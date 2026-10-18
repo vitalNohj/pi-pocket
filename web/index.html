@@ -14,19 +14,17 @@
         <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
         <link rel="icon" href="/icon.svg" type="image/svg+xml" />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-        <link
-            rel="preload"
-            href="/fonts/JetBrainsMono.woff2"
-            as="font"
-            type="font/woff2"
-            crossorigin
-        />
-        <link rel="stylesheet" href="/style.css" />
-        <!-- The last look this browser used (theme.js keeps it), before the first paint: no flash of another theme. -->
+        <!--
+            The last look this browser used (theme.js keeps it), before the first paint: no flash of another theme. Its
+            fonts (JetBrains Mono, the default, before it chose one) start loading at once. Above the style sheet: a
+            script after one waits for it.
+        -->
         <script>
+            var fonts = ["/fonts/JetBrainsMono.woff2"];
             try {
                 var look = JSON.parse(localStorage.getItem("pocket.themeCache") || "null");
                 if (look) {
+                    if (Array.isArray(look.fonts)) fonts = look.fonts;
                     var root = document.documentElement;
                     for (var name in look.vars) root.style.setProperty(name, look.vars[name]);
                     for (var key in look.attrs) root.dataset[key] = look.attrs[key];
@@ -35,7 +33,17 @@
                         .setAttribute("content", look.vars["--o-bg"]);
                 }
             } catch (error) {}
+            for (var i = 0; i < fonts.length; i++) {
+                var link = document.createElement("link");
+                link.rel = "preload";
+                link.as = "font";
+                link.type = "font/woff2";
+                link.crossOrigin = "anonymous";
+                link.href = fonts[i];
+                document.head.appendChild(link);
+            }
         </script>
+        <link rel="stylesheet" href="/style.css" />
         <script type="importmap">
             {
                 "imports": {

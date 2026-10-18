@@ -2,6 +2,8 @@
 import { closeSheet, openSheet, store } from "../store.js";
 import {
     chooseTheme,
+    fontOf,
+    FONTS,
     paletteOf,
     prefs,
     setPrefs,
@@ -68,6 +70,7 @@ function SettingRow({ title, detail, children }) {
 
 export function AppearanceSheet() {
     const p = prefs();
+    const font = fontOf(p.font);
     const desktop = store.state.desktopTheme;
 
     return html`<${Sheet} title="Appearance" onClose=${closeSheet} wide=${true}>
@@ -84,6 +87,58 @@ export function AppearanceSheet() {
                 Running Pi Pocket on an Omarchy desktop adds “Desktop”: the app follows the theme the desktop uses.
             </p>`
         }
+        <div class="label">Typography</div>
+        <div>
+            <div class="font-picker">
+                <label for="appearance-font">Font</label>
+                <select
+                    id="appearance-font"
+                    value=${font.id}
+                    aria-describedby="appearance-font-detail"
+                    onChange=${(event) => setPrefs({ font: event.currentTarget.value })}
+                >
+                    ${FONTS.map(
+                        (choice) => html`<option key=${choice.id} value=${choice.id}>
+                            ${choice.name}${choice.id === "jetbrains-mono" ? " (default)" : ""}
+                        </option>`,
+                    )}
+                </select>
+                <p id="appearance-font-detail" class="muted small">
+                    Saved in this browser. Code and diffs stay monospace.
+                </p>
+                <div class="font-preview" aria-label="Font preview">
+                    <div>The quick brown fox jumps over the lazy dog.</div>
+                    <code>const answer = (x) => x !== 42; // 0O 1lI</code>
+                    ${
+                        // Icons as a prompt prints them: a folder, Git's branch, Node.js, and Python.
+                        font.id === "jetbrains-mono-nerd" &&
+                        html`<code>\u{F07C} ~/pi-pocket \u{E0A0} main \u{E718} \u{E73C}</code>`
+                    }
+                </div>
+            </div>
+            <${SettingRow}
+                title="Use ligatures"
+                detail="Draw => and !== as one symbol, in the fonts that have them"
+            >
+                <${Switch}
+                    on=${p.ligatures}
+                    label="Use ligatures"
+                    onChange=${() => setPrefs({ ligatures: !p.ligatures })}
+                />
+            <//>
+            <${SettingRow} title="Text size">
+                <div class="segmented">
+                    ${[12, 13, 14, 15, 16].map(
+                        (size) => html`<button
+                            class=${p.text === size ? "on" : ""}
+                            onClick=${() => setPrefs({ text: size })}
+                        >
+                            ${size}
+                        </button>`,
+                    )}
+                </div>
+            <//>
+        </div>
         <div class="label">Layout and motion</div>
         <div>
             <${SettingRow}
@@ -156,18 +211,6 @@ export function AppearanceSheet() {
                             >
                                 ${label}
                             </button>`,
-                    )}
-                </div>
-            <//>
-            <${SettingRow} title="Text size">
-                <div class="segmented">
-                    ${[12, 13, 14, 15, 16].map(
-                        (size) => html`<button
-                            class=${p.text === size ? "on" : ""}
-                            onClick=${() => setPrefs({ text: size })}
-                        >
-                            ${size}
-                        </button>`,
                     )}
                 </div>
             <//>

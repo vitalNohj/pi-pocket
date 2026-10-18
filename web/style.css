@@ -2,7 +2,7 @@
  * Pi Pocket's theme, after Omarchy. The palette is the Omarchy theme's colors.toml (theme.js sets the --o-* variables,
  * from a bundled theme or the desktop's own); everything else mixes from it the way omarchy-shell does: the foreground
  * over the background at a few percent for fills, square tiles, 2px window borders, no shadows or blur, JetBrains Mono
- * everywhere, and Hyprland's animation curves and timings for motion.
+ * by default (Appearance can choose another font), and Hyprland's animation curves and timings for motion.
  */
 /*
  * Contents, in the order the cascade reads them. Search for "─── " and a name to jump to a section. A rule later in
@@ -46,6 +46,111 @@
     font-family: "Pocket Mono";
     src: url("/fonts/JetBrainsMono.woff2") format("woff2");
     font-weight: 100 800;
+    font-display: swap;
+}
+
+/* Each font's own italic, which a browser downloads only when italic text shows (comments in code, emphasis). Fira
+   Code has none: the browser slants its upright letters. */
+@font-face {
+    font-family: "Pocket Mono";
+    src: url("/fonts/JetBrainsMono-Italic.woff2") format("woff2");
+    font-weight: 100 800;
+    font-style: italic;
+    font-display: swap;
+}
+
+/* The other fonts Appearance offers (theme.js FONTS). A browser downloads one only when the chosen font uses it. */
+
+/* The Nerd Fonts icons alone (their Mono build: one cell wide), in the private use areas they fill. */
+@font-face {
+    font-family: "Pocket Nerd Symbols";
+    src: url("/fonts/NerdFontsSymbolsMono.woff2") format("woff2");
+    font-display: swap;
+    unicode-range: U+E000-F8FF, U+F0000-F1AF0;
+}
+
+@font-face {
+    font-family: "Pocket Fira Code";
+    src: url("/fonts/FiraCode-VF.woff2") format("woff2");
+    font-weight: 300 700;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket IBM Plex Mono";
+    src: url("/fonts/IBMPlexMono-Variable.woff2") format("woff2");
+    font-weight: 100 700;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket IBM Plex Mono";
+    src: url("/fonts/IBMPlexMono-Variable-Italic.woff2") format("woff2");
+    font-weight: 100 700;
+    font-style: italic;
+    font-display: swap;
+}
+
+/* Iosevka has no variable font: the weights the app uses, upright and italic. 800 shows as 700, 100 as 400. Each file
+   keeps every character but drops the optional letter variants (ss and cv features) the app never turns on, which
+   were three quarters of its size. */
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-SemiBold.woff2") format("woff2");
+    font-weight: 600;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-Bold.woff2") format("woff2");
+    font-weight: 700;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-Italic.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-SemiBoldItalic.woff2") format("woff2");
+    font-weight: 600;
+    font-style: italic;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-BoldItalic.woff2") format("woff2");
+    font-weight: 700;
+    font-style: italic;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Inter";
+    src: url("/fonts/InterVariable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Inter";
+    src: url("/fonts/InterVariable-Italic.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: italic;
     font-display: swap;
 }
 
@@ -132,9 +237,14 @@
     --t-border: 540ms; /* border */
     --t-hover: 140ms;
 
-    --mono:
+    --font-jetbrains:
         "Pocket Mono", "JetBrains Mono", "JetBrainsMono Nerd Font", ui-monospace, "SF Mono", Menlo,
         Consolas, monospace;
+    --font-system-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-system-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+    --font: var(--font-jetbrains);
+    --mono: var(--font-jetbrains);
+    --ligatures: none;
     color-scheme: dark;
 }
 
@@ -170,8 +280,8 @@ body {
     height: 100%;
     background: var(--desk);
     color: var(--body);
-    font: var(--text-size, 14px) / 1.6 var(--mono);
-    font-variant-ligatures: none;
+    font: var(--text-size, 14px) / 1.6 var(--font);
+    font-variant-ligatures: var(--ligatures);
     -webkit-text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
 }
@@ -292,6 +402,9 @@ kbd {
     vertical-align: middle;
 }
 
+code,
+pre,
+samp,
 .mono {
     font-family: var(--mono);
 }
@@ -433,7 +546,7 @@ kbd {
     gap: 1.1rem;
     height: 100dvh;
     padding: 1.5rem;
-    font-family: var(--mono);
+    font-family: var(--font);
     color: var(--muted);
     text-align: center;
     background: var(--bg);
@@ -3770,6 +3883,8 @@ button.chip:hover {
 .fetch-info {
     display: flex;
     flex-direction: column;
+    /* Its rule and rows line up as fastfetch's do only in a monospace font, whatever font Appearance picks. */
+    font-family: var(--mono);
     font-size: 0.86rem;
     min-width: 18rem;
 }
@@ -6164,6 +6279,40 @@ textarea.notes {
     font-size: 0.68rem;
     color: var(--o-fg);
     opacity: 0.75;
+}
+
+.font-picker {
+    display: grid;
+    gap: 0.45rem;
+    min-width: 0;
+    padding: 0.55rem 0;
+}
+
+.font-picker label {
+    color: var(--text);
+}
+
+.font-picker select {
+    min-width: 0;
+    min-height: 44px;
+}
+
+.font-picker p {
+    margin: 0;
+}
+
+.font-preview {
+    padding: 0.75rem;
+    border: 1px solid var(--line);
+    background: var(--card);
+    overflow-wrap: anywhere;
+}
+
+.font-preview code {
+    display: block;
+    margin-top: 0.35rem;
+    overflow-x: auto;
+    white-space: pre;
 }
 
 .setting-row {

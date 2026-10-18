@@ -447,15 +447,20 @@ export function Composer() {
             element.setSelectionRange(element.value.length, element.value.length);
         });
     }, [insert?.n]);
-    // Again when the text size changes (Appearance), which changes the lines' height.
+    // Again when the text size or the font changes (Appearance), or a font finishes loading: each changes the lines'
+    // height.
     useEffect(() => {
         const fit = () => fitBox(box.current);
 
         fit();
         addEventListener("resize", fit);
+        document.fonts?.addEventListener("loadingdone", fit);
 
-        return () => removeEventListener("resize", fit);
-    }, [text, prefs().text]);
+        return () => {
+            removeEventListener("resize", fit);
+            document.fonts?.removeEventListener("loadingdone", fit);
+        };
+    }, [text, prefs().text, prefs().font]);
 
     const update = (value, at = value.length) => {
         setText(value);
@@ -1437,15 +1442,15 @@ function oneRow(line) {
 }
 
 /**
- * The whole line where it fits on one row; otherwise each shorter form in turn, until one does. Only when its text or
- * the text size changed, or `again`: a render that changed neither measures nothing.
+ * The whole line where it fits on one row; otherwise each shorter form in turn, until one does. Only when its text, the
+ * text size, or the font changed, or `again`: a render that changed none of them measures nothing.
  */
 function fitStatus(line, again = false) {
     if (!line) {
         return;
     }
 
-    const key = `${prefs().text} ${line.textContent}`;
+    const key = `${prefs().text} ${prefs().font} ${line.textContent}`;
 
     // Hidden, it has no width to fit: the observer hears it show.
     if ((!again && fitted.get(line) === key) || line.clientWidth === 0) {
@@ -1463,7 +1468,7 @@ function fitStatus(line, again = false) {
     }
 }
 
-/** Keep the status line in `ref` on one row: after every render, when its width changes, and once the font loads. */
+/** Keep the status line in `ref` on one row: after every render, when its width changes, and when a font loads. */
 function useStatusFit(ref) {
     useLayoutEffect(() => fitStatus(ref.current));
     useEffect(() => {
@@ -1487,13 +1492,18 @@ function useStatusFit(ref) {
             frame = requestAnimationFrame(() => fitStatus(line, true));
         });
 
+        // The first font, and later one Appearance picks, arrive after the line was fitted with another's widths.
+        const loaded = () => !gone && fitStatus(line, true);
+
         observer.observe(line);
-        document.fonts?.ready.then(() => !gone && fitStatus(line, true));
+        document.fonts?.ready.then(loaded);
+        document.fonts?.addEventListener("loadingdone", loaded);
 
         return () => {
             gone = true;
             cancelAnimationFrame(frame);
             observer.disconnect();
+            document.fonts?.removeEventListener("loadingdone", loaded);
         };
     }, []);
 }

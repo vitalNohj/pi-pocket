@@ -1,5 +1,5 @@
 // Appearance: Omarchy palettes as CSS variables, "Follow desktop" (the Omarchy theme this machine runs), tiled windows,
-// motion, text size, and the sidebar's shape. Saved per browser. index.html applies the last look before the first
+// motion, fonts, text size, and the sidebar's shape. Saved per browser. index.html applies the last look before the first
 // paint from `pocket.themeCache`, so a reload never flashes another theme.
 import { THEMES } from "./themes.js";
 import { api, store } from "./store.js";
@@ -9,6 +9,75 @@ const CACHE = "pocket.themeCache";
 const DESKTOP_CACHE = "pocket.desktopTheme";
 const PINNED = "pocket.pinned";
 const FALLBACK = "tokyo-night";
+
+/**
+ * The app's font choices. Only monospace choices also replace the font for code, diffs, and technical details. `file`
+ * is the bundled file of its regular text (style.css declares them all), which index.html preloads; none for a font
+ * this device already has.
+ */
+export const FONTS = [
+    {
+        id: "jetbrains-mono",
+        name: "JetBrains Mono",
+        family: "var(--font-jetbrains)",
+        mono: true,
+        file: "/fonts/JetBrainsMono.woff2",
+    },
+    {
+        // Omarchy's terminal font: JetBrains Mono with the Nerd Fonts icons that prompts and tools print, from a file
+        // of the icons alone that a browser fetches only when one shows.
+        id: "jetbrains-mono-nerd",
+        name: "JetBrainsMono Nerd Font",
+        family: '"Pocket Mono", "Pocket Nerd Symbols", var(--font-jetbrains)',
+        mono: true,
+        file: "/fonts/JetBrainsMono.woff2",
+    },
+    {
+        id: "system-sans",
+        name: "System Sans",
+        family: "var(--font-system-sans)",
+        mono: false,
+        file: null,
+    },
+    {
+        id: "system-mono",
+        name: "System Mono",
+        family: "var(--font-system-mono)",
+        mono: true,
+        file: null,
+    },
+    {
+        id: "fira-code",
+        name: "Fira Code",
+        family: '"Pocket Fira Code", var(--font-jetbrains)',
+        mono: true,
+        file: "/fonts/FiraCode-VF.woff2",
+    },
+    {
+        id: "ibm-plex-mono",
+        name: "IBM Plex Mono",
+        family: '"Pocket IBM Plex Mono", var(--font-jetbrains)',
+        mono: true,
+        file: "/fonts/IBMPlexMono-Variable.woff2",
+    },
+    {
+        id: "iosevka",
+        name: "Iosevka",
+        family: '"Pocket Iosevka", var(--font-jetbrains)',
+        mono: true,
+        file: "/fonts/Iosevka-Regular.woff2",
+    },
+    {
+        id: "inter",
+        name: "Inter",
+        family: '"Pocket Inter", var(--font-system-sans)',
+        mono: false,
+        file: "/fonts/InterVariable.woff2",
+    },
+];
+
+/** An older or unknown saved choice keeps the original JetBrains Mono look. */
+export const fontOf = (id) => FONTS.find((font) => font.id === id) ?? FONTS[0];
 
 const DEFAULTS = {
     /** "desktop" follows the Omarchy theme of the machine Pi Pocket runs on; otherwise a key of THEMES. */
@@ -20,6 +89,10 @@ const DEFAULTS = {
     /** "auto" follows the system's reduced-motion setting. */
     motion: "auto",
     text: 14,
+    /** A key in FONTS, saved in this browser only. */
+    font: "jetbrains-mono",
+    /** Draw the font's ligatures (`=>` as one arrow, in the fonts that have them). Off until turned on. */
+    ligatures: false,
     /** The sidebar on wide screens: "open", or "rail" (icons and numbered sessions only). */
     sidebar: "open",
     /** The open sidebar's width, its borders, the rail, and the list's: a 264px list. */
@@ -71,8 +144,10 @@ function savedPrefs() {
 /** The open sidebar's width as it shows: the rail and its borders, and a list 204–464px wide. */
 const sidebarWidth = (p) => `${Math.min(524, Math.max(264, p.sidebarWidth))}px`;
 
+const savedAppearance = { ...DEFAULTS, ...savedPrefs() };
+
 store.set({
-    appearance: { ...DEFAULTS, ...savedPrefs() },
+    appearance: { ...savedAppearance, font: fontOf(savedAppearance.font).id },
     desktopTheme: readJson(DESKTOP_CACHE, null),
     pinned: readJson(PINNED, []),
 });
@@ -82,6 +157,7 @@ export const prefs = () => store.state.appearance;
 export function setPrefs(patch) {
     const next = { ...prefs(), ...patch };
 
+    next.font = fontOf(next.font).id;
     localStorage.setItem(KEY, JSON.stringify(next));
     store.set({ appearance: next });
     apply();
@@ -223,6 +299,16 @@ export function apply() {
 
     setVars(root, vars);
     const p = prefs();
+    const font = fontOf(p.font);
+    // A font that is not monospace leaves code, diffs, and technical details in the default.
+    const mono = font.mono ? font : FONTS[0];
+    const typography = {
+        "--font": font.family,
+        "--mono": mono.family,
+        "--ligatures": p.ligatures ? "normal" : "none",
+    };
+
+    setVars(root, typography);
     const desktop = store.state.desktopTheme;
     const wallpaper =
         p.theme === "desktop" && p.wallpaper && p.tiling && desktop?.wallpaper
@@ -249,11 +335,13 @@ export function apply() {
         JSON.stringify({
             vars: {
                 ...cached,
+                ...typography,
                 "--wallpaper": wallpaper,
                 "--text-size": `${p.text}px`,
                 "--sidebar-w": sidebarWidth(p),
             },
             attrs,
+            fonts: [...new Set([font.file, mono.file])].filter(Boolean),
         }),
     );
 }

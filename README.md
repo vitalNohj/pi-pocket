@@ -151,7 +151,7 @@ Pi knows where Pi Pocket's own documentation is: [docs/index.md](docs/index.md) 
 
 ## Credits
 
-Inspired by [Mario Zechner's demo](https://x.com/badlogicgames/status/2106452296087302173) of his own Pi app. Pi Pocket is an independent project, not affiliated with Earendil. JetBrains Mono is bundled under the [SIL Open Font License](web/fonts/OFL.txt).
+Inspired by [Mario Zechner's demo](https://x.com/badlogicgames/status/2106452296087302173) of his own Pi app. Pi Pocket is an independent project, not affiliated with Earendil. JetBrains Mono ([license](web/fonts/OFL.txt)), Fira Code ([license](web/fonts/FiraCode-OFL.txt)), IBM Plex Mono ([license](web/fonts/IBMPlexMono-OFL.txt)), Iosevka ([license](web/fonts/Iosevka-OFL.txt)), and Inter ([license](web/fonts/Inter-OFL.txt)) are bundled under the SIL Open Font License, and the [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) icons under the [licenses of their icon sets](web/fonts/NerdFonts-README.txt) ([MIT](web/fonts/NerdFonts-LICENSE.txt) for Nerd Fonts itself).
 
 ## License
 
