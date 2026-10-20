@@ -158,7 +158,7 @@ The app's CSS comes in three cascade layers: the app's own (with extensions' sty
 
 - A theme's rule wins over the app's, however specific the app's rule is. `[data-part="message-box"] { border-radius: 0; }` is enough.
 - The app's `!important` rules still win, such as Appearance's reduced motion. A theme cannot turn motion back on.
-- What people set themselves still wins: the text size, and the widths they drag (`--text-size` and `--sidebar-w` are theirs). A theme's `!important` would beat even those: never mark a size `!important`.
+- What people set themselves still wins: the text size, the fonts and ligatures they choose in Appearance, and the widths they drag (`--text-size`, `--sidebar-w`, and, once someone chooses, `--sans`, `--mono`, and `--ligatures` are theirs). Their choice of **Theme's** leaves the fonts and ligatures to the theme. A theme's `!important` would beat even those: never mark a size `!important`.
 - A theme's `@font-face` and `@keyframes` are in its layer too.
 
 Each browser keeps the theme's addresses, and the page loads them before it first draws, so a reload never flashes the app's own look. It preloads the theme's fonts in place of the app's. A theme's addresses carry a hash of its files, so the browser keeps each file until the theme changes, and then fetches the new ones.

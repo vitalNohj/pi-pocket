@@ -17,11 +17,18 @@ import {
     chooseTheme,
     colorsOnly,
     folderPaletteIds,
+    fontOf,
+    FONTS,
     lookIds,
+    MAX_TEXT,
+    MIN_TEXT,
     paletteOf,
     prefs,
     preview,
     setPrefs,
+    STEP_TEXT,
+    textSizeOf,
+    THEME_FONT,
     themeDefault,
     themeIds,
     themeVars,
@@ -359,6 +366,139 @@ function chooseDensity(density, event) {
     });
 }
 
+/** One font menu: the theme's font first, then the bundled and the device's fonts that fit (only monospace for code). */
+function FontMenu({ id, label, value, code, onChange }) {
+    const font = fontOf(value);
+
+    return html`<select
+        id=${id}
+        aria-label=${label}
+        value=${font && (!code || font.mono) ? value : THEME_FONT}
+        onChange=${(event) => onChange(event.currentTarget.value)}
+    >
+        <option value=${THEME_FONT}>Theme's</option>
+        ${FONTS.filter((font) => !code || font.mono).map(
+            (font) => html`<option key=${font.id} value=${font.id}>${font.name}</option>`,
+        )}
+    </select>`;
+}
+
+/**
+ * The conversation's text size: a few usual sizes, and a field for any other, MIN_TEXT to MAX_TEXT in half pixels. The
+ * field takes a size once it is one (14 on the way to 145 shows at once); Enter or leaving it keeps it in range.
+ */
+function TextSize({ size }) {
+    const [draft, setDraft] = useState(null);
+
+    // A size set another way (a button, another tab) shows at once, over what was being typed; what is being typed
+    // stays while it means this size.
+    useEffect(() => {
+        if (draft !== null && textSizeOf(draft) !== size) {
+            setDraft(null);
+        }
+    }, [size]);
+
+    const commit = (value) => {
+        setDraft(null);
+        setPrefs({ text: textSizeOf(value) });
+    };
+
+    return html`<div class="text-size">
+        <div class="segmented">
+            ${[11, 13, 15, 17].map(
+                (each) => html`<button
+                    class=${size === each ? "on" : ""}
+                    aria-pressed=${size === each}
+                    onClick=${() => commit(each)}
+                >
+                    ${each}
+                </button>`,
+            )}
+        </div>
+        <label class="text-size-field">
+            <input
+                type="number"
+                inputmode="decimal"
+                min=${MIN_TEXT}
+                max=${MAX_TEXT}
+                step=${STEP_TEXT}
+                aria-label="Text size in pixels"
+                value=${draft ?? size}
+                onInput=${(event) => {
+                    const value = event.currentTarget.value;
+                    const number = Number(value);
+
+                    setDraft(value);
+
+                    if (value !== "" && number >= MIN_TEXT && number <= MAX_TEXT) {
+                        setPrefs({ text: textSizeOf(number) });
+                    }
+                }}
+                onChange=${(event) => commit(event.currentTarget.value === "" ? size : event.currentTarget.value)}
+                onBlur=${() => setDraft(null)}
+                onKeyDown=${(event) => event.key === "Enter" && event.currentTarget.blur()}
+            />
+            <span>px</span>
+        </label>
+    </div>`;
+}
+
+/** Appearance's fonts, ligatures, and text size, for this browser, over the theme's. */
+function Typography({ p }) {
+    const textFont = fontOf(p.textFont);
+    const codeFont = fontOf(p.codeFont);
+
+    return html`<div class="label">Typography</div>
+        <div class="sheet-list">
+            <${SettingRow} title="Text font" detail="Words: replies, messages, menus">
+                <${FontMenu} id="appearance-text-font" label="Text font" value=${p.textFont} onChange=${(textFont) => setPrefs({ textFont })} />
+            <//>
+            <${SettingRow} title="Code font" detail="Code, diffs, paths, and numbers: monospace only">
+                <${FontMenu}
+                    id="appearance-code-font"
+                    label="Code font"
+                    value=${p.codeFont}
+                    code=${true}
+                    onChange=${(codeFont) => setPrefs({ codeFont })}
+                />
+            <//>
+            <div class="font-preview" aria-label="Font preview" style=${`font-size: ${textSizeOf(p.text)}px`}>
+                <div>The quick brown fox jumps over the lazy dog.</div>
+                <code>const answer = (x) => x !== 42; // 0O 1lI</code>
+                ${
+                    // Icons as a prompt prints them: a folder, Git's branch, Node.js, and Python.
+                    (textFont?.id === "jetbrains-mono-nerd" ||
+                        codeFont?.id === "jetbrains-mono-nerd") &&
+                    html`<code>\u{F07C} ~/pi-pocket \u{E0A0} main \u{E718} \u{E73C}</code>`
+                }
+            </div>
+            <${SettingRow}
+                title="Ligatures"
+                detail="Draw => and !== as one symbol, in the fonts that have them. Theme's: off in Pocket's own look"
+            >
+                <div class="segmented">
+                    ${[
+                        [THEME_FONT, "Theme's"],
+                        ["on", "On"],
+                        ["off", "Off"],
+                    ].map(
+                        ([value, label]) =>
+                            html`<button
+                                class=${p.ligatures === value ? "on" : ""}
+                                aria-pressed=${p.ligatures === value}
+                                onClick=${() => setPrefs({ ligatures: value })}
+                            >
+                                ${label}
+                            </button>`,
+                    )}
+                </div>
+            <//>
+            <${SettingRow} title="Text size" detail=${`The conversation's, ${MIN_TEXT} to ${MAX_TEXT} px`}>
+                <${TextSize} size=${textSizeOf(p.text)} />
+            <//>
+        </div>`;
+}
+
 function SettingRow({ title, detail, children }) {
     return html`<div class="setting-row">
         <div class="setting-text">
@@ -396,6 +536,7 @@ export function AppearanceSheet() {
                 Running Pi Pocket on an Omarchy desktop adds “Desktop”: the app follows the theme the desktop uses.
             </p>`
         }
+        <${Typography} p=${p} />
         <div class="label">Layout and motion</div>
         <div class="sheet-list">
             <${SettingRow}
@@ -470,19 +611,6 @@ export function AppearanceSheet() {
                             >
                                 ${label}
                             </button>`,
-                    )}
-                </div>
-            <//>
-            <${SettingRow} title="Text size">
-                <div class="segmented">
-                    ${[13, 14, 15, 16, 17].map(
-                        (size) => html`<button
-                            class=${p.text === size ? "on" : ""}
-                            aria-pressed=${p.text === size}
-                            onClick=${() => setPrefs({ text: size })}
-                        >
-                            ${size}
-                        </button>`,
                     )}
                 </div>
             <//>

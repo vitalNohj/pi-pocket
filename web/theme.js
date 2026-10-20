@@ -1,6 +1,6 @@
 // Appearance: the theme (a folder of CSS the server lists, `themes.ts`), the colors (Omarchy palettes as CSS variables,
-// a theme folder's own, or "Follow desktop": the Omarchy theme this machine runs), tiled windows, motion, text size,
-// density, and the sidebar's shape. Saved per browser. index.html applies the last look before the first paint from
+// a theme folder's own, or "Follow desktop": the Omarchy theme this machine runs), tiled windows, motion, fonts, text
+// size, density, and the sidebar's shape. Saved per browser. index.html applies the last look before the first paint from
 // `pocket.themeCache`, the theme's stylesheets included, so a reload never flashes another look.
 import { THEMES } from "./themes.js";
 import { onSafeModeEnd, safeMode } from "./safe-mode.js";
@@ -14,6 +14,101 @@ const FALLBACK = "tokyo-night";
 
 /** The app's own look, which every theme builds on: it loads no stylesheet. */
 export const BASE_LOOK = "pocket";
+
+/** A font choice that leaves the font to the theme (the app's own: Geist for words, JetBrains Mono for code). */
+export const THEME_FONT = "theme";
+
+/**
+ * The fonts Appearance offers, bundled in `web/fonts/` (style.css declares them) or the device's own. `family` goes into
+ * `--sans` or `--mono` inline, over the theme's; `file` is the file of its upright text, which index.html preloads (none
+ * for a device's font). Code fonts are the monospace ones; the text font can be any.
+ */
+export const FONTS = [
+    {
+        id: "geist",
+        name: "Geist",
+        mono: false,
+        file: "/fonts/Geist.woff2",
+        family: '"Pocket Sans", "Geist", var(--font-system-sans)',
+    },
+    {
+        id: "inter",
+        name: "Inter",
+        mono: false,
+        file: "/fonts/InterVariable.woff2",
+        family: '"Pocket Inter", var(--font-system-sans)',
+    },
+    {
+        id: "system-sans",
+        name: "System Sans",
+        mono: false,
+        file: null,
+        family: "var(--font-system-sans)",
+    },
+    {
+        id: "jetbrains-mono",
+        name: "JetBrains Mono",
+        mono: true,
+        file: "/fonts/JetBrainsMono.woff2",
+        family: "var(--font-jetbrains)",
+    },
+    {
+        // Omarchy's terminal font: JetBrains Mono with the Nerd Fonts icons that prompts and tools print, from a file of
+        // the icons alone that a browser fetches only when one shows.
+        id: "jetbrains-mono-nerd",
+        name: "JetBrainsMono Nerd Font",
+        mono: true,
+        file: "/fonts/JetBrainsMono.woff2",
+        family: '"Pocket Mono", "Pocket Nerd Symbols", var(--font-jetbrains)',
+    },
+    {
+        id: "fira-code",
+        name: "Fira Code",
+        mono: true,
+        file: "/fonts/FiraCode-VF.woff2",
+        family: '"Pocket Fira Code", var(--font-jetbrains)',
+    },
+    {
+        id: "ibm-plex-mono",
+        name: "IBM Plex Mono",
+        mono: true,
+        file: "/fonts/IBMPlexMono-Variable.woff2",
+        family: '"Pocket IBM Plex Mono", var(--font-jetbrains)',
+    },
+    {
+        id: "iosevka",
+        name: "Iosevka",
+        mono: true,
+        file: "/fonts/Iosevka-Regular.woff2",
+        family: '"Pocket Iosevka", var(--font-jetbrains)',
+    },
+    {
+        id: "system-mono",
+        name: "System Mono",
+        mono: true,
+        file: null,
+        family: "var(--font-system-mono)",
+    },
+];
+
+/** A bundled font by id, or null for the theme's (and for an id this version does not know). */
+export const fontOf = (id) => FONTS.find((font) => font.id === id) ?? null;
+
+/** The conversation's text size in pixels: anything from MIN_TEXT to MAX_TEXT, in steps of STEP_TEXT. */
+export const MIN_TEXT = 10;
+export const MAX_TEXT = 24;
+export const STEP_TEXT = 0.5;
+
+/** A text size someone typed or saved, kept in range and on a step; the default for one that is not a number. */
+export function textSizeOf(value) {
+    const size = Number(value);
+
+    if (!Number.isFinite(size)) {
+        return DEFAULTS.text;
+    }
+
+    return Math.min(MAX_TEXT, Math.max(MIN_TEXT, Math.round(size / STEP_TEXT) * STEP_TEXT));
+}
 
 const DEFAULTS = {
     /**
@@ -29,8 +124,13 @@ const DEFAULTS = {
     wallpaper: false,
     /** "auto" follows the system's reduced-motion setting. */
     motion: "auto",
-    /** The conversation's text in pixels, 13 to 17; the rest of the app keeps its own sizes. */
+    /** The conversation's text in pixels, MIN_TEXT to MAX_TEXT; the rest of the app keeps its own sizes. */
     text: 15,
+    /** The font for words (`--sans`) and for code, paths, and numbers (`--mono`): a key of FONTS, or the theme's. */
+    textFont: THEME_FONT,
+    codeFont: THEME_FONT,
+    /** Ligatures (`=>` as one arrow, in the fonts that have them): "on", "off", or the theme's (off in the app's own). */
+    ligatures: THEME_FONT,
     /** How much room the spacing takes: "comfortable", "compact", or "tight". Font sizes stay. */
     density: "comfortable",
     /**
@@ -490,15 +590,31 @@ export function apply() {
             : null;
     // Width other than Comfortable is the person's choice, inline over the theme's; Comfortable leaves it to the theme.
     const width = WIDTHS[p.width];
+    // Fonts and ligatures someone chose are theirs, inline over the theme's, as the text size is; the theme's own
+    // otherwise.
+    const textFont = fontOf(p.textFont);
+    const codeFont = fontOf(p.codeFont);
+    const typography = {
+        "--sans": textFont?.family ?? null,
+        "--mono": codeFont?.mono ? codeFont.family : null,
+        "--ligatures": p.ligatures === "on" ? "normal" : p.ligatures === "off" ? "none" : null,
+    };
     const inline = {
-        "--text-size": `${p.text}px`,
+        "--text-size": `${textSizeOf(p.text)}px`,
         "--sidebar-w": sidebarWidth(p),
         ...(wallpaper === null ? {} : { "--wallpaper": wallpaper }),
         ...(width ?? {}),
+        ...Object.fromEntries(Object.entries(typography).filter(([, value]) => value !== null)),
     };
 
     if (wallpaper === null) {
         root.style.removeProperty("--wallpaper");
+    }
+
+    for (const [name, value] of Object.entries(typography)) {
+        if (value === null) {
+            root.style.removeProperty(name);
+        }
     }
 
     if (!width) {
@@ -550,6 +666,12 @@ export function apply() {
             color: vars["--o-bg"],
             css,
             fonts,
+            // The chosen fonts' files, for index.html to preload in place of the theme's for words or for code: "" for a
+            // device's font, none for the theme's.
+            picked: {
+                ...(textFont ? { sans: textFont.file ?? "" } : {}),
+                ...(codeFont?.mono ? { mono: codeFont.file ?? "" } : {}),
+            },
             ...(pair ? { pair } : {}),
         }),
     );

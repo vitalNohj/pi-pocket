@@ -60,8 +60,8 @@ Set by Colors (`colors.toml`, an Omarchy palette, or the desktop's). A theme rea
 
 | Token                                                          | Default                                                                                                                                                                                                                                                     |
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--sans`, `--mono`                                             | Geist for words; JetBrains Mono for code, paths, counts, keys                                                                                                                                                                                               |
-| `--ligatures`                                                  | `none`: no ligatures, as in a terminal. `contextual` turns on a font's `calt`; `normal`, all its usual ones                                                                                                                                                 |
+| `--sans`, `--mono`                                             | Geist for words; JetBrains Mono for code, paths, counts, keys. A font chosen in Appearance replaces the theme's, inline                                                                                                                                     |
+| `--ligatures`                                                  | `none`: no ligatures, as in a terminal. `contextual` turns on a font's `calt`; `normal`, all its usual ones. Appearance's On or Off replaces it, inline                                                                                                     |
 | `--r-mark`, `--r-tag`, `--r-seg`, `--r-row`, `--r-control`     | 3, 5, 7, 9, 10 px: state squares, tags, segments, rows, fields                                                                                                                                                                                              |
 | `--r-card`, `--r-window`, `--r-sheet`, `--r-float`, `--r-pill` | 12, 14, 18, 20, 999 px: cards, windows, sheets, PiP, pills                                                                                                                                                                                                  |
 | `--radius`                                                     | A control's corner that names none (`--r-control`)                                                                                                                                                                                                          |
@@ -85,7 +85,7 @@ Read them; a theme cannot change them, as they are each person's choice in Appea
 
 | Token                                    | What                                                                                |
 | ---------------------------------------- | ----------------------------------------------------------------------------------- |
-| `--text-size`                            | The conversation's text size, 13 to 17 px                                           |
+| `--text-size`                            | The conversation's text size, 10 to 24 px                                           |
 | `--sidebar-w`                            | The open sidebar's width, as dragged                                                |
 | `--transcript-width`, `--composer-width` | Only with Width set to Wide or Full: then they are inline, and win over the theme's |
 

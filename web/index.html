@@ -64,6 +64,24 @@
                             });
                             if (sheets.length > 0 && own.length > 0) fonts = own;
                         }
+                        // The fonts chosen in Appearance, for words and for code, in place of the app's own for each;
+                        // "" is a font of the device, which nothing preloads.
+                        var picked = look.picked || {};
+                        var slots = {
+                            sans: "/fonts/Geist.woff2",
+                            mono: "/fonts/JetBrainsMono.woff2",
+                        };
+                        for (var slot in slots) {
+                            var file = picked[slot];
+                            if (
+                                typeof file !== "string" ||
+                                !/^(\/fonts\/[A-Za-z0-9_-]+\.woff2)?$/.test(file)
+                            )
+                                continue;
+                            var at = fonts.indexOf(slots[slot]);
+                            if (at !== -1) fonts.splice(at, 1);
+                            if (file !== "" && fonts.indexOf(file) === -1) fonts.push(file);
+                        }
                         for (var each in look.vars) root.style.setProperty(each, look.vars[each]);
                         for (var key in look.attrs) root.dataset[key] = look.attrs[key];
                         if (look.pair) root.dataset.mode = light ? "light" : "dark";

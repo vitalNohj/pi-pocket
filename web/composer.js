@@ -472,14 +472,19 @@ export function Composer() {
             element.setSelectionRange(element.value.length, element.value.length);
         });
     }, [insert?.n]);
+    // Again when Appearance changes the font, or a font finishes loading: either wraps the text another way.
     useEffect(() => {
         const fit = () => fitBox(box.current);
 
         fit();
         addEventListener("resize", fit);
+        document.fonts?.addEventListener("loadingdone", fit);
 
-        return () => removeEventListener("resize", fit);
-    }, [text]);
+        return () => {
+            removeEventListener("resize", fit);
+            document.fonts?.removeEventListener("loadingdone", fit);
+        };
+    }, [text, prefs().textFont]);
 
     const update = (value, at = value.length) => {
         setText(value);
@@ -1511,15 +1516,15 @@ function oneRow(line) {
 }
 
 /**
- * The whole line where it fits on one row; otherwise each shorter form in turn, until one does. Only when its text
- * changed, or `again`: a render that changed nothing measures nothing.
+ * The whole line where it fits on one row; otherwise each shorter form in turn, until one does. Only when its text or
+ * Appearance's fonts changed, or `again`: a render that changed none of them measures nothing.
  */
 function fitStatus(line, again = false) {
     if (!line) {
         return;
     }
 
-    const key = line.textContent;
+    const key = `${prefs().textFont} ${prefs().codeFont} ${line.textContent}`;
 
     // Hidden, it has no width to fit: the observer hears it show.
     if ((!again && fitted.get(line) === key) || line.clientWidth === 0) {
@@ -1537,7 +1542,7 @@ function fitStatus(line, again = false) {
     }
 }
 
-/** Keep the status line in `ref` on one row: after every render, when its width changes, and once the font loads. */
+/** Keep the status line in `ref` on one row: after every render, when its width changes, and when a font loads. */
 function useStatusFit(ref) {
     useLayoutEffect(() => fitStatus(ref.current));
     useEffect(() => {
@@ -1561,11 +1566,15 @@ function useStatusFit(ref) {
             frame = requestAnimationFrame(() => fitStatus(line, true));
         });
 
+        const loaded = () => !gone && fitStatus(line, true);
+
         observer.observe(line);
-        document.fonts?.ready.then(() => !gone && fitStatus(line, true));
+        document.fonts?.ready.then(loaded);
+        document.fonts?.addEventListener("loadingdone", loaded);
 
         return () => {
             gone = true;
+            document.fonts?.removeEventListener("loadingdone", loaded);
             cancelAnimationFrame(frame);
             observer.disconnect();
         };
