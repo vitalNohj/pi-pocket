@@ -2,7 +2,7 @@
 // these checks keep a theme from any other address on it (`url(/login?token=…)`, an API route), however it is written.
 import { root } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { APP_ROOT } from "../src/server/config.ts";
@@ -113,4 +113,70 @@ test("a theme that names the app's fonts gets their files preloaded, with its ow
     assert.equal(fonts.length, 3);
     assert.match(fonts[0]!, /^\/themes\/reader\/[A-Za-z0-9_-]{12}\/fonts\/own\.woff2$/);
     assert.deepEqual(fonts.slice(1), ["/fonts/InterVariable.woff2", "/fonts/FiraCode-VF.woff2"]);
+});
+
+test("Appearance's fonts are saved into the owner's theme, and only its fonts there", async () => {
+    const data = join(root, "set-fonts-data");
+    const dir = join(data, "themes", "mine");
+
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "theme.json"), JSON.stringify({ themeApi: 1, name: "Mine" }));
+    writeFileSync(join(dir, "theme.css"), `:root { --accent: #ff0000; }\n`);
+
+    const themes = new Themes({
+        builtIn: join(APP_ROOT, "web", "themes"),
+        dataDir: data,
+        notify: () => {},
+        changed: () => {},
+        log: () => {},
+    });
+
+    await themes.load();
+    const mine = () => themes.list().find((each) => each.id === "mine");
+
+    themes.setFonts("mine", { sans: "Pocket Inter", mono: "Pocket Fira Code", ligatures: true });
+    assert.deepEqual(mine()?.typography, {
+        sans: "Pocket Inter",
+        mono: "Pocket Fira Code",
+        ligatures: true,
+    });
+    assert.deepEqual(
+        mine()?.fonts,
+        ["/fonts/InterVariable.woff2", "/fonts/FiraCode-VF.woff2"],
+        "preloaded",
+    );
+
+    // Again: the theme's own CSS is kept, and imports the fonts once, first.
+    themes.setFonts("mine", { sans: null, mono: "Pocket Iosevka", ligatures: false });
+    const css = readFileSync(join(dir, "theme.css"), "utf8");
+
+    assert.equal(css, `@import "fonts.css";\n:root { --accent: #ff0000; }\n`);
+    assert.deepEqual(mine()?.typography, { mono: "Pocket Iosevka", ligatures: false });
+
+    assert.throws(
+        () => themes.setFonts("mine", { sans: "Comic Sans" }),
+        /Not one of the app's fonts/,
+    );
+    assert.throws(
+        () => themes.setFonts("mine", { mono: "Pocket Inter" }),
+        /Not one of the app's fonts/,
+    );
+    assert.throws(
+        () => themes.setFonts("pocket", { sans: "Pocket Inter" }),
+        /duplicate this one first/,
+    );
+
+    // A theme of colors alone gets the stylesheet, and the theme.json that one needs, and stays usable.
+    mkdirSync(join(data, "themes", "hues"), { recursive: true });
+    writeFileSync(
+        join(data, "themes", "hues", "colors.toml"),
+        `background = "#101010"\nforeground = "#eeeeee"\naccent = "#00ff00"\n`,
+    );
+    await themes.load();
+    themes.setFonts("hues", { sans: "Pocket Inter" });
+    const hues = themes.list().find((each) => each.id === "hues");
+
+    assert.equal(hues?.usable, true, hues?.problem ?? "");
+    assert.equal(hues?.typography?.sans, "Pocket Inter");
+    assert.equal(hues?.colors?.accent, "#00ff00", "its colors kept");
 });

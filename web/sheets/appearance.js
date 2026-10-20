@@ -243,6 +243,61 @@ function LookTools() {
     </div>`;
 }
 
+/** The fonts Appearance sets in a theme (themes.ts THEME_FONTS): the family, and its name here. */
+const TEXT_FONTS = [
+    ["Pocket Sans", "Geist"],
+    ["Pocket Inter", "Inter"],
+    ["Pocket Mono", "JetBrains Mono"],
+    ["Pocket Fira Code", "Fira Code"],
+    ["Pocket IBM Plex Mono", "IBM Plex Mono"],
+    ["Pocket Iosevka", "Iosevka"],
+];
+const CODE_FONTS = TEXT_FONTS.slice(2);
+
+/**
+ * The owner's fonts for the theme in use: for words, for code, and ligatures, saved into the theme (its `fonts.css`),
+ * so everyone who uses it sees them. The themes that come with the app are duplicated first.
+ */
+function FontTools() {
+    const id = prefs().look ?? BASE_LOOK;
+    const look = lookInfo(id);
+
+    if (!look?.usable) {
+        return null;
+    }
+
+    if (look.builtIn) {
+        return html`<p class="muted small">
+            To choose its fonts, duplicate ${look.name}: fonts are set on a theme of your own.
+        </p>`;
+    }
+
+    const set = look.typography ?? { ligatures: false };
+    const save = (patch) =>
+        attempt(() =>
+            api(`themes/${encodeURIComponent(id)}/fonts`, { ...set, ...patch }, { method: "PUT" }),
+        );
+    const menu = (label, fonts, value, key) => html`<label class="font-menu">
+        <span>${label}</span>
+        <select value=${value ?? fonts[0][0]} onChange=${(event) => save({ [key]: event.currentTarget.value })}>
+            ${fonts.map(([family, name]) => html`<option value=${family}>${name}</option>`)}
+        </select>
+    </label>`;
+
+    return html`<div class="font-tools">
+        ${menu("Text font", TEXT_FONTS, set.sans, "sans")}
+        ${menu("Code font", CODE_FONTS, set.mono, "mono")}
+        <label class="font-menu">
+            <span>Ligatures</span>
+            <${Switch} on=${set.ligatures} label="Ligatures" onChange=${() => save({ ligatures: !set.ligatures })} />
+        </label>
+        <div class="font-preview">
+            The quick brown fox jumps over the lazy dog. <em>Emphasis.</em>
+            <code>const ok = (x) => x !== 42; <span class="hl-com">// a comment</span></code>
+        </div>
+    </div>`;
+}
+
 /**
  * The owner's tools for the colors in use: a copy of them as a theme folder of colors, and for colors of their own, Edit
  * with Pi and Remove.
@@ -381,6 +436,7 @@ export function AppearanceSheet() {
             ${lookIds().map((id) => html`<${LookCard} key=${id} id=${id} />`)}
         </div>
         ${store.state.me?.role === "owner" && html`<${LookTools} />`}
+        ${store.state.me?.role === "owner" && html`<${FontTools} />`}
         <div class="label">Colors</div>
         <div class="theme-grid">
             ${desktop && html`<${ThemeCard} id="desktop" desktop=${true} />`}

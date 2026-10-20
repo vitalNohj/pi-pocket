@@ -283,3 +283,50 @@ test(
         assert.equal(drawn.width, 1, "each icon one letter wide, so columns line up");
     },
 );
+
+test(
+    "the owner picks a theme's fonts in Appearance: they show at once, for whoever uses it, and stay",
+    real,
+    async () => {
+        // A sheet just closed goes back through history a moment later, which cancels a navigation under way.
+        await until(
+            async () =>
+                (
+                    await page.navigate(
+                        `${base}/login?token=${encodeURIComponent(app.config.ownerToken)}`,
+                    )
+                ).error === undefined,
+            "a sign-in that is not cancelled",
+        );
+        // Signed in as the guest, the link asks first.
+        await page.click({ selector: "form button" });
+        await see(
+            `return JSON.stringify((await import("/store.js")).store.state.me?.role === "owner")`,
+            "signed in as the owner",
+        );
+        await page.evaluate(`localStorage.clear()`);
+        await open();
+        await choose("Reader");
+        await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+        await see(
+            `return JSON.stringify([...document.querySelectorAll(".font-tools select")].map((menu) => menu.value).join() === "Pocket Inter,Pocket Fira Code")`,
+            "the menus showing the theme's fonts",
+        );
+        await page.select({ selector: ".font-menu:nth-child(2) select" }, "Iosevka");
+        await see(
+            `return JSON.stringify(getComputedStyle(document.querySelector(".font-preview code")).fontFamily.startsWith('"Pocket Iosevka"'))`,
+            "the preview in the new code font",
+        );
+        await page.evaluate(`(await import("/store.js")).closeSheet()`);
+
+        const shown = await open();
+
+        assert.equal(shown.prose, "Pocket Inter", "the text font as it was");
+        assert.equal(shown.code, "Pocket Iosevka");
+        assert.equal(shown.ligatures, "contextual");
+        assert.ok(
+            shown.preloads.includes("/fonts/Iosevka-Regular.woff2"),
+            "the new font preloaded",
+        );
+    },
+);

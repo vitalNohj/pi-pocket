@@ -381,6 +381,16 @@ export function createApi(options: HttpOptions, auth: Auth) {
             });
         }
 
+        if (first === "themes" && second !== undefined && third === "fonts" && method === "PUT") {
+            requireOwner(user);
+            app.themes.setFonts(
+                second,
+                await readJson<{ sans?: unknown; mono?: unknown; ligatures?: unknown }>(request),
+            );
+
+            return json(response, 200, { ok: true });
+        }
+
         if (first === "themes" && second !== undefined && third === "edit" && method === "GET") {
             requireOwner(user);
 
