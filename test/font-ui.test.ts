@@ -1,0 +1,285 @@
+// The app's fonts, in a real browser where this machine has Chromium: the default look unchanged but for real italics
+// and the Nerd Fonts icons, and an owner's theme that names the app's other fonts and turns ligatures on, which a guest
+// chooses and sees, with only those files fetched, preloaded on a reload, and the message box measured again.
+import {
+    type App,
+    cleanUp,
+    newSession,
+    openApp,
+    root,
+    say,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
+import type { ConversationId } from "@earendil-works/pi-durable";
+import { Browsers } from "../src/server/browser.ts";
+import { findBrowser } from "../src/server/browser/discovery.ts";
+import type { BrowserPage } from "../src/server/browser/page.ts";
+import { VIEWPORTS } from "../src/server/browser/viewport.ts";
+import { createHandler } from "../src/server/http.ts";
+
+const chromium = findBrowser();
+const real = {
+    skip: chromium === undefined ? "no Chromium-based browser on this machine" : false,
+} as const;
+
+let app: App;
+let server: Server;
+let browsers: Browsers;
+let page: BrowserPage;
+let base = "";
+let session: ConversationId;
+
+async function inPage<T>(script: string): Promise<T> {
+    return JSON.parse(await page.evaluate(script)) as T;
+}
+
+const see = (script: string, what: string) =>
+    until(async () => (await inPage<boolean>(script).catch(() => false)) === true, what);
+
+type Look = {
+    prose: string;
+    code: string;
+    ligatures: string;
+    preloads: string[];
+    loaded: string[];
+    italics: string[];
+};
+
+/** Open the session afresh, as a reload would, and say which fonts it uses where. */
+let opened = 0;
+
+async function open(): Promise<Look> {
+    await page.evaluate(`window.fontTestOldPage = true`);
+    // A sheet just closed goes back through history a moment later, which cancels a navigation under way.
+    await until(
+        async () =>
+            (await page.navigate(`${base}/s/${session}?open=${++opened}`)).error === undefined,
+        "a navigation that is not cancelled",
+    );
+    await see(
+        `return JSON.stringify(window.fontTestOldPage === undefined)`,
+        "the page loaded again",
+    );
+    await see(
+        `return JSON.stringify(document.querySelector(".md pre code .hl-com") !== null && document.fonts.status === "loaded")`,
+        "the reply's code, and the fonts",
+    );
+
+    return inPage<Look>(`
+        const first = (element) => getComputedStyle(element).fontFamily.split(",")[0].trim().replace(/"/g, "");
+        const faces = [...document.fonts].filter((face) => face.status === "loaded");
+
+        return JSON.stringify({
+            prose: first(document.querySelector(".md p")),
+            code: first(document.querySelector(".md pre code")),
+            ligatures: getComputedStyle(document.querySelector(".md pre code")).fontVariantLigatures,
+            preloads: [...document.querySelectorAll('link[rel="preload"][as="font"]')].map((link) =>
+                link.getAttribute("href").replace(/^\\/themes\\/[^/]+\\/[^/]+\\//, "theme:"),
+            ),
+            loaded: [...new Set(faces.map((face) => face.family))].toSorted(),
+            italics: [...new Set(faces.filter((face) => face.style === "italic").map((face) => face.family))],
+        });
+    `);
+}
+
+/** Choose a theme in Appearance, as a person does. */
+async function choose(name: string): Promise<void> {
+    await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+    await see(
+        `return JSON.stringify([...document.querySelectorAll(".look-grid > *")].some((card) => card.textContent.includes(${JSON.stringify(name)})))`,
+        `the ${name} theme`,
+    );
+    await page.evaluate(`
+        const card = [...document.querySelectorAll(".look-grid > *")].find((each) => each.textContent.includes(${JSON.stringify(name)}));
+
+        (card.querySelector("button") ?? card).click();
+    `);
+    await see(
+        `return JSON.stringify(document.documentElement.dataset.theme !== "pocket")`,
+        `${name} in use`,
+    );
+    await page.evaluate(`(await import("/store.js")).closeSheet()`);
+}
+
+before(async () => {
+    if (chromium === undefined) {
+        return;
+    }
+
+    app = await openApp(scriptedModel());
+    // The owner's theme: the app's own look, in Inter and Fira Code, with ligatures.
+    const theme = join(app.dataDir, "themes", "reader");
+
+    mkdirSync(theme, { recursive: true });
+    writeFileSync(join(theme, "theme.json"), JSON.stringify({ themeApi: 1, name: "Reader" }));
+    writeFileSync(
+        join(theme, "theme.css"),
+        `:root { --sans: "Pocket Inter", sans-serif; --mono: "Pocket Fira Code", "Pocket Nerd Symbols", monospace; --ligatures: contextual; }\n`,
+    );
+    await app.themes.load();
+
+    const handler = createHandler({
+        app,
+        listen: { host: "127.0.0.1", port: 0 },
+        restart: () => {},
+    });
+
+    server = createServer((request, response) => {
+        void handler(request, response);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    browsers = new Browsers({
+        dataDir: mkdtempSync(join(root, "font-ui-")),
+        load: async () => undefined,
+        save: () => {},
+    });
+    session = await newSession(app);
+    // The scripted model echoes it: a reply with words, and code with a comment (italic) and an arrow (a ligature).
+    await say(
+        app,
+        session,
+        "Some prose, then code:\n\n```js\n// a comment\nconst f = (x) => x !== 42;\n```",
+    );
+    page = await browsers.open(1);
+    await page.setViewport(VIEWPORTS.mobile);
+    // A guest: the owner made the theme, anyone may choose it.
+    const { token } = app.config.addUser("Guest", "guest");
+
+    await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+    await see(
+        `return JSON.stringify((await import("/store.js")).store.state.me?.role === "guest")`,
+        "signed in as a guest",
+    );
+});
+
+after(async () => {
+    await browsers?.closeAll({ final: true });
+    server?.closeAllConnections();
+    server?.close();
+    await app?.close();
+    cleanUp();
+});
+
+test(
+    "the default look keeps its fonts, with JetBrains Mono's own italic for comments",
+    real,
+    async () => {
+        await page.evaluate(`localStorage.clear()`);
+
+        const shown = await open();
+
+        assert.equal(shown.prose, "Pocket Sans");
+        assert.equal(shown.code, "Pocket Mono");
+        assert.equal(shown.ligatures, "none");
+        assert.deepEqual(shown.preloads, ["/fonts/Geist.woff2", "/fonts/JetBrainsMono.woff2"]);
+        assert.deepEqual(shown.italics, ["Pocket Mono"], "the comment from its italic file");
+        assert.ok(
+            !shown.loaded.includes("Pocket Inter") && !shown.loaded.includes("Pocket Fira Code"),
+            "no font unused",
+        );
+    },
+);
+
+test(
+    "a guest who chooses the owner's theme gets its fonts and ligatures, preloaded on a reload",
+    real,
+    async () => {
+        await page.evaluate(`localStorage.clear()`);
+        await open();
+        await choose("Reader");
+
+        const shown = await open();
+
+        assert.equal(shown.prose, "Pocket Inter");
+        assert.equal(shown.code, "Pocket Fira Code");
+        assert.equal(shown.ligatures, "contextual");
+        assert.deepEqual(shown.preloads, [
+            "/fonts/InterVariable.woff2",
+            "/fonts/FiraCode-VF.woff2",
+        ]);
+        // JetBrains Mono may come too, for a character Fira Code lacks; Geist never.
+        assert.ok(
+            !shown.loaded.includes("Pocket Sans"),
+            "the default font for words is not fetched",
+        );
+    },
+);
+
+test(
+    "the message box measures again when a theme's font changes how its text wraps",
+    real,
+    async () => {
+        await page.evaluate(`localStorage.clear()`);
+        await open();
+        // Wide letters: Inter's are wider than Geist's, so the text wraps onto more lines and the box must grow.
+        await page.type({ selector: ".composer textarea" }, "WWWW ".repeat(30));
+
+        // The height the box should have: its text's own, measured with nothing else on the page changing it.
+        const fits = `
+        const box = document.querySelector(".composer textarea");
+        const height = box.offsetHeight;
+
+        box.style.height = "auto";
+        const wanted = Math.min(box.scrollHeight, innerHeight * 0.4);
+        box.style.height = height + "px";
+
+        return JSON.stringify(Math.abs(height - wanted) <= 1 ? height : -1);
+    `;
+        const before = await inPage<number>(fits);
+
+        assert.ok(before > 0, "the box fits its text in the default font");
+        await choose("Reader");
+        await see(
+            `return JSON.stringify(getComputedStyle(document.querySelector(".composer textarea")).fontFamily.includes("Pocket Inter") && document.fonts.status === "loaded")`,
+            "the box in the theme's font",
+        );
+
+        const after = await inPage<number>(fits);
+
+        assert.ok(
+            after > 0,
+            "the box fits its text in the theme's font, with no typing to make it measure",
+        );
+        assert.ok(after > before, "the box grew with the wider font");
+    },
+);
+
+test(
+    "the Nerd Fonts icons come from a file that loads only for them, one cell wide",
+    real,
+    async () => {
+        await page.evaluate(`localStorage.clear()`);
+
+        const plain = await open();
+
+        assert.ok(!plain.loaded.includes("Pocket Nerd Symbols"), "no icons, no icon file");
+
+        const drawn = await inPage<{ width: number; loaded: boolean }>(`
+        const icon = document.createElement("code");
+
+        icon.textContent = "\\u{F07C}\\u{E0A0}";
+        document.querySelector(".md").append(icon);
+        await document.fonts.load("14px " + getComputedStyle(icon).fontFamily, icon.textContent);
+        const width = icon.getBoundingClientRect().width;
+
+        icon.textContent = "ab";
+        const letters = icon.getBoundingClientRect().width;
+        icon.remove();
+
+        return JSON.stringify({
+            width: Math.round((width / letters) * 100) / 100,
+            loaded: [...document.fonts].some((face) => face.family === "Pocket Nerd Symbols" && face.status === "loaded"),
+        });
+    `);
+
+        assert.ok(drawn.loaded, "the icons' file loads for an icon");
+        assert.equal(drawn.width, 1, "each icon one letter wide, so columns line up");
+    },
+);

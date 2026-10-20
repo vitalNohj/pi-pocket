@@ -28,7 +28,7 @@ import { describe, HttpError } from "./errors.ts";
 import { opened } from "./http/io.ts";
 import { desktopTheme } from "./omarchy.ts";
 import { watchTree } from "./reload.ts";
-import { cssReferences, themeFile } from "./themes/css.ts";
+import { cssReferences, themeFile, tokenize } from "./themes/css.ts";
 import { reservedThemeIds } from "./themes/reserved.ts";
 import { pocketVersion } from "./versions.ts";
 import {
@@ -95,6 +95,17 @@ interface Version {
     assets: Map<string, FileStat & { type: string }>;
     rev: string;
 }
+
+/**
+ * The fonts that come with the app (`web/style.css`), which a theme names in `--sans` or `--mono`, and the upright file
+ * of each, for the page to preload with the theme. The Nerd Fonts symbols are left out: they load only for an icon.
+ */
+const APP_FONTS: Record<string, string> = {
+    "Pocket Inter": "/fonts/InterVariable.woff2",
+    "Pocket Fira Code": "/fonts/FiraCode-VF.woff2",
+    "Pocket IBM Plex Mono": "/fonts/IBMPlexMono-Variable.woff2",
+    "Pocket Iosevka": "/fonts/Iosevka-Regular.woff2",
+};
 
 /** A theme's file's address: its path in the folder, each part escaped, under the theme's id and version. */
 const themeAddress = (id: string, rev: string, path: string) =>
@@ -463,11 +474,23 @@ export class Themes {
         }
     }
 
-    /** The fonts a theme's stylesheets load. */
+    /** The fonts a theme's stylesheets load: its own, and the upright file of each of the app's that it names. */
     #fonts(version: Version): string[] {
-        return [...version.assets]
-            .filter(([, asset]) => asset.type === "font/woff2")
-            .map(([path]) => themeAddress(version.id, version.rev, path));
+        // Its strings, as CSS reads them (comments skipped, escapes resolved): a family it names is one of them.
+        const named = new Set(
+            [...version.css.values()].flatMap((text) =>
+                tokenize(text).flatMap((token) => (token.type === "string" ? [token.value] : [])),
+            ),
+        );
+
+        return [
+            ...[...version.assets]
+                .filter(([, asset]) => asset.type === "font/woff2")
+                .map(([path]) => themeAddress(version.id, version.rev, path)),
+            ...Object.entries(APP_FONTS)
+                .filter(([family]) => named.has(family))
+                .map(([, file]) => file),
+        ];
     }
 
     /** The stylesheet of a theme: its `theme.css`, which imports the rest; none for colors alone. */

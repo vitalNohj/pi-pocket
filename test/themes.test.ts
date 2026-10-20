@@ -81,3 +81,36 @@ test("an owner's theme loads when the data folder is reached through a link", as
         [["mine", true]],
     );
 });
+
+test("a theme that names the app's fonts gets their files preloaded, with its own", async () => {
+    const data = join(root, "app-fonts-data");
+    const dir = join(data, "themes", "reader");
+
+    mkdirSync(join(dir, "fonts"), { recursive: true });
+    writeFileSync(join(dir, "theme.json"), JSON.stringify({ themeApi: 1, name: "Reader" }));
+    writeFileSync(join(dir, "fonts", "own.woff2"), "wOF2");
+    writeFileSync(
+        join(dir, "theme.css"),
+        [
+            `@font-face { font-family: "Own"; src: url(fonts/own.woff2); }`,
+            `:root { --sans: "Pocket Inter", sans-serif; --mono: "Pocket Fira Code", monospace; }`,
+            // Named in a comment only: not a font it uses.
+            `/* "Pocket Iosevka" */`,
+        ].join("\n"),
+    );
+
+    const themes = new Themes({
+        builtIn: join(root, "no-built-in-themes"),
+        dataDir: data,
+        notify: () => {},
+        changed: () => {},
+        log: () => {},
+    });
+
+    await themes.load();
+    const fonts = themes.list().find((each) => each.id === "reader")?.fonts ?? [];
+
+    assert.equal(fonts.length, 3);
+    assert.match(fonts[0]!, /^\/themes\/reader\/[A-Za-z0-9_-]{12}\/fonts\/own\.woff2$/);
+    assert.deepEqual(fonts.slice(1), ["/fonts/InterVariable.woff2", "/fonts/FiraCode-VF.woff2"]);
+});

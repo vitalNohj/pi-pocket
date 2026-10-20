@@ -57,6 +57,112 @@
     font-display: swap;
 }
 
+/* Each font's own italic, which a browser downloads only when italic text shows (comments in code, emphasis). Fira
+   Code has none: the browser slants its upright letters. */
+@font-face {
+    font-family: "Pocket Mono";
+    src: url("/fonts/JetBrainsMono-Italic.woff2") format("woff2");
+    font-weight: 100 800;
+    font-style: italic;
+    font-display: swap;
+}
+
+/* More fonts for themes to name in --sans and --mono (docs/extensions/themes.md lists them). A browser downloads one only
+   when a theme uses it. */
+
+/* The Nerd Fonts icons alone (their Mono build: one cell wide), in the private use areas they fill. */
+@font-face {
+    font-family: "Pocket Nerd Symbols";
+    src: url("/fonts/NerdFontsSymbolsMono.woff2") format("woff2");
+    font-display: swap;
+    unicode-range: U+E000-F8FF, U+F0000-F1AF0;
+}
+
+@font-face {
+    font-family: "Pocket Fira Code";
+    src: url("/fonts/FiraCode-VF.woff2") format("woff2");
+    font-weight: 300 700;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket IBM Plex Mono";
+    src: url("/fonts/IBMPlexMono-Variable.woff2") format("woff2");
+    font-weight: 100 700;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket IBM Plex Mono";
+    src: url("/fonts/IBMPlexMono-Variable-Italic.woff2") format("woff2");
+    font-weight: 100 700;
+    font-style: italic;
+    font-display: swap;
+}
+
+/* Iosevka has no variable font: the weights the app uses, upright and italic. 800 shows as 700, 100 as 400. Each file
+   keeps every character but drops the optional letter variants (ss and cv features) the app never turns on, which
+   were three quarters of its size. */
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-SemiBold.woff2") format("woff2");
+    font-weight: 600;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-Bold.woff2") format("woff2");
+    font-weight: 700;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-Italic.woff2") format("woff2");
+    font-weight: 400;
+    font-style: italic;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-SemiBoldItalic.woff2") format("woff2");
+    font-weight: 600;
+    font-style: italic;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Iosevka";
+    src: url("/fonts/Iosevka-BoldItalic.woff2") format("woff2");
+    font-weight: 700;
+    font-style: italic;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Inter";
+    src: url("/fonts/InterVariable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Pocket Inter";
+    src: url("/fonts/InterVariable-Italic.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: italic;
+    font-display: swap;
+}
+
 :root {
     /* The palette. These defaults are Tokyo Night; theme.js replaces them. */
     --o-bg: #1a1b26;
@@ -191,8 +297,8 @@
     /* Ligatures: none, as in a terminal. A theme may turn on a font's own (`contextual`, `normal`). */
     --ligatures: none;
     --mono:
-        "Pocket Mono", "JetBrains Mono", "JetBrainsMono Nerd Font", ui-monospace, "SF Mono", Menlo,
-        Consolas, monospace;
+        "Pocket Mono", "Pocket Nerd Symbols", "JetBrains Mono", "JetBrainsMono Nerd Font",
+        ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --sans: "Pocket Sans", "Geist", ui-sans-serif, system-ui, sans-serif;
     color-scheme: dark;
 }
