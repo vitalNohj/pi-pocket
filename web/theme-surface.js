@@ -176,6 +176,7 @@ export const PARTS = [
     "activity-head",
     "activity-chevron",
     "timeline",
+    "timeline-earlier",
     "thinking",
     "tool-call",
     "step-head",

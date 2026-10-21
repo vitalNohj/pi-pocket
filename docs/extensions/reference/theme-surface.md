@@ -134,6 +134,7 @@ Each is a `data-part` attribute. Some elements have two (`data-part="composer-bu
 | `reply-actions`                                 | The row under an answer: react, discuss, pin, copy                                      |
 | `activity`, `activity-head`, `activity-chevron` | A group of what Pi did, its head (what it did, how long), and the chevron that opens it |
 | `timeline`                                      | The open group's steps, on a rule                                                       |
+| `timeline-earlier`                              | Above a long group's newest steps: shows the earlier ones                               |
 | `thinking`, `tool-call`                         | A step: a thought, a tool call                                                          |
 | `step-head`, `step-mark`, `step-label`          | A step's line, its mark on the rule, and its name                                       |
 | `step-detail`                                   | What a step shows under its line: what it made, and its input and output                |

@@ -17,6 +17,8 @@ import {
     collab,
     discuss,
     isRow,
+    loadEarlier,
+    loadedFrom,
     navigate,
     notify,
     openSheet,
@@ -1068,6 +1070,12 @@ function ToolStep({
 /** Groups opened or closed by hand, per conversation and group, for as long as the page is open. */
 const openedGroups = new Map();
 /**
+ * An open group draws its newest steps, this many, and a button for the rest: a long run of Pi's alone can be hundreds of
+ * steps, which made opening its session freeze on a phone. Groups shown in full, by hand or by a jump, are kept here.
+ */
+const GROUP_STEPS = 24;
+const wholeGroups = new Map();
+/**
  * The answer a jump asked to see last (`jumpToEntry` in chat.js says so with a `pocket:reveal` event), and when: a group
  * that shows only after the jump moved the rows shown opens when it first draws. Groups already shown hear the event.
  */
@@ -1155,6 +1163,7 @@ function ActivityGroup({
         item.anchors.includes(revealing.entryId)
     ) {
         keep(openedGroups, id, true);
+        keep(wholeGroups, id, true);
     }
 
     const chosen = openedGroups.get(id);
@@ -1211,6 +1220,8 @@ function ActivityGroup({
     let thoughts = 0;
     // A jump to one of its answers (Find, a pin, Changes) opens it: `jumpToEntry` says which.
     const anchors = item.anchors.join();
+    // The steps not drawn yet, the oldest: each still names the steps after it (below), so keys stay as they were.
+    const hidden = wholeGroups.get(id) ? 0 : Math.max(0, item.steps.length - GROUP_STEPS);
 
     useEffect(() => {
         if (anchors === "") {
@@ -1220,6 +1231,7 @@ function ActivityGroup({
         const reveal = (event) => {
             if (item.anchors.includes(event.detail)) {
                 keep(openedGroups, id, true);
+                keep(wholeGroups, id, true);
                 redraw((n) => n + 1);
             }
         };
@@ -1262,13 +1274,31 @@ function ActivityGroup({
             open &&
             !lone &&
             html`<div class="timeline" data-part="timeline">
+                ${
+                    hidden > 0 &&
+                    html`<button
+                        class="link timeline-earlier"
+                        data-part="timeline-earlier"
+                        onClick=${() => {
+                            keep(wholeGroups, id, true);
+                            redraw((n) => n + 1);
+                        }}
+                    >
+                        Show ${hidden} earlier ${hidden === 1 ? "step" : "steps"}
+                    </button>`
+                }
                 ${item.steps.map(({ block, entry, streaming, canRun }, index) => {
                     // A call is named by its id, the same streamed and stored; a thought by the call before it. Not by
                     // place: earlier steps join the front when earlier messages show.
                     if (block.type === "thinking") {
-                        return html`<${Memo} key=${`t:${lastCall}:${thoughts++}`} deps=${[block, streaming, reading]}>
-                            <${ThoughtStep} block=${block} streaming=${streaming} reading=${reading} />
-                        <//>`;
+                        const key = `t:${lastCall}:${thoughts++}`;
+
+                        return (
+                            index >= hidden &&
+                            html`<${Memo} key=${key} deps=${[block, streaming, reading]}>
+                                <${ThoughtStep} block=${block} streaming=${streaming} reading=${reading} />
+                            <//>`
+                        );
                     }
 
                     const slot = slots.get(block.id);
@@ -1286,6 +1316,10 @@ function ActivityGroup({
                     keys.add(key);
                     lastCall = key;
                     thoughts = 0;
+
+                    if (index < hidden) {
+                        return null;
+                    }
 
                     return html`<${Memo}
                         key=${key}
@@ -2361,18 +2395,23 @@ export function Transcript() {
     const { view, missing, history, transcriptFrom } = store.state;
     const scroller = useRef(null);
     const stick = useRef(true);
+    /** A jump to a message is under way: the reader has not scrolled or tapped since. */
+    const jumping = useRef(false);
     /** Distance from the bottom to restore after rows are added above, so the reader stays in place. */
     const keep = useRef(null);
     const counted = useRef(0);
     const [showJump, setShowJump] = useState(false);
 
-    // Keep the snapshot's rows stable across unrelated UI updates, including scrolling the thought reading area.
+    // Keep the snapshot's rows stable across unrelated UI updates, including scrolling the thought reading area. Only
+    // the entries this tab has, which are the newest: earlier ones load as "Show earlier messages" shows them.
+    const unloaded = useMemo(() => loadedFrom(view), [view.order, view.entries]);
     const entries = useMemo(
-        () => view.order.map((id) => view.entries.get(id)).filter(Boolean),
-        [view.order, view.entries],
+        () => view.order.slice(unloaded).map((id) => view.entries.get(id)),
+        [view.order, view.entries, unloaded],
     );
     const rows = entries.filter(isRow);
     const start = windowStart(rows, transcriptFrom);
+    const [fetching, setFetching] = useState(false);
 
     // The room the pane gives, for what may run wider than the column (a reply's code blocks and tables: style.css).
     useEffect(() => {
@@ -2505,6 +2544,34 @@ export function Transcript() {
         };
     }, [view.conversation?.id]);
 
+    // A jump to a message (`jumpToEntry`) leaves the bottom, until the reader scrolls or taps: its smooth scroll starts
+    // near the bottom, where `onScroll` would follow along again, and the next update (earlier rows that load for it)
+    // would take them back down.
+    useEffect(() => {
+        const away = () => {
+            jumping.current = true;
+            stick.current = false;
+            keep.current = null;
+        };
+
+        const back = () => (jumping.current = false);
+        const takes = ["wheel", "touchstart", "pointerdown", "keydown"];
+
+        document.addEventListener("pocket:reveal", away);
+
+        for (const name of takes) {
+            document.addEventListener(name, back, { capture: true, passive: true });
+        }
+
+        return () => {
+            document.removeEventListener("pocket:reveal", away);
+
+            for (const name of takes) {
+                document.removeEventListener(name, back, { capture: true });
+            }
+        };
+    }, []);
+
     // Images finish loading after the transcript renders and make it taller: stay at the bottom if we were there.
     useEffect(() => {
         const element = scroller.current;
@@ -2544,7 +2611,7 @@ export function Transcript() {
         const element = scroller.current;
         const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 60;
 
-        stick.current = atBottom;
+        stick.current = atBottom && !jumping.current;
 
         if (showJump === atBottom) {
             setShowJump(!atBottom);
@@ -2592,8 +2659,34 @@ export function Transcript() {
     };
 
     const showEarlier = () => {
-        keepPlace();
-        store.set({ transcriptFrom: rows[Math.max(0, start - TRANSCRIPT_ROWS)].id });
+        if (start >= TRANSCRIPT_ROWS || unloaded === 0) {
+            keepPlace();
+            store.set({ transcriptFrom: rows[Math.max(0, start - TRANSCRIPT_ROWS)].id });
+
+            return;
+        }
+
+        // Not here yet: load the rows to show (and as many more), then show them.
+        const id = conversation.id;
+
+        setFetching(true);
+        attempt(async () => {
+            await loadEarlier({ rows: 2 * TRANSCRIPT_ROWS });
+            const { view: now } = store.state;
+
+            if (now.conversation?.id !== id) {
+                return;
+            }
+
+            const loaded = now.order
+                .slice(loadedFrom(now))
+                .map((entryId) => now.entries.get(entryId))
+                .filter(isRow);
+            const at = loaded.findIndex((row) => row.id === rows[start]?.id);
+
+            keepPlace();
+            store.set({ transcriptFrom: loaded[Math.max(0, at - TRANSCRIPT_ROWS)]?.id ?? null });
+        }).finally(() => setFetching(false));
     };
 
     const results = new Map();
@@ -2632,9 +2725,11 @@ export function Transcript() {
                     </p>`)
             }
             ${
-                start > 0
+                start > 0 || unloaded > 0
                     ? html`<div class="divider">
-                        <button class="link" onClick=${showEarlier}>Show earlier messages</button>
+                        <button class="link" disabled=${fetching} onClick=${showEarlier}>
+                            ${fetching ? html`<${Spinner} /> Loading earlier messages` : "Show earlier messages"}
+                        </button>
                     </div>`
                     : first &&
                       (first.kind === "compaction" || first.kind === "reset") &&

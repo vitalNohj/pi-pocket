@@ -1261,6 +1261,9 @@ export function useSide(ref, of = (element) => element) {
     const [side, setSide] = useState("left");
     const look = useRef(null);
 
+    const watched = useRef(null);
+    const watcher = useRef(null);
+
     look.current = () => {
         const element = ref.current && of(ref.current);
         const box = element?.getBoundingClientRect();
@@ -1270,8 +1273,25 @@ export function useSide(ref, of = (element) => element) {
         }
     };
 
-    // After each draw (the element may have only now come), and when the window or the theme changes.
-    useLayoutEffect(() => look.current());
+    // Measured when the browser lays the element out anyway, before the frame is painted: as it comes, shows, or changes
+    // size (a ResizeObserver says so). Measured after each draw instead, it laid the whole page out early, and opening a
+    // session froze the longer for it on a phone.
+    useLayoutEffect(() => {
+        const element = ref.current && of(ref.current);
+
+        if (element === watched.current) {
+            return;
+        }
+
+        watched.current = element;
+        watcher.current ??= new ResizeObserver(() => look.current());
+        watcher.current.disconnect();
+
+        if (element) {
+            watcher.current.observe(element);
+        }
+    });
+    // And when the window or the theme changes, which can move it without resizing it.
     useLayoutEffect(() => {
         const again = () => look.current();
 
@@ -1281,6 +1301,7 @@ export function useSide(ref, of = (element) => element) {
         return () => {
             removeEventListener("resize", again);
             document.removeEventListener("pocket:theme", again);
+            watcher.current?.disconnect();
         };
     }, []);
 

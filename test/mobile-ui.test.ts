@@ -342,6 +342,49 @@ async function compactedView(): Promise<void> {
     );
 }
 
+test("a long open group draws its newest steps, and shows the rest when asked", real, async () => {
+    await fresh();
+    await goTo(first);
+    await until(
+        async () =>
+            await inPage<boolean>(`
+                return JSON.stringify((await import("/store.js")).store.state.view.conversation?.id === ${first});
+            `),
+        "the session view",
+    );
+    // A person's message, then a run of Pi's alone: 30 answers that each call a tool, and a result for each.
+    await page.evaluate(`
+        const { store } = await import("/store.js");
+        const entries = [{ id: 910000, kind: "user", text: "go", images: 0, at: Date.now() }];
+
+        for (let n = 1; n <= 30; n++) {
+            entries.push({ id: 910000 + n * 2, kind: "assistant", stopReason: "toolUse", at: Date.now(),
+                blocks: [{ type: "toolCall", id: "call" + n, name: "bash", args: { command: "echo " + n } }] });
+            entries.push({ id: 910001 + n * 2, kind: "toolResult", callId: "call" + n, text: String(n), at: Date.now() });
+        }
+
+        store.set({ view: { ...store.state.view,
+            entries: new Map(entries.map((entry) => [entry.id, entry])),
+            order: entries.map((entry) => entry.id),
+        } });
+    `);
+    const timeline = () =>
+        inPage<{ steps: number; earlier: string | null }>(`
+            const timeline = document.querySelector(".transcript .activity.open .timeline");
+
+            return JSON.stringify({
+                steps: timeline?.querySelectorAll(":scope > :not(.timeline-earlier)").length ?? 0,
+                earlier: timeline?.querySelector(".timeline-earlier")?.textContent.trim() ?? null,
+            });
+        `);
+
+    await until(async () => (await timeline()).steps > 0, "the open group");
+    assert.deepEqual(await timeline(), { steps: 24, earlier: "Show 6 earlier steps" });
+    await tap(".transcript .timeline-earlier");
+    await until(async () => (await timeline()).steps === 30, "all 30 steps");
+    assert.equal((await timeline()).earlier, null);
+});
+
 test("earlier history does not repeat a message kept after compaction", real, async () => {
     await compactedView();
     await page.evaluate(`

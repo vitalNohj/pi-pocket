@@ -391,7 +391,9 @@ export function Composer() {
 
         return (element) => {
             box.current = element;
-            fitBox(element);
+            // A frame later, not now: measuring in the middle of a render lays the whole page out early, and again for
+            // the frame, which on a phone made opening a session freeze longer. Still before the frame is painted.
+            requestAnimationFrame(() => fitBox(element));
             observer.disconnect();
             width = -1;
 
@@ -1496,12 +1498,15 @@ defineItem("composer", {
         </button>`,
 });
 
+/** The browser sizes the message box to its text itself (`field-sizing` in style.css): nothing to measure. */
+const SIZES_ITSELF = globalThis.CSS?.supports?.("field-sizing", "content") ?? false;
+
 /**
  * The message box grows with what is written, to 40% of the screen; its least height (two lines, or one on a short
- * screen) is the stylesheet's, and changes with the screen.
+ * screen) is the stylesheet's, and changes with the screen. Browsers without `field-sizing` measure it here.
  */
 function fitBox(element) {
-    if (!element) {
+    if (!element || SIZES_ITSELF || !element.isConnected) {
         return;
     }
 
