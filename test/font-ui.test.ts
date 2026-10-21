@@ -225,10 +225,12 @@ test(
         const fits = `
         const box = document.querySelector(".composer textarea");
         const height = box.offsetHeight;
+        // Put back as it was: a box the browser sizes itself (field-sizing) has no height of its own to pin.
+        const was = box.style.height;
 
         box.style.height = "auto";
         const wanted = Math.min(box.scrollHeight, innerHeight * 0.4);
-        box.style.height = height + "px";
+        box.style.height = was;
 
         return JSON.stringify(Math.abs(height - wanted) <= 1 ? height : -1);
     `;
