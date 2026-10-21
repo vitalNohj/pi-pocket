@@ -237,7 +237,23 @@ function preloads(imports: Record<string, string>): string[] {
     return [...found];
 }
 
-/** The app page, with its content security policy, and the modules it loads listed for the browser to fetch at once. */
+/**
+ * A web file's address with the hash of its bytes now (`/store.js?v=…`), which `serveFile` lets the browser keep for good:
+ * an edit changes the address. Undefined when the file is not there.
+ */
+function versioned(address: string, file: string | undefined): string | undefined {
+    try {
+        return file === undefined ? undefined : `${address}?v=${readNow(file).hash}`;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * The app page, with its content security policy. The modules it loads are listed for the browser to fetch at once, and
+ * they and the stylesheet are fetched at addresses with their hash (`versioned`): a browser that has them asks for none
+ * of them again, where it asked for each, a round trip, though only a few changed since.
+ */
 export function serveApp(response: ServerResponse): void {
     let body: string;
 
@@ -249,23 +265,60 @@ export function serveApp(response: ServerResponse): void {
         return;
     }
 
-    // The policy is of the page as it is stored: links are not scripts, and add nothing to it.
-    const policy = appPolicy(body);
-
     try {
-        const map = /<script type="importmap">([\s\S]*?)<\/script>/.exec(body)?.[1];
-        const imports = (map === undefined ? {} : JSON.parse(map).imports) as Record<
+        const found = /(<script type="importmap">)([\s\S]*?)(<\/script>)/.exec(body);
+        const imports = (found === null ? {} : JSON.parse(found[2]!).imports) as Record<
             string,
             string
         >;
-        const links = preloads(imports)
-            .map((address) => `<link rel="modulepreload" href="${address}" />`)
+        const modules = preloads(imports);
+        // Each module's own address to its hashed one, so a relative import (`./store.js`) finds the same module too.
+        const at = new Map(
+            modules.flatMap((address) => {
+                const hashed = versioned(address, moduleFile(address));
+
+                return hashed === undefined ? [] : [[address, hashed] as const];
+            }),
+        );
+        const map = {
+            imports: {
+                ...Object.fromEntries(
+                    Object.entries(imports).map(([name, address]) => [
+                        name,
+                        at.get(address) ?? address,
+                    ]),
+                ),
+                ...Object.fromEntries(at),
+            },
+        };
+        const links = modules
+            .map((address) => `<link rel="modulepreload" href="${at.get(address) ?? address}" />`)
             .join("");
+        const style = versioned("/style.css", join(WEB, "style.css"));
+
+        if (found !== null) {
+            const text = JSON.stringify(map, null, 4).replace(/</g, "\\u003c");
+
+            body = body.replace(found[0], () => `${found[1]}${text}${found[3]}`);
+        }
+
+        // A module script's address is not a name the import map maps: the page names the hashed one itself.
+        body = body.replace(
+            /<script type="module" src="\/app\.js"><\/script>/,
+            () => `<script type="module" src="${at.get("/app.js") ?? "/app.js"}"></script>`,
+        );
+
+        if (style !== undefined) {
+            body = body.replaceAll('"/style.css"', () => `"${style}"`);
+        }
 
         body = body.replace("</head>", () => `${links}</head>`);
     } catch {
-        // The page as it is: the browser finds the modules as it runs them.
+        // The page as it is: the browser finds the modules as it runs them, and asks for each again.
     }
+
+    // The policy of the page as it is sent: it allows the import map, as rewritten here, by its hash.
+    const policy = appPolicy(body);
 
     send(response, 200, body, "text/html; charset=utf-8", {
         "cache-control": "no-cache",
@@ -275,14 +328,16 @@ export function serveApp(response: ServerResponse): void {
 
 /**
  * A file of the web app. The app is edited live, so the browser asks each time whether its copy is still the newest (`no-cache`):
- * the answer is a short "not modified" while the file's bytes are the same (the ETag is their hash), else the file. Text
- * goes compressed, compressed once for each edit.
+ * the answer is a short "not modified" while the file's bytes are the same (the ETag is their hash), else the file. Asked
+ * for at the address with the hash of its bytes now (`version`, as the app page names it), the browser may keep it for
+ * good (`immutable`): those bytes never change. Text goes compressed, compressed once for each edit.
  */
 export async function serveFile(
     request: IncomingMessage,
     response: ServerResponse,
     file: string,
     fallbackType?: string,
+    version?: string | null,
 ): Promise<void> {
     let read: ReadFile;
 
@@ -301,7 +356,9 @@ export async function serveFile(
             : undefined;
     const headers: Record<string, string> = {
         "content-type": type,
-        "cache-control": "no-cache",
+        // Another version than this one: it was just edited, and the next page names this one.
+        "cache-control":
+            version === read.hash ? "private, max-age=31536000, immutable" : "no-cache",
         etag: `"${read.hash}${encoding === undefined ? "" : `-${encoding}`}"`,
         ...(compressible(type) ? { vary: "accept-encoding" } : {}),
     };

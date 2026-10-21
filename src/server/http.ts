@@ -72,6 +72,7 @@ export function createHandler(options: HttpOptions) {
                     response,
                     VENDOR[parts[1]]!,
                     "text/javascript; charset=utf-8",
+                    url.searchParams.get("v"),
                 );
             }
 
@@ -104,7 +105,7 @@ export function createHandler(options: HttpOptions) {
                 return serveApp(response);
             }
 
-            return await serveFile(request, response, file);
+            return await serveFile(request, response, file, undefined, url.searchParams.get("v"));
         } catch (error) {
             const status = error instanceof HttpError ? error.status : 500;
 

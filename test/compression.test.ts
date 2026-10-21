@@ -111,7 +111,9 @@ test("a compressed event stream delivers each event as it happens", async () => 
 
 test("the app page lists the modules it loads, even those imported by others", async () => {
     const page = (await get("/", { "accept-encoding": "identity" })).body.toString("utf8");
-    const listed = [...page.matchAll(/rel="modulepreload" href="([^"]+)"/g)].map((m) => m[1]);
+    const listed = [...page.matchAll(/rel="modulepreload" href="([^"]+)\?v=[0-9a-f]+"/g)].map(
+        (m) => m[1],
+    );
 
     for (const address of [
         "/app.js",
@@ -121,4 +123,40 @@ test("the app page lists the modules it loads, even those imported by others", a
     ]) {
         assert.ok(listed.includes(address), address);
     }
+});
+
+test("the app page names its files by their bytes, which a browser keeps for good, and an edit by new ones", async () => {
+    const page = () =>
+        get("/", { "accept-encoding": "identity" }).then((answer) => answer.body.toString("utf8"));
+    const map = (html: string) =>
+        JSON.parse(/<script type="importmap">([\s\S]*?)<\/script>/.exec(html)![1]!)
+            .imports as Record<string, string>;
+    const first = await page();
+    const imports = map(first);
+    const store = imports["/store.js"]!;
+
+    // A bare name and a module's own address both go to its hashed one, so relative imports find the same module.
+    assert.match(store, /^\/store\.js\?v=[0-9a-f]{24}$/);
+    assert.match(imports.preact!, /^\/vendor\/preact\.mjs\?v=[0-9a-f]{24}$/);
+    assert.match(first, /<script type="module" src="\/app\.js\?v=[0-9a-f]{24}"><\/script>/);
+    assert.match(first, /"\/style\.css\?v=[0-9a-f]{24}"/);
+
+    const kept = await get(store, {});
+    const plain = await get("/store.js", {});
+    const stale = await get("/store.js?v=000000000000000000000000", {});
+
+    assert.equal(kept.status, 200);
+    assert.equal(kept.headers["cache-control"], "private, max-age=31536000, immutable");
+    assert.deepEqual(kept.body, plain.body);
+    assert.equal(
+        plain.headers["cache-control"],
+        "no-cache",
+        "without its hash, it is asked for again",
+    );
+    assert.equal(stale.headers["cache-control"], "no-cache", "another version than its own now");
+    assert.equal(
+        map(await page())["/store.js"],
+        store,
+        "the same bytes, the same address: the browser asks for nothing",
+    );
 });

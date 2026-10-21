@@ -1551,12 +1551,12 @@ test("the web edge: page policy, local redirects, asked account switches, no cro
     const cookie = (response: Response) => response.headers.get("set-cookie") ?? "";
 
     try {
-        // The app page allows its own import map by hash and nothing from other sites.
-        const html = readFileSync(new URL("../web/index.html", import.meta.url), "utf8");
-        const map = /<script type="importmap">([\s\S]*?)<\/script>/.exec(html)![1]!;
-
+        // The app page allows its own import map, as it sends it, by hash, and nothing from other sites.
         for (const path of ["/", `/s/${id}`, "/index.html"]) {
-            const policy = (await fetch(base + path)).headers.get("content-security-policy") ?? "";
+            const page = await fetch(base + path);
+            const html = await page.text();
+            const map = /<script type="importmap">([\s\S]*?)<\/script>/.exec(html)![1]!;
+            const policy = page.headers.get("content-security-policy") ?? "";
 
             assert.ok(
                 policy.includes(`'sha256-${createHash("sha256").update(map).digest("base64")}'`),
