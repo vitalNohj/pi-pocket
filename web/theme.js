@@ -15,6 +15,22 @@ const FALLBACK = "tokyo-night";
 /** The app's own look, which every theme builds on: it loads no stylesheet. */
 export const BASE_LOOK = "pocket";
 
+/** The conversation's text size in pixels: anything from MIN_TEXT to MAX_TEXT, in steps of STEP_TEXT. */
+export const MIN_TEXT = 10;
+export const MAX_TEXT = 32;
+export const STEP_TEXT = 0.5;
+
+/** A text size someone typed or saved, kept in range and on a step; the default for one that is not a number. */
+export function textSizeOf(value) {
+    const size = Number(value);
+
+    if (value === null || value === "" || !Number.isFinite(size)) {
+        return 15;
+    }
+
+    return Math.min(MAX_TEXT, Math.max(MIN_TEXT, Math.round(size / STEP_TEXT) * STEP_TEXT));
+}
+
 const DEFAULTS = {
     /**
      * The colors: "desktop" follows the Omarchy theme of the machine Pi Pocket runs on; otherwise a key of THEMES, or the
@@ -29,7 +45,7 @@ const DEFAULTS = {
     wallpaper: false,
     /** "auto" follows the system's reduced-motion setting. */
     motion: "auto",
-    /** The conversation's text in pixels, 13 to 17; the rest of the app keeps its own sizes. */
+    /** The conversation's text in pixels, MIN_TEXT to MAX_TEXT; the rest of the app keeps its own sizes. */
     text: 15,
     /** How much room the spacing takes: "comfortable", "compact", or "tight". Font sizes stay. */
     density: "comfortable",
@@ -491,7 +507,7 @@ export function apply() {
     // Width other than Comfortable is the person's choice, inline over the theme's; Comfortable leaves it to the theme.
     const width = WIDTHS[p.width];
     const inline = {
-        "--text-size": `${p.text}px`,
+        "--text-size": `${textSizeOf(p.text)}px`,
         "--sidebar-w": sidebarWidth(p),
         ...(wallpaper === null ? {} : { "--wallpaper": wallpaper }),
         ...(width ?? {}),

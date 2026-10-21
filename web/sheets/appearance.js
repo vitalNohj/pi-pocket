@@ -24,8 +24,12 @@ import {
     setPrefs,
     themeDefault,
     themeIds,
+    textSizeOf,
     themeVars,
     varsStyle,
+    MAX_TEXT,
+    MIN_TEXT,
+    STEP_TEXT,
 } from "../theme.js";
 import { html, Icon, Sheet, Switch } from "../ui.js";
 import { galleryAvailable } from "./gallery.js";
@@ -243,22 +247,90 @@ function LookTools() {
     </div>`;
 }
 
+/**
+ * The conversation's text size: a few usual sizes, and a field for any other, MIN_TEXT to MAX_TEXT in half pixels. The
+ * field takes a size once it is one (14 on the way to 145 shows at once); Enter or leaving it keeps it in range.
+ */
+function TextSize({ size }) {
+    const [draft, setDraft] = useState(null);
+
+    // A size set another way (a button, another tab) shows at once, over what was being typed; what is being typed
+    // stays while it means this size.
+    useEffect(() => {
+        if (draft !== null && textSizeOf(draft) !== size) {
+            setDraft(null);
+        }
+    }, [size]);
+
+    const commit = (value) => {
+        setDraft(null);
+        setPrefs({ text: textSizeOf(value) });
+    };
+
+    return html`<div class="text-size">
+        <div class="segmented">
+            ${[13, 15, 17, 20].map(
+                (each) => html`<button
+                    class=${size === each ? "on" : ""}
+                    aria-pressed=${size === each}
+                    onClick=${() => commit(each)}
+                >
+                    ${each}
+                </button>`,
+            )}
+        </div>
+        <label class="text-size-field">
+            <input
+                type="number"
+                inputmode="decimal"
+                min=${MIN_TEXT}
+                max=${MAX_TEXT}
+                step=${STEP_TEXT}
+                aria-label="Text size in pixels"
+                value=${draft ?? size}
+                onInput=${(event) => {
+                    const value = event.currentTarget.value;
+                    const number = Number(value);
+
+                    setDraft(value);
+
+                    if (value !== "" && number >= MIN_TEXT && number <= MAX_TEXT) {
+                        setPrefs({ text: textSizeOf(number) });
+                    }
+                }}
+                onChange=${(event) => commit(event.currentTarget.value === "" ? size : event.currentTarget.value)}
+                onBlur=${() => setDraft(null)}
+                onKeyDown=${(event) => event.key === "Enter" && event.currentTarget.blur()}
+            />
+            <span>px</span>
+        </label>
+    </div>`;
+}
+
 /** The fonts Appearance sets in a theme (themes.ts THEME_FONTS): the family, and its name here. */
 const TEXT_FONTS = [
     ["Pocket Sans", "Geist"],
     ["Pocket Inter", "Inter"],
+    ["system-ui", "System Sans"],
     ["Pocket Mono", "JetBrains Mono"],
     ["Pocket Fira Code", "Fira Code"],
     ["Pocket IBM Plex Mono", "IBM Plex Mono"],
     ["Pocket Iosevka", "Iosevka"],
+    ["ui-monospace", "System Mono"],
 ];
-const CODE_FONTS = TEXT_FONTS.slice(2);
+const CODE_FONTS = TEXT_FONTS.slice(3);
+
+/** A font's name here, by the family a stylesheet names first; the app's own for none. */
+const fontName = (fonts, family) =>
+    (fonts.find(([each]) => each === family) ?? (family ? [family, family] : fonts[0]))[1];
 
 /**
- * The owner's fonts for the theme in use: for words, for code, and ligatures, saved into the theme (its `fonts.css`),
- * so everyone who uses it sees them. The themes that come with the app are duplicated first.
+ * The fonts of the theme in use: for words, for code, and ligatures, with a preview. The owner sets them on a theme of
+ * their own, saved into it (its `fonts.css`), so everyone who uses it sees them; a theme that comes with the app shows
+ * its own, with a way to make a copy that can change.
  */
 function FontTools() {
+    const [naming, setNaming] = useState(false);
     const id = prefs().look ?? BASE_LOOK;
     const look = lookInfo(id);
 
@@ -266,36 +338,76 @@ function FontTools() {
         return null;
     }
 
-    if (look.builtIn) {
-        return html`<p class="muted small">
-            To choose its fonts, duplicate ${look.name}: fonts are set on a theme of your own.
-        </p>`;
-    }
-
     const set = look.typography ?? { ligatures: false };
     const save = (patch) =>
         attempt(() =>
             api(`themes/${encodeURIComponent(id)}/fonts`, { ...set, ...patch }, { method: "PUT" }),
         );
-    const menu = (label, fonts, value, key) => html`<label class="font-menu">
-        <span>${label}</span>
-        <select value=${value ?? fonts[0][0]} onChange=${(event) => save({ [key]: event.currentTarget.value })}>
-            ${fonts.map(([family, name]) => html`<option value=${family}>${name}</option>`)}
-        </select>
-    </label>`;
+    // A font the theme names that is not one of these shows as itself, so the menu says what is in use.
+    const choices = (fonts, value) =>
+        value && !fonts.some(([family]) => family === value) ? [...fonts, [value, value]] : fonts;
+    const menu = (label, fonts, value, key) =>
+        look.builtIn
+            ? html`<div class="font-menu">
+                  <span>${label}</span>
+                  <strong>${fontName(fonts, value)}</strong>
+              </div>`
+            : html`<label class="font-menu">
+                  <span>${label}</span>
+                  <select
+                      value=${value ?? fonts[0][0]}
+                      onChange=${(event) => save({ [key]: event.currentTarget.value })}
+                  >
+                      ${choices(fonts, value).map(
+                          ([family, name]) => html`<option value=${family}>${name}</option>`,
+                      )}
+                  </select>
+              </label>`;
 
-    return html`<div class="font-tools">
+    return html`<section class="font-tools" aria-label=${`Fonts for ${look.name}`}>
+        <h4 class="font-title">Fonts for <em>${look.name}</em></h4>
         ${menu("Text font", TEXT_FONTS, set.sans, "sans")}
         ${menu("Code font", CODE_FONTS, set.mono, "mono")}
-        <label class="font-menu">
+        <div class="font-menu">
             <span>Ligatures</span>
-            <${Switch} on=${set.ligatures} label="Ligatures" onChange=${() => save({ ligatures: !set.ligatures })} />
-        </label>
-        <div class="font-preview">
+            ${
+                look.builtIn
+                    ? html`<strong>${set.ligatures ? "On" : "Off"}</strong>`
+                    : html`<${Switch}
+                          on=${set.ligatures}
+                          label="Ligatures"
+                          onChange=${() => save({ ligatures: !set.ligatures })}
+                      />`
+            }
+        </div>
+        <div class="font-preview" aria-label="Font preview">
             The quick brown fox jumps over the lazy dog. <em>Emphasis.</em>
             <code>const ok = (x) => x !== 42; <span class="hl-com">// a comment</span></code>
         </div>
-    </div>`;
+        ${
+            look.builtIn &&
+            (naming
+                ? html`<div class="font-duplicate">
+                      <${Duplicate}
+                          from=${id}
+                          label=${look.name}
+                          onDone=${(made) => {
+                              setNaming(false);
+
+                              if (made) {
+                                  chooseLook(made);
+                              }
+                          }}
+                      />
+                  </div>`
+                : html`<div class="font-duplicate">
+                      <button class="button" onClick=${() => setNaming(true)}>
+                          <${Icon} name="copy" size=${14} /> Duplicate to change
+                      </button>
+                      <span class="muted small">${look.name} comes with the app: its fonts stay as they are.</span>
+                  </div>`)
+        }
+    </section>`;
 }
 
 /**
@@ -529,18 +641,8 @@ export function AppearanceSheet() {
                     )}
                 </div>
             <//>
-            <${SettingRow} title="Text size">
-                <div class="segmented">
-                    ${[13, 14, 15, 16, 17].map(
-                        (size) => html`<button
-                            class=${p.text === size ? "on" : ""}
-                            aria-pressed=${p.text === size}
-                            onClick=${() => setPrefs({ text: size })}
-                        >
-                            ${size}
-                        </button>`,
-                    )}
-                </div>
+            <${SettingRow} title="Text size" detail=${`The conversation's, in pixels: any from ${MIN_TEXT} to ${MAX_TEXT}`}>
+                <${TextSize} size=${textSizeOf(p.text)} />
             <//>
             <${SettingRow}
                 title="Width"

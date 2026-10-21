@@ -8983,6 +8983,76 @@ textarea.notes {
     justify-self: start;
 }
 
+.font-menu strong {
+    padding: 6px 0;
+    font-weight: 500;
+    color: var(--text);
+    font-size: 14px;
+}
+
+.font-title,
+.font-duplicate {
+    grid-column: 1 / -1;
+}
+
+.font-title {
+    margin: 4px 0 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.font-title em {
+    font-style: normal;
+    color: var(--accent);
+}
+
+.font-duplicate {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.font-duplicate .look-duplicate {
+    flex: 1;
+    margin: 0;
+}
+
+.text-size {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.text-size-field {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.text-size-field input {
+    width: 4.5rem;
+    padding: 0.35rem 0.5rem;
+    text-align: right;
+    font-family: var(--mono);
+}
+
+@media (max-width: 480px) {
+    .setting-row:has(.text-size) {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .setting-row:has(.text-size) .setting-text {
+        flex-basis: 100%;
+    }
+}
+
 .font-preview {
     grid-column: 1 / -1;
     padding: 10px 12px;

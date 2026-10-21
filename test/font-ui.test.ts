@@ -306,13 +306,22 @@ test(
         );
         await page.evaluate(`localStorage.clear()`);
         await open();
+        // The app's own look: its fonts, and a way to a copy that can change, not menus.
+        await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+        await see(
+            `const tools = document.querySelector(".font-tools");
+
+            return JSON.stringify(tools?.querySelector(".font-title").textContent === "Fonts for Pocket" && tools.querySelector("select") === null && tools.textContent.includes("Geist") && tools.textContent.includes("JetBrains Mono") && tools.textContent.includes("Duplicate to change"))`,
+            "Pocket's fonts, to duplicate",
+        );
+        await page.evaluate(`(await import("/store.js")).closeSheet()`);
         await choose("Reader");
         await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
         await see(
-            `return JSON.stringify([...document.querySelectorAll(".font-tools select")].map((menu) => menu.value).join() === "Pocket Inter,Pocket Fira Code")`,
+            `return JSON.stringify(document.querySelector(".font-title")?.textContent === "Fonts for Reader" && [...document.querySelectorAll(".font-tools select")].map((menu) => menu.value).join() === "Pocket Inter,Pocket Fira Code")`,
             "the menus showing the theme's fonts",
         );
-        await page.select({ selector: ".font-menu:nth-child(2) select" }, "Iosevka");
+        await page.select({ selector: ".font-tools .font-menu:nth-of-type(2) select" }, "Iosevka");
         await see(
             `return JSON.stringify(getComputedStyle(document.querySelector(".font-preview code")).fontFamily.startsWith('"Pocket Iosevka"'))`,
             "the preview in the new code font",
@@ -330,3 +339,48 @@ test(
         );
     },
 );
+
+/** Wait until the sheet stops moving: it rises as it opens, and a click mid-rise misses. */
+const settled = () =>
+    see(
+        `const at = () => document.querySelector(".text-size-field input").getBoundingClientRect().top;
+        const before = at();
+
+        await new Promise((resolve) => setTimeout(resolve, 150));
+
+        return JSON.stringify(document.getAnimations().length === 0 && at() === before);`,
+        "the sheet at rest",
+    );
+
+test("any text size from 10 to 32 px can be typed, and stays", real, async () => {
+    await page.evaluate(`localStorage.clear()`);
+    await open();
+    await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+    await see(
+        `return JSON.stringify(document.querySelector(".text-size-field input") !== null)`,
+        "the size field",
+    );
+    await page.scroll({ selector: ".text-size-field input" });
+    await settled();
+    await page.type({ selector: ".text-size-field input" }, "27.5", { submit: true });
+    await page.evaluate(`(await import("/store.js")).closeSheet()`);
+    await open();
+
+    const size = await inPage<string>(
+        `return JSON.stringify(getComputedStyle(document.querySelector(".md p")).fontSize)`,
+    );
+
+    assert.equal(size, "27.5px");
+    await page.evaluate(`(await import("/store.js")).openSheet({ type: "appearance" })`);
+    await see(
+        `return JSON.stringify(document.querySelector(".text-size-field input") !== null)`,
+        "the size field",
+    );
+    await page.scroll({ selector: ".text-size-field input" });
+    await settled();
+    await page.type({ selector: ".text-size-field input" }, "99", { submit: true });
+    await see(
+        `return JSON.stringify(document.querySelector(".text-size-field input").value === "32")`,
+        "a size past the largest kept to it",
+    );
+});

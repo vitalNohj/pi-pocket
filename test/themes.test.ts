@@ -153,6 +153,15 @@ test("Appearance's fonts are saved into the owner's theme, and only its fonts th
     assert.equal(css, `@import "fonts.css";\n:root { --accent: #ff0000; }\n`);
     assert.deepEqual(mine()?.typography, { mono: "Pocket Iosevka", ligatures: false });
 
+    // The device's own fonts, named as CSS names them.
+    themes.setFonts("mine", { sans: "system-ui", mono: "ui-monospace" });
+    assert.deepEqual(mine()?.typography, {
+        sans: "system-ui",
+        mono: "ui-monospace",
+        ligatures: false,
+    });
+    assert.match(readFileSync(join(dir, "fonts.css"), "utf8"), /--sans: system-ui, ui-sans-serif/);
+
     assert.throws(
         () => themes.setFonts("mine", { sans: "Comic Sans" }),
         /Not one of the app's fonts/,

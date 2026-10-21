@@ -110,18 +110,46 @@ const APP_FONTS: Record<string, string> = {
     "Pocket Iosevka": "/fonts/Iosevka-Regular.woff2",
 };
 
-/** The fonts Appearance offers a theme, for words and for code: the app's own two, then APP_FONTS. */
+/**
+ * The fonts Appearance offers a theme, for words and for code: the app's own two, APP_FONTS, and the device's own, by
+ * the CSS generic family each starts with (`system-ui`, `ui-monospace`), which is how a stylesheet names them.
+ */
 export const THEME_FONTS = {
     sans: [
         "Pocket Sans",
         "Pocket Inter",
+        "system-ui",
         "Pocket Mono",
         "Pocket Fira Code",
         "Pocket IBM Plex Mono",
         "Pocket Iosevka",
+        "ui-monospace",
     ],
-    mono: ["Pocket Mono", "Pocket Fira Code", "Pocket IBM Plex Mono", "Pocket Iosevka"],
+    mono: [
+        "Pocket Mono",
+        "Pocket Fira Code",
+        "Pocket IBM Plex Mono",
+        "Pocket Iosevka",
+        "ui-monospace",
+    ],
 };
+
+/** The whole list a font of THEME_FONTS is written as: each falls back to the device's own of its kind. */
+function fontStack(family: string, kind: "sans" | "mono"): string {
+    const monospace = family === "ui-monospace" || THEME_FONTS.mono.includes(family);
+    const named = family.startsWith("Pocket ") ? `"${family}"` : family;
+
+    if (!monospace) {
+        return `${named}, ${family === "system-ui" ? "" : "system-ui, "}ui-sans-serif, sans-serif`;
+    }
+
+    // Code keeps the Nerd Fonts icons after its font, for the ones prompts and tools print.
+    const icons = kind === "mono" ? `"Pocket Nerd Symbols", ` : "";
+
+    return family === "ui-monospace"
+        ? `ui-monospace, ${icons}SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace`
+        : `${named}, ${icons}ui-monospace, monospace`;
+}
 
 /** What a `fonts.css` that Appearance wrote sets: the first family of `--sans` and `--mono`, and ligatures. */
 function typography(sheets: Map<string, string>): {
@@ -136,9 +164,19 @@ function typography(sheets: Map<string, string>): {
     ]
         .join("\n")
         .replace(/\/\*[\s\S]*?\*\//g, "");
+
+    // The last value set, as its first family: a name in quotes, or a keyword (`system-ui`).
+    const first = (name: string) => {
+        const found = [
+            ...css.matchAll(new RegExp(`--${name}:\\s*(?:"([^"]+)"|([a-z-]+))`, "g")),
+        ].at(-1);
+
+        return found?.[1] ?? found?.[2];
+    };
+
     const last = (pattern: RegExp) => [...css.matchAll(pattern)].at(-1)?.[1];
-    const sans = last(/--sans:\s*"([^"]+)"/g);
-    const mono = last(/--mono:\s*"([^"]+)"/g);
+    const sans = first("sans");
+    const mono = first("mono");
 
     return {
         ...(sans === undefined ? {} : { sans }),
@@ -496,14 +534,8 @@ export class Themes {
         const sans = family(fonts.sans, "sans");
         const mono = family(fonts.mono, "mono");
         const rules = [
-            ...(sans === null
-                ? []
-                : [`    --sans: "${sans}", ui-sans-serif, system-ui, sans-serif !important;`]),
-            ...(mono === null
-                ? []
-                : [
-                      `    --mono: "${mono}", "Pocket Nerd Symbols", ui-monospace, monospace !important;`,
-                  ]),
+            ...(sans === null ? [] : [`    --sans: ${fontStack(sans, "sans")} !important;`]),
+            ...(mono === null ? [] : [`    --mono: ${fontStack(mono, "mono")} !important;`]),
             ...(typeof fonts.ligatures === "boolean"
                 ? [`    --ligatures: ${fonts.ligatures ? "contextual" : "none"} !important;`]
                 : []),
