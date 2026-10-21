@@ -482,6 +482,7 @@ export async function attempt(action) {
 export function signOut() {
     return attempt(async () => {
         await api("logout", {});
+        localStorage.removeItem(SIGNED_IN_KEY);
         location.href = "/";
     });
 }
@@ -692,6 +693,8 @@ const handlers = {
  */
 const PROTOCOL = 3;
 const TRANSPORT_KEY = "pocket.transport";
+/** "1" once this browser was signed in here: the next page opens its events without waiting for `/api/me` (`start`). */
+const SIGNED_IN_KEY = "pocket.signedIn";
 const local = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
 /** After an event stream stalls on this address, poll for a day, then try the stream again: one slow start is not forever. */
 const POLL_FOR_MS = 24 * 60 * 60_000;
@@ -1033,19 +1036,42 @@ onRoute(() => {
 });
 
 export async function start() {
+    // A browser signed in before most likely still is: its events open at once, with the person's hello first, not a
+    // round trip after `/api/me` (on a phone network, a tenth of a second or more). Not otherwise: a stream that is
+    // refused retries forever, when this page should show the sign-in.
+    const early = localStorage.getItem(SIGNED_IN_KEY) === "1";
+
+    if (early) {
+        connect();
+    }
+
     try {
         const hello = await api("me");
 
-        store.set({
-            me: hello.user,
-            users: hello.users,
-            models: hello.models,
-            guard: hello.guard,
-            server: hello.server,
-            themeList: Array.isArray(hello.themes) ? hello.themes : [],
-        });
-        connect();
+        localStorage.setItem(SIGNED_IN_KEY, "1");
+
+        // The stream's hello may have come first: the same, and as new.
+        if (!store.state.me) {
+            store.set({
+                me: hello.user,
+                users: hello.users,
+                models: hello.models,
+                guard: hello.guard,
+                server: hello.server,
+                themeList: Array.isArray(hello.themes) ? hello.themes : [],
+            });
+        }
+
+        if (!early) {
+            connect();
+        }
     } catch (error) {
+        if (error.status === 401) {
+            localStorage.removeItem(SIGNED_IN_KEY);
+            source?.close();
+            source = null;
+        }
+
         store.set({ me: error.status === 401 ? null : undefined });
 
         if (error.status !== 401) {

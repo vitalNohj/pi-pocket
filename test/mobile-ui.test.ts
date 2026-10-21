@@ -342,6 +342,49 @@ async function compactedView(): Promise<void> {
     );
 }
 
+test(
+    "a browser signed in before opens its events at once, not after asking who it is",
+    real,
+    async () => {
+        await fresh();
+        // Start the app's connection again as a page load does, and see in what order its requests go out and come back.
+        const order = await inPage<string[]>(`
+        const { start, store } = await import("/store.js");
+        const order = [];
+        const Source = window.EventSource;
+        const fetching = window.fetch;
+
+        window.EventSource = class extends Source {
+            constructor(url, options) {
+                super(url, options);
+                order.push("events opened");
+            }
+        };
+        window.fetch = async (...args) => {
+            const answer = await fetching(...args);
+
+            if (String(args[0]).endsWith("/api/me")) {
+                order.push("me answered");
+            }
+
+            return answer;
+        };
+
+        try {
+            store.set({ me: undefined });
+            await start();
+        } finally {
+            window.EventSource = Source;
+            window.fetch = fetching;
+        }
+
+        return JSON.stringify(order);
+    `);
+
+        assert.deepEqual(order, ["events opened", "me answered"]);
+    },
+);
+
 test("earlier history does not repeat a message kept after compaction", real, async () => {
     await compactedView();
     await page.evaluate(`
