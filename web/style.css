@@ -636,7 +636,7 @@ kbd {
 }
 
 :root[data-motion="reduced"] .boot-bar span {
-    width: 70%;
+    transform: scaleX(0.7);
 }
 
 /* Theme changes: the new look grows as a circle from where it was chosen (theme.js sets the place). */
@@ -709,17 +709,20 @@ kbd {
     overflow: hidden;
 }
 
+/* Scaled, not sized: a width would lay the page out on each frame, while the session it waits for loads. */
 .boot-bar span {
     display: block;
-    width: 0;
+    width: 100%;
     height: 100%;
     background: var(--body);
+    transform: scaleX(0);
+    transform-origin: left;
     animation: boot-fill 15s cubic-bezier(0.12, 0.6, 0.3, 1) forwards;
 }
 
 @keyframes boot-fill {
     to {
-        width: 70%;
+        transform: scaleX(0.7);
     }
 }
 
@@ -1444,6 +1447,11 @@ kbd {
      * message box, when a session long enough to scroll opens. */
     scrollbar-gutter: stable both-edges;
     position: relative;
+    /* The room it gives, for what may run wider than the column (a reply's code blocks and tables, below): the
+     * browser's own measure as it lays out, inside the scroll bar's gutters, so no script restyles the conversation
+     * after it is drawn. A fixed or sticky element in it keeps its place: inline-size containment makes neither a
+     * containing block nor a stacking context. */
+    container-type: inline-size;
 }
 
 /* A column of turns: a person's message, what Pi did, Pi's reply, an approval, the live line. Its text size is
@@ -1458,6 +1466,10 @@ kbd {
     gap: calc(16px * var(--space-y));
     font-size: var(--text-size, 15px);
     line-height: var(--leading);
+}
+
+/* A session opened rises into place; on a phone, where the route slides it in, the slide alone (`transcript.js`). */
+.transcript.rising {
     animation: rise-in 0.36s var(--ease-out);
 }
 
@@ -1758,16 +1770,13 @@ kbd {
 }
 
 /*
- * A reply's code blocks and tables may run wider than its words, up to the pane's room (--pane-room, which
- * transcript.js measures) less the column's padding. A code block as wide as its longest line, at least the column's
- * width, centered on the column; a table as wide as its cells, from the column's start toward the pane's edge. On a
- * phone, and in a pane no wider than the column, the room is the column, so nothing changes.
+ * A reply's code blocks and tables may run wider than its words, up to the pane's room (the scroller's width, `cqi`)
+ * less the column's padding. A code block as wide as its longest line, at least the column's width, centered on the
+ * column; a table as wide as its cells, from the column's start toward the pane's edge. On a phone, and in a pane no
+ * wider than the column, the room is the column, so nothing changes.
  */
 .transcript {
-    --wide-room: max(
-        100%,
-        calc(var(--pane-room, 100%) - 56px * var(--space-x) - var(--transcript-gutter))
-    );
+    --wide-room: max(100%, calc(100cqi - 56px * var(--space-x) - var(--transcript-gutter)));
 }
 
 [data-part~="reply"] :is(.md, .md-part) > .code {
@@ -2179,12 +2188,16 @@ kbd {
 .timeline {
     position: relative;
     padding: calc(6px * var(--space-y)) 0;
-    animation: unroll var(--t-in) var(--ease-out);
 }
 
 /* A group that is one thought alone: its words, under the line that names it. */
 .activity-thought {
     padding: calc(10px * var(--space-y)) calc(12px * var(--space-x)) calc(12px * var(--space-y));
+}
+
+/* What a person opened unrolls (`unrolling`, transcript.js); what opens by itself (a session's open groups, a group
+ * that goes live) shows at once. A clip-path is painted on each frame, which a phone cannot spare as a session opens. */
+:is(.timeline, .activity-thought, .step-body).unrolling {
     animation: unroll var(--t-in) var(--ease-out);
 }
 
@@ -2389,10 +2402,6 @@ kbd {
 
 .step-extras + .step-body {
     margin-top: 0;
-}
-
-.step-body {
-    animation: unroll var(--t-in) var(--ease-out);
 }
 
 .step-extras > .thumbs {
@@ -12745,7 +12754,7 @@ textarea.notes {
 
 /*
  * Phones: a session opened slides in from the right, and going back brings the list (or the session before) in from
- * the left, so where back goes is where things came from. `data-route` is set while it slides (back.js).
+ * the left, so where back goes is where things came from. `data-route` is set on the window while it slides (back.js).
  */
 @media (max-width: 959px) {
     /* Held inside the window: a scroller sliding in from the right (a route, a swipe's lean) would make the page wider
@@ -12753,11 +12762,11 @@ textarea.notes {
     .pane {
         overflow-x: clip;
     }
-    :root[data-route="forward"] .pane > .scroller {
+    .pane[data-route="forward"] > .scroller {
         animation: route-forward 0.32s var(--ease-out);
     }
-    :root[data-route="back"] .pane > .scroller,
-    :root[data-route="back"] .home-list {
+    .pane[data-route="back"] > .scroller,
+    .pane[data-route="back"] > .home-list {
         animation: route-back 0.32s var(--ease-out);
     }
 }
@@ -16753,7 +16762,7 @@ pre.gallery-code {
 }
 
 /* A session opened: its conversation settles up into place. */
-:root[data-motion="fluid"] .transcript {
+:root[data-motion="fluid"] .transcript.rising {
     animation: fluid-rise var(--t-glide) var(--ease-glide);
 }
 
@@ -16797,7 +16806,7 @@ pre.gallery-code {
 }
 
 /* A group of steps opening: it unrolls on the glide, and its first steps drop in one after another. */
-:root[data-motion="fluid"] :is(.timeline, .activity-thought, .step-body) {
+:root[data-motion="fluid"] :is(.timeline, .activity-thought, .step-body).unrolling {
     animation: unroll var(--t-glide) var(--ease-glide);
 }
 
@@ -16914,11 +16923,11 @@ pre.gallery-code {
 }
 
 @media (max-width: 959px) {
-    :root[data-motion="fluid"][data-route="forward"] .pane > .scroller {
+    :root[data-motion="fluid"] .pane[data-route="forward"] > .scroller {
         animation: route-forward var(--t-glide) var(--ease-glide);
     }
-    :root[data-motion="fluid"][data-route="back"] .pane > .scroller,
-    :root[data-motion="fluid"][data-route="back"] .home-list {
+    :root[data-motion="fluid"] .pane[data-route="back"] > .scroller,
+    :root[data-motion="fluid"] .pane[data-route="back"] > .home-list {
         animation: route-back var(--t-glide) var(--ease-glide);
     }
 }
