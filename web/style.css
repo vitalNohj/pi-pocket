@@ -812,9 +812,11 @@ kbd {
 
 /* ─── Layout: windows on a desktop ─────────────────────────── */
 
+/* Clear of a notch and rounded corners at the sides (a phone on its side); 0 everywhere else. */
 .layout {
     display: flex;
     height: 100dvh;
+    padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
     background: var(--bg);
 }
 
@@ -914,6 +916,14 @@ kbd {
     }
 }
 
+/* A phone on its side (touch, and too short for any tablet): the list takes the whole width, not a column in the
+ * middle. A short desktop window keeps its column. */
+@media (max-height: 500px) and (min-width: 600px) and (pointer: coarse) {
+    .home-list > .sessions {
+        max-width: none;
+    }
+}
+
 .splash {
     display: none;
 }
@@ -940,7 +950,8 @@ kbd {
     }
 
     :root[data-tiling="on"] .layout {
-        padding: var(--gap-out);
+        padding: var(--gap-out) calc(var(--gap-out) + env(safe-area-inset-right)) var(--gap-out)
+            calc(var(--gap-out) + env(safe-area-inset-left));
         gap: calc(var(--gap-in) * 2);
         background: var(--desk) var(--wallpaper, none) center / cover no-repeat;
     }
