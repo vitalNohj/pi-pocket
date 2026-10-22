@@ -794,7 +794,7 @@ test("back to the list slides it in whole, and its rows do not rise in again", r
             rows: rows.length,
             arriving: rows.filter((each) => each.classList.contains("arriving")).length,
             rowAnimations: rows.flatMap((each) => each.getAnimations()).length,
-            slide: document.documentElement.dataset.route ?? "",
+            slide: document.querySelector(".pane")?.dataset.route ?? "",
         });
     `);
 
