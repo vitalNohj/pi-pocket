@@ -954,50 +954,87 @@ test(
         await reach({ path: `/s/${other}` }, "another session");
         await say(app, first, "new while away");
 
-        // Back: the kept session shows in the same frame as the switch, before the server is asked; then what came while
-        // away arrives, and nothing else of the session.
-        const back = await inPage<{
-            drawn: boolean;
-            asked: string;
-            views: { order: number; orderFrom: number | null; entries: string[] }[];
-        }>(`
-        const { navigate, store } = await import("/store.js");
+        // The tab's connection, watched: it opens again, on the session shown, and stays open for the switch back.
+        await inPage<boolean>(`
+        const { connect, store } = await import("/store.js");
         const Source = window.EventSource;
-        const views = [];
-        let asked = "";
 
+        window.__views = [];
+        window.__sources = 0;
         window.EventSource = class extends Source {
             constructor(url) {
                 super(url);
-                asked = String(url);
+                window.__sources++;
                 this.addEventListener("view", (event) => {
                     const data = JSON.parse(event.data);
 
-                    views.push({ order: data.order?.length ?? -1, orderFrom: data.orderFrom ?? null,
-                        entries: data.entries.map((each) => each.text ?? each.kind) });
+                    window.__views.push({ id: data.conversation.id, order: data.order?.length ?? -1,
+                        orderFrom: data.orderFrom ?? null, entries: data.entries.map((each) => each.text ?? each.kind) });
                 });
             }
+        };
+        connect();
+        window.EventSource = Source;
+
+        return "true";
+    `);
+        await until(
+            async () =>
+                (await inPage<boolean>(`
+                const { store } = await import("/store.js");
+
+                return JSON.stringify(store.state.connection === "open" && window.__views.length > 0);
+            `)) === true,
+            "connected again",
+        );
+
+        // Back: the kept session shows in the same frame as the switch, before the server is asked; then what came while
+        // away arrives, and nothing else of the session, on the connection the tab has.
+        const back = await inPage<{
+            drawn: boolean;
+            sources: number;
+            switches: string[];
+            views: { order: number; orderFrom: number | null; entries: string[] }[];
+        }>(`
+        const { navigate, store } = await import("/store.js");
+        const send = window.fetch;
+        const switches = [];
+
+        window.__views.length = 0;
+        window.fetch = (url, init) => {
+            if (String(url).endsWith("/api/switch")) {
+                switches.push(String(init.body));
+            }
+
+            return send(url, init);
         };
 
         try {
             navigate(${Number(first)});
             // What the switch put in the store, before any event came: the kept session, or none yet.
-            const drawn = views.length === 0 && store.state.view.conversation?.id === ${Number(first)} &&
+            const drawn = window.__views.length === 0 && store.state.view.conversation?.id === ${Number(first)} &&
                 [...store.state.view.entries.values()].some((each) => each.text === "kept here");
             const until = Date.now() + 5000;
+            const views = () => window.__views.filter((each) => each.id === ${Number(first)});
 
-            while (!views.some((each) => each.entries.includes("new while away")) && Date.now() < until) {
+            while (!views().some((each) => each.entries.includes("new while away")) && Date.now() < until) {
                 await new Promise((resolve) => setTimeout(resolve, 50));
             }
 
-            return JSON.stringify({ drawn, asked, views });
+            return JSON.stringify({ drawn, sources: window.__sources, switches, views: views() });
         } finally {
-            window.EventSource = Source;
+            window.fetch = send;
         }
     `);
 
         assert.ok(back.drawn, "the kept session shows before the server answers");
-        assert.match(back.asked, /&have=\d+\.\d+\.[0-9a-z]+\.\d+/, "the tab says what it kept");
+        assert.equal(back.sources, 1, "no new connection");
+        assert.equal(back.switches.length, 1, "one switch");
+        assert.match(
+            JSON.parse(back.switches[0]!).have,
+            /^\d+\.\d+\.[0-9a-z]+\.\d+$/,
+            "the tab says what it kept",
+        );
         assert.ok(back.views[0]!.orderFrom! > 0, "the view goes on from what the tab kept");
         assert.deepEqual(
             back.views.flatMap((each) => each.entries),
@@ -1059,13 +1096,12 @@ test("a session no longer shared is not kept, whatever the tab hears first", rea
         await goTo(other);
         await reach({ path: `/s/${other}` }, "another session");
 
-        // Back to it: kept, it shows at once. Its connection loses the word that the session is missing, as one does
-        // when the tab leaves first (a reconnect sends the new hello and list before that word).
-        const shownAgain = await inPage<boolean>(`
-            const { navigate, store } = await import("/store.js");
+        // Its connection loses the word that the session is missing, as one does when the tab leaves first (a reconnect
+        // sends the new hello and list before that word).
+        await inPage<boolean>(`
+            const { connect } = await import("/store.js");
             const Source = window.EventSource;
 
-            window.__realSource = Source;
             window.__lost = 0;
             window.EventSource = class extends Source {
                 constructor(url) {
@@ -1076,6 +1112,25 @@ test("a session no longer shared is not kept, whatever the tab hears first", rea
                     });
                 }
             };
+            connect();
+            window.EventSource = Source;
+
+            return "true";
+        `);
+        await until(
+            async () =>
+                (await inPage<boolean>(`
+                    const { store } = await import("/store.js");
+
+                    return JSON.stringify(store.state.connection === "open" && store.state.view.conversation?.id === ${Number(other)});
+                `)) === true,
+            "connected again",
+        );
+
+        // Back to it: kept, it shows at once.
+        const shownAgain = await inPage<boolean>(`
+            const { navigate, store } = await import("/store.js");
+
             navigate(${Number(theirs)});
 
             return JSON.stringify(store.state.view.conversation?.id === ${Number(theirs)});
@@ -1084,10 +1139,13 @@ test("a session no longer shared is not kept, whatever the tab hears first", rea
         assert.ok(shownAgain, "kept while it is shared");
         await until(
             async () =>
-                (await inPage<boolean>(
-                    `return JSON.stringify((await import("/store.js")).store.state.connection === "open")`,
-                )) === true,
-            "connected again",
+                (await inPage<boolean>(`
+                    const { store } = await import("/store.js");
+
+                    return JSON.stringify(store.state.view.conversation?.id === ${Number(theirs)} &&
+                        ![...store.state.view.entries.values()].some((each) => each.partial));
+                `)) === true,
+            "the session, from the server",
         );
 
         // The owner stops sharing it: the tab hears its new rights and list, not that the session is missing. Wherever

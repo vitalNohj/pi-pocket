@@ -648,13 +648,20 @@ let source;
 
 // ─── Sessions this tab keeps, to show again at once ─────────────────────────────────────────────────────────────────
 
-/** Sessions kept, newest last: a tab that goes back to one shows it at once, and the server sends only what is new. */
-const KEPT_SESSIONS = 10;
-/** Entries kept across them, so a few long sessions do not hold more than a few MB. */
-const KEPT_ENTRIES = 6000;
+/**
+ * What the sessions this tab keeps may take in all, as the length of their JSON: once parsed they take about 1.6 times
+ * that in memory (measured on real sessions), so about 25 MB. However many sessions that is: 26 real ones took 7.5 MB.
+ */
+const KEPT_CHARS = 16_000_000;
 
-/** The views of sessions this tab left, by conversation id, least recently shown first. */
+/**
+ * The views of sessions this tab left, by conversation id, least recently shown first: `{ view, size }`, with `size` as
+ * `keptSize` measures it, and undefined until the next `trimKept`.
+ */
 const keptViews = new Map();
+/** Each entry's JSON length, measured once: an entry does not change (a new one replaces it). */
+const entrySizes = new WeakMap();
+let trimming;
 
 /**
  * Keep the view of the session this tab leaves, to show it again at once (`keptView`). Only one the server that runs now
@@ -683,21 +690,48 @@ function keepView(view) {
 
     // One whose earlier messages were all loaded (Find does) keeps its newest ones, as it opens with: a long session
     // stays within what is kept.
-    keptViews.set(id, newestOf(view));
+    keptViews.set(id, { view: newestOf(view), size: undefined });
+    // Measured after the switch has drawn: not in the tap's time.
+    clearTimeout(trimming);
+    trimming = setTimeout(trimKept, 500);
+}
+
+/** Drop the views kept longest without a visit until what is kept fits in `KEPT_CHARS`. */
+function trimKept() {
     let total = 0;
 
-    for (const each of keptViews.values()) {
-        total += each.entries.size;
+    for (const kept of keptViews.values()) {
+        kept.size ??= keptSize(kept.view);
+        total += kept.size;
     }
 
-    for (const [oldest, each] of keptViews) {
-        if (keptViews.size <= KEPT_SESSIONS && total <= KEPT_ENTRIES) {
+    for (const [oldest, kept] of keptViews) {
+        if (total <= KEPT_CHARS) {
             break;
         }
 
         keptViews.delete(oldest);
-        total -= each.entries.size;
+        total -= kept.size;
     }
+}
+
+/** What a kept view takes, as JSON: its entries, its order's ids, and the rest of the view (authors grows with it). */
+function keptSize(view) {
+    const { entries, order, ...rest } = view;
+    let size = order.length * 8 + JSON.stringify(rest).length;
+
+    for (const entry of entries.values()) {
+        let each = entrySizes.get(entry);
+
+        if (each === undefined) {
+            each = JSON.stringify(entry).length;
+            entrySizes.set(entry, each);
+        }
+
+        size += each;
+    }
+
+    return size;
 }
 
 /** Entries a view keeps when it is left: at most this many of the newest, which is still more than it opens with. */
@@ -740,11 +774,11 @@ function forgetKept() {
 
 /** The view this tab kept of a session, taken out to show (it is kept again when the tab leaves), or an empty one. */
 function keptView(id) {
-    const view = keptViews.get(id);
+    const kept = keptViews.get(id);
 
     keptViews.delete(id);
 
-    return view ?? emptyView();
+    return kept?.view ?? emptyView();
 }
 
 /**
@@ -782,6 +816,11 @@ function goesOn(view, data) {
 }
 
 function applyView(data) {
+    // One of a session this tab has left, sent before the server heard of the switch (`show`): not the one it shows.
+    if (data.conversation.id !== store.state.conversationId) {
+        return;
+    }
+
     // A view that goes on from what this tab kept must go on from what it has. If it does not, which should not happen,
     // the session opens again from the start.
     if (data.orderFrom !== undefined && !goesOn(store.state.view, data)) {
@@ -1108,6 +1147,12 @@ const handlers = {
     // Every subagent in every session, while this tab shows the subagents board (`subagents-board.js`).
     subagents: (agents) => store.state.board && store.set({ boardAgents: agents }),
     view: applyView,
+    // A switch on this connection went through (`switchTo`): what comes of a session after it is the new one's.
+    switched: (data) => {
+        if (data.seq === switchSeq) {
+            switching = null;
+        }
+    },
     // This person's PiP: its conversation, whether it works, and when it last answered (`pip.js`); null for none.
     // Sent again on each connect, mostly as it was.
     pip: (pip) => setChanged({ pip: kept(store.state.pip, pip) }),
@@ -1131,7 +1176,8 @@ const handlers = {
     missing: (data) => {
         keptViews.delete(data.conversationId);
         store.set((state) => ({
-            missing: data.message,
+            // Said of a session this tab has since left (`show`), it is not what the tab shows.
+            ...(state.conversationId === data.conversationId ? { missing: data.message } : {}),
             ...(state.view.conversation?.id === data.conversationId ? { view: emptyView() } : {}),
         }));
     },
@@ -1202,12 +1248,22 @@ const connected = () => store.state.connection !== "open" && store.set({ connect
 
 export function connect() {
     source?.close();
+    // A new connection names the session itself: a switch still on its way is no longer awaited.
+    switching = null;
+    switchSeq++;
     store.set({ connection: "connecting" });
-    const id = store.state.conversationId;
-    const have = id === null ? null : haveOf(store.state.view);
-    const query = `tab=${encodeURIComponent(TAB)}&p=${PROTOCOL}${id === null ? "" : `&c=${id}`}${have === null ? "" : `&have=${have}`}`;
+    source = pollHere() && !local ? pollEvents() : streamEvents(eventsQuery(true));
+}
 
-    source = pollHere() && !local ? pollEvents(query) : streamEvents(query);
+/**
+ * What a new connection asks for: this tab, what its code understands, the session it shows now (a switch changes it
+ * on the connection it has), and, with `kept`, what it kept of that session.
+ */
+function eventsQuery(kept) {
+    const id = store.state.conversationId;
+    const have = kept && id !== null ? haveOf(store.state.view) : null;
+
+    return `tab=${encodeURIComponent(TAB)}&p=${PROTOCOL}${id === null ? "" : `&c=${id}`}${have === null ? "" : `&have=${have}`}`;
 }
 
 // A page kept for Back and Forward stays alive, frozen, and so would its stream: each holds one of the few connections a
@@ -1226,9 +1282,11 @@ addEventListener("pageshow", (event) => {
 function streamEvents(query) {
     helloAsked = moment();
     const events = new EventSource(`/api/events?${query}`);
+    /** The session its address names: a retry by the browser asks for that one again. */
+    const named = store.state.conversationId;
     /** The first batch arrived whole: the session's view, or the session list when no session is open. */
     let settled = false;
-    const settles = query.includes("&c=") ? ["view", "missing"] : ["sessions"];
+    const settles = named !== null ? ["view", "missing"] : ["sessions"];
     const connection = {
         close() {
             clearTimeout(fallback);
@@ -1259,7 +1317,7 @@ function streamEvents(query) {
                 settled = true;
             }
 
-            handler(JSON.parse(event.data));
+            heard(name, JSON.parse(event.data), handler);
         });
     }
 
@@ -1278,6 +1336,14 @@ function streamEvents(query) {
         }
 
         store.set({ connection: "closed" });
+
+        // Switched on this connection since it opened (`show`): the browser's retry would ask for the session its address
+        // names. A new connection names the one shown; it hears a 401 as this one does.
+        if (named !== store.state.conversationId) {
+            connect();
+
+            return;
+        }
 
         // EventSource retries by itself after a network error; a 401 needs a sign-in instead.
         try {
@@ -1307,8 +1373,62 @@ function streamEvents(query) {
     return connection;
 }
 
+// ─── Switching sessions on the connection the tab has ─────────────────────────────────────────────────────────────
+
+/** Events about the session a tab shows: while a switch is on its way, those that come are the old session's. */
+const SESSION_EVENTS = new Set(["view", "chat", "notes", "presence", "browser", "missing"]);
+/** The number of the last switch asked, so the server drops one that arrives after a newer one. */
+let switchSeq = 0;
+/** The switch on its way: its number, until the server's `switched` says it went through. */
+let switching = null;
+
+/** Pass an event on to its handler, unless it is about the session the tab is leaving. */
+function heard(name, data, handler) {
+    if (switching !== null && SESSION_EVENTS.has(name)) {
+        return;
+    }
+
+    handler(data);
+}
+
+/**
+ * Show the session the tab now shows (`conversationId`, null for the list) on the connection it has, rather than a new
+ * one: no hello, list, or PiP state comes again, and nobody sees this person leave and come back. A server that cannot
+ * (an older one, or no connection open) gets a new connection, as before.
+ */
+function show() {
+    const connection = store.state.streamId;
+
+    if (
+        store.state.server?.switches !== true ||
+        !connection ||
+        !source ||
+        store.state.connection !== "open"
+    ) {
+        connect();
+
+        return;
+    }
+
+    const id = store.state.conversationId;
+    const seq = ++switchSeq;
+
+    switching = seq;
+    api("switch", {
+        connection,
+        c: id,
+        have: id === null ? null : haveOf(store.state.view),
+        seq,
+    }).catch(() => {
+        // The connection closed, or the server started again: a new one, which names the session.
+        if (switchSeq === seq) {
+            connect();
+        }
+    });
+}
+
 /** Long polling: each request waits for events and returns them; the next one acknowledges what arrived. */
-function pollEvents(query) {
+function pollEvents() {
     let session = null;
     let ack = 0;
     let stopped = false;
@@ -1332,8 +1452,10 @@ function pollEvents(query) {
             const asked = moment();
 
             try {
+                // A poll the server no longer knows (it started again, or this tab fell far behind) attaches afresh: it
+                // names the session shown now, which a switch may have changed (`show`).
                 const response = await fetch(
-                    `/api/poll?${query}${session ? `&session=${session}&ack=${ack}` : ""}`,
+                    `/api/poll?${eventsQuery(session === null)}${session ? `&session=${session}&ack=${ack}` : ""}`,
                     { signal: request.signal, cache: "no-store" },
                 );
 
@@ -1360,6 +1482,9 @@ function pollEvents(query) {
                     session = data.session;
                     ack = 0;
                     helloAsked = asked;
+                    // It named the session shown when it was asked: a switch still on its way went to the old one.
+                    switching = null;
+                    switchSeq++;
                 }
 
                 failures = 0;
@@ -1371,7 +1496,10 @@ function pollEvents(query) {
                     }
 
                     ack = item.seq;
-                    handlers[item.event]?.(item.data);
+
+                    if (handlers[item.event]) {
+                        heard(item.event, item.data, handlers[item.event]);
+                    }
                 }
             } catch {
                 if (stopped) {
@@ -1500,7 +1628,7 @@ export function navigate(conversationId, { replace = false, sheet = null } = {})
         drawer: false,
         ...sheetChange(sheet, state),
     }));
-    connect();
+    show();
 }
 
 // Back or forward to another route. Back that only closes a layer (a sheet, a panel) is back.js's.
@@ -1521,7 +1649,7 @@ onRoute(() => {
             sheet: null,
             drawer: false,
         });
-        connect();
+        show();
     }
 });
 

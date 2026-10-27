@@ -74,7 +74,7 @@ function newClient(url: URL, user: User, send: Client["send"]): Client {
  * What a tab kept of the session it opens (`Client.have`), from `have=<from>.<count>.<key>.<started>`: undefined when
  * it names none, or not in that form. `Room.push` checks it against the session.
  */
-function keptPart(text: string | null): Client["have"] {
+export function keptPart(text: string | null): Client["have"] {
     const match = /^(\d{1,9})\.(\d{1,9})\.([0-9a-z]{1,16})\.(\d{1,16})$/.exec(text ?? "");
 
     return match === null

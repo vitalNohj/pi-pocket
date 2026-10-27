@@ -26,7 +26,7 @@ import { runningNow } from "../running.ts";
 import { serveImage } from "./assets.ts";
 import { browserRoutes } from "./browser-routes.ts";
 import { conversationRoutes } from "./conversation-routes.ts";
-import { createEventStreams } from "./events.ts";
+import { createEventStreams, keptPart } from "./events.ts";
 import { extensionRoute } from "./extension-routes.ts";
 import { type ApiRequest, conversationId, type HttpOptions, json, readJson } from "./io.ts";
 import { pushRoutes } from "./push-routes.ts";
@@ -228,6 +228,36 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 body.ids.slice(0, MAX_PEEKS).map((id) => conversationId(String(id))),
                 body.seq as number | undefined,
             );
+
+            return json(response, 200, { ok: true });
+        }
+
+        // A tab shows another session, or the list (`c` null), on the connection it has; `have` is what it kept of it.
+        if (first === "switch" && method === "POST") {
+            const body = await readJson<{
+                connection?: unknown;
+                c?: unknown;
+                have?: unknown;
+                seq?: unknown;
+            }>(request);
+
+            if (!Number.isSafeInteger(body.seq)) {
+                throw new HttpError(400, "seq must be a whole number");
+            }
+
+            const switched = app.switchTo(
+                user,
+                String(body.connection ?? ""),
+                body.c === null || body.c === undefined
+                    ? undefined
+                    : conversationId(String(body.c)),
+                keptPart(typeof body.have === "string" ? body.have : null),
+                body.seq as number,
+            );
+
+            if (!switched) {
+                throw new HttpError(409, "This connection is not open");
+            }
 
             return json(response, 200, { ok: true });
         }

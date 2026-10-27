@@ -172,6 +172,10 @@ export interface Client {
     peeks?: Set<ConversationId>;
     /** The number of the last peek list taken, so one that arrives late does not undo a newer one. */
     peekSeq?: number;
+    /** The number of the last switch taken (`PocketApp.switchTo`), so one that arrives late does not undo a newer one. */
+    switchSeq?: number;
+    /** Counts the times the tab entered a session: a room that opens after a later switch is not entered. */
+    visit?: number;
     /** This tab shows the subagents board: it gets every subagent with each session list (`PocketApp.setBoard`). */
     board?: boolean;
     /** The number of the last board request taken, so one that arrives late does not undo a newer one. */
