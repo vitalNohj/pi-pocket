@@ -722,6 +722,22 @@ function newestOf(view) {
     return { ...view, entries };
 }
 
+/**
+ * Forget every view this tab kept, and keep the one it shows from being kept or named (`started` null, as for a view
+ * mixed from two servers): this person's access changed (a role, the sessions shared with them), another person signed
+ * in, the server started again, or a session left the list. Until the server answers again, a kept view could show
+ * what they may no longer see.
+ */
+function forgetKept() {
+    keptViews.clear();
+
+    const { view } = store.state;
+
+    if (view.started != null) {
+        store.set({ view: { ...view, started: null } });
+    }
+}
+
 /** The view this tab kept of a session, taken out to show (it is kept again when the tab leaves), or an empty one. */
 function keptView(id) {
     const view = keptViews.get(id);
@@ -1041,12 +1057,13 @@ const handlers = {
         helloAsked = undefined;
 
         // A server that started again may run other code, which sends entries otherwise; and this person's rights may have
-        // changed (a role, the sessions shared with them), or another person signed in: what this tab kept goes.
+        // changed (a role, the sessions shared with them), or another person signed in: what this tab kept goes, and the
+        // view it shows is not kept when it leaves.
         if (
             data.server?.startedAt !== state.server?.startedAt ||
             (state.me && !sameJson(state.me, data.user))
         ) {
-            keptViews.clear();
+            forgetKept();
         }
 
         setChanged({
@@ -1066,14 +1083,14 @@ const handlers = {
         const state = store.state;
         const sessions = keptEach(state.sessions, list);
 
-        // A session gone from the list (deleted, or no longer shared with this person): nothing of it stays kept.
-        if (sessions !== state.sessions && keptViews.size > 0) {
+        // A session gone from the list (no longer shared with this person): nothing kept stays, its subagents' views
+        // included, and the view shown is not kept when the tab leaves it, though the list may come before the server
+        // says it is missing (a reconnect). Rare: only a person's access takes a session out of their list.
+        if (sessions !== state.sessions) {
             const listed = new Set(sessions.map((session) => session.id));
 
-            for (const each of state.sessions) {
-                if (!listed.has(each.id)) {
-                    keptViews.delete(each.id);
-                }
+            if (state.sessions.some((each) => !listed.has(each.id))) {
+                forgetKept();
             }
         }
 

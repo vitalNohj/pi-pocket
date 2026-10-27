@@ -1014,6 +1014,111 @@ test(
     },
 );
 
+test("a session no longer shared is not kept, whatever the tab hears first", real, async () => {
+    const other = await newSession(app);
+    const theirs = await newSession(app);
+    const guest = app.config.addUser("Ivy", "guest", [String(theirs), String(other)]);
+    // The guest's own browser: the owner's would ask before it switched accounts.
+    const owners = page;
+    const guests = new Browsers({
+        dataDir: mkdtempSync(join(root, "mobile-ui-guest-")),
+        load: async () => undefined,
+        save: () => {},
+    });
+
+    await say(app, theirs, "shared for now");
+
+    try {
+        page = await guests.open(1);
+        await page.setViewport(VIEWPORTS.mobile);
+        await page.navigate(`${base}/login?token=${encodeURIComponent(guest.token)}`);
+        await until(
+            async () =>
+                (await inPage<boolean>(`
+                    const { store } = await import("/store.js");
+
+                    return JSON.stringify(store.state.me?.id === ${JSON.stringify(guest.user.id)} &&
+                        store.state.sessions.some((each) => each.id === ${Number(theirs)}));
+                `)) === true,
+            "the guest's list",
+            20_000,
+        );
+        // Open the shared session until its entries are whole (a tab keeps only such a view), then leave it.
+        await goTo(theirs);
+        await until(
+            async () =>
+                (await inPage<boolean>(`
+                    const { store } = await import("/store.js");
+                    const { view, connection } = store.state;
+
+                    return JSON.stringify(connection === "open" && view.conversation?.id === ${Number(theirs)} &&
+                        view.entries.size > 0 && ![...view.entries.values()].some((each) => each.partial));
+                `)) === true,
+            "the shared session, whole",
+        );
+        await goTo(other);
+        await reach({ path: `/s/${other}` }, "another session");
+
+        // Back to it: kept, it shows at once. Its connection loses the word that the session is missing, as one does
+        // when the tab leaves first (a reconnect sends the new hello and list before that word).
+        const shownAgain = await inPage<boolean>(`
+            const { navigate, store } = await import("/store.js");
+            const Source = window.EventSource;
+
+            window.__realSource = Source;
+            window.__lost = 0;
+            window.EventSource = class extends Source {
+                constructor(url) {
+                    super(url);
+                    this.addEventListener("missing", (event) => {
+                        window.__lost++;
+                        event.stopImmediatePropagation();
+                    });
+                }
+            };
+            navigate(${Number(theirs)});
+
+            return JSON.stringify(store.state.view.conversation?.id === ${Number(theirs)});
+        `);
+
+        assert.ok(shownAgain, "kept while it is shared");
+        await until(
+            async () =>
+                (await inPage<boolean>(
+                    `return JSON.stringify((await import("/store.js")).store.state.connection === "open")`,
+                )) === true,
+            "connected again",
+        );
+
+        // The owner stops sharing it: the tab hears its new rights and list, not that the session is missing. Wherever
+        // it goes then, nothing of the session is kept.
+        app.setAccess(owner(app), guest.user.id, { sessions: [String(other)] });
+        await until(
+            async () =>
+                (await inPage<boolean>(`
+                    const { store } = await import("/store.js");
+
+                    return JSON.stringify(window.__lost > 0 && !store.state.sessions.some((each) => each.id === ${Number(theirs)}));
+                `)) === true,
+            "the list without it",
+        );
+        const keptAfter = await inPage<boolean>(`
+            const { navigate, store } = await import("/store.js");
+
+            navigate(${Number(other)});
+            navigate(${Number(theirs)});
+
+            return JSON.stringify(store.state.view.entries.size > 0);
+        `);
+
+        assert.ok(!keptAfter, "not kept once it is no longer shared");
+    } finally {
+        await guests.closeAll({ final: true });
+        page = owners;
+        app.config.removeUser(guest.user.id);
+    }
+});
+
 test(
     "the transcript stays at the bottom as an answer streams, and as a row grows",
     real,
