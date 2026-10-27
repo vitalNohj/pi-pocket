@@ -1122,6 +1122,144 @@ test("a tab of protocol 5 gets a session's newest entries light first, and whole
     }
 });
 
+test("a tab of protocol 6 that kept a session gets only what came after, and the end of the order", async () => {
+    const { fingerprint } = (await import(
+        new URL("../web/fingerprint.js", import.meta.url).href
+    )) as {
+        fingerprint: (text: string) => string;
+    };
+    const id = await newSession();
+
+    for (let n = 1; n <= 3; n++) {
+        await say(id, `message ${n}`);
+    }
+
+    type Entry = { id: number; kind: string; text?: string; partial?: boolean };
+    type View = { full: boolean; entries: Entry[]; order?: number[]; orderFrom?: number };
+    const views = (of: ReturnType<typeof fakeTab>) =>
+        of.events.filter((each) => each.event === "view").map((each) => each.data as View);
+
+    const settled = async (of: ReturnType<typeof fakeTab>, count: number) => {
+        await until(() => views(of).length >= count, "the views");
+        // The light first view's whole entries come right after it: let them.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+
+    // A tab opens the session as any does, and keeps what it got.
+    const first = fakeTab(id, owner(), 6);
+
+    await app.attach(first.client);
+    await settled(first, 1);
+    app.detach(first.client);
+    const order = views(first)[0]!.order!;
+    const kept = (count: number, from = 0, started = app.startedAt) => ({
+        from,
+        count,
+        key: fingerprint(order.slice(0, count).join(",")),
+        started,
+    });
+
+    // Nothing new since: the view names where the order goes on, and brings nothing.
+    const again = fakeTab(id, owner(), 6);
+
+    again.client.have = kept(order.length);
+    await app.attach(again.client);
+    await settled(again, 1);
+    app.detach(again.client);
+    const [none, ...rest] = views(again);
+
+    assert.deepEqual(
+        {
+            full: none!.full,
+            entries: none!.entries.length,
+            order: none!.order,
+            orderFrom: none!.orderFrom,
+        },
+        { full: true, entries: 0, order: [], orderFrom: order.length },
+    );
+    assert.ok(rest.every((each) => each.entries.length === 0 && each.order === undefined));
+
+    // Two messages later: only their entries, and their part of the order.
+    await say(id, "message 4");
+    const later = fakeTab(id, owner(), 6);
+
+    later.client.have = kept(order.length);
+    await app.attach(later.client);
+    await settled(later, 1);
+    const view = views(later)[0]!;
+
+    assert.equal(view.orderFrom, order.length);
+    assert.deepEqual(
+        view.entries.map((entry) => entry.id),
+        view.order,
+    );
+    assert.deepEqual(
+        view.entries.map((entry) => entry.text ?? entry.kind),
+        ["message 4", "assistant"],
+    );
+
+    // An update of a tab that has the order brings only the end of it, too.
+    await say(id, "message 5");
+    await until(
+        () => views(later).some((each) => each.entries.some((entry) => entry.text === "message 5")),
+        "the update with the message",
+    );
+    const update = views(later).find((each) =>
+        each.entries.some((entry) => entry.text === "message 5"),
+    )!;
+
+    assert.equal(update.full, false);
+    assert.equal(update.orderFrom, order.length + 2);
+    assert.ok(update.order!.length <= 2, `${update.order!.length} ids`);
+    app.detach(later.client);
+
+    // What does not fit gets the whole first view, as a tab that kept nothing: a key that is not the order's, a count
+    // past its end, an older server's entries, or older code.
+    for (const [what, have, protocol] of [
+        ["another order", { ...kept(order.length), key: "abc" }, 6],
+        ["more than there is", { ...kept(order.length), count: order.length + 99 }, 6],
+        ["an older server's", kept(order.length, 0, app.startedAt - 1), 6],
+        ["older code", kept(order.length), 5],
+    ] as const) {
+        const tab = fakeTab(id, owner(), protocol);
+
+        tab.client.have = have;
+        await app.attach(tab.client);
+        await settled(tab, 1);
+        app.detach(tab.client);
+        const whole = views(tab)[0]!;
+
+        assert.equal(whole.orderFrom, undefined, what);
+        assert.equal(whole.order!.length, order.length + 4, what);
+        assert.ok(whole.entries.length > 4, what);
+    }
+
+    // Entries the tab kept only from a point on (it never loaded the earliest): the newest rows' entries it lacks come,
+    // with what is new, and none it has.
+    const part = fakeTab(id, owner(), 6);
+
+    part.client.have = kept(order.length, 4);
+    await app.attach(part.client);
+    await settled(part, 1);
+    app.detach(part.client);
+    const opened = views(part)[0]!;
+    const sent = new Set(views(part).flatMap((each) => each.entries.map((entry) => entry.id)));
+
+    assert.equal(opened.orderFrom, order.length);
+    assert.ok(
+        order.slice(0, 4).every((entry) => sent.has(entry)),
+        "the ones it lacks",
+    );
+    assert.ok(
+        order.slice(4).every((entry) => !sent.has(entry)),
+        "none it has",
+    );
+    assert.ok(
+        opened.order!.every((entry) => sent.has(entry)),
+        "what is new",
+    );
+});
+
 test("a tab does not get the session list again when it did not change", async () => {
     const id = await newSession();
     const tab = fakeTab(id, owner());

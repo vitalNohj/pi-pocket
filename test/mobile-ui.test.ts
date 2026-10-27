@@ -925,6 +925,96 @@ test("back to the list slides it in whole, and its rows do not rise in again", r
 });
 
 test(
+    "a session opened before shows again at once, and the server sends only what is new",
+    real,
+    async () => {
+        const other = await newSession(app);
+
+        await say(app, first, "kept here");
+        await fresh();
+        await tap(row(first));
+        await reach({ path: `/s/${first}` }, "the session");
+        const shownFirst = async () =>
+            (await inPage<boolean>(
+                `return JSON.stringify((document.querySelector('[data-part="transcript"]')?.textContent ?? "").includes("kept here"))`,
+            )) === true;
+
+        await until(shownFirst, "its message");
+        // Whole, as a tab keeps it: its light entries came whole after the first view.
+        await until(
+            async () =>
+                (await inPage<boolean>(`
+                const { store } = await import("/store.js");
+
+                return JSON.stringify(store.state.connection === "open" && ![...store.state.view.entries.values()].some((each) => each.partial));
+            `)) === true,
+            "its whole entries",
+        );
+        await goTo(other);
+        await reach({ path: `/s/${other}` }, "another session");
+        await say(app, first, "new while away");
+
+        // Back: the kept session shows in the same frame as the switch, before the server is asked; then what came while
+        // away arrives, and nothing else of the session.
+        const back = await inPage<{
+            drawn: boolean;
+            asked: string;
+            views: { order: number; orderFrom: number | null; entries: string[] }[];
+        }>(`
+        const { navigate, store } = await import("/store.js");
+        const Source = window.EventSource;
+        const views = [];
+        let asked = "";
+
+        window.EventSource = class extends Source {
+            constructor(url) {
+                super(url);
+                asked = String(url);
+                this.addEventListener("view", (event) => {
+                    const data = JSON.parse(event.data);
+
+                    views.push({ order: data.order?.length ?? -1, orderFrom: data.orderFrom ?? null,
+                        entries: data.entries.map((each) => each.text ?? each.kind) });
+                });
+            }
+        };
+
+        try {
+            navigate(${Number(first)});
+            // What the switch put in the store, before any event came: the kept session, or none yet.
+            const drawn = views.length === 0 && store.state.view.conversation?.id === ${Number(first)} &&
+                [...store.state.view.entries.values()].some((each) => each.text === "kept here");
+            const until = Date.now() + 5000;
+
+            while (!views.some((each) => each.entries.includes("new while away")) && Date.now() < until) {
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+
+            return JSON.stringify({ drawn, asked, views });
+        } finally {
+            window.EventSource = Source;
+        }
+    `);
+
+        assert.ok(back.drawn, "the kept session shows before the server answers");
+        assert.match(back.asked, /&have=\d+\.\d+\.[0-9a-z]+\.\d+/, "the tab says what it kept");
+        assert.ok(back.views[0]!.orderFrom! > 0, "the view goes on from what the tab kept");
+        assert.deepEqual(
+            back.views.flatMap((each) => each.entries),
+            ["new while away", "assistant"],
+            "only what came while away",
+        );
+        await until(
+            async () =>
+                (await inPage<boolean>(
+                    `return JSON.stringify((document.querySelector('[data-part="transcript"]')?.textContent ?? "").includes("new while away"))`,
+                )) === true,
+            "the new message, shown",
+        );
+    },
+);
+
+test(
     "the transcript stays at the bottom as an answer streams, and as a row grows",
     real,
     async () => {
