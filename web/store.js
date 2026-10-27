@@ -3,6 +3,7 @@ import { onRoute, pushRoute } from "./back.js";
 import { sessionForest, unfolded } from "./session-tree.js";
 import { liveMessage } from "./live.js";
 import { fitClock, moment } from "./clock.js";
+import { fingerprint } from "./fingerprint.js";
 
 /** A random id. crypto.randomUUID only exists on https and localhost pages; plain-http network addresses lack it. */
 export function uid() {
@@ -645,12 +646,152 @@ export function signOut() {
 
 let source;
 
+// ─── Sessions this tab keeps, to show again at once ─────────────────────────────────────────────────────────────────
+
+/** Sessions kept, newest last: a tab that goes back to one shows it at once, and the server sends only what is new. */
+const KEPT_SESSIONS = 10;
+/** Entries kept across them, so a few long sessions do not hold more than a few MB. */
+const KEPT_ENTRIES = 6000;
+
+/** The views of sessions this tab left, by conversation id, least recently shown first. */
+const keptViews = new Map();
+
+/**
+ * Keep the view of the session this tab leaves, to show it again at once (`keptView`). Only one the server that runs now
+ * sent whole: a light entry (`partial`) would have to come again, and one from before a restart may differ from what
+ * this server's code sends.
+ */
+function keepView(view) {
+    const id = view.conversation?.id;
+
+    if (
+        id === undefined ||
+        view.started == null ||
+        view.started !== store.state.server?.startedAt
+    ) {
+        return;
+    }
+
+    keptViews.delete(id);
+
+    if (
+        loadedFrom(view) >= view.order.length ||
+        [...view.entries.values()].some((entry) => entry.partial)
+    ) {
+        return;
+    }
+
+    // One whose earlier messages were all loaded (Find does) keeps its newest ones, as it opens with: a long session
+    // stays within what is kept.
+    keptViews.set(id, newestOf(view));
+    let total = 0;
+
+    for (const each of keptViews.values()) {
+        total += each.entries.size;
+    }
+
+    for (const [oldest, each] of keptViews) {
+        if (keptViews.size <= KEPT_SESSIONS && total <= KEPT_ENTRIES) {
+            break;
+        }
+
+        keptViews.delete(oldest);
+        total -= each.entries.size;
+    }
+}
+
+/** Entries a view keeps when it is left: at most this many of the newest, which is still more than it opens with. */
+const KEPT_PER_SESSION = 1500;
+
+/** The view with only its newest entries (`KEPT_PER_SESSION`), or as it is when it has no more. */
+function newestOf(view) {
+    if (view.entries.size <= KEPT_PER_SESSION) {
+        return view;
+    }
+
+    const entries = new Map();
+
+    for (const id of view.order.slice(-KEPT_PER_SESSION)) {
+        const entry = view.entries.get(id);
+
+        if (entry !== undefined) {
+            entries.set(id, entry);
+        }
+    }
+
+    return { ...view, entries };
+}
+
+/** The view this tab kept of a session, taken out to show (it is kept again when the tab leaves), or an empty one. */
+function keptView(id) {
+    const view = keptViews.get(id);
+
+    keptViews.delete(id);
+
+    return view ?? emptyView();
+}
+
+/**
+ * What this tab has of the session it shows, for the server (`have` in `/api/events`): the order's ids up to the last
+ * one it has, as a fingerprint, and from where on it has their entries. The server checks it (`Room.push`), and then
+ * leaves those out of the view it sends. Null with nothing to name.
+ */
+function haveOf(view) {
+    // A light entry (`partial`) is not had: the server sends it whole after it, and would not if it were named.
+    if (
+        view.conversation?.id !== store.state.conversationId ||
+        view.started == null ||
+        [...view.entries.values()].some((entry) => entry.partial)
+    ) {
+        return null;
+    }
+
+    const from = loadedFrom(view);
+    const count = view.order.length;
+
+    return from >= count
+        ? null
+        : `${from}.${count}.${fingerprint(view.order.join(","))}.${view.started}`;
+}
+
+/**
+ * Whether a view that goes on from `orderFrom` goes on from what this tab has: the same session, with that much order.
+ * A full one goes on from what this tab kept (`have`); an update from the order the tab has, all of it.
+ */
+function goesOn(view, data) {
+    return (
+        view.conversation?.id === data.conversation.id &&
+        (data.full ? view.order.length >= data.orderFrom : view.order.length === data.orderFrom)
+    );
+}
+
 function applyView(data) {
+    // A view that goes on from what this tab kept must go on from what it has. If it does not, which should not happen,
+    // the session opens again from the start.
+    if (data.orderFrom !== undefined && !goesOn(store.state.view, data)) {
+        keptViews.delete(data.conversation.id);
+        store.set({ view: emptyView() });
+        connect();
+
+        return;
+    }
+
     store.set((state) => ({ view: mergeView(state.view, data), missing: null }));
 }
 
-/** PiP's conversation, for its panel (`pip.js`): the same view, from a view of its own beside the session's. */
+/**
+ * PiP's conversation, for its panel (`pip.js`): the same view, from a view of its own beside the session's. It names
+ * nothing kept, so only an update goes on from its order; one that does not fit opens the panel's view again.
+ */
 function applyPipView(data) {
+    // A new connection opens the panel's view again (`pip.js`), with all of its order.
+    if (data.orderFrom !== undefined && !goesOn(store.state.pipView, data)) {
+        store.set({ pipView: emptyView() });
+        connect();
+
+        return;
+    }
+
     store.set((state) => ({ pipView: mergeView(state.pipView, data) }));
 }
 
@@ -661,17 +802,26 @@ function applyPipView(data) {
 function mergeView(current, data) {
     const same = current.conversation?.id === data.conversation.id;
     const base = data.full || !same ? emptyView() : current;
+    const started = store.state.server?.startedAt;
 
+    // Nothing came after what this tab kept (`have`): the same order and Map, as for an update that brings none.
+    const nothingNew =
+        data.full &&
+        same &&
+        data.orderFrom === current.order.length &&
+        data.order.length === 0 &&
+        data.entries.length === 0;
     // Most updates while Pi writes bring no entries: the same Map then, so what is built from it (the transcript's rows)
     // is not built again for each of them.
-    const unchanged = !data.full && same && data.entries.length === 0 && !data.order;
+    const unchanged =
+        nothingNew || (!data.full && same && data.entries.length === 0 && !data.order);
     const entries = unchanged
         ? current.entries
         : new Map(data.full && same ? current.entries : base.entries);
 
     // A light one held from before (the tab left before the whole one came) goes: past the newest rows, the server
     // counts it as sent, so only `loadEarlier` brings it whole, and it asks for what is missing.
-    if (data.full && same) {
+    if (data.full && same && !unchanged) {
         for (const [id, entry] of entries) {
             if (entry.partial) {
                 entries.delete(id);
@@ -691,10 +841,17 @@ function mergeView(current, data) {
         entries.set(entry.id, entry);
     }
 
-    const order = data.order ?? base.order;
+    // Only the end of the order comes after what this tab kept (`have`): it goes on from `orderFrom`.
+    const order = nothingNew
+        ? current.order
+        : data.order === undefined
+          ? base.order
+          : data.orderFrom === undefined
+            ? data.order
+            : current.order.slice(0, data.orderFrom).concat(data.order);
 
-    if (data.order) {
-        const keep = new Set(data.order);
+    if (data.order && !nothingNew) {
+        const keep = new Set(order);
 
         for (const id of entries.keys()) {
             if (!keep.has(id)) {
@@ -708,6 +865,14 @@ function mergeView(current, data) {
         conversation: data.conversation,
         entries,
         order,
+        // The server that made these entries (an entry is as its code projects it), for what this tab tells the next
+        // one it has (`have`). A full view from another, after a restart, over entries the tab kept, mixes the two:
+        // null, and such a view is neither kept nor named.
+        started: !data.full
+            ? base.started
+            : !same || current.started === started || data.orderFrom !== undefined
+              ? started
+              : null,
         live: mergeLive(base.live, data.live),
         agent: data.agent,
         stats: data.stats,
@@ -874,6 +1039,16 @@ const handlers = {
         const asked = helloAsked;
 
         helloAsked = undefined;
+
+        // A server that started again may run other code, which sends entries otherwise; and this person's rights may have
+        // changed (a role, the sessions shared with them), or another person signed in: what this tab kept goes.
+        if (
+            data.server?.startedAt !== state.server?.startedAt ||
+            (state.me && !sameJson(state.me, data.user))
+        ) {
+            keptViews.clear();
+        }
+
         setChanged({
             me: kept(state.me, data.user),
             users: keptEach(state.users, data.users),
@@ -890,6 +1065,17 @@ const handlers = {
     sessions: (list) => {
         const state = store.state;
         const sessions = keptEach(state.sessions, list);
+
+        // A session gone from the list (deleted, or no longer shared with this person): nothing of it stays kept.
+        if (sessions !== state.sessions && keptViews.size > 0) {
+            const listed = new Set(sessions.map((session) => session.id));
+
+            for (const each of state.sessions) {
+                if (!listed.has(each.id)) {
+                    keptViews.delete(each.id);
+                }
+            }
+        }
 
         setChanged({
             sessions,
@@ -924,7 +1110,14 @@ const handlers = {
     users: (users) => setChanged({ users: keptEach(store.state.users, users) }),
     // Pi's lessons changed somewhere: a Memory sheet or menu that shows them fetches them again (`sheets/memory.js`).
     memory: () => store.set((state) => ({ memoryRev: (state.memoryRev ?? 0) + 1 })),
-    missing: (data) => store.set({ missing: data.message }),
+    // Not this person's to see (any more), or gone: nothing of it stays in this tab, kept or shown.
+    missing: (data) => {
+        keptViews.delete(data.conversationId);
+        store.set((state) => ({
+            missing: data.message,
+            ...(state.view.conversation?.id === data.conversationId ? { view: emptyView() } : {}),
+        }));
+    },
     // An event an extension module sent its browser module (`extension-ui.js`).
     ext: (data) => {
         for (const listener of extensionListeners) {
@@ -962,10 +1155,11 @@ const handlers = {
  * What this code understands of the server's updates, sent with each connection. 2: it keeps the queue when an update
  * leaves it out. 3: it takes the message being written as what changed (`mergeLive`). 4: a full view brings only the
  * entries of the newest rows, and it loads earlier ones as it shows them (`loadEarlier`). 5: those entries come light
- * (`partial`) at first, whole in the update after. The server sends a tab below 3 the whole message with each update,
- * and one whose code names none (as a tab asleep through an update keeps) the queue too.
+ * (`partial`) at first, whole in the update after. 6: it names what it kept of the session it opens (`have`), and takes a
+ * view that leaves that out (`orderFrom`). The server sends a tab below 3 the whole message with each update, and one
+ * whose code names none (as a tab asleep through an update keeps) the queue too.
  */
-const PROTOCOL = 5;
+const PROTOCOL = 6;
 const TRANSPORT_KEY = "pocket.transport";
 const local = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
 /** After an event stream stalls on this address, poll for a day, then try the stream again: one slow start is not forever. */
@@ -993,7 +1187,8 @@ export function connect() {
     source?.close();
     store.set({ connection: "connecting" });
     const id = store.state.conversationId;
-    const query = `tab=${encodeURIComponent(TAB)}&p=${PROTOCOL}${id === null ? "" : `&c=${id}`}`;
+    const have = id === null ? null : haveOf(store.state.view);
+    const query = `tab=${encodeURIComponent(TAB)}&p=${PROTOCOL}${id === null ? "" : `&c=${id}`}${have === null ? "" : `&have=${have}`}`;
 
     source = pollHere() && !local ? pollEvents(query) : streamEvents(query);
 }
@@ -1276,9 +1471,10 @@ export function navigate(conversationId, { replace = false, sheet = null } = {})
         return;
     }
 
+    keepView(store.state.view);
     store.set((state) => ({
         conversationId,
-        view: emptyView(),
+        view: keptView(conversationId),
         ...peopleFor(conversationId),
         browser: null,
         history: null,
@@ -1296,9 +1492,10 @@ onRoute(() => {
 
     if (id !== store.state.conversationId) {
         opened(id);
+        keepView(store.state.view);
         store.set({
             conversationId: id,
-            view: emptyView(),
+            view: keptView(id),
             ...peopleFor(id),
             browser: null,
             history: null,
