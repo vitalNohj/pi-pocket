@@ -282,8 +282,8 @@ function sendScreen() {
     );
 }
 
-// Each connection to the server starts without tiles (a session switch reconnects, as does a restart): say again
-// which are on screen.
+// Each connection to the server starts without tiles (a reconnect or a restart; a session switch keeps the connection):
+// say again which are on screen.
 store.subscribe((state) => {
     if (state.streamId !== lastStream) {
         lastStream = state.streamId;

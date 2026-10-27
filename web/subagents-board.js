@@ -41,7 +41,8 @@ const labelOf = (agent) =>
 const PHONE = matchMedia("(max-width: 699px)");
 
 // While the board shows, this tab gets every subagent with each session list: the server is told which connection
-// wants them, again on each new one (a session switch reconnects, as does a restart), and when the board closes.
+// wants them, again on each new one (a reconnect or a restart; a session switch keeps the connection), and when the
+// board closes.
 let told = null;
 /** Numbers each request, so the server drops one that arrives after a newer one. */
 let seq = 0;

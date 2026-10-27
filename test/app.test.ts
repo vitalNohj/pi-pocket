@@ -1260,6 +1260,185 @@ test("a tab of protocol 6 that kept a session gets only what came after, and the
     );
 });
 
+test("a tab switches session on the connection it has: the new one comes, and nothing else again", async () => {
+    const { fingerprint } = (await import(
+        new URL("../web/fingerprint.js", import.meta.url).href
+    )) as {
+        fingerprint: (text: string) => string;
+    };
+    const first = await newSession();
+    const second = await newSession();
+
+    await say(first, "in the first");
+    await say(second, "in the second");
+
+    type View = {
+        full: boolean;
+        conversation: { id: number };
+        entries: { id: number; text?: string; kind: string }[];
+        order?: number[];
+        orderFrom?: number;
+    };
+    const tab = fakeTab(first, owner(), 6);
+    const watcher = fakeTab(first, owner(), 6);
+    const views = (of: ReturnType<typeof fakeTab>, id: ConversationId) =>
+        of.events
+            .filter((each) => each.event === "view")
+            .map((each) => each.data as View)
+            .filter((each) => each.conversation.id === Number(id));
+    const names = (from: number) => tab.events.slice(from).map((each) => each.event);
+
+    await app.attach(watcher.client);
+    await app.attach(tab.client);
+    await until(() => views(tab, first).length > 0, "the first session");
+    await until(
+        () =>
+            ((watcher.last("presence")?.people as { tabs?: number }[] | undefined) ?? []).some(
+                (each) => each.tabs === 2,
+            ),
+        "both tabs there",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const watched = watcher.events.length;
+    const before = tab.events.length;
+
+    // To the second: `switched` first, then its view, chat, notes, and browser, as a new connection gets them; no hello,
+    // list, or PiP state again.
+    assert.equal(app.switchTo(owner(), tab.client.connection, second, undefined, 1), true);
+    await until(() => views(tab, second).length > 0, "the second session");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const after = names(before);
+
+    assert.equal(after[0], "switched");
+    assert.deepEqual(tab.events[before]!.data, { seq: 1, conversationId: Number(second) });
+
+    for (const each of ["view", "chat", "notes", "browser"]) {
+        assert.ok(after.includes(each), each);
+    }
+
+    for (const each of ["hello", "users", "pip"]) {
+        assert.ok(!after.includes(each), `no ${each}`);
+    }
+
+    assert.ok(
+        views(tab, second)[0]!.entries.some((entry) => entry.text === "in the second"),
+        "the second session's entries",
+    );
+    // The first session's room no longer has it, and the person stayed: the other tab sees one tab there, and no change
+    // in who is online.
+    await until(
+        () =>
+            ((watcher.last("presence")?.people as { tabs?: number }[] | undefined) ?? []).some(
+                (each) => each.tabs === 1,
+            ),
+        "one tab left there",
+    );
+    assert.ok(
+        !watcher.events.slice(watched).some((each) => each.event === "users"),
+        "nobody left the app",
+    );
+
+    // Updates of the session it left no longer come; those of the one it shows do.
+    const shown = tab.events.length;
+
+    await say(first, "while away");
+    await say(second, "while here");
+    await until(
+        () =>
+            views(tab, second).some((each) =>
+                each.entries.some((entry) => entry.text === "while here"),
+            ),
+        "the update of the session shown",
+    );
+    assert.ok(
+        !tab.events
+            .slice(shown)
+            .some(
+                (each) =>
+                    each.event === "view" && (each.data as View).conversation.id === Number(first),
+            ),
+        "none of the session left",
+    );
+
+    // A switch that arrives after a newer one is dropped.
+    const late = tab.events.length;
+
+    app.switchTo(owner(), tab.client.connection, undefined, undefined, 3);
+    app.switchTo(owner(), tab.client.connection, first, undefined, 2);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(tab.client.conversationId, undefined, "the list, as the newer one asked");
+    assert.deepEqual(
+        tab.events
+            .slice(late)
+            .filter((each) => each.event === "switched")
+            .map((each) => each.data.seq),
+        [3],
+    );
+    assert.ok(!tab.events.slice(late).some((each) => each.event === "view"), "no view on the list");
+
+    // Back to the first with what it kept: only what came after it.
+    const order = views(tab, first)[0]!.order!;
+
+    app.switchTo(
+        owner(),
+        tab.client.connection,
+        first,
+        {
+            from: 0,
+            count: order.length,
+            key: fingerprint(order.join(",")),
+            started: app.startedAt,
+        },
+        4,
+    );
+    await until(
+        () => views(tab, first).some((each) => each.orderFrom === order.length),
+        "the first again, going on from what it kept",
+    );
+    const goesOn = views(tab, first).find((each) => each.orderFrom === order.length)!;
+
+    assert.deepEqual(
+        goesOn.entries.map((entry) => entry.text ?? entry.kind),
+        ["while away", "assistant"],
+    );
+
+    // No such connection (it closed, or the server started again): the tab connects again instead.
+    assert.equal(app.switchTo(owner(), "no-such-connection", first, undefined, 5), false);
+
+    // Not this person's: the switch goes through, and the session is missing.
+    const guest = app.config.addUser("Rex", "guest", [String(first)]);
+    const theirs = fakeTab(first, guest.user, 6);
+
+    try {
+        await app.attach(theirs.client);
+        await until(
+            () => theirs.events.some((each) => each.event === "view"),
+            "the guest's session",
+        );
+        assert.equal(
+            app.switchTo(guest.user, theirs.client.connection, second, undefined, 1),
+            true,
+        );
+        await until(() => theirs.last("missing") !== undefined, "missing");
+        assert.equal(theirs.last("missing")!.conversationId, Number(second));
+        assert.ok(
+            !theirs.events.some(
+                (each) =>
+                    each.event === "view" && (each.data as View).conversation.id === Number(second),
+            ),
+            "nothing of it",
+        );
+        // Another person's connection is not theirs to switch.
+        assert.equal(app.switchTo(owner(), theirs.client.connection, second, undefined, 2), false);
+    } finally {
+        app.detach(theirs.client);
+        app.config.removeUser(guest.user.id);
+    }
+
+    app.detach(tab.client);
+    app.detach(watcher.client);
+});
+
 test("a tab does not get the session list again when it did not change", async () => {
     const id = await newSession();
     const tab = fakeTab(id, owner());
