@@ -535,6 +535,14 @@ export class PocketApp {
             },
             // Everyone's tabs hear the new list in `hello`: commands are for guests too, not by a browser module's access.
             commandsChanged: () => this.#websChanged("all"),
+            presentationsChanged: () => {
+                for (const pending of this.#rooms.values()) {
+                    void pending.then(
+                        (room) => room.reproject(),
+                        () => {},
+                    );
+                }
+            },
             log: (line) => this.#log(line),
             // Something about a module only the owner can mend: their tabs, as what it says can name the server's folders.
             warn: (message) => this.ownerNotice("warning", message),

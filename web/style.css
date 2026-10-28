@@ -1681,6 +1681,180 @@ kbd {
     text-wrap: pretty;
 }
 
+/* An input a module presents (`web.presentEntry`), folded: a card of one line, as Pi's groups are, that opens to the
+ * message. It starts a turn like a person's message, and is a card like theirs, but quieter: nobody typed it. */
+.presented-input {
+    min-width: 0;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-window);
+    background: var(--card);
+    overflow: hidden;
+}
+
+.presented-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    /* 40px, 35px, and 30px; a thumb's 34px at least on a touch screen. */
+    min-height: calc(22px + 18px * var(--space-y));
+    padding: 0 calc(14px * var(--space-x));
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--muted);
+    transition:
+        color var(--t-hover) var(--ease-out),
+        background-color var(--t-hover) var(--ease-out);
+}
+
+/* The line that opens it, and beside it the button for its message sheet (Show, Fold, Hide; Copy). */
+.presented-bar {
+    display: flex;
+    align-items: stretch;
+}
+
+.presented-bar > .presented-head {
+    flex: 1;
+    min-width: 0;
+}
+
+.presented-more {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: calc(22px + 18px * var(--space-y));
+    color: var(--faint);
+    transition:
+        color var(--t-hover) var(--ease-out),
+        background-color var(--t-hover) var(--ease-out);
+}
+
+@media (pointer: coarse) {
+    .presented-more {
+        width: max(34px, calc(22px + 18px * var(--space-y)));
+    }
+}
+
+.presented-more:focus-visible {
+    outline-offset: -2px;
+}
+
+.presented-input.open > .presented-bar {
+    border-bottom: 1px solid var(--hair);
+}
+
+/* Its chevron turns as other chevrons do (`.open > button > .chev`), one level further in. */
+.presented-input.open > .presented-bar > .presented-head > .chev {
+    transform: rotate(90deg);
+}
+
+.presented-body.tappable {
+    cursor: pointer;
+}
+
+@media (hover: hover) {
+    .presented-head:hover,
+    .presented-more:hover {
+        color: var(--text);
+        background: var(--hover);
+    }
+}
+
+/* Inside a card that cuts off what is past it. */
+.presented-head:focus-visible {
+    outline-offset: -2px;
+}
+
+/* The label, then the summary: one line that gives way at its end. */
+.presented-line {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.presented-label {
+    color: var(--text);
+    font-weight: 600;
+}
+
+/* In a presented input's message sheet: how every input of its kind shows in this browser, between the message and
+ * what can be done with it. */
+.presented-choice {
+    margin: 0 0 12px;
+}
+
+/* In the queue too: the label, then its summary, quieter. */
+.queued-text .presented-summary {
+    color: var(--muted);
+}
+
+.presented-time {
+    flex: none;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--faint);
+}
+
+/* Opened: the message, as a person's message shows its words. */
+.presented-body {
+    padding: calc(10px * var(--space-y)) calc(16px * var(--space-x)) calc(12px * var(--space-y))
+        calc(38px * var(--space-x));
+    color: var(--text);
+}
+
+.presented-body.unrolling {
+    animation: unroll var(--t-in) var(--ease-out);
+}
+
+@media (max-width: 699px) {
+    .presented-input {
+        border-radius: calc(var(--r-window) + 2px);
+    }
+
+    .presented-body {
+        padding-left: calc(14px * var(--space-x));
+    }
+}
+
+/* Shown open, a presented input is a message with its label beside who sent it. */
+.presented-tag {
+    padding: 0 7px;
+    border-radius: var(--r-pill);
+    background: var(--hover);
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 18px;
+}
+
+.transcript > .presented-hidden,
+.history > .presented-hidden {
+    height: 0;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+}
+
+.transcript > .presented-hidden:not(:first-child) {
+    margin-top: calc(-16px * var(--space-y));
+}
+
+.history > .presented-hidden:not(:first-child) {
+    margin-top: -16px;
+}
+
+.transcript > .presented-hidden:first-child:not(:has(+ .presented-hidden)) {
+    margin-bottom: calc(-16px * var(--space-y));
+}
+
+.history > .presented-hidden:first-child:not(:has(+ .presented-hidden)) {
+    margin-bottom: -16px;
+}
+
 /* What a PR watch or a webhook fenced for Pi (a check's log, a post): a block of its own, scrolling past a few lines. */
 .fenced-data {
     margin: 0.4rem 0;
@@ -10461,6 +10635,15 @@ textarea.notes {
     font-weight: 600;
 }
 
+.peek-line.presented .peek-text {
+    color: var(--muted);
+}
+
+.peek-line.presented b {
+    color: var(--body);
+    font-weight: 600;
+}
+
 .peek-line.cmd .peek-text {
     font: 12px / 1.5 var(--mono);
 }
@@ -13641,7 +13824,8 @@ textarea.notes {
     .step-head {
         min-height: 36px;
     }
-    .activity-head {
+    .activity-head,
+    .presented-head {
         min-height: max(34px, calc(22px + 18px * var(--space-y)));
     }
     .browser-servers .chip,
@@ -17294,7 +17478,7 @@ pre.gallery-code {
 }
 
 /* Pi's answer, what it did, and reports: quieter, a short rise. */
-:root[data-motion="fluid"] :is(.reply, .activity, .report).enter {
+:root[data-motion="fluid"] :is(.reply, .activity, .report, .presented-input).enter {
     animation: fluid-rise var(--t-glide) var(--ease-glide) backwards;
 }
 
@@ -17319,7 +17503,8 @@ pre.gallery-code {
 }
 
 /* A group of steps opening: it unrolls on the glide, and its first steps drop in one after another. */
-:root[data-motion="fluid"] :is(.timeline, .activity-thought, .step-body).unrolling {
+:root[data-motion="fluid"]
+    :is(.timeline, .activity-thought, .step-body, .presented-body).unrolling {
     animation: unroll var(--t-glide) var(--ease-glide);
 }
 

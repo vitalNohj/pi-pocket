@@ -457,6 +457,14 @@ function PeekLine({ line }) {
                 <span class="peek-mark">${">_"}</span>
                 <span class="peek-text">${line.command}${" "}<${Status} status=${line.status} /></span>
             </div>`;
+        case "presented":
+            // An input an extension presents: its label and summary, as the transcript's folded line.
+            return html`<div class="peek-line presented">
+                <span class="peek-mark">›</span>
+                <span class="peek-text">
+                    <b>${line.label}</b>${line.summary && html` · ${line.summary}`}
+                </span>
+            </div>`;
         case "note":
             return html`<div class="peek-line faint">
                 <span class="peek-mark">⑂</span>

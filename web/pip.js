@@ -1099,7 +1099,13 @@ function PipPanel({ leaving, scrim }) {
             }
             ${pending.map(
                 (item) => html`<div class="pip-you pending" key=${`pending-${item.id}`}>
-                    <div>${(item.text ?? "").replace(FROM, "")}</div>
+                    <div>
+                        ${
+                            typeof item.label === "string" && item.label !== ""
+                                ? `▸ ${item.label}${item.summary ? `: ${item.summary}` : ""}`
+                                : (item.text ?? "").replace(FROM, "")
+                        }
+                    </div>
                     <div class="pip-pending-line">
                         <span>${pendingWhen(item, busy)}</span>
                         <button

@@ -1,8 +1,8 @@
 # web
 
-`web` is the second argument of a module's default export. With it, a module adds to the app what a tool cannot: routes on the server, a browser module, and commands for the message box. [Adding to the app](../app.md) tells you how the parts work together.
+`web` is the second argument of a module's default export. With it, a module adds to the app what a tool cannot: routes on the server, a browser module, commands for the message box, and how its own inputs show. [Adding to the app](../app.md) tells you how the parts work together.
 
-Register routes, the browser module, and commands while the module loads. After that, these calls throw. What you register goes when this version of the module goes: an edit replaces it, or the owner turns the module off.
+Register routes, the browser module, commands, and presentations while the module loads. After that, these calls throw. What you register goes when this version of the module goes: an edit replaces it, or the owner turns the module off.
 
 The types are `Web` and the types that it uses, in [types/pocket.d.ts](../../../types/pocket.d.ts).
 
@@ -93,6 +93,26 @@ Adds the command `/name` to the message box, for the people who can run it. The 
 - [Names](names.md#commands) gives the rules for `name`.
 - [Command context](command-context.md) gives the fields of `command` and what its handler gets and returns.
 - [Slash commands](../commands.md) tells you who can run a command, how a run is kept, and how a person stops it.
+
+### `presentEntry`
+
+```ts
+presentEntry(spec: PresentEntry): void;
+```
+
+Since 0.27.0 · Experimental
+
+Says how an input this module sends shows in the transcript, while the module is on. The model still reads the message in full. Nothing registered here is stored.
+
+- `kind` is `x.<module>.<name>`: this module's name, then a name of letters, digits, `_` and `-`.
+- `label` is one short line ([limits](limits.md#presentations)).
+- `userPrefix`, when set, matches a user message that starts with it only when nobody wrote that message. A message a person sent stays theirs. It is a few characters at least, and cannot start with `[`: the app's own inputs nobody typed (subagent reports, linked sessions, schedules) do ([limits](limits.md#presentations)).
+- A module registers a limited number of presentations ([limits](limits.md#presentations)). Two modules cannot share a kind, and no prefix can start another one.
+- Turning the module off, or a load that fails, drops the registration. Open transcripts show the change at once, as do rows whose author becomes known.
+- An input stored as the module's own kind cannot be sent again from its message sheet, and [`pocket.messages`](pocket.md#messages) leaves it out: it is not a person's message to Pi. A user message that `userPrefix` matched stays one.
+- Each browser chooses how these inputs show: a person picks Show, Fold, or Hide in a row's message sheet, and a browser module can read or set that choice for its own kinds with [`pocket.entryPresentation`](pocket.md#entrypresentation).
+
+The module puts a short `summary` string on the entry's data when it submits. The transcript shows `label`, or `label · summary` when that string is there. See [`PresentEntry`](#presententry).
 
 ### `publicPage`
 
@@ -400,6 +420,20 @@ type PublicPageHandler = (
 Since 0.22.0 · Experimental
 
 Draws a public page. A `POST` to a link with `uses` counts one before the handler runs. A handler that throws, or answers with a status of 400 or more, gives it back.
+
+### `PresentEntry`
+
+```ts
+interface PresentEntry {
+    kind: string;
+    label: string;
+    userPrefix?: string;
+}
+```
+
+Since 0.27.0 · Experimental
+
+What [`presentEntry`](#presententry) registers. `kind` is the stored kind. `label` is the line the transcript shows. `userPrefix` matches the start of a user message that nobody wrote.
 
 ### `PublicPageAnswer`
 

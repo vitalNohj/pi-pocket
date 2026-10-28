@@ -60,6 +60,7 @@ export const PAGES = {
         "HumanLinkedSession",
         "WebMethod",
         "WebAccess",
+        "PresentEntry",
         "PublicPageHandler",
         "PublicPageAnswer",
         "PublicPageRequest",

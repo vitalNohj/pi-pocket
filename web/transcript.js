@@ -3,6 +3,15 @@
 import { Component } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { activityOpen } from "./activity-fold.js";
+import {
+    noteRevealed,
+    onPresentationMode,
+    onRevealed,
+    presentationDraw,
+    presentationLine,
+    presentationMode,
+    wasRevealed,
+} from "./entry-presentation.js";
 import { initials, personColor } from "./avatar.js";
 import { routeSliding } from "./back.js";
 import { browserAvailable, setBrowserOpen } from "./browser.js";
@@ -160,6 +169,51 @@ function EntryImages({ entryId, count, label }) {
             />`,
         )}
     </div>`;
+}
+
+/**
+ * What a message carries besides its words: files sent along by name, attached pictures as thumbnails, other
+ * attachments as chips, and images in the message. `attachments` is the block `splitAttachments` cut off.
+ */
+function MessageExtras({ entry, attachments }) {
+    const files = attachments ? parseAttachments(attachments) : [];
+    const pictures = files.filter((file) => file.path && file.mime.startsWith("image/"));
+    const others = files.filter((file) => !pictures.includes(file));
+
+    return html`
+        ${
+            entry.files?.length > 0 &&
+            html`<div class="attachments">
+                ${entry.files.map(
+                    (path) =>
+                        html`<button
+                            class="chip"
+                            title=${`Sent with the message: ${path}`}
+                            onClick=${() => openFile(path)}
+                        >
+                            📄 ${path.split("/").pop()}
+                        </button>`,
+                )}
+            </div>`
+        }
+        ${
+            pictures.length > 0 &&
+            html`<div class="thumbs">
+                ${pictures.map((file) => html`<${Thumb} src=${fileUrl(file.path)} alt=${file.name} />`)}
+            </div>`
+        }
+        ${
+            others.length > 0 &&
+            html`<div class="attachments">
+                ${others.map((file) => html`<span class="chip">📎 ${file.name}</span>`)}
+            </div>`
+        }
+        ${
+            entry.images > 0 &&
+            !attachments &&
+            html`<${EntryImages} entryId=${entry.id} count=${entry.images} label="Image" />`
+        }
+    `;
 }
 
 function authorName(entryId, view, users) {
@@ -324,9 +378,161 @@ const clock = (at) => clockTime(new Date(fromServer(at)));
 
 /**
  * A person's message: a filled row with a prompt mark, the accent's for your own and the author's color for someone
- * else's, then who sent it and when, and what they wrote.
+ * else's, then who sent it and when, and what they wrote. An input a module presents is one line, or an anchor when
+ * this browser hides it, until it is opened.
  */
 function UserEntry({ entry, view, users }) {
+    if (entry.presentation !== undefined) {
+        return html`<${PresentedUser} entry=${entry} view=${view} users=${users} />`;
+    }
+
+    return html`<${UserMessage} entry=${entry} view=${view} users=${users} />`;
+}
+
+/**
+ * One presented input: the message, a card of one line (its label, summary, and time) that opens to the text as Pi's
+ * groups do, or an anchor Find can still reach.
+ */
+function PresentedUser({ entry, view, users }) {
+    const kind = entry.presentation.entryKind;
+    const [fresh] = useState(() => settledFor !== null && settledFor === view.conversation?.id);
+    const unrolled = useRef(-Infinity);
+    const [mode, setMode] = useState(() => presentationMode(kind));
+    const [opened, setOpened] = useState(() => wasRevealed(entry.id));
+    const [text, setText] = useState(entry.text);
+    const wantsText = mode === "open" || opened;
+
+    // A new copy of the entry (the module changed, or its full text came): show that one.
+    useEffect(() => setText(entry.text), [entry.text]);
+
+    useEffect(
+        () =>
+            onPresentationMode((changed, next) => {
+                if (changed !== kind) {
+                    return;
+                }
+
+                setMode(next);
+                setOpened(wasRevealed(entry.id));
+            }),
+        [kind, entry.id],
+    );
+    useEffect(
+        () =>
+            onRevealed((id) => {
+                if (id === entry.id) {
+                    setOpened(true);
+                }
+            }),
+        [entry.id],
+    );
+    useEffect(() => {
+        if (!wantsText || entry.presentation.clipped === undefined) {
+            return;
+        }
+
+        let gone = false;
+
+        attempt(async () => {
+            const full = await actions.fullEntry(entry.id);
+
+            if (!gone && full?.kind === "user") {
+                setText(full.text);
+            }
+        });
+
+        return () => {
+            gone = true;
+        };
+    }, [wantsText, entry.id, entry.text, entry.presentation.clipped]);
+
+    const draw = presentationDraw(mode, opened);
+    const { label, summary } = entry.presentation;
+
+    if (draw === "message") {
+        return html`<${UserMessage} entry=${{ ...entry, text }} view=${view} users=${users} />`;
+    }
+
+    if (draw === "anchor") {
+        return html`<span
+            class="entry-anchor presented-hidden"
+            id=${`entry-${entry.id}`}
+            aria-hidden="true"
+        ></span>`;
+    }
+
+    const openedText = draw === "text";
+    const bodyId = `presented-${entry.id}`;
+
+    return html`<div
+        class="user-row"
+        data-part="prompt-row"
+        data-entry-kind=${kind}
+        id=${`entry-${entry.id}`}
+    >
+        <div
+            class=${`presented-input ${openedText ? "open" : ""} ${fresh ? "enter" : ""}`}
+            data-part="presented-input"
+            data-state=${openedText ? "open" : undefined}
+        >
+            <div class="presented-bar">
+                <button
+                    class="presented-head"
+                    data-part="presented-head"
+                    type="button"
+                    aria-expanded=${openedText ? "true" : "false"}
+                    aria-controls=${openedText ? bodyId : undefined}
+                    title=${presentationLine(label, summary)}
+                    onClick=${() => {
+                        unrolled.current = openedText ? -Infinity : performance.now();
+                        setOpened(!openedText);
+                    }}
+                >
+                    <${Icon} name="chevron" size=${14} class="chev" part="presented-chevron" />
+                    <span class="presented-line">
+                        <span class="presented-label">${label}</span>
+                        ${summary && html`<span class="presented-summary"> · ${summary}</span>`}
+                    </span>
+                    ${entry.at && html`<span class="presented-time">${clock(entry.at)}</span>`}
+                </button>
+                <button
+                    class="presented-more"
+                    data-part="presented-more"
+                    type="button"
+                    aria-label=${`${label}: show, fold, or hide, copy, and more`}
+                    title="Show, fold, or hide inputs like this; copy, and more"
+                    onClick=${() => openSheet({ type: "message", entryId: entry.id })}
+                >
+                    <${Icon} name="more" size=${16} />
+                </button>
+            </div>
+            ${
+                openedText &&
+                html`<div
+                    class=${`presented-body tappable ${unrolling(unrolled)}`}
+                    id=${bodyId}
+                    data-part="prompt-text"
+                    onClick=${(event) => openMessage(event, entry.id)}
+                >
+                    <${PresentedText} entry=${entry} text=${text} />
+                </div>`
+            }
+        </div>
+    </div>`;
+}
+
+/** A presented input's opened text: its words, then what it carries, as a message shows them. */
+function PresentedText({ entry, text }) {
+    const [written, attachments] = splitAttachments(text);
+
+    return html`
+        ${written && html`<div class="user-text"><${MentionedText} text=${written} /></div>`}
+        <${MessageExtras} entry=${entry} attachments=${attachments} />
+    `;
+}
+
+/** A person's message, including one a module presents when this browser shows it open. */
+function UserMessage({ entry, view, users }) {
     const [fresh] = useState(() => settledFor !== null && settledFor === view.conversation?.id);
 
     // A report has nobody's name on it: a person's message that looks like one is theirs.
@@ -391,11 +597,8 @@ function UserEntry({ entry, view, users }) {
             ? /\n<linked-session-message>\n([\s\S]*)\n<\/linked-session-message>$/.exec(sent)?.[1]
             : undefined;
     const body = peerText ?? (scheduled ? sent.slice(SCHEDULED.length) : sent);
-    const files = attachments ? parseAttachments(attachments) : [];
     // `/skill:name request`: the skill by name, and the request.
     const skill = SKILL.exec(body);
-    const pictures = files.filter((file) => file.path && file.mime.startsWith("image/"));
-    const others = files.filter((file) => !pictures.includes(file));
     const name = author ?? (scheduled ? "Pi" : undefined);
     // Your own messages take the accent; someone else's, their color; one from someone the app does not know (a name
     // the message carries, the main agent, Pi's own schedule), a quiet one.
@@ -420,6 +623,7 @@ function UserEntry({ entry, view, users }) {
     return html`<div
         class=${`user-row ${fresh ? "enter" : ""}`}
         data-part="prompt-row"
+        data-entry-kind=${entry.presentation?.entryKind}
         id=${`entry-${entry.id}`}
     >
         <div
@@ -449,6 +653,12 @@ function UserEntry({ entry, view, users }) {
                     ${name ? initials(name) : "›"}
                 </span>
                 ${name && html`<b class="prompt-author" data-part="prompt-author">${name}</b>`}
+                ${
+                    entry.presentation &&
+                    html`<span class="presented-tag" data-part="presented-tag">
+                        ${entry.presentation.label}
+                    </span>`
+                }
                 ${entry.at && html`<span class="prompt-time">${clock(entry.at)}</span>`}
                 ${scheduled && html`<span class="prompt-time">· scheduled</span>`}
                 ${via && html`<span class="prompt-time">· via ${peerText === undefined ? via[1] : "a linked session"}</span>`}
@@ -474,40 +684,7 @@ function UserEntry({ entry, view, users }) {
                         }
                     </div>`
                 }
-                ${
-                    entry.files?.length > 0 &&
-                    html`<div class="attachments">
-                        ${entry.files.map(
-                            (path) =>
-                                html`<button
-                                    class="chip"
-                                    title=${`Sent with the message: ${path}`}
-                                    onClick=${() => openFile(path)}
-                                >
-                                    📄 ${path.split("/").pop()}
-                                </button>`,
-                        )}
-                    </div>`
-                }
-                ${
-                    pictures.length > 0 &&
-                    html`<div class="thumbs">
-                        ${pictures.map(
-                            (file) => html`<${Thumb} src=${fileUrl(file.path)} alt=${file.name} />`,
-                        )}
-                    </div>`
-                }
-                ${
-                    others.length > 0 &&
-                    html`<div class="attachments">
-                        ${others.map((file) => html`<span class="chip">📎 ${file.name}</span>`)}
-                    </div>`
-                }
-                ${
-                    entry.images > 0 &&
-                    !attachments &&
-                    html`<${EntryImages} entryId=${entry.id} count=${entry.images} label="Image" />`
-                }
+                <${MessageExtras} entry=${entry} attachments=${attachments} />
             </div>
         </div>
     </div>`;
@@ -1193,6 +1370,7 @@ let revealing = { entryId: null, at: 0 };
 
 document.addEventListener("pocket:reveal", (event) => {
     revealing = { entryId: event.detail, at: Date.now() };
+    noteRevealed(event.detail);
 });
 /** When this page first saw a group that began before any of its entries was stored: the start of its clock. */
 const groupSeen = new Map();
