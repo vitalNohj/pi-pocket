@@ -2974,12 +2974,16 @@ pre.diff .del {
     }
 }
 
-/* The way back to the newest message. */
+/* The way back to the newest message: right above the end of the message box, beside the conversation's rows, not at
+ * the far edge of a wide pane. A margin's percentage is of the scroller's width, as the column's width is. */
 .jump {
     position: sticky;
     bottom: 0.8rem;
     left: 100%;
-    margin-right: 0.8rem;
+    margin-right: max(
+        0.8rem,
+        calc((100% - min(100%, var(--composer-width))) / 2 + 24px * var(--space-x))
+    );
     width: 40px;
     height: 40px;
     border: 1px solid var(--hair-2);
@@ -2995,6 +2999,13 @@ pre.diff .del {
         border-color var(--t-hover) var(--ease-out),
         color var(--t-hover) var(--ease-out),
         transform 90ms var(--ease-out);
+}
+
+/* A narrow pane: the message box spans it, and the button keeps to its edge. */
+@media (max-width: 699px) {
+    .jump {
+        margin-right: 0.8rem;
+    }
 }
 
 @media (hover: hover) {

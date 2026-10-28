@@ -137,6 +137,16 @@ export const store = {
         history: null,
         /** The id of the oldest transcript entry shown, or null for the newest `TRANSCRIPT_ROWS` rows. */
         transcriptFrom: null,
+        /**
+         * Where the reader of the transcript is, when not at the bottom: `{ keep }`, its distance from the bottom (scroll
+         * height less scroll top). Kept with a session's view as the tab leaves it (`keepView`), to open there again.
+         */
+        transcriptPlace: null,
+        /**
+         * A kept session this tab goes back to, which changed while it was away, held behind the loading screen until the
+         * server's view of it comes (Appearance's Wait for updates, `holdsFor`): its id, or null.
+         */
+        holding: null,
         missing: null,
         connection: "connecting",
         notices: [],
@@ -655,13 +665,18 @@ let source;
 const KEPT_CHARS = 16_000_000;
 
 /**
- * The views of sessions this tab left, by conversation id, least recently shown first: `{ view, size }`, with `size` as
- * `keptSize` measures it, and undefined until the next `trimKept`.
+ * The views of sessions this tab left, by conversation id, least recently shown first: `{ view, size, place, seen }`,
+ * with `size` as `keptSize` measures it (undefined until the next `trimKept`), `place` where the reader was
+ * (`transcriptPlace`), and `seen` the session as the list showed it then (`seenOf`).
  */
 const keptViews = new Map();
 /** Each entry's JSON length, measured once: an entry does not change (a new one replaces it). */
 const entrySizes = new WeakMap();
 let trimming;
+/** The session whose view the server sent since the tab showed it: what the tab keeps of it then is up to date. */
+let synced = null;
+/** What the list showed of the session the tab shows, when the tab kept its view (`seen`): still so until it is synced. */
+let shownSeen = null;
 
 /**
  * Keep the view of the session this tab leaves, to show it again at once (`keptView`). Only one the server that runs now
@@ -689,8 +704,21 @@ function keepView(view) {
     }
 
     // One whose earlier messages were all loaded (Find does) keeps its newest ones, as it opens with: a long session
-    // stays within what is kept.
-    keptViews.set(id, { view: newestOf(view), size: undefined });
+    // stays within what is kept. Where the reader was goes with it, as far up as its rows are kept.
+    const { transcriptFrom, transcriptPlace } = store.state;
+    const kept = newestOf(view);
+
+    keptViews.set(id, {
+        view: kept,
+        size: undefined,
+        place:
+            transcriptPlace === null ||
+            (transcriptFrom !== null && !kept.entries.has(transcriptFrom))
+                ? null
+                : { ...transcriptPlace, from: transcriptFrom },
+        // As the list shows it now, if the view is up to date; else as it was when the tab kept what it shows.
+        seen: synced === id ? seenOf(id) : shownSeen,
+    });
     // Measured after the switch has drawn: not in the tap's time.
     clearTimeout(trimming);
     trimming = setTimeout(trimKept, 500);
@@ -772,13 +800,69 @@ function forgetKept() {
     }
 }
 
-/** The view this tab kept of a session, taken out to show (it is kept again when the tab leaves), or an empty one. */
+/**
+ * The session as the list shows it, as far as what its transcript shows goes: when it last moved up (a message, Pi
+ * starting work), when its last run ended, and whether Pi works there now. Null when it is not in the list.
+ */
+function seenOf(id) {
+    const session = store.state.sessions.find((each) => each.id === id);
+
+    return session === undefined
+        ? null
+        : {
+              updatedAt: session.updatedAt,
+              endedAt: session.endedAt ?? null,
+              busy: session.busy === true,
+          };
+}
+
+/**
+ * Whether a kept session waits behind the loading screen until the server's view of it comes: with Appearance's Wait
+ * for updates, when the list says it changed since the tab left it (or Pi works there), and only on a connection that
+ * is open, which brings that view soon. Otherwise the kept view shows at once, and what came since slides in.
+ */
+function holdsFor(kept) {
+    if (kept?.seen == null || store.state.appearance?.waitForUpdates !== true) {
+        return false;
+    }
+
+    const now = seenOf(kept.view.conversation.id);
+
+    return (
+        store.state.connection === "open" &&
+        (now === null ||
+            now.busy ||
+            kept.seen.busy ||
+            now.updatedAt !== kept.seen.updatedAt ||
+            now.endedAt !== kept.seen.endedAt)
+    );
+}
+
+/**
+ * What the store shows for a session the tab goes to: the view it kept, taken out (it is kept again when the tab leaves),
+ * and where the reader was in it; or an empty view. One held for its changes (`holdsFor`) opens at the bottom once they
+ * come, as a session does that was not kept.
+ */
 function keptView(id) {
     const kept = keptViews.get(id);
 
     keptViews.delete(id);
+    synced = null;
+    shownSeen = kept?.seen ?? null;
 
-    return kept?.view ?? emptyView();
+    if (kept === undefined) {
+        return { view: emptyView(), transcriptFrom: null, transcriptPlace: null, holding: null };
+    }
+
+    const hold = holdsFor(kept);
+    const place = hold ? null : kept.place;
+
+    return {
+        view: kept.view,
+        transcriptFrom: place?.from ?? null,
+        transcriptPlace: place === null ? null : { keep: place.keep },
+        holding: hold ? id : null,
+    };
 }
 
 /**
@@ -831,7 +915,12 @@ function applyView(data) {
         return;
     }
 
-    store.set((state) => ({ view: mergeView(state.view, data), missing: null }));
+    if (data.full) {
+        synced = data.conversation.id;
+    }
+
+    // A session held for its changes (`holdsFor`) shows with them.
+    store.set((state) => ({ view: mergeView(state.view, data), missing: null, holding: null }));
 }
 
 /**
@@ -1177,7 +1266,9 @@ const handlers = {
         keptViews.delete(data.conversationId);
         store.set((state) => ({
             // Said of a session this tab has since left (`show`), it is not what the tab shows.
-            ...(state.conversationId === data.conversationId ? { missing: data.message } : {}),
+            ...(state.conversationId === data.conversationId
+                ? { missing: data.message, holding: null }
+                : {}),
             ...(state.view.conversation?.id === data.conversationId ? { view: emptyView() } : {}),
         }));
     },
@@ -1619,11 +1710,10 @@ export function navigate(conversationId, { replace = false, sheet = null } = {})
     keepView(store.state.view);
     store.set((state) => ({
         conversationId,
-        view: keptView(conversationId),
+        ...keptView(conversationId),
         ...peopleFor(conversationId),
         browser: null,
         history: null,
-        transcriptFrom: null,
         missing: null,
         drawer: false,
         ...sheetChange(sheet, state),
@@ -1640,11 +1730,10 @@ onRoute(() => {
         keepView(store.state.view);
         store.set({
             conversationId: id,
-            view: keptView(id),
+            ...keptView(id),
             ...peopleFor(id),
             browser: null,
             history: null,
-            transcriptFrom: null,
             missing: null,
             sheet: null,
             drawer: false,

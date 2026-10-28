@@ -69,6 +69,11 @@ const DEFAULTS = {
     speed: false,
     /** Pi's current thought above the live line, and its finished thoughts open. Off until turned on. */
     showThinking: false,
+    /**
+     * Going back to a session that changed while this tab was away: wait behind the loading screen until its updates
+     * come, then show it whole. Off, the tab's copy of it shows at once and the updates slide in (`holdsFor` in store.js).
+     */
+    waitForUpdates: false,
     /** This browser's own layout of each slot (`slots.js`): `{ [slot]: { order: [ids], hidden: { [id]: boolean } } }`. */
     layout: {},
 };
