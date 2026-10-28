@@ -75,6 +75,11 @@ const DEFAULTS = {
      * thought alone in its group still follows Show thinking. Off until turned on.
      */
     foldActivity: false,
+    /**
+     * Going back to a session that changed while this tab was away: wait behind the loading screen until its updates
+     * come, then show it whole. Off, the tab's copy of it shows at once and the updates slide in (`holdsFor` in store.js).
+     */
+    waitForUpdates: false,
     /** This browser's own layout of each slot (`slots.js`): `{ [slot]: { order: [ids], hidden: { [id]: boolean } } }`. */
     layout: {},
 };

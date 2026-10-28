@@ -1051,6 +1051,167 @@ test(
     },
 );
 
+test(
+    "what came while away slides in: at the bottom it glides up, scrolled up the reader stays put, and Wait for updates holds the session until it comes",
+    real,
+    async () => {
+        const session = await newSession(app);
+        const other = await newSession(app);
+        const long = (n: number) => `${"words to make the row a few lines long ".repeat(6)}${n}`;
+
+        for (let n = 1; n <= 8; n++) {
+            await say(app, session, long(n));
+        }
+
+        await fresh();
+        await goTo(session);
+
+        /** The session shown, whole, connected, and settled where `place` puts the reader. */
+        const settle = async (place: "bottom" | "up") => {
+            await until(
+                async () =>
+                    (await inPage<boolean>(`
+                    const { store } = await import("/store.js");
+
+                    return JSON.stringify(store.state.connection === "open" && store.state.view.conversation?.id === ${Number(session)} &&
+                        ![...store.state.view.entries.values()].some((each) => each.partial));
+                `)) === true,
+                "the session, whole",
+            );
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            await page.evaluate(`
+                const scroller = document.querySelector(".pane > .scroller");
+
+                scroller.scrollTop = ${place === "bottom" ? "scroller.scrollHeight" : "scroller.scrollHeight - scroller.clientHeight - 600"};
+                scroller.dispatchEvent(new Event("scroll"));
+            `);
+            await new Promise((resolve) => setTimeout(resolve, 300));
+        };
+
+        /** Away to `other` while 2 messages come to the session, then back, watched frame by frame for 1.2 s. */
+        const awayAndBack = async (n: number) => {
+            const listed = () =>
+                inPage<string>(`
+                const { store } = await import("/store.js");
+                const each = store.state.sessions.find((one) => one.id === ${Number(session)});
+
+                return JSON.stringify(JSON.stringify([each?.updatedAt, each?.endedAt, each?.busy]));
+            `);
+            const before = await listed();
+
+            await goTo(other);
+            await reach({ path: `/s/${other}` }, "the other session");
+            await say(app, session, long(n));
+            await say(app, session, long(n + 1));
+            // The list the tab has says it changed, and that Pi is done there.
+            await until(async () => {
+                const now = await listed();
+
+                return now !== before && JSON.parse(now)[2] !== true;
+            }, "the list, changed");
+
+            return inPage<{
+                frames: { gap: number; first: number | null; boot: boolean; shift: number }[];
+                enter: number;
+                came: boolean;
+                held: boolean;
+            }>(`
+                const { navigate, store } = await import("/store.js");
+                const frames = [];
+                let watched = null;
+
+                navigate(${Number(session)});
+                // As the switch drew: held behind the loading screen, or the kept session shown.
+                const held = store.state.holding === ${Number(session)};
+
+                const end = performance.now() + 1200;
+
+                while (performance.now() < end) {
+                    await new Promise((resolve) => requestAnimationFrame(resolve));
+                    const scroller = document.querySelector(".pane > .scroller");
+                    const column = scroller?.querySelector('[data-part="transcript"]');
+                    const rows = column ? [...column.querySelectorAll(".user-row")] : [];
+                    // The first row in view, as the reader sees it: its place on screen, frame to frame.
+                    watched ??= rows.find((row) => row.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top + 2) ?? null;
+                    const transform = column ? getComputedStyle(column).transform : "none";
+
+                    frames.push({
+                        gap: scroller ? Math.round(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight) : -1,
+                        first: watched?.isConnected ? Math.round(watched.getBoundingClientRect().top) : null,
+                        boot: document.querySelector('[data-part="boot"]') !== null,
+                        shift: transform === "none" ? 0 : Math.round(new DOMMatrixReadOnly(transform).m42),
+                    });
+                }
+
+                const text = document.querySelector('[data-part="transcript"]')?.textContent ?? "";
+
+                return JSON.stringify({
+                    frames,
+                    enter: document.querySelectorAll('[data-part="transcript"] .user-row.enter').length,
+                    came: text.includes(${JSON.stringify(long(n + 1))}),
+                    held,
+                });
+            `);
+        };
+
+        // At the bottom: the new rows rise in, and the column glides up to them, ending at the bottom.
+        await settle("bottom");
+        const atBottom = await awayAndBack(9);
+
+        assert.ok(atBottom.came, "what came while away shows");
+        assert.ok(atBottom.enter >= 2, `the new rows animate in (${atBottom.enter})`);
+        assert.ok(
+            atBottom.frames.some((frame) => frame.shift > 0),
+            "the column glides up into place",
+        );
+        assert.ok(!atBottom.frames.some((frame) => frame.boot), "no loading screen");
+        assert.ok(Math.abs(atBottom.frames.at(-1)!.gap) < 2, "at the bottom once it has glided");
+
+        // Scrolled up: the new rows animate in below, the row in view does not move, and there is no glide.
+        await settle("up");
+        const scrolledUp = await awayAndBack(11);
+        const tops = scrolledUp.frames.map((frame) => frame.first).filter((top) => top !== null);
+
+        assert.ok(scrolledUp.came, "what came while away is there");
+        assert.ok(scrolledUp.enter >= 2, `the new rows animate in (${scrolledUp.enter})`);
+        assert.ok(
+            !scrolledUp.frames.some((frame) => frame.shift !== 0),
+            "no glide when scrolled up",
+        );
+        assert.ok(
+            Math.max(...tops) - Math.min(...tops) < 2,
+            `the row in view stays put (${Math.min(...tops)}..${Math.max(...tops)})`,
+        );
+        assert.ok(
+            scrolledUp.frames.at(-1)!.gap > 300,
+            "still where the reader was, not at the bottom",
+        );
+
+        // Wait for updates: the loading screen until what came arrives, then the session, whole, with nothing gliding.
+        await page.evaluate(`(await import("/theme.js")).setPrefs({ waitForUpdates: true })`);
+
+        try {
+            await settle("bottom");
+            const waited = await awayAndBack(13);
+
+            // The server here answers within a frame, so the loading screen may not be drawn at all.
+            assert.ok(waited.held, "held for its updates as the switch drew");
+            assert.ok(!atBottom.held && !scrolledUp.held, "not held without the setting");
+            assert.ok(
+                waited.frames.every((frame) => !frame.boot) || waited.frames.at(-1)!.boot === false,
+                "then the session",
+            );
+            assert.ok(waited.came, "with what came while away");
+            assert.ok(
+                !waited.frames.some((frame) => frame.shift !== 0),
+                "nothing glides: it shows whole",
+            );
+        } finally {
+            await page.evaluate(`(await import("/theme.js")).setPrefs({ waitForUpdates: false })`);
+        }
+    },
+);
+
 test("a session no longer shared is not kept, whatever the tab hears first", real, async () => {
     const other = await newSession(app);
     const theirs = await newSession(app);
