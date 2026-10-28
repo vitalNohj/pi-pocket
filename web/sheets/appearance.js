@@ -792,6 +792,16 @@ export function AppearanceSheet() {
                     onChange=${() => setPrefs({ waitForUpdates: !p.waitForUpdates })}
                 />
             <//>
+            <${SettingRow}
+                title="Keep activity folded"
+                detail="Pi's thinking and tool calls stay on their one line until you open them, also while it works and in the newest turn"
+            >
+                <${Switch}
+                    on=${p.foldActivity}
+                    label="Keep activity folded"
+                    onChange=${() => setPrefs({ foldActivity: !p.foldActivity })}
+                />
+            <//>
         </div>
         <div class="label">Status line</div>
         <div class="sheet-list">

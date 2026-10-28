@@ -1231,8 +1231,35 @@ export type PublicPageHandler = (
 ) => PublicPageAnswer | Promise<PublicPageAnswer>;
 
 /**
- * What a module adds to the app: the second argument of its default export. Register routes, the browser module, and
- * commands while the module loads. They go when this version of the module goes.
+ * How a module's own input shows in the transcript, while the module is on. Nothing here is stored. The model still
+ * reads the message in full.
+ * @since 0.27.0
+ * @experimental
+ */
+export interface PresentEntry {
+    /**
+     * The stored kind, `x.<module>.<name>`.
+     * @since 0.27.0
+     * @experimental
+     */
+    kind: string;
+    /**
+     * The one line the transcript shows.
+     * @since 0.27.0
+     * @experimental
+     */
+    label: string;
+    /**
+     * Matches the start of a user message only when nobody wrote that message.
+     * @since 0.27.0
+     * @experimental
+     */
+    userPrefix?: string;
+}
+
+/**
+ * What a module adds to the app: the second argument of its default export. Register routes, the browser module,
+ * commands, and presentations while the module loads. They go when this version of the module goes.
  * @since 0.14.0
  */
 export interface Web {
@@ -1277,6 +1304,14 @@ export interface Web {
      * @since 0.14.0
      */
     command(name: string, command: Command): void;
+    /**
+     * Says how an input this module sends shows in the transcript, while the module is on. The model still reads
+     * the message in full. `kind` is `x.<module>.<name>`. An optional `userPrefix` matches only a user message
+     * nobody wrote.
+     * @since 0.27.0
+     * @experimental
+     */
+    presentEntry(spec: PresentEntry): void;
     /**
      * Sends an event to the browser module: to everyone it loads for, or to the person `to`. It never throws.
      * @since 0.14.0
@@ -2379,6 +2414,32 @@ export interface SwitchProps {
 }
 
 /**
+ * What `pocket.pip.ask` answers. It does not throw when PiP is not there: `reason` tells why nothing happened. `sent` is
+ * false when the text waits in PiP's message box.
+ * @since 0.26.0
+ * @experimental
+ */
+export type PipAskResult = { ok: true; sent: boolean } | { ok: false; reason: string };
+
+/**
+ * The part of `pocket` that talks to PiP.
+ * @since 0.26.0
+ * @experimental
+ */
+export interface PipApi {
+    /**
+     * Gives PiP text as the person's own message. By default it opens PiP and puts the text in its message box, after
+     * what is there, for the person to read, edit, and send. With `send: true` it sends the text at once, but only just
+     * after the person tapped or pressed a key: one tap serves for 5 seconds and for one send. The text starts with the
+     * module's title, so the person and PiP see where it came from. It resolves with `{ ok: false, reason }` when the
+     * person has no PiP, and when `send` has no tap to use. Text that is empty or past 100,000 characters throws.
+     * @since 0.26.0
+     * @experimental
+     */
+    ask(text: string, options?: { send?: boolean }): Promise<PipAskResult>;
+}
+
+/**
  * The app's API for a browser module: the argument of its default export.
  * @since 0.14.0
  */
@@ -2512,6 +2573,22 @@ export interface Pocket {
      */
     reveal(id: string): Promise<boolean>;
     /**
+     * How this browser shows one of this module's inputs (`web.presentEntry` on the server). `kind` is
+     * `x.<module>.<name>`. `open` shows the message, `folded` one line, and `hidden` keeps the turn without
+     * the text until Find. The same mode again changes nothing. The choice stays in this browser, and a person
+     * can change it on any of those rows.
+     * @since 0.27.0
+     * @experimental
+     */
+    entryPresentation(kind: string, mode: "open" | "folded" | "hidden"): void;
+    /**
+     * This browser's choice for one of this module's inputs, or undefined when there is none yet (the rows are
+     * folded then). Set a mode only when there is none, so a person's choice stays theirs.
+     * @since 0.27.0
+     * @experimental
+     */
+    entryPresentation(kind: string): "open" | "folded" | "hidden" | undefined;
+    /**
      * Calls one of the module's routes: a GET without `body`, a POST with it.
      * @since 0.14.0
      */
@@ -2637,6 +2714,12 @@ export interface Pocket {
      * @experimental
      */
     insertText(text: string, options?: { inline?: boolean }): void;
+    /**
+     * Gives text to the person's PiP, their assistant.
+     * @since 0.26.0
+     * @experimental
+     */
+    readonly pip: PipApi;
     /**
      * Hides or reorders a slot's items, the app's own too. A person's own choices in Appearance → Layout win.
      * @since 0.19.0
