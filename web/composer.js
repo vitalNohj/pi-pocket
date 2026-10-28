@@ -36,6 +36,7 @@ import { MicButton, useDictation } from "./voice.js";
 import {
     APPLE,
     contextLevel,
+    fileUrl,
     formatBytes,
     formatTokens,
     html,
@@ -789,6 +790,39 @@ export function Composer() {
         }
     };
 
+    /**
+     * Take one's own queued message back to change it: its words go above what the box holds, on a line of their own,
+     * and its files join the ones attached.
+     */
+    const editQueued = async (item) => {
+        const back = await attempt(() => actions.editQueued(item.id));
+
+        if (!back) {
+            return;
+        }
+
+        const current = drafts.get(conversationId);
+        const at = back.text.length;
+
+        setReading(null);
+        update(current.trim() === "" ? back.text : `${back.text}\n${current}`, at);
+        setFiles((list) => [
+            ...back.attachments.map((attachment) => ({
+                key: uid(),
+                name: attachment.name,
+                size: attachment.size,
+                state: "done",
+                preview: attachment.mime.startsWith("image/") ? fileUrl(attachment.path) : null,
+                attachment,
+            })),
+            ...list,
+        ]);
+        requestAnimationFrame(() => {
+            box.current?.focus();
+            box.current?.setSelectionRange(at, at);
+        });
+    };
+
     /** Put a message sent before into the box, to send again or change. */
     const recall = (value, at = value.length) => {
         update(value, at);
@@ -1165,6 +1199,13 @@ export function Composer() {
                                 !blocked &&
                                 (item.mode === "steer" || item.mode === "followUp") &&
                                 html`<div class="queued-actions">
+                                    <button
+                                        class="button small"
+                                        title="Take it back into the message box to change it"
+                                        onClick=${() => editQueued(item)}
+                                    >
+                                        Edit
+                                    </button>
                                     <button
                                         class="button small"
                                         title=${modeHint(item.mode === "steer" ? "followUp" : "steer")}

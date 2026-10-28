@@ -6,7 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, extname, join, sep } from "node:path";
 import { type Context, copyJson } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -89,6 +89,33 @@ import {
 const context = BACKGROUND_CONTEXT;
 
 export type Attachment = { path: string; name: string; mime: string; size: number };
+
+/**
+ * A file in a message's list of attached files (`- path (name, type, size bytes)`, as `submit` writes it), if it is one of
+ * the session's uploads. A name can hold " (", so the path is the part that ends with "-name".
+ */
+function attachedFile(line: string, uploads: string): Attachment[] {
+    const tail = /, ([^,]+), (\d+) bytes\)$/.exec(line);
+
+    if (!line.startsWith("- ") || tail === null) {
+        return [];
+    }
+
+    const head = line.slice(2, tail.index);
+
+    for (let at = head.indexOf(" ("); at !== -1; at = head.indexOf(" (", at + 1)) {
+        const path = head.slice(0, at);
+        const name = head.slice(at + 2);
+
+        if (path.startsWith(uploads + sep) && path.endsWith(`-${name}`)) {
+            const mime = tail[1] === "unknown type" ? "" : tail[1]!;
+
+            return [{ path, name, mime, size: Number(tail[2]) }];
+        }
+    }
+
+    return [];
+}
 
 export interface SubmitRequest {
     text: string;
@@ -1290,6 +1317,57 @@ export class Commands {
         }
 
         return result;
+    }
+
+    /**
+     * Take one's own queued message back to change it: it leaves the queue, as with `withdraw`, and its words and
+     * attached files come back for the message box. Only its sender may, as with moving it.
+     */
+    async editQueued(
+        id: ConversationId,
+        user: User,
+        submissionId: number,
+    ): Promise<{ text: string; attachments: Attachment[] }> {
+        const app = this.#app;
+
+        app.requireSee(user, id);
+        app.requireSteer(user);
+
+        if (!Number.isInteger(submissionId) || submissionId <= 0) {
+            throw new HttpError(400, "Say which queued message to edit.");
+        }
+
+        if ((await app.attribution.submitter(submissionId)) !== user.id) {
+            throw new HttpError(403, "Only its sender can edit a queued message.");
+        }
+
+        const item = (await app.harness.snapshot(InboxDoc, id, context))?.items.find(
+            (entry) => Number(entry.id) === submissionId,
+        );
+        // Taken back only if Pi has not read it yet: then what it says is the message as it was queued.
+        const result =
+            item === undefined || item.mode === "write"
+                ? "not_found"
+                : await app.harness.abortSubmission(
+                      submissionId as unknown as SubmissionId,
+                      context,
+                      id,
+                  );
+
+        if (item === undefined || item.mode === "write" || result !== "aborted") {
+            throw new HttpError(409, "That message has already gone to Pi.");
+        }
+
+        // shortcut: a `/skill:` or prompt template message comes back as it was sent, expanded.
+        const [written, files] = splitAttachments(
+            userContent({ content: item.content }).text.replace(FROM_PREFIX, ""),
+        );
+        const uploads = app.workspace.uploadDirectory(id);
+
+        return {
+            text: written,
+            attachments: (files ?? "").split("\n").flatMap((line) => attachedFile(line, uploads)),
+        };
     }
 
     /**
