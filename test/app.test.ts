@@ -1439,6 +1439,86 @@ test("a tab switches session on the connection it has: the new one comes, and no
     app.detach(watcher.client);
 });
 
+test("a session no longer shared while its room opens sends nothing of it, on a new connection or a switch", async () => {
+    type View = { conversation: { id: number } };
+    const room = app.room.bind(app);
+
+    /** The owner stops sharing `id` with `userId` just as its room starts to open. */
+    const unshareAsItOpens = (id: ConversationId, userId: string, keep: string[]) => {
+        let hit = false;
+
+        (app as { room: typeof room }).room = (opened) => {
+            const opening = room(opened);
+
+            if (!hit && opened === id) {
+                hit = true;
+                app.setAccess(owner(), userId, { sessions: keep });
+            }
+
+            return opening;
+        };
+
+        return () => hit;
+    };
+
+    const nothingOf = (tab: ReturnType<typeof fakeTab>, id: ConversationId, what: string) => {
+        for (const event of ["view", "chat", "notes", "browser"]) {
+            assert.ok(
+                !tab.events.some(
+                    (each) =>
+                        each.event === event &&
+                        (event === "view"
+                            ? (each.data as View).conversation.id
+                            : each.data.conversationId) === Number(id),
+                ),
+                `${what}: no ${event} of it`,
+            );
+        }
+
+        assert.equal(tab.last("missing")?.conversationId, Number(id), `${what}: missing`);
+    };
+
+    const first = await newSession();
+    const second = await newSession();
+    const third = await newSession();
+    const guest = app.config.addUser("Uma", "guest", [
+        String(first),
+        String(second),
+        String(third),
+    ]);
+
+    try {
+        // A new connection to it.
+        const fresh = fakeTab(first, guest.user, 6);
+        let hit = unshareAsItOpens(first, guest.user.id, [String(second), String(third)]);
+
+        await app.attach(fresh.client);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        (app as { room: typeof room }).room = room;
+        assert.ok(hit(), "its room opened");
+        nothingOf(fresh, first, "a new connection");
+        app.detach(fresh.client);
+
+        // A switch to it.
+        const tab = fakeTab(second, guest.user, 6);
+
+        await app.attach(tab.client);
+        await until(() => tab.events.some((each) => each.event === "view"), "the session shown");
+        hit = unshareAsItOpens(third, guest.user.id, [String(second)]);
+        assert.equal(app.switchTo(guest.user, tab.client.connection, third, undefined, 1), true);
+        await until(() => tab.last("missing") !== undefined, "missing");
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        (app as { room: typeof room }).room = room;
+        assert.ok(hit(), "its room opened");
+        nothingOf(tab, third, "a switch");
+        assert.equal(tab.client.conversationId, undefined, "the tab shows nothing");
+        app.detach(tab.client);
+    } finally {
+        (app as { room: typeof room }).room = room;
+        app.config.removeUser(guest.user.id);
+    }
+});
+
 test("a tab does not get the session list again when it did not change", async () => {
     const id = await newSession();
     const tab = fakeTab(id, owner());

@@ -1514,6 +1514,19 @@ export class PocketApp {
                 return;
             }
 
+            // The person's access can change while the room opens (`setAccess` evicts only tabs already there): asked
+            // again now, as nothing of the session has gone yet.
+            if (!this.canSee(client.user, id)) {
+                this.releaseRoom(room);
+                client.conversationId = undefined;
+                client.send("missing", {
+                    conversationId: id,
+                    message: "This session is no longer shared with you.",
+                });
+
+                return;
+            }
+
             room.keepOpen();
             room.clients.add(client);
             room.push(client, true);
