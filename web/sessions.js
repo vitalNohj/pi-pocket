@@ -297,7 +297,10 @@ const PRESS_MS = 450;
 const PRESS_SLOP = 8;
 const PRESS_SHOWS_MS = 100;
 
-/** The list whose row a finger last held: Select in that row's sheet selects there. */
+/**
+ * The list whose row a finger last held (or a right-click opened): Select in that row's sheet selects there, and Deselect
+ * all lets go there. A ref to `{ select(id), clear(), count() }`.
+ */
 let pressedIn = null;
 
 /**
@@ -305,7 +308,17 @@ let pressedIn = null;
  * does with a mouse. From the sheet a long press opens.
  */
 export function selectFromList(id) {
-    pressedIn?.current?.(id);
+    pressedIn?.current?.select(id);
+}
+
+/** How many sessions are selected in the list where the row's actions opened: none when there is no such list. */
+export function selectedInList() {
+    return pressedIn?.current?.count() ?? 0;
+}
+
+/** Let go of the selection in the list where the row's actions opened. */
+export function deselectInList() {
+    pressedIn?.current?.clear();
 }
 
 /**
@@ -387,6 +400,7 @@ function SessionRow({
     folders,
     onPick,
     onSelect,
+    onMenu,
     hoverAction,
     open,
     pinned,
@@ -472,7 +486,7 @@ function SessionRow({
             aria-current=${open ? "page" : undefined}
             onPointerDown=${(event) => onSelect(event, session.id)}
             onClick=${(event) => onPick(event, session.id)}
-            onContextMenu=${(event) => event.ctrlKey && event.preventDefault()}
+            onContextMenu=${(event) => onMenu(event, session.id)}
             title=${tip}
         >
             <span class="session-mark">
@@ -683,7 +697,9 @@ function groupsOf(shown, { tab, needle, home, pinned, today }) {
 
     const groups = [];
     const pins = new Set(pinned);
-    const first = shown.filter((session) => pins.has(session.id));
+    const byId = new Map(shown.map((session) => [session.id, session]));
+    // In the order they were pinned (or moved to: Move to top, Move to bottom), as the numbers count them.
+    const first = pinned.map((id) => byId.get(id)).filter(Boolean);
 
     if (first.length > 0) {
         groups.push({ key: "pinned", label: "Pinned", rows: first });
@@ -793,10 +809,14 @@ function AllSessions({ compact = false }) {
     const startSelect = useRef(null);
     const unpress = useRef(null);
 
-    startSelect.current = (id) => {
-        anchor.current = id;
-        setSelected(new Set([...picked.current, id]));
-        setTapSelects(true);
+    startSelect.current = {
+        select: (id) => {
+            anchor.current = id;
+            setSelected(new Set([...picked.current, id]));
+            setTapSelects(true);
+        },
+        clear: () => clearSelection(),
+        count: () => picked.current.size,
     };
 
     useEffect(
@@ -1052,6 +1072,28 @@ function AllSessions({ compact = false }) {
     };
 
     /**
+     * A right-click on a row opens its actions in a small menu at the pointer (`SessionSheet`'s `at`). Ctrl+click, a
+     * Mac's right-click, still selects (`select`); Shift+right-click keeps the browser's own menu. A finger's long press
+     * already did its own (`press` swallows the menu it raises).
+     */
+    const menu = (event, id) => {
+        if (event.shiftKey || event.defaultPrevented) {
+            return;
+        }
+
+        event.preventDefault();
+        const session = sessions.find((each) => each.id === id);
+
+        if (event.ctrlKey || !session || (session.archived && !canSteer())) {
+            return;
+        }
+
+        pressedIn = startSelect;
+        // Over the drawer, which stays: Select goes on there.
+        store.set({ sheet: { type: "session", id, at: { x: event.clientX, y: event.clientY } } });
+    };
+
+    /**
      * Ctrl/⌘+press on a row selects it (or, if it was selected, unselects it); dragging on does the same to every row
      * between it and the pointer. Once the pointer moves, the list scrolls along near its top or bottom edge. A finger
      * held on a row opens its actions instead.
@@ -1262,9 +1304,10 @@ function AllSessions({ compact = false }) {
     // call this draw's `pick` and `select`, which see this draw's selection.
     const handlers = useRef(null);
 
-    handlers.current = { pick, select, toggleFold };
+    handlers.current = { pick, select, menu, toggleFold };
     const [onPick] = useState(() => (event, id) => handlers.current.pick(event, id));
     const [onSelect] = useState(() => (event, id) => handlers.current.select(event, id));
+    const [onMenu] = useState(() => (event, id) => handlers.current.menu(event, id));
     const [onFold] = useState(() => (id) => handlers.current.toggleFold(id));
     // What every row reads of the store, read once here: rows read none of it themselves (`SessionRow`). Marks, seen
     // marks, and read times come through `isUnread`, `finishedUnseen`, and `sessionUnread`.
@@ -1296,6 +1339,7 @@ function AllSessions({ compact = false }) {
             folders=${tab === "folders" && needle === ""}
             onPick=${onPick}
             onSelect=${onSelect}
+            onMenu=${onMenu}
             hoverAction=${hoverAction}
             open=${open}
             pinned=${isPinned(session.id)}

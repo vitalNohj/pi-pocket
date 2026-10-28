@@ -905,6 +905,9 @@ function ToolStep({
             setFull({ call: fullCall ?? call, result: fullResult });
         });
 
+    // An image a read returned is a file already on screen elsewhere (often one the person just sent): it shows only
+    // when the call is opened. What other calls return as images (a screenshot) shows under the line.
+    const imagesInside = call.name === "read";
     let body = null;
 
     if (open) {
@@ -925,6 +928,16 @@ function ToolStep({
                 >
                     Open ${args.path.split("/").pop()} →
                 </button>`,
+            );
+        }
+
+        if (imagesInside && result?.images > 0) {
+            parts.push(
+                html`<${EntryImages}
+                    entryId=${result.id}
+                    count=${result.images}
+                    label=${`${call.name} image`}
+                />`,
             );
         }
 
@@ -1073,7 +1086,8 @@ function ToolStep({
         memoryAvailable(conversationId)
             ? details.lesson
             : null;
-    const extras = result?.images > 0 || artifact || watch || lesson;
+    const imagesUnder = result?.images > 0 && !imagesInside;
+    const extras = imagesUnder || artifact || watch || lesson;
 
     return html`<div
         class=${`step ${open ? "open" : ""} ${settled ? "settled" : ""}`}
@@ -1133,7 +1147,7 @@ function ToolStep({
                     html`<${LessonCall} lessonId=${lesson} conversationId=${conversationId} />`
                 }
                 ${
-                    result?.images > 0 &&
+                    imagesUnder &&
                     html`<${EntryImages}
                         entryId=${result.id}
                         count=${result.images}

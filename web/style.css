@@ -6003,6 +6003,54 @@ button.session-chip {
     animation: pop 0.25s var(--ease-out);
 }
 
+/* A session row's actions at the pointer, from a right-click (`web/sheets/session.js`): small rows in groups. */
+.session-menu {
+    width: max-content;
+    min-width: 200px;
+    max-width: min(300px, calc(100vw - 16px));
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+    padding: 4px;
+    border-radius: var(--r-card);
+    animation-duration: 0.15s;
+}
+
+.session-menu-group + .session-menu-group {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--hair);
+}
+
+.session-menu-item {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: var(--r-row);
+    color: var(--text);
+    font-size: 13px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.session-menu-item:focus-visible {
+    outline: none;
+    background: var(--hover);
+}
+
+@media (hover: hover) {
+    .session-menu-item:hover {
+        background: var(--hover);
+    }
+}
+
+.session-menu-hint {
+    margin-left: auto;
+    color: var(--faint);
+    font-size: 11.5px;
+}
+
 /* No chip to open from: in the middle of the screen. */
 .pop-menu.free {
     position: relative;

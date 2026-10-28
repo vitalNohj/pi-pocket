@@ -270,7 +270,7 @@ function sheetBody(sheet) {
             break;
         case "session":
             body = store.state.sessions.some((each) => each.id === sheet.id)
-                ? html`<${SessionSheet} id=${sheet.id} />`
+                ? html`<${SessionSheet} id=${sheet.id} at=${sheet.at ?? null} />`
                 : null;
             break;
         case "places":
@@ -279,14 +279,24 @@ function sheetBody(sheet) {
         case "chat":
             body = view.conversation ? html`<${ChatSheet} />` : null;
             break;
-        case "rename":
-            body = html`<${TextSheet}
+
+        case "rename": {
+            // A row's actions name their session (`id`); the menu and `/name` rename the open one.
+            const renamed = sheet.id
+                ? store.state.sessions.find((each) => each.id === sheet.id)
+                : view.conversation;
+
+            body =
+                renamed &&
+                html`<${TextSheet}
                 title="Rename"
                 label="Session title"
-                initial=${view.conversation?.title ?? ""}
-                submit=${(value) => actions.updateSession(view.conversation.id, { title: value })}
+                initial=${renamed.title ?? ""}
+                submit=${(value) => actions.updateSession(renamed.id, { title: value })}
             />`;
             break;
+        }
+
         case "worktree":
             body = html`<${WorktreeSheet} />`;
             break;
