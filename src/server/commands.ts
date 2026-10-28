@@ -21,6 +21,7 @@ import {
     AgentDoc,
     type ConversationCreateOptions,
     type ConversationId,
+    type Cursor,
     defineTask,
     type EntryId,
     type InputEntry,
@@ -2018,13 +2019,27 @@ export class Commands {
         }
     }
 
-    /** A new session with this session's history through `entryId`, which then goes its own way. */
+    /**
+     * A new session with this session's history through `entryId`, which then goes its own way. Without `entryId`, the
+     * whole session as it stands: through Pi's latest finished reply (a session list's Fork), or none of it before one.
+     */
     async fork(
         id: ConversationId,
         user: User,
         request: { entryId?: unknown; worktree?: unknown },
     ): Promise<{ id: ConversationId }> {
         this.#requireForkable(id, user);
+
+        if (request.entryId === undefined) {
+            return {
+                id: await this.#branch(id, user, {
+                    at: await this.#latestReply(id),
+                    label: "fork",
+                    worktree: request.worktree === true,
+                }),
+            };
+        }
+
         const entryId = entryIdOf(request.entryId);
         const entry = await this.#app.transcripts.visibleEntry(id, entryId);
 
@@ -2168,6 +2183,34 @@ export class Commands {
         this.#reportUnanswered(forked, submission.wait(context));
 
         return { id: forked };
+    }
+
+    /**
+     * The id of Pi's newest finished reply in a session, or undefined before its first: where a fork of the whole session
+     * ends. A reply that called tools is not finished (a fork from it would wait for their results), nor is one cut off.
+     */
+    async #latestReply(id: ConversationId): Promise<number | undefined> {
+        const conversation = await this.#app.conversation(id);
+        let cursor: Cursor | undefined;
+
+        do {
+            const page = await conversation.entries({}, 64, cursor, context);
+
+            for (const entry of page.items) {
+                const reply = entry.model?.[0];
+
+                if (
+                    entry.kind === "pi.assistant" &&
+                    !(reply?.role === "assistant" && reply.stopReason === "toolUse")
+                ) {
+                    return Number(entry.id);
+                }
+            }
+
+            cursor = page.next;
+        } while (cursor !== undefined);
+
+        return undefined;
     }
 
     /** Forks are new sessions: who may start one may fork, from a session they can see. */
