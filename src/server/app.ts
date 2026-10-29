@@ -93,6 +93,7 @@ import { Memory } from "./memory.ts";
 import { isThinkingLevel, modelInfo, modelList, resolveModel, THINKING_LEVELS } from "./models.ts";
 import { Updates } from "./updates.ts";
 import { pocketPackage, pocketVersion } from "./versions.ts";
+import { serverBuild } from "./build.ts";
 import { compactionReader } from "./compaction.ts";
 import { configureHttp } from "./net.ts";
 import { createPublicFetch } from "./public-fetch.ts";
@@ -289,6 +290,11 @@ export class PocketApp {
     readonly defaultCwd: string;
     readonly supervised: boolean;
     readonly startedAt = Date.now();
+    /**
+     * This server's code (`serverBuild`): sessions a tab keeps, in its memory or on the device, are good for a server of
+     * the same build, so they last across a restart but not across new code.
+     */
+    readonly build = serverBuild();
     /** Set by the launcher over IPC; undefined when the server runs on its own. */
     access: AccessInfo | undefined;
     harness!: Harness;
@@ -2336,6 +2342,12 @@ export class PocketApp {
                 peeks: true,
                 // Tells the web app it may show another session on the connection it has (`POST /api/switch`).
                 switches: true,
+                // Sessions tabs keep are good for servers of this build (`have`).
+                build: this.build,
+                // Whether a browser may keep sessions on the device (IndexedDB), for every tab and across reloads:
+                // `PI_POCKET_SESSION_CACHE=off` keeps them in each tab's memory only, and has browsers drop what they
+                // kept on the device.
+                deviceCache: process.env.PI_POCKET_SESSION_CACHE !== "off",
                 // This server's clock: peek tiles compare the browser's looks with when runs ended here.
                 now: Date.now(),
                 // Collaboration features: 2 adds roles, take turns, reactions, pins, notes, mentions, and push.

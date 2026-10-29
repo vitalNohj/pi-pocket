@@ -1032,7 +1032,7 @@ test(
         assert.equal(back.switches.length, 1, "one switch");
         assert.match(
             JSON.parse(back.switches[0]!).have,
-            /^\d+\.\d+\.[0-9a-z]+\.\d+$/,
+            /^\d+\.\d+\.[0-9a-z]+\.[0-9a-f]{16}$/,
             "the tab says what it kept",
         );
         assert.ok(back.views[0]!.orderFrom! > 0, "the view goes on from what the tab kept");
@@ -1048,6 +1048,100 @@ test(
                 )) === true,
             "the new message, shown",
         );
+    },
+);
+
+test(
+    "a session kept on the device shows after a reload, and the server sends only what is new; another person's, or none when the server says so",
+    real,
+    async () => {
+        const session = await newSession(app);
+        const attach = app.attach.bind(app);
+        const attached: { id: number | null; have: string | null }[] = [];
+        const onDevice = () =>
+            inPage<number[]>(`
+            const { list } = await import("/session-cache.js");
+
+            return JSON.stringify((await list()).map((each) => each.id));
+        `);
+        const shown = (text: string) =>
+            until(
+                async () =>
+                    (await inPage<boolean>(
+                        `return JSON.stringify((document.querySelector('[data-part="transcript"]')?.textContent ?? "").includes(${JSON.stringify(text)}))`,
+                    )) === true,
+                text,
+            );
+
+        /** Reload the page on the session, and what its first connection said it had, once a view came. */
+        const reload = async () => {
+            attached.length = 0;
+            await page.reload();
+            await until(() => attached.length > 0, "a connection after the reload");
+
+            return attached[0]!;
+        };
+
+        app.attach = (client) => {
+            attached.push({
+                id: client.conversationId === undefined ? null : Number(client.conversationId),
+                have:
+                    client.have === undefined
+                        ? null
+                        : `${client.have.from}.${client.have.count}.${client.have.key}.${client.have.build}`,
+            });
+
+            return attach(client);
+        };
+
+        try {
+            await say(app, session, "kept on the device");
+            await fresh();
+            await goTo(session);
+            await reach({ path: `/s/${session}` }, "the session");
+            await shown("kept on the device");
+            // Saved a few seconds after it settles.
+            await until(
+                async () => (await onDevice()).includes(Number(session)),
+                "saved on the device",
+                15_000,
+            );
+            await say(app, session, "new since the reload");
+
+            // A reload: the tab's memory is gone, so what it says it has came from the device.
+            const again = await reload();
+
+            assert.equal(again.id, Number(session), "the connection names the session");
+            assert.match(
+                again.have ?? "",
+                new RegExp(`\\.${app.build}$`),
+                "the tab says what the device kept",
+            );
+            await shown("new since the reload");
+
+            // Another person's (here: the record says so): not shown, and not named to the server.
+            await inPage<boolean>(`
+            const disk = await import("/session-cache.js");
+            const found = await disk.read(${Number(session)});
+
+            await disk.save(${Number(session)}, found.record, { ...found.info, owner: "someone else" }, 1e9);
+
+            return "true";
+        `);
+            assert.equal((await reload()).have, null, "another person's is not used");
+
+            // The server keeps sessions out of devices: what was kept goes, and nothing is saved.
+            process.env.PI_POCKET_SESSION_CACHE = "off";
+            await reload();
+            await shown("new since the reload");
+            await until(async () => (await onDevice()).length === 0, "nothing on the device");
+            await new Promise((resolve) => setTimeout(resolve, 4000));
+            assert.deepEqual(await onDevice(), [], "nothing saved");
+            assert.equal((await reload()).have, null, "nothing named");
+        } finally {
+            delete process.env.PI_POCKET_SESSION_CACHE;
+            app.attach = attach;
+        }
     },
 );
 

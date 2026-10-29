@@ -165,10 +165,10 @@ export interface Client {
     /**
      * What a tab of protocol 6 kept of the session it opens, from an earlier visit or before a reconnect (`have` in
      * `web/store.js`): the first `count` ids of the order, which join to `key` (`fingerprint`), and the entries from
-     * `from` to `count` whole, as the server that started at `started` sent them. Its first full view (`Room.push`)
+     * `from` to `count` whole, as a server of build `build` (`serverBuild`) sent them. Its first full view (`Room.push`)
      * then leaves those out, with that part of the order. Used once, then cleared.
      */
-    have?: { from: number; count: number; key: string; started: number };
+    have?: { from: number; count: number; key: string; build: string };
     /**
      * This connection, apart from others of the same tab id: a duplicated browser tab keeps the id, and a reconnect
      * briefly overlaps the old connection. Sent in `hello`; peek lists name it.
@@ -827,9 +827,9 @@ export class Room {
 
     /**
      * How much of the order's start a tab kept (`Client.have`), with its entries from `have.from` on, which then count as
-     * sent: 0 when it kept nothing this server would send it now. Only the server that sent them (an entry's projection
-     * is this code's, and a restart may bring new code) and an order that still starts with them (no compaction since)
-     * count. The rest goes as for any first view: the newest rows' entries the tab lacks, and what is new.
+     * sent: 0 when it kept nothing this server would send it now. Only entries a server of this build sent (an entry's
+     * projection is this code's: a restart with the same code sends them the same) and an order that still starts with
+     * them (no compaction since) count. The rest goes as for any first view: the newest rows' entries the tab lacks, and what is new.
      */
     #kept(client: Client, order: readonly number[]): number {
         const have = client.have;
@@ -839,7 +839,7 @@ export class Room {
         if (
             have === undefined ||
             (client.protocol ?? 1) < 6 ||
-            have.started !== this.#app.startedAt ||
+            have.build !== this.#app.build ||
             have.count <= 0 ||
             have.count > order.length ||
             have.from > have.count ||

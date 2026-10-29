@@ -72,11 +72,11 @@ function newClient(url: URL, user: User, send: Client["send"]): Client {
 }
 
 /**
- * What a tab kept of the session it opens (`Client.have`), from `have=<from>.<count>.<key>.<started>`: undefined when
+ * What a tab kept of the session it opens (`Client.have`), from `have=<from>.<count>.<key>.<build>`: undefined when
  * it names none, or not in that form. `Room.push` checks it against the session.
  */
 export function keptPart(text: string | null): Client["have"] {
-    const match = /^(\d{1,9})\.(\d{1,9})\.([0-9a-z]{1,16})\.(\d{1,16})$/.exec(text ?? "");
+    const match = /^(\d{1,9})\.(\d{1,9})\.([0-9a-z]{1,16})\.([0-9a-f]{1,16})$/.exec(text ?? "");
 
     return match === null
         ? undefined
@@ -84,7 +84,7 @@ export function keptPart(text: string | null): Client["have"] {
               from: Number(match[1]),
               count: Number(match[2]),
               key: match[3]!,
-              started: Number(match[4]),
+              build: match[4]!,
           };
 }
 

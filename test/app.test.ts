@@ -1152,11 +1152,11 @@ test("a tab of protocol 6 that kept a session gets only what came after, and the
     await settled(first, 1);
     app.detach(first.client);
     const order = views(first)[0]!.order!;
-    const kept = (count: number, from = 0, started = app.startedAt) => ({
+    const kept = (count: number, from = 0, build = app.build) => ({
         from,
         count,
         key: fingerprint(order.slice(0, count).join(",")),
-        started,
+        build,
     });
 
     // Nothing new since: the view names where the order goes on, and brings nothing.
@@ -1218,7 +1218,7 @@ test("a tab of protocol 6 that kept a session gets only what came after, and the
     for (const [what, have, protocol] of [
         ["another order", { ...kept(order.length), key: "abc" }, 6],
         ["more than there is", { ...kept(order.length), count: order.length + 99 }, 6],
-        ["an older server's", kept(order.length, 0, app.startedAt - 1), 6],
+        ["another build's", kept(order.length, 0, app.build === "0" ? "1" : "0"), 6],
         ["older code", kept(order.length), 5],
     ] as const) {
         const tab = fakeTab(id, owner(), protocol);
@@ -1258,6 +1258,28 @@ test("a tab of protocol 6 that kept a session gets only what came after, and the
         opened.order!.every((entry) => sent.has(entry)),
         "what is new",
     );
+});
+
+test("hello names the server's build, the same for the same code, and whether browsers may keep sessions on the device", async () => {
+    const { serverBuild } = await import("../src/server/build.ts");
+    const hello = await app.hello(owner());
+
+    assert.match(app.build, /^[0-9a-f]{16}$/);
+    assert.equal(
+        serverBuild(),
+        app.build,
+        "the same code, the same build: a restart keeps what tabs kept",
+    );
+    assert.equal(hello.server.build, app.build);
+    assert.equal(hello.server.deviceCache, true, "on by default");
+
+    process.env.PI_POCKET_SESSION_CACHE = "off";
+
+    try {
+        assert.equal((await app.hello(owner())).server.deviceCache, false);
+    } finally {
+        delete process.env.PI_POCKET_SESSION_CACHE;
+    }
 });
 
 test("a tab switches session on the connection it has: the new one comes, and nothing else again", async () => {
@@ -1387,7 +1409,7 @@ test("a tab switches session on the connection it has: the new one comes, and no
             from: 0,
             count: order.length,
             key: fingerprint(order.join(",")),
-            started: app.startedAt,
+            build: app.build,
         },
         4,
     );
