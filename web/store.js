@@ -1,5 +1,6 @@
 // App state, the server connection, and API calls. Components read `store.state` and re-render on `store.subscribe`.
 import { onRoute, pushRoute } from "./back.js";
+import { hostCan, onPageVisibility, pageVisible } from "./host.js";
 import { sessionForest, unfolded } from "./session-tree.js";
 import { liveMessage } from "./live.js";
 import { fitClock, moment } from "./clock.js";
@@ -858,6 +859,16 @@ function setChanged(change) {
 /** Who hears extensions' events: `extension-ui.js`, which imports this module and so cannot be imported here. */
 const extensionListeners = new Set();
 
+/** Who hears the notifications for a desktop app: `desktop.js`, which imports this module. */
+const desktopListeners = new Set();
+
+/** Hear the notifications the server sends this page's desktop app (`desktop-notify`). */
+export function onDesktopNotify(listener) {
+    desktopListeners.add(listener);
+
+    return () => desktopListeners.delete(listener);
+}
+
 /** Hear the events extension modules send their browser modules: `{ module, event, data }`. */
 export function onExtensionEvent(listener) {
     extensionListeners.add(listener);
@@ -950,6 +961,8 @@ const handlers = {
         }
     },
     auth: (data) => handleAuth(data),
+    // A notification for the desktop app this page runs in, which shows it itself (`web/desktop.js`).
+    "desktop-notify": (data) => desktopListeners.forEach((listener) => listener(data)),
     closing: () => store.set({ connection: "closed" }),
     reload: () => {
         // A web file changed on the server. Message drafts live in localStorage and survive the reload; an unsaved notes
@@ -993,7 +1006,9 @@ export function connect() {
     source?.close();
     store.set({ connection: "connecting" });
     const id = store.state.conversationId;
-    const query = `tab=${encodeURIComponent(TAB)}&p=${PROTOCOL}${id === null ? "" : `&c=${id}`}`;
+    // A desktop app that shows notifications itself gets them over this connection (`web/host.js`).
+    const host = hostCan("notify") ? "&host=notify" : "";
+    const query = `tab=${encodeURIComponent(TAB)}&p=${PROTOCOL}${id === null ? "" : `&c=${id}`}${host}`;
 
     source = pollHere() && !local ? pollEvents(query) : streamEvents(query);
 }
@@ -1690,11 +1705,12 @@ export function discuss(entryId, text) {
     }));
 }
 
-// Tell the server when this tab is hidden or shown: others see "away", and push notifications only reach hidden tabs.
+// Tell the server when this tab is hidden or shown: others see "away", and push notifications only reach hidden tabs. A
+// desktop app's window hidden in its tray, or minimized, counts as hidden (`pageVisible`).
 let lastVisible = null;
 
 function reportVisibility() {
-    const visible = document.visibilityState === "visible";
+    const visible = pageVisible();
 
     if (visible === lastVisible || !collab()) {
         return;
@@ -1704,12 +1720,12 @@ function reportVisibility() {
     api("visibility", { tab: TAB, visible }).catch(() => {});
 }
 
-document.addEventListener("visibilitychange", reportVisibility);
+onPageVisibility(reportVisibility);
 store.subscribe((state) => {
     // Report again after each (re)connect: the server starts every new connection as visible.
     if (state.connection !== "open") {
         lastVisible = null;
-    } else if (lastVisible === null && document.visibilityState !== "visible") {
+    } else if (lastVisible === null && !pageVisible()) {
         reportVisibility();
     }
 });
