@@ -277,6 +277,47 @@ function MentionedText({ text }) {
     return parts;
 }
 
+/**
+ * Code in a person's message, as Markdown writes it: a ``` fence on lines of its own (with an optional language), or a
+ * span on one line, closed by as many backticks as opened it (`a`, ``a ` b``). Only code: the rest of the message
+ * stays as typed, so a `*` or a `#` never changes what it says. A fence or a span left open stays text.
+ */
+const CODE =
+    /(^|\n)```([\w+#.-]*)[ \t]*\n([\s\S]*?)\n```[ \t]*(?=\n|$)|(?<!`)(`+)(?!`)(.+?)(?<!`)\4(?!`)/g;
+
+/** A person's message with its code shown as code, colored when a fence names its language; the rest as `MentionedText`. */
+function CodedText({ text }) {
+    const parts = [];
+    let last = 0;
+
+    for (const match of text.matchAll(CODE)) {
+        const block = match[4] === undefined;
+        // As Markdown does, a span drops one space at each end when it has both: `` `a` `` shows `a`.
+        const span = block ? "" : match[5].replace(/^ (.*[^ ].*) $/, "$1");
+
+        if (!block && span.trim() === "") {
+            continue;
+        }
+
+        // A block is a line of its own: the line breaks around its fence would only add a blank line.
+        parts.push(html`<${MentionedText} text=${text.slice(last, match.index)} />`);
+        parts.push(
+            block
+                ? html`<${Highlighted} class="user-code" text=${match[3]} lang=${match[2]} />`
+                : html`<code>${span}</code>`,
+        );
+        last = match.index + match[0].length;
+
+        if (block && text[last] === "\n") {
+            last += 1;
+        }
+    }
+
+    parts.push(html`<${MentionedText} text=${text.slice(last)} />`);
+
+    return parts;
+}
+
 /** A subagent's report: who, whether it answered or failed, and what it said. */
 function Report({ report, view, fresh }) {
     const [, name, verb, after, text] = report;
@@ -680,7 +721,7 @@ function UserMessage({ entry, view, users }) {
                         ${
                             via
                                 ? html`<${FencedText} text=${body} />`
-                                : html`<${MentionedText} text=${skill ? skill[3] : body} />`
+                                : html`<${CodedText} text=${skill ? skill[3] : body} />`
                         }
                     </div>`
                 }
@@ -1083,6 +1124,9 @@ function ToolStep({
             setFull({ call: fullCall ?? call, result: fullResult });
         });
 
+    // An image a read returned is a file already on screen elsewhere (often one the person just sent): it shows only
+    // when the call is opened. What other calls return as images (a screenshot) shows under the line.
+    const imagesInside = call.name === "read";
     let body = null;
 
     if (open) {
@@ -1103,6 +1147,16 @@ function ToolStep({
                 >
                     Open ${args.path.split("/").pop()} →
                 </button>`,
+            );
+        }
+
+        if (imagesInside && result?.images > 0) {
+            parts.push(
+                html`<${EntryImages}
+                    entryId=${result.id}
+                    count=${result.images}
+                    label=${`${call.name} image`}
+                />`,
             );
         }
 
@@ -1251,7 +1305,8 @@ function ToolStep({
         memoryAvailable(conversationId)
             ? details.lesson
             : null;
-    const extras = result?.images > 0 || artifact || watch || lesson;
+    const imagesUnder = result?.images > 0 && !imagesInside;
+    const extras = imagesUnder || artifact || watch || lesson;
 
     return html`<div
         class=${`step ${open ? "open" : ""} ${settled ? "settled" : ""}`}
@@ -1311,7 +1366,7 @@ function ToolStep({
                     html`<${LessonCall} lessonId=${lesson} conversationId=${conversationId} />`
                 }
                 ${
-                    result?.images > 0 &&
+                    imagesUnder &&
                     html`<${EntryImages}
                         entryId=${result.id}
                         count=${result.images}
