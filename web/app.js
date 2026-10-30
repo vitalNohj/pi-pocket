@@ -40,6 +40,7 @@ import { defineItem, slotItems } from "./slots.js";
 import { branchAvailable, headLabel } from "./sheets/branch.js";
 import { SignIn } from "./signin.js";
 import { openSubagents } from "./subagents.js";
+import { RunningBoard } from "./running-board.js";
 import { SubagentsBoard } from "./subagents-board.js";
 import {
     actions,
@@ -525,12 +526,14 @@ function App() {
         </aside>
         <div class=${`pane window ${placed ? "boarded" : ""}`} data-part="pane">
             ${
-                board
-                    ? html`<${SubagentsBoard} />`
-                    : page
-                      ? html`<${ExtensionPage} key=${`${state.page.module}:${state.page.id}`} />`
-                      : inConversation
-                        ? html`<${Topbar} />
+                board === "running"
+                    ? html`<${RunningBoard} />`
+                    : board
+                      ? html`<${SubagentsBoard} />`
+                      : page
+                        ? html`<${ExtensionPage} key=${`${state.page.module}:${state.page.id}`} />`
+                        : inConversation
+                          ? html`<${Topbar} />
                     ${
                         peeking &&
                         tiles.length > 0 &&
@@ -543,7 +546,7 @@ function App() {
                         !state.missing &&
                         html`<${Composer} key=${state.conversationId} />`
                     }`
-                        : html`<div class="home-list" data-part="home-list">
+                          : html`<div class="home-list" data-part="home-list">
                           <${RailNav} />
                           <${SessionList} />
                       </div>

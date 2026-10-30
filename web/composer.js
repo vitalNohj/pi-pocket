@@ -21,6 +21,7 @@ import {
     drafts,
     navigate,
     notify,
+    openRunning,
     openSheet,
     store,
     typing,
@@ -1988,7 +1989,7 @@ defineItem("status", {
                 class="background-now"
                 aria-label=${backgroundTitle(count)}
                 title=${backgroundTitle(count)}
-                onClick=${() => openSheet({ type: "running" })}
+                onClick=${openRunning}
             >
                 <span class="dot" aria-hidden="true"></span>
                 <span class="num">${count}</span>
