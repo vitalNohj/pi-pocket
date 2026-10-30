@@ -1218,7 +1218,8 @@ test(
                 // As the switch drew: held behind the loading screen, or the kept session shown.
                 const held = store.state.holding === ${Number(session)};
 
-                const end = performance.now() + 1200;
+                // Long enough for the glide (at most 1 s) after what came arrives.
+                const end = performance.now() + 2200;
 
                 while (performance.now() < end) {
                     await new Promise((resolve) => requestAnimationFrame(resolve));

@@ -2980,10 +2980,18 @@ function windowStart(rows, from) {
 const CATCH_UP_MS = 3000;
 /** How long a session held for its changes (Appearance's Wait for updates) waits for them before it shows anyway. */
 const HOLD_MS = 2500;
-/** The catch-up's glide: as long as a row's rise into place (`.enter`), so the two land together. */
-const GLIDE_IN_MS = 420;
-/** A catch-up taller than the screen glides longer, up to this, and from no further than 2 screens down. */
-const GLIDE_LONG_MS = 640;
+/**
+ * The catch-up's glide, by how far it goes: a line or two `GLIDE_IN_MS`, a screen or more `GLIDE_LONG_MS`, and from no
+ * further than 2 screens down. Long enough to follow by eye: a quicker one reads as a jump. Its rows rise in as long
+ * (`.transcript.catching .enter`), so the two land together.
+ */
+const GLIDE_IN_MS = 700;
+const GLIDE_LONG_MS = 1000;
+/**
+ * The glide's curve: it sets off gently and settles slowly, so the eye follows it the whole way. The theme's `--ease-out`
+ * (easeOutQuint) does most of its distance in the first tenth: at this length, a jump and then a crawl.
+ */
+const GLIDE_EASING = "cubic-bezier(0.45, 0, 0.15, 1)";
 
 /** How far a catch-up's glide has still to go: the column's offset down, which the scroller counts in its height. */
 function glideLeft(glide, column) {
@@ -3025,7 +3033,10 @@ function anchorOf(scroller, column, bottom) {
     if (bottom) {
         const last = rows.findLast((row) => !passing(row));
 
-        return last ? { row: last, bottom, at: at(last.getBoundingClientRect().bottom) } : null;
+        // The rows there were, too: if the draw replaces the last one, what is new is what was not there.
+        return last
+            ? { row: last, bottom, at: at(last.getBoundingClientRect().bottom), had: new Set(rows) }
+            : null;
     }
 
     for (const row of rows) {
@@ -3037,6 +3048,26 @@ function anchorOf(scroller, column, bottom) {
     }
 
     return null;
+}
+
+/**
+ * How tall the rows at the end of the column are that were not there when `anchorOf` measured (`had`): what the draw
+ * added below, when the row measured from is gone (a group drawn again, the rows above folded).
+ */
+function addedBelow(column, anchor) {
+    let height = 0;
+
+    for (const row of [...column.children].reverse()) {
+        if (anchor.had.has(row)) {
+            break;
+        }
+
+        if (!passing(row)) {
+            height += row.getBoundingClientRect().height;
+        }
+    }
+
+    return height;
 }
 
 /** The same row's place now, as `anchorOf` measured it, or null when it is gone. */
@@ -3218,11 +3249,15 @@ export function Transcript() {
             return;
         }
 
-        const now = placeOf(element, column.current, before);
+        const placed = placeOf(element, column.current, before);
 
-        if (now === null) {
+        if (placed === null && !before.bottom) {
             return;
         }
+
+        // The row measured from was drawn again (or folded away): the glide goes by what came below, from where the end
+        // of the column was. Without this a large catch-up jumped there in one frame.
+        const now = placed ?? before.at - addedBelow(column.current, before);
 
         if (!before.bottom) {
             // A browser that keeps the row in place by itself (scroll anchoring) has: then this moves nothing.
@@ -3250,18 +3285,16 @@ export function Transcript() {
             return;
         }
 
-        // The theme's easing, as rows rise with (Fluid motion's is softer).
-        const easing = getComputedStyle(column.current).getPropertyValue("--ease-out").trim();
-
-        const screens = from / Math.max(1, element.clientHeight);
+        // Longer for more: from a line or two to a screen, then as long as it gets.
+        const screens = Math.min(1, from / Math.max(1, element.clientHeight));
         const running = column.current.animate(
             [
                 { transform: `translateY(${Math.min(from, 2 * element.clientHeight)}px)` },
                 { transform: "none" },
             ],
             {
-                duration: screens <= 1 ? GLIDE_IN_MS : GLIDE_LONG_MS,
-                easing: easing || "ease-out",
+                duration: Math.round(GLIDE_IN_MS + (GLIDE_LONG_MS - GLIDE_IN_MS) * screens),
+                easing: GLIDE_EASING,
             },
         );
 
@@ -3564,7 +3597,11 @@ export function Transcript() {
         conversation.forkedFrom && sessions.find((each) => each.id === conversation.forkedFrom.id);
 
     return html`<main class="scroller" ref=${scroller} onScroll=${onScroll}>
-        <div class=${`transcript ${entrance.current}`} data-part="transcript" ref=${column}>
+        <div
+            class=${`transcript ${entrance.current} ${catching() ? "catching" : ""}`}
+            data-part="transcript"
+            ref=${column}
+        >
             <${LinkedSessions} />
             ${
                 conversation.forkedFrom &&

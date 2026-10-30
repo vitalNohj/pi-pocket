@@ -1533,6 +1533,12 @@ kbd {
     animation: rise-in 0.42s var(--ease-out) backwards;
 }
 
+/* What came while away, as a kept session catches up: it rises in as long as the column glides to it (`GLIDE_LONG_MS` in
+   transcript.js), in every motion but reduced. */
+:root:not([data-motion="reduced"]) .transcript.catching .enter {
+    animation-duration: 0.9s;
+}
+
 .empty {
     display: grid;
     place-items: center;
