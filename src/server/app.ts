@@ -93,6 +93,7 @@ import { Memory } from "./memory.ts";
 import { isThinkingLevel, modelInfo, modelList, resolveModel, THINKING_LEVELS } from "./models.ts";
 import { Updates } from "./updates.ts";
 import { pocketPackage, pocketVersion } from "./versions.ts";
+import { serverBuild } from "./build.ts";
 import { compactionReader } from "./compaction.ts";
 import { configureHttp } from "./net.ts";
 import { createPublicFetch } from "./public-fetch.ts";
@@ -322,6 +323,11 @@ export class PocketApp {
     readonly defaultCwd: string;
     readonly supervised: boolean;
     readonly startedAt = Date.now();
+    /**
+     * This server's code (`serverBuild`): sessions a tab keeps, in its memory or on the device, are good for a server of
+     * the same build, so they last across a restart but not across new code.
+     */
+    readonly build = serverBuild();
     /** Set by the launcher over IPC; undefined when the server runs on its own. */
     access: AccessInfo | undefined;
     harness!: Harness;
@@ -1531,13 +1537,78 @@ export class PocketApp {
             this.#peopleChanged(client.user.id);
         }
 
-        if (client.conversationId === undefined) {
+        await this.#enter(client);
+    }
+
+    /**
+     * Show a tab another session, or none (the list), on the connection it has (`connection`, the id its `hello`
+     * carried): it leaves the room of the one it showed, and gets what the new one has as a new connection would, with
+     * what it kept of it (`have`). No new connection means no hello, session list, or PiP state again, and nobody sees
+     * this person leave and come back. `switched` goes first: every event of a session after it is the new one's. A switch
+     * numbered `seq` below one already taken arrived late, and is dropped. False when no such connection is open (it
+     * closed, or the server started again): the tab connects again instead.
+     */
+    switchTo(
+        user: User,
+        connection: string,
+        id: ConversationId | undefined,
+        have: Client["have"],
+        seq: number,
+    ): boolean {
+        let found = false;
+
+        for (const client of this.#clients) {
+            if (client.user.id !== user.id || client.connection !== connection) {
+                continue;
+            }
+
+            found = true;
+
+            if (seq <= (client.switchSeq ?? -Infinity)) {
+                continue;
+            }
+
+            client.switchSeq = seq;
+            const previous = client.conversationId;
+
+            if (previous !== undefined) {
+                this.#leaveRoom(client, previous);
+            }
+
+            client.conversationId = id;
+
+            if (have === undefined) {
+                delete client.have;
+            } else {
+                client.have = have;
+            }
+
+            client.send("switched", { seq, conversationId: id ?? null });
+            void this.#enter(client);
+
+            if (id === undefined) {
+                this.#scheduleSessions();
+            }
+        }
+
+        return found;
+    }
+
+    /**
+     * Put a tab in the room of the session it shows (`client.conversationId`), and send it what that session has: its
+     * view, chat, notes, and browser. A later switch while the room opens wins: this one then leaves nothing behind.
+     */
+    async #enter(client: Client): Promise<void> {
+        const visit = (client.visit = (client.visit ?? 0) + 1);
+        const id = client.conversationId;
+
+        if (id === undefined) {
             return;
         }
 
-        if (!this.canSee(client.user, client.conversationId)) {
+        if (!this.canSee(client.user, id)) {
             client.send("missing", {
-                conversationId: client.conversationId,
+                conversationId: id,
                 message: "This session is not shared with you.",
             });
             // Keep the tab for app-wide events only: nothing about that conversation reaches it, and it is not "there".
@@ -1547,11 +1618,23 @@ export class PocketApp {
         }
 
         try {
-            const id = client.conversationId;
             const room = await this.room(id);
 
-            if (!this.#clients.has(client)) {
+            if (!this.#clients.has(client) || client.visit !== visit) {
                 this.releaseRoom(room);
+
+                return;
+            }
+
+            // The person's access can change while the room opens (`setAccess` evicts only tabs already there): asked
+            // again now, as nothing of the session has gone yet.
+            if (!this.canSee(client.user, id)) {
+                this.releaseRoom(room);
+                client.conversationId = undefined;
+                client.send("missing", {
+                    conversationId: id,
+                    message: "This session is no longer shared with you.",
+                });
 
                 return;
             }
@@ -1576,10 +1659,9 @@ export class PocketApp {
             room.pushPresence();
             this.#scheduleSessions();
         } catch (error) {
-            client.send("missing", {
-                conversationId: client.conversationId,
-                message: describe(error),
-            });
+            if (client.visit === visit) {
+                client.send("missing", { conversationId: id, message: describe(error) });
+            }
         }
     }
 
@@ -2298,6 +2380,14 @@ export class PocketApp {
                 refreshModels: user.role === "owner",
                 // Tells the web app this server sends peek tiles (`POST /api/peeks`, `peek` events).
                 peeks: true,
+                // Tells the web app it may show another session on the connection it has (`POST /api/switch`).
+                switches: true,
+                // Sessions tabs keep are good for servers of this build (`have`).
+                build: this.build,
+                // Whether a browser may keep sessions on the device (IndexedDB), for every tab and across reloads:
+                // `PI_POCKET_SESSION_CACHE=off` keeps them in each tab's memory only, and has browsers drop what they
+                // kept on the device.
+                deviceCache: process.env.PI_POCKET_SESSION_CACHE !== "off",
                 // This server's clock: peek tiles compare the browser's looks with when runs ended here.
                 now: Date.now(),
                 // Collaboration features: 2 adds roles, take turns, reactions, pins, notes, mentions, and push.

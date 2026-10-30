@@ -802,6 +802,16 @@ export function AppearanceSheet() {
                     onChange=${() => setPrefs({ quoteReply: !p.quoteReply })}
                 />
             <//>
+            <${SettingRow}
+                title="Wait for updates"
+                detail="Going back to a session that changed while you were away: show it once its updates have come, instead of your last copy at once with the updates sliding in"
+            >
+                <${Switch}
+                    on=${p.waitForUpdates}
+                    label="Wait for updates"
+                    onChange=${() => setPrefs({ waitForUpdates: !p.waitForUpdates })}
+                />
+            <//>
         </div>
         <div class="label">Status line</div>
         <div class="sheet-list">
