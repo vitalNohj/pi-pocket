@@ -792,6 +792,16 @@ export function AppearanceSheet() {
                     onChange=${() => setPrefs({ foldActivity: !p.foldActivity })}
                 />
             <//>
+            <${SettingRow}
+                title="Reply to a passage"
+                detail="Select words in one of Pi's replies, and a Reply button by them quotes them in your next message"
+            >
+                <${Switch}
+                    on=${p.quoteReply}
+                    label="Reply to a passage"
+                    onChange=${() => setPrefs({ quoteReply: !p.quoteReply })}
+                />
+            <//>
         </div>
         <div class="label">Status line</div>
         <div class="sheet-list">

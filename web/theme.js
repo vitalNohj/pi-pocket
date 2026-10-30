@@ -75,6 +75,8 @@ const DEFAULTS = {
      * thought alone in its group still follows Show thinking. Off until turned on.
      */
     foldActivity: false,
+    /** A Reply button by words selected in one of Pi's replies, which quotes them in the next message. On by default. */
+    quoteReply: true,
     /** This browser's own layout of each slot (`slots.js`): `{ [slot]: { order: [ids], hidden: { [id]: boolean } } }`. */
     layout: {},
 };

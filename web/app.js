@@ -585,7 +585,7 @@ function App() {
         <${Drawer} />
         <${PipHost} />
         <${Sheets} />
-        <${QuoteReplyButton} />
+        ${prefs().quoteReply && html`<${QuoteReplyButton} />`}
         <${LauncherHost} />
         <${Notices} />
     </div>`;
