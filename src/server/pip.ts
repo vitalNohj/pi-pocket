@@ -36,6 +36,7 @@ import {
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import { AuthorsDoc, FollowsDoc, PipAskedDoc, SessionsDoc } from "./docs.ts";
+import { presentationOptions, presentationPip } from "./entry-presentation.ts";
 import { NOTE_ENTRY } from "./entry-format.ts";
 import { describe, HttpError } from "./errors.ts";
 import { clip, defang, quoted } from "./fence.ts";
@@ -626,7 +627,11 @@ export class Pip {
                     continue;
                 }
 
-                const shown = projectEntry(entry);
+                const shown = projectEntry(
+                    entry,
+                    false,
+                    presentationOptions(app.webs.presentations(), own, Number(entry.id)),
+                );
 
                 if (shown?.kind === "user" && own[String(shown.id)] === user.id) {
                     messages.push({ id: shown.id, text: shown.text });
@@ -898,8 +903,16 @@ export class Pip {
             undefined,
             context,
         );
+        const authors = (await app.harness.snapshot(AuthorsDoc, id, context))?.entries;
+        const presentations = app.webs.presentations();
         const projected = page.items
-            .map((entry) => projectEntry(entry))
+            .map((entry) =>
+                projectEntry(
+                    entry,
+                    false,
+                    presentationOptions(presentations, authors, Number(entry.id)),
+                ),
+            )
             .filter((entry): entry is ClientEntry => entry !== undefined)
             .reverse();
         const last = projected.findLast(
@@ -932,7 +945,14 @@ export class Pip {
 
         for (const entry of projected) {
             if (entry.kind === "user") {
-                lines.push(`▸ ${entry.from ?? "Someone"}: ${clip(entry.text, LINE_CHARS)}`);
+                lines.push(
+                    entry.presentation === undefined
+                        ? `▸ ${entry.from ?? "Someone"}: ${clip(entry.text, LINE_CHARS)}`
+                        : clip(
+                              presentationPip(entry.presentation.label, entry.presentation.summary),
+                              LINE_CHARS,
+                          ),
+                );
             } else if (entry.kind === "assistant") {
                 for (const block of entry.blocks) {
                     if (block.type === "text" && block.text.trim() !== "") {

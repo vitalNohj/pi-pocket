@@ -142,6 +142,10 @@ Each is a `data-part` attribute. Some elements have two (`data-part="composer-bu
 | `prompt`                                        | A person's message                                                                                            |
 | `prompt-head`, `author-mark`, `prompt-author`   | Its head: who sent it and when; their initials; their name                                                    |
 | `prompt-text`                                   | What it says (its skill chip, words, and files)                                                               |
+| `presented-input`, `presented-head`             | An extension's input (`web.presentEntry`), folded: its card and the line that opens it (since 0.27.0)         |
+| `presented-chevron`, `presented-tag`            | That line's chevron; the input's label in its head, when shown open (since 0.27.0)                            |
+| `presented-more`                                | The button beside that line that opens its message sheet (since 0.27.0)                                       |
+| `presented-choice`                              | In its message sheet: Show, Fold, and Hide for every input of its kind (since 0.27.0)                         |
 | `reply`                                         | Pi's answer                                                                                                   |
 | `reply-quote`                                   | The passage a reply quotes, at the top of a message (since 0.27.0)                                            |
 | `reply-actions`                                 | The row under an answer: react, discuss, pin, copy                                                            |
@@ -219,6 +223,8 @@ Each is a `data-part` attribute. Some elements have two (`data-part="composer-bu
 | `session-button`                                   | `aria-current`                                   | `page` on the open session's                                                                                                                   |
 | `session-group-head`, `activity-head`, `step-head` | `aria-expanded`                                  | `true` while open; none on Priority's Needs you head, which does not fold                                                                      |
 | `activity`                                         | `data-state`                                     | `open` while open                                                                                                                              |
+| `presented-input`                                  | `data-state`                                     | `open` while open; its `presented-head` has `aria-expanded` `true` (since 0.27.0)                                                              |
+| `prompt-row`                                       | `data-entry-kind`                                | The input's kind (`x.<module>.<name>`) on one an extension presents (since 0.27.0)                                                             |
 | `tool-call`                                        | `data-state`                                     | `running`, `ok`, `failed`, `waiting` (for approval), `denied`, `stopped`                                                                       |
 | `prompt`                                           | `data-from`                                      | `me`, `person` (someone else), `linked` (a linked session), `other` (Pi's schedule, the main agent, a watch or a webhook)                      |
 | `send-button`                                      | `data-state`                                     | `ready` when there is something to send                                                                                                        |

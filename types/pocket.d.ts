@@ -1292,8 +1292,35 @@ export type PublicPageHandler = (
 ) => PublicPageAnswer | Promise<PublicPageAnswer>;
 
 /**
- * What a module adds to the app: the second argument of its default export. Register routes, the browser module, and
- * commands while the module loads. They go when this version of the module goes.
+ * How a module's own input shows in the transcript, while the module is on. Nothing here is stored. The model still
+ * reads the message in full.
+ * @since 0.27.0
+ * @experimental
+ */
+export interface PresentEntry {
+    /**
+     * The stored kind, `x.<module>.<name>`.
+     * @since 0.27.0
+     * @experimental
+     */
+    kind: string;
+    /**
+     * The one line the transcript shows.
+     * @since 0.27.0
+     * @experimental
+     */
+    label: string;
+    /**
+     * Matches the start of a user message only when nobody wrote that message.
+     * @since 0.27.0
+     * @experimental
+     */
+    userPrefix?: string;
+}
+
+/**
+ * What a module adds to the app: the second argument of its default export. Register routes, the browser module,
+ * commands, and presentations while the module loads. They go when this version of the module goes.
  * @since 0.14.0
  */
 export interface Web {
@@ -1338,6 +1365,14 @@ export interface Web {
      * @since 0.14.0
      */
     command(name: string, command: Command): void;
+    /**
+     * Says how an input this module sends shows in the transcript, while the module is on. The model still reads
+     * the message in full. `kind` is `x.<module>.<name>`. An optional `userPrefix` matches only a user message
+     * nobody wrote.
+     * @since 0.27.0
+     * @experimental
+     */
+    presentEntry(spec: PresentEntry): void;
     /**
      * Sends an event to the browser module: to everyone it loads for, or to the person `to`. It never throws.
      * @since 0.14.0
@@ -2598,6 +2633,22 @@ export interface Pocket {
      * @experimental
      */
     reveal(id: string): Promise<boolean>;
+    /**
+     * How this browser shows one of this module's inputs (`web.presentEntry` on the server). `kind` is
+     * `x.<module>.<name>`. `open` shows the message, `folded` one line, and `hidden` keeps the turn without
+     * the text until Find. The same mode again changes nothing. The choice stays in this browser, and a person
+     * can change it on any of those rows.
+     * @since 0.27.0
+     * @experimental
+     */
+    entryPresentation(kind: string, mode: "open" | "folded" | "hidden"): void;
+    /**
+     * This browser's choice for one of this module's inputs, or undefined when there is none yet (the rows are
+     * folded then). Set a mode only when there is none, so a person's choice stays theirs.
+     * @since 0.27.0
+     * @experimental
+     */
+    entryPresentation(kind: string): "open" | "folded" | "hidden" | undefined;
     /**
      * Calls one of the module's routes: a GET without `body`, a POST with it.
      * @since 0.14.0
