@@ -139,7 +139,7 @@ const QUEUED_INTERRUPT_HINT =
     "Stops the run right now (also its tool call), then sends this one. The other queued messages stay queued";
 
 /**
- * Whether a queued message's Interrupt asks first: the first tap reads "Interrupt?", a second within 4 s sends it.
+ * Whether a queued message's Interrupt asks first: the first tap reads "Interrupt now?", a second within 4 s sends it.
  * Set to false to send it on the first tap.
  */
 const CONFIRM_INTERRUPT = true;
@@ -1248,7 +1248,7 @@ export function Composer() {
                                             void attempt(() => actions.move(item.id, "interrupt"));
                                         }}
                                     >
-                                        ${interrupting === item.id ? "Interrupt?" : "Interrupt"}
+                                        ${interrupting === item.id ? "Interrupt now?" : "Interrupt now"}
                                     </button>
                                 </div>`
                             }

@@ -3337,30 +3337,61 @@ pre.diff .del {
     color: var(--muted);
 }
 
-/* Tapped open, one's own message: a row of buttons under it to move it to Steer or Queue, or send it now. */
+/* Tapped open, one's own message: a quiet row under it, past a line from edge to edge, to move it to Steer or Queue, or
+   send it now. Words at the end, as under Pi's answers. */
 .queued:has(> .queued-actions) {
     flex-wrap: wrap;
 }
 
 .queued-actions {
-    flex-basis: 100%;
+    flex-basis: calc(100% + 16px);
     display: flex;
-    gap: 6px;
-    padding-bottom: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 2px;
+    margin: 0 -4px 0 -12px;
+    padding: 3px 4px 3px 12px;
+    border-top: 1px solid var(--hair);
+}
+
+.queued-actions .button.small {
+    min-height: 26px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: var(--r-seg);
+    background: none;
+    color: var(--muted);
+}
+
+@media (hover: hover) {
+    .queued-actions .button.small:hover {
+        color: var(--text);
+        background: var(--hover);
+    }
 }
 
 /* Interrupt, tapped once: the color of stopping the run. */
-.queued-actions .button.danger {
-    border-color: var(--err);
+.queued-actions .button.small.danger {
     color: var(--err);
+    background: var(--err-soft);
 }
 
-/* A thumb's room around the small mark. */
+/* A thumb's room around the small mark, and around the words under an open message. */
 @media (pointer: coarse) {
     .queued .queued-remove::after {
         content: "";
         position: absolute;
         inset: -8px -4px;
+    }
+
+    .queued-actions .button {
+        position: relative;
+    }
+
+    .queued-actions .button::after {
+        content: "";
+        position: absolute;
+        inset: -6px 0;
     }
 }
 
