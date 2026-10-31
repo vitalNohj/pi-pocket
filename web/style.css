@@ -1917,6 +1917,27 @@ kbd {
     margin-bottom: -16px;
 }
 
+/* Code a person wrote in backticks: as Pi's replies show it (`.md code`, `.md pre`), sized like the message's text. */
+.user-text code {
+    padding: 2px 6px;
+    border-radius: var(--r-tag);
+    background: var(--card-2);
+    color: var(--text);
+    font: 0.83em var(--mono);
+}
+
+.user-text pre.user-code {
+    margin: 0.4rem 0;
+    padding: 10px 12px;
+    overflow-x: auto;
+    white-space: pre;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--code-bg);
+    color: var(--body);
+    font: 0.83em / 1.6 var(--mono);
+}
+
 /* What a PR watch or a webhook fenced for Pi (a check's log, a post): a block of its own, scrolling past a few lines. */
 .fenced-data {
     margin: 0.4rem 0;
@@ -3580,6 +3601,17 @@ pre.diff .del {
     }
 }
 
+/* A message on its way: what it says and sends stays, dimmed and still, until the server takes it. */
+.composer.sending textarea,
+.composer.sending .files {
+    opacity: 0.5;
+    transition: opacity var(--t-border) var(--ease-out);
+}
+
+.composer.sending .files button {
+    pointer-events: none;
+}
+
 .composer .files {
     margin: 0;
     padding: 10px 14px 0;
@@ -3601,17 +3633,6 @@ pre.diff .del {
     /* As tall as what is written, to the most above; browsers without this measure it in script (`fitBox`). */
     field-sizing: content;
 }
-/* A message on its way: what it says and sends stays, dimmed and still, until the server takes it. */
-.composer.sending textarea,
-.composer.sending .files {
-    opacity: 0.5;
-    transition: opacity var(--t-border) var(--ease-out);
-}
-
-.composer.sending .files button {
-    pointer-events: none;
-}
-
 
 /* Touch screens keep 16px, below which iOS zooms into the field. */
 @media (pointer: coarse) {
@@ -6290,6 +6311,54 @@ button.session-chip {
     overflow: hidden;
     outline: none;
     animation: pop 0.25s var(--ease-out);
+}
+
+/* A session row's actions at the pointer, from a right-click (`web/sheets/session.js`): small rows in groups. */
+.session-menu {
+    width: max-content;
+    min-width: 200px;
+    max-width: min(300px, calc(100vw - 16px));
+    max-height: calc(100dvh - 16px);
+    overflow-y: auto;
+    padding: 4px;
+    border-radius: var(--r-card);
+    animation-duration: 0.15s;
+}
+
+.session-menu-group + .session-menu-group {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--hair);
+}
+
+.session-menu-item {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: var(--r-row);
+    color: var(--text);
+    font-size: 13px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.session-menu-item:focus-visible {
+    outline: none;
+    background: var(--hover);
+}
+
+@media (hover: hover) {
+    .session-menu-item:hover {
+        background: var(--hover);
+    }
+}
+
+.session-menu-hint {
+    margin-left: auto;
+    color: var(--faint);
+    font-size: 11.5px;
 }
 
 /* No chip to open from: in the middle of the screen. */

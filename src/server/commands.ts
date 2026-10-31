@@ -20,6 +20,7 @@ import {
     AgentDoc,
     type ConversationCreateOptions,
     type ConversationId,
+    type Cursor,
     defineTask,
     type EntryId,
     type InputEntry,
@@ -55,8 +56,8 @@ import {
     splitAttachments,
 } from "./entry-format.ts";
 import { describe, HttpError, optionalText } from "./errors.ts";
-import { homePath } from "./paths.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage } from "./model-images.ts";
+import { homePath } from "./paths.ts";
 import { mentionedPaths, viewFile } from "./files.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./models.ts";
 import { writePiSession } from "./pi-sessions.ts";
@@ -740,12 +741,12 @@ export class Commands {
         },
     ): Promise<{ submissionId: SubmissionId; requestId: string }> {
         const app = this.#app;
-
         // Where a slow send spends its time, logged when it takes long (`SLOW_SUBMIT_MS`).
         const started = performance.now();
         const steps: string[] = [];
         const step = (name: string) =>
             steps.push(`${name} ${Math.round(performance.now() - started)}ms`);
+
         app.requireSee(user, id);
         await app.requireDriver(id, user);
 
@@ -771,8 +772,8 @@ export class Commands {
             throw new HttpError(400, "Nothing to send");
         }
 
-        const agent = await app.agentState(id);
         step("checked");
+        const agent = await app.agentState(id);
         const model =
             agent?.model === undefined
                 ? undefined
@@ -827,8 +828,8 @@ export class Commands {
             }
         });
 
-        const content = parts.length === 1 ? body : parts;
         step("prepared");
+        const content = parts.length === 1 ? body : parts;
         const requestId =
             via === undefined
                 ? ownRequest(user.id, clientKey(request.requestId))
@@ -848,9 +849,9 @@ export class Commands {
             submitContext.abortSignal?.throwIfAborted();
         }
 
-        // Interrupt: stop the run now, rather than waiting for its tool round or turn to end. Like Stop, this withdraws
         step("admitted");
 
+        // Interrupt: stop the run now, rather than waiting for its tool round or turn to end. Like Stop, this withdraws
         // what waits in the queue. Only a person's own message interrupts, never one sent for them (`via`).
         // A retried request finds its first submission: it must not stop the run that the first one started. (Two POSTs
         // of one request at the same moment can both find none and both stop the run: a rare race, left as it is.)
@@ -883,14 +884,14 @@ export class Commands {
             )
             .finally(() => admission?.afterSubmit());
 
-        app.collab.setTyping(id, user, null);
         step("submitted");
+        app.collab.setTyping(id, user, null);
         // The title comes from the message as it was stored: without hidden values.
         const titled = app.hidden.replace(typed, id);
 
         await this.#touched(id, titled, text === titled ? undefined : text);
-
         step("touched");
+
         // A person's own words: linked sessions may message each other again (`linked-sessions.ts`).
         if (via === undefined) {
             await app.linkedSessions.personWrote(id);
@@ -902,13 +903,13 @@ export class Commands {
             await this.#followFailure(id, user, failure, requestId);
         }
 
-        // For extensions (`host.on`): once for each message (two retries at once, too), never for PiP's conversation,
         step("done");
 
         if (performance.now() - started > SLOW_SUBMIT_MS) {
             app.log(`Slow send to conversation ${String(id)}: ${steps.join(", ")}`);
         }
 
+        // For extensions (`host.on`): once for each message (two retries at once, too), never for PiP's conversation,
         // which is its person's alone.
         if (app.pip.ownerOf(id) === undefined && !known && this.#announce(submission.id)) {
             app.events.emit("message.sent", {
@@ -2025,13 +2026,27 @@ export class Commands {
         }
     }
 
-    /** A new session with this session's history through `entryId`, which then goes its own way. */
+    /**
+     * A new session with this session's history through `entryId`, which then goes its own way. Without `entryId`, the
+     * whole session as it stands: through Pi's latest finished reply (a session list's Fork), or none of it before one.
+     */
     async fork(
         id: ConversationId,
         user: User,
         request: { entryId?: unknown; worktree?: unknown },
     ): Promise<{ id: ConversationId }> {
         this.#requireForkable(id, user);
+
+        if (request.entryId === undefined) {
+            return {
+                id: await this.#branch(id, user, {
+                    at: await this.#latestReply(id),
+                    label: "fork",
+                    worktree: request.worktree === true,
+                }),
+            };
+        }
+
         const entryId = entryIdOf(request.entryId);
         const entry = await this.#app.transcripts.visibleEntry(id, entryId);
 
@@ -2175,6 +2190,34 @@ export class Commands {
         this.#reportUnanswered(forked, submission.wait(context));
 
         return { id: forked };
+    }
+
+    /**
+     * The id of Pi's newest finished reply in a session, or undefined before its first: where a fork of the whole session
+     * ends. A reply that called tools is not finished (a fork from it would wait for their results), nor is one cut off.
+     */
+    async #latestReply(id: ConversationId): Promise<number | undefined> {
+        const conversation = await this.#app.conversation(id);
+        let cursor: Cursor | undefined;
+
+        do {
+            const page = await conversation.entries({}, 64, cursor, context);
+
+            for (const entry of page.items) {
+                const reply = entry.model?.[0];
+
+                if (
+                    entry.kind === "pi.assistant" &&
+                    !(reply?.role === "assistant" && reply.stopReason === "toolUse")
+                ) {
+                    return Number(entry.id);
+                }
+            }
+
+            cursor = page.next;
+        } while (cursor !== undefined);
+
+        return undefined;
     }
 
     /** Forks are new sessions: who may start one may fork, from a session they can see. */
