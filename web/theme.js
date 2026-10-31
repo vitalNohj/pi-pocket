@@ -278,6 +278,19 @@ export function togglePin(id) {
     store.set({ pinned });
 }
 
+/** Move a pinned session to the top of the pins (`last` false) or to their bottom (`last` true). */
+export function movePin(id, last) {
+    if (!isPinned(id)) {
+        return;
+    }
+
+    const others = store.state.pinned.filter((each) => each !== id);
+    const pinned = last ? [...others, id] : [id, ...others];
+
+    localStorage.setItem(PINNED, JSON.stringify(pinned));
+    store.set({ pinned });
+}
+
 // ─── Palettes ───────────────────────────────────────────────────────────────────
 
 /** The palette a theme id means: a bundled theme, or the desktop's (falling back when there is none). */

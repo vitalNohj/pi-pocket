@@ -2181,6 +2181,8 @@ export const actions = {
     /** A new session with this one's history through `entryId`. */
     fork: (entryId, { worktree = false } = {}) =>
         api(`c/${current()}/fork`, { entryId, ...(worktree ? { worktree } : {}) }),
+    /** A new session with the whole of session `id`'s history, through Pi's latest finished reply. */
+    forkSession: (id) => api(`c/${id}/fork`, {}),
     /** Send a message to Pi again in a fork that ends just before it: `{ text }` edits it, `{ model }` picks another model. */
     resend: (entryId, change = {}) => api(`c/${current()}/resend`, { entryId, ...change }),
     setPlan: (on) => api(`c/${current()}/plan`, { on }),

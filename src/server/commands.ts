@@ -5,7 +5,7 @@
  * command checks who may do it, and changes others should know about become activity lines in the session's chat.
  */
 import { randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { basename, extname, join, sep } from "node:path";
 import { type Context, copyJson } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -15,12 +15,12 @@ import {
     type ModelThinkingLevel,
     type TextContent,
 } from "@earendil-works/pi-ai";
-import { resizeImage } from "@earendil-works/pi-coding-agent";
 import {
     type AgentChange,
     AgentDoc,
     type ConversationCreateOptions,
     type ConversationId,
+    type Cursor,
     defineTask,
     type EntryId,
     type InputEntry,
@@ -56,6 +56,7 @@ import {
     splitAttachments,
 } from "./entry-format.ts";
 import { describe, HttpError, optionalText } from "./errors.ts";
+import { forModel, MAX_INLINE_IMAGE, modelImage } from "./model-images.ts";
 import { homePath } from "./paths.ts";
 import { mentionedPaths, viewFile } from "./files.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./models.ts";
@@ -131,9 +132,6 @@ export interface SubmitRequest {
     inlineFiles?: boolean;
 }
 
-/** Attached images that also go to the model itself, when it takes images. */
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const MAX_INLINE_IMAGE = 5 * 1024 * 1024;
 /** How many `@` mentioned files go along with a message, and how much of them. */
 const MAX_MENTIONED = 10;
 const MAX_MENTIONED_FILE = 100_000;
@@ -194,19 +192,6 @@ function entryIdOf(value: unknown): number {
     return id;
 }
 
-/**
- * An image file for the model, at most 2000 pixels a side as Pi's read tool sends images: models refuse bigger ones once
- * a conversation holds many, and then every request fails until they leave its context.
- */
-async function modelImage(path: string, mimeType: string): Promise<ImageContent> {
-    const image = await resizeImage(readFileSync(path), mimeType);
-
-    if (image === null) {
-        throw new Error("it could not be made small enough for the model");
-    }
-
-    return { type: "image", mimeType: image.mimeType, data: image.data };
-}
 
 /** A request's model, when it names one, must name a provider and a model id. */
 function checkModel(asked: { provider?: unknown; modelId?: unknown } | undefined): void {
@@ -815,21 +800,25 @@ export class Commands {
             ),
         ];
 
-        for (const file of attachments) {
-            if (
-                !model.input.includes("image") ||
-                !IMAGE_TYPES.has(file.mime) ||
-                file.size > MAX_INLINE_IMAGE
-            ) {
-                continue;
-            }
+        // Most were made ready as they were uploaded (`model-images.ts`); the rest are made side by side, in their order.
+        const images = model.input.includes("image")
+            ? attachments.filter((file) => forModel(file.mime, file.size))
+            : [];
+        const made = await Promise.allSettled(
+            images.map((file) => modelImage(file.path, file.mime)),
+        );
 
-            try {
-                parts.push(await modelImage(file.path, file.mime));
-            } catch (error) {
-                app.notice("warning", `Could not attach ${file.name}: ${describe(error)}`, id);
+        made.forEach((result, index) => {
+            if (result.status === "fulfilled") {
+                parts.push(result.value);
+            } else {
+                app.notice(
+                    "warning",
+                    `Could not attach ${images[index]!.name}: ${describe(result.reason)}`,
+                    id,
+                );
             }
-        }
+        });
 
         const content = parts.length === 1 ? body : parts;
         const requestId =
@@ -2018,13 +2007,27 @@ export class Commands {
         }
     }
 
-    /** A new session with this session's history through `entryId`, which then goes its own way. */
+    /**
+     * A new session with this session's history through `entryId`, which then goes its own way. Without `entryId`, the
+     * whole session as it stands: through Pi's latest finished reply (a session list's Fork), or none of it before one.
+     */
     async fork(
         id: ConversationId,
         user: User,
         request: { entryId?: unknown; worktree?: unknown },
     ): Promise<{ id: ConversationId }> {
         this.#requireForkable(id, user);
+
+        if (request.entryId === undefined) {
+            return {
+                id: await this.#branch(id, user, {
+                    at: await this.#latestReply(id),
+                    label: "fork",
+                    worktree: request.worktree === true,
+                }),
+            };
+        }
+
         const entryId = entryIdOf(request.entryId);
         const entry = await this.#app.transcripts.visibleEntry(id, entryId);
 
@@ -2168,6 +2171,34 @@ export class Commands {
         this.#reportUnanswered(forked, submission.wait(context));
 
         return { id: forked };
+    }
+
+    /**
+     * The id of Pi's newest finished reply in a session, or undefined before its first: where a fork of the whole session
+     * ends. A reply that called tools is not finished (a fork from it would wait for their results), nor is one cut off.
+     */
+    async #latestReply(id: ConversationId): Promise<number | undefined> {
+        const conversation = await this.#app.conversation(id);
+        let cursor: Cursor | undefined;
+
+        do {
+            const page = await conversation.entries({}, 64, cursor, context);
+
+            for (const entry of page.items) {
+                const reply = entry.model?.[0];
+
+                if (
+                    entry.kind === "pi.assistant" &&
+                    !(reply?.role === "assistant" && reply.stopReason === "toolUse")
+                ) {
+                    return Number(entry.id);
+                }
+            }
+
+            cursor = page.next;
+        } while (cursor !== undefined);
+
+        return undefined;
     }
 
     /** Forks are new sessions: who may start one may fork, from a session they can see. */

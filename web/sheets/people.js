@@ -43,8 +43,14 @@ const cancelInvite = (invite) => {
 };
 
 export function InviteSheet({ session = null }) {
-    const { view, me } = store.state;
-    const here = view.conversation?.kind === "session" ? view.conversation : null;
+    const { view, me, sessions } = store.state;
+    // The session named (Share from a row's menu), or the one open.
+    const here =
+        session !== null
+            ? (sessions.find((each) => each.id === session) ?? null)
+            : view.conversation?.kind === "session"
+              ? view.conversation
+              : null;
     const [role, setRole] = useState("guest");
     const [only, setOnly] = useState(session !== null);
     // The owner's own other device: it signs in as the owner, not as someone new.
