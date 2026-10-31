@@ -8,7 +8,7 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { createInterface } from "node:readline";
@@ -17,6 +17,7 @@ import {
     ACCESS_LABELS,
     type AccessMode,
     bindHost,
+    listenHost,
     chooseAccess,
     CloudflareTunnel,
     cloudflaredSource,
@@ -895,7 +896,16 @@ async function changeAccess(): Promise<void> {
             return;
         }
 
+        // prepareServe() saves the serve choice before it tries: a switch that fails puts back what was saved.
+        const saved = loadSettings().access;
+
         if (next === "tailscale-serve" && !prepareServe()) {
+            if (saved === undefined) {
+                rmSync(settingsFile, { force: true });
+            } else {
+                saveSettings(saved);
+            }
+
             return;
         }
 
@@ -1041,8 +1051,7 @@ async function main(): Promise<void> {
         }
 
         state.mode = mode;
-        // `custom` is `--host`'s own address, and only that turns a mode into `custom`; bindHost knows the rest.
-        state.host = mode === "custom" ? options.host! : bindHost(mode);
+        state.host = listenHost(mode, options.host);
 
         if (mode !== "custom") {
             saveSettings(mode);

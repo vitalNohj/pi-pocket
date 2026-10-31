@@ -677,7 +677,16 @@ export async function attempt(action) {
 /** End this browser's sign-in, and go to the sign-in page. */
 export function signOut() {
     return attempt(async () => {
-        // What this browser kept of this person's sessions goes with their sign-in.
+        // What this browser kept of this person's sessions goes with their sign-in, and nothing saves it again: not a save
+        // of this tab still to come, nor one of the other tabs, which hear of it through the storage event.
+        deviceCacheStopped = true;
+
+        try {
+            localStorage.setItem(SIGNED_OUT_KEY, String(Date.now()));
+        } catch {
+            // Storage refused: the other tabs find out at their next request.
+        }
+
         await disk.clear().catch(() => {});
         await api("logout", {});
         location.href = "/";
@@ -874,7 +883,20 @@ function forgetKept() {
 // ─── Sessions kept on the device ───────────────────────────────────────────────────────────────────────────────────
 
 /** Whether this browser keeps sessions on the device: the server allows it (`PI_POCKET_SESSION_CACHE`), and it can. */
-const onDevice = () => store.state.server?.deviceCache === true && typeof indexedDB !== "undefined";
+const onDevice = () =>
+    !deviceCacheStopped &&
+    store.state.server?.deviceCache === true &&
+    typeof indexedDB !== "undefined";
+
+/** Set at sign-out, in this tab or another: the device keeps nothing more. */
+let deviceCacheStopped = false;
+const SIGNED_OUT_KEY = "pocket.signedOut";
+
+addEventListener("storage", (event) => {
+    if (event.key === SIGNED_OUT_KEY) {
+        deviceCacheStopped = true;
+    }
+});
 
 /**
  * Whose sessions these are, and what they may see: a person's id, role, and shared sessions. What the device kept for

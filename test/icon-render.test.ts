@@ -7,7 +7,7 @@ import { inflateSync } from "node:zlib";
 import { APP_ICON, renderIcon } from "../src/server/icon-render.ts";
 
 // The owner's stored colors live in the data folder: a folder of this test's own, not the real one.
-process.env.PI_POCKET_DIR = mkdtempSync(join(tmpdir(), "icon-store-"));
+const dataDir = mkdtempSync(join(tmpdir(), "icon-store-"));
 
 /** An 8-bit RGB PNG with no interlacing, as pixels. */
 function decode(png: Buffer): { size: number; pixels: Buffer } {
@@ -125,13 +125,13 @@ test("the page carries the icon address of the colors in the cookie, and no othe
         ({ headers: cookie === undefined ? {} : { cookie } }) as never;
 
     assert.equal(
-        iconAddress(request("a=1; pocket_icon=070707.000.b0b0b0.b6b6b6.b9b9b9")),
+        iconAddress(request("a=1; pocket_icon=070707.000.b0b0b0.b6b6b6.b9b9b9"), dataDir),
         "/app-icon.png?frame=070707&card=000&ring1=b0b0b0&ring2=b6b6b6&pi=b9b9b9&size=180",
     );
-    assert.equal(iconAddress(request()), null, "no cookie");
-    assert.equal(iconAddress(request("pocket_icon=zz")), null, "not colors");
+    assert.equal(iconAddress(request(), dataDir), null, "no cookie");
+    assert.equal(iconAddress(request("pocket_icon=zz"), dataDir), null, "not colors");
     assert.equal(
-        iconAddress(request('pocket_icon=070707.000.b0b0b0.b6b6b6.b9b9b9"><script>')),
+        iconAddress(request('pocket_icon=070707.000.b0b0b0.b6b6b6.b9b9b9"><script>'), dataDir),
         null,
         "nothing but the colors reaches the page",
     );
@@ -163,10 +163,10 @@ test("the manifest takes the icons and colors of the cookie, and is left alone w
     const request = (cookie?: string) =>
         ({ headers: cookie === undefined ? {} : { cookie } }) as never;
 
-    assert.equal(manifestFor(request(), file), null, "the static file is served");
+    assert.equal(manifestFor(request(), file, dataDir), null, "the static file is served");
 
     const made = JSON.parse(
-        manifestFor(request("pocket_icon=070707.000.b0b0b0.b6b6b6.b9b9b9"), file)!,
+        manifestFor(request("pocket_icon=070707.000.b0b0b0.b6b6b6.b9b9b9"), file, dataDir)!,
     );
 
     assert.equal(made.name, "Pi Pocket", "the rest stays");
@@ -187,24 +187,24 @@ test("the owner's colors serve a request with no cookie, and the cookie still wi
     const request = (cookie?: string) =>
         ({ headers: cookie === undefined ? {} : { cookie } }) as never;
 
-    assert.equal(storedIconColors(), null, "nothing stored yet");
-    assert.equal(iconAddress(request()), null);
+    assert.equal(storedIconColors(dataDir), null, "nothing stored yet");
+    assert.equal(iconAddress(request(), dataDir), null);
 
-    storeIconColors("070707.000.b0b0b0.b6b6b6.b9b9b9");
+    storeIconColors(dataDir, "070707.000.b0b0b0.b6b6b6.b9b9b9");
 
-    assert.deepEqual(storedIconColors(), ["070707", "000", "b0b0b0", "b6b6b6", "b9b9b9"]);
+    assert.deepEqual(storedIconColors(dataDir), ["070707", "000", "b0b0b0", "b6b6b6", "b9b9b9"]);
     assert.match(
-        iconAddress(request())!,
+        iconAddress(request(), dataDir)!,
         /frame=070707.*pi=b9b9b9/,
         "no cookie: the owner's colors",
     );
     assert.match(
-        iconAddress(request("pocket_icon=111.222.333.444.555"))!,
+        iconAddress(request("pocket_icon=111.222.333.444.555"), dataDir)!,
         /frame=111/,
         "a cookie wins",
     );
-    assert.ok(manifestFor(request(), "{}"), "the manifest too");
-    assert.throws(() => storeIconColors("nope"), TypeError, "only colors are stored");
+    assert.ok(manifestFor(request(), "{}", dataDir), "the manifest too");
+    assert.throws(() => storeIconColors(dataDir, "nope"), TypeError, "only colors are stored");
 });
 
 test("the icon route draws no more than 192 pixels, and a size that is not a number is a 400", async () => {

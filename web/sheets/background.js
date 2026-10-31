@@ -71,33 +71,40 @@ export function BackgroundSheet({ task: opened }) {
 
         let open = true;
         let ended = false;
+        // One look at a time: a look still on its way has not moved `from` yet, so another would get the same part.
+        let looking = false;
 
         from.current = undefined;
         setLog({ text: "", skipped: 0, item: null });
 
         const load = () => {
-            if (ended) {
+            if (ended || looking) {
                 return;
             }
 
             const since = from.current === undefined ? "" : `&from=${from.current}`;
 
-            api(`c/${conversationId}/background/${selected}/output?chars=${CHARS}${since}`).then(
-                (data) => {
-                    if (!open) {
-                        return;
-                    }
+            looking = true;
+            api(`c/${conversationId}/background/${selected}/output?chars=${CHARS}${since}`)
+                .finally(() => {
+                    looking = false;
+                })
+                .then(
+                    (data) => {
+                        if (!open) {
+                            return;
+                        }
 
-                    ended = !isLive(data.item);
-                    from.current = data.to;
-                    setLog((was) => ({
-                        text: (was.text + data.text).slice(-CHARS),
-                        skipped: was.skipped + data.skipped,
-                        item: data.item,
-                    }));
-                },
-                (error) => open && notify("error", error.message),
-            );
+                        ended = !isLive(data.item);
+                        from.current = data.to;
+                        setLog((was) => ({
+                            text: (was.text + data.text).slice(-CHARS),
+                            skipped: was.skipped + data.skipped,
+                            item: data.item,
+                        }));
+                    },
+                    (error) => open && notify("error", error.message),
+                );
         };
 
         load();

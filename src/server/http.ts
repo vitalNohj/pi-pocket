@@ -122,7 +122,7 @@ export function createHandler(options: HttpOptions) {
                 parts.length === 1 &&
                 parts[0] === "apple-touch-icon.png" &&
                 (request.method === "GET" || request.method === "HEAD") &&
-                appleTouchIcon(request, response)
+                appleTouchIcon(request, response, app.dataDir)
             ) {
                 return;
             }
@@ -136,6 +136,7 @@ export function createHandler(options: HttpOptions) {
                 const body = manifestFor(
                     request,
                     readFileSync(join(WEB, "manifest.webmanifest"), "utf8"),
+                    app.dataDir,
                 );
 
                 if (body !== null) {
@@ -164,7 +165,7 @@ export function createHandler(options: HttpOptions) {
 
             // The web app: index.html for app routes, files from web/ otherwise.
             if (parts.length === 0 || parts[0] === "s") {
-                return serveApp(response, iconAddress(request));
+                return serveApp(response, iconAddress(request, app.dataDir));
             }
 
             const file = normalize(join(WEB, ...parts));
@@ -174,7 +175,7 @@ export function createHandler(options: HttpOptions) {
             }
 
             if (file === join(WEB, "index.html")) {
-                return serveApp(response, iconAddress(request));
+                return serveApp(response, iconAddress(request, app.dataDir));
             }
 
             return await serveFile(request, response, file);

@@ -192,7 +192,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         // A picture of anyone this person may see in the people list.
         if (first === "avatar" && second !== undefined && method === "GET") {
             const picture = app.people(user).some((each) => each.id === second)
-                ? readAvatar(second)
+                ? readAvatar(app.dataDir, second)
                 : undefined;
 
             if (picture === undefined) {
@@ -436,7 +436,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 throw new HttpError(400, "Colors are five hex colors joined by dots");
             }
 
-            storeIconColors(colors);
+            storeIconColors(app.dataDir, colors);
 
             return json(response, 200, { ok: true });
         }

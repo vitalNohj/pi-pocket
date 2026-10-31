@@ -2,7 +2,7 @@
 // a theme folder's own, or "Follow desktop": the Omarchy theme this machine runs), tiled windows, motion, text size,
 // density, and the sidebar's shape. Saved per browser. index.html applies the last look before the first paint from
 // `pocket.themeCache`, the theme's stylesheets included, so a reload never flashes another look.
-import { applyIcons } from "./app-icon.js";
+import { applyIcons, reportIconsAs } from "./app-icon.js";
 import { THEMES } from "./themes.js";
 import { onSafeModeEnd, safeMode } from "./safe-mode.js";
 import { api, store } from "./store.js";
@@ -843,6 +843,7 @@ export function startTheme() {
 
         stop();
         checkDesktop({ animate: false });
+        reportIconsAs(state.me.role === "owner");
     });
 }
 

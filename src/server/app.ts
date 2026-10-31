@@ -1994,10 +1994,10 @@ export class PocketApp {
     /** Set (bytes) or clear (undefined) someone's picture; everyone's lists show it at once. */
     setAvatar(user: User, bytes: Buffer | undefined): void {
         if (bytes === undefined) {
-            removeAvatar(user.id);
+            removeAvatar(this.dataDir, user.id);
             this.config.updateUser(user.id, { avatar: undefined });
         } else {
-            saveAvatar(user.id, bytes);
+            saveAvatar(this.dataDir, user.id, bytes);
             this.config.updateUser(user.id, { avatar: Date.now() });
         }
 
@@ -2926,7 +2926,7 @@ export class PocketApp {
 
     #forget(userId: string): void {
         this.config.removeUser(userId);
-        removeAvatar(userId);
+        removeAvatar(this.dataDir, userId);
         this.pushStore?.removeUser(userId);
 
         // Their open tabs end now; reconnecting fails, so they land on the sign-in screen.

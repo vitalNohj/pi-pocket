@@ -6,7 +6,6 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { dataDir } from "./config.ts";
 
 const HEX = "(?:[0-9a-f]{3}|[0-9a-f]{6})";
 
@@ -14,13 +13,13 @@ const HEX = "(?:[0-9a-f]{3}|[0-9a-f]{6})";
 export const isIconColors = (value: unknown): value is string =>
     typeof value === "string" && new RegExp(`^${HEX}(?:\\.${HEX}){4}$`, "i").test(value);
 
-const file = () => join(dataDir(), "app-icon.json");
+const file = (dataDir: string) => join(dataDir, "app-icon.json");
 
 /** The colors as read from `file()` once; the page, the manifest, and the icon ask for them on every request. */
 let kept: { path: string; colors: string[] | null } | undefined;
 
-export function storedIconColors(): string[] | null {
-    const path = file();
+export function storedIconColors(dataDir: string): string[] | null {
+    const path = file(dataDir);
 
     if (kept?.path === path) {
         return kept.colors;
@@ -46,13 +45,13 @@ export function storedIconColors(): string[] | null {
     return colors;
 }
 
-export function storeIconColors(colors: unknown): void {
+export function storeIconColors(dataDir: string, colors: unknown): void {
     if (!isIconColors(colors)) {
         throw new TypeError("Colors are five hex colors joined by dots");
     }
 
-    if (storedIconColors()?.join(".") !== colors) {
-        writeFileSync(file(), `${JSON.stringify({ colors })}\n`);
-        kept = { path: file(), colors: colors.split(".") };
+    if (storedIconColors(dataDir)?.join(".") !== colors) {
+        writeFileSync(file(dataDir), `${JSON.stringify({ colors })}\n`);
+        kept = { path: file(dataDir), colors: colors.split(".") };
     }
 }

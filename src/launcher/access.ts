@@ -84,6 +84,11 @@ export function bindHost(mode: AccessMode): string {
     return "127.0.0.1";
 }
 
+/** Where the server listens: `--host` when it is given, with any mode, as in 0.27; else the mode's own address. */
+export function listenHost(mode: AccessMode | "custom", host: string | undefined): string {
+    return host ?? (mode === "custom" ? "127.0.0.1" : bindHost(mode));
+}
+
 // ─── Choosing a mode ────────────────────────────────────────────────────
 
 export interface AccessChoice {

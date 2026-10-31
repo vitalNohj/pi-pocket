@@ -1545,7 +1545,24 @@ export class BackgroundTasks {
                 ? Math.min(Math.max(Math.floor(options.from), 0), end)
                 : Math.max(0, end - window);
         // A look that fell behind starts where the window begins: what it missed is skipped, and said so.
-        const start = Math.max(since, Math.max(0, end - window));
+        let start = Math.max(since, Math.max(0, end - window));
+
+        // A start the client chose can be inside a hidden value, and the rest of it alone is not replaced: go back to
+        // where that value begins, as `#settled` stops before one. Not from the end, where nothing follows: an ended
+        // task's last bytes can look like a value's start, and they were shown already.
+        if (start > 0 && start < end) {
+            const before = this.#span(
+                conversationId,
+                item,
+                Math.max(0, start - 4 * 4096),
+                start,
+            ).bytes;
+            const open = openTail(before);
+            const prefix = before.subarray(0, before.length - open).toString();
+
+            start -= open + Buffer.byteLength(prefix.slice(this.#safeRaw(conversationId, prefix)));
+        }
+
         const { bytes, began } = this.#span(conversationId, item, start, end);
         // From partway in, the first whole line after it, so no line shows cut in two and no hidden value in part.
         let head = closingHead(bytes);
@@ -1577,7 +1594,7 @@ export class BackgroundTasks {
             text,
             from: at,
             to: end,
-            skipped: at - since,
+            skipped: Math.max(0, at - since),
         };
     }
 

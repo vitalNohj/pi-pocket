@@ -12,6 +12,7 @@ import {
     chooseAccess,
     findTailscale,
     isAccessMode,
+    listenHost,
     serveBailOut,
     serveWithoutTailscale,
 } from "../src/launcher/access.ts";
@@ -170,4 +171,11 @@ test("the serve mode is spelled the way systemd's unit and its guide spell it", 
         "tailscale",
         "tailscale-serve",
     ]);
+});
+
+test("--host is where the server listens, whatever the access mode", () => {
+    assert.equal(listenHost("lan", "127.0.0.2"), "127.0.0.2");
+    assert.equal(listenHost("local", "::1"), "::1");
+    assert.equal(listenHost("lan", undefined), "0.0.0.0");
+    assert.equal(listenHost("custom", undefined), "127.0.0.1");
 });

@@ -100,13 +100,21 @@ const HEX = "(?:[0-9a-f]{3}|[0-9a-f]{6})";
 const COOKIE = new RegExp(`(?:^|;\\s*)pocket_icon=(${HEX}(?:\\.${HEX}){4})(?:;|$)`, "i");
 
 /** The colors in the request's `pocket_icon` cookie (`frame.card.ring1.ring2.pi`, which `web/app-icon.js` keeps), or null. */
-function cookieColors(request: IncomingMessage): string[] | null {
-    return COOKIE.exec(request.headers.cookie ?? "")?.[1]?.split(".") ?? storedIconColors() ?? null;
+function cookieColors(request: IncomingMessage, dataDir: string): string[] | null {
+    return (
+        COOKIE.exec(request.headers.cookie ?? "")?.[1]?.split(".") ??
+        storedIconColors(dataDir) ??
+        null
+    );
 }
 
 /** The icon for a request with no cookie, as a phone's own fetch of the icon is: the owner's colors, else the file. */
-export function appleTouchIcon(request: IncomingMessage, response: ServerResponse): boolean {
-    const colors = cookieColors(request);
+export function appleTouchIcon(
+    request: IncomingMessage,
+    response: ServerResponse,
+    dataDir: string,
+): boolean {
+    const colors = cookieColors(request, dataDir);
 
     if (colors === null) {
         return false;
@@ -150,8 +158,8 @@ const address = (colors: string[], size: number, maskable = false) => {
  * The home-screen icon's address for the colors in the cookie, or the owner's, or null. iOS may read the icon from the page
  * as served, so the page carries it.
  */
-export function iconAddress(request: IncomingMessage): string | null {
-    const colors = cookieColors(request);
+export function iconAddress(request: IncomingMessage, dataDir: string): string | null {
+    const colors = cookieColors(request, dataDir);
 
     return colors === null ? null : address(colors, 180);
 }
@@ -160,8 +168,12 @@ export function iconAddress(request: IncomingMessage): string | null {
  * The web app manifest with the icons and colors of the cookie, or null without one (the file is served as it is).
  * iOS and Android read the manifest's icons too, and an icon there that is not the page's own wins over it.
  */
-export function manifestFor(request: IncomingMessage, file: string): string | null {
-    const colors = cookieColors(request);
+export function manifestFor(
+    request: IncomingMessage,
+    file: string,
+    dataDir: string,
+): string | null {
+    const colors = cookieColors(request, dataDir);
 
     if (colors === null) {
         return null;

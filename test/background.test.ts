@@ -370,6 +370,44 @@ test(
     },
 );
 
+test("a look from a byte inside a hidden value shows none of it", { skip }, async () => {
+    const id = await session();
+    const remove = app.hidden.add({ value: "SECRETVALUE123", label: "the key" });
+
+    try {
+        const item = await app.background.start(id, {
+            command: "printf 'a SECRETVALUE123 b\\n'",
+            notify: false,
+        });
+
+        await until(async () => (await one(id)).status !== "running", "the end");
+
+        // A viewer chooses where a look starts: from inside the value, it starts where the value does.
+        for (const from of [3, 8]) {
+            const look = await app.background.output(id, item.id, { from });
+
+            assert.equal(look?.text, "[the key] b\n", `from ${from}`);
+        }
+
+        // An ended task's last bytes that only look like a value's start show once, not again from the end.
+        const ends = await app.background.start(id, {
+            command: "printf 'ordinary SEC'",
+            notify: false,
+        });
+
+        await until(
+            async () => (await items(id)).every((each) => each.status !== "running"),
+            "its end",
+        );
+        const look = await app.background.output(id, ends.id);
+
+        assert.equal(look?.text, "ordinary SEC");
+        assert.equal((await app.background.output(id, ends.id, { from: look!.to }))?.text, "");
+    } finally {
+        remove();
+    }
+});
+
 test(
     "a look in Background moves nothing Pi reads, and goes on from where the last look ended",
     { skip },

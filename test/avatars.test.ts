@@ -5,7 +5,6 @@ import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { dataDir } from "../src/server/config.ts";
 import { createHandler } from "../src/server/http.ts";
 
 let app: Awaited<ReturnType<typeof openApp>>;
@@ -98,7 +97,7 @@ test("removing a person removes their picture", async () => {
     const gone = app.config.addUser("Gone", "guest");
 
     assert.equal((await call(gone.token, "/api/me/avatar", "POST", PNG)).status, 200);
-    const file = join(dataDir(), "avatars", gone.user.id);
+    const file = join(app.dataDir, "avatars", gone.user.id);
 
     assert.equal(existsSync(file), true);
     app.removeUser(app.config.userById(app.config.users[0]!.id)!, gone.user.id);

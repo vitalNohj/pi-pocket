@@ -34,11 +34,26 @@ export function iconSvg(vars) {
 const svgUrl = (svg) => `data:image/svg+xml,${encodeURIComponent(svg)}`;
 
 /**
+ * A palette color as the server takes it: hex with no `#`, 3 or 6 digits. Its alpha is dropped (an icon is opaque), and a
+ * color in another form is the app's own.
+ */
+const hex = (vars, name) => {
+    const value = (vars[name] ?? "").trim().replace("#", "").toLowerCase();
+    const opaque = /^[0-9a-f]{8}$/.test(value)
+        ? value.slice(0, 6)
+        : /^[0-9a-f]{4}$/.test(value)
+          ? value.slice(0, 3)
+          : value;
+
+    return /^(?:[0-9a-f]{3}|[0-9a-f]{6})$/.test(opaque) ? opaque : DEFAULTS[name].replace("#", "");
+};
+
+/**
  * The home-screen icon's address: the server draws the PNG (`src/server/icon-render.ts`). A phone fetches it when the
  * icon is added, and does not take a `data:` or `blob:` address for it.
  */
 const homeIconUrl = (vars) => {
-    const color = (name) => (vars[name] ?? DEFAULTS[name]).replace("#", "");
+    const color = (name) => hex(vars, name);
     const query = new URLSearchParams({
         frame: color("--o-bg-darker"),
         card: color("--o-bg"),
@@ -58,7 +73,7 @@ const homeIconUrl = (vars) => {
 const COOKIE = "pocket_icon";
 const cookieValue = (vars) =>
     ["--o-bg-darker", "--o-bg", "--o-cyan", "--o-green", "--o-orange"]
-        .map((name) => (vars[name] ?? DEFAULTS[name]).replace("#", ""))
+        .map((name) => hex(vars, name))
         .join(".");
 
 function setLink(rel, href, type) {
@@ -79,7 +94,7 @@ function setLink(rel, href, type) {
 
 /**
  * A phone fetches the page and the icon in a session of its own, with no cookie: the owner's browser tells the server the
- * colors too (a guest's is refused, and keeps its cookie). Not awaited; a failure only leaves the cookie's colors.
+ * colors too (`reportIconsAs`). Not awaited; a failure only leaves the cookie's colors.
  */
 async function reportToServer(colors) {
     try {
@@ -100,6 +115,18 @@ async function reportToServer(colors) {
 }
 
 let applied = "";
+/** The colors in use, `frame.card.ring1.ring2.pi`, and whether this browser reports them: only the owner's may. */
+let colorsInUse = null;
+let reports = false;
+
+/** Once the person is known: the owner's browser reports the colors (a guest's or a viewer's would be refused). */
+export function reportIconsAs(owner) {
+    reports = owner;
+
+    if (owner && colorsInUse !== null) {
+        void reportToServer(colorsInUse);
+    }
+}
 
 /** Put the icons for `vars` on the page: the tab's icon and the home-screen icon. The same colors again do nothing. */
 export function applyIcons(vars) {
@@ -112,6 +139,10 @@ export function applyIcons(vars) {
     applied = key;
     setLink("icon", svgUrl(iconSvg(vars)), "image/svg+xml");
     setLink("apple-touch-icon", homeIconUrl(vars));
-    document.cookie = `${COOKIE}=${cookieValue(vars)}; path=/; max-age=31536000; samesite=lax`;
-    reportToServer(cookieValue(vars));
+    colorsInUse = cookieValue(vars);
+    document.cookie = `${COOKIE}=${colorsInUse}; path=/; max-age=31536000; samesite=lax`;
+
+    if (reports) {
+        void reportToServer(colorsInUse);
+    }
 }
