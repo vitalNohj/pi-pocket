@@ -3943,7 +3943,6 @@ pre.diff .del {
     pointer-events: none;
 }
 
-
 /* Touch screens keep 16px, below which iOS zooms into the field. */
 @media (pointer: coarse) {
     .composer textarea {

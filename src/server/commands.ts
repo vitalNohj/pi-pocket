@@ -191,7 +191,6 @@ function entryIdOf(value: unknown): number {
     return id;
 }
 
-
 /** A request's model, when it names one, must name a provider and a model id. */
 function checkModel(asked: { provider?: unknown; modelId?: unknown } | undefined): void {
     if (
