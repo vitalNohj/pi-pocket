@@ -99,43 +99,6 @@ function loadPastes(id) {
     }
 }
 
-const attachedKey = (id) => `pocket.attached.${id ?? "home"}`;
-
-/**
- * Each conversation's uploaded files, kept with its draft: the browser drops a tab in the background, or reloads it after
- * an update, and the files must still be there. A file still uploading is not kept: its upload ends with the page.
- */
-function loadAttached(id) {
-    try {
-        const list = JSON.parse(localStorage.getItem(attachedKey(id)) ?? "[]");
-
-        return list.map((attachment) => ({
-            key: uid(),
-            name: attachment.name,
-            size: attachment.size,
-            state: "done",
-            preview: attachment.mime?.startsWith("image/") ? fileUrl(attachment.path) : null,
-            attachment,
-        }));
-    } catch {
-        return [];
-    }
-}
-
-function saveAttached(id, files) {
-    const list = files.filter((file) => file.state === "done").map((file) => file.attachment);
-
-    try {
-        if (list.length === 0) {
-            localStorage.removeItem(attachedKey(id));
-        } else {
-            localStorage.setItem(attachedKey(id), JSON.stringify(list));
-        }
-    } catch {
-        // No room: the files stay attached until the page goes.
-    }
-}
-
 function savePastes(id, pastes) {
     try {
         if (Object.keys(pastes).length === 0) {
@@ -425,7 +388,7 @@ export function Composer() {
     const { view, conversationId } = store.state;
     const historyScope = { person: store.state.me?.id, conversation: conversationId };
     const [text, setText] = useState(() => drafts.get(conversationId));
-    const [files, setFiles] = useState(() => loadAttached(conversationId));
+    const [files, setFiles] = useState([]);
     // How a message goes while Pi works: "steer", "followUp" (Queue), or "interrupt" (stop the run, then send).
     const [sendMode, setSendMode] = useState("steer");
     // The queued message tapped open, wrapped: one line each until then. The queue holds only a message's start.
@@ -504,7 +467,6 @@ export function Composer() {
 
         return () => clearTimeout(timer);
     }, [interrupting]);
-    useEffect(() => saveAttached(conversationId, files), [files]);
     useEffect(() => {
         const draft = drafts.get(conversationId);
 
