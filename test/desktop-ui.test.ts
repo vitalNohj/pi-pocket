@@ -268,3 +268,170 @@ test(
         );
     },
 );
+
+test(
+    "a tiled window is cut around window controls, and a window that opens has its room in its first frame",
+    real,
+    async () => {
+        await page.evaluate(`
+        localStorage.setItem("pocket.appearance", JSON.stringify({ sessionTabs: false, sidebar: "open", tiling: true }));
+    `);
+        await page.navigate(`${base}/s/${session}`);
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(document.querySelector(".topbar") !== null)`,
+                ),
+            "the conversation's top bar",
+        );
+
+        // On the left, the sidebar is under the buttons. It has no bar: it starts below them, and is not cut.
+        await page.evaluate(`
+        overlayTest.visible = true;
+        overlayTest.side = "left";
+        overlayTest.height = 32;
+        overlayTest.dispatchEvent(new Event("geometrychange"));
+    `);
+        await until(
+            () =>
+                inPage<boolean>(`
+                const sidebar = document.querySelector(".sidebar");
+                return JSON.stringify(sidebar.dataset.underControls === "push" &&
+                    document.querySelector("[data-controls-notch]") === null);
+            `),
+            "the sidebar starts below left window controls",
+        );
+
+        // On the right, the conversation's top bar is: its window is cut around them. A window cut on the left is
+        // the same, mirrored.
+        await page.evaluate(`
+        overlayTest.side = "right";
+        overlayTest.dispatchEvent(new Event("geometrychange"));
+    `);
+        await until(
+            () =>
+                inPage<boolean>(`
+                const window = document.querySelector(".topbar").closest(".layout > .window");
+                const box = window.getBoundingClientRect();
+                const w = Math.round(box.right - (innerWidth - 140) + 6);
+                return JSON.stringify(document.documentElement.dataset.tiling !== "on" ||
+                    (window.hasAttribute("data-controls-notch") &&
+                        window.style.getPropertyValue("--notch-w") === w + "px" &&
+                        window.style.getPropertyValue("--notch-h") === Math.round(32 - box.top + 6) + "px" &&
+                        (!CSS.supports("corner-shape", "notch") ||
+                            getComputedStyle(window).borderTopRightRadius.startsWith(w + "px"))));
+            `),
+            "the window under right window controls is cut around them",
+        );
+
+        // The subagents board takes the conversation's place: its bar makes room before the frame that shows it.
+        const frames = await inPage<string[]>(`
+            const seen = [];
+            const look = () => {
+                const head = document.querySelector(".board-head");
+                seen.push(head === null ? "none" : head.dataset.underControls ?? "no room");
+            };
+            await new Promise((done) => requestAnimationFrame(done));
+            (await import("/sessions.js")).toggleBoard();
+            for (let frame = 0; frame < 4; frame += 1) {
+                await new Promise((done) => requestAnimationFrame(done));
+                look();
+            }
+            (await import("/sessions.js")).toggleBoard();
+            return JSON.stringify(seen);
+        `);
+
+        assert.deepEqual(
+            frames.filter((each) => each !== "none"),
+            frames.filter((each) => each !== "none").map(() => "bar"),
+        );
+        assert.ok(frames.includes("bar"), `the board showed: ${frames.join(", ")}`);
+
+        await page.evaluate(`
+        overlayTest.visible = false;
+        overlayTest.dispatchEvent(new Event("geometrychange"));
+    `);
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(document.querySelector("[data-controls-notch]") === null)`,
+                ),
+            "no cut without window controls",
+        );
+    },
+);
+
+test(
+    "with window controls, every window's top bar moves the window by its empty room, and what is in it takes clicks",
+    real,
+    async () => {
+        await page.evaluate(`
+        localStorage.setItem("pocket.appearance", JSON.stringify({ sessionTabs: false, sidebar: "open", tiling: true }));
+    `);
+        await page.navigate(`${base}/s/${session}`);
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(document.querySelector(".topbar") !== null && document.querySelector(".sessions-head") !== null)`,
+                ),
+            "the top bar and the sidebar",
+        );
+
+        const regions = `
+            const region = (selector) => getComputedStyle(document.querySelector(selector)).appRegion;
+            return JSON.stringify({
+                topbar: region(".topbar"),
+                sessions: region(".sessions-head"),
+                title: region(".topbar > .title"),
+                titleFits: document.querySelector(".topbar > .title").getBoundingClientRect().right <
+                    [...document.querySelectorAll(".topbar > .icon-button")]
+                        .filter((each) => each.getBoundingClientRect().width > 0)[0].getBoundingClientRect().left - 12,
+                button: region(".sessions-head .new-button"),
+                search: region(".search input"),
+            });
+        `;
+
+        // In a browser tab there is no window to move: nothing is a drag region.
+        const tab = await inPage<Record<string, string | boolean>>(regions);
+
+        assert.equal(tab.topbar, "none");
+        assert.equal(tab.sessions, "none");
+
+        for (const side of ["right", "left"] as const) {
+            await page.evaluate(`
+            overlayTest.visible = true;
+            overlayTest.side = ${JSON.stringify(side)};
+            overlayTest.height = 32;
+            overlayTest.dispatchEvent(new Event("geometrychange"));
+        `);
+            await until(
+                () =>
+                    inPage<boolean>(
+                        `return JSON.stringify(document.documentElement.dataset.windowControls === ${JSON.stringify(side)})`,
+                    ),
+                `${side} window controls`,
+            );
+
+            assert.deepEqual(await inPage(regions), {
+                topbar: "drag",
+                sessions: "drag",
+                title: "no-drag",
+                titleFits: true,
+                button: "no-drag",
+                search: "no-drag",
+            });
+        }
+
+        await page.evaluate(`
+        overlayTest.visible = false;
+        overlayTest.dispatchEvent(new Event("geometrychange"));
+    `);
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(getComputedStyle(document.querySelector(".topbar")).appRegion === "none")`,
+                ),
+            "no drag regions without window controls",
+        );
+    },
+);
