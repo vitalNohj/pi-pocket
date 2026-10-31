@@ -5,7 +5,7 @@
  * command checks who may do it, and changes others should know about become activity lines in the session's chat.
  */
 import { randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { basename, extname, join, sep } from "node:path";
 import { type Context, copyJson } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -15,7 +15,6 @@ import {
     type ModelThinkingLevel,
     type TextContent,
 } from "@earendil-works/pi-ai";
-import { resizeImage } from "@earendil-works/pi-coding-agent";
 import {
     type AgentChange,
     AgentDoc,
@@ -58,6 +57,7 @@ import {
 } from "./entry-format.ts";
 import { describe, HttpError, optionalText } from "./errors.ts";
 import { homePath } from "./paths.ts";
+import { forModel, MAX_INLINE_IMAGE, modelImage } from "./model-images.ts";
 import { mentionedPaths, viewFile } from "./files.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./models.ts";
 import { writePiSession } from "./pi-sessions.ts";
@@ -129,9 +129,8 @@ export interface SubmitRequest {
     inlineFiles?: boolean;
 }
 
-/** Attached images that also go to the model itself, when it takes images. */
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const MAX_INLINE_IMAGE = 5 * 1024 * 1024;
+/** A send slower than this logs where its time went. */
+const SLOW_SUBMIT_MS = 1000;
 /** How many `@` mentioned files go along with a message, and how much of them. */
 const MAX_MENTIONED = 10;
 const MAX_MENTIONED_FILE = 100_000;
@@ -192,19 +191,6 @@ function entryIdOf(value: unknown): number {
     return id;
 }
 
-/**
- * An image file for the model, at most 2000 pixels a side as Pi's read tool sends images: models refuse bigger ones once
- * a conversation holds many, and then every request fails until they leave its context.
- */
-async function modelImage(path: string, mimeType: string): Promise<ImageContent> {
-    const image = await resizeImage(readFileSync(path), mimeType);
-
-    if (image === null) {
-        throw new Error("it could not be made small enough for the model");
-    }
-
-    return { type: "image", mimeType: image.mimeType, data: image.data };
-}
 
 /** A request's model, when it names one, must name a provider and a model id. */
 function checkModel(asked: { provider?: unknown; modelId?: unknown } | undefined): void {
@@ -761,6 +747,11 @@ export class Commands {
     ): Promise<{ submissionId: SubmissionId; requestId: string }> {
         const app = this.#app;
 
+        // Where a slow send spends its time, logged when it takes long (`SLOW_SUBMIT_MS`).
+        const started = performance.now();
+        const steps: string[] = [];
+        const step = (name: string) =>
+            steps.push(`${name} ${Math.round(performance.now() - started)}ms`);
         app.requireSee(user, id);
         await app.requireDriver(id, user);
 
@@ -787,6 +778,7 @@ export class Commands {
         }
 
         const agent = await app.agentState(id);
+        step("checked");
         const model =
             agent?.model === undefined
                 ? undefined
@@ -821,23 +813,28 @@ export class Commands {
             ),
         ];
 
-        for (const file of attachments) {
-            if (
-                !model.input.includes("image") ||
-                !IMAGE_TYPES.has(file.mime) ||
-                file.size > MAX_INLINE_IMAGE
-            ) {
-                continue;
-            }
+        // Most were made ready as they were uploaded (`model-images.ts`); the rest are made side by side, in their order.
+        const images = model.input.includes("image")
+            ? attachments.filter((file) => forModel(file.mime, file.size))
+            : [];
+        const made = await Promise.allSettled(
+            images.map((file) => modelImage(file.path, file.mime)),
+        );
 
-            try {
-                parts.push(await modelImage(file.path, file.mime));
-            } catch (error) {
-                app.notice("warning", `Could not attach ${file.name}: ${describe(error)}`, id);
+        made.forEach((result, index) => {
+            if (result.status === "fulfilled") {
+                parts.push(result.value);
+            } else {
+                app.notice(
+                    "warning",
+                    `Could not attach ${images[index]!.name}: ${describe(result.reason)}`,
+                    id,
+                );
             }
-        }
+        });
 
         const content = parts.length === 1 ? body : parts;
+        step("prepared");
         const requestId =
             via === undefined
                 ? ownRequest(user.id, clientKey(request.requestId))
@@ -858,6 +855,8 @@ export class Commands {
         }
 
         // Interrupt: stop the run now, rather than waiting for its tool round or turn to end. Like Stop, this withdraws
+        step("admitted");
+
         // what waits in the queue. Only a person's own message interrupts, never one sent for them (`via`).
         // A retried request finds its first submission: it must not stop the run that the first one started. (Two POSTs
         // of one request at the same moment can both find none and both stop the run: a rare race, left as it is.)
@@ -891,11 +890,13 @@ export class Commands {
             .finally(() => admission?.afterSubmit());
 
         app.collab.setTyping(id, user, null);
+        step("submitted");
         // The title comes from the message as it was stored: without hidden values.
         const titled = app.hidden.replace(typed, id);
 
         await this.#touched(id, titled, text === titled ? undefined : text);
 
+        step("touched");
         // A person's own words: linked sessions may message each other again (`linked-sessions.ts`).
         if (via === undefined) {
             await app.linkedSessions.personWrote(id);
@@ -908,6 +909,12 @@ export class Commands {
         }
 
         // For extensions (`host.on`): once for each message (two retries at once, too), never for PiP's conversation,
+        step("done");
+
+        if (performance.now() - started > SLOW_SUBMIT_MS) {
+            app.log(`Slow send to conversation ${String(id)}: ${steps.join(", ")}`);
+        }
+
         // which is its person's alone.
         if (app.pip.ownerOf(id) === undefined && !known && this.#announce(submission.id)) {
             app.events.emit("message.sent", {
