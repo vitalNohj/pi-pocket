@@ -20,6 +20,10 @@ export function forModel(mime: string, size: number): boolean {
     return IMAGE_TYPES.has(mime) && size <= MAX_INLINE_IMAGE;
 }
 
+/**
+ * An image file for the model, at most 2000 pixels a side as Pi's read tool sends images: models refuse bigger ones once
+ * a conversation holds many, and then every request fails until they leave its context.
+ */
 async function make(path: string, mimeType: string): Promise<ImageContent> {
     const image = await resizeImage(await readFile(path), mimeType);
 
