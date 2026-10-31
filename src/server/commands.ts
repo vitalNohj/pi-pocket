@@ -751,6 +751,7 @@ export class Commands {
         const steps: string[] = [];
         const step = (name: string) =>
             steps.push(`${name} ${Math.round(performance.now() - started)}ms`);
+
         app.requireSee(user, id);
         await app.requireDriver(id, user);
 
@@ -777,6 +778,7 @@ export class Commands {
         }
 
         const agent = await app.agentState(id);
+
         step("checked");
         const model =
             agent?.model === undefined
@@ -833,6 +835,7 @@ export class Commands {
         });
 
         const content = parts.length === 1 ? body : parts;
+
         step("prepared");
         const requestId =
             via === undefined
@@ -896,6 +899,7 @@ export class Commands {
         await this.#touched(id, titled, text === titled ? undefined : text);
 
         step("touched");
+
         // A person's own words: linked sessions may message each other again (`linked-sessions.ts`).
         if (via === undefined) {
             await app.linkedSessions.personWrote(id);
