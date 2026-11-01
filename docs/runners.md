@@ -32,6 +32,14 @@ Pi's own tools run there: `read`, `write`, `edit`, and `bash`, and with them goa
 
 For now these work only for sessions on the server, because they read the server's own disk: background tasks, the browser, artifacts, design, memory, subagents and teams, PR watches, git worktrees, the Files and Changes panels, and the folder's project context and skills. Files people attach stay on the server.
 
+## Who can use them
+
+Only the person who linked a computer can start sessions on it, forks included.
+
+By default each session on a linked computer is its creator's alone: nobody else on the server sees it in their list, opens it, or prompts it, owners included. The owner can turn on **Share sessions on linked computers** in Computers (`sharedRunnerSessions` in the server's `config.json`). Then they follow the usual rules, like any other session: people who can see one can see and prompt it, and its commands run on that computer for them too. Turning it off again closes those sessions in everyone else's tabs at once.
+
+This switch is for the whole server. Later, sharing could be chosen per session: who may see it, who may prompt it, and whether its tool calls need the linker's approval when someone else asked for them.
+
 ## When the link drops
 
 | What happens                       | The work in progress                                                                                                                                          |
