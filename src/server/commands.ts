@@ -400,15 +400,17 @@ export class Commands {
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
 
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can start sessions on another computer.");
+        // Only the person who linked the computer runs things on it: everything there runs as them.
+        if (app.runners.require(runner).createdBy !== user.id) {
+            throw new HttpError(
+                403,
+                "Only the person who linked this computer can start sessions on it.",
+            );
         }
 
         if (request.worktree === true) {
             throw new HttpError(400, "Worktrees work only for sessions on this server, for now.");
         }
-
-        app.runners.require(runner);
 
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
         const initial = this.#defaultModel();
@@ -2310,8 +2312,10 @@ export class Commands {
         }
 
         // It runs on the same computer, with everything that runs as that computer's person: theirs alone.
-        if (app.sessionMeta(id)?.runner !== undefined && user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can fork a session on another computer.");
+        const meta = app.sessionMeta(id);
+
+        if (meta?.runner !== undefined && meta.createdBy !== user.id) {
+            throw new HttpError(403, "Only the person whose session this is can fork it.");
         }
     }
 

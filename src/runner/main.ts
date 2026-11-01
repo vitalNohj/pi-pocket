@@ -50,7 +50,8 @@ Options:
 Environment: PI_POCKET_RUNNER_CONFIG, PI_POCKET_RUNNER_DAEMON (a pi-env daemon to use instead of the packaged one)
 
 The server keeps the agent, models, keys, and history. This computer only runs the tools: files and commands in the
-folders its sessions work in, as you. Anyone who can prompt those sessions can do what you can here.`;
+folders its sessions work in, as you. Only the person who linked this computer can start, see, or prompt those
+sessions; nobody else on the server can.`;
 
 type Link = RunnerLinkFile;
 

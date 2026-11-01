@@ -2139,9 +2139,15 @@ export class PocketApp {
      */
     canSee(user: User, id: ConversationId): boolean {
         const root = this.rootOf(id);
-        const pip = this.#sessions[String(root)]?.pip;
+        const meta = this.#sessions[String(root)];
+        const pip = meta?.pip;
 
         if (pip !== undefined && pip !== user.id) {
+            return false;
+        }
+
+        // A session on another computer is its creator's alone, as PiP is: its tools run there, as that person.
+        if (meta?.runner !== undefined && meta.createdBy !== user.id) {
             return false;
         }
 
@@ -2512,12 +2518,14 @@ export class PocketApp {
             this.#sessionsTimer = undefined;
             const all = this.sessions();
             const allJson = JSON.stringify(all);
+            // Sessions on other computers are their creators' alone: then each person gets their own list.
+            const personal = all.some((session) => session.runner !== undefined);
             let board: SubagentEntry[] | undefined;
 
             for (const client of this.#clients) {
                 const scope = client.user.sessions;
 
-                if (scope === undefined) {
+                if (scope === undefined && !personal) {
                     this.#sendSessions(client, all, allJson);
                 } else {
                     // Scoped lists need their own metadata projection, not just a filter over the global list.
@@ -2614,6 +2622,10 @@ export class PocketApp {
                 ([id, meta]) =>
                     // PiP is not a session people pick: it shows in its own panel (`pip.ts`).
                     meta.pip === undefined &&
+                    // A session on another computer: its creator's alone (`canSee`).
+                    (meta.runner === undefined ||
+                        user === undefined ||
+                        meta.createdBy === user.id) &&
                     (user?.sessions === undefined || user.sessions.includes(id)),
             )
             .map(([id, meta]) => {

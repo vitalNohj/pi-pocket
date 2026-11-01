@@ -186,6 +186,30 @@ describe("a session on another computer", () => {
         assert.equal(app.workspace.head(id as never), undefined);
     });
 
+    it("is its creator's alone: others on the server neither see nor start, fork, or prompt one", async () => {
+        const { user: other } = app.config.addUser("Someone", "guest");
+        const { user: anotherOwner } = app.config.addUser("Co-owner", "owner");
+
+        for (const person of [other, anotherOwner]) {
+            assert.equal(app.canSee(person, id as never), false, `${person.name} cannot see it`);
+            assert.ok(
+                !app.sessions(person).some((each) => each.id === Number(id)),
+                `${person.name}'s list has no such session`,
+            );
+            assert.throws(() => app.requireSee(person, id as never), /not shared with you/);
+            await assert.rejects(
+                app.commands.createSession(person, { cwd: there, runner: runnerId }),
+                /Only the person who linked this computer/,
+            );
+            await assert.rejects(
+                app.commands.fork(id as never, person, {}),
+                /not shared|Only the person/,
+            );
+        }
+
+        assert.equal(app.canSee(owner(app), id as never), true);
+    });
+
     it("keeps the computer in a fork", async () => {
         const fork = await app.commands.fork(id as never, owner(app), {});
 
