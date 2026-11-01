@@ -144,6 +144,12 @@ interface PocketConfig {
     runners?: StoredRunner[];
     /** One-time codes that link a computer, not yet used. */
     runnerCodes?: StoredRunnerCode[];
+    /**
+     * Sessions on a linked computer follow the usual sharing rules (others who can see a session can see and prompt
+     * it, so its tools run there for them too). Absent or false: each is its creator's alone. Starting one on a
+     * computer stays its linker's either way.
+     */
+    sharedRunnerSessions?: boolean;
 }
 
 /** The hours a run waits for a model's limit to clear, until the owner says otherwise. */
@@ -458,6 +464,21 @@ export class ConfigStore {
             delete this.#config.keepWarm;
         } else {
             this.#config.keepWarm = kept;
+        }
+
+        this.save();
+    }
+
+    /** Whether sessions on linked computers are shared like any other (`sharedRunnerSessions`). Default: no. */
+    get sharedRunnerSessions(): boolean {
+        return this.#config.sharedRunnerSessions === true;
+    }
+
+    set sharedRunnerSessions(shared: boolean) {
+        if (shared) {
+            this.#config.sharedRunnerSessions = true;
+        } else {
+            delete this.#config.sharedRunnerSessions;
         }
 
         this.save();
