@@ -34,6 +34,7 @@ import { isPinned, lookLabel, togglePin } from "../theme.js";
 import { currentTrust, trustAvailable } from "../trust.js";
 import { branchAvailable } from "./branch.js";
 import { KeepWarmCard, keepWarmAvailable, keepWarmHint } from "./keep-warm.js";
+import { runnersHint } from "./computers.js";
 import { memoryAvailable, memoryHint, useMemory } from "./memory.js";
 import { defaultLabel, defaultsKept } from "./model.js";
 import { copyText, html, Icon, item, PlaceTile, Sheet, shortPath } from "../ui.js";
@@ -567,7 +568,7 @@ export function MenuSheet({ places = true }) {
             ${triggersOn() && me?.role !== "viewer" && item("Webhooks and watches", () => openSheet({ type: "hooks" }), "GitHub, other services")}
             ${me?.role === "owner" && item("Providers", () => openSheet({ type: "providers" }))}
             ${me?.role === "owner" && keepWarmAvailable() && item("Keep warm", () => openSheet({ type: "keep-warm" }), keepWarmHint())}
-            ${me?.role === "owner" && item("Computers", () => openSheet({ type: "computers" }))}
+            ${me?.role === "owner" && item("Runners", () => openSheet({ type: "computers" }), runnersHint())}
             ${modelRefreshAvailable() && item("Refresh models", refreshModels, store.state.modelRefresh.loading ? "refreshing…" : "models.json and providers")}
             ${extensionMenuItems().map((each) => item(each.label, each.run, each.hint))}
             ${item("Extensions", () => openSheet({ type: "extensions" }), extensionsHint())}

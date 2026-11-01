@@ -120,12 +120,47 @@ function LineInput({ value, placeholder, label, onSubmit, onCancel, class: class
     </form>`;
 }
 
+/**
+ * Where a new session runs, among the places: this server, or a linked computer (`computers.js`), and a way to
+ * Runners to link one. Only the owner links computers, so only the owner sees it.
+ */
+function RunsOn({ runner, runners, onPick }) {
+    const choices = [{ id: null, name: "This server", online: true }, ...runners];
+
+    return html`<div class="fp-places-title">Runs on</div>
+        ${choices.map(
+            (each) => html`<button
+                key=${each.id ?? "server"}
+                type="button"
+                class=${`fp-place ${each.id === runner ? "on" : ""}`}
+                aria-pressed=${each.id === runner}
+                disabled=${!each.online && each.id !== runner}
+                title=${each.online ? `Start the session on ${each.name}` : `${each.name} is offline`}
+                onClick=${() => onPick(each.id)}
+            >
+                <${Icon} name=${each.id === null ? "home" : "monitor"} size=${15} />
+                <span>${each.name}</span>
+                ${each.id !== null && html`<span class=${`runner-dot ${each.online ? "on" : ""}`}></span>`}
+            </button>`,
+        )}
+        <button
+            type="button"
+            class="link small fp-pi"
+            onClick=${() => openSheet({ type: "computers" })}
+        >
+            ${runners.length === 0 ? "Link a computer…" : "Manage runners…"}
+        </button>`;
+}
+
 export function CwdSheet({ mode, fromList = false, runner: given = null }) {
     const { view, server, runners } = store.state;
     const changing = mode === "change";
     // The computer whose folders these are (`runners.ts`): the one asked for, or the session's when moving it. Its
     // folders are not this server's: no favorites, recent folders, default workspace, or worktrees.
-    const runner = changing ? (view.conversation?.runner ?? null) : given;
+    // A new session can switch computer in the places list (Runs on); moving one keeps its computer.
+    const [picked, setPicked] = useState(given);
+    const runner = changing ? (view.conversation?.runner ?? null) : picked;
+    const owner = store.state.me?.role === "owner";
     const favorites = runner ? [] : store.state.folderFavorites;
     const computer = runner
         ? (runners.find((each) => each.id === runner)?.name ??
@@ -213,9 +248,11 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
 
     useEffect(() => {
         load(initial);
+    }, [runner]);
 
-        // The computer's name, when this tab has not got the list yet (it comes with Computers, or a change).
-        if (runner && !runners.some((each) => each.id === runner)) {
+    useEffect(() => {
+        // The linked computers, for their names and the Runs on places, when this tab has not got the list yet.
+        if (owner && runners.length === 0) {
             api("runners").then(
                 (list) => store.set({ runners: list }),
                 () => {},
@@ -447,6 +484,13 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
         }
     };
 
+    /** Start the new session on another computer, or this server (`null`): its folders show instead. */
+    const pick = (id) => {
+        setSelected(null);
+        setListing(null);
+        setPicked(id);
+    };
+
     const crumbs = folder === null ? [] : crumbsOf(folder, home);
     const recent = (listing?.recent ?? []).filter((path) => !favorites.includes(path));
     const favoriteLabels = recentLabels(favorites, home);
@@ -465,7 +509,7 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
         ...(home ? [{ path: home, name: "Home", icon: "home" }] : []),
         ...(runner && home && /^[A-Za-z]:\\/.test(home)
             ? [{ path: home.slice(0, 3), name: home.slice(0, 2), icon: "monitor" }]
-            : [{ path: "/", name: computer ?? "Computer", icon: "monitor" }]),
+            : [{ path: "/", name: "Computer", icon: "monitor" }]),
     ];
 
     const place = (path, name, icon, key = null, pin = false) => html`<button
@@ -633,6 +677,7 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
                 )}
                 ${recent.length > 0 && html`<div class="fp-places-title">Recent</div>`}
                 ${recent.map((path, index) => place(path, labels[index], "folder"))}
+                ${!changing && owner && html`<${RunsOn} runner=${runner} runners=${runners} onPick=${pick} />`}
                 ${
                     !changing &&
                     !runner &&

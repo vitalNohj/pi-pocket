@@ -476,9 +476,9 @@ function actionItems() {
                 run: () => openSheet({ type: "keep-warm" }),
             },
         me?.role === "owner" && {
-            label: "Computers",
-            detail: "other computers that run sessions' tools",
-            keywords: "runner remote machine link laptop",
+            label: "Runners",
+            detail: "link a computer, start sessions on it",
+            keywords: "computers runner remote machine link laptop server",
             icon: "monitor",
             run: () => openSheet({ type: "computers" }),
         },
