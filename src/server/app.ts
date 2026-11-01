@@ -155,6 +155,7 @@ import { Spend } from "./spend.ts";
 import { Transcripts } from "./transcripts.ts";
 import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
+import { Runners } from "./runners.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -368,6 +369,8 @@ export interface OpenOptions {
 
 export class PocketApp {
     readonly config: ConfigStore;
+    /** Other computers that run sessions' tools (`runners.ts`): their links, keys, and environments. */
+    readonly runners: Runners;
     /** Push subscriptions and their keys; undefined until the server opened. */
     pushStore: PushStore | undefined;
     readonly approvals = new Approvals((id) => this.attribution.requesterOf(id));
@@ -552,6 +555,11 @@ export class PocketApp {
         this.config = new ConfigStore(options.dataDir);
         this.#lockFile = join(options.dataDir, "harness.lock");
         this.#log = options.log ?? ((line) => console.log(line));
+        this.runners = new Runners({
+            config: this.config,
+            log: (line) => this.#log(line),
+            onChange: () => this.#runnersChanged(),
+        });
         this.cacheKeeper = new CacheKeeper({
             log: (line) => this.#log(line),
             conversationOf: (sessionId) => this.#conversationOfSession(sessionId),
@@ -1649,14 +1657,54 @@ export class PocketApp {
         return canonical;
     }
 
-    /** Where a conversation's commands run: its folder here, or its workspace provider's env. */
+    /**
+     * Where a conversation's commands run: its folder here, its workspace provider's env, or the computer its session
+     * runs on.
+     */
     envFor(id: ConversationId): ExecutionEnv {
         return this.#wrapped(id, this.cwdOf(id));
     }
 
-    /** A folder's environment, with what extensions add to each command and hide from its output in this session. */
+    /**
+     * The computer a conversation's tools run on: its session's runner, for the session and every subagent under it.
+     * Undefined: this machine.
+     */
+    runnerOf(id: ConversationId): string | undefined {
+        return this.#sessions[String(this.rootOf(id))]?.runner;
+    }
+
+    /** Refuse what works on this machine's disk for a conversation whose tools run on another computer. */
+    requireLocal(id: ConversationId, what: string): void {
+        const runner = this.runnerOf(id);
+
+        if (runner !== undefined) {
+            throw new HttpError(
+                409,
+                `This session runs on ${this.runners.name(runner)}: ${what} works only for sessions on this server, for now.`,
+            );
+        }
+    }
+
+    /**
+     * A folder's environment, with what extensions add to each command and hide from its output in this session. A
+     * session on another computer gets that computer's, never this machine's: when it is offline, its tools fail.
+     */
     #wrapped(id: ConversationId, cwd: string): ExecutionEnv {
-        return wrapEnv(this.#env(cwd), Number(id), cwd, this.commandEnvs, this.hidden);
+        const runner = this.runnerOf(id);
+        const base = runner === undefined ? this.#env(cwd) : this.runners.env(runner, cwd);
+
+        return wrapEnv(base, Number(id), cwd, this.commandEnvs, this.hidden);
+    }
+
+    /** The computers list changed (linked, removed, online, away): tell the owner's tabs. */
+    #runnersChanged(): void {
+        const list = this.runners.list();
+
+        for (const client of this.#clients) {
+            if (client.user.role === "owner") {
+                client.send("runners", list);
+            }
+        }
     }
 
     #env(cwd: string): ExecutionEnv {
@@ -3086,9 +3134,15 @@ export class PocketApp {
             // Keep warm: the session's choice and what its cache keeper does now.
             ...(meta === undefined ? {} : { keepWarm: this.keepWarm.session(room.id) }),
             // Whether a fork could get a worktree of its own.
-            ...(meta === undefined
-                ? {}
-                : { inRepository: this.workspace.inRepository(agent.cwd ?? meta.cwd) }),
+            // A session on another computer: its folder is there, so no worktree or panel reads it here.
+            ...(this.runnerOf(room.id) === undefined
+                ? meta === undefined
+                    ? {}
+                    : { inRepository: this.workspace.inRepository(agent.cwd ?? meta.cwd) }
+                : {
+                      runner: this.runnerOf(room.id)!,
+                      runnerName: this.runners.name(this.runnerOf(room.id)!),
+                  }),
         };
     }
 
@@ -3571,6 +3625,8 @@ export class PocketApp {
             throw new HttpError(403, "Only the owner decides which projects Pi trusts.");
         }
 
+        this.requireLocal(id, "project trust");
+
         const cwd = this.cwdOf(id);
 
         if (this.workspaceScheme(cwd) !== undefined) {
@@ -3603,6 +3659,11 @@ export class PocketApp {
 
     /** Pi's skills in a conversation's folder, to run as `/skill:name`. */
     skillCommands(id: ConversationId): SkillCommand[] {
+        // A session on another computer: its project's skills are there, and this server's would not fit it.
+        if (this.runnerOf(id) !== undefined) {
+            return [];
+        }
+
         try {
             return this.skills(this.cwdOf(id)).map((skill) => ({
                 name: skill.name,
@@ -3617,6 +3678,10 @@ export class PocketApp {
 
     /** Pi's prompt templates, as a conversation in its folder offers them. */
     promptTemplates(id: ConversationId): PromptTemplate[] {
+        if (this.runnerOf(id) !== undefined) {
+            return [];
+        }
+
         let paths: string[] = [];
 
         try {
@@ -4234,6 +4299,8 @@ export class PocketApp {
     close(): Promise<void> {
         this.#closing ??= (async () => {
             clearTimeout(this.#sessionsTimer);
+            // Runners reconnect to the next server; their daemons keep running for the grace period.
+            this.runners.close();
             this.alerts.close();
             this.themes.close();
             await this.cacheKeeper.close();

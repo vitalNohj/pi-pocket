@@ -567,6 +567,7 @@ export function MenuSheet({ places = true }) {
             ${triggersOn() && me?.role !== "viewer" && item("Webhooks and watches", () => openSheet({ type: "hooks" }), "GitHub, other services")}
             ${me?.role === "owner" && item("Providers", () => openSheet({ type: "providers" }))}
             ${me?.role === "owner" && keepWarmAvailable() && item("Keep warm", () => openSheet({ type: "keep-warm" }), keepWarmHint())}
+            ${me?.role === "owner" && item("Computers", () => openSheet({ type: "computers" }))}
             ${modelRefreshAvailable() && item("Refresh models", refreshModels, store.state.modelRefresh.loading ? "refreshing…" : "models.json and providers")}
             ${extensionMenuItems().map((each) => item(each.label, each.run, each.hint))}
             ${item("Extensions", () => openSheet({ type: "extensions" }), extensionsHint())}

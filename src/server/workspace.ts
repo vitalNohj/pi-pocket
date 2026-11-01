@@ -99,6 +99,11 @@ export class Workspace {
 
     /** What a conversation's folder has checked out, for its view: its repository's HEAD file, read as it is now. */
     head(id: ConversationId): Head | undefined {
+        // A session on another computer: its repository is there.
+        if (this.#app.runnerOf(id) !== undefined) {
+            return undefined;
+        }
+
         const gitDir = this.#gitDir(this.#app.cwdOf(id));
 
         return gitDir === undefined ? undefined : headOf(gitDir);
@@ -109,6 +114,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         this.#app.requireSteer(user);
+        this.#app.requireLocal(id, "the branch list");
 
         const cwd = this.#app.cwdOf(id);
 
@@ -135,6 +141,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         this.#app.requireSteer(user);
+        this.#app.requireLocal(id, "switching branches");
 
         if (user.sessions !== undefined) {
             throw new HttpError(403, "You were invited to one session.");
@@ -285,6 +292,11 @@ export class Workspace {
     conversationFile(user: User, id: ConversationId, path: string): string {
         const file = this.conversationPath(id, path);
 
+        // A session on another computer: its paths are there; only its uploads, kept here, load here.
+        if (this.#app.runnerOf(id) !== undefined) {
+            return this.#uploaded(id, path);
+        }
+
         if (user.role !== "viewer" && user.sessions === undefined) {
             return file;
         }
@@ -357,6 +369,30 @@ export class Workspace {
     }
 
     /** This session and the sessions it was forked from, nearest first. */
+    /** A file people attached to a session, or to the sessions it was forked from: those are all that load here. */
+    #uploaded(id: ConversationId, path: string): string {
+        const file = resolve(expandHome(path.trim()));
+
+        const real = (target: string) => {
+            try {
+                return realpathSync(target);
+            } catch {
+                return undefined;
+            }
+        };
+
+        const target = real(file);
+        const roots = this.#lineage(id)
+            .map((each) => real(join(this.#app.dataDir, "uploads", String(each))))
+            .filter((root): root is string => root !== undefined);
+
+        if (target === undefined || !roots.some((root) => target.startsWith(root + sep))) {
+            throw new HttpError(404, "Image not found");
+        }
+
+        return target;
+    }
+
     #lineage(id: ConversationId): ConversationId[] {
         const lineage = [id];
 
@@ -385,6 +421,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         this.#app.requireSteer(user);
+        this.#app.requireLocal(id, "the file list");
         await this.#app.conversation(id);
 
         return this.#files.get(this.#app.cwdOf(id));
@@ -401,6 +438,7 @@ export class Workspace {
     ): Promise<{ path: string; display: string } & FileView> {
         this.#app.requireSee(user, id);
         this.#app.requireSteer(user);
+        this.#app.requireLocal(id, "the file viewer");
         await this.#app.conversation(id);
         let file: string;
 
@@ -429,6 +467,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         await this.#app.requireDriver(id, user);
+        this.#app.requireLocal(id, "undoing a file");
 
         if (this.#app.isBusy(id)) {
             throw new HttpError(
@@ -457,6 +496,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         this.#app.requireSteer(user);
+        this.#app.requireLocal(id, "Changes");
 
         // Someone invited to this session only sees the files in its folder, here as in `conversationFile`.
         const onlyHere = user.sessions !== undefined;
@@ -519,6 +559,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         this.#app.requireSteer(user);
+        this.#app.requireLocal(id, "Changes");
 
         try {
             return await diffOf(this.#app.cwdOf(id), path, user.sessions !== undefined);
