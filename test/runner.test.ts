@@ -207,7 +207,7 @@ describe("runner link", () => {
             const result = await pending;
 
             assert.equal(result.ok, false);
-            assert.match(result.ok ? "" : result.error.message, /away too long/);
+            assert.match(result.ok ? "" : result.error.message, /disconnected too long/);
 
             setup.server.removeAllListeners("upgrade");
             setup.server.on("upgrade", listener);
@@ -250,7 +250,7 @@ describe("runner link", () => {
 
             assert.throws(() => setup.runners.makeCode("Server box ", "owner"), /already/);
 
-            assert.throws(() => setup.runners.redeem(code), /wrong, used, or expired/);
+            assert.throws(() => setup.runners.redeem(code), /wrong, already used, or expired/);
             assert.equal(setup.config.runnerByKey(linked.key)?.name, "Server box");
             assert.equal(setup.config.runnerByKey("nope"), undefined);
             assert.ok(!JSON.stringify(setup.config.runners).includes(linked.key));

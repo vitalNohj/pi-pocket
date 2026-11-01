@@ -54,6 +54,14 @@ A page from before 0.28.0-beta.7, still open after the server updates, asks with
 
 A page in an Electron window keeps running at full speed while the window hides in the tray, so `document.visibilityState` stays `visible` there. That is why `visible()` exists: without it, the server would think the person is looking, and hold every notification back.
 
+### Runner
+
+With the `runner` capability, the app provides `computerName()` and `linkRunner({ server, code, name })`. The server address is `server`, the one-time link code is `code`, and the computer's chosen name is `name`.
+
+`linkRunner()` saves the link, starts the runner, and keeps it running while the app is open. It returns a promise with `{ ok: true }` on success, or `{ ok: false, error: "…" }` with a message that the page can show. There is nothing to type in a terminal.
+
+The app must not restart a runner that exits with code 3. The person must resolve the reported error or link again. See [Sessions on another computer](runners.md) for the commands, access rules, and what happens when the connection drops.
+
 ### Notifications
 
 The server decides as for Web Push (`alerts.ts`): who can see the session, the kinds each person turned on in Menu → Notifications, and whether they are looking at it. Then it sends the message through Web Push to their subscribed devices, and to each of their embedders' connections (`PocketApp.notifyEmbedders`). An embedder that is not running gets nothing: nothing waits for it.

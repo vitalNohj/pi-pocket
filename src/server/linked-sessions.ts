@@ -660,7 +660,7 @@ export class LinkedSessions implements LinkedSessionsApi {
         cwd?: string,
     ): Promise<string> {
         // Its folder is on another computer, and a linked session does not keep the computer yet.
-        this.#app.requireLocal(source, "starting linked sessions");
+        this.#app.requireLocal(source, "Starting linked sessions");
 
         // A blank field (an empty form input) is no folder, not the home folder.
         if (cwd === undefined || (typeof cwd === "string" && cwd.trim() === "")) {

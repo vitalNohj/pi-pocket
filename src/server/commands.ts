@@ -418,7 +418,10 @@ export class Commands {
         }
 
         if (request.worktree === true) {
-            throw new HttpError(400, "Worktrees work only for sessions on this server, for now.");
+            throw new HttpError(
+                400,
+                "Worktrees are not available for sessions on another computer yet.",
+            );
         }
 
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
@@ -2430,7 +2433,7 @@ export class Commands {
         if (runner !== undefined && app.runners.stored(runner)?.createdBy !== user.id) {
             throw new HttpError(
                 403,
-                "Only the person who linked this computer can start sessions on it, forks too.",
+                "Only the person who linked this computer can start sessions on it, including forks.",
             );
         }
     }
@@ -2457,7 +2460,10 @@ export class Commands {
         const title = `${sourceTitle} · ${branch.label}`.slice(0, MAX_TITLE);
 
         if (meta.runner !== undefined && branch.worktree) {
-            throw new HttpError(400, "Worktrees work only for sessions on this server, for now.");
+            throw new HttpError(
+                400,
+                "Worktrees are not available for sessions on another computer yet.",
+            );
         }
 
         return this.#inPlace(source?.cwd ?? meta.cwd, branch.worktree, title, (place) =>
