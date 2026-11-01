@@ -213,6 +213,14 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
 
     useEffect(() => {
         load(initial);
+
+        // The computer's name, when this tab has not got the list yet (it comes with Computers, or a change).
+        if (runner && !runners.some((each) => each.id === runner)) {
+            api("runners").then(
+                (list) => store.set({ runners: list }),
+                () => {},
+            );
+        }
     }, []);
 
     // A new folder shows from its top, or with the selected one in view; its path shows to its end. Keys go to the
@@ -555,18 +563,20 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
                           )}
                       </nav>`
             }
-            <button
-                type="button"
-                class="button small fp-new"
-                hidden=${runner !== null}
-                disabled=${folder === null}
-                onClick=${() => {
-                    setEditing(null);
-                    setNaming(true);
-                }}
-            >
-                <${Icon} name="plus" size=${14} /> New folder
-            </button>
+            ${
+                !runner &&
+                html`<button
+                    type="button"
+                    class="button small fp-new"
+                    disabled=${folder === null}
+                    onClick=${() => {
+                        setEditing(null);
+                        setNaming(true);
+                    }}
+                >
+                    <${Icon} name="plus" size=${14} /> New folder
+                </button>`
+            }
         </div>
         ${
             missing !== null &&
