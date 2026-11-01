@@ -69,6 +69,31 @@ export interface StoredInvite {
     createdBy: string;
 }
 
+/**
+ * A computer whose runner (`pi-pocket runner`) may connect, so sessions can run their tools there (`runners.ts`). Kept by
+ * its key's sha256; the key itself is only on that computer.
+ */
+export interface StoredRunner {
+    id: string;
+    name: string;
+    keyHash: string;
+    createdAt: number;
+    /** Who linked it: the owner. Its sessions are theirs. */
+    createdBy: string;
+    /** When it last connected. */
+    lastSeen?: number;
+    /** What it reported when it last connected: its OS, architecture, home folder, and runner version. */
+    platform?: { os: string; arch: string; home: string; version: string };
+}
+
+/** A one-time code that links a computer, not yet used: kept by its sha256, for a few minutes. */
+export interface StoredRunnerCode {
+    codeHash: string;
+    name: string;
+    createdBy: string;
+    expiresAt: number;
+}
+
 /** The theme (a theme folder's id, or "pocket") and the colors ("desktop", a palette's id, or a folder's) a browser
  * starts with until its person chooses. */
 export interface ThemeDefault {
@@ -113,6 +138,10 @@ interface PocketConfig {
      * setting with no value here has its default. Since 0.22.0; an older Pi Pocket ignores it.
      */
     extensionSettings?: Record<string, Record<string, string | number | boolean>>;
+    /** Computers whose runners may connect (`runners.ts`). Since 0.29.0; an older Pi Pocket ignores them. */
+    runners?: StoredRunner[];
+    /** One-time codes that link a computer, not yet used. */
+    runnerCodes?: StoredRunnerCode[];
 }
 
 /** The hours a run waits for a model's limit to clear, until the owner says otherwise. */
@@ -510,6 +539,92 @@ export class ConfigStore {
         this.save();
 
         return token;
+    }
+
+    get runners(): readonly StoredRunner[] {
+        return this.#config.runners ?? [];
+    }
+
+    /** The computer a runner key belongs to. */
+    runnerByKey(key: string): StoredRunner | undefined {
+        const hash = hashToken(key);
+
+        return this.#config.runners?.find((runner) => sameHash(runner.keyHash, hash));
+    }
+
+    runnerById(id: string): StoredRunner | undefined {
+        return this.#config.runners?.find((runner) => runner.id === id);
+    }
+
+    /** Add a computer; returns it and its key, which only its runner keeps. */
+    addRunner(name: string, createdBy: string): { runner: StoredRunner; key: string } {
+        const key = newToken();
+        const runner: StoredRunner = {
+            id: randomUUID(),
+            name,
+            keyHash: hashToken(key),
+            createdAt: Date.now(),
+            createdBy,
+        };
+
+        this.#config.runners = [...(this.#config.runners ?? []), runner];
+        this.save();
+
+        return { runner, key };
+    }
+
+    updateRunner(
+        id: string,
+        patch: Partial<Pick<StoredRunner, "name" | "lastSeen" | "platform">>,
+    ): void {
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            Object.assign(runner, patch);
+            this.save();
+        }
+    }
+
+    /** Forget a computer: its key stops working. */
+    removeRunner(id: string): boolean {
+        const before = this.#config.runners ?? [];
+        const after = before.filter((runner) => runner.id !== id);
+
+        if (after.length === before.length) {
+            return false;
+        }
+
+        this.#config.runners = after;
+        this.save();
+
+        return true;
+    }
+
+    /** Keep a one-time code that links a computer named `name`, until `expiresAt`. */
+    addRunnerCode(code: string, name: string, createdBy: string, expiresAt: number): void {
+        const now = Date.now();
+
+        this.#config.runnerCodes = [
+            ...(this.#config.runnerCodes ?? []).filter((each) => each.expiresAt >= now),
+            { codeHash: hashToken(code), name, createdBy, expiresAt },
+        ];
+        this.save();
+    }
+
+    /** Use a one-time code: returns what it was for and forgets it; undefined when it is unknown or expired. */
+    takeRunnerCode(code: string): StoredRunnerCode | undefined {
+        const hash = hashToken(code);
+        const now = Date.now();
+        const codes = this.#config.runnerCodes ?? [];
+        const found = codes.find((each) => sameHash(each.codeHash, hash));
+        const left = codes.filter((each) => each !== found && each.expiresAt >= now);
+
+        if (found !== undefined || left.length !== codes.length) {
+            this.#config.runnerCodes = left;
+            this.save();
+        }
+
+        return found !== undefined && found.expiresAt >= now ? found : undefined;
     }
 
     save(): void {

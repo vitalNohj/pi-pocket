@@ -48,6 +48,7 @@ import {
     type SubagentRecord,
     SubagentsDoc,
 } from "./docs.ts";
+import { REMOTE_EXTENSIONS } from "./runners.ts";
 import {
     ATTACHMENTS_HEADING,
     FILE_BLOCK,
@@ -384,10 +385,66 @@ export class Commands {
         });
     }
 
+    /**
+     * Start a session whose tools run on computer `runner` (`runners.ts`), in a folder there; home without one. Only
+     * the owner: everything it runs runs as the person whose computer that is. It runs with `REMOTE_EXTENSIONS` only,
+     * so nothing in it works on this server's disk.
+     */
+    async #createRemote(
+        user: User,
+        runner: string,
+        request: { cwd?: string; worktree?: unknown },
+        title: string | undefined,
+    ): Promise<{ id: ConversationId }> {
+        const app = this.#app;
+
+        if (user.role !== "owner") {
+            throw new HttpError(403, "Only the owner can start sessions on another computer.");
+        }
+
+        if (request.worktree === true) {
+            throw new HttpError(400, "Worktrees work only for sessions on this server, for now.");
+        }
+
+        app.runners.require(runner);
+
+        const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
+        const initial = this.#defaultModel();
+        const now = Date.now();
+        const conversation = await app.harness.createConversation(
+            {
+                ownership: { kind: "ownerless" },
+                agent: {
+                    cwd,
+                    ...(initial.model === undefined ? {} : { model: initial.model }),
+                    ...(initial.thinkingLevel === undefined
+                        ? {}
+                        : { thinkingLevel: initial.thinkingLevel }),
+                },
+                init: async (tx, id) => {
+                    const sessions = await tx.doc(SessionsDoc);
+
+                    (await tx.doc(AgentDoc, id)).extensions = [...REMOTE_EXTENSIONS];
+                    sessions.items[String(id)] = {
+                        cwd,
+                        createdAt: now,
+                        updatedAt: now,
+                        createdBy: user.id,
+                        runner,
+                        title: title ?? `${basename(cwd) || cwd} on ${app.runners.name(runner)}`,
+                    };
+                },
+            },
+            context,
+        );
+
+        return { id: conversation.id };
+    }
+
     /** Start a session in a folder; with `worktree`, in a git worktree of its own made from that folder. */
     async createSession(
         user: User,
-        request: { cwd?: string; title?: string; worktree?: unknown },
+        request: { cwd?: string; title?: string; worktree?: unknown; runner?: unknown },
         { projectDefaults = true }: { projectDefaults?: boolean } = {},
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
@@ -400,6 +457,12 @@ export class Commands {
 
         const given = optionalText(request.title, "title");
         const title = (given === undefined ? undefined : oneLine(given)) || undefined;
+        const runner = optionalText(request.runner, "runner");
+
+        if (runner !== undefined) {
+            return this.#createRemote(user, runner, request, title);
+        }
+
         const folder = app.workspace.checkDirectory(
             optionalText(request.cwd, "cwd") ?? app.defaultCwd,
         );
@@ -1063,6 +1126,11 @@ export class Commands {
         const parts: (TextContent | ImageContent)[] = [];
         let total = 0;
 
+        // Its folder is on another computer: the mentions stay mentions, which Pi reads there.
+        if (app.runnerOf(id) !== undefined) {
+            return parts;
+        }
+
         for (const mention of mentionedPaths(text).slice(0, MAX_MENTIONED)) {
             let file: string | undefined;
 
@@ -1578,8 +1646,13 @@ export class Commands {
             current?.thinkingLevel ??
             "off") as ModelThinkingLevel;
         const thinkingLevel = model === undefined ? wanted : clampThinkingLevel(model, wanted);
+        const runner = app.runnerOf(id);
         const cwd =
-            request.cwd === undefined ? undefined : app.workspace.checkDirectory(request.cwd);
+            request.cwd === undefined
+                ? undefined
+                : runner === undefined
+                  ? app.workspace.checkDirectory(request.cwd)
+                  : await app.runners.checkFolder(runner, request.cwd);
 
         const change = {
             ...(request.model === undefined
@@ -2212,6 +2285,11 @@ export class Commands {
         if (app.sessionMeta(id)?.pip !== undefined) {
             throw new HttpError(400, "PiP's conversation cannot be forked. Start fresh instead.");
         }
+
+        // It runs on the same computer, with everything that runs as that computer's person: theirs alone.
+        if (app.sessionMeta(id)?.runner !== undefined && user.role !== "owner") {
+            throw new HttpError(403, "Only the owner can fork a session on another computer.");
+        }
     }
 
     /**
@@ -2234,6 +2312,10 @@ export class Commands {
         const source = await app.agentState(id);
         const sourceTitle = meta.title ?? "New session";
         const title = `${sourceTitle} · ${branch.label}`.slice(0, MAX_TITLE);
+
+        if (meta.runner !== undefined && branch.worktree) {
+            throw new HttpError(400, "Worktrees work only for sessions on this server, for now.");
+        }
 
         return this.#inPlace(source?.cwd ?? meta.cwd, branch.worktree, title, (place) =>
             this.#fork(id, user, { ...branch, title, sourceTitle, place }),
@@ -2259,10 +2341,13 @@ export class Commands {
         const app = this.#app;
         const source = await app.agentState(id);
         const { at, title, place } = fork;
+        // A fork runs where its session runs, with the same extensions (a fresh one copies no agent state).
+        const runner = app.sessionMeta(id)?.runner;
         const agent: AgentChange = {
             ...fork.agent,
             ...(place.worktree === undefined ? {} : { cwd: place.cwd }),
         };
+
         const now = Date.now();
         // A new session rather than a fork gets plan mode and the notes by hand.
         const plan =
@@ -2280,8 +2365,13 @@ export class Commands {
                 updatedAt: now,
                 createdBy: user.id,
                 forkedFrom: { id: Number(id), ...(at === undefined ? {} : { entryId: at }) },
+                ...(runner === undefined ? {} : { runner }),
                 ...(place.worktree === undefined ? {} : { worktree: place.worktree }),
             };
+
+            if (runner !== undefined) {
+                (await tx.doc(AgentDoc, forked)).extensions = [...REMOTE_EXTENSIONS];
+            }
 
             if (fork.resend !== undefined) {
                 await tx.createTask(ResendTask, fork.resend, {

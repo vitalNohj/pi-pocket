@@ -578,10 +578,59 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, await app.commands.continuePiSession(user, body.path));
         }
 
-        if (first === "sessions" && second === undefined && method === "POST") {
-            const body = await readJson<{ cwd?: string; title?: string; worktree?: unknown }>(
-                request,
+        // Other computers that run sessions' tools (`runners.ts`): the owner's alone.
+        if (first === "runners" && second === undefined && method === "GET") {
+            requireOwner(user);
+
+            return json(response, 200, app.runners.list());
+        }
+
+        if (first === "runners" && second === "code" && method === "POST") {
+            requireOwner(user);
+
+            const body = await readJson<{ name?: unknown }>(request);
+
+            return json(
+                response,
+                200,
+                app.runners.makeCode(typeof body.name === "string" ? body.name : "", user.id),
             );
+        }
+
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === undefined &&
+            method === "DELETE"
+        ) {
+            requireOwner(user);
+            app.runners.remove(second);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // The folders on another computer, for the folder picker of a new session there.
+        if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
+            requireOwner(user);
+
+            return json(
+                response,
+                200,
+                await app.runners.folders(
+                    second,
+                    url.searchParams.get("path") ?? "~",
+                    url.searchParams.get("hidden") === "1",
+                ),
+            );
+        }
+
+        if (first === "sessions" && second === undefined && method === "POST") {
+            const body = await readJson<{
+                cwd?: string;
+                title?: string;
+                worktree?: unknown;
+                runner?: unknown;
+            }>(request);
 
             return json(response, 200, await app.commands.createSession(user, body));
         }

@@ -18,6 +18,7 @@ import {
     GallerySourceSheet,
     GalleryUpdateSheet,
 } from "./sheets/gallery.js";
+import { ComputersSheet } from "./sheets/computers.js";
 import { CwdSheet } from "./sheets/folder.js";
 import { MemorySheet } from "./sheets/memory.js";
 import { MenuSheet, PlacesSheet } from "./sheets/menu.js";
@@ -199,7 +200,11 @@ function sheetBody(sheet) {
             body = view.conversation ? html`<${BranchPicker} />` : null;
             break;
         case "cwd":
-            body = html`<${CwdSheet} mode=${sheet.mode} fromList=${sheet.fromList === true} />`;
+            body = html`<${CwdSheet}
+                mode=${sheet.mode}
+                fromList=${sheet.fromList === true}
+                runner=${sheet.runner ?? null}
+            />`;
             break;
         case "artifacts":
             body = html`<${ArtifactsSheet} />`;
@@ -263,6 +268,9 @@ function sheetBody(sheet) {
             break;
         case "invite":
             body = html`<${InviteSheet} session=${sheet.session ?? null} />`;
+            break;
+        case "computers":
+            body = html`<${ComputersSheet} />`;
             break;
         case "people":
             body = html`<${PeopleSheet} />`;

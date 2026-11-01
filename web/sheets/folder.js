@@ -120,17 +120,29 @@ function LineInput({ value, placeholder, label, onSubmit, onCancel, class: class
     </form>`;
 }
 
-export function CwdSheet({ mode, fromList = false }) {
-    const { view, server, folderFavorites: favorites } = store.state;
+export function CwdSheet({ mode, fromList = false, runner: given = null }) {
+    const { view, server, runners } = store.state;
     const changing = mode === "change";
+    // The computer whose folders these are (`runners.ts`): the one asked for, or the session's when moving it. Its
+    // folders are not this server's: no favorites, recent folders, default workspace, or worktrees.
+    const runner = changing ? (view.conversation?.runner ?? null) : given;
+    const favorites = runner ? [] : store.state.folderFavorites;
+    const computer = runner
+        ? (runners.find((each) => each.id === runner)?.name ??
+          view.conversation?.runnerName ??
+          "another computer")
+        : null;
     const [alwaysDefault, setAlwaysDefault] = useState(
         () => localStorage.getItem(ALWAYS_DEFAULT_KEY) === "1",
     );
     // Where it opens: default workspace if pinned, else the folder of the session you are in (Issue #96).
-    const initial =
-        !changing && alwaysDefault && server?.defaultCwd
-            ? server.defaultCwd
-            : (view.agent?.cwd ?? server?.defaultCwd ?? "~");
+    const initial = runner
+        ? changing
+            ? (view.agent?.cwd ?? "~")
+            : "~"
+        : !changing && alwaysDefault && server?.defaultCwd
+          ? server.defaultCwd
+          : (view.agent?.cwd ?? server?.defaultCwd ?? "~");
     const [listing, setListing] = useState(null);
     const [failed, setFailed] = useState(null);
     // The folder a click selected (mouse only): Open takes it over the one you are in.
@@ -163,7 +175,11 @@ export function CwdSheet({ mode, fromList = false }) {
     const load = (path, { showHidden = hidden, select = null } = {}) => {
         const ask = ++asked.current;
 
-        return api(`fs?path=${encodeURIComponent(path)}${showHidden ? "&hidden=1" : ""}`).then(
+        const where = runner ? `runners/${encodeURIComponent(runner)}/fs` : "fs";
+
+        return api(
+            `${where}?path=${encodeURIComponent(path)}${showHidden ? "&hidden=1" : ""}`,
+        ).then(
             (result) => {
                 if (ask !== asked.current) {
                     return;
@@ -256,7 +272,10 @@ export function CwdSheet({ mode, fromList = false }) {
                 await actions.configure({ cwd: path });
                 closeSheet();
             } else {
-                const created = await actions.createSession(path, { worktree });
+                const created = await actions.createSession(
+                    path,
+                    runner ? { runner } : { worktree },
+                );
 
                 navigate(created.id);
 
@@ -273,7 +292,7 @@ export function CwdSheet({ mode, fromList = false }) {
         }
     };
 
-    const mayStar = canSteer() && !scoped();
+    const mayStar = canSteer() && !scoped() && !runner;
     const starred = target !== null && favorites.includes(target);
 
     /** Star or unstar a folder. The list changes when the server says it did, on every device. */
@@ -425,7 +444,7 @@ export function CwdSheet({ mode, fromList = false }) {
     const favoriteLabels = recentLabels(favorites, home);
     const labels = recentLabels(recent, home);
     const places = [
-        ...(server?.defaultCwd && server.defaultCwd !== home && server.defaultCwd !== "/"
+        ...(!runner && server?.defaultCwd && server.defaultCwd !== home && server.defaultCwd !== "/"
             ? [
                   {
                       path: server.defaultCwd,
@@ -436,7 +455,9 @@ export function CwdSheet({ mode, fromList = false }) {
               ]
             : []),
         ...(home ? [{ path: home, name: "Home", icon: "home" }] : []),
-        { path: "/", name: "Computer", icon: "monitor" },
+        ...(runner && home && /^[A-Za-z]:\\/.test(home)
+            ? [{ path: home.slice(0, 3), name: home.slice(0, 2), icon: "monitor" }]
+            : [{ path: "/", name: computer ?? "Computer", icon: "monitor" }]),
     ];
 
     const place = (path, name, icon, key = null, pin = false) => html`<button
@@ -466,7 +487,10 @@ export function CwdSheet({ mode, fromList = false }) {
     </button>`;
 
     return html`<${Sheet}
-        title=${changing ? "Move this session: pick a folder" : "New session: pick a folder"}
+        title=${
+            (changing ? "Move this session: pick a folder" : "New session: pick a folder") +
+            (computer ? ` on ${computer}` : "")
+        }
         onClose=${closeSheet}
         wide=${true}
         className="folder-sheet"
@@ -534,6 +558,7 @@ export function CwdSheet({ mode, fromList = false }) {
             <button
                 type="button"
                 class="button small fp-new"
+                hidden=${runner !== null}
                 disabled=${folder === null}
                 onClick=${() => {
                     setEditing(null);
@@ -552,6 +577,7 @@ export function CwdSheet({ mode, fromList = false }) {
                 <span class="fp-missing-actions">
                     ${
                         missingWhy === null &&
+                        !runner &&
                         html`<button class="button small" onClick=${() => make(missing)}>
                             Create it
                         </button>`
@@ -599,6 +625,7 @@ export function CwdSheet({ mode, fromList = false }) {
                 ${recent.map((path, index) => place(path, labels[index], "folder"))}
                 ${
                     !changing &&
+                    !runner &&
                     piSessionsAvailable() &&
                     html`<button
                         type="button"
@@ -686,6 +713,7 @@ export function CwdSheet({ mode, fromList = false }) {
             <div class="fp-options">
                 ${
                     !changing &&
+                    !runner &&
                     html`<label
                         class="check"
                         title="The session gets a branch of its own, apart from this folder"

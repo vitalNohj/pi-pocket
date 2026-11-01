@@ -114,6 +114,8 @@ export const store = {
     state: {
         me: undefined, // undefined: unknown, null: signed out
         users: [],
+        /** Other computers that run sessions' tools: the owner's, from `GET /api/runners` and `runners` events. */
+        runners: [],
         models: [],
         /** This tab's shared model refresh state and last result (`model-refresh.js`). */
         modelRefresh: { loading: false, result: null, error: null },
@@ -1609,6 +1611,8 @@ const handlers = {
     peek: (data) =>
         store.set((state) => ({ peeks: { ...state.peeks, [data.conversationId]: data } })),
     users: (users) => setChanged({ users: keptEach(store.state.users, users) }),
+    // The owner's computers came, went, or changed (`sheets/computers.js`).
+    runners: (runners) => store.set({ runners }),
     // Pi's lessons changed somewhere: a Memory sheet or menu that shows them fetches them again (`sheets/memory.js`).
     memory: () => store.set((state) => ({ memoryRev: (state.memoryRev ?? 0) + 1 })),
     // Not this person's to see (any more), or gone: nothing of it stays in this tab, kept or shown.
@@ -2245,8 +2249,8 @@ export const actions = {
     approve: (id, allow, values) =>
         api(`approvals/${encodeURIComponent(id)}`, { allow, ...(values ? { values } : {}) }),
     /** `worktree`: the session works in a git worktree of its own, made from the folder. */
-    createSession: (cwd, { worktree = false } = {}) =>
-        api("sessions", { cwd, ...(worktree ? { worktree } : {}) }),
+    createSession: (cwd, { worktree = false, runner } = {}) =>
+        api("sessions", { cwd, ...(worktree ? { worktree } : {}), ...(runner ? { runner } : {}) }),
     updateSession: (id, patch) => api(`sessions/${id}`, patch),
     upload: (file) => api(`c/${current()}/upload?name=${encodeURIComponent(file.name)}`, file),
     fullEntry: (entryId) => api(`c/${current()}/entry/${entryId}`),
