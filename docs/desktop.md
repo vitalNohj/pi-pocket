@@ -31,6 +31,10 @@ window.pocketHost = {
     visible(), // whether the app's window shows: false while hidden in a tray or minimized
     setPinned(list), // [{ id, title, state, label, url }]: the pinned sessions, in order
     subscribe(listener), // the app's events (below)
+
+    // With the "runner" capability (runners.md): the app runs `pi-pocket runner` for the computer it is on.
+    computerName(), // this computer's name, to suggest for it
+    linkRunner({ server, code, name }), // link with this one-time code and keep the runner running: Promise<{ ok, error? }>
 };
 ```
 
@@ -45,6 +49,7 @@ window.pocketHost = {
 | `notify`     | Opens its event stream with `host=notify`. The server then sends this connection every notification it would push to the person (`desktop-notify`), and the page passes each to `notify(message)`.                                                                                    |
 | `visibility` | Reads `visible()` with the page's own visibility: the page counts as hidden while either says so. It tells the server (`POST /api/visibility`), so the server knows the person is away and lets notifications through, and seen marks and peek tiles wait as they do in a hidden tab. |
 | `pinned`     | Calls `setPinned(list)` when a pinned session's title or state changes, for a tray menu. `state` is the square's shape, as the session list's `data-state` names it: `waiting`, `limited`, `working`, `failed`, `fresh` (finished, not read), or `seen`. `label` says it in words.    |
+| `runner`     | Computers offers **Link this computer**: Pi Pocket makes a one-time code and calls `linkRunner()`, and the app runs `pi-pocket runner` for this computer while it runs ([runners.md](runners.md)).                                                                                    |
 | `open`       | Opens what the app asks for (an `open` event), also without `notify`.                                                                                                                                                                                                                 |
 
 A page in an Electron window keeps running at full speed while the window hides in the tray, so `document.visibilityState` stays `visible` there. That is why `visible()` exists: without it, the server would think the person is looking, and hold every notification back.

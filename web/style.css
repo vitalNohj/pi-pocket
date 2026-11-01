@@ -20400,3 +20400,25 @@ pre.gallery-code {
     overflow-wrap: anywhere;
     user-select: all;
 }
+
+.runner-command-box {
+    display: flex;
+    gap: 0.25rem;
+    align-items: flex-start;
+    margin: 0.35rem 0 0.6rem;
+}
+
+.runner-command-box .runner-command {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+.runner-list {
+    margin: 0;
+    padding-left: 1.25rem;
+}
+
+.row.wrap {
+    flex-wrap: wrap;
+}

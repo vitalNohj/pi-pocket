@@ -10,16 +10,22 @@
  *   pi-pocket runner                        connect and serve, until stopped
  *   pi-pocket runner status                 show what this computer is linked to
  *   pi-pocket runner unlink                 forget the link
+ *   pi-pocket runner service [remove]       keep it running as a systemd user service (Linux)
+ *
+ * It exits with `STOPPED_BY_SERVER` when the server ends the link for good (the computer was removed, its key is
+ * wrong): a service manager or the desktop app does not start it again then.
  */
 import {
     chmodSync,
     existsSync,
     mkdirSync,
     readFileSync,
+    realpathSync,
     renameSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pocketVersion } from "../server/versions.ts";
@@ -34,6 +40,8 @@ Usage:
   pi-pocket runner                        Connect and serve until stopped (Ctrl+C)
   pi-pocket runner status                 Show the server this computer is linked to
   pi-pocket runner unlink                 Forget the link (remove the computer on the server too)
+  pi-pocket runner service                Linux: keep it running as a systemd user service
+  pi-pocket runner service remove         Linux: stop and remove that service
 
 Options:
   --config FILE   Where the link is kept (default ~/.pi-pocket/runner.json)
@@ -45,6 +53,11 @@ The server keeps the agent, models, keys, and history. This computer only runs t
 folders its sessions work in, as you. Anyone who can prompt those sessions can do what you can here.`;
 
 type Link = RunnerLinkFile;
+
+/** The exit code when the server ended the link for good: starting it again would not help. */
+export const STOPPED_BY_SERVER = 3;
+/** The systemd user unit `service` writes. */
+const UNIT = "pi-pocket-runner.service";
 
 function fail(message: string): never {
     console.error(`pi-pocket runner: ${message}`);
@@ -174,7 +187,9 @@ async function link(file: string, args: string[]): Promise<void> {
 
     writeLink(file, { server, id: got.id, name: got.name, key: got.key });
     console.log(`Linked as "${got.name}" to ${server}. Its key is in ${file}.`);
-    console.log("Start it with: pi-pocket runner");
+    console.log(
+        "Start it with: pi-pocket runner (or, on Linux, keep it running: pi-pocket runner service)",
+    );
 }
 
 async function serve(file: string): Promise<void> {
@@ -214,11 +229,94 @@ async function serve(file: string): Promise<void> {
         await runner.finished;
     } catch (error) {
         if (error instanceof RunnerStopped) {
-            fail(error.message);
+            console.error(`pi-pocket runner: ${error.message}`);
+            process.exit(STOPPED_BY_SERVER);
         }
 
         throw error;
     }
+}
+
+/** `systemctl --user …`, its output shown; false when it failed. */
+function systemctl(...args: string[]): boolean {
+    return spawnSync("systemctl", ["--user", ...args], { stdio: "inherit" }).status === 0;
+}
+
+/**
+ * Keep the runner running as a systemd user service, with this Node, this Pi Pocket, this link file, and this PATH
+ * (the tools sessions run find what this shell finds). Linux only: elsewhere, the person keeps `pi-pocket runner`
+ * running their own way, or the desktop app does.
+ */
+function service(file: string, args: string[]): void {
+    if (process.platform !== "linux" || spawnSync("systemctl", ["--version"]).status !== 0) {
+        fail(
+            "service needs Linux with systemd. Elsewhere, keep `pi-pocket runner` running yourself, or use the Pi Pocket desktop app.",
+        );
+    }
+
+    const unit = join(
+        process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
+        "systemd",
+        "user",
+        UNIT,
+    );
+
+    if (args[0] === "remove") {
+        systemctl("disable", "--now", UNIT);
+        rmSync(unit, { force: true });
+        systemctl("daemon-reload");
+        console.log(`Removed ${UNIT}. The link stays: \`pi-pocket runner unlink\` forgets it.`);
+
+        return;
+    }
+
+    if (readLink(file) === undefined) {
+        fail("Not linked yet. Run: pi-pocket runner link <server> <code>");
+    }
+
+    const launcher = realpathSync(process.argv[1] ?? "");
+
+    // npx's copy is a cache npm can clear: the service would stop starting.
+    if (launcher.includes("_npx")) {
+        fail(
+            "This pi-pocket runs from npx's cache, which npm can clear. Install it first (npm install -g pi-pocket), then run: pi-pocket runner service",
+        );
+    }
+
+    const quote = (value: string) => `"${value.replace(/(["\\])/g, "\\$1")}"`;
+
+    mkdirSync(dirname(unit), { recursive: true });
+    writeFileSync(
+        unit,
+        [
+            "[Unit]",
+            "Description=Pi Pocket runner: runs a Pi Pocket server's session tools on this computer",
+            "After=network-online.target",
+            "Wants=network-online.target",
+            "",
+            "[Service]",
+            `ExecStart=${quote(process.execPath)} ${quote(launcher)} runner --config ${quote(file)}`,
+            `Environment=${quote(`PATH=${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`)}`,
+            "Restart=on-failure",
+            "RestartSec=5",
+            // The server removed this computer, or its key is wrong: starting again would not help.
+            `RestartPreventExitStatus=${String(STOPPED_BY_SERVER)}`,
+            "",
+            "[Install]",
+            "WantedBy=default.target",
+            "",
+        ].join("\n"),
+    );
+
+    if (!systemctl("daemon-reload") || !systemctl("enable", "--now", UNIT)) {
+        fail(`Wrote ${unit}, but systemd did not start it. See: systemctl --user status ${UNIT}`);
+    }
+
+    console.log(`The runner runs as ${UNIT}, and starts with your session.`);
+    console.log(`  Its log:  journalctl --user -u ${UNIT} -f`);
+    console.log(
+        `  To keep it running while you are logged out: loginctl enable-linger ${process.env.USER ?? "$USER"}`,
+    );
 }
 
 export async function main(argv: string[]): Promise<void> {
@@ -251,6 +349,9 @@ export async function main(argv: string[]): Promise<void> {
 
             return;
         }
+
+        case "service":
+            return service(file, rest);
 
         case "unlink":
             rmSync(file, { force: true });

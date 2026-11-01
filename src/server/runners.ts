@@ -63,6 +63,16 @@ export const REMOTE_EXTENSIONS = [
 /** How long a one-time link code works. */
 export const CODE_MINUTES = 10;
 
+/**
+ * What another computer installs to get `pi-pocket runner`, as `npm install -g` takes it: this release from npm, or
+ * `PI_POCKET_RUNNER_PACKAGE` (a fork's tarball, say) on a server that runs a build npm does not have.
+ */
+export function runnerPackage(): string {
+    const given = process.env.PI_POCKET_RUNNER_PACKAGE?.trim();
+
+    return given || "pi-pocket@latest";
+}
+
 /** Send an acknowledgement once this many bytes came in, or within ACK_MS. */
 const ACK_BYTES = 256 * 1024;
 const ACK_MS = 1000;
@@ -793,7 +803,10 @@ export class Runners {
     }
 
     /** A one-time code that links a computer named `name`: `pi-pocket runner link <server> <code>` on it. */
-    makeCode(name: string, createdBy: string): { code: string; expiresAt: number } {
+    makeCode(
+        name: string,
+        createdBy: string,
+    ): { code: string; expiresAt: number; package: string } {
         const clean = name.replace(/\s+/g, " ").trim().slice(0, 60);
 
         if (clean === "") {
@@ -812,7 +825,7 @@ export class Runners {
 
         this.#config.addRunnerCode(code, clean, createdBy, expiresAt);
 
-        return { code, expiresAt };
+        return { code, expiresAt, package: runnerPackage() };
     }
 
     /** A runner gives its one-time code: it gets its computer's key, kept only there. */
