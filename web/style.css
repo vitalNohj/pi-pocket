@@ -20396,6 +20396,7 @@ pre.gallery-code {
     padding: 0.6rem 0.75rem;
     border-radius: var(--radius-s, 8px);
     background: var(--code-bg);
-    white-space: pre;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     user-select: all;
 }

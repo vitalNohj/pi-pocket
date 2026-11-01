@@ -47,9 +47,9 @@ function LinkCode({ onDone }) {
 
         return html`<div class="field">
             <p class="muted small">
-                On that computer, with Node.js 22.19 or newer, run this, then
-                <span class="mono">npx pi-pocket runner</span> to keep it connected. The code works once, for
-                ${Math.max(1, Math.round((made.expiresAt - Date.now()) / 60000))} minutes.
+                ${"On that computer, with Node.js 22.19 or newer, run this, then "}
+                <span class="mono">npx pi-pocket runner</span>
+                ${` to keep it connected. The code works once, for ${Math.max(1, Math.round((made.expiresAt - Date.now()) / 60000))} minutes.`}
             </p>
             <pre class="mono runner-command">${command}</pre>
             <div class="row">
