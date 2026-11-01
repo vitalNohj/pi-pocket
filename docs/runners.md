@@ -2,7 +2,7 @@
 
 A session can run its tools on another computer of yours: files, commands, and git there. Pi, its models, the provider keys, and the session's history stay on the server. That computer runs `pi-pocket runner`, which connects out to the server over a WebSocket, so it needs no open port, no SSH, and no provider key.
 
-Anyone who can prompt such a session can do on that computer what its user can. Only the owner links computers and starts sessions on them.
+Only the owner links computers. A session on a computer belongs to the person who linked it: only they can start one, see it, prompt it, or fork it. Nobody else on the server gets it in their list, and its subagents and forks stay theirs.
 
 ## Link a computer
 

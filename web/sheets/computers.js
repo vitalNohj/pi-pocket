@@ -189,7 +189,7 @@ export function ComputersSheet() {
         <p class="muted small">
             A session can run its tools on another computer of yours: files, commands, and git there, with Pi, its
             models, and its history here. That computer connects out to this server, so it needs no open port.
-            Anyone who can prompt such a session can do there what you can.
+            Only you can start, see, and prompt your sessions on a computer you linked; nobody else on this server can.
         </p>
         ${!loaded && runners.length === 0 && html`<${Loader} />`}
         ${runners.map(
