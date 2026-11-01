@@ -31,6 +31,10 @@ window.pocketHost = {
     visible(), // whether the app's window shows: false while hidden in a tray or minimized
     setPinned(list), // [{ id, title, state, label, url }]: the pinned sessions, in order
     subscribe(listener), // the app's events (below)
+
+    // With the "runner" capability (runners.md): the app runs `pi-pocket runner` for the computer it is on.
+    computerName(), // this computer's name, to suggest for it
+    linkRunner({ server, code, name }), // link with this one-time code and keep the runner running: Promise<{ ok, error? }>
 };
 ```
 
