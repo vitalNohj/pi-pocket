@@ -16,7 +16,8 @@ import { extensionFile } from "./http/extension-routes.ts";
 import { hookRoute } from "./http/hook-routes.ts";
 import { linkRoute } from "./http/link-routes.ts";
 import { serveApp, serveFile, VENDOR, WEB } from "./http/assets.ts";
-import { type HttpOptions, json } from "./http/io.ts";
+import { type HttpOptions, json, readJson } from "./http/io.ts";
+import { LINK_CODE_PATH } from "../runner/protocol.ts";
 import { join as joinPage, login, sharePage } from "./http/sign-in.ts";
 import { themeFile } from "./http/theme-routes.ts";
 
@@ -81,6 +82,18 @@ export function createHandler(options: HttpOptions) {
                 const token = parts.length === 2 ? parts[1] : undefined;
 
                 return await linkRoute(app, request, response, token, url);
+            }
+
+            // A runner on another computer trades its one-time code for that computer's key (`runners.ts`): the code
+            // is the whole of the access, as a sign-in link's token is.
+            if (path === LINK_CODE_PATH && request.method === "POST") {
+                const body = await readJson<{ code?: unknown }>(request);
+
+                if (typeof body.code !== "string" || body.code.length > 64) {
+                    throw new HttpError(400, "Give the link code.");
+                }
+
+                return json(response, 200, app.runners.redeem(body.code));
             }
 
             if (parts[0] === "a") {

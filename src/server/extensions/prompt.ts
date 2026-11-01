@@ -141,16 +141,40 @@ export default function createPrompt(host: PocketHost) {
 
     const cwdOf = (input: PromptInput) => input.env?.cwd ?? input.agent.cwd ?? process.cwd();
 
+    /**
+     * The computer a session on another one runs on (its environment is a `RunnerEnv`, `runners.ts`). Its project files
+     * and skills are there, not on this server: none are read here for it, so nothing of this machine's shows instead.
+     */
+    const computerOf = (
+        input: PromptInput,
+    ): { name: string; os?: string; arch?: string } | undefined => {
+        const env = input.env as
+            { computer?: () => { name: string; os?: string; arch?: string } } | undefined;
+
+        return typeof env?.computer === "function" ? env.computer() : undefined;
+    };
+
     return defineExtension({
         name: "pocket-prompt",
         sections: [
             section("preamble", () => PREAMBLE, { tag: false }),
             section("guidelines", () => GUIDELINES),
             section("pocket_docs", () => docs(host.dataDir)),
-            section("project_context", (input) => load(cwdOf(input)).context),
-            section("skills", (input) => load(cwdOf(input)).skills, { tag: false }),
+            section("project_context", (input) =>
+                computerOf(input) === undefined ? load(cwdOf(input)).context : undefined,
+            ),
+            section(
+                "skills",
+                (input) =>
+                    computerOf(input) === undefined ? load(cwdOf(input)).skills : undefined,
+                { tag: false },
+            ),
             section("environment", (input) => {
-                const base = `Working directory: ${cwdOf(input)}\nPlatform: ${process.platform}`;
+                const computer = computerOf(input);
+                const base =
+                    computer === undefined
+                        ? `Working directory: ${cwdOf(input)}\nPlatform: ${process.platform}`
+                        : `Working directory: ${cwdOf(input)}, on the computer "${computer.name}"\nPlatform: ${computer.os ?? "unknown"}${computer.arch === undefined ? "" : ` (${computer.arch})`}\nYour tools (read, write, edit, bash) run on that computer, not on the Pi Pocket server. Files people attach are saved on the server, so you cannot read them there.`;
 
                 // Off by default: a date in the system prompt changes once a day and rewrites the whole prompt cache.
                 // PI_POCKET_PROMPT_DATE=1 adds the local date back.

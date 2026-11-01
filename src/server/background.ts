@@ -1232,6 +1232,8 @@ export class BackgroundTasks {
         if (meta.pip !== undefined) {
             throw new HttpError(400, "PiP does not run commands.");
         }
+
+        this.#app.requireLocal(conversationId, "background tasks");
     }
 
     /**

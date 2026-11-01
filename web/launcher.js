@@ -459,6 +459,13 @@ function actionItems() {
             icon: "key",
             run: () => openSheet({ type: "providers" }),
         },
+        me?.role === "owner" && {
+            label: "Computers",
+            detail: "other computers that run sessions' tools",
+            keywords: "runner remote machine link laptop",
+            icon: "monitor",
+            run: () => openSheet({ type: "computers" }),
+        },
         modelRefreshAvailable() && {
             label: "Refresh models",
             detail: store.state.modelRefresh.loading

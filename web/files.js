@@ -44,7 +44,8 @@ const cwd = () => store.state.view.agent?.cwd;
 export function loadFiles({ ifMissing = false } = {}) {
     const id = store.state.conversationId;
 
-    if (id === null) {
+    // Its folder is on another computer (`runners.ts`): no list here; an @ path is written by hand.
+    if (id === null || store.state.view.conversation?.runner) {
         return;
     }
 

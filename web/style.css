@@ -20356,3 +20356,46 @@ pre.gallery-code {
     gap: 0.5rem;
     padding: 0 0 1rem;
 }
+/* Computers (`sheets/computers.js`): other computers that run sessions' tools. */
+.runner-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.runner-name {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.5rem;
+    align-items: center;
+    min-width: 0;
+}
+
+.runner-dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: var(--muted);
+    flex: none;
+}
+
+.runner-dot.on {
+    background: var(--ok);
+}
+
+.runner-dot.away {
+    background: var(--warn);
+}
+
+.runner-command {
+    overflow-x: auto;
+    padding: 0.6rem 0.75rem;
+    border-radius: var(--radius-s, 8px);
+    background: var(--code-bg);
+    white-space: pre;
+    user-select: all;
+}
