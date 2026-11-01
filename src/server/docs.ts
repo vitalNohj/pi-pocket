@@ -48,6 +48,12 @@ export type SessionMeta = {
      * kept out of the session list; an older Pi Pocket, which does not know this field, lists it as a session.
      */
     pip?: string;
+    /**
+     * The computer the session's tools run on (`runners.ts`): a linked runner's id. Absent: this server. Set when the
+     * session is made and never changed; forks and linked sessions keep it. An older Pi Pocket, which does not know this
+     * field, would run the session here: such a session never goes back to one.
+     */
+    runner?: string;
 };
 
 /** The catalogue of user-facing sessions: ownerless conversations created by the app. Subagents are not listed. */

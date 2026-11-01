@@ -801,6 +801,16 @@ export function reloadChanges(id = store.state.conversationId) {
         return known.pending;
     }
 
+    // Its folder is on another computer (`runners.ts`): Changes reads this server's disk, so it says so, unasked.
+    const remote = id === store.state.conversationId && store.state.view.conversation?.runnerName;
+
+    if (remote) {
+        known.error = `This session runs on ${remote}. Changes works only for sessions on this server, for now.`;
+        changesCache.set(id, known);
+
+        return Promise.resolve();
+    }
+
     // The conversation's newest entry when it asked: nothing newer, and Pi quiet, what it said still holds.
     const entry = id === store.state.conversationId ? store.state.view.order?.at(-1) : undefined;
     // What shows now: an answer the same as it draws nothing again (each draw is the whole app's).
