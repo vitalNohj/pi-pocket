@@ -7,7 +7,7 @@
  * again what the other missed.
  *
  *   pi-pocket runner serve                  walks through linking (or shows the saved link), then serves until stopped
- *   pi-pocket runner link <server> <code>   link this computer without questions, with a code from Computers
+ *   pi-pocket runner link <server> <code>   link this computer without questions, with a code from Runners
  *   pi-pocket runner                        serve with the saved link, without questions (services, the desktop app)
  *   pi-pocket runner status                 show what this computer is linked to
  *   pi-pocket runner unlink                 forget the link
@@ -43,13 +43,13 @@ Commands:
   pi-pocket runner serve
     Link this computer or use a saved link, then start the runner.
   pi-pocket runner link <server> <code>
-    Save a link without questions. Get a code from Menu > Computers.
+    Save a link without questions. Get a code from Menu > Runners.
   pi-pocket runner
     Run with the saved link. Does not ask questions.
   pi-pocket runner status
     Show the saved link and whether the service is running.
   pi-pocket runner unlink
-    Delete the saved link. Also remove this computer in Menu > Computers.
+    Delete the saved link. Also remove this computer in Menu > Runners.
   pi-pocket runner service
     Linux with systemd: start a service that runs after you close the terminal.
   pi-pocket runner service remove
@@ -71,7 +71,7 @@ This computer reads and writes files and runs commands as your user account.
 Only link a server you trust.
 Only the person who linked this computer can start sessions on it.
 Sessions are private by default. The owner can turn on
-"Let others use these sessions" in Menu > Computers.`;
+"Let others use these sessions" in Menu > Runners.`;
 
 type Link = RunnerLinkFile;
 
@@ -203,7 +203,7 @@ async function redeem(server: string, code: string): Promise<Link> {
         }
 
         throw new Problem(
-            `${server} did not accept the code: ${message || response.statusText}\n  Make a new code in Menu > Computers > Link a computer, then try again.`,
+            `${server} did not accept the code: ${message || response.statusText}\n  Make a new code in Menu > Runners > Link a computer, then try again.`,
         );
     }
 
@@ -217,7 +217,7 @@ async function redeem(server: string, code: string): Promise<Link> {
 
     if (typeof got.id !== "string" || typeof got.name !== "string" || typeof got.key !== "string") {
         throw new Problem(
-            `${server} returned an invalid link. Check the server address, then make a new code in Menu > Computers.`,
+            `${server} returned an invalid link. Check the server address, then make a new code in Menu > Runners.`,
         );
     }
 
@@ -322,7 +322,7 @@ function canService(): boolean {
 
 /**
  * `pi-pocket runner serve`: shows the saved link, or walks through making one (the server's address, then a code
- * from its Computers sheet), then serves. Without a terminal it serves the saved link, as `pi-pocket runner` does.
+ * from its Runners sheet), then serves. Without a terminal it serves the saved link, as `pi-pocket runner` does.
  */
 async function walkThrough(file: string): Promise<void> {
     if (!process.stdin.isTTY) {
@@ -383,7 +383,7 @@ async function walkThrough(file: string): Promise<void> {
 
         console.log(`  Found Pi Pocket at ${server}.`);
         console.log("");
-        console.log("  In Pi Pocket, open Menu > Computers > Link a computer.");
+        console.log("  In Pi Pocket, open Menu > Runners > Link a computer.");
         console.log("  Enter a name for this computer. Choose Get a link code in a browser,");
         console.log("  or Link another computer in the desktop app.");
         console.log("  The code works once and expires after 10 minutes.");
@@ -601,7 +601,7 @@ export async function main(argv: string[]): Promise<void> {
         case "unlink":
             rmSync(file, { force: true });
             console.log(
-                "Deleted the saved link from this computer.\nIn Pi Pocket, also remove this computer from Menu > Computers to stop its runner and cancel its key.",
+                "Deleted the saved link from this computer.\nIn Pi Pocket, also remove this computer from Menu > Runners to stop its runner and cancel its key.",
             );
 
             return;
