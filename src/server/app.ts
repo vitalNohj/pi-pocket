@@ -2137,6 +2137,18 @@ export class PocketApp {
      * People invited to one session see only that session and its subagents. A PiP is its own person's alone: its tools
      * act as them, so anyone else who could write to it would act as them too.
      */
+    /**
+     * Whether `user` may have session `meta` as far as its computer goes: not on one, theirs, or shared by the owner
+     * (`sharedRunnerSessions`). Then the usual rules decide, as for any session.
+     */
+    runnerSessionOpen(meta: SessionMeta | undefined, user: User): boolean {
+        return (
+            meta?.runner === undefined ||
+            meta.createdBy === user.id ||
+            this.config.sharedRunnerSessions
+        );
+    }
+
     canSee(user: User, id: ConversationId): boolean {
         const root = this.rootOf(id);
         const meta = this.#sessions[String(root)];
@@ -2146,8 +2158,9 @@ export class PocketApp {
             return false;
         }
 
-        // A session on another computer is its creator's alone, as PiP is: its tools run there, as that person.
-        if (meta?.runner !== undefined && meta.createdBy !== user.id) {
+        // A session on another computer is its creator's alone, as PiP is: its tools run there, as that person. The
+        // owner can share them like any other (`sharedRunnerSessions`).
+        if (!this.runnerSessionOpen(meta, user)) {
             return false;
         }
 
@@ -2467,6 +2480,8 @@ export class PocketApp {
                 collab: 2,
                 reactions: REACTIONS,
                 approvalRule: this.config.approvalRule,
+                // Sessions on linked computers: shared like any other, or their creators' alone (the default).
+                sharedRunnerSessions: this.config.sharedRunnerSessions,
                 // The model and thinking level new sessions start with, or null for the last one picked.
                 defaultModel: this.config.defaultModel ?? null,
                 // The theme and colors of browsers that have not chosen their own, or null for the app's own.
@@ -2519,7 +2534,9 @@ export class PocketApp {
             const all = this.sessions();
             const allJson = JSON.stringify(all);
             // Sessions on other computers are their creators' alone: then each person gets their own list.
-            const personal = all.some((session) => session.runner !== undefined);
+            const personal =
+                !this.config.sharedRunnerSessions &&
+                all.some((session) => session.runner !== undefined);
             let board: SubagentEntry[] | undefined;
 
             for (const client of this.#clients) {
@@ -2622,10 +2639,8 @@ export class PocketApp {
                 ([id, meta]) =>
                     // PiP is not a session people pick: it shows in its own panel (`pip.ts`).
                     meta.pip === undefined &&
-                    // A session on another computer: its creator's alone (`canSee`).
-                    (meta.runner === undefined ||
-                        user === undefined ||
-                        meta.createdBy === user.id) &&
+                    // A session on another computer: its creator's alone, unless shared (`canSee`).
+                    (user === undefined || this.runnerSessionOpen(meta, user)) &&
                     (user?.sessions === undefined || user.sessions.includes(id)),
             )
             .map(([id, meta]) => {
@@ -3391,6 +3406,51 @@ export class PocketApp {
             (error: unknown) =>
                 this.notice("warning", `The LANCET model download failed: ${describe(error)}`),
         ).finally(refresh);
+    }
+
+    /**
+     * The owner shares sessions on linked computers like any other session, or keeps each its creator's alone (the
+     * default). Off again: everyone else's tabs and peeks leave them at once, and their lists lose them.
+     */
+    async setSharedRunnerSessions(user: User, shared: unknown): Promise<void> {
+        if (user.role !== "owner") {
+            throw new HttpError(403, "Only the owner can do that");
+        }
+
+        if (typeof shared !== "boolean") {
+            throw new HttpError(400, "sharedRunnerSessions must be true or false");
+        }
+
+        if (shared === this.config.sharedRunnerSessions) {
+            return;
+        }
+
+        this.config.sharedRunnerSessions = shared;
+
+        for (const client of [...this.#clients]) {
+            if (
+                client.conversationId !== undefined &&
+                !this.canSee(client.user, client.conversationId)
+            ) {
+                this.#evict(client, "This session runs on someone's computer and is theirs alone.");
+            }
+
+            for (const id of client.peeks ?? []) {
+                if (!this.canSee(client.user, id)) {
+                    client.peeks?.delete(id);
+                    this.#unpeek(client, id);
+                }
+            }
+        }
+
+        await this.#refreshClients();
+        this.#scheduleSessions();
+        this.notice(
+            "info",
+            shared
+                ? `${user.name} shared sessions on linked computers like any other session.`
+                : `${user.name} made sessions on linked computers their creators' alone.`,
+        );
     }
 
     /** The owner changes who may allow risky calls. */

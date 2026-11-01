@@ -2311,11 +2311,15 @@ export class Commands {
             throw new HttpError(400, "PiP's conversation cannot be forked. Start fresh instead.");
         }
 
-        // It runs on the same computer, with everything that runs as that computer's person: theirs alone.
-        const meta = app.sessionMeta(id);
+        // A fork is a new session on the same computer, run as that computer's person: starting one is theirs alone,
+        // also when the owner shares these sessions (`sharedRunnerSessions`).
+        const runner = app.sessionMeta(id)?.runner;
 
-        if (meta?.runner !== undefined && meta.createdBy !== user.id) {
-            throw new HttpError(403, "Only the person whose session this is can fork it.");
+        if (runner !== undefined && app.runners.stored(runner)?.createdBy !== user.id) {
+            throw new HttpError(
+                403,
+                "Only the person who linked this computer can start sessions on it, forks too.",
+            );
         }
     }
 

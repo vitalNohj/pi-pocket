@@ -3,7 +3,35 @@
 import { useEffect, useState } from "preact/hooks";
 import { callHost, hostCan } from "../host.js";
 import { actions, api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
-import { copyText, html, Icon, Loader, Sheet, timeAgo } from "../ui.js";
+import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
+
+/**
+ * Whether sessions on linked computers follow the usual sharing rules (`sharedRunnerSessions`), or each is its
+ * creator's alone (the default). Starting one on a computer stays its linker's either way.
+ */
+function SharedSessions() {
+    const { server, me } = store.state;
+    const shared = server?.sharedRunnerSessions === true;
+    const owner = me?.role === "owner";
+    const change = () => attempt(() => api("settings", { sharedRunnerSessions: !shared }));
+
+    return html`<div class="setting">
+        <div class="grow">
+            <div class="small">Share sessions on linked computers</div>
+            <div class="muted small">
+                Off: each is its creator's alone. On: they follow the usual rules, so people who can see a session
+                can see and prompt it, and its commands run on that computer for them too. Only whoever linked a
+                computer can start sessions on it either way.
+            </div>
+        </div>
+        <${Switch}
+            on=${shared}
+            disabled=${!owner}
+            label=${`Share sessions on linked computers: ${shared ? "on" : "off"}`}
+            onChange=${change}
+        />
+    </div>`;
+}
 
 /** What a computer is doing now, in a few words. */
 function status(runner) {
@@ -194,8 +222,9 @@ export function ComputersSheet() {
         <p class="muted small">
             A session can run its tools on another computer of yours: files, commands, and git there, with Pi, its
             models, and its history here. That computer connects out to this server, so it needs no open port.
-            Only you can start, see, and prompt your sessions on a computer you linked; nobody else on this server can.
+            Only you can start sessions on a computer you linked.
         </p>
+        <${SharedSessions} />
         ${!loaded && runners.length === 0 && html`<${Loader} />`}
         ${runners.map(
             (runner) => html`<div class="runner-row">

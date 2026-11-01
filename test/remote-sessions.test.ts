@@ -210,6 +210,37 @@ describe("a session on another computer", () => {
         assert.equal(app.canSee(owner(app), id as never), true);
     });
 
+    it("follows the usual rules when the owner shares them, but starting one stays the linker's", async () => {
+        const other = app.config.users.find((each) => each.name === "Co-owner")!;
+
+        await assert.rejects(
+            app.setSharedRunnerSessions(
+                app.config.users.find((each) => each.name === "Someone")!,
+                true,
+            ),
+            /Only the owner/,
+        );
+        await app.setSharedRunnerSessions(owner(app), true);
+
+        try {
+            assert.equal(app.canSee(other, id as never), true);
+            assert.ok(app.sessions(other).some((each) => each.id === Number(id)));
+            await assert.rejects(
+                app.commands.createSession(other, { cwd: there, runner: runnerId }),
+                /Only the person who linked this computer/,
+            );
+            await assert.rejects(
+                app.commands.fork(id as never, other, {}),
+                /Only the person who linked/,
+            );
+        } finally {
+            await app.setSharedRunnerSessions(owner(app), false);
+        }
+
+        assert.equal(app.canSee(other, id as never), false);
+        assert.equal(app.config.sharedRunnerSessions, false);
+    });
+
     it("keeps the computer in a fork", async () => {
         const fork = await app.commands.fork(id as never, owner(app), {});
 
