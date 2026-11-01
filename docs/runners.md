@@ -1,51 +1,81 @@
 # Sessions on another computer
 
-A session can run its tools on another computer of yours: files, commands, and git there. Pi, its models, the provider keys, and the session's history stay on the server. That computer runs `pi-pocket runner`, which connects out to the server over a WebSocket, so it needs no open port, no SSH, and no provider key.
+As the server owner, you can link a computer in 2 ways:
 
-Only the owner links computers. A session on a computer belongs to the person who linked it: only they can start one, see it, prompt it, or fork it. Nobody else on the server gets it in their list, and its subagents and forks stay theirs.
+- **Pi Pocket desktop app:** open your server in the app on the computer you want to link. Go to Menu → **Computers** → **Link a computer**, enter a name, and choose **Link this computer**. The app links it with one click and keeps the runner running while the app is open. There is nothing to type in a terminal.
+- **Any other computer:** install Node.js 22.19 or newer, then run these commands on that computer:
 
-## Link a computer
+    ```sh
+    npm install -g pi-pocket@latest
+    pi-pocket runner serve
+    ```
 
-In Pi Pocket: Menu → **Computers** → **Link a computer**, and give it a name.
+    In Pi Pocket, go to Menu → **Computers** → **Link a computer**. Enter a name, then choose **Get a link code** in a browser, or **Link another computer** in the desktop app. The screen shows the commands above and a code. The code works once and expires after 10 minutes.
 
-- **In the Pi Pocket desktop app**, on the computer to link: **Link this computer**. The app gets the code, runs the runner, and keeps it running while the app runs. Nothing to type.
-- **Any other computer** (a server, a laptop without the app), with Node.js 22.19 or newer. **Make a link code** shows these, ready to copy:
+    In the terminal, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. On Linux with systemd, it offers to run as a service. Otherwise, leave the terminal open. Press Ctrl+C to stop the runner and its commands.
+
+Only the server owner can link computers. Only link a server you trust: its session commands run as your user account on the linked computer.
+
+The computer connects out to the server over a WebSocket. It needs no open port, SSH, or provider key. Pi, its models, the provider keys, and session history stay on the server. Sessions read and write files and run commands, including git, on the linked computer.
+
+## Commands
+
+Run these commands on the linked computer:
+
+| Command                                 | What it does                                                                                                      |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `pi-pocket runner serve`                | Guides you through setup. If a link is saved, shows it and asks whether to use it. Then starts the runner.        |
+| `pi-pocket runner link <server> <code>` | Saves a link without questions. Use the server address and a one-time code from **Computers**.                    |
+| `pi-pocket runner`                      | Runs with the saved link, without questions. The service and the desktop app use this command.                    |
+| `pi-pocket runner status`               | Shows the saved link and whether the systemd service is running. It does not check the connection.                |
+| `pi-pocket runner unlink`               | Deletes the saved link on this computer. Also remove the computer in **Computers** to stop it and cancel its key. |
+| `pi-pocket runner service`              | On Linux with systemd, starts a user service that keeps the runner running after you close the terminal.          |
+| `pi-pocket runner service remove`       | Stops and removes the service. Keeps the saved link.                                                              |
+
+For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner` or `pi-pocket runner service`. Plain `pi-pocket runner` never asks questions. Without a terminal, `serve` also uses the saved link without questions.
+
+The link file is `~/.pi-pocket/runner.json`. It contains this computer's key, and only your user account can read it. Do not share it. Use `--config FILE` or `PI_POCKET_RUNNER_CONFIG` to choose another file; `--config` takes priority. `PI_POCKET_RUNNER_DAEMON` selects a pi-env daemon instead of the packaged one.
+
+The systemd user service starts with your user session. To keep it running while you are logged out, run:
 
 ```sh
-npm install -g pi-pocket@latest
-pi-pocket runner serve
+loginctl enable-linger $USER
 ```
 
-`serve` walks you through it: it asks for the server's address (and checks that Pi Pocket answers there), then for the code (it works once, for 10 minutes), saves the link, and on Linux with systemd offers to keep running as a service that starts with the computer. Otherwise it serves in that terminal until Ctrl+C. Run `serve` again later and it shows the saved link and asks whether to use it.
+Run `pi-pocket runner serve` again to use or replace a saved link. If the service is already running, `serve` shows how to view its logs and stop it instead of starting a second runner. To delete the link as well as the service, run `pi-pocket runner service remove`, then `pi-pocket runner unlink`. Deleting the link file alone does not stop a runner that is already running.
 
-Without questions, for scripts: `pi-pocket runner link <server> <code>`, then `pi-pocket runner` (serves the saved link and never asks; what the service and the desktop app run) or `pi-pocket runner service`.
+If your server uses a build that is not on npm, set `PI_POCKET_RUNNER_PACKAGE` on the server. For example, use the URL of a fork's package tarball. This changes the install command shown in **Computers**.
 
-`pi-pocket runner status` shows the link, `pi-pocket runner unlink` forgets it, and `pi-pocket runner service remove` removes the service. The link, with the computer's key, is in `~/.pi-pocket/runner.json` (only its user can read it). To keep a service running while you are logged out: `loginctl enable-linger $USER`.
+## What works in a session
 
-A server that runs a build npm does not have can name another package to install, for the instructions: set `PI_POCKET_RUNNER_PACKAGE` (for example a tarball URL of a fork).
+In Menu → **Computers**, choose **New session** next to an online computer, then choose a folder on it. The session's title, top bar, and Pi's system prompt identify the computer. Forks keep the same computer.
 
-## Sessions there
+Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, and schedules also work.
 
-Computers → **New session** next to an online computer picks a folder on it. The session's title, its top bar, and Pi's system prompt say which computer it is on. Forks keep the computer.
+These features are not available yet in sessions on another computer, because they use the server's disk:
 
-Pi's own tools run there: `read`, `write`, `edit`, and `bash`, and with them goals, plans, questions, and schedules. Through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env), they act as on the server.
+- Background tasks, the browser, artifacts, design, and memory.
+- Subagents and teams, PR watches, and git worktrees.
+- The **Files** and **Changes** panels, and the folder's project context and skills.
 
-For now these work only for sessions on the server, because they read the server's own disk: background tasks, the browser, artifacts, design, memory, subagents and teams, PR watches, git worktrees, the Files and Changes panels, and the folder's project context and skills. Files people attach stay on the server.
+Files that people attach stay on the server. They are not copied to the linked computer.
 
-## Who can use them
+## Sharing
 
-Only the person who linked a computer can start sessions on it, forks included.
+Only the person who linked a computer can start sessions on it, including forks. Sharing does not change this rule.
 
-By default each session on a linked computer is its creator's alone: nobody else on the server sees it in their list, opens it, or prompts it, owners included. The owner can turn on **Share sessions on linked computers** in Computers (`sharedRunnerSessions` in the server's `config.json`). Then they follow the usual rules, like any other session: people who can see one can see and prompt it, and its commands run on that computer for them too. Turning it off again closes those sessions in everyone else's tabs at once.
+By default, a session on a linked computer is private to its creator. Other people cannot see it in their session list, open it, prompt it, or fork it. This includes other server owners. These access rules also protect a private session's forks and subagents.
 
-This switch is for the whole server. Later, sharing could be chosen per session: who may see it, who may prompt it, and whether its tool calls need the linker's approval when someone else asked for them.
+The owner can turn on **Let others use these sessions** in Menu → **Computers** (`sharedRunnerSessions` in the server's `config.json`). These sessions then follow the usual sharing rules. People who can see a session can prompt it, and its commands run on the linked computer for them too. Turning sharing off closes those sessions in everyone else's tabs at once.
 
-## When the link drops
+This setting applies to the whole server. In the future, sharing could be chosen per session: who can see it, who can prompt it, and whether tool calls need the linker's approval when someone else requested them.
 
-| What happens                       | The work in progress                                                                                                                                          |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A short drop (up to 2 minutes)     | Nothing is lost. A command goes on, and what it printed meanwhile comes when the runner is back.                                                              |
-| A longer one (sleep, the app quit) | A command that ran stops, and Pi gets "was away too long". The next tool call waits for nothing: it fails at once with "is offline" until the runner is back. |
-| The server restarts                | As for sessions on the server: a command that ran comes back as interrupted, and the session goes on.                                                         |
+## When the connection drops
 
-Removing a computer in Computers stops its runner and its key. A runner that the server removed exits with code 3, which its service does not restart.
+| What happens                             | What happens to the work                                                                                                                                   |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A short drop, up to 2 minutes            | Nothing is lost. Commands keep running. Their output arrives when the runner reconnects.                                                                   |
+| A longer drop, such as sleep or app exit | Running commands stop, and Pi is told the computer "was disconnected too long". New tool calls fail at once with "is offline" until the runner reconnects. |
+| The server restarts                      | As with sessions on the server, running commands return as interrupted. The session continues.                                                             |
+
+Removing a computer in **Computers** stops its runner and cancels its key. A runner that the server removed exits with code 3. Its systemd service does not restart it.

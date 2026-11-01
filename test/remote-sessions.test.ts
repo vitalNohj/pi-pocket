@@ -130,7 +130,7 @@ describe("a session on another computer", () => {
         );
         await assert.rejects(
             app.commands.createSession(owner(app), { cwd: there, runner: "nobody" }),
-            /No such computer/,
+            /not linked to this server/,
         );
         await assert.rejects(
             app.commands.createSession(owner(app), {
@@ -138,7 +138,7 @@ describe("a session on another computer", () => {
                 runner: runnerId,
                 worktree: true,
             }),
-            /Worktrees work only for sessions on this server/,
+            /Worktrees are not available for sessions on another computer/,
         );
     });
 

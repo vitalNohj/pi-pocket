@@ -34,28 +34,44 @@ import { pocketVersion } from "../server/versions.ts";
 import { LINK_CODE_PATH } from "./protocol.ts";
 import { Runner, type RunnerLinkFile, RunnerStopped } from "./runner.ts";
 
-const HELP = `pi-pocket runner: run a Pi Pocket server's sessions' tools on this computer.
+const HELP = `pi-pocket runner: run session tools on this computer.
 
-Usage:
-  pi-pocket runner serve                  Start here. Walks you through linking this computer to a
-                                          server (or shows the saved link), then serves until Ctrl+C
-  pi-pocket runner link <server> <code>   Link without questions, with a one-time code from the
-                                          server's Menu > Computers > Link a computer
-  pi-pocket runner                        Serve with the saved link, without questions
-  pi-pocket runner status                 Show the server this computer is linked to
-  pi-pocket runner unlink                 Forget the link (remove the computer on the server too)
-  pi-pocket runner service                Linux: keep it running as a systemd user service
-  pi-pocket runner service remove         Linux: stop and remove that service
+Start here:
+  pi-pocket runner serve
+
+Commands:
+  pi-pocket runner serve
+    Link this computer or use a saved link, then start the runner.
+  pi-pocket runner link <server> <code>
+    Save a link without questions. Get a code from Menu > Computers.
+  pi-pocket runner
+    Run with the saved link. Does not ask questions.
+  pi-pocket runner status
+    Show the saved link and whether the service is running.
+  pi-pocket runner unlink
+    Delete the saved link. Also remove this computer in Menu > Computers.
+  pi-pocket runner service
+    Linux with systemd: start a service that runs after you close the terminal.
+  pi-pocket runner service remove
+    Stop and remove the service. Keep the saved link.
+
+Example:
+  pi-pocket runner link https://pocket.example.com ABCD-EFGH-JKLM
 
 Options:
-  --config FILE   Where the link is kept (default ~/.pi-pocket/runner.json)
+  --config FILE   Link file (default: ~/.pi-pocket/runner.json)
   -h, --help      Show this help
 
-Environment: PI_POCKET_RUNNER_CONFIG, PI_POCKET_RUNNER_DAEMON (a pi-env daemon to use instead of the packaged one)
+Environment:
+  PI_POCKET_RUNNER_CONFIG   Link file, unless --config is set
+  PI_POCKET_RUNNER_DAEMON   Use this pi-env daemon instead of the packaged one
 
-The server keeps the agent, models, keys, and history. This computer only runs the tools: files and commands in the
-folders its sessions work in, as you. Only the person who linked this computer can start, see, or prompt those
-sessions; nobody else on the server can.`;
+The server keeps Pi, models, provider keys, and session history.
+This computer reads and writes files and runs commands as your user account.
+Only link a server you trust.
+Only the person who linked this computer can start sessions on it.
+Sessions are private by default. The owner can turn on
+"Let others use these sessions" in Menu > Computers.`;
 
 type Link = RunnerLinkFile;
 
@@ -82,7 +98,7 @@ function configFile(args: string[]): string {
         const value = args[at + 1];
 
         if (value === undefined) {
-            fail("--config needs a file");
+            fail("--config needs a file path. Example: --config ~/.pi-pocket/runner.json");
         }
 
         args.splice(at, 2);
@@ -113,7 +129,9 @@ function readLink(file: string): Link | undefined {
         // Below.
     }
 
-    fail(`${file} is not a runner link. Remove it, then link again.`);
+    fail(
+        `${file} is not a valid link file. Move or remove that file, then run: pi-pocket runner serve`,
+    );
 }
 
 function writeLink(file: string, link: Link): void {
@@ -142,14 +160,16 @@ async function checkServer(server: string): Promise<void> {
             signal: AbortSignal.timeout(10_000),
         });
     } catch (error) {
-        throw new Problem(`Could not reach ${server}: ${(error as Error).message}`);
+        throw new Problem(
+            `Could not reach ${server} (${(error as Error).message}). Check the address and network, then try again.`,
+        );
     }
 
     const info = (await response.json().catch(() => undefined)) as { name?: unknown } | undefined;
 
     if (!response.ok || info?.name !== "pi-pocket") {
         throw new Problem(
-            `${server} answered, but not as Pi Pocket (HTTP ${String(response.status)}). Use the address that opens Pi Pocket in your browser.`,
+            `Pi Pocket did not answer at ${server} (HTTP ${String(response.status)}). Use the address that opens Pi Pocket in your browser.`,
         );
     }
 }
@@ -166,7 +186,9 @@ async function redeem(server: string, code: string): Promise<Link> {
             signal: AbortSignal.timeout(15_000),
         });
     } catch (error) {
-        throw new Problem(`Could not reach ${server}: ${(error as Error).message}`);
+        throw new Problem(
+            `Could not reach ${server} (${(error as Error).message}). Check the address and network, then try again.`,
+        );
     }
 
     const text = await response.text();
@@ -180,7 +202,9 @@ async function redeem(server: string, code: string): Promise<Link> {
             // As it is.
         }
 
-        throw new Problem(`${server} refused the code: ${message || response.statusText}`);
+        throw new Problem(
+            `${server} did not accept the code: ${message || response.statusText}\n  Make a new code in Menu > Computers > Link a computer, then try again.`,
+        );
     }
 
     let got: { id?: unknown; name?: unknown; key?: unknown } = {};
@@ -192,7 +216,9 @@ async function redeem(server: string, code: string): Promise<Link> {
     }
 
     if (typeof got.id !== "string" || typeof got.name !== "string" || typeof got.key !== "string") {
-        throw new Problem(`${server} did not answer as a Pi Pocket server.`);
+        throw new Problem(
+            `${server} returned an invalid link. Check the server address, then make a new code in Menu > Computers.`,
+        );
     }
 
     return { server, id: got.id, name: got.name, key: got.key };
@@ -205,11 +231,15 @@ function serverAddress(given: string): string {
     try {
         url = new URL(given.includes("://") ? given : `http://${given}`);
     } catch {
-        throw new Problem(`${given} is not a server address.`);
+        throw new Problem(
+            `"${given}" is not a server address. Enter an address such as https://pocket.example.com.`,
+        );
     }
 
     if (url.protocol !== "http:" && url.protocol !== "https:") {
-        throw new Problem(`${given}: use an http:// or https:// address.`);
+        throw new Problem(
+            `"${given}" is not an HTTP address. Use http:// or https:// (example: https://pocket.example.com).`,
+        );
     }
 
     url.search = "";
@@ -223,7 +253,7 @@ async function link(file: string, args: string[]): Promise<void> {
 
     if (given === undefined || code === undefined) {
         fail(
-            "Usage: pi-pocket runner link <server> <code>   (or: pi-pocket runner serve, which asks)",
+            "Enter a server address and a one-time code.\nExample: pi-pocket runner link https://pocket.example.com ABCD-EFGH-JKLM\nFor step-by-step setup, run: pi-pocket runner serve",
         );
     }
 
@@ -231,8 +261,9 @@ async function link(file: string, args: string[]): Promise<void> {
         const got = await redeem(serverAddress(given), code);
 
         writeLink(file, got);
-        console.log(`Linked as "${got.name}" to ${got.server}. Its key is in ${file}.`);
-        console.log("Start it with: pi-pocket runner serve");
+        console.log(`Linked "${got.name}" to ${got.server}.`);
+        console.log(`Link file: ${file}. It contains this computer's key. Do not share it.`);
+        console.log("To start the runner, run: pi-pocket runner serve");
     } catch (error) {
         fail((error as Error).message);
     }
@@ -260,7 +291,11 @@ function asker() {
             (await lines.question(`${question}${given === "" ? "" : ` [${given}]`}: `)).trim() ||
             given,
         yes: async (question: string, yes = true): Promise<boolean> => {
-            const answer = (await lines.question(`${question} ${yes ? "[Y/n]" : "[y/N]"}: `))
+            const answer = (
+                await lines.question(
+                    `${question}\n  Type y or n (example: n; Enter for ${yes ? "y" : "n"}): `,
+                )
+            )
                 .trim()
                 .toLowerCase();
 
@@ -297,18 +332,20 @@ async function walkThrough(file: string): Promise<void> {
     const terminal = asker();
     let saved = readLink(file);
 
-    console.log("Pi Pocket runner: a Pi Pocket server runs its sessions' tools on this computer.");
+    console.log("Pi Pocket runner: run session tools on this computer.");
+    console.log("Commands run as your user account. Only link a server you trust.");
     console.log("");
 
     if (saved !== undefined) {
         console.log(`Saved link: "${saved.name}" on ${saved.server}`);
-        console.log(`  kept in ${file}`);
+        console.log(`Link file: ${file}`);
 
         if (serviceActive()) {
             console.log("");
-            console.log(`It already runs as ${UNIT}; a second runner here would take its place.`);
-            console.log(`  Its log:  journalctl --user -u ${UNIT} -f`);
-            console.log("  To stop it: pi-pocket runner service remove");
+            console.log(`The runner is already running as ${UNIT}.`);
+            console.log("A second runner with this link would replace it.");
+            console.log(`  View logs: journalctl --user -u ${UNIT} -f`);
+            console.log("  Stop the service: pi-pocket runner service remove");
             terminal.close();
 
             return;
@@ -316,13 +353,13 @@ async function walkThrough(file: string): Promise<void> {
 
         console.log("");
 
-        if (!(await terminal.yes("Use it?"))) {
+        if (!(await terminal.yes("Use this saved link?"))) {
             saved = undefined;
         }
     }
 
     if (saved === undefined) {
-        console.log("Link this computer to your server:");
+        console.log("Link this computer to Pi Pocket:");
 
         let server = "";
 
@@ -330,7 +367,7 @@ async function walkThrough(file: string): Promise<void> {
             try {
                 server = serverAddress(
                     await terminal.ask(
-                        "  Server address, as this computer reaches it (e.g. https://pocket.example.com)",
+                        "  Type the server address (example: https://pocket.example.com)",
                     ),
                 );
                 await checkServer(server);
@@ -346,11 +383,13 @@ async function walkThrough(file: string): Promise<void> {
 
         console.log(`  Found Pi Pocket at ${server}.`);
         console.log("");
-        console.log("  In Pi Pocket, open Menu > Computers > Link a computer, name this computer,");
-        console.log("  and choose Link another computer (Make a link code in a browser).");
+        console.log("  In Pi Pocket, open Menu > Computers > Link a computer.");
+        console.log("  Enter a name for this computer. Choose Get a link code in a browser,");
+        console.log("  or Link another computer in the desktop app.");
+        console.log("  The code works once and expires after 10 minutes.");
 
         while (saved === undefined) {
-            const code = await terminal.ask("  The code it shows");
+            const code = await terminal.ask("  Paste the one-time code (example: ABCD-EFGH-JKLM)");
 
             if (code === "") {
                 continue;
@@ -368,12 +407,15 @@ async function walkThrough(file: string): Promise<void> {
         }
 
         writeLink(file, saved);
-        console.log(`  Linked as "${saved.name}". The key is in ${file}.`);
+        console.log(`  Linked "${saved.name}" to ${saved.server}.`);
+        console.log(`  Link file: ${file}. It contains this computer's key. Do not share it.`);
         console.log("");
 
         if (
             canService() &&
-            (await terminal.yes("Keep it running as a service that starts with this computer?"))
+            (await terminal.yes(
+                "Keep the runner running after you close this terminal (systemd user service)?",
+            ))
         ) {
             terminal.close();
             service(file, []);
@@ -392,7 +434,7 @@ async function serve(file: string): Promise<void> {
     const saved = readLink(file);
 
     if (saved === undefined) {
-        fail("Not linked yet. Run pi-pocket runner serve in a terminal: it walks you through it.");
+        fail("This computer is not linked. In a terminal, run: pi-pocket runner serve");
     }
 
     const runner = new Runner({
@@ -411,7 +453,7 @@ async function serve(file: string): Promise<void> {
         }
 
         stopping = true;
-        log("Stopping.");
+        log("Stopping the runner and its commands.");
         void runner.stop();
         setTimeout(() => process.exit(0), 3000).unref();
     };
@@ -446,7 +488,7 @@ function systemctl(...args: string[]): boolean {
 function service(file: string, args: string[]): void {
     if (process.platform !== "linux" || spawnSync("systemctl", ["--version"]).status !== 0) {
         fail(
-            "service needs Linux with systemd. Elsewhere, keep `pi-pocket runner` running yourself, or use the Pi Pocket desktop app.",
+            "The service command needs Linux with systemd. Keep pi-pocket runner open in a terminal, or use the Pi Pocket desktop app.",
         );
     }
 
@@ -461,13 +503,14 @@ function service(file: string, args: string[]): void {
         systemctl("disable", "--now", UNIT);
         rmSync(unit, { force: true });
         systemctl("daemon-reload");
-        console.log(`Removed ${UNIT}. The link stays: \`pi-pocket runner unlink\` forgets it.`);
+        console.log(`Stopped and removed ${UNIT}. The saved link is still in ${file}.`);
+        console.log("To delete the saved link, run: pi-pocket runner unlink");
 
         return;
     }
 
     if (readLink(file) === undefined) {
-        fail("Not linked yet. Run pi-pocket runner serve first: it walks you through it.");
+        fail("This computer is not linked. To link it, run: pi-pocket runner serve");
     }
 
     const launcher = realpathSync(process.argv[1] ?? "");
@@ -475,7 +518,7 @@ function service(file: string, args: string[]): void {
     // npx's copy is a cache npm can clear: the service would stop starting.
     if (launcher.includes("_npx")) {
         fail(
-            "This pi-pocket runs from npx's cache, which npm can clear. Install it first (npm install -g pi-pocket), then run: pi-pocket runner service",
+            "A service cannot use Pi Pocket from the npx cache. Install it with: npm install -g pi-pocket@latest\nThen run: pi-pocket runner service",
         );
     }
 
@@ -486,7 +529,7 @@ function service(file: string, args: string[]): void {
         unit,
         [
             "[Unit]",
-            "Description=Pi Pocket runner: runs a Pi Pocket server's session tools on this computer",
+            "Description=Pi Pocket runner: run session tools on this computer",
             "After=network-online.target",
             "Wants=network-online.target",
             "",
@@ -506,13 +549,16 @@ function service(file: string, args: string[]): void {
     );
 
     if (!systemctl("daemon-reload") || !systemctl("enable", "--now", UNIT)) {
-        fail(`Wrote ${unit}, but systemd did not start it. See: systemctl --user status ${UNIT}`);
+        fail(
+            `The service file is in ${unit}, but the runner did not start. Check the error with: systemctl --user status ${UNIT}`,
+        );
     }
 
-    console.log(`The runner runs as ${UNIT}, and starts with your session.`);
-    console.log(`  Its log:  journalctl --user -u ${UNIT} -f`);
+    console.log(`The runner is running as ${UNIT}. It starts with your user session.`);
+    console.log(`  View logs: journalctl --user -u ${UNIT} -f`);
+    console.log("  Stop the service: pi-pocket runner service remove");
     console.log(
-        `  To keep it running while you are logged out: loginctl enable-linger ${process.env.USER ?? "$USER"}`,
+        `  To run while you are logged out: loginctl enable-linger ${process.env.USER ?? "$USER"}`,
     );
 }
 
@@ -542,8 +588,8 @@ export async function main(argv: string[]): Promise<void> {
 
             console.log(
                 saved === undefined
-                    ? "Not linked. Run: pi-pocket runner serve"
-                    : `Linked as "${saved.name}" to ${saved.server} (${file}).${serviceActive() ? ` Runs as ${UNIT}.` : ""}`,
+                    ? "This computer is not linked.\nTo link it, run: pi-pocket runner serve"
+                    : `Computer: ${saved.name}\nServer: ${saved.server}\nLink file: ${file}${serviceActive() ? `\nService: ${UNIT} (running)` : ""}`,
             );
 
             return;
@@ -555,11 +601,11 @@ export async function main(argv: string[]): Promise<void> {
         case "unlink":
             rmSync(file, { force: true });
             console.log(
-                "Forgot the link. Remove the computer on the server too, under Settings > Computers.",
+                "Deleted the saved link from this computer.\nIn Pi Pocket, also remove this computer from Menu > Computers to stop its runner and cancel its key.",
             );
 
             return;
         default:
-            fail(`Unknown command ${command}.\n\n${HELP}`);
+            fail(`Unknown command "${command}". Choose a command below.\n\n${HELP}`);
     }
 }

@@ -85,7 +85,9 @@ class Daemon {
         this.exited = new Promise((resolve) => {
             this.child.once("exit", (code) => resolve(code));
             this.child.once("error", (error) => {
-                log(`pi-env could not start: ${error.message}`);
+                log(
+                    `The tool process could not start: ${error.message}\nCheck PI_POCKET_RUNNER_DAEMON, or reinstall Pi Pocket.`,
+                );
                 resolve(null);
             });
         });
@@ -94,7 +96,7 @@ class Daemon {
             const text = chunk.toString("utf8").trim();
 
             if (text !== "") {
-                log(`pi-env: ${text}`);
+                log(`Tool process: ${text}`);
             }
         });
         this.child.stdout.on("data", (chunk: Buffer) => {
@@ -290,7 +292,9 @@ export class Runner {
                 return;
             }
 
-            this.#log(`pi-env stopped (code ${String(code)}); starting it again.`);
+            this.#log(
+                `The tool process stopped (exit code ${String(code)}). Restarting it automatically. If this repeats, reinstall Pi Pocket.`,
+            );
             this.#session = this.#fresh();
             // The server's session belonged to the old daemon: say hello again, as a new one.
             this.#socket?.close(1000, "pi-env restarted");
@@ -346,10 +350,12 @@ export class Runner {
         ws.on("unexpected-response", (_request, response) => {
             if (response.statusCode === 401) {
                 this.#fail(
-                    `${link.server} does not know this computer's key anymore. Link it again with a new code.`,
+                    `${link.server} no longer accepts this computer's key. Run pi-pocket runner serve. Type n to replace the saved link.`,
                 );
             } else {
-                this.#log(`${link.server} answered ${String(response.statusCode)}; trying again.`);
+                this.#log(
+                    `${link.server} returned HTTP ${String(response.statusCode)}. Retrying automatically. If this continues, check that Pi Pocket is running at this address.`,
+                );
             }
 
             ws.terminate();
@@ -392,7 +398,9 @@ export class Runner {
         });
         ws.on("error", (error) => {
             if (this.#attempt <= 1) {
-                this.#log(`Connection: ${error.message}`);
+                this.#log(
+                    `Connection error (${error.message}). If the runner does not connect, check the address and network.`,
+                );
             }
         });
         ws.on("close", (code, reason) => {
@@ -409,26 +417,32 @@ export class Runner {
             const why = reason.toString("utf8");
 
             if (code === CLOSE.removed) {
-                this.#fail(`${link.server} removed this computer. Link it again with a new code.`);
+                this.#fail(
+                    `${link.server} removed this computer. To link again, run pi-pocket runner serve. Type n to replace the saved link.`,
+                );
 
                 return;
             }
 
             if (code === CLOSE.replaced) {
-                this.#fail("Another runner with this computer's key connected; this one stops.");
+                this.#fail(
+                    "Another runner is using this computer's link. This runner has stopped. Stop the other runner before you start this one again.",
+                );
 
                 return;
             }
 
             if (code === CLOSE.protocol) {
-                this.#fail(`${why}. Update Pi Pocket here or on the server.`);
+                this.#fail(
+                    `${why}. Update Pi Pocket on this computer and the server, then start the runner again.`,
+                );
 
                 return;
             }
 
             if (welcomed) {
                 this.#log(
-                    `Disconnected${why === "" ? "" : ` (${why})`}; reconnecting. Running work waits.`,
+                    `Disconnected${why === "" ? "" : ` (${why})`}. Reconnecting automatically. Commands keep running during a short drop.`,
                 );
 
                 // After the grace period the server has ended this session: stop what still runs for it.
@@ -437,7 +451,7 @@ export class Runner {
 
                     if (this.#session.id !== null && !this.connected) {
                         this.#restart(
-                            "Away longer than the server waits; the work from before ended.",
+                            "The connection was down too long. Stopping the previous commands and restarting the tool process.",
                         );
                     }
                 }, this.#graceMs + 5000);
@@ -473,7 +487,9 @@ export class Runner {
                         type: "bye",
                         reason: "The runner lost its place; it starts over",
                     });
-                    this.#restart("Lost the place in the stream; starting pi-env again.");
+                    this.#restart(
+                        "The connection could not resume. Restarting the tool process and connecting again.",
+                    );
                     ws.close(1000, "Start over");
 
                     return false;
@@ -483,7 +499,9 @@ export class Runner {
                     ws.send(each);
                 }
 
-                this.#log(`Back with ${this.#options.link.server}; the work goes on.`);
+                this.#log(
+                    `Reconnected to ${this.#options.link.server}. Running commands continue.`,
+                );
 
                 return true;
             }
@@ -492,7 +510,9 @@ export class Runner {
 
             // A new session on the server: a daemon that served an old one starts over, so nothing it ran outlives it.
             if (session.id !== null) {
-                this.#restart("The server started a new session; the work from before ended.");
+                this.#restart(
+                    "The server reset the connection. Stopping the previous commands and restarting the tool process.",
+                );
                 current = this.#session;
             }
 
@@ -516,7 +536,7 @@ export class Runner {
                 session.daemon.resume();
             }
         } else if (message?.type === "bye") {
-            this.#log(`The server said: ${message.reason}`);
+            this.#log(`Server message: ${message.reason}`);
         } else {
             ws.close(1002, "Unexpected message");
         }
@@ -539,7 +559,9 @@ export class Runner {
         try {
             frames = session.splitter.push(fresh);
         } catch (error) {
-            this.#restart(`The server sent a corrupt frame: ${(error as Error).message}`);
+            this.#restart(
+                `The server sent invalid tool data: ${(error as Error).message}\nRestarting the tool process. Update Pi Pocket if this repeats.`,
+            );
             ws.close(1002, "Corrupt frame");
 
             return;

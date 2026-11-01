@@ -20356,30 +20356,13 @@ pre.gallery-code {
     gap: 0.5rem;
     padding: 0 0 1rem;
 }
-/* Computers (`sheets/computers.js`): other computers that run sessions' tools. */
-.runner-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem 1rem;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.6rem 0;
-    border-bottom: 1px solid var(--line);
-}
-
-.runner-name {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem 0.5rem;
-    align-items: center;
-    min-width: 0;
-}
-
+/* Computers (`sheets/computers.js`): other computers that run sessions' tools. Rows are People's (`.person-row`). */
 .runner-dot {
-    width: 0.55rem;
-    height: 0.55rem;
+    width: 0.6rem;
+    height: 0.6rem;
+    margin: 0 0.15rem;
     border-radius: 50%;
-    background: var(--muted);
+    background: var(--faint);
     flex: none;
 }
 
@@ -20391,40 +20374,73 @@ pre.gallery-code {
     background: var(--warn);
 }
 
-.runner-command {
-    overflow-x: auto;
-    padding: 0.6rem 0.75rem;
-    border-radius: var(--radius-s, 8px);
-    background: var(--code-bg);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    user-select: all;
+.runner-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.runner-command-box {
-    display: flex;
-    gap: 0.25rem;
-    align-items: flex-start;
-    margin: 0.35rem 0 0.6rem;
-}
-
-.runner-command-box .runner-command {
-    flex: 1;
-    min-width: 0;
+.runner-none {
     margin: 0;
 }
 
-.runner-list {
+/* Linking: the name, then (for another computer) the steps with what to copy. */
+.runner-link {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.9rem 1rem 1rem;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--bg);
+}
+
+.runner-link > .group-title {
+    margin: 0;
+}
+
+.runner-link p {
+    margin: 0;
+}
+
+.runner-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
     margin: 0;
     padding-left: 1.25rem;
+    font-size: 13.5px;
 }
 
-/* The answers `pi-pocket runner serve` asks for, each ready to copy. */
-.runner-code {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 0 0.75rem;
+.runner-steps li > div:first-child {
+    margin-bottom: 0.4rem;
+}
+
+.runner-copy {
+    display: flex;
     align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.35rem;
+    padding: 0.25rem 0.25rem 0.25rem 0.75rem;
+    border-radius: var(--r-card);
+    background: var(--code-bg);
+}
+
+.runner-copy-label {
+    flex: none;
+    min-width: 4.2rem;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.runner-copy-text {
+    flex: 1;
+    min-width: 0;
+    padding: 0.3rem 0;
+    background: none;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+    user-select: all;
 }
 
 .row.wrap {

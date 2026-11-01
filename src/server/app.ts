@@ -1417,7 +1417,7 @@ export class PocketApp {
         if (runner !== undefined) {
             throw new HttpError(
                 409,
-                `This session runs on ${this.runners.name(runner)}: ${what} works only for sessions on this server, for now.`,
+                `This session runs on ${this.runners.name(runner)}. ${what} is not available for sessions on another computer yet.`,
             );
         }
     }
@@ -3185,7 +3185,7 @@ export class PocketApp {
             throw new HttpError(403, "Only the owner decides which projects Pi trusts.");
         }
 
-        this.requireLocal(id, "project trust");
+        this.requireLocal(id, "Project trust");
 
         return readProjectTrust(this.cwdOf(id), this.#skillSources());
     }

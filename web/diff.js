@@ -805,7 +805,7 @@ export function reloadChanges(id = store.state.conversationId) {
     const remote = id === store.state.conversationId && store.state.view.conversation?.runnerName;
 
     if (remote) {
-        known.error = `This session runs on ${remote}. Changes works only for sessions on this server, for now.`;
+        known.error = `This session runs on ${remote}. Changes is not available for sessions on another computer yet.`;
         changesCache.set(id, known);
 
         return Promise.resolve();
