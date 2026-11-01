@@ -20419,6 +20419,14 @@ pre.gallery-code {
     padding-left: 1.25rem;
 }
 
+/* The answers `pi-pocket runner serve` asks for, each ready to copy. */
+.runner-code {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0 0.75rem;
+    align-items: center;
+}
+
 .row.wrap {
     flex-wrap: wrap;
 }

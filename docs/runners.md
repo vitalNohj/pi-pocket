@@ -13,10 +13,12 @@ In Pi Pocket: Menu → **Computers** → **Link a computer**, and give it a name
 
 ```sh
 npm install -g pi-pocket@latest
-pi-pocket runner link https://your-server 7K3M-QX9P-2HWD   # the code works once, for 10 minutes
-pi-pocket runner service    # Linux with systemd: keep it running, also after a reboot
-pi-pocket runner            # anywhere else: keep it running in a terminal
+pi-pocket runner serve
 ```
+
+`serve` walks you through it: it asks for the server's address (and checks that Pi Pocket answers there), then for the code (it works once, for 10 minutes), saves the link, and on Linux with systemd offers to keep running as a service that starts with the computer. Otherwise it serves in that terminal until Ctrl+C. Run `serve` again later and it shows the saved link and asks whether to use it.
+
+Without questions, for scripts: `pi-pocket runner link <server> <code>`, then `pi-pocket runner` (serves the saved link and never asks; what the service and the desktop app run) or `pi-pocket runner service`.
 
 `pi-pocket runner status` shows the link, `pi-pocket runner unlink` forgets it, and `pi-pocket runner service remove` removes the service. The link, with the computer's key, is in `~/.pi-pocket/runner.json` (only its user can read it). To keep a service running while you are logged out: `loginctl enable-linger $USER`.
 

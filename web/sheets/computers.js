@@ -57,16 +57,21 @@ function LinkSteps({ made }) {
                 <${Command} text=${`npm install -g ${made.package ?? "pi-pocket@latest"}`} />
             </li>
             <li>
-                Link it:
-                <${Command} text=${`pi-pocket runner link ${server} ${made.code}`} />
-            </li>
-            <li>
-                Keep it running. On Linux with systemd, as a service that starts with the computer:
-                <${Command} text="pi-pocket runner service" />
-                Anywhere else, in a terminal that stays open:
-                <${Command} text="pi-pocket runner" />
+                Run this, and answer its questions: this server's address and the code. On Linux it
+                offers to keep running as a service.
+                <${Command} text="pi-pocket runner serve" />
             </li>
         </ol>
+        <div class="runner-code">
+            <span class="muted small">Address</span>
+            <${Command} text=${server} />
+            <span class="muted small">Code</span>
+            <${Command} text=${made.code} />
+        </div>
+        <p class="muted small">
+            ${"Or in one line, without questions: "}
+            <span class="mono">${`pi-pocket runner link ${server} ${made.code}`}</span>
+        </p>
         <p class="muted small">
             ${"With the Pi Pocket desktop app on that computer, there is nothing to type: open this server in it, then Menu → Computers → "}
             <strong>Link this computer</strong>.
