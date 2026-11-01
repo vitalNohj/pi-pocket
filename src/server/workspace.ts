@@ -114,7 +114,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         this.#app.requireSteer(user);
-        this.#app.requireLocal(id, "the branch list");
+        this.#app.requireLocal(id, "The branch list");
 
         const cwd = this.#app.cwdOf(id);
 
@@ -141,7 +141,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         this.#app.requireSteer(user);
-        this.#app.requireLocal(id, "switching branches");
+        this.#app.requireLocal(id, "Switching branches");
 
         if (user.sessions !== undefined) {
             throw new HttpError(403, "You were invited to one session.");
@@ -421,7 +421,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         this.#app.requireSteer(user);
-        this.#app.requireLocal(id, "the file list");
+        this.#app.requireLocal(id, "The file list");
         await this.#app.conversation(id);
 
         return this.#files.get(this.#app.cwdOf(id));
@@ -438,7 +438,7 @@ export class Workspace {
     ): Promise<{ path: string; display: string } & FileView> {
         this.#app.requireSee(user, id);
         this.#app.requireSteer(user);
-        this.#app.requireLocal(id, "the file viewer");
+        this.#app.requireLocal(id, "The file viewer");
         await this.#app.conversation(id);
         let file: string;
 
@@ -467,7 +467,7 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         await this.#app.requireDriver(id, user);
-        this.#app.requireLocal(id, "undoing a file");
+        this.#app.requireLocal(id, "Undoing a file");
 
         if (this.#app.isBusy(id)) {
             throw new HttpError(

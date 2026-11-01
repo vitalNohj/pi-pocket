@@ -1,67 +1,45 @@
-// Other computers that run sessions' tools (`src/server/runners.ts`): link one with a one-time code, see which are
-// online, start a session on one, or remove one. The owner's alone.
+// Computers (`src/server/runners.ts`): other computers of the owner's that run sessions' tools. Link one with a
+// one-time code, see which are online, start a session on one, remove one, and choose whether others may use those
+// sessions. The owner's alone.
 import { useEffect, useState } from "preact/hooks";
 import { callHost, hostCan } from "../host.js";
-import { actions, api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
+import { api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
-
-/**
- * Whether sessions on linked computers follow the usual sharing rules (`sharedRunnerSessions`), or each is its
- * creator's alone (the default). Starting one on a computer stays its linker's either way.
- */
-function SharedSessions() {
-    const { server, me } = store.state;
-    const shared = server?.sharedRunnerSessions === true;
-    const owner = me?.role === "owner";
-    const change = () => attempt(() => api("settings", { sharedRunnerSessions: !shared }));
-
-    return html`<div class="setting">
-        <div class="grow">
-            <div class="small">Share sessions on linked computers</div>
-            <div class="muted small">
-                Off: each is its creator's alone. On: they follow the usual rules, so people who can see a session
-                can see and prompt it, and its commands run on that computer for them too. Only whoever linked a
-                computer can start sessions on it either way.
-            </div>
-        </div>
-        <${Switch}
-            on=${shared}
-            disabled=${!owner}
-            label=${`Share sessions on linked computers: ${shared ? "on" : "off"}`}
-            onChange=${change}
-        />
-    </div>`;
-}
 
 /** What a computer is doing now, in a few words. */
 function status(runner) {
     if (runner.online) {
-        return "online";
+        return "Online";
     }
 
     if (runner.away) {
-        return "reconnecting, its work waits";
+        return "Reconnecting";
     }
 
     if (!runner.lastSeen) {
-        return "never connected";
+        return "Waiting to connect";
     }
 
     const ago = timeAgo(runner.lastSeen);
 
-    return `offline, seen ${ago === "now" ? "just now" : `${ago} ago`}`;
+    return `Offline · seen ${ago === "now" ? "just now" : `${ago} ago`}`;
 }
 
-/** The server's address as another computer reaches it: the address this page came from. */
-const serverAddress = () => location.origin;
+/** Its system, in words people use: macOS, not darwin. */
+function system(runner) {
+    const name = { macos: "macOS", darwin: "macOS", linux: "Linux", windows: "Windows" }[runner.os];
 
-/** A command, with a button that copies it. */
-function Command({ text }) {
-    return html`<div class="runner-command-box">
-        <pre class="mono runner-command">${text}</pre>
+    return name ?? runner.os ?? "";
+}
+
+/** A line to copy: a command, the address, or the code, with its copy button. */
+function Copyable({ text, label }) {
+    return html`<div class="runner-copy">
+        ${label && html`<span class="runner-copy-label">${label}</span>`}
+        <code class="runner-copy-text">${text}</code>
         <button
             class="icon-button"
-            aria-label="Copy"
+            aria-label=${`Copy ${label ?? "command"}`}
             title="Copy"
             onClick=${() => copyText(text).then(() => notify("info", "Copied."))}
         >
@@ -70,125 +48,185 @@ function Command({ text }) {
     </div>`;
 }
 
-/** How to link another computer with a code: the steps for a server, or any computer with Node.js. */
-function LinkSteps({ made }) {
-    const server = serverAddress();
+/** The steps on another computer, once the code is made. */
+function LinkSteps({ made, onDone }) {
+    const server = location.origin;
     const minutes = Math.max(1, Math.round((made.expiresAt - Date.now()) / 60000));
 
-    return html`<div class="runner-steps">
-        <p class="muted small">
-            ${`On that computer, with Node.js 22.19 or newer. The code works once, for ${minutes} minutes.`}
-        </p>
-        <ol class="runner-list">
+    return html`<div class="runner-link">
+        <div class="group-title">Link ${made.name}</div>
+        <ol class="runner-steps">
             <li>
-                Install Pi Pocket there:
-                <${Command} text=${`npm install -g ${made.package ?? "pi-pocket@latest"}`} />
+                <div>On ${made.name}, install Pi Pocket (Node.js 22.19 or newer):</div>
+                <${Copyable} text=${`npm install -g ${made.package ?? "pi-pocket@latest"}`} />
             </li>
             <li>
-                Run this, and answer its questions: this server's address and the code. On Linux it
-                offers to keep running as a service.
-                <${Command} text="pi-pocket runner serve" />
+                <div>Start the runner. It asks for this server's address and the code.</div>
+                <${Copyable} text="pi-pocket runner serve" />
+                <${Copyable} label="Address" text=${server} />
+                <${Copyable} label="Code" text=${made.code} />
             </li>
         </ol>
-        <div class="runner-code">
-            <span class="muted small">Address</span>
-            <${Command} text=${server} />
-            <span class="muted small">Code</span>
-            <${Command} text=${made.code} />
+        <p class="muted small">
+            ${`The code works once and expires in ${minutes} minutes. ${made.name} shows as online here when it connects.`}
+        </p>
+        <div class="row">
+            <button class="button" onClick=${onDone}>Done</button>
         </div>
-        <p class="muted small">
-            ${"Or in one line, without questions: "}
-            <span class="mono">${`pi-pocket runner link ${server} ${made.code}`}</span>
-        </p>
-        <p class="muted small">
-            ${"With the Pi Pocket desktop app on that computer, there is nothing to type: open this server in it, then Menu → Computers → "}
-            <strong>Link this computer</strong>.
-        </p>
     </div>`;
 }
 
 /**
- * Link a computer. In the desktop app, the computer it runs on links with one click: the app gets the code, starts
- * the runner, and keeps it running. Any other: a code and the commands to run there.
+ * Link a computer. In the desktop app, the computer it runs on links in one step: the app makes the link and keeps
+ * the runner running. Any other computer gets a code and two commands.
  */
 function LinkComputer({ onDone }) {
     const app = hostCan("runner");
     const [name, setName] = useState(() => (app ? (callHost("computerName") ?? "") : ""));
     const [made, setMade] = useState(null);
     const [busy, setBusy] = useState(false);
+    const clean = name.trim();
 
     const make = (here) =>
         attempt(async () => {
             setBusy(true);
 
             try {
-                const code = await api("runners/code", { name });
+                const code = await api("runners/code", { name: clean });
 
-                if (here) {
-                    const answer = await callHost("linkRunner", {
-                        server: serverAddress(),
-                        code: code.code,
-                        name: name.trim(),
-                    });
+                if (!here) {
+                    setMade({ ...code, name: clean });
 
-                    if (answer?.ok === false) {
-                        throw new Error(
-                            answer.error ?? "The desktop app could not link this computer.",
-                        );
-                    }
-
-                    notify("info", `${name.trim()} is linking. It shows as online in a moment.`);
-                    onDone();
-                } else {
-                    setMade(code);
+                    return;
                 }
+
+                const answer = await callHost("linkRunner", {
+                    server: location.origin,
+                    code: code.code,
+                    name: clean,
+                });
+
+                if (answer?.ok === false) {
+                    throw new Error(
+                        answer.error ?? "The desktop app could not link this computer.",
+                    );
+                }
+
+                notify("info", `Linking ${clean}. It shows as online in a moment.`);
+                onDone();
             } finally {
                 setBusy(false);
             }
         });
 
     if (made) {
-        return html`<div class="field">
-            <${LinkSteps} made=${made} />
-            <div class="row">
-                <button class="button ghost" onClick=${onDone}>Done</button>
-            </div>
-        </div>`;
+        return html`<${LinkSteps} made=${made} onDone=${onDone} />`;
     }
 
-    return html`<div class="field">
-        <div class="label">Name it</div>
-        <input
-            type="text"
-            value=${name}
-            placeholder="Laptop"
-            maxlength="60"
-            onInput=${(event) => setName(event.currentTarget.value)}
-            onKeyDown=${(event) => event.key === "Enter" && name.trim() && make(app)}
-        />
+    return html`<div class="runner-link">
+        <div class="group-title">Link a computer</div>
+        <label class="field">
+            <span class="label">Name</span>
+            <input
+                type="text"
+                value=${name}
+                placeholder="For example: MacBook, Build server"
+                maxlength="60"
+                autofocus
+                onInput=${(event) => setName(event.currentTarget.value)}
+                onKeyDown=${(event) => event.key === "Enter" && clean && !busy && make(app)}
+            />
+        </label>
+        ${
+            app &&
+            html`<p class="muted small">
+                Link this computer and the desktop app runs the runner for you while it is open. For any other
+                computer, such as a server, you get a code and two commands to run there.
+            </p>`
+        }
         <div class="row wrap">
             ${
                 app &&
-                html`<button class="button primary" disabled=${busy || !name.trim()} onClick=${() => make(true)}>
+                html`<button
+                    class="button primary"
+                    disabled=${busy || !clean}
+                    onClick=${() => make(true)}
+                >
                     Link this computer
                 </button>`
             }
             <button
                 class=${`button ${app ? "" : "primary"}`}
-                disabled=${busy || !name.trim()}
+                disabled=${busy || !clean}
                 onClick=${() => make(false)}
             >
-                ${app ? "Link another computer" : "Make a link code"}
+                ${app ? "Link another computer" : "Get a link code"}
             </button>
             <button class="button ghost" onClick=${onDone}>Cancel</button>
         </div>
-        ${
-            app &&
-            html`<p class="muted small">
-                Link this computer: the desktop app runs the runner for you while it is open. Another computer, such
-                as a server: you get a code and two commands to run there.
-            </p>`
-        }
+    </div>`;
+}
+
+/** One linked computer: its state, and what can be done with it. */
+function ComputerRow({ runner }) {
+    const remove = () =>
+        confirm(
+            `Remove ${runner.name}? Its runner disconnects and its sessions stop working. You can link it again later.`,
+        ) &&
+        attempt(() =>
+            api(`runners/${encodeURIComponent(runner.id)}`, undefined, { method: "DELETE" }),
+        );
+
+    return html`<div class="person-row runner-row">
+        <span
+            class=${`runner-dot ${runner.online ? "on" : runner.away ? "away" : ""}`}
+            aria-hidden="true"
+        ></span>
+        <div class="person-main">
+            <div class="runner-title">${runner.name}</div>
+            <div class="muted small">
+                ${[status(runner), system(runner)].filter(Boolean).join(" · ")}
+            </div>
+        </div>
+        <div class="person-actions">
+            <button
+                class="button small"
+                disabled=${!runner.online}
+                title=${runner.online ? "Pick a folder there" : `${runner.name} is not connected`}
+                onClick=${() => openSheet({ type: "cwd", mode: "new", runner: runner.id })}
+            >
+                New session
+            </button>
+            <button class="button small ghost" onClick=${remove}>Remove</button>
+        </div>
+    </div>`;
+}
+
+/**
+ * Who may use sessions on linked computers (`sharedRunnerSessions`): each its creator's alone (the default), or the
+ * usual sharing rules. Starting one stays the linker's either way.
+ */
+function SharedSessions() {
+    const shared = store.state.server?.sharedRunnerSessions === true;
+    const change = () => attempt(() => api("settings", { sharedRunnerSessions: !shared }));
+
+    return html`<div class="group">
+        <div class="group-title">Sharing</div>
+        <div class="setting wrap">
+            <div class="grow">
+                <div class="small">Let others use these sessions</div>
+                <div class="muted small">
+                    Off: only the person who started a session can see or prompt it. On: sessions on linked
+                    computers are shared like any other, and their commands run on that computer for whoever
+                    prompts them.
+                </div>
+            </div>
+            <${Switch}
+                on=${shared}
+                label=${`Let others use these sessions: ${shared ? "on" : "off"}`}
+                onChange=${change}
+            />
+        </div>
     </div>`;
 }
 
@@ -204,49 +242,25 @@ export function ComputersSheet() {
         });
     }, []);
 
-    const remove = (runner) => {
-        if (
-            !confirm(
-                `Remove ${runner.name}? Its runner stops, its key stops working, and its sessions cannot run until you link it again.`,
-            )
-        ) {
-            return;
-        }
-
-        attempt(() =>
-            api(`runners/${encodeURIComponent(runner.id)}`, undefined, { method: "DELETE" }),
-        );
-    };
-
     return html`<${Sheet} title="Computers" onClose=${closeSheet}>
         <p class="muted small">
-            A session can run its tools on another computer of yours: files, commands, and git there, with Pi, its
-            models, and its history here. That computer connects out to this server, so it needs no open port.
-            Only you can start sessions on a computer you linked.
+            Run a session's tools on another of your computers: its files and commands are used there, while Pi,
+            your models, and the history stay on this server. The computer connects out to this server, so it
+            needs no open port. Only you can start sessions on computers you link.
         </p>
-        <${SharedSessions} />
+        ${
+            runners.length > 0 &&
+            html`<div class="sheet-list">
+                ${runners.map((runner) => html`<${ComputerRow} key=${runner.id} runner=${runner} />`)}
+            </div>`
+        }
         ${!loaded && runners.length === 0 && html`<${Loader} />`}
-        ${runners.map(
-            (runner) => html`<div class="runner-row">
-                <div class="runner-name">
-                    <span class=${`runner-dot ${runner.online ? "on" : runner.away ? "away" : ""}`}></span>
-                    <span>${runner.name}</span>
-                    <span class="muted small">
-                        ${status(runner)}${runner.os ? ` · ${runner.os} ${runner.arch ?? ""}` : ""}
-                    </span>
-                </div>
-                <div class="row">
-                    <button
-                        class="button"
-                        disabled=${!runner.online}
-                        onClick=${() => openSheet({ type: "cwd", mode: "new", runner: runner.id })}
-                    >
-                        New session
-                    </button>
-                    <button class="button ghost" onClick=${() => remove(runner)}>Remove</button>
-                </div>
-            </div>`,
-        )}
+        ${
+            loaded &&
+            runners.length === 0 &&
+            !linking &&
+            html`<p class="muted small runner-none">No computers linked yet.</p>`
+        }
         ${
             linking
                 ? html`<${LinkComputer} onDone=${() => setLinking(false)} />`
@@ -254,10 +268,6 @@ export function ComputersSheet() {
                       <${Icon} name="plus" size=${16} /> Link a computer
                   </button>`
         }
+        <${SharedSessions} />
     <//>`;
-}
-
-/** Start a session on computer `runner` in `cwd`, and open it. */
-export async function startOn(runner, cwd) {
-    return actions.createSession(cwd, { runner });
 }

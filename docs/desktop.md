@@ -32,9 +32,9 @@ window.pocketHost = {
     setPinned(list), // [{ id, title, state, label, url }]: the pinned sessions, in order
     subscribe(listener), // the app's events (below)
 
-    // With the "runner" capability (runners.md): the app runs `pi-pocket runner` for the computer it is on.
-    computerName(), // this computer's name, to suggest for it
-    linkRunner({ server, code, name }), // link with this one-time code and keep the runner running: Promise<{ ok, error? }>
+    // With the "runner" capability (runners.md): run session tools on the computer that runs the app.
+    computerName(), // suggested name for this computer
+    linkRunner({ server, code, name }), // save the link and run the runner: Promise<{ ok, error? }>
 };
 ```
 
@@ -52,6 +52,14 @@ window.pocketHost = {
 | `open`       | Opens what the app asks for (an `open` event), also without `notify`.                                                                                                                                                                                                                                                                        |
 
 A page in an Electron window keeps running at full speed while the window hides in the tray, so `document.visibilityState` stays `visible` there. That is why `visible()` exists: without it, the server would think the person is looking, and hold every notification back.
+
+### Runner
+
+With the `runner` capability, the app provides `computerName()` and `linkRunner({ server, code, name })`. The server address is `server`, the one-time link code is `code`, and the computer's chosen name is `name`.
+
+`linkRunner()` saves the link, starts the runner, and keeps it running while the app is open. It returns a promise with `{ ok: true }` on success, or `{ ok: false, error: "…" }` with a message that the page can show. There is nothing to type in a terminal.
+
+The app must not restart a runner that exits with code 3. The person must resolve the reported error or link again. See [Sessions on another computer](runners.md) for the commands, access rules, and what happens when the connection drops.
 
 ### Notifications
 

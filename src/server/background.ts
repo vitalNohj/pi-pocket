@@ -1266,7 +1266,7 @@ export class BackgroundTasks {
             throw new HttpError(400, "PiP does not run commands.");
         }
 
-        this.#app.requireLocal(conversationId, "background tasks");
+        this.#app.requireLocal(conversationId, "Background tasks");
     }
 
     /**

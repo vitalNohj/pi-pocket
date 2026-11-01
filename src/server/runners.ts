@@ -237,9 +237,7 @@ export class RunnerLink {
         const session = this.#session;
 
         if (session === undefined || !session.live) {
-            throw lost(
-                `${this.name} is offline. Start its runner (pi-pocket runner) and try again.`,
-            );
+            throw lost(`${this.name} is offline. Start Pi Pocket's runner there, then try again.`);
         }
 
         return session;
@@ -341,7 +339,10 @@ export class RunnerLink {
             this.#runners.log(`${this.name} is back; its work goes on.`);
         } else {
             if (current !== undefined) {
-                this.#end(current, lost(`${this.name} started over; the work it was doing ended`));
+                this.#end(
+                    current,
+                    lost(`${this.name} restarted, so the command it was running stopped`),
+                );
             }
 
             session = new LinkSession(++this.#sessions);
@@ -418,7 +419,9 @@ export class RunnerLink {
             session.grace = setTimeout(() => {
                 this.#end(
                     session,
-                    lost(`${this.name} was away too long; the work it was doing ended`),
+                    lost(
+                        `${this.name} was disconnected too long, so the command it was running stopped`,
+                    ),
                 );
                 this.#runners.changed();
             }, this.#runners.graceMs);
@@ -632,6 +635,8 @@ export class Runners {
             lastSeen: Date.now(),
             platform: { os: info.os, arch: info.arch, home: info.home, version },
         });
+        // Its system shows in Computers from now: the list went out when it connected, before this was known.
+        this.#onChange();
     }
 
     /** The link to a computer, made when first asked for, also for a computer not (or no longer) here. */
@@ -669,7 +674,7 @@ export class Runners {
         const runner = this.#config.runnerById(id);
 
         if (runner === undefined) {
-            throw new HttpError(404, "No such computer. Link it first.");
+            throw new HttpError(404, "That computer is not linked to this server.");
         }
 
         return runner;
@@ -810,11 +815,14 @@ export class Runners {
         const clean = name.replace(/\s+/g, " ").trim().slice(0, 60);
 
         if (clean === "") {
-            throw new HttpError(400, "Give the computer a name");
+            throw new HttpError(400, "Give the computer a name.");
         }
 
         if (this.#config.runners.some((runner) => runner.name === clean)) {
-            throw new HttpError(409, `A computer is already named ${clean}`);
+            throw new HttpError(
+                409,
+                `A computer named ${clean} is already linked. Choose another name.`,
+            );
         }
 
         // 12 characters of an alphabet without look-alikes (no 0/O, 1/I/L): 60 bits, easy to read out and type.
@@ -833,7 +841,10 @@ export class Runners {
         const found = this.#config.takeRunnerCode(code.trim().toUpperCase());
 
         if (found === undefined) {
-            throw new HttpError(403, "This link code is wrong, used, or expired. Make a new one.");
+            throw new HttpError(
+                403,
+                "This code is wrong, already used, or expired. Get a new one in Computers.",
+            );
         }
 
         const { runner, key } = this.#config.addRunner(found.name, found.createdBy);
