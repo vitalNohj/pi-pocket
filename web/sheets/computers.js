@@ -1,4 +1,4 @@
-// Computers (`src/server/runners.ts`): other computers of the owner's that run sessions' tools. Link one with a
+// Runners (`src/server/runners.ts`): other computers of the owner's that run sessions' tools. Link one with a
 // one-time code, see which are online, start a session on one, remove one, and choose whether others may use those
 // sessions. The owner's alone.
 import { useEffect, useState } from "preact/hooks";
@@ -230,6 +230,19 @@ function SharedSessions() {
     </div>`;
 }
 
+/** The Runners item's hint in the menu: how many linked computers are online. */
+export function runnersHint() {
+    const { runners } = store.state;
+
+    if (runners.length === 0) {
+        return "link a computer";
+    }
+
+    const online = runners.filter((runner) => runner.online).length;
+
+    return `${online} of ${runners.length} online`;
+}
+
 export function ComputersSheet() {
     const { runners } = store.state;
     const [loaded, setLoaded] = useState(false);
@@ -242,7 +255,7 @@ export function ComputersSheet() {
         });
     }, []);
 
-    return html`<${Sheet} title="Computers" onClose=${closeSheet}>
+    return html`<${Sheet} title="Runners" onClose=${closeSheet}>
         <p class="muted small">
             Run a session's tools on another of your computers: its files and commands are used there, while Pi,
             your models, and the history stay on this server. The computer connects out to this server, so it

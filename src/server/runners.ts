@@ -635,7 +635,7 @@ export class Runners {
             lastSeen: Date.now(),
             platform: { os: info.os, arch: info.arch, home: info.home, version },
         });
-        // Its system shows in Computers from now: the list went out when it connected, before this was known.
+        // Its system shows in Runners from now: the list went out when it connected, before this was known.
         this.#onChange();
     }
 
@@ -843,7 +843,7 @@ export class Runners {
         if (found === undefined) {
             throw new HttpError(
                 403,
-                "This code is wrong, already used, or expired. Get a new one in Computers.",
+                "This code is wrong, already used, or expired. Get a new one in Menu → Runners.",
             );
         }
 

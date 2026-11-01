@@ -2499,6 +2499,8 @@ export class PocketApp {
             },
             // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
             folderFavorites: await this.folderFavorites.list(user),
+            // Linked computers (`runners.ts`), for the owner's Runners sheet and New session's Runs on.
+            ...(user.role === "owner" ? { runners: this.runners.list() } : {}),
             // Every theme folder, for Appearance and for the look this tab uses (`theme.js`).
             themes: this.themes.list(user.role === "owner"),
         };
