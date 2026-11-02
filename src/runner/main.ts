@@ -814,7 +814,7 @@ async function linkInteractively(file: string): Promise<Link | undefined> {
     console.log(green(`  Found Pi Pocket at ${server}.`));
     console.log("");
     console.log("  In Pi Pocket, open Menu > Runners > Link a computer, name this computer,");
-    console.log("  and choose Get a link code (Link another computer in the desktop app).");
+    console.log("  and choose Get a link code.");
     console.log(dim("  The code works once, for 10 minutes."));
 
     for (;;) {

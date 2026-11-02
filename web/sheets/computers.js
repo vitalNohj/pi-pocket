@@ -2,7 +2,6 @@
 // one-time code, see which are online, start a session on one, remove one, and choose whether others may use those
 // sessions. The owner's alone.
 import { useEffect, useState } from "preact/hooks";
-import { callHost, hostCan } from "../host.js";
 import { api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
 
@@ -48,23 +47,25 @@ function Copyable({ text, label }) {
     </div>`;
 }
 
-/** The steps on another computer, once the code is made. */
+/** The address and code for the runner on that computer, and how to get a runner there. */
 function LinkSteps({ made, onDone }) {
     const server = location.origin;
     const minutes = Math.max(1, Math.round((made.expiresAt - Date.now()) / 60000));
 
     return html`<div class="runner-link">
         <div class="group-title">Link ${made.name}</div>
+        <p class="muted small">Give the runner on ${made.name} this address and code:</p>
+        <${Copyable} label="Address" text=${server} />
+        <${Copyable} label="Code" text=${made.code} />
+        <div class="group-title">No runner there yet?</div>
         <ol class="runner-steps">
             <li>
-                <div>On ${made.name}, install Pi Pocket (Node.js 22.19 or newer):</div>
+                <div>Install Pi Pocket (Node.js 22.19 or newer):</div>
                 <${Copyable} text=${`npm install -g ${made.package ?? "pi-pocket@latest"}`} />
             </li>
             <li>
-                <div>Run the runner, choose Link this computer, then enter this address and code:</div>
+                <div>Run the runner, choose Link this computer, and enter the address and code:</div>
                 <${Copyable} text="pi-pocket runner" />
-                <${Copyable} label="Address" text=${server} />
-                <${Copyable} label="Code" text=${made.code} />
             </li>
         </ol>
         <p class="muted small">
@@ -76,44 +77,19 @@ function LinkSteps({ made, onDone }) {
     </div>`;
 }
 
-/**
- * Link a computer. In the desktop app, the computer it runs on links in one step: the app makes the link and keeps
- * the runner running. Any other computer gets a code and two commands.
- */
+/** Link a computer: name it, get a one-time code, and run the runner there with this address and code. */
 function LinkComputer({ onDone }) {
-    const app = hostCan("runner");
-    const [name, setName] = useState(() => (app ? (callHost("computerName") ?? "") : ""));
+    const [name, setName] = useState("");
     const [made, setMade] = useState(null);
     const [busy, setBusy] = useState(false);
     const clean = name.trim();
 
-    const make = (here) =>
+    const make = () =>
         attempt(async () => {
             setBusy(true);
 
             try {
-                const code = await api("runners/code", { name: clean });
-
-                if (!here) {
-                    setMade({ ...code, name: clean });
-
-                    return;
-                }
-
-                const answer = await callHost("linkRunner", {
-                    server: location.origin,
-                    code: code.code,
-                    name: clean,
-                });
-
-                if (answer?.ok === false) {
-                    throw new Error(
-                        answer.error ?? "The desktop app could not link this computer.",
-                    );
-                }
-
-                notify("info", `Linking ${clean}. It shows as online in a moment.`);
-                onDone();
+                setMade({ ...(await api("runners/code", { name: clean })), name: clean });
             } finally {
                 setBusy(false);
             }
@@ -134,33 +110,12 @@ function LinkComputer({ onDone }) {
                 maxlength="60"
                 autofocus
                 onInput=${(event) => setName(event.currentTarget.value)}
-                onKeyDown=${(event) => event.key === "Enter" && clean && !busy && make(app)}
+                onKeyDown=${(event) => event.key === "Enter" && clean && !busy && make()}
             />
         </label>
-        ${
-            app &&
-            html`<p class="muted small">
-                Link this computer and the desktop app runs the runner for you while it is open. For any other
-                computer, such as a server, you get a code and two commands to run there.
-            </p>`
-        }
         <div class="row wrap">
-            ${
-                app &&
-                html`<button
-                    class="button primary"
-                    disabled=${busy || !clean}
-                    onClick=${() => make(true)}
-                >
-                    Link this computer
-                </button>`
-            }
-            <button
-                class=${`button ${app ? "" : "primary"}`}
-                disabled=${busy || !clean}
-                onClick=${() => make(false)}
-            >
-                ${app ? "Link another computer" : "Get a link code"}
+            <button class="button primary" disabled=${busy || !clean} onClick=${make}>
+                Get a link code
             </button>
             <button class="button ghost" onClick=${onDone}>Cancel</button>
         </div>
