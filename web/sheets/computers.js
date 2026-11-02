@@ -122,6 +122,36 @@ function LinkComputer({ onDone }) {
     </div>`;
 }
 
+/** Readiness is a hint, not a requirement: tools and sign-ins can be installed later. */
+function Tools({ runner }) {
+    const { tools, os } = runner;
+
+    if (!tools) {
+        return null;
+    }
+
+    const windows = os === "windows" || os === "win32";
+    const git =
+        os === "darwin"
+            ? "xcode-select --install"
+            : windows
+              ? "winget install Git.Git"
+              : "sudo apt install git";
+    const gh = os === "darwin" ? "brew install gh" : windows ? "winget install GitHub.cli" : null;
+
+    return html`<div class="muted small">
+        ${tools.git ? "git ✓" : html`git not found: <code>${git}</code>`} · ${
+            !tools.gh
+                ? gh
+                    ? html`GitHub: gh not found: <code>${gh}</code>`
+                    : html`GitHub: gh not found: <a href="https://github.com/cli/cli#installation" target="_blank" rel="noopener noreferrer">Install gh</a>`
+                : tools.github
+                  ? "GitHub ✓"
+                  : html`GitHub: sign in with <code>gh auth login</code>`
+        }
+    </div>`;
+}
+
 /** One linked computer: its state, and what can be done with it. */
 function ComputerRow({ runner }) {
     const remove = () =>
@@ -142,6 +172,7 @@ function ComputerRow({ runner }) {
             <div class="muted small">
                 ${[status(runner), system(runner)].filter(Boolean).join(" · ")}
             </div>
+            <${Tools} runner=${runner} />
         </div>
         <div class="person-actions">
             <button

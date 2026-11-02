@@ -91,12 +91,24 @@ export function remoteRepo(
     cwd: string,
     context: Context,
 ): Promise<string | undefined> {
+    return remoteGit(env, cwd, ["remote", "get-url", "origin"], context).then((output) =>
+        output === undefined ? undefined : normalizeRemote(output),
+    );
+}
+
+/** A short git lookup on another computer; no shell, and no repository when it fails or times out. */
+export function remoteGit(
+    env: ExecutionEnv,
+    cwd: string,
+    args: string[],
+    context: Context,
+): Promise<string | undefined> {
     let output = "";
 
     return within(
         env
             .exec(
-                ["git", "remote", "get-url", "origin"],
+                ["git", ...args],
                 {
                     cwd,
                     timeout: REPO_MS / 1000,
@@ -109,7 +121,7 @@ export function remoteRepo(
                 context,
             )
             .then((result) =>
-                result.ok && result.value.exitCode === 0 ? normalizeRemote(output) : undefined,
+                result.ok && result.value.exitCode === 0 ? output.trim() : undefined,
             ),
         REPO_MS,
     );
