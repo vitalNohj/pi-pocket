@@ -263,7 +263,7 @@ function Topbar() {
                     folder &&
                     html`<span
                         class="folder-mark"
-                        style=${`--folder:${folderColor(cwd)}`}
+                        style=${`--folder:${folderColor(cwd, view.conversation?.runner)}`}
                         aria-hidden="true"
                     ></span>`
                 }
