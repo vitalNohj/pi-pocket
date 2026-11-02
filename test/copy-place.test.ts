@@ -294,7 +294,8 @@ describe("a copy with a place", () => {
             (tool) => tool.name,
         );
 
-        assert.ok(!tools.includes("subagent"), "no subagents on another computer yet");
+        assert.ok(tools.includes("subagent"), "subagents work on another computer");
+        assert.ok(tools.includes("codemode"), "codemode works on another computer");
 
         await say(app, copy.id, "where now");
         assert.match(

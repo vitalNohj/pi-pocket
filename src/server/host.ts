@@ -451,6 +451,8 @@ export interface PocketHost {
     readonly fetchPublic: FetchPublic;
     /** Who Pi works for in a conversation now: whose message led to its current work. */
     requesterOf(conversationId: ConversationId): string | undefined;
+    /** The computer this conversation and its subagents run on; undefined for this server. Built-in modules only. */
+    runnerOf(conversationId: ConversationId): string | undefined;
     /**
      * The role of a person by id, as core decides it; undefined for an id that is not a person here.
      *

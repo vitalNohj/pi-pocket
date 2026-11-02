@@ -1016,8 +1016,13 @@ export default function createSubagents(host: PocketHost) {
                         ownership: { kind: "task", taskId: anchor },
                     });
 
+                    // A remove edit starts from defaults, not the inherited selection. Keep the parent's list.
+                    const removed = new Set([SubagentTools.name, AgentTeams.name, Ask.name]);
+
                     await configure(tx, child.id, {
-                        extensions: { remove: [SubagentTools, AgentTeams, Ask] },
+                        extensions: parent.extensions.filter(
+                            (extension) => !removed.has(extension.name),
+                        ),
                         instructions: `You are the subagent "${name}". You work for another agent, not directly for a person, although a person may open your conversation and talk to you. Answer requests completely but concisely: your final answer is what gets reported back.`,
                         ...(model === undefined ? {} : { model }),
                         ...(thinking === undefined ? {} : { thinkingLevel: thinking }),
