@@ -18623,3 +18623,65 @@ pre.gallery-code {
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
+
+/* Keep warm: the owner's settings, and the row a session chooses its own with. */
+.keep-warm-sheet p {
+    margin: 0 0 0.5rem;
+}
+
+.keep-warm-now {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.keep-warm-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.7rem 0;
+    border-top: 1px solid var(--line);
+}
+
+.keep-warm-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-height: 44px;
+}
+
+.keep-warm-row > span:first-child .muted {
+    display: block;
+}
+
+.keep-warm-input {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex: none;
+    white-space: nowrap;
+}
+
+.keep-warm-number {
+    min-height: 36px;
+    text-align: right;
+}
+
+.keep-warm-model {
+    justify-content: space-between;
+    cursor: default;
+}
+
+.keep-warm-session {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 10px 12px;
+}
+
+.keep-warm-session-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+}

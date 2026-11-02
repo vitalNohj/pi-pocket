@@ -39,6 +39,8 @@ export type SessionMeta = {
     linkedFrom?: { id: number };
     /** The most Pi may spend here, in dollars, subagents included. */
     budget?: number;
+    /** Keeping the prompt cache warm once a run ends: "on" with no time limit, "off" never; absent: the owner's default. */
+    keepWarm?: "on" | "off";
     /** The git worktree the session works in, when it has one of its own. */
     worktree?: Worktree;
     /** The session of Pi's in the terminal this one continues, and how many messages its file had then. */
