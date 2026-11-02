@@ -9,10 +9,11 @@
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { connect as connectTcp, type Socket } from "node:net";
+import { connect as connectTcp, type LookupFunction, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { localDaemon } from "@earendil-works/pi-env";
 import WebSocket from "ws";
+import { guardedLookup, PrivateAddressError, type Resolve } from "./destinations.ts";
 import { checkTransport, refusal, type Transport } from "./transport.ts";
 import { checkTools } from "./tools.ts";
 import type { RunnerTools } from "./protocol.ts";
@@ -73,6 +74,8 @@ export type RunnerSettings = {
     allowHttp?: boolean;
     /** Open the network connections of sessions' browsers from this computer. Default: true. */
     network?: boolean;
+    /** Where sessions' browser downloads go, an absolute folder: `<folder>/<session>/`. Default: the temporary folder. */
+    downloads?: string;
 };
 
 /** A question the server asked this computer: a session would start here. */
@@ -108,6 +111,8 @@ export type RunnerOptions = {
     ask?: (question: SessionQuestion) => Promise<SessionAnswer>;
     /** Check the server's transport before each connect; tests and HTTPS skip it. Default: `checkTransport`. */
     transport?: (server: string, allowHttp: boolean) => Promise<Transport>;
+    /** How browser streams resolve names; tests give fixed answers. Default: the system's (`dns.lookup`). */
+    resolve?: Resolve;
 };
 
 /** How long the runner waits for its person; the server waits 10 s longer (`CONFIRM_MS` in `runners.ts`). */
@@ -257,6 +262,7 @@ export class Runner {
     opened = 0;
     /** Network connections still connecting, by stream id. */
     readonly #connecting = new Map<number, Socket>();
+    readonly #lookup: LookupFunction;
     #done!: (error?: Error) => void;
     /** Settles when the runner stops: resolves after `stop()`, rejects with `RunnerStopped` when the server ends it. */
     readonly finished: Promise<void>;
@@ -265,6 +271,7 @@ export class Runner {
         this.#options = options;
         this.#log = options.log ?? (() => {});
         this.#retry = options.retryMs ?? RETRY_MS;
+        this.#lookup = guardedLookup(options.resolve);
         this.#url = new URL(options.link.server);
         this.#url.protocol = this.#url.protocol === "https:" ? "wss:" : "ws:";
         this.#url.pathname = `${this.#url.pathname.replace(/\/+$/, "")}${LINK_PATH}`;
@@ -523,6 +530,9 @@ export class Runner {
                     tools,
                     // And opens network streams (`net-open`), or refuses them as its settings say.
                     network: true,
+                    ...(this.#settings().downloads === undefined
+                        ? {}
+                        : { downloads: this.#settings().downloads }),
                 } satisfies ControlMessage),
             );
         });
@@ -863,7 +873,13 @@ export class Runner {
         }
 
         const host = open.host.replace(/^\[|\]$/g, "");
-        const socket = connectTcp({ host, port: open.port, allowHalfOpen: true });
+        // Resolved here once, and checked: a public name must not lead to this computer's network.
+        const socket = connectTcp({
+            host,
+            port: open.port,
+            allowHalfOpen: true,
+            lookup: this.#lookup,
+        });
         const timer = setTimeout(() => {
             socket.destroy();
             fail("timeout", `No answer from ${open.host}:${open.port} in ${CONNECT_MS / 1000} s`);
@@ -885,7 +901,12 @@ export class Runner {
             if (!connected && this.#connecting.get(open.id) === socket) {
                 clearTimeout(timer);
                 this.#connecting.delete(open.id);
-                fail("unreachable", `${open.host}:${open.port}: ${error.code ?? error.message}`);
+                fail(
+                    "unreachable",
+                    error instanceof PrivateAddressError
+                        ? error.message
+                        : `${open.host}:${open.port}: ${error.code ?? error.message}`,
+                );
             }
         });
         socket.once("connect", () => {

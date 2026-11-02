@@ -2,17 +2,19 @@
  * Downloads of the built-in browser. Chromium saves each one in a private folder of its page's browser context on this
  * server (`incoming`, named by its guid); when it completes, it goes where the conversation's session works:
  *
- * - A session on this server: into `downloads/<conversation>/` in the data folder, under the name the page suggested.
- * - A session on another computer: copied in parts to `pi-pocket-downloads/<conversation>/` in that computer's
- *   temporary folder (`RunnerEnv`), and the server's copy is deleted at once. Its bytes pass through this server only
- *   for that moment.
+ * - A session on this server: into `pi-pocket-downloads-<uid>/<conversation>/` in this server's temporary folder, a
+ *   folder only this user may open (`privateFolder`), under the name the page suggested.
+ * - A session on another computer: copied in parts to `<folder>/<conversation>/`, where the folder is the one its
+ *   runner's settings name, or else `pi-pocket-downloads` in that computer's temporary folder (`RunnerEnv`). The
+ *   server's copy is deleted at once: its bytes pass through this server only for that moment.
  *
  * The browser tool reports each download once it began, and again once it ended, with where the file is.
  */
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { constants, createReadStream } from "node:fs";
-import { copyFile, link, mkdir, rm, stat, unlink } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, rm, stat, unlink } from "node:fs/promises";
+import { tmpdir, userInfo } from "node:os";
 import { extname, join } from "node:path";
 
 /** The largest file a download may be. */
@@ -24,8 +26,17 @@ const PART = 4 * 1024 * 1024;
 /** How many downloads of a conversation are kept for its reports. */
 const KEEP = 20;
 
-/** A computer's environment, and where its temporary folder is (pi-env's `info()`). */
-export type Computer = { name: string; env: ExecutionEnv; tmpdir: string; separator: string };
+/**
+ * A computer's environment, where its temporary folder is (pi-env's `info()`), and the downloads folder its runner's
+ * settings name, if any.
+ */
+export type Computer = {
+    name: string;
+    env: ExecutionEnv;
+    tmpdir: string;
+    separator: string;
+    folder?: string;
+};
 
 export type DownloadState = "downloading" | "copying" | "done" | "failed" | "canceled";
 
@@ -90,6 +101,40 @@ export function formatSize(bytes: number): string {
     return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
+/**
+ * This server's folder for downloads of its own sessions: `pi-pocket-downloads-<uid>` in the temporary folder, mode
+ * 0700. The temporary folder is shared by every user, so a folder there that is a link, or that another user owns
+ * (made first, to read or swap the files), is refused; one of this user's that others may open is closed to them.
+ */
+export async function privateFolder(
+    base = tmpdir(),
+    uid: number | undefined = process.getuid?.(),
+): Promise<string> {
+    const folder = join(base, `pi-pocket-downloads-${uid ?? userInfo().username}`);
+
+    await mkdir(folder, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") {
+            throw error;
+        }
+    });
+
+    const found = await lstat(folder);
+
+    if (!found.isDirectory()) {
+        throw new Error(`${folder} is not a folder: refused for downloads`);
+    }
+
+    if (uid !== undefined && found.uid !== uid) {
+        throw new Error(`${folder} belongs to another user: refused for downloads`);
+    }
+
+    if (uid !== undefined && (found.mode & 0o077) !== 0) {
+        await chmod(folder, 0o700);
+    }
+
+    return folder;
+}
+
 /** Move a finished file into `folder` on this server, under a free name; its path. */
 export async function moveToFolder(file: string, folder: string, name: string): Promise<string> {
     await mkdir(folder, { recursive: true, mode: 0o700 });
@@ -133,8 +178,9 @@ function failure(error: unknown): string {
 }
 
 /**
- * Copy a finished file to `pi-pocket-downloads/<conversation>/` in a computer's temporary folder, in parts, under a
- * free name; its path there. A part file takes the bytes and gets its name only when complete.
+ * Copy a finished file to `<folder>/<conversation>/` on a computer (`folder`: its runner's setting, or else
+ * `pi-pocket-downloads` in its temporary folder), in parts, under a free name; its path there. A part file takes
+ * the bytes and gets its name only when complete.
  */
 export async function copyToComputer(
     computer: Computer,
@@ -144,8 +190,9 @@ export async function copyToComputer(
 ): Promise<string> {
     const { env, separator } = computer;
     const folder = [
-        computer.tmpdir.replace(/[\\/]+$/, ""),
-        "pi-pocket-downloads",
+        ...(computer.folder === undefined
+            ? [computer.tmpdir.replace(/[\\/]+$/, ""), "pi-pocket-downloads"]
+            : [computer.folder.replace(/(?<=.)[\\/]+$/, "")]),
         String(conversationId),
     ].join(separator);
 
@@ -406,7 +453,7 @@ export class Downloads {
             download.reported = "ended";
             lines.push(
                 download.state === "done"
-                    ? `Downloaded ${download.name} (${formatSize(download.bytes)}) to ${download.path}`
+                    ? `Downloaded ${download.path} (${formatSize(download.bytes)}).`
                     : download.state === "canceled"
                       ? `The download of ${download.name} was canceled.`
                       : `The download of ${download.name} failed: ${download.error}.`,
