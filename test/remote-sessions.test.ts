@@ -13,7 +13,7 @@ import {
     fauxToolCall,
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner, type SessionAnswer, type SessionQuestion } from "../src/runner/runner.ts";
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
 import {
     type App,
@@ -65,6 +65,14 @@ const route: FauxResponseStep = (context) => {
     return fauxAssistantMessage([fauxText("ok")]);
 };
 
+/** The runner's settings, as its link file would hold them. */
+const runnerSettings: { confirm?: boolean } = {};
+
+/** What the computer was asked, and how its person answers: yes, unless a test says otherwise. */
+const asked: SessionQuestion[] = [];
+let answer: (question: SessionQuestion) => Promise<SessionAnswer> = () =>
+    Promise.resolve({ allow: true });
+
 /** The newest tool result's text in a conversation. */
 async function lastToolText(id: number): Promise<string> {
     const view = await (await app.harness.conversation(id as never, context))!.context(context);
@@ -97,6 +105,13 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50, 100, 200],
+        settings: () => runnerSettings,
+        // The person at the computer: asked before each session, answering as `answer` says.
+        ask: (question) => {
+            asked.push(question);
+
+            return answer(question);
+        },
     });
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
@@ -245,6 +260,46 @@ describe("a session on another computer", () => {
         const fork = await app.commands.fork(id as never, owner(app), {});
 
         assert.equal(app.runnerOf(fork.id), runnerId);
+    });
+
+    it("asks the computer first, and does not start a session its person denies", async () => {
+        asked.length = 0;
+        answer = () =>
+            Promise.resolve({ allow: false, reason: "The person at this computer denied it." });
+
+        try {
+            const before = app.sessions(owner(app)).length;
+
+            await assert.rejects(
+                app.commands.createSession(owner(app), { cwd: there, runner: runnerId }),
+                /denied it/,
+            );
+            await assert.rejects(app.commands.fork(id as never, owner(app), {}), /denied it/);
+            assert.equal(app.sessions(owner(app)).length, before, "no session was made");
+            assert.deepEqual(
+                asked.map((each) => [each.kind, each.person, each.folder]),
+                [
+                    ["new", "Owner", there],
+                    ["fork", "Owner", there],
+                ],
+            );
+        } finally {
+            answer = () => Promise.resolve({ allow: true });
+        }
+    });
+
+    it("starts sessions without asking when its person turned asking off", async () => {
+        asked.length = 0;
+        answer = () => Promise.reject(new Error("must not be asked"));
+
+        try {
+            runnerSettings.confirm = false;
+            await app.commands.createSession(owner(app), { cwd: there, runner: runnerId });
+            assert.equal(asked.length, 0);
+        } finally {
+            runnerSettings.confirm = true;
+            answer = () => Promise.resolve({ allow: true });
+        }
     });
 
     it("fails a tool, not the server, when the computer is offline", async () => {

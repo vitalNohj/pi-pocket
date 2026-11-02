@@ -61,14 +61,14 @@ function LinkSteps({ made, onDone }) {
                 <${Copyable} text=${`npm install -g ${made.package ?? "pi-pocket@latest"}`} />
             </li>
             <li>
-                <div>Start the runner. It asks for this server's address and the code.</div>
-                <${Copyable} text="pi-pocket runner serve" />
+                <div>Run the runner, choose Link this computer, then enter this address and code:</div>
+                <${Copyable} text="pi-pocket runner" />
                 <${Copyable} label="Address" text=${server} />
                 <${Copyable} label="Code" text=${made.code} />
             </li>
         </ol>
         <p class="muted small">
-            ${`The code works once and expires in ${minutes} minutes. ${made.name} shows as online here when it connects.`}
+            ${`The code works once and expires in ${minutes} minutes. ${made.name} shows as online here when it connects. Before a session starts there, it asks the person at ${made.name}.`}
         </p>
         <div class="row">
             <button class="button" onClick=${onDone}>Done</button>
