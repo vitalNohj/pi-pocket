@@ -18624,9 +18624,25 @@ pre.gallery-code {
     overflow: hidden;
 }
 
-/* Keep warm: the owner's settings, and the row a session chooses its own with. */
+/*
+ * Keep warm: the owner's settings. A phone stacks the settings over the models; a wide screen puts them side by side,
+ * and the models fill the height in as many columns as fit.
+ */
 .keep-warm-sheet p {
-    margin: 0 0 0.5rem;
+    margin: 0;
+}
+
+.keep-warm-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.keep-warm-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
 }
 
 .keep-warm-now {
@@ -18639,20 +18655,23 @@ pre.gallery-code {
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-    padding: 0.7rem 0;
+    padding-top: 10px;
     border-top: 1px solid var(--line);
 }
 
-.keep-warm-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    min-height: 44px;
+/* The caps and the refresh share: two to a row. */
+.keep-warm-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 14px;
 }
 
-.keep-warm-row > span:first-child .muted {
-    display: block;
+.keep-warm-field {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    min-width: 0;
 }
 
 .keep-warm-input {
@@ -18665,12 +18684,124 @@ pre.gallery-code {
 
 .keep-warm-number {
     min-height: 36px;
+    padding: 0 8px;
     text-align: right;
+    appearance: textfield;
+}
+
+.keep-warm-number::-webkit-inner-spin-button,
+.keep-warm-number::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+}
+
+.keep-warm-models {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+}
+
+.keep-warm-models-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.keep-warm-models-head .label {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.keep-warm-models .search {
+    margin: 0;
+}
+
+.keep-warm-model-list {
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--bg);
+}
+
+.keep-warm-model-list > p {
+    padding: 0.6rem;
+}
+
+.keep-warm-provider + .keep-warm-provider {
+    border-top: 1px solid var(--hair);
+}
+
+/* Models in as many columns as fit, each a name and its minutes. */
+.keep-warm-model-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
 }
 
 .keep-warm-model {
+    display: flex;
+    align-items: center;
     justify-content: space-between;
-    cursor: default;
+    gap: 0.6rem;
+    min-height: 48px;
+    padding: 6px 12px;
+    border-top: 1px solid var(--hair);
+}
+
+.keep-warm-model.never .keep-warm-model-name > span:first-child {
+    color: var(--muted);
+    text-decoration: line-through;
+}
+
+.keep-warm-model-name {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.keep-warm-model-name > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (min-width: 1000px) {
+    .sheet.keep-warm-sheet {
+        max-width: 1240px;
+        height: min(88dvh, 920px);
+    }
+    .keep-warm-sheet .sheet-body {
+        overflow-y: hidden;
+    }
+    .keep-warm-layout {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+        gap: 24px;
+    }
+    .keep-warm-settings {
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding-right: 4px;
+    }
+    .keep-warm-models {
+        padding: 14px 16px 16px;
+        border: 1px solid var(--hair);
+        border-radius: var(--r-card);
+        background: var(--card);
+    }
+    .keep-warm-model-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
 }
 
 .keep-warm-session {
