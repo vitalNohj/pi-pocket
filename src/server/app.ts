@@ -521,6 +521,22 @@ export class PocketApp {
             dataDir: options.dataDir,
             ...(options.browser === undefined ? {} : { executable: options.browser }),
             log: (line) => this.#log(line),
+            remote: {
+                runnerOf: (id) => this.runnerOf(id as unknown as ConversationId),
+                name: (runner) => this.runners.name(runner),
+                connect: (runner, host, port, socket, open) =>
+                    this.runners.link(runner).openNetwork(host, port, socket, open),
+                computer: async (runner) => {
+                    const info = await this.runners.link(runner).info();
+
+                    return {
+                        name: this.runners.name(runner),
+                        env: this.runners.env(runner, info.home),
+                        tmpdir: info.tmpdir,
+                        separator: info.separator,
+                    };
+                },
+            },
             load: async (id) =>
                 (await this.harness.snapshot(
                     BrowserDoc,

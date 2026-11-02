@@ -22,16 +22,16 @@ The computer connects out to the server over a WebSocket. It needs no open port,
 
 Run these commands on the linked computer:
 
-| Command                                 | What it does                                                                                                    |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `pi-pocket runner`                      | In a terminal, opens a menu: link, start, settings, service, unlink, and help. Without a terminal, it starts.   |
-| `pi-pocket runner start`                | Runs with the saved link, without questions. The service and the desktop app use this command.                  |
-| `pi-pocket runner link <server> <code>` | Saves a link without questions. Use the server address and a one-time code from **Runners**.                    |
-| `pi-pocket runner settings`             | Shows the settings. `settings confirm on\|off` and `settings http allow\|refuse` change them.                   |
-| `pi-pocket runner status`               | Shows the saved link and whether the systemd service is running. It does not check the connection.              |
-| `pi-pocket runner unlink`               | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key. |
-| `pi-pocket runner service`              | On Linux with systemd, starts a user service that keeps the runner running after you close the terminal.        |
-| `pi-pocket runner service remove`       | Stops and removes the service. Keeps the saved link.                                                            |
+| Command                                 | What it does                                                                                                                     |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `pi-pocket runner`                      | In a terminal, opens a menu: link, start, settings, service, unlink, and help. Without a terminal, it starts.                    |
+| `pi-pocket runner start`                | Runs with the saved link, without questions. The service and the desktop app use this command.                                   |
+| `pi-pocket runner link <server> <code>` | Saves a link without questions. Use the server address and a one-time code from **Runners**.                                     |
+| `pi-pocket runner settings`             | Shows the settings. `settings confirm on\|off`, `settings http allow\|refuse`, and `settings network allow\|refuse` change them. |
+| `pi-pocket runner status`               | Shows the saved link and whether the systemd service is running. It does not check the connection.                               |
+| `pi-pocket runner unlink`               | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                  |
+| `pi-pocket runner service`              | On Linux with systemd, starts a user service that keeps the runner running after you close the terminal.                         |
+| `pi-pocket runner service remove`       | Stops and removes the service. Keeps the saved link.                                                                             |
 
 For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner start` or `pi-pocket runner service`.
 
@@ -70,15 +70,34 @@ To link a server on another plain HTTP address, choose **Allow plain HTTP** when
 
 In Menu → **Runners**, choose **New session** next to an online computer, then choose a folder on it. The session's title, top bar, and Pi's system prompt identify the computer. Forks keep the same computer.
 
-Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, and schedules also work.
+Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, schedules, and [the browser](#the-browser) also work.
 
 These features are not available yet in sessions on another computer, because they use the server's disk:
 
-- Background tasks, the browser, artifacts, design, and memory.
+- Background tasks, artifacts, design, and memory.
 - Subagents and teams, PR watches, and git worktrees.
 - The **Files** and **Changes** panels, and the folder's project context and skills.
 
 Files that people attach stay on the server. They are not copied to the linked computer.
+
+## The browser
+
+The browser tool and the **Browser** panel work in a session on another computer. Chromium runs on the server, but every connection of its pages goes out from the linked computer:
+
+- `localhost:5173` is the linked computer's port 5173. The Browser panel lists the ports that the computer listens on (`lsof` on macOS, `/proc/net/tcp` or `ss` on Linux, `netstat` on Windows).
+- Names resolve with the computer's DNS, and pages use its routes, VPN, and local network. Sites see the computer's IP address.
+- Pi's model calls do not change: they go out from the server.
+- File paths and `file://` addresses do not open, because the browser would read the server's disk. Serve the files instead, for example with `python3 -m http.server`.
+
+How it works: these pages use a second Chromium on the server, with a proxy built into Pi Pocket. Each session's pages have their own proxy credentials, which name the computer. The proxy sends each connection to the runner over its link, and the runner opens the TCP connection on the computer. Chromium's own background traffic and anything without valid credentials go to a proxy that refuses everything. WebRTC sends no UDP outside the proxy, and QUIC is off. If the computer is offline, the page fails with "<name> is offline". Nothing goes out from the server. A runner older than this feature gets the message "update its runner".
+
+To stop sharing the network, choose **Settings** → **Share the network with browsers** in the `pi-pocket runner` menu, or run `pi-pocket runner settings network refuse`. The runner then refuses every connection, and pages show "<name> does not share its network". The change takes effect without a restart.
+
+The risk: a page in this browser can reach everything that the linked computer can reach, including its `localhost` and its local network. Pi and anyone who can steer the session's Browser panel can open such pages. Link only a server you trust, and turn off network sharing if the computer must not do this. Other programs on the server cannot use the proxy, because they do not have the credentials.
+
+**Downloads.** A file that a page downloads goes to the computer's temporary folder, in `pi-pocket-downloads/<session id>/` (on macOS, the per-user `$TMPDIR`, not `/tmp`). The tool result gives the full path. If the name is already used, the file gets a number, such as `report (2).pdf`. The bytes pass through the server: Chromium saves the file there, Pi Pocket copies it to the computer in parts, and then deletes the server copy at once, also when the copy fails. Downloads larger than 2 GiB fail. In a session on the server, downloads go to `~/.pi-pocket/downloads/<session id>/` on the server.
+
+**macOS desktop app.** On macOS 15 and later, connections to devices on the local network (not `localhost`) can need the **Local Network** permission. The desktop app runs the runner as a child process, so macOS can ask for this permission on behalf of the app. The app's `Info.plist` does not have an `NSLocalNetworkUsageDescription` yet, so the system prompt has no explanation. If pages on the local network fail with "No route to host", allow Pi Pocket in System Settings → Privacy & Security → Local Network. This was not tested on a Mac.
 
 ## Sharing
 

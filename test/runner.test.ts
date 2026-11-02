@@ -4,13 +4,16 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, createServer as createNetServer } from "node:net";
+import { Duplex } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
+import WebSocket from "ws";
+import { LINK_PATH, LINK_PROTOCOL, LINK_SUBPROTOCOL } from "../src/runner/protocol.ts";
 import { Runner, RunnerStopped } from "../src/runner/runner.ts";
 import { ConfigStore } from "../src/server/config.ts";
 import { Runners } from "../src/server/runners.ts";
@@ -64,6 +67,36 @@ function startRunner(
     runner.start();
 
     return { runner, id: linked.id };
+}
+
+/** Two connected in-memory streams, as a socket and its peer. */
+function socketPair(): [Duplex, Duplex] {
+    let a: Duplex;
+    let b: Duplex;
+    const make = (peer: () => Duplex) =>
+        new Duplex({
+            write(chunk, _encoding, done) {
+                peer().push(chunk);
+                done();
+            },
+            final(done) {
+                peer().push(null);
+                done();
+            },
+            read() {},
+            destroy(error, done) {
+                if (!peer().destroyed) {
+                    peer().destroy();
+                }
+
+                done(error);
+            },
+        });
+
+    a = make(() => b);
+    b = make(() => a);
+
+    return [a, b];
 }
 
 async function until(check: () => boolean, what: string, ms = 10_000): Promise<void> {
@@ -233,6 +266,100 @@ describe("runner link", () => {
 
             assert.equal(result.ok, false);
             assert.match(result.ok ? "" : result.error.message, /is offline/);
+        } finally {
+            await close(setup);
+        }
+    });
+
+    it("opens network connections on the computer, and resets them when the link drops", async () => {
+        const setup = await serve();
+        const echo = createNetServer((socket) => socket.pipe(socket));
+        const gone = createNetServer();
+
+        await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+        await new Promise<void>((resolve) => gone.listen(0, "127.0.0.1", resolve));
+        // A port nothing listens on any more.
+        const closedPort = (gone.address() as AddressInfo).port;
+
+        await new Promise((resolve) => gone.close(resolve));
+        const { runner, id } = startRunner(setup, "Net");
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+
+            const link = setup.runners.link(id);
+            const [near, far] = socketPair();
+            const opened = runner.opened;
+
+            await link.openNetwork("localhost", (echo.address() as AddressInfo).port, far, {
+                first: [Buffer.from("first ")],
+            });
+            assert.equal(runner.opened, opened + 1);
+
+            let echoed = "";
+
+            near.on("data", (chunk: Buffer) => (echoed += chunk.toString()));
+            // A megabyte each way: more than a credit window, so credit has to come back.
+            const big = "x".repeat(1024 * 1024);
+
+            near.write(big);
+            await until(() => echoed.length === 6 + big.length, "the echo");
+            assert.ok(echoed.startsWith("first x"));
+
+            // Nothing listens: the computer's error comes back.
+            await assert.rejects(
+                link.openNetwork("127.0.0.1", closedPort, socketPair()[1]),
+                (error: Error) => /refused/i.test(error.message),
+            );
+
+            const closed = new Promise((resolve) => near.once("close", resolve));
+
+            runner.drop();
+            await closed;
+            await until(() => runner.connected, "the runner to reconnect");
+            await runner.stop();
+            await until(() => !setup.runners.list()[0]!.online, "the computer to be offline");
+            await assert.rejects(
+                link.openNetwork("localhost", 80, socketPair()[1]),
+                /Net is offline/,
+            );
+        } finally {
+            await runner.stop();
+            echo.close();
+            await close(setup);
+        }
+    });
+
+    it("an older runner, without network streams, is told to update", async () => {
+        const setup = await serve();
+
+        try {
+            const { code } = setup.runners.makeCode("Old", "owner");
+            const linked = setup.runners.redeem(code);
+            const old = new WebSocket(
+                `${setup.address.replace("http", "ws")}${LINK_PATH}`,
+                LINK_SUBPROTOCOL,
+                {
+                    headers: { authorization: `Bearer ${linked.key}` },
+                },
+            );
+
+            await new Promise((resolve) => old.once("open", resolve));
+            old.send(
+                JSON.stringify({
+                    type: "hello",
+                    protocol: LINK_PROTOCOL,
+                    session: null,
+                    received: 0,
+                    version: "0.27.0",
+                }),
+            );
+            await until(() => setup.runners.list()[0]?.online === true, "the old runner to link");
+            await assert.rejects(
+                setup.runners.link(linked.id).openNetwork("localhost", 80, socketPair()[1]),
+                /Old runs an older Pi Pocket runner.*update its runner/,
+            );
+            old.terminate();
         } finally {
             await close(setup);
         }
