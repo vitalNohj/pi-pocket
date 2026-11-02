@@ -33,25 +33,25 @@ const DESKTOP_BRIDGE = 1;
 
 /**
  * Who is signed in, and this server's build, for the app page (`serveApp`): the same `user` a hello sends, so the tab
- * can check a session the device kept (`usable`) before `/api/me` answers. Undefined when nobody is signed in.
+ * can check a session the device kept (`usable`) before `/api/me` answers. Absent when signed out or caching is off.
  */
 function pageFacts(
     request: IncomingMessage,
     auth: Auth,
     app: HttpOptions["app"],
-): { user: { id: string; name: string; role: string; sessions?: number[] }; build: string } | undefined {
+):
+    | { user: { id: string; name: string; role: string; sessions?: number[] }; build: string }
+    | undefined {
     const user = auth.user(request);
 
-    return user === undefined
+    return user === undefined || process.env.PI_POCKET_SESSION_CACHE === "off"
         ? undefined
         : {
               user: {
                   id: user.id,
                   name: user.name,
                   role: user.role,
-                  ...(user.sessions === undefined
-                      ? {}
-                      : { sessions: user.sessions.map(Number) }),
+                  ...(user.sessions === undefined ? {} : { sessions: user.sessions.map(Number) }),
               },
               build: app.build,
           };

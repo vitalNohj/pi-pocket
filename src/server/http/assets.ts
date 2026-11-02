@@ -254,7 +254,8 @@ function preloads(imports: Record<string, string>): string[] {
 /**
  * The app page, with its content security policy, and the modules it loads listed for the browser to fetch at once.
  * `facts`, when the request is signed in, is who and which build (`{ user, build }`, as `hello` says them): the page
- * carries them so a tab can check a session the device kept before `/api/me` answers. Absent for a signed-out request.
+ * carries them so a tab can check a session the device kept before `/api/me` answers. Absent when signed out or
+ * device caching is off.
  */
 export function serveApp(
     response: ServerResponse,
@@ -288,6 +289,9 @@ export function serveApp(
             "</head>",
             () => `<script type="application/json" id="pocket-known">${json}</script></head>`,
         );
+        // The static boot screen must not flash before IndexedDB has its chance. `start` reveals the root once it
+        // has either a checked view to paint or no copy (then the normal boot screen, while `/api/me` answers).
+        body = body.replace('<div id="app">', '<div id="app" hidden>');
     }
 
     // The policy is of the page as it is served: the facts above are a script, allowed by their hash.

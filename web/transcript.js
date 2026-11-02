@@ -3289,9 +3289,8 @@ function windowStart(rows, from) {
 }
 
 /**
- * How long after a session's rows are on screen what arrives for it is its catch-up: it glides in at the bottom, or
- * arrives below the reader without moving what they read. From the rows, not from the switch (`keptAt`): a slow answer
- * still glides.
+ * How long new rows carry the catch-up entrance. Each update after rows are on screen opens this window (`keptAt`),
+ * so a slow answer or reconnect still glides at the bottom, or keeps the reader's row when scrolled up.
  */
 const CATCH_UP_MS = 3000;
 /** How long a session held for its changes (Appearance's Wait for updates) waits for them before it shows anyway. */
@@ -3432,11 +3431,9 @@ export function Transcript() {
         entrance.current = routeSliding() ? "" : "rising";
     }
 
-    // When the session on screen first had rows to show: what arrives for it until `CATCH_UP_MS` after the next draw
-    // is its catch-up, and glides in. Measured from the rows on screen, not from the switch, so a slow answer still
-    // glides. Null until a draw finds rows already up. 0 for a session held for its changes, which shows whole, and
-    // for one whose window has passed.
-    const keptAt = useRef(null);
+    // The last update after this session had rows on screen. Every such update opens its own catch-up window: no
+    // deadline measured from opening the session can make a later answer jump. The initial view still shows whole.
+    const keptAt = useRef(0);
     const catching = () => keptAt.current > 0 && performance.now() - keptAt.current < CATCH_UP_MS;
     /** The row the reader looks at, as this draw began, while the session catches up (`anchorOf`). */
     const anchor = useRef(null);
@@ -3506,9 +3503,9 @@ export function Transcript() {
     const shown = useRef(false);
 
     if (rows !== drawnRows.current) {
-        // The window opens once a draw has put rows on screen (`shown`), so the next rows glide however late they
-        // are. This draw's rows are what the session opened with, and do not glide themselves.
-        if (keptAt.current === null && shown.current && view.conversation && !held) {
+        // Rows are already on screen (`shown`): this update glides however late it is, even after an earlier update's
+        // window has passed. The rows the session opens with do not glide themselves.
+        if (shown.current && view.conversation && !held) {
             keptAt.current = performance.now();
         }
 

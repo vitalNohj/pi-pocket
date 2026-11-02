@@ -145,6 +145,11 @@ test(
 
         assert.equal(seen.glided, true, "the column glides");
         assert.equal(seen.jumped, false, "the scroll does not jump");
+        // A first update must not start another deadline that makes a later catch-up or reconnect jump.
+        const later = await arrive("later still", 3200);
+
+        assert.equal(later.glided, true, "a later update glides too");
+        assert.equal(later.jumped, false, "no deadline can make the next update jump");
     },
 );
 
@@ -230,6 +235,36 @@ test(
         assert.equal(seen.redraw, true, "the whole entries do not jump");
     },
 );
+
+test("a reader scrolled up keeps the same row when a late catch-up arrives", real, async () => {
+    const id = await newSession(app);
+
+    await say(app, id, "a reader's place");
+    await openOn(id, "a reader's place");
+    const displacement = await inPage<number>(`
+        const { store } = await import('/store.js');
+        const view = store.state.view;
+        const extra = Array.from({ length: 40 }, (_, n) => ['reading-' + n, { id: 'reading-' + n, kind: 'user', text: 'Reading row ' + n }]);
+
+        store.set({ view: { ...view, order: [...view.order, ...extra.map(([id]) => id)], entries: new Map([...view.entries, ...extra]) } });
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const scroller = document.querySelector('.pane > .scroller');
+        const row = document.querySelector('[data-part="prompt-row"]');
+
+        scroller.scrollTop = 0;
+        scroller.dispatchEvent(new Event('scroll'));
+        await new Promise((resolve) => setTimeout(resolve, 3200));
+        const before = row.getBoundingClientRect().top;
+        const current = store.state.view;
+
+        store.set({ view: { ...current, order: [...current.order, 'below-reader'], entries: new Map([...current.entries, ['below-reader', { id: 'below-reader', kind: 'user', text: 'Below the reader' }]]) } });
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+        return JSON.stringify(row.getBoundingClientRect().top - before);
+    `);
+
+    assert.ok(Math.abs(displacement) < 2, "the reader is not moved to the bottom");
+});
 
 test(
     "a reconnect, and a reload of a cached session, glide what arrives after the rows show",

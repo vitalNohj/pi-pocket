@@ -1,9 +1,7 @@
-// Opening a session shows what the tab already has, before the server answers (`start` and `keptView` in web/store.js):
-// a reload paints a session the device kept before `/api/me`, and a switch to one the tab has not shown paints the
-// device's copy at once, or a quiet loader in the transcript when nothing is kept anywhere.
+// Session opens share the checked device cache, before `/api/me` on reload and before a switch's server view.
 import { cleanUp, newSession, openApp, root, say, scriptedModel, until } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -13,9 +11,11 @@ import { Browsers } from "../src/server/browser.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
 import type { BrowserPage } from "../src/server/browser/page.ts";
 import { createHandler } from "../src/server/http.ts";
+import { json } from "../src/server/http/io.ts";
 
 const real = {
-    skip: findBrowser() === undefined ? "no Chromium-based browser on the machine" : false,
+    skip: findBrowser() === undefined ? "no Chromium-based browser on this machine" : false,
+    timeout: 45_000,
 } as const;
 
 let app: App;
@@ -23,6 +23,26 @@ let server: Server;
 let browsers: Browsers;
 let page: BrowserPage;
 let base = "";
+let meUser: Parameters<App["hello"]>[0] | undefined;
+let failModule = false;
+const gates = new Map<string, { wait: Promise<void>; release: () => void; entered: boolean }>();
+
+/** Hold a real request at the server, including across a page reload. */
+function hold(path: string) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const gate = {
+        wait: promise,
+        entered: false,
+        release: () => {
+            gates.delete(path);
+            resolve();
+        },
+    };
+
+    gates.set(path, gate);
+
+    return gate;
+}
 
 /** Run a script in the page and read back the JSON it returns. */
 async function inPage<T>(script: string): Promise<T> {
@@ -35,9 +55,59 @@ before(async () => {
     }
 
     app = await openApp(scriptedModel());
-    server = createServer(
-        createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
-    );
+    const handler = createHandler({
+        app,
+        listen: { host: "127.0.0.1", port: 0 },
+        restart: () => {},
+    });
+    const source = readFileSync(join(import.meta.dirname, "../web/app.js"), "utf8");
+    // Installed before the app's first render on every document. Disable idle read-ahead so the device-only switch
+    // really is device-only, not accidentally warmed into tab memory while the test waits.
+    const probe = `
+        const idle = requestIdleCallback;
+
+        globalThis.requestIdleCallback = (callback, options) => options?.timeout === 1000 ? 0 : idle(callback, options);
+        globalThis.openProbe = { boot: false };
+        new MutationObserver(() => {
+            if ([...document.querySelectorAll('.boot:not(.inline)')].some((node) => node.getClientRects().length > 0)) {
+                openProbe.boot = true;
+            }
+        }).observe(document, { subtree: true, childList: true, attributes: true });
+    `;
+
+    server = createServer(async (request, response) => {
+        const path = new URL(request.url ?? "/", "http://test.local").pathname;
+        const gate = gates.get(path);
+
+        if (gate !== undefined) {
+            gate.entered = true;
+            await gate.wait;
+        }
+
+        if (failModule && path === "/text-hash.js") {
+            response.writeHead(403).end();
+
+            return;
+        }
+
+        if (path === "/app.js") {
+            response.writeHead(200, {
+                "content-type": "text/javascript",
+                "cache-control": "no-store",
+            });
+            response.end(probe + source);
+
+            return;
+        }
+
+        if (path === "/api/me" && meUser !== undefined) {
+            json(response, 200, await app.hello(meUser));
+
+            return;
+        }
+
+        await handler(request, response);
+    });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     browsers = new Browsers({
@@ -47,19 +117,14 @@ before(async () => {
     });
     page = await browsers.open(1);
     await page.navigate(`${base}/login?token=${encodeURIComponent(app.config.ownerToken)}`);
-    await until(
-        async () =>
-            (await inPage<boolean>(`
-                const { store } = await import("/store.js");
-
-                return JSON.stringify(store.state.me !== undefined && store.state.sessionsLoaded);
-            `)) === true,
-        "signed in",
-        20_000,
-    );
+    await ready();
 });
 
 after(async () => {
+    for (const gate of gates.values()) {
+        gate.release();
+    }
+
     await browsers?.closeAll({ final: true });
     server?.closeAllConnections();
     server?.close();
@@ -67,275 +132,410 @@ after(async () => {
     cleanUp();
 });
 
-/** Open `id` and wait until its transcript shows `text`. */
-async function openOn(id: ConversationId, text: string): Promise<void> {
-    await page.navigate(`${base}/s/${id}`);
+async function ready(): Promise<void> {
     await until(
         async () =>
-            (await inPage<boolean>(`
-                return JSON.stringify((document.querySelector('[data-part="transcript"]')?.textContent ?? "").includes(${JSON.stringify(text)}));
-            `)) === true,
-        text,
+            await inPage<boolean>(`
+            const { store } = await import("/store.js");
+
+            return JSON.stringify(store.state.me != null && store.state.sessionsLoaded && store.state.connection === "open");
+        `),
+        "signed in and connected",
         20_000,
     );
 }
 
-/** Wait until the device has saved `id`. */
+/** Open a new document, losing all tab memory. */
+async function openOn(id: ConversationId, text: string): Promise<void> {
+    await page.navigate(`${base}/s/${id}`);
+    await until(async () => (await shown(text)).rows, text, 20_000);
+    await ready();
+}
+
 async function saved(id: ConversationId): Promise<void> {
     await until(
         async () =>
-            (await inPage<boolean>(`
-                const { list } = await import("/session-cache.js");
-
-                return JSON.stringify((await list()).some((each) => each.id === ${Number(id)}));
-            `)) === true,
+            await inPage<boolean>(`
+            return JSON.stringify((await (await import("/session-cache.js")).list()).some((each) => each.id === ${Number(id)}));
+        `),
         "saved on the device",
         15_000,
     );
 }
 
-/** What the page shows: the boot screen, the quiet loader, and whether the transcript carries `text`. */
-function shown(text: string): Promise<{ boot: boolean; loader: boolean; rows: boolean }> {
+function shown(
+    text: string,
+): Promise<{ boot: boolean; loader: boolean; rows: boolean; me: boolean }> {
     return inPage(`
-        const boot = document.querySelector(".boot");
+        const { store } = await import("/store.js");
         const transcript = document.querySelector('[data-part="transcript"]');
 
         return JSON.stringify({
-            boot: boot !== null && !boot.classList.contains("inline"),
-            loader: transcript?.querySelector(".loader") != null,
-            rows: (transcript?.textContent ?? "").includes(${JSON.stringify(text)}),
+            boot: globalThis.openProbe?.boot ?? false,
+            loader: transcript?.querySelector('.loader') != null,
+            rows: [...(transcript?.querySelectorAll('[data-part="prompt-row"]') ?? [])].some((row) => row.textContent.includes(${JSON.stringify(text)})),
+            me: store.state.me !== undefined,
         });
     `);
 }
 
-test("a reload with a cached session paints its rows before /api/me, never the boot screen", real, async () => {
-    const id = await newSession(app);
+/** Leave the transcript before changing the device record, so pagehide cannot overwrite the test's record. */
+async function leave(): Promise<void> {
+    await page.navigate(`${base}/`);
+    await ready();
+}
 
-    await say(app, id, "kept across the reload");
-    await openOn(id, "kept across the reload");
-    await saved(id);
-    // `/api/me` waits, so the rows can only be the device's.
-    await page.evaluate(`
-        const fetched = fetch;
+test(
+    "a cached reload paints rows before /api/me, without ever showing the boot screen",
+    real,
+    async () => {
+        const id = await newSession(app);
 
-        globalThis.fetch = (url, options) =>
-            String(url).endsWith("/api/me")
-                ? new Promise((resolve) => setTimeout(() => resolve(fetched(url, options)), 4000))
-                : fetched(url, options);
+        await say(app, id, "kept across the reload");
+        await openOn(id, "kept across the reload");
+        await saved(id);
+        const me = hold("/api/me");
 
-        return "null";
-    `);
-    await page.reload();
-    await until(async () => (await shown("kept across the reload")).rows, "the cached rows", 20_000);
+        try {
+            await page.reload();
+            await until(
+                async () => (await shown("kept across the reload")).rows,
+                "cached rows",
+                15_000,
+            );
+            const early = await shown("kept across the reload");
 
-    const early = await shown("kept across the reload");
+            assert.equal(me.entered, true);
+            assert.equal(early.me, false, "/api/me is still held");
+            assert.equal(early.boot, false, "no static or app boot-screen flash");
+            assert.equal(early.rows, true);
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify(document.querySelector('.title-open').disabled)`,
+                ),
+                true,
+                "the session menu waits for /api/me",
+            );
+        } finally {
+            me.release();
+        }
 
-    assert.equal(early.rows, true, "the cached rows show before /api/me");
-    assert.equal(early.boot, false, "the boot screen never shows");
-    await until(
-        async () =>
-            (await inPage<boolean>(`
-                const { store } = await import("/store.js");
+        await ready();
+        assert.equal((await shown("kept across the reload")).boot, false);
+    },
+);
 
-                return JSON.stringify(store.state.me !== undefined);
-            `)) === true,
-        "/api/me answered",
-        20_000,
-    );
-});
+test(
+    "a reload with no device copy keeps the boot screen until /api/me, then shows rows",
+    real,
+    async () => {
+        const id = await newSession(app);
 
-test("a reload with nothing cached shows the boot screen, then the transcript", real, async () => {
-    const id = await newSession(app);
-    // A page of its own, so nothing this tab showed before is in its memory, and nothing is on the device.
-    const fresh = await browsers.open(1);
-    const inFresh = async <T>(script: string) => JSON.parse(await fresh.evaluate(script)) as T;
+        await say(app, id, "nothing kept for this one");
+        await openOn(id, "nothing kept for this one");
+        await leave();
+        await inPage(`await (await import('/session-cache.js')).clear(); return 'null';`);
+        const me = hold("/api/me");
 
-    await fresh.navigate(`${base}/login?token=${encodeURIComponent(app.config.ownerToken)}`);
-    await until(
-        async () =>
-            (await inFresh<boolean>(`
-                const { store } = await import("/store.js");
+        try {
+            await inPage(`history.replaceState(history.state, '', '/s/${id}'); return 'null';`);
+            await page.reload();
+            await until(
+                async () => (await shown("nothing kept for this one")).boot,
+                "the boot screen",
+            );
+            const early = await shown("nothing kept for this one");
 
-                return JSON.stringify(store.state.me !== undefined);
-            `)) === true,
-        "the fresh page signed in",
-        20_000,
-    );
-    await fresh.evaluate(`
-        const cache = await import("/session-cache.js");
+            assert.equal(early.me, false);
+            assert.equal(early.rows, false);
+        } finally {
+            me.release();
+        }
 
-        await cache.clear();
-
-        return "null";
-    `);
-    await fresh.navigate(`${base}/s/${id}`);
-    await until(
-        async () =>
-            (await inFresh<boolean>(`return JSON.stringify(document.querySelector(".boot") !== null)`)) ===
+        await until(
+            async () => (await shown("nothing kept for this one")).rows,
+            "the server's rows",
+        );
+        assert.equal(
+            await inPage<boolean>(
+                `return JSON.stringify(![...document.querySelectorAll('.boot:not(.inline)')].some((node) => node.getClientRects().length > 0))`,
+            ),
             true,
-        "the boot screen",
-        20_000,
-    );
-    await until(
-        async () =>
-            (await inFresh<boolean>(`
-                return JSON.stringify((document.querySelector('[data-part="transcript"]')?.textContent ?? "").includes("nothing kept for this one"));
-            `)) === true,
-        "the transcript",
-        20_000,
-    );
+        );
+    },
+);
 
-    const late = await inFresh<{ boot: boolean; rows: boolean }>(`
-        return JSON.stringify({
-            boot: document.querySelector(".boot") !== null,
-            rows: (document.querySelector('[data-part="transcript"]')?.textContent ?? "").includes("nothing kept for this one"),
-        });
-    `);
-
-    assert.equal(late.boot, false, "the boot screen goes once the transcript shows");
-    assert.equal(late.rows, true);
-    await fresh.close();
-});
-
-test("a switch to a session cached only on the device shows its rows at once", real, async () => {
-    const [first, second] = [await newSession(app), await newSession(app)];
+test("a switch reads rows kept only on the device before the server answers", real, async () => {
+    const first = await newSession(app);
+    const second = await newSession(app);
 
     await say(app, first, "in memory");
     await say(app, second, "only on the device");
     await openOn(second, "only on the device");
     await saved(second);
-    // Leave it: the tab drops it from memory and keeps the device's copy, which the switch reads.
+    // A new document has never shown second and cannot read it ahead (the probe disables idle read-ahead).
     await openOn(first, "in memory");
-    await page.evaluate(`
-        const fetched = fetch;
+    const switched = hold("/api/switch");
 
-        globalThis.fetch = (url, options) =>
-            String(url).includes("/api/")
-                ? new Promise((resolve) => setTimeout(() => resolve(fetched(url, options)), 4000))
-                : fetched(url, options);
-
-        return "null";
-    `);
-    await inPage(`
-        const { navigate } = await import("/store.js");
-
-        navigate(${Number(second)});
-
-        return "null";
-    `);
-    await until(async () => (await shown("only on the device")).rows, "the device's rows", 20_000);
-
-    const early = await shown("only on the device");
-
-    assert.equal(early.rows, true, "the device's rows show before the server answers");
-    assert.equal(early.boot, false, "no boot screen");
+    try {
+        await inPage(
+            `openProbe.boot = false; (await import('/store.js')).navigate(${Number(second)}); return 'null';`,
+        );
+        await until(async () => (await shown("only on the device")).rows, "the device's rows");
+        await until(() => switched.entered, "the held switch request");
+        assert.equal((await shown("only on the device")).boot, false);
+    } finally {
+        switched.release();
+    }
 });
 
-test("a switch to a session cached nowhere shows a quiet loader, never the boot screen", real, async () => {
-    const [first, second] = [await newSession(app), await newSession(app)];
+test(
+    "an uncached switch keeps its header and a quiet loader, then fills the same pane",
+    real,
+    async () => {
+        const first = await newSession(app);
+        const second = await newSession(app);
 
-    await say(app, first, "the one on screen");
-    await say(app, second, "not kept anywhere");
-    await openOn(first, "the one on screen");
-    await page.evaluate(`
-        const cache = await import("/session-cache.js");
+        await say(app, first, "the one on screen");
+        await say(app, second, "not kept anywhere");
+        await openOn(first, "the one on screen");
+        await until(
+            async () =>
+                await inPage<boolean>(`
+        return JSON.stringify((await import('/store.js')).store.state.sessions.some((each) => each.id === ${Number(second)}));
+    `),
+            "the session list",
+        );
+        const switched = hold("/api/switch");
 
-        await cache.drop((info) => info.id === ${Number(second)});
+        try {
+            await inPage(`
+            const { store, navigate } = await import('/store.js');
 
-        return "null";
-    `);
-    await inPage(`
-        const { store, navigate } = await import("/store.js");
+            globalThis.expectedTitle = store.state.sessions.find((each) => each.id === ${Number(second)}).title;
+            openProbe.boot = false;
+            navigate(${Number(second)});
 
-        store.set({ sessions: [...store.state.sessions, { id: ${Number(second)}, title: "The uncached one" }] });
-        navigate(${Number(second)});
+            return 'null';
+        `);
+            await until(() => switched.entered, "the held switch request");
+            const waiting = await shown("not kept anywhere");
 
-        return "null";
-    `);
+            assert.equal(waiting.boot, false);
+            assert.equal(waiting.rows, false);
+            assert.equal(waiting.loader, true);
+            assert.equal(
+                await inPage<boolean>(`
+            return JSON.stringify(document.querySelector('[data-part="topbar-title"]').textContent === expectedTitle);
+        `),
+                true,
+                "the session's own header shows",
+            );
+            await inPage(
+                `globalThis.waitingPane = document.querySelector('.pane'); return 'null';`,
+            );
+        } finally {
+            switched.release();
+        }
 
-    const waiting = await shown("not kept anywhere");
+        await until(async () => (await shown("not kept anywhere")).rows, "the server's rows");
+        const late = await shown("not kept anywhere");
 
-    console.log("WAITING", JSON.stringify(waiting), await page.evaluate(`return document.body.innerText.slice(0, 400)`));
-    assert.equal(waiting.boot, false, "no full-page boot screen");
-    assert.equal(waiting.loader, true, "a quiet loader in the transcript");
-    assert.equal(
-        await inPage<boolean>(`return JSON.stringify(document.body.textContent.includes("The uncached one"))`),
-        true,
-        "the session's title shows",
-    );
-    await until(async () => (await shown("not kept anywhere")).rows, "the server's rows", 20_000);
+        assert.equal(late.boot, false);
+        assert.equal(late.loader, false);
+        assert.equal(
+            await inPage<boolean>(
+                `return JSON.stringify(document.querySelector('.pane') === waitingPane)`,
+            ),
+            true,
+        );
+    },
+);
 
-    const late = await shown("not kept anywhere");
+test(
+    "Wait for updates still holds a changed tab-memory view until the server answers",
+    real,
+    async () => {
+        const first = await newSession(app);
+        const second = await newSession(app);
 
-    assert.equal(late.rows, true, "the rows show once the server answers");
-    assert.equal(late.loader, false, "the loader goes");
-    assert.equal(late.boot, false);
-});
+        await say(app, first, "waited-for rows");
+        await say(app, second, "the other session");
+        await openOn(first, "waited-for rows");
+        await inPage(`(await import('/store.js')).navigate(${Number(second)}); return 'null';`);
+        await until(async () => (await shown("the other session")).rows, "the other session");
+        const switched = hold("/api/switch");
 
-test("a device cache from another person is not shown before /api/me", real, async () => {
+        try {
+            await inPage(`
+            const { store, navigate } = await import('/store.js');
+            const { setPrefs } = await import('/theme.js');
+
+            setPrefs({ waitForUpdates: true });
+            store.set({ sessions: store.state.sessions.map((each) => each.id === ${Number(first)} ? { ...each, busy: true } : each) });
+            navigate(${Number(first)});
+
+            return 'null';
+        `);
+            await until(() => switched.entered, "the held switch");
+            assert.equal((await shown("waited-for rows")).rows, false);
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify(document.querySelector('.pane .boot.inline') !== null)`,
+                ),
+                true,
+            );
+        } finally {
+            switched.release();
+            await inPage(
+                `(await import('/theme.js')).setPrefs({ waitForUpdates: false }); return 'null';`,
+            );
+        }
+
+        await until(async () => (await shown("waited-for rows")).rows, "the complete view");
+    },
+);
+
+test("another person's device copy is refused before /api/me", real, async () => {
     const id = await newSession(app);
 
     await say(app, id, "someone else's words");
     await openOn(id, "someone else's words");
     await saved(id);
-    // The device's copy says another person kept it: the check refuses it, so the boot screen stands.
-    console.log(
-        "SAVE",
-        await page.evaluate(`
-        const cache = await import("/session-cache.js");
-        const found = (await cache.list()).find((each) => each.id === ${Number(id)});
-        const read = await cache.read(${Number(id)});
+    await leave();
+    await inPage(`
+        const cache = await import('/session-cache.js');
+        const found = await cache.read(${Number(id)});
 
-        await cache.save(
-            ${Number(id)},
-            read.record,
-            { owner: "someone-else", build: found.build, size: found.size },
-            100_000_000,
-        );
+        await cache.save(${Number(id)}, found.record, { ...found.info, owner: 'someone-else' }, 100_000_000);
 
-        return JSON.stringify({ found, after: (await cache.list()).find((each) => each.id === ${Number(id)}) });
-    `),
-    );
-    // `/api/me` waits, so rows before it could only be the other person's, which must not show.
-    await page.evaluate(`
-        const fetched = fetch;
-
-        globalThis.fetch = (url, options) =>
-            String(url).endsWith("/api/me")
-                ? new Promise((resolve) => setTimeout(() => resolve(fetched(url, options)), 1500))
-                : fetched(url, options);
-
-        return "null";
+        return 'null';
     `);
-    await page.reload();
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    const me = hold("/api/me");
 
-    const early = await shown("someone else's words");
+    try {
+        await page.navigate(`${base}/s/${id}`);
+        await until(
+            async () => (await shown("someone else's words")).boot,
+            "the refused cache's boot screen",
+        );
+        const early = await shown("someone else's words");
 
-    console.log(
-        "EARLY",
-        JSON.stringify(early),
-        await page.evaluate(`return JSON.stringify({
-            known: document.getElementById("pocket-known")?.textContent?.slice(0, 200) ?? null,
-            me: (await import("/store.js")).store.state.me?.id ?? null,
-            build: (await import("/store.js")).store.state.server?.build ?? null,
-            viewBuild: (await import("/store.js")).store.state.view.build ?? null,
-            owner: (await (await import("/session-cache.js")).list()).find((e) => e.id === ${Number(id)})?.owner ?? null,
-        })`),
-    );
-    assert.equal(early.rows, false, "another person's rows are not shown before /api/me");
+        assert.equal(early.me, false);
+        assert.equal(early.rows, false, "another person's rows are never painted");
+    } finally {
+        me.release();
+    }
+
     await until(
-        async () =>
-            (await inPage<boolean>(`
-                const { store } = await import("/store.js");
-
-                return JSON.stringify(store.state.me !== undefined);
-            `)) === true,
-        "/api/me answered",
-        20_000,
+        async () => (await shown("someone else's words")).rows,
+        "the authorized server view",
     );
+});
 
-    const seen = await shown("someone else's words");
+test(
+    "the page's cache identity is authenticated, escaped, and absent when caching is off",
+    real,
+    async () => {
+        const user = app.config.users[0]!;
+        const original = user.name;
+        const cachePolicy = process.env.PI_POCKET_SESSION_CACHE;
+        const headers = { authorization: `Bearer ${app.config.ownerToken}` };
 
-    assert.equal(seen.rows, true, "the server's own view shows, once it answers");
+        try {
+            user.name = "</script><script>not a script</script>";
+            const response = await fetch(`${base}/s/1`, { headers });
+            const html = await response.text();
+            const facts = JSON.parse(html.match(/id="pocket-known">([^<]+)<\/script>/)![1]!);
+
+            assert.equal(facts.user.id, user.id);
+            assert.equal(facts.user.name, user.name);
+            assert.equal(facts.build, app.build);
+            assert.ok(html.includes('<div id="app" hidden>'));
+            assert.ok(!html.includes(user.name), "a name cannot close the JSON script tag");
+            assert.ok(response.headers.get("content-security-policy")?.includes("'sha256-"));
+            assert.ok(!JSON.stringify(facts).includes(app.config.ownerToken));
+            assert.ok(
+                !(await (await fetch(base)).text()).includes('id="pocket-known"'),
+                "signed out has no early identity",
+            );
+            process.env.PI_POCKET_SESSION_CACHE = "off";
+            const disabled = await (await fetch(base, { headers })).text();
+
+            assert.ok(!disabled.includes('id="pocket-known"'));
+            assert.ok(!disabled.includes('<div id="app" hidden>'));
+        } finally {
+            user.name = original;
+
+            if (cachePolicy === undefined) {
+                delete process.env.PI_POCKET_SESSION_CACHE;
+            } else {
+                process.env.PI_POCKET_SESSION_CACHE = cachePolicy;
+            }
+        }
+    },
+);
+
+test(
+    "/api/me changing the person removes the early view and cannot keep it for a switch",
+    real,
+    async () => {
+        const id = await newSession(app);
+
+        await say(app, id, "the previous person's rows");
+        await openOn(id, "the previous person's rows");
+        await saved(id);
+        const me = hold("/api/me");
+        const events = hold("/api/events");
+        const poll = hold("/api/poll");
+
+        try {
+            await page.reload();
+            await until(
+                async () => (await shown("the previous person's rows")).rows,
+                "the early view",
+            );
+            meUser = { ...app.config.users[0]!, id: "another-person" };
+            me.release();
+            await until(
+                async () =>
+                    await inPage<boolean>(`
+            return JSON.stringify((await import('/store.js')).store.state.me?.id === 'another-person');
+        `),
+                "the changed identity",
+            );
+            assert.equal((await shown("the previous person's rows")).rows, false);
+            assert.equal(
+                await inPage<boolean>(`
+            return JSON.stringify(!(await (await import('/session-cache.js')).list()).some((each) => each.id === ${Number(id)}));
+        `),
+                true,
+                "the old view was forgotten on the device too",
+            );
+        } finally {
+            meUser = undefined;
+            me.release();
+            events.release();
+            poll.release();
+        }
+    },
+);
+
+test("a blocked module still reveals the startup error on a signed-in page", real, async () => {
+    failModule = true;
+
+    try {
+        await page.reload();
+        await until(
+            async () =>
+                await inPage<boolean>(`
+            const boot = document.querySelector('#app > .boot.failed');
+
+            return JSON.stringify(boot != null && boot.getClientRects().length > 0 && boot.textContent.includes('did not load'));
+        `),
+            "the visible startup error",
+        );
+    } finally {
+        failModule = false;
+    }
 });

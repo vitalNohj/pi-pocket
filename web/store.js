@@ -150,6 +150,8 @@ export const store = {
          * server's view of it comes (Appearance's Wait for updates, `holdsFor`): its id, or null.
          */
         holding: null,
+        /** A session opened without a tab-memory view: its pane waits for the device or server, not a boot screen. */
+        pending: null,
         missing: null,
         connection: "connecting",
         notices: [],
@@ -913,7 +915,7 @@ function knownFromPage() {
 const onDevice = () =>
     !deviceCacheStopped &&
     (store.state.server?.deviceCache === true ||
-        (store.state.server == null && knownFromPage() !== null)) &&
+        (store.state.me === undefined && store.state.server == null && knownFromPage() !== null)) &&
     typeof indexedDB !== "undefined";
 
 /** Set at sign-out, in this tab or another: the device keeps nothing more. */
@@ -1007,10 +1009,7 @@ document.addEventListener("visibilitychange", () => {
  * not in their list, and the server says it is missing.
  */
 async function deviceView(id) {
-    // The page's word of who this is (`knownFromPage`) is enough: `usable` checks it before `/api/me` answers.
-    return onDevice() && (store.state.me || knownFromPage())
-        ? adopt(id, await readDevice(id))
-        : undefined;
+    return onDevice() && store.state.me ? adopt(id, await readDevice(id)) : undefined;
 }
 
 /** What the device kept of a session, unchecked (`adopt` checks it): undefined if nothing, or it cannot be read. */
@@ -1024,27 +1023,22 @@ function readDevice(id) {
  * Whether what the device kept of session `id` may be used: this person's, with the same rights, of this build. Before
  * `/api/me` answers, the page's own word of who and which build (`knownFromPage`) stands in for the store's.
  */
-function usable(found, id) {
-    const { me, server } = store.state;
-    const known = me == null || server?.build == null ? knownFromPage() : null;
-    const who = me ?? known?.user;
-    const build = server?.build ?? known?.build;
-
+function usable(found, id, { me, server } = store.state) {
     return (
         found !== undefined &&
         onDevice() &&
-        who != null &&
-        found.info.owner === ownerOf(who) &&
-        found.info.build === build &&
-        found.record.view?.build === build &&
+        me != null &&
+        found.info.owner === ownerOf(me) &&
+        found.info.build === server?.build &&
+        found.record.view?.build === server.build &&
         found.record.view.conversation?.id === id
     );
 }
 
 /** A session the device kept (`readDevice`), as `deviceView` gives it, once it is checked. */
-function adopt(id, found) {
+function adopt(id, found, identity = store.state) {
     if (
-        !usable(found, id) ||
+        !usable(found, id, identity) ||
         store.state.conversationId !== id ||
         store.state.view.conversation != null
     ) {
@@ -2195,20 +2189,23 @@ onRoute(() => {
 export async function start() {
     try {
         const asked = moment();
-        // The session the page opens on, from the device, read while the server answers who this is. When the page
-        // already says who and which build, and that check passes, it shows at once, before the answer.
+        // Read the device while asking who this is. The signed-in page supplies the same identity and build for
+        // `usable`, never a browser-stored guess. Apply a checked copy as soon as the read finishes.
         const id = store.state.conversationId;
         const onDisk = id === null ? undefined : readDevice(id);
+        const answer = api("me");
 
-        if (onDisk !== undefined) {
-            const found = adopt(id, await onDisk);
+        // The request may fail before IndexedDB answers; it is handled by the await below.
+        void answer.catch(() => {});
+        const cached = await onDisk;
+        const known = knownFromPage();
+        const early =
+            known === null ? undefined : adopt(id, cached, { me: known.user, server: known });
 
-            if (found !== undefined) {
-                store.set(found);
-            }
-        }
-
-        const hello = await api("me");
+        store.set(early ?? {});
+        // Let App's queued render replace the static boot screen before revealing a checked transcript.
+        queueMicrotask(() => document.getElementById("app")?.removeAttribute("hidden"));
+        const hello = await answer;
 
         store.set({
             me: hello.user,
@@ -2219,30 +2216,19 @@ export async function start() {
             themeList: Array.isArray(hello.themes) ? hello.themes : [],
         });
 
-        // Shown from the page's word of who this is: checked again against the answer. Another person, or a build the
-        // page did not name, and it goes. The page named nobody (the server keeps sessions off devices): checked now.
-        const shown = store.state.view;
-
-        if (shown.conversation?.id === id && shown.build != null) {
-            const still = usable(
-                {
-                    info: { owner: ownerOf(hello.user), build: shown.build },
-                    record: { view: shown },
-                },
-                id,
-            );
-
-            if (!still) {
-                // Not this person's, or another build: the quiet loader stands until the server sends its own view.
-                store.set({
-                    view: emptyView(),
-                    transcriptFrom: null,
-                    transcriptPlace: null,
-                    pending: id,
-                });
-            }
-        } else if (onDisk !== undefined && shown.conversation == null) {
-            const found = adopt(id, await onDisk);
+        // Recheck the original record, including its owner, against `/api/me`. A changed sign-in, rights, build, or
+        // device-cache policy must remove the early view, and must not keep it for a later switch.
+        if (early !== undefined && !usable(cached, id)) {
+            forgetKept();
+            store.set({
+                view: emptyView(),
+                transcriptFrom: null,
+                transcriptPlace: null,
+                holding: null,
+                pending: id,
+            });
+        } else if (store.state.view.conversation == null) {
+            const found = adopt(id, cached);
 
             if (found !== undefined) {
                 store.set(found);
@@ -2252,6 +2238,7 @@ export async function start() {
         connect();
     } catch (error) {
         store.set({ me: error.status === 401 ? null : undefined });
+        queueMicrotask(() => document.getElementById("app")?.removeAttribute("hidden"));
 
         if (error.status !== 401) {
             notify("error", `Server unreachable: ${error.message}`);

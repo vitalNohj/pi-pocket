@@ -238,7 +238,7 @@ function Topbar() {
                 class="title-open"
                 aria-label=${`${title}${folder ? `, in ${folder}` : ""}: session menu`}
                 title=${cwd ? `${shortPath(cwd, server?.home)}\nSession menu` : "Session menu"}
-                disabled=${!conversation}
+                disabled=${!conversation || store.state.me == null}
                 onClick=${() => openSheet({ type: "menu" })}
             ></button>
             <span class="title-main" data-part="topbar-title" aria-hidden="true">${title}</span>
@@ -489,8 +489,7 @@ function App() {
             : "Pi Pocket";
     }, [state.view.conversation?.title]);
 
-    // Who this is is not known yet. A session the device kept, already checked and shown, draws as it will;
-    // otherwise the boot screen, as before.
+    // A checked device view can draw before `/api/me`; with no copy, keep the usual boot screen.
     if (state.me === undefined && state.view.conversation == null) {
         return html`<${Boot}
             caption=${state.notices.some((notice) => notice.level === "error") ? "waiting for the server" : "starting"}
