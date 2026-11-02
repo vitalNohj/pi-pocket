@@ -2186,7 +2186,12 @@ onRoute(() => {
     }
 });
 
+// A failed `/api/me` leaves this device snapshot on screen; its original provenance follows the next attempt.
+let shownEarly = null;
+
 export async function start() {
+    const retained = shownEarly;
+
     try {
         const asked = moment();
         // Read the device while asking who this is. The signed-in page supplies the same identity and build for
@@ -2201,6 +2206,10 @@ export async function start() {
         const known = knownFromPage();
         const early =
             known === null ? undefined : adopt(id, cached, { me: known.user, server: known });
+
+        if (early !== undefined) {
+            shownEarly = { id, cached };
+        }
 
         store.set(early ?? {});
         // Let App's queued render replace the static boot screen before revealing a checked transcript.
@@ -2217,15 +2226,21 @@ export async function start() {
         });
 
         // Recheck the original record, including its owner, against `/api/me`. A changed sign-in, rights, build, or
-        // device-cache policy must remove the early view, and must not keep it for a later switch.
-        if (early !== undefined && !usable(cached, id)) {
+        // device-cache policy must remove the early view, and must not keep it for a later switch, including on retry.
+        const shown = early !== undefined ? { id, cached } : retained;
+
+        if (
+            shown !== null &&
+            store.state.view.conversation?.id === shown.id &&
+            !usable(shown.cached, shown.id)
+        ) {
             forgetKept();
             store.set({
                 view: emptyView(),
                 transcriptFrom: null,
                 transcriptPlace: null,
                 holding: null,
-                pending: id,
+                pending: shown.id,
             });
         } else if (store.state.view.conversation == null) {
             const found = adopt(id, cached);
@@ -2235,6 +2250,7 @@ export async function start() {
             }
         }
 
+        shownEarly = null;
         connect();
     } catch (error) {
         store.set({ me: error.status === 401 ? null : undefined });

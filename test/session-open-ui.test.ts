@@ -25,6 +25,7 @@ let page: BrowserPage;
 let base = "";
 let meUser: Parameters<App["hello"]>[0] | undefined;
 let failModule = false;
+let retryMe: { requests: number; user: Parameters<App["hello"]>[0] } | undefined;
 const gates = new Map<string, { wait: Promise<void>; release: () => void; entered: boolean }>();
 
 /** Hold a real request at the server, including across a page reload. */
@@ -67,8 +68,12 @@ before(async () => {
         const idle = requestIdleCallback;
 
         globalThis.requestIdleCallback = (callback, options) => options?.timeout === 1000 ? 0 : idle(callback, options);
-        globalThis.openProbe = { boot: false };
+        globalThis.openProbe = { boot: false, rows: false };
         new MutationObserver(() => {
+            if ([...document.querySelectorAll('[data-part="prompt-row"]')].some((node) => node.getClientRects().length > 0)) {
+                openProbe.rows = true;
+            }
+
             if ([...document.querySelectorAll('.boot:not(.inline)')].some((node) => node.getClientRects().length > 0)) {
                 openProbe.boot = true;
             }
@@ -96,6 +101,22 @@ before(async () => {
                 "cache-control": "no-store",
             });
             response.end(probe + source);
+
+            return;
+        }
+
+        if (path === "/api/me" && retryMe !== undefined) {
+            const attempt = retryMe;
+
+            attempt.requests++;
+
+            if (attempt.requests === 1) {
+                // Give IndexedDB time to paint the early snapshot, then exercise the actual startup retry.
+                await new Promise((resolve) => setTimeout(resolve, 1500));
+                json(response, 503, { error: "temporarily unavailable" });
+            } else {
+                json(response, 200, await app.hello(attempt.user));
+            }
 
             return;
         }
@@ -520,6 +541,52 @@ test(
         }
     },
 );
+
+for (const changed of [false, true]) {
+    test(
+        `a startup retry ${changed ? "drops an early snapshot after the person changes" : "keeps a still-usable early snapshot"}`,
+        real,
+        async () => {
+            const id = await newSession(app);
+            const text = `rows retained through a startup failure (${changed})`;
+
+            await say(app, id, text);
+            await openOn(id, text);
+            await saved(id);
+            const events = hold("/api/events");
+            const poll = hold("/api/poll");
+            const attempt = {
+                requests: 0,
+                user: {
+                    ...app.config.users[0]!,
+                    ...(changed ? { id: "another-person" } : {}),
+                },
+            };
+
+            try {
+                retryMe = attempt;
+                await page.reload();
+                await until(
+                    async () => await inPage<boolean>(`return JSON.stringify(openProbe.rows);`),
+                    "the early snapshot was painted",
+                );
+                await until(() => attempt.requests >= 2, "the automatic startup retry", 15_000);
+                await until(async () => (await shown(text)).me, "the retry's identity");
+                assert.equal(
+                    (await shown(text)).rows,
+                    !changed,
+                    "revalidation precedes any session connection response",
+                );
+            } finally {
+                retryMe = undefined;
+                events.release();
+                poll.release();
+            }
+
+            await leave();
+        },
+    );
+}
 
 test("a blocked module still reveals the startup error on a signed-in page", real, async () => {
     failModule = true;
