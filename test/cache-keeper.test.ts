@@ -13,6 +13,7 @@ import {
     type IdlePolicy,
     type IdleRecord,
     type IdleStore,
+    breakEvenRefreshes,
     idleEveryMs,
     MAX_AGE_MS,
     refreshDelayMs,
@@ -371,7 +372,9 @@ test("a run that ended before the conversation lookup came back stops the warm",
 
 // ─── Keep warm (idle) ────────────────────────────────────────────────────
 
-const POLICY: IdlePolicy = { hours: 2, maxCost: 1, maxRefreshes: 30, share: 75, minutes: {} };
+const POLICY: IdlePolicy = { hours: 2, maxCost: 1, maxRefreshes: 30, share: 75, facts: () => ({}) };
+/** Claude's prices for a 1 hour cache: read $0.50, write $10 per million tokens, so 20 refreshes break even. */
+const CLAUDE = { read: 0.5, write: 10 };
 const HOUR_MODEL = { short: 3600 };
 
 /** The run of session "s" (conversation 3) ends after a finished answer. */
@@ -444,7 +447,7 @@ test("keep warm: after the run ends it refreshes until the time limit", async ()
 });
 
 test("keep warm: the refresh cap and the cost cap stop it", async () => {
-    const capped = rig(false, { policy: { ...POLICY, hours: null, maxRefreshes: 3 } });
+    const capped = rig(false, { policy: { ...POLICY, hours: 1000, maxRefreshes: 3 } });
 
     await idleRun(capped);
 
@@ -457,7 +460,7 @@ test("keep warm: the refresh cap and the cost cap stop it", async () => {
 
     assert.equal(!one.warm && one.stopped, "the refresh cap was reached");
 
-    const cost = rig(false, { policy: { ...POLICY, hours: null, maxCost: 0.04 } });
+    const cost = rig(false, { policy: { ...POLICY, hours: 1000, maxCost: 0.04 } });
 
     await idleRun(cost);
 
@@ -486,7 +489,7 @@ test("keep warm: a new message stops it; the next run's end starts it again", as
 });
 
 test("keep warm: two refreshes in a row that wrote the cache stop it, with the reason", async () => {
-    const r = rig(false, { policy: { ...POLICY, hours: null } });
+    const r = rig(false, { policy: { ...POLICY, hours: 1000 } });
 
     await idleRun(r);
     r.rewriteOnWarm();
@@ -500,7 +503,7 @@ test("keep warm: two refreshes in a row that wrote the cache stop it, with the r
 });
 
 test("keep warm: a refresh that errs is tried again soon; two in a row stop it", async () => {
-    const r = rig(false, { policy: { ...POLICY, hours: null } });
+    const r = rig(false, { policy: { ...POLICY, hours: 1000 } });
 
     await idleRun(r);
     r.failWarm();
@@ -552,7 +555,7 @@ test("keep warm: a 1 hour cache is kept warm when idle, though a tool wait never
 
 test("keep warm: it goes on after a restart while the cache lives, and not after it expired", async () => {
     const memory = memoryStore();
-    const first = rig(false, { policy: { ...POLICY, hours: null }, store: memory.store });
+    const first = rig(false, { policy: { ...POLICY, hours: 1000 }, store: memory.store });
 
     await idleRun(first);
     await first.advance();
@@ -561,7 +564,7 @@ test("keep warm: it goes on after a restart while the cache lives, and not after
     assert.equal(memory.saved.size, 1, "close keeps it for the next start");
     assert.equal(memory.saved.get("s")?.warms, 1);
 
-    const second = rig(false, { policy: { ...POLICY, hours: null }, store: memory.store });
+    const second = rig(false, { policy: { ...POLICY, hours: 1000 }, store: memory.store });
 
     second.setNow(first.now() + 60_000);
     second.endRun(3);
@@ -602,4 +605,73 @@ test("keep warm: a new run stops it with nothing to report", async () => {
     r.keeper.runStarted(3);
     assert.deepEqual(r.keeper.idleStatus(3), { warm: false });
     assert.equal(r.timers.length, 0);
+});
+
+test("keep warm: break-even is the write price over the read price", () => {
+    assert.equal(breakEvenRefreshes(CLAUDE), 20);
+    assert.equal(
+        breakEvenRefreshes({ read: 0.5, write: 6.25 }),
+        12,
+        "the 5 minute write: 12.5, rounded down",
+    );
+    assert.equal(breakEvenRefreshes({ read: 0, write: 10 }), 0, "no read price: not known");
+    assert.equal(breakEvenRefreshes({ read: 1, write: 0.5 }), 1);
+});
+
+test("keep warm: Auto stops at break-even, with its own reason", async () => {
+    const r = rig(false, {
+        policy: { ...POLICY, hours: "auto", facts: () => ({ prices: { read: 0.5, write: 2 } }) },
+    });
+
+    await idleRun(r);
+
+    for (let i = 0; i < 20 && r.timers.length > 0; i++) {
+        await r.advance();
+    }
+
+    assert.equal(r.keeper.status().warms, 4, "write 4× the read: 4 refreshes");
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(
+        !status.warm && status.stopped,
+        "Auto: more refreshes would cost more than writing the cache again",
+    );
+});
+
+test("keep warm: Auto is not started for a model with no prices; the refresh cap below break-even wins", async () => {
+    const none = rig(false, { policy: { ...POLICY, hours: "auto" } });
+
+    await idleRun(none);
+    assert.equal(none.keeper.idleStatus(3).warm, false);
+
+    const capped = rig(false, {
+        policy: { ...POLICY, hours: "auto", maxRefreshes: 2, facts: () => ({ prices: CLAUDE }) },
+    });
+
+    await idleRun(capped);
+
+    for (let i = 0; i < 20 && capped.timers.length > 0; i++) {
+        await capped.advance();
+    }
+
+    const status = capped.keeper.idleStatus(3);
+
+    assert.equal(capped.keeper.status().warms, 2);
+    assert.equal(!status.warm && status.stopped, "the refresh cap was reached");
+});
+
+test("keep warm: the owner's lifetime and minutes for a model win over Pi's", async () => {
+    const r = rig(false, {
+        policy: { ...POLICY, facts: () => ({ lifetimeMs: 3_600_000 }) },
+    });
+
+    await idleRun(r);
+    assert.equal((r.timers[0]?.at ?? 0) - r.now(), 2_700_000, "75% of the owner's hour");
+
+    const minutes = rig(false, {
+        policy: { ...POLICY, facts: () => ({ minutes: 10, lifetimeMs: 3_600_000 }) },
+    });
+
+    await idleRun(minutes);
+    assert.equal((minutes.timers[0]?.at ?? 0) - minutes.now(), 600_000);
 });

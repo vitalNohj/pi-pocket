@@ -5,18 +5,79 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { PocketApp } from "./app.ts";
-import type { IdlePolicy, IdleStatus } from "./cache-keeper.ts";
-import { KEEP_WARM_HOURS, type KeepWarmSettings, keepWarmFrom, type User } from "./config.ts";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type { IdleFacts, IdlePolicy, IdleStatus } from "./cache-keeper.ts";
+import {
+    isKeepWarmTime,
+    type KeepWarmModel,
+    type KeepWarmSettings,
+    type KeepWarmTime,
+    keepWarmFrom,
+    keepWarmModelFrom,
+    type User,
+} from "./config.ts";
 import { SessionsDoc } from "./docs.ts";
 import { HttpError } from "./errors.ts";
 
-/** A session's choice: the owner's default, on with no time limit, or never. */
-export type KeepWarmChoice = "default" | "on" | "off";
+/** A session's choice: the owner's default, or a time of its own (0: off, "auto", or hours). */
+export type KeepWarmChoice = "default" | KeepWarmTime;
 
-const CHOICES: readonly KeepWarmChoice[] = ["default", "on", "off"];
+/**
+ * What Pi knows of a model for keep warm: its cache lifetime in minutes, and its cache prices per million tokens.
+ * `pricesFrom`: the model in Pi's own list the prices came from, when this one has none (a subscription at $0).
+ */
+type PiFacts = { lifetime?: number; read?: number; write?: number; pricesFrom?: string };
 
-/** What the settings window lists for one model: its cache lifetime in seconds, when known. */
-type ModelLifetime = { spec: string; name: string; lifetime?: number };
+/** What the settings window lists for one model: Pi's facts, which the owner's own replace field by field. */
+type ModelRow = { spec: string; name: string; pi: PiFacts };
+
+/** The cache tier requests use: Pi's `PI_CACHE_RETENTION`. */
+const tier = (): "short" | "long" => (process.env.PI_CACHE_RETENTION === "long" ? "long" : "short");
+
+/**
+ * Pi's facts about a model. Prices of 0 are not known (a subscription, or a `models.json` that left them out). Anthropic
+ * charges twice the input price to write a cache that lives an hour, where Pi's price is the 5-minute write.
+ */
+function prices(model: Model<Api>, seconds: number | undefined): { read?: number; write?: number } {
+    const { input, cacheRead, cacheWrite } = model.cost;
+    const hourWrite = model.api === "anthropic-messages" && (seconds ?? 0) >= 3600 && input > 0;
+
+    return {
+        ...(cacheRead > 0 ? { read: cacheRead } : {}),
+        ...(hourWrite ? { write: input * 2 } : cacheWrite > 0 ? { write: cacheWrite } : {}),
+    };
+}
+
+/** The last part of a model id, which a reseller's id (`cc/claude-opus-5-5`) shares with the maker's. */
+const bareId = (id: string) => id.slice(id.lastIndexOf("/") + 1).toLowerCase();
+
+function piFacts(
+    model: Model<Api> | undefined,
+    priced: (id: string) => Model<Api> | undefined,
+): PiFacts {
+    if (model === undefined) {
+        return {};
+    }
+
+    const seconds = model.promptCache?.[tier()];
+    const own = prices(model, seconds);
+    // No prices of its own: the same model from a provider that lists them, at this model's cache lifetime.
+    const twin = own.read === undefined || own.write === undefined ? priced(model.id) : undefined;
+    const theirs = twin === undefined ? {} : prices(twin, seconds ?? twin.promptCache?.[tier()]);
+    const read = own.read ?? theirs.read;
+    const write = own.write ?? theirs.write;
+
+    return {
+        ...(seconds === undefined ? {} : { lifetime: Math.round(seconds / 60) }),
+        ...(read === undefined ? {} : { read }),
+        ...(write === undefined ? {} : { write }),
+        ...(twin !== undefined &&
+        (own.read === undefined || own.write === undefined) &&
+        (theirs.read !== undefined || theirs.write !== undefined)
+            ? { pricesFrom: `${twin.provider}/${twin.id}` }
+            : {}),
+    };
+}
 
 export class KeepWarm {
     readonly #app: PocketApp;
@@ -42,10 +103,9 @@ export class KeepWarm {
             return undefined;
         }
 
-        const choice = meta.keepWarm ?? "default";
-        const hours = choice === "on" ? null : settings.hours;
+        const hours = isKeepWarmTime(meta.keepWarm) ? meta.keepWarm : settings.hours;
 
-        if (choice === "off" || hours === 0) {
+        if (hours === 0) {
             return undefined;
         }
 
@@ -54,21 +114,42 @@ export class KeepWarm {
             maxCost: settings.maxCost,
             maxRefreshes: settings.maxRefreshes,
             share: settings.share,
-            minutes: settings.minutes,
+            facts: (spec) => this.facts(spec, settings),
+        };
+    }
+
+    /** What is known of a model: the owner's values over Pi's. */
+    facts(spec: string, settings = this.#app.config.keepWarm): IdleFacts {
+        const own = settings.models[spec] ?? {};
+        const pi = piFacts(this.#model(spec), (id) => this.#priced(id));
+        const read = own.read ?? pi.read;
+        const write = own.write ?? pi.write;
+
+        return {
+            ...(own.minutes === undefined ? {} : { minutes: own.minutes }),
+            ...(own.lifetime === undefined ? {} : { lifetimeMs: own.lifetime * 60_000 }),
+            ...(read === undefined || write === undefined ? {} : { prices: { read, write } }),
         };
     }
 
     /** The owner's minutes for a model, whether or not anything is kept warm now. */
     minutes(spec: string): number | undefined {
-        return this.#app.config.keepWarm.minutes[spec];
+        return this.#app.config.keepWarm.models[spec]?.minutes;
     }
 
-    /** For a tab's hello: the owner's time limit, which the session row names as its default. */
+    /** The owner's cache lifetime for a model, so a model Pi knows none for can be kept warm. */
+    lifetimeMs(spec: string): number | undefined {
+        const minutes = this.#app.config.keepWarm.models[spec]?.lifetime;
+
+        return minutes === undefined ? undefined : minutes * 60_000;
+    }
+
+    /** For a tab's hello: the owner's time, which the session row names as its default. */
     hello() {
         return { hours: this.#app.config.keepWarm.hours };
     }
 
-    /** The settings window's: every setting, each model's known cache lifetime, and what is warm now. */
+    /** The settings window's: every setting, Pi's facts about each model, and what is warm now. */
     overview(user: User) {
         if (user.role !== "owner") {
             throw new HttpError(403, "Only the owner can do that");
@@ -78,7 +159,7 @@ export class KeepWarm {
 
         return {
             settings,
-            models: this.#lifetimes(settings),
+            models: this.#rows(settings),
             now: this.#app.cacheKeeper.idleSummary(),
         };
     }
@@ -92,7 +173,7 @@ export class KeepWarm {
         }
 
         return {
-            choice: meta.keepWarm ?? "default",
+            choice: isKeepWarmTime(meta.keepWarm) ? meta.keepWarm : "default",
             status: this.#app.cacheKeeper.idleStatus(Number(id)),
         };
     }
@@ -109,17 +190,14 @@ export class KeepWarm {
 
         const asked = patch as Partial<Record<keyof KeepWarmSettings, unknown>>;
         const current = this.#app.config.keepWarm;
-        const next: KeepWarmSettings = { ...current, minutes: { ...current.minutes } };
+        const next: KeepWarmSettings = { ...current, models: { ...current.models } };
 
         if ("hours" in asked) {
-            if (!KEEP_WARM_HOURS.includes(asked.hours as number | null)) {
-                throw new HttpError(
-                    400,
-                    `hours must be one of ${KEEP_WARM_HOURS.map(String).join(", ")}`,
-                );
+            if (!isKeepWarmTime(asked.hours)) {
+                throw new HttpError(400, 'hours must be 0, "auto", 1, 2, 4, or 8');
             }
 
-            next.hours = asked.hours as number | null;
+            next.hours = asked.hours;
         }
 
         const number = (key: "maxCost" | "maxRefreshes" | "share", low: number, high: number) => {
@@ -156,35 +234,49 @@ export class KeepWarm {
             next.subagents = asked.subagents;
         }
 
-        // Minutes by model: a number sets one, null takes it off so the model's lifetime decides again.
-        if (asked.minutes !== undefined) {
+        // A model's facts, field by field: a number sets one, null takes it off so Pi's counts again.
+        if (asked.models !== undefined) {
             if (
-                typeof asked.minutes !== "object" ||
-                asked.minutes === null ||
-                Array.isArray(asked.minutes)
+                typeof asked.models !== "object" ||
+                asked.models === null ||
+                Array.isArray(asked.models)
             ) {
                 throw new HttpError(
                     400,
-                    "minutes must be an object of provider/modelId to minutes",
+                    "models must be an object of provider/modelId to its values",
                 );
             }
 
-            for (const [spec, value] of Object.entries(asked.minutes as Record<string, unknown>)) {
-                if (spec.indexOf("/") <= 0) {
-                    throw new HttpError(400, `${spec} is not provider/modelId`);
+            for (const [spec, fields] of Object.entries(asked.models as Record<string, unknown>)) {
+                if (spec.indexOf("/") <= 0 || typeof fields !== "object" || fields === null) {
+                    throw new HttpError(400, `${spec} is not provider/modelId with values`);
                 }
 
-                if (value === null) {
-                    delete next.minutes[spec];
-                } else if (
-                    typeof value === "number" &&
-                    Number.isFinite(value) &&
-                    value >= 0 &&
-                    value <= 24 * 60
-                ) {
-                    next.minutes[spec] = Math.round(value);
+                const merged: Record<string, unknown> = { ...next.models[spec] };
+
+                for (const [field, value] of Object.entries(fields as Record<string, unknown>)) {
+                    if (!["minutes", "lifetime", "read", "write"].includes(field)) {
+                        throw new HttpError(
+                            400,
+                            `${field} is not minutes, lifetime, read, or write`,
+                        );
+                    }
+
+                    if (value === null) {
+                        delete merged[field];
+                    } else if (keepWarmModelFrom({ [field]: value }) === undefined) {
+                        throw new HttpError(400, `${field} for ${spec} is out of range`);
+                    } else {
+                        merged[field] = value;
+                    }
+                }
+
+                const model: KeepWarmModel | undefined = keepWarmModelFrom(merged);
+
+                if (model === undefined) {
+                    delete next.models[spec];
                 } else {
-                    throw new HttpError(400, "Minutes must be a number from 0 to 1440, or null");
+                    next.models[spec] = model;
                 }
             }
         }
@@ -193,14 +285,10 @@ export class KeepWarm {
         this.#app.cacheKeeper.reconsider();
     }
 
-    /** Someone who can steer chooses for one session. Only the owner may lift the time limit: it spends the owner's money. */
-    async setSession(user: User, id: ConversationId, choice: unknown): Promise<void> {
-        if (typeof choice !== "string" || !CHOICES.includes(choice as KeepWarmChoice)) {
-            throw new HttpError(400, `keepWarm must be one of ${CHOICES.join(", ")}`);
-        }
-
-        if (choice === "on" && user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can keep a session warm with no time limit");
+    /** Someone who can steer chooses for one session; the owner's caps bound every choice. */
+    async setSession(id: ConversationId, choice: unknown): Promise<void> {
+        if (choice !== "default" && !isKeepWarmTime(choice)) {
+            throw new HttpError(400, 'keepWarm must be "default", 0, "auto", 1, 2, 4, or 8');
         }
 
         await this.#app.harness.commit(async (tx) => {
@@ -213,39 +301,74 @@ export class KeepWarm {
             if (choice === "default") {
                 delete meta.keepWarm;
             } else {
-                meta.keepWarm = choice as "on" | "off";
+                meta.keepWarm = choice;
             }
         }, BACKGROUND_CONTEXT);
         this.#app.cacheKeeper.reconsider();
     }
 
-    /** Every model people can pick, and every model the owner set minutes for, with its known cache lifetime. */
-    #lifetimes(settings: KeepWarmSettings): ModelLifetime[] {
-        const models = this.#app.models;
-        const tier = process.env.PI_CACHE_RETENTION === "long" ? "long" : "short";
-        const rows = new Map<string, ModelLifetime>();
+    /** Pi's models with cache prices, by bare id; built again a minute later, as model lists change rarely. */
+    #pricedIndex: { at: number; byId: Map<string, Model<Api>> } | undefined;
 
-        for (const model of models.getAvailableSnapshot()) {
+    /** A model Pi lists with cache prices, of the same bare id as `id`: the maker's, first. */
+    #priced(id: string): Model<Api> | undefined {
+        const now = Date.now();
+
+        if (this.#pricedIndex === undefined || now - this.#pricedIndex.at > 60_000) {
+            const byId = new Map<string, Model<Api>>();
+
+            for (const model of this.#app.models.getModels()) {
+                const key = bareId(model.id);
+                const known = byId.get(key);
+
+                // The maker's own listing wins over a cloud's (Bedrock, Vertex), whose ids and prices differ.
+                if (
+                    model.cost.cacheRead > 0 &&
+                    model.cost.input > 0 &&
+                    (known === undefined ||
+                        ((model.provider === "anthropic" || model.provider === "openai") &&
+                            known.provider !== model.provider))
+                ) {
+                    byId.set(key, model);
+                }
+            }
+
+            this.#pricedIndex = { at: now, byId };
+        }
+
+        return this.#pricedIndex.byId.get(bareId(id));
+    }
+
+    #model(spec: string): Model<Api> | undefined {
+        const slash = spec.indexOf("/");
+
+        return slash > 0
+            ? this.#app.models.getModel(spec.slice(0, slash), spec.slice(slash + 1))
+            : undefined;
+    }
+
+    /** Every model people can pick, and every model the owner set values for, with Pi's facts. */
+    #rows(settings: KeepWarmSettings): ModelRow[] {
+        const rows = new Map<string, ModelRow>();
+
+        for (const model of this.#app.models.getAvailableSnapshot()) {
             const spec = `${model.provider}/${model.id}`;
-            const lifetime = model.promptCache?.[tier];
 
             rows.set(spec, {
                 spec,
                 name: model.name,
-                ...(lifetime === undefined ? {} : { lifetime }),
+                pi: piFacts(model, (id) => this.#priced(id)),
             });
         }
 
-        for (const spec of Object.keys(settings.minutes)) {
+        for (const spec of Object.keys(settings.models)) {
             if (!rows.has(spec)) {
-                const slash = spec.indexOf("/");
-                const model = models.getModel(spec.slice(0, slash), spec.slice(slash + 1));
-                const lifetime = model?.promptCache?.[tier];
+                const model = this.#model(spec);
 
                 rows.set(spec, {
                     spec,
-                    name: model?.name ?? spec.slice(slash + 1),
-                    ...(lifetime === undefined ? {} : { lifetime }),
+                    name: model?.name ?? spec.slice(spec.indexOf("/") + 1),
+                    pi: piFacts(model, (id) => this.#priced(id)),
                 });
             }
         }

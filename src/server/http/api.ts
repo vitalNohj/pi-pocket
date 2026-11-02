@@ -500,7 +500,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             if (body.keepWarm !== undefined) {
                 app.requireSee(user, id);
                 app.requireSteer(user);
-                await app.keepWarm.setSession(user, id, body.keepWarm);
+                await app.keepWarm.setSession(id, body.keepWarm);
             }
 
             if (body.title !== undefined || body.archived !== undefined) {

@@ -18740,17 +18740,122 @@ pre.gallery-code {
 /* Models in as many columns as fit, each a name and its minutes. */
 .keep-warm-model-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr));
 }
 
+/* A model: its name and what keep warm does with it, then its four values side by side. */
 .keep-warm-model {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.6rem;
-    min-height: 48px;
-    padding: 6px 12px;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px 10px;
     border-top: 1px solid var(--hair);
+}
+
+.keep-warm-cells {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.keep-warm-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.keep-warm-cell .keep-warm-input {
+    display: flex;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.keep-warm-cell .keep-warm-number {
+    min-width: 0;
+    flex: 1;
+}
+
+/* The calculator: shut until asked for, as a line of text. */
+.keep-warm-disclosure {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    align-self: flex-start;
+    min-height: 40px;
+    color: var(--text);
+    font-weight: 500;
+}
+
+.keep-warm-disclosure svg {
+    transition: transform var(--t-hover) var(--ease-out);
+}
+
+.keep-warm-disclosure[aria-expanded="true"] svg {
+    transform: rotate(90deg);
+}
+
+.keep-warm-calc {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.keep-warm-calc-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+}
+
+.keep-warm-calc-grid .wide {
+    grid-column: 1 / -1;
+}
+
+.keep-warm-calc select {
+    padding: 0.45rem 0.6rem;
+}
+
+.keep-warm-calc .keep-warm-unit {
+    width: auto;
+}
+
+.keep-warm-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+}
+
+.keep-warm-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+}
+
+.keep-warm-table th,
+.keep-warm-table td {
+    padding: 6px 7px;
+    text-align: right;
+    white-space: nowrap;
+    border-top: 1px solid var(--hair);
+}
+
+.keep-warm-table thead th {
+    border-top: 0;
+    color: var(--faint);
+    font-weight: 500;
+}
+
+.keep-warm-table th:first-child {
+    text-align: left;
+}
+
+.keep-warm-table td .small {
+    display: block;
+}
+
+.keep-warm-table tr.own {
+    background: var(--hover);
 }
 
 .keep-warm-model.never .keep-warm-model-name > span:first-child {
@@ -18782,7 +18887,7 @@ pre.gallery-code {
         flex: 1;
         min-height: 0;
         display: grid;
-        grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+        grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
         gap: 24px;
     }
     .keep-warm-settings {
@@ -18809,6 +18914,10 @@ pre.gallery-code {
     flex-direction: column;
     gap: 0.4rem;
     padding: 10px 12px;
+}
+
+.keep-warm-times button {
+    padding: 4px 9px;
 }
 
 .keep-warm-session-head {

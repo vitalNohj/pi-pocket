@@ -118,10 +118,27 @@ interface PocketConfig {
 /** The hours a run waits for a model's limit to clear, until the owner says otherwise. */
 export const DEFAULT_LIMIT_WAIT_HOURS = 6;
 
+/**
+ * How long a session is kept warm once its run ends: 0 is off; "auto" until the refreshes have cost as much as one more
+ * cache write (`breakEvenRefreshes` in `cache-keeper.ts`); a number is that many hours.
+ */
+export type KeepWarmTime = 0 | "auto" | number;
+
+/** The owner's facts about one model, over what Pi knows of it. Each one left out: Pi's, or none. */
+export type KeepWarmModel = {
+    /** Minutes between refreshes; 0: never keep it warm. Absent: a share of its cache lifetime. */
+    minutes?: number;
+    /** How long its prompt cache lives, in minutes. */
+    lifetime?: number;
+    /** Dollars per million tokens to read the cache. */
+    read?: number;
+    /** Dollars per million tokens to write the cache. */
+    write?: number;
+};
+
 /** The owner's settings for keeping a session's prompt cache warm once its run ends. */
 export type KeepWarmSettings = {
-    /** Hours after a run ends; 0: off; null: no time limit (the caps still stop it). */
-    hours: number | null;
+    hours: KeepWarmTime;
     /** Dollars at most for each session's idle stretch; 0: no cost cap. */
     maxCost: number;
     /** Refreshes at most for each session's idle stretch. */
@@ -130,12 +147,12 @@ export type KeepWarmSettings = {
     share: number;
     /** Whether subagents are kept warm too. */
     subagents: boolean;
-    /** Minutes between refreshes by model (`provider/modelId`), over the share; 0: never warm it. */
-    minutes: Record<string, number>;
+    /** The owner's facts by model (`provider/modelId`). */
+    models: Record<string, KeepWarmModel>;
 };
 
-/** The time limits the settings offer, in hours; null: no time limit. */
-export const KEEP_WARM_HOURS: readonly (number | null)[] = [0, 1, 2, 4, 8, null];
+/** The fixed time limits on offer, in hours. */
+export const KEEP_WARM_HOURS: readonly number[] = [1, 2, 4, 8];
 
 export const DEFAULT_KEEP_WARM: Readonly<KeepWarmSettings> = Object.freeze({
     hours: 0,
@@ -143,22 +160,62 @@ export const DEFAULT_KEEP_WARM: Readonly<KeepWarmSettings> = Object.freeze({
     maxRefreshes: 30,
     share: 75,
     subagents: false,
-    minutes: {},
+    models: {},
 });
+
+/** Whether `value` is a time a session may be kept warm for: off, auto, or one of the fixed hours. */
+export function isKeepWarmTime(value: unknown): value is KeepWarmTime {
+    return value === 0 || value === "auto" || KEEP_WARM_HOURS.includes(value as number);
+}
+
+const finite = (each: unknown, low: number, high: number): number | undefined =>
+    typeof each === "number" && Number.isFinite(each) && each >= low && each <= high
+        ? each
+        : undefined;
+
+/** One model's facts from a file people may have edited: what is out of range is left out. */
+export function keepWarmModelFrom(raw: unknown): KeepWarmModel | undefined {
+    if (typeof raw !== "object" || raw === null) {
+        return undefined;
+    }
+
+    const value = raw as Record<string, unknown>;
+    const minutes = finite(value.minutes, 0, 24 * 60);
+    const lifetime = finite(value.lifetime, 1, 7 * 24 * 60);
+    const read = finite(value.read, 0, 10_000);
+    const write = finite(value.write, 0, 10_000);
+    const model: KeepWarmModel = {
+        ...(minutes === undefined ? {} : { minutes: Math.round(minutes) }),
+        ...(lifetime === undefined ? {} : { lifetime: Math.round(lifetime) }),
+        ...(read === undefined ? {} : { read }),
+        ...(write === undefined ? {} : { write }),
+    };
+
+    return Object.keys(model).length === 0 ? undefined : model;
+}
 
 /** Settings read from a file people may have edited: anything out of range has its default. */
 export function keepWarmFrom(raw: unknown): KeepWarmSettings {
     const value = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
-    const number = (each: unknown, low: number, high: number, fallback: number) =>
-        typeof each === "number" && Number.isFinite(each) && each >= low && each <= high
-            ? each
-            : fallback;
-    const minutes: Record<string, number> = {};
+    const models: Record<string, KeepWarmModel> = {};
 
+    if (typeof value.models === "object" && value.models !== null) {
+        for (const [spec, each] of Object.entries(value.models)) {
+            const model = spec.indexOf("/") > 0 ? keepWarmModelFrom(each) : undefined;
+
+            if (model !== undefined) {
+                models[spec] = model;
+            }
+        }
+    }
+
+    // Before 0.28 (not released): minutes by model alone, and null for no time limit.
     if (typeof value.minutes === "object" && value.minutes !== null) {
         for (const [spec, each] of Object.entries(value.minutes)) {
-            if (spec.indexOf("/") > 0 && typeof each === "number" && Number.isFinite(each)) {
-                minutes[spec] = Math.min(Math.max(Math.round(each), 0), 24 * 60);
+            const model = spec.indexOf("/") > 0 ? keepWarmModelFrom({ minutes: each }) : undefined;
+
+            if (model !== undefined && models[spec] === undefined) {
+                models[spec] = model;
             }
         }
     }
@@ -166,15 +223,17 @@ export function keepWarmFrom(raw: unknown): KeepWarmSettings {
     return {
         hours:
             value.hours === null
-                ? null
-                : number(value.hours, 0, 24 * 7, DEFAULT_KEEP_WARM.hours as number),
-        maxCost: number(value.maxCost, 0, 1000, DEFAULT_KEEP_WARM.maxCost),
+                ? "auto"
+                : isKeepWarmTime(value.hours)
+                  ? value.hours
+                  : DEFAULT_KEEP_WARM.hours,
+        maxCost: finite(value.maxCost, 0, 1000) ?? DEFAULT_KEEP_WARM.maxCost,
         maxRefreshes: Math.round(
-            number(value.maxRefreshes, 1, 10_000, DEFAULT_KEEP_WARM.maxRefreshes),
+            finite(value.maxRefreshes, 1, 10_000) ?? DEFAULT_KEEP_WARM.maxRefreshes,
         ),
-        share: Math.round(number(value.share, 10, 95, DEFAULT_KEEP_WARM.share)),
+        share: Math.round(finite(value.share, 10, 95) ?? DEFAULT_KEEP_WARM.share),
         subagents: value.subagents === true,
-        minutes,
+        models,
     };
 }
 
@@ -367,8 +426,8 @@ export class ConfigStore {
 
         for (const key of Object.keys(clean) as (keyof KeepWarmSettings)[]) {
             const same =
-                key === "minutes"
-                    ? Object.keys(clean.minutes).length === 0
+                key === "models"
+                    ? Object.keys(clean.models).length === 0
                     : clean[key] === DEFAULT_KEEP_WARM[key];
 
             if (!same) {
