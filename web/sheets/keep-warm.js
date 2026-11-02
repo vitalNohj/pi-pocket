@@ -146,17 +146,19 @@ function NumberField({
 }
 
 /**
- * Examples of where Auto stops, written here as text: each maker's list price per million tokens to read the cache, and
- * what a miss costs (the cache write; OpenAI and xAI charge the plain input price). Pocket reads no prices from anywhere.
+ * Examples of where Auto stops, written here as text from the makers' docs (2026-11-02): the price per million tokens to
+ * read the cache and to write it (what a miss costs), the default cache tier's lifetime in minutes, and a refresh at 75%
+ * of it. Claude: the 1-hour tier, read 0.05×, write 2× input. GPT-6.1: the 30-minute tier, read 0.05×, write 1.25×.
+ * Grok: read 0.25×, no write charge, and no published lifetime (assumed an hour). Pocket reads no prices from anywhere.
  */
 const EXAMPLES = [
-    { name: "Claude Opus 5.5", read: 0.2, write: 8 },
-    { name: "GPT-6.1 Sol", read: 0.1, write: 2 },
-    { name: "GPT-6.1 Terra", read: 0.05, write: 1 },
-    { name: "Grok 4.7", read: 0.5, write: 2 },
+    { name: "Claude Opus 5.5", read: 0.2, write: 8, lifetime: 60, every: 45 },
+    { name: "GPT-6.1 Sol", read: 0.1, write: 2.5, lifetime: 30, every: 22 },
+    { name: "GPT-6.1 Terra", read: 0.05, write: 1.25, lifetime: 30, every: 22 },
+    { name: "Grok 4.7", read: 0.5, write: 2, every: 45 },
 ];
 
-/** Minutes between refreshes in the examples: 75% of a 1-hour cache. */
+/** Minutes between refreshes in the calculator until a model says otherwise: 75% of a 1-hour cache. */
 const ESTIMATED_EVERY = 45;
 
 /** The context size the examples' cost is for, in tokens. */
@@ -206,7 +208,7 @@ function Calculator({ models, settings }) {
         ...EXAMPLES.map((example) => ({
             key: `example:${example.name}`,
             label: `${example.name} · list price`,
-            plan: { read: example.read, write: example.write, every: ESTIMATED_EVERY },
+            plan: { read: example.read, write: example.write, every: example.every },
         })),
         ...models
             .map((model) => ({ model, plan: modelPlan(model, settings) }))
@@ -474,13 +476,14 @@ export function KeepWarmSheet() {
     const custom = Object.keys(settings.models).length;
     const warmable = models.filter((model) => plans.get(model.spec).every !== undefined);
     // Where Auto stops for the examples, at their list prices and a refresh every 45 minutes, within the refresh cap.
-    const autoStops = EXAMPLES.map(({ name, read, write }) => {
+    const autoStops = EXAMPLES.map(({ name, read, write, lifetime, every }) => {
         const refreshes = Math.min(breakEvenOf(read, write), settings.maxRefreshes);
 
         return {
             name,
             read,
-            time: durationLabel(refreshes * ESTIMATED_EVERY * 60_000),
+            cache: lifetime === undefined ? "?" : durationLabel(lifetime * 60_000),
+            time: durationLabel(refreshes * every * 60_000),
             refreshes,
             cost: money((refreshes * read * EXAMPLE_CONTEXT) / 1e6),
         };
@@ -517,22 +520,31 @@ export function KeepWarmSheet() {
                     ${
                         settings.hours === "auto" &&
                         html`<p class="muted small">
-                            Where it stops, about: list prices, a refresh every ${ESTIMATED_EVERY} min, and a
+                            Where it stops, about: list prices, a refresh at 75% of the cache time, and a
                             ${tokensLabel(EXAMPLE_CONTEXT)} context.
                         </p>
                         <table class="keep-warm-stops small">
                             <thead>
                                 <tr>
                                     <th scope="col">Model</th>
-                                    <th scope="col">Cache read</th>
+                                    <th scope="col">Cache</th>
+                                    <th scope="col">Read</th>
                                     <th scope="col">Stops after</th>
                                     <th scope="col">Cost</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 ${autoStops.map(
-                                    ({ name, read, time, refreshes, cost }) => html`<tr key=${name}>
+                                    ({
+                                        name,
+                                        cache,
+                                        read,
+                                        time,
+                                        refreshes,
+                                        cost,
+                                    }) => html`<tr key=${name}>
                                         <th scope="row">${name}</th>
+                                        <td>${cache}</td>
                                         <td>${money(read)}/M</td>
                                         <td>${time} (${refreshes})</td>
                                         <td>${cost}</td>
@@ -541,7 +553,8 @@ export function KeepWarmSheet() {
                             </tbody>
                         </table>
                         <p class="muted small">
-                            The cheaper a cache read is next to a cache write, the longer Auto lasts. Auto keeps a model
+                            Grok publishes no cache time (?): its row assumes an hour. The cheaper a cache read is next
+                            to a cache write, the longer Auto lasts. Auto keeps a model
                             warm only once you set its Read and Write prices below; Pocket reads no prices itself.
                         </p>`
                     }
