@@ -13,6 +13,8 @@ import { homedir } from "node:os";
 import { localDaemon } from "@earendil-works/pi-env";
 import WebSocket from "ws";
 import { checkTransport, refusal, type Transport } from "./transport.ts";
+import { checkTools } from "./tools.ts";
+import type { RunnerTools } from "./protocol.ts";
 import {
     CLOSE,
     type Confirm,
@@ -409,13 +411,13 @@ export class Runner {
                     );
                 }
 
-                this.#open();
+                void checkTools().then((tools) => this.#open(tools));
             },
             (error: unknown) => this.#fail(`Could not check the server address: ${String(error)}`),
         );
     }
 
-    #open(): void {
+    #open(tools: RunnerTools): void {
         if (this.#stopping) {
             return;
         }
@@ -469,6 +471,7 @@ export class Runner {
                     // This runner answers `confirm`: the server asks it before a session starts here.
                     asks: true,
                     withdraws: true,
+                    tools,
                 } satisfies ControlMessage),
             );
         });

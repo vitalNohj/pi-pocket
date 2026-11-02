@@ -50,6 +50,9 @@ export const FRAME = { request: 1, result: 2, error: 3, event: 4, cancel: 5, pin
 /** pi-env's largest frame. */
 export const MAX_FRAME = 16 * 1024 * 1024;
 
+/** Programs ready on the runner, checked at each connection; older runners do not send this. */
+export type RunnerTools = { git: boolean; gh: boolean; github: boolean };
+
 /** Runner to server, first: who it is and where its stream from the server stopped. */
 export type Hello = {
     type: "hello";
@@ -67,6 +70,7 @@ export type Hello = {
     asks?: boolean;
     /** The runner understands `Withdraw`: a session question can be cancelled by the server. */
     withdraws?: boolean;
+    tools?: RunnerTools;
 };
 
 /**
@@ -133,7 +137,15 @@ export function parseControl(text: string): ControlMessage | undefined {
             return typeof message.protocol === "number" &&
                 (message.session === null || typeof message.session === "string") &&
                 count("received") &&
-                typeof message.version === "string"
+                typeof message.version === "string" &&
+                (message.tools === undefined ||
+                    (typeof message.tools === "object" &&
+                        message.tools !== null &&
+                        ["git", "gh", "github"].every(
+                            (name) =>
+                                typeof (message.tools as Record<string, unknown>)[name] ===
+                                "boolean",
+                        )))
                 ? (message as Hello)
                 : undefined;
         case "welcome":

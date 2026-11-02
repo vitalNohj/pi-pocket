@@ -2,6 +2,7 @@
 // connects over a real WebSocket to a real pi-env daemon, and Pi's tools in a session there run there. Here the "other
 // computer" is this one, in a folder of its own that the server's sessions never use.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -17,12 +18,15 @@ import { Runner, type SessionAnswer, type SessionQuestion } from "../src/runner/
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
 import { AgentDoc } from "@earendil-works/pi-durable";
 import { SubagentsDoc } from "../src/server/docs.ts";
+import type { Lesson } from "../src/server/docs.ts";
 import { ExtensionRequest } from "../src/server/extension-request.ts";
+import { createHandler } from "../src/server/http.ts";
 import {
     type App,
     cleanUp,
     context,
     lastText,
+    loadTools,
     newSession,
     openApp,
     owner,
@@ -111,7 +115,9 @@ before(async () => {
     await app.setExtensionEnabled(owner(app), "agent-teams.ts", true);
     app.config.lastModel ??= { provider: "faux", modelId: "faux-1", thinkingLevel: "off" };
 
-    server = createServer((request, response) => response.writeHead(404).end());
+    server = createServer(
+        createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
+    );
     server.on("upgrade", (request, socket, head) => {
         if (!app.runners.upgrade(request, socket, head)) {
             socket.destroy();
@@ -204,11 +210,20 @@ describe("a session on another computer", () => {
             (tool) => tool.name,
         );
 
-        for (const name of ["read", "write", "edit", "bash", "subagent", "team", "codemode"]) {
+        for (const name of [
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "subagent",
+            "team",
+            "codemode",
+            "memory",
+        ]) {
             assert.ok(tools.includes(name), `${name} is offered`);
         }
 
-        for (const name of ["background", "browser", "artifact", "design_preview", "memory"]) {
+        for (const name of ["background", "browser", "artifact", "design_preview"]) {
             assert.ok(!tools.includes(name), `${name} is not offered`);
         }
     });
@@ -567,6 +582,200 @@ describe("a session on another computer", () => {
             } else {
                 process.env.TMPDIR = previous;
             }
+        }
+    });
+
+    it("keeps lessons on their computer and offers approved lessons from other copies to add", async () => {
+        const localFolder = join(root, "local-memory");
+        const remoteFolder = join(root, "runner-memory");
+
+        for (const [folder, url] of [
+            [localFolder, "git@github.com:Acme/Memory.git"],
+            [remoteFolder, "https://github.com/acme/memory.git"],
+        ]) {
+            mkdirSync(folder!, { recursive: true });
+            execFileSync("git", ["init", "-q"], { cwd: folder });
+            execFileSync("git", ["remote", "add", "origin", url!], { cwd: folder });
+        }
+
+        const local = (await app.commands.createSession(owner(app), { cwd: localFolder })).id;
+        const remote = (
+            await app.commands.createSession(owner(app), { cwd: remoteFolder, runner: runnerId })
+        ).id;
+        const localProject = (await app.memory.project(local, localFolder))!;
+        const remoteProject = (await app.memory.project(remote, remoteFolder))!;
+
+        assert.match(remoteProject.key, new RegExp(`^runner:${runnerId}:`));
+        assert.equal(localProject.key, join(localFolder, ".git"));
+        assert.equal(remoteProject.runner, runnerId);
+        assert.equal(localProject.repo?.toLowerCase(), remoteProject.repo?.toLowerCase());
+        const localLesson = await app.memory.remember(local, owner(app), {
+            text: "Build with make check.",
+        });
+        const remoteLesson = await app.memory.remember(remote, owner(app), {
+            text: "Keep commands on the runner.",
+        });
+
+        await app.memory.remember(local, owner(app), { text: "Shared lesson." });
+        await app.memory.remember(remote, owner(app), { text: "  Shared lesson.  " });
+        await app.memory.remember(local, owner(app), { text: "Already pending there." });
+        const pi = { userId: owner(app).id, byPi: true, name: "Pi" };
+
+        await app.memory.add(remote, remoteFolder, pi, {
+            text: "Already pending there.",
+            scope: "project",
+        });
+        await app.memory.add(local, localFolder, pi, {
+            text: "Unapproved source.",
+            scope: "project",
+        });
+        assert.ok(
+            (await app.memory.inForce(remote, remoteFolder)).lessons.some(
+                (lesson) => lesson.id === remoteLesson.id,
+            ),
+        );
+        assert.ok(
+            !(await app.memory.inForce(local, localFolder)).lessons.some(
+                (lesson) => lesson.id === remoteLesson.id,
+            ),
+        );
+        assert.ok(
+            !(await app.memory.inForce(remote, remoteFolder)).lessons.some(
+                (lesson) => lesson.id === localLesson.id,
+            ),
+        );
+
+        const view = await app.memory.view(remote, owner(app));
+
+        assert.deepEqual(
+            view.others?.map((other) => [
+                other.project,
+                other.name,
+                other.computer,
+                other.lessons.map((lesson) => lesson.id),
+            ]),
+            [[localProject.key, localProject.name, "this server", [localLesson.id]]],
+        );
+        const localView = await app.memory.view(local, owner(app));
+
+        assert.deepEqual(
+            localView.others?.map((other) => [
+                other.computer,
+                other.lessons.map((lesson) => lesson.id),
+            ]),
+            [["Laptop", [remoteLesson.id]]],
+        );
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/c/${remote}/memory`;
+        const copy = (lesson: string) =>
+            fetch(url, {
+                method: "POST",
+                headers: {
+                    authorization: `Bearer ${app.config.ownerToken}`,
+                    "x-pocket": "1",
+                    "content-type": "application/json",
+                },
+                body: JSON.stringify({ copy: lesson }),
+            });
+
+        for (const invalid of [remoteLesson.id, "missing"]) {
+            const rejected = await copy(invalid);
+
+            assert.equal(rejected.status, 404);
+            assert.match(
+                await rejected.text(),
+                /That lesson is not in another copy of this repository\./,
+            );
+        }
+
+        const response = await copy(localLesson.id);
+
+        assert.equal(response.status, 200);
+        const copied = (await response.json()) as Lesson;
+
+        assert.notEqual(copied.id, localLesson.id);
+        assert.equal(copied.text, localLesson.text);
+        assert.equal(copied.project, remoteProject.key);
+        assert.equal(copied.pending, undefined);
+        assert.equal(copied.from?.conversationId, remote);
+        assert.equal((await app.memory.view(remote, owner(app))).others, undefined);
+        assert.equal((await copy(localLesson.id)).status, 404);
+
+        await say(app, remote, "check my saved lessons");
+        assert.match(sections.memory ?? "", /Keep commands on the runner/);
+        assert.match(sections.memory ?? "", /Build with make check/);
+    });
+
+    it("starts PR watches using the runner's origin and branch but gh on the server", async () => {
+        const folder = join(root, "runner-watch");
+
+        mkdirSync(folder, { recursive: true });
+        execFileSync("git", ["init", "-q", "-b", "runner-branch"], { cwd: folder });
+        execFileSync(
+            "git",
+            [
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "initial",
+            ],
+            { cwd: folder },
+        );
+        execFileSync("git", ["remote", "add", "origin", "git@github.com:acme/app.git"], {
+            cwd: folder,
+        });
+        const session = (
+            await app.commands.createSession(owner(app), { cwd: folder, runner: runnerId })
+        ).id;
+        const previous = app.watches.gh;
+        const calls: { args: string[]; cwd?: string }[] = [];
+
+        // The same server-side gh seam as triggers.test.ts, never a gh command sent to the runner.
+        app.watches.gh = async (args, cwd) => {
+            calls.push({ args, cwd });
+
+            if (args[0] === "api") {
+                return args[1] === "user"
+                    ? "me\n"
+                    : JSON.stringify({ full_name: "acme/app", permissions: { push: true } });
+            }
+
+            return JSON.stringify({
+                number: 23,
+                url: "https://github.com/acme/app/pull/23",
+                title: "Runner PR",
+                state: "OPEN",
+                headRefName: "runner-branch",
+            });
+        };
+
+        try {
+            await loadTools(app, session, "watch_pr");
+            const tools = (await (await app.conversation(session)).agent(context)).tools.map(
+                (tool) => tool.name,
+            );
+
+            assert.ok(tools.includes("watch_pr"));
+
+            for (const pr of [undefined, "23", "https://github.com/acme/app/pull/23"]) {
+                calls.length = 0;
+                await app.watches.start(session, owner(app).id, {
+                    ...(pr === undefined ? {} : { pr }),
+                    byPi: true,
+                });
+                const call = calls.find(({ args }) => args[0] === "pr" && args[1] === "view")!;
+
+                assert.equal(call.cwd, undefined, "server gh never receives the runner's folder");
+                assert.equal(call.args[call.args.indexOf("--repo") + 1], "acme/app");
+                assert.equal(call.args[call.args.indexOf("--") + 1], pr ?? "runner-branch");
+                await app.watches.stop(session);
+            }
+        } finally {
+            await app.watches.stop(session);
+            app.watches.gh = previous;
         }
     });
 
