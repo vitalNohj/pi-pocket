@@ -489,7 +489,9 @@ function App() {
             : "Pi Pocket";
     }, [state.view.conversation?.title]);
 
-    if (state.me === undefined) {
+    // Who this is is not known yet. A session the device kept, already checked and shown, draws as it will;
+    // otherwise the boot screen, as before.
+    if (state.me === undefined && state.view.conversation == null) {
         return html`<${Boot}
             caption=${state.notices.some((notice) => notice.level === "error") ? "waiting for the server" : "starting"}
         />

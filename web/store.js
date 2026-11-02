@@ -701,10 +701,10 @@ let source;
 
 /**
  * What the sessions this tab keeps in its memory may take in all, as the length of their JSON: once parsed they take
- * about 1.6 times that (measured on real sessions), so about 25 MB. However many sessions that is: 26 real ones took
+ * about 1.6 times that (measured on real sessions), so about 50 MB. However many sessions that is: 26 real ones took
  * 7.5 MB. The device keeps more (`DEVICE_CHARS`): a session that went from memory loads from there in a moment.
  */
-const KEPT_CHARS = 16_000_000;
+const KEPT_CHARS = 32_000_000;
 /**
  * What the sessions this browser keeps on the device (`session-cache.js`, IndexedDB) may take in all, as the length of
  * their JSON: about 100 MB. Shared by every tab of the browser; the sessions used longest ago go first.
@@ -884,10 +884,36 @@ function forgetKept() {
 
 // ─── Sessions kept on the device ───────────────────────────────────────────────────────────────────────────────────
 
-/** Whether this browser keeps sessions on the device: the server allows it (`PI_POCKET_SESSION_CACHE`), and it can. */
+/**
+ * Who is signed in, and this server's build, as the page carries them (`serveApp`): `{ user, build }`, the same shape
+ * `hello` sends, so a session the device kept can be checked (`usable`) before `/api/me` answers. Null when the page
+ * names neither, as for a signed-out request.
+ */
+function knownFromPage() {
+    const text = document.getElementById("pocket-known")?.textContent;
+
+    if (!text) {
+        return null;
+    }
+
+    try {
+        const known = JSON.parse(text);
+
+        return known?.user?.id && typeof known.build === "string" ? known : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Whether this browser keeps sessions on the device: the server allows it (`PI_POCKET_SESSION_CACHE`), and it can.
+ * Before `/api/me` answers, the page saying who is signed in (`knownFromPage`) says the server allows it: a server
+ * that does not sends no such page, and what it kept is checked again once the answer comes.
+ */
 const onDevice = () =>
     !deviceCacheStopped &&
-    store.state.server?.deviceCache === true &&
+    (store.state.server?.deviceCache === true ||
+        (store.state.server == null && knownFromPage() !== null)) &&
     typeof indexedDB !== "undefined";
 
 /** Set at sign-out, in this tab or another: the device keeps nothing more. */
@@ -981,7 +1007,10 @@ document.addEventListener("visibilitychange", () => {
  * not in their list, and the server says it is missing.
  */
 async function deviceView(id) {
-    return onDevice() && store.state.me ? adopt(id, await readDevice(id)) : undefined;
+    // The page's word of who this is (`knownFromPage`) is enough: `usable` checks it before `/api/me` answers.
+    return onDevice() && (store.state.me || knownFromPage())
+        ? adopt(id, await readDevice(id))
+        : undefined;
 }
 
 /** What the device kept of a session, unchecked (`adopt` checks it): undefined if nothing, or it cannot be read. */
@@ -991,17 +1020,23 @@ function readDevice(id) {
         : disk.read(id).catch(() => undefined);
 }
 
-/** Whether what the device kept of session `id` may be used: this person's, with the same rights, of this build. */
+/**
+ * Whether what the device kept of session `id` may be used: this person's, with the same rights, of this build. Before
+ * `/api/me` answers, the page's own word of who and which build (`knownFromPage`) stands in for the store's.
+ */
 function usable(found, id) {
     const { me, server } = store.state;
+    const known = me == null || server?.build == null ? knownFromPage() : null;
+    const who = me ?? known?.user;
+    const build = server?.build ?? known?.build;
 
     return (
         found !== undefined &&
         onDevice() &&
-        me != null &&
-        found.info.owner === ownerOf(me) &&
-        found.info.build === server?.build &&
-        found.record.view?.build === server.build &&
+        who != null &&
+        found.info.owner === ownerOf(who) &&
+        found.info.build === build &&
+        found.record.view?.build === build &&
         found.record.view.conversation?.id === id
     );
 }
@@ -1198,7 +1233,15 @@ function keptView(id) {
     shownSeen = kept?.seen ?? null;
 
     if (kept === undefined) {
-        return { view: emptyView(), transcriptFrom: null, transcriptPlace: null, holding: null };
+        // Not in memory: the device may have it (`showKept` reads it). Until that read, or the server's view, the
+        // transcript shows the session's header and a quiet loader, not the full-page boot screen (`pending`).
+        return {
+            view: emptyView(),
+            transcriptFrom: null,
+            transcriptPlace: null,
+            holding: null,
+            pending: id,
+        };
     }
 
     const hold = holdsFor(kept);
@@ -1209,6 +1252,8 @@ function keptView(id) {
         transcriptFrom: place?.from ?? null,
         transcriptPlace: place === null ? null : { keep: place.keep },
         holding: hold ? id : null,
+        // In hand: its quiet loader, from a switch that found nothing in memory, goes.
+        pending: null,
     };
 }
 
@@ -1267,8 +1312,13 @@ function applyView(data) {
         synced = data.conversation.id;
     }
 
-    // A session held for its changes (`holdsFor`) shows with them.
-    store.set((state) => ({ view: mergeView(state.view, data), missing: null, holding: null }));
+    // A session held for its changes (`holdsFor`) shows with them. Its quiet loader (`pending`) goes with the view.
+    store.set((state) => ({
+        view: mergeView(state.view, data),
+        missing: null,
+        holding: null,
+        pending: null,
+    }));
 }
 
 /**
@@ -1631,7 +1681,7 @@ const handlers = {
         store.set((state) => ({
             // Said of a session this tab has since left (`show`), it is not what the tab shows.
             ...(state.conversationId === data.conversationId
-                ? { missing: data.message, holding: null }
+                ? { missing: data.message, holding: null, pending: null }
                 : {}),
             ...(state.view.conversation?.id === data.conversationId ? { view: emptyView() } : {}),
         }));
@@ -2113,7 +2163,8 @@ function showKept(id) {
         }
 
         if (found !== undefined) {
-            store.set(found);
+            // In hand from the device: its quiet loader, shown while the read ran, goes.
+            store.set({ ...found, pending: null });
         }
 
         show();
@@ -2144,9 +2195,19 @@ onRoute(() => {
 export async function start() {
     try {
         const asked = moment();
-        // The session the page opens on, from the device, read while the server answers who this is: then checked.
+        // The session the page opens on, from the device, read while the server answers who this is. When the page
+        // already says who and which build, and that check passes, it shows at once, before the answer.
         const id = store.state.conversationId;
         const onDisk = id === null ? undefined : readDevice(id);
+
+        if (onDisk !== undefined) {
+            const found = adopt(id, await onDisk);
+
+            if (found !== undefined) {
+                store.set(found);
+            }
+        }
+
         const hello = await api("me");
 
         store.set({
@@ -2158,7 +2219,29 @@ export async function start() {
             themeList: Array.isArray(hello.themes) ? hello.themes : [],
         });
 
-        if (onDisk !== undefined && store.state.view.conversation == null) {
+        // Shown from the page's word of who this is: checked again against the answer. Another person, or a build the
+        // page did not name, and it goes. The page named nobody (the server keeps sessions off devices): checked now.
+        const shown = store.state.view;
+
+        if (shown.conversation?.id === id && shown.build != null) {
+            const still = usable(
+                {
+                    info: { owner: ownerOf(hello.user), build: shown.build },
+                    record: { view: shown },
+                },
+                id,
+            );
+
+            if (!still) {
+                // Not this person's, or another build: the quiet loader stands until the server sends its own view.
+                store.set({
+                    view: emptyView(),
+                    transcriptFrom: null,
+                    transcriptPlace: null,
+                    pending: id,
+                });
+            }
+        } else if (onDisk !== undefined && shown.conversation == null) {
             const found = adopt(id, await onDisk);
 
             if (found !== undefined) {
