@@ -360,6 +360,13 @@ describe("a copy with a place", () => {
             app.commands.copySuggestion(remote.id, owner(app), desk.id).cwd,
         );
         assert.deepEqual((await app.agentState(across.id))?.extensions, [...REMOTE_EXTENSIONS]);
+
+        // A copy of the copy, as it is: its folder is the copy's, not the one the history had at that reply.
+        const again = await app.commands.fork(across.id, owner(app), { entryId: reply });
+
+        assert.equal(app.runnerOf(again.id), desk.id);
+        assert.equal(app.cwdOf(again.id), app.cwdOf(across.id));
+        assert.equal((await app.agentState(again.id))?.cwd, app.cwdOf(across.id));
     });
 
     it("refuses a worktree on another computer, and a folder that is not there", async () => {
