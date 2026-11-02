@@ -49,18 +49,11 @@ window.pocketHost = {
 | `visibility` | Reads `visible()` with the page's own visibility: the page counts as hidden while either says so. It tells the server (`POST /api/visibility`), so the server knows the person is away and lets notifications through, and seen marks and peek tiles wait as they do in a hidden tab.                                                            |
 | `pinned`     | Calls `setPinned(list)` when a pinned session's title or state changes, for a tray menu. `state` is the square's shape from `sessionMark`: `waiting`, `limited`, `working`, `failed`, `fresh` (finished, not read), or `seen`. The session list's theme states `done` and `idle` do not change these app bridge names. `label` says it in words. |
 | `open`       | Opens what the embedder asks for (an `open` event), also without `notify`.                                                                                                                                                                                                                                                                       |
+| `newSession` | Opens the **New session** sheet when the embedder asks for it (a `newSession` event), as Alt+N does.                                                                                                                                                                                                                                             |
 
 A page from before 0.28.0-beta.7, still open after the server updates, asks with `host=notify` and listens for `desktop-notify`: the server still sends it those, until the page reloads.
 
 A page in an Electron window keeps running at full speed while the window hides in the tray, so `document.visibilityState` stays `visible` there. That is why `visible()` exists: without it, the server would think the person is looking, and hold every notification back.
-
-### Runner
-
-With the `runner` capability, the app provides `computerName()` and `linkRunner({ server, code, name })`. The server address is `server`, the one-time link code is `code`, and the computer's chosen name is `name`.
-
-`linkRunner()` saves the link, starts the runner, and keeps it running while the app is open. It returns a promise with `{ ok: true }` on success, or `{ ok: false, error: "…" }` with a message that the page can show. There is nothing to type in a terminal.
-
-The app must not restart a runner that exits with code 3. The person must resolve the reported error or link again. See [Sessions on another computer](runners.md) for the commands, access rules, and what happens when the connection drops.
 
 ### Notifications
 

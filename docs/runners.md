@@ -1,18 +1,18 @@
 # Sessions on another computer
 
-As the server owner, you can link a computer in 2 ways:
+As the server owner, you link a computer with a one-time code:
 
-- **Pi Pocket desktop app:** open your server in the app on the computer you want to link. Go to Menu → **Runners** → **Link a computer**, enter a name, and choose **Link this computer**. The app links it with one click and keeps the runner running while the app is open. There is nothing to type in a terminal.
-- **Any other computer:** install Node.js 22.19 or newer, then run these commands on that computer:
+1. In Pi Pocket, go to Menu → **Runners** → **Link a computer**. Enter a name, then choose **Get a link code**. The screen shows the server address and the code. The code works once and expires after 10 minutes.
+2. Give them to the runner on that computer:
+    - **With the Pi Pocket desktop app:** the app has the runner built in. In its settings, under **Runner**, enter the address and code, then choose **Link**. The app keeps the runner running while it is open.
+    - **Any other computer:** install Node.js 22.19 or newer, then run:
 
-    ```sh
-    npm install -g pi-pocket@latest
-    pi-pocket runner
-    ```
+        ```sh
+        npm install -g pi-pocket@latest
+        pi-pocket runner
+        ```
 
-    In Pi Pocket, go to Menu → **Runners** → **Link a computer**. Enter a name, then choose **Get a link code** in a browser, or **Link another computer** in the desktop app. The screen shows the commands above and a code. The code works once and expires after 10 minutes.
-
-    `pi-pocket runner` opens a menu: use the arrow keys and Enter. Choose **Link this computer**, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. Then choose **Start**, and leave the terminal open. On Linux with systemd, **Run as a service** keeps it running after the terminal closes. Press Ctrl+C to stop the runner and its commands.
+        `pi-pocket runner` opens a menu: use the arrow keys and Enter. Choose **Link this computer**, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. Then choose **Start**, and leave the terminal open. On Linux with systemd, **Run as a service** keeps it running after the terminal closes. Press Ctrl+C to stop the runner and its commands.
 
 Only the server owner can link computers. Only link a server you trust: its session commands run as your user account on the linked computer.
 
