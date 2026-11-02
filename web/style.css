@@ -8513,14 +8513,21 @@ div.group-head {
     overflow-wrap: anywhere;
 }
 
-/* Shared refresh feedback stays visible after a request and wraps provider messages as plain text. */
-.model-refresh {
-    margin-block: 0.5rem;
-    min-width: 0;
+/* Refresh sits in the Models heading; its feedback stays under the heading and wraps provider messages as plain text. */
+.model-refresh-button[aria-busy="true"] svg {
+    animation: model-refresh-turn 0.9s linear infinite;
 }
 
-.model-refresh .button.model-refresh-button {
-    min-height: 40px;
+@keyframes model-refresh-turn {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .model-refresh-button[aria-busy="true"] svg {
+        animation: none;
+    }
 }
 
 .model-refresh-status {
@@ -8528,6 +8535,10 @@ div.group-head {
     overflow-y: auto;
     overflow-wrap: anywhere;
     overscroll-behavior: contain;
+}
+
+.model-refresh-status:empty {
+    display: none;
 }
 
 .model-refresh-status p {
@@ -8568,6 +8579,13 @@ div.group-head {
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 8px;
+}
+
+.subagent-models-tools {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
 }
 
 .subagent-models-heading .label {

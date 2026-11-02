@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api, attempt, closeSheet, closeSignIn, signInAnswered, store } from "../store.js";
 import { html, Icon, Loader, Sheet } from "../ui.js";
-import { RefreshModels } from "../model-refresh.js";
+import { RefreshModelsButton, RefreshModelsStatus } from "../model-refresh.js";
 import { favoriteModels, setModelFavorite } from "../model-favorites.js";
 import { EndpointForm, removeCustomProvider, useCustomProviders } from "./custom-providers.js";
 
@@ -95,10 +95,14 @@ function SubagentModels({ names }) {
     return html`<div class="subagent-models">
         <div class="subagent-models-heading">
             <div class="label">Models</div>
-            <span class="small subagent-models-chosen" title=${summary} aria-live="polite">
-                ${chosen.length} for subagents
+            <span class="subagent-models-tools">
+                <span class="small subagent-models-chosen" title=${summary} aria-live="polite">
+                    ${chosen.length} for subagents
+                </span>
+                <${RefreshModelsButton} />
             </span>
         </div>
+        <${RefreshModelsStatus} />
         <p class="muted small">
             <strong>Checkbox:</strong> models subagents and linked sessions may use. With none checked, they use the
             session's model. <strong>Star:</strong> only a shortcut in your model picker; it changes no permission.
@@ -497,7 +501,7 @@ export function ProvidersSheet() {
             }
             <div class="providers-main">
                 ${auth && !authInList && html`<${AuthDialog} inline=${true} />`}
-                ${owner && html`<${RefreshModels} /><${LimitWait} />`}
+                ${owner && html`<${LimitWait} />`}
                 <label class="search">
                     <${Icon} name="search" size=${16} />
                     <input
