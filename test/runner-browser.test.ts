@@ -3,7 +3,7 @@
 // through the runner, which opens the connections on its computer; here that computer is this machine, so the runner's
 // count of opened connections proves the path, and the test sites count what reaches them.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { type AddressInfo, connect } from "node:net";
 import { join } from "node:path";
@@ -37,6 +37,8 @@ const real = {
 /** The other computer's folders: its project, and its temporary folder (`TMPDIR` of its daemon). */
 const there = join(root, "there");
 const computerTmp = join(root, "computer-tmp");
+/** This server's temporary folder (`TMPDIR` of the test process once the runner started). */
+const serverTmp = join(root, "server-tmp");
 const BIG = 96 * 1024 * 1024;
 const REPORT = Buffer.from(Array.from({ length: 70_000 }, (_, i) => (i * 7) % 251));
 
@@ -122,6 +124,7 @@ before(async () => {
 
     mkdirSync(there, { recursive: true });
     mkdirSync(computerTmp, { recursive: true });
+    mkdirSync(serverTmp, { recursive: true });
 
     site = createServer((request, response) => {
         reached.push(request.url ?? "");
@@ -207,14 +210,22 @@ before(async () => {
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
     await app.runners.link(runnerId).info();
 
-    if (tmp === undefined) {
-        delete process.env.TMPDIR;
-    } else {
-        process.env.TMPDIR = tmp;
-    }
+    // From now, this server's temporary folder is its own, apart from the computer's.
+    process.env.TMPDIR = serverTmp;
+
+    restoreTmp = () => {
+        if (tmp === undefined) {
+            delete process.env.TMPDIR;
+        } else {
+            process.env.TMPDIR = tmp;
+        }
+    };
 });
 
+let restoreTmp = () => {};
+
 after(async () => {
+    restoreTmp();
     await runner?.stop();
     await app?.close();
     server?.closeAllConnections();
@@ -267,15 +278,42 @@ describe("the browser of a session on another computer", () => {
         const folder = join(computerTmp, "pi-pocket-downloads", String(id));
         const file = join(folder, "report.bin");
 
-        assert.ok(done.includes(`Downloaded report.bin (68 KB) to ${file}`), done);
+        assert.ok(done.includes(`Downloaded ${file} (68 KB).`), done);
         assert.deepEqual(readFileSync(file), REPORT);
         assert.deepEqual(incoming(), [], "no server copy stays");
-        assert.deepEqual(files(join(root, "data", "downloads")), []);
+        assert.deepEqual(files(serverTmp), [], "nothing in this server's folder");
 
         // The same name again gets a number.
         const again = await download(id, { action: "navigate", url: `${page()}/report.bin` });
 
-        assert.ok(again.includes(join(folder, "report (2).bin")), again);
+        assert.ok(again.includes(`Downloaded ${join(folder, "report (2).bin")} (68 KB).`), again);
+    });
+
+    it("downloads to the folder the computer's runner settings name", real, async () => {
+        const chosen = join(root, "chosen downloads");
+
+        // The setting reaches the server with the runner's next hello.
+        settings.downloads = chosen;
+
+        try {
+            runner.drop();
+            await until(
+                () => app.runners.link(runnerId).downloads === chosen,
+                "the runner's folder",
+            );
+            const done = await download(id, { action: "navigate", url: `${page()}/report.bin` });
+            const file = join(chosen, String(id), "report.bin");
+
+            assert.ok(done.includes(`Downloaded ${file} (68 KB).`), done);
+            assert.deepEqual(readFileSync(file), REPORT);
+        } finally {
+            delete settings.downloads;
+            runner.drop();
+            await until(
+                () => app.runners.link(runnerId).downloads === undefined && runner.connected,
+                "the default folder again",
+            );
+        }
     });
 
     it("keeps the computer's commands fast while a large download runs", real, async (t) => {
@@ -296,7 +334,7 @@ describe("the browser of a session on another computer", () => {
 
         const done = await browse(id, { action: "wait", download: true, timeoutMs: 60_000 });
 
-        assert.match(done, /Downloaded big\.bin \(96 MB\)/);
+        assert.match(done, /Downloaded \S*big\.bin \(96 MB\)\./);
         t.diagnostic(`commands during the download: ${timings.join(", ")} ms`);
         assert.ok(timings.length >= 2, `commands ran ${timings.length} times during the download`);
         assert.ok(Math.max(...timings) < 2000, `slowest command: ${Math.max(...timings)} ms`);
@@ -355,6 +393,20 @@ describe("the browser of a session on another computer", () => {
 
         assert.match(result, /Through the computer/);
         assert.equal(runner.opened, opened, "the runner opened nothing");
+
+        // Its downloads go to this server's private folder, not to the computer.
+        const done = await download(Number(local), {
+            action: "navigate",
+            url: `127.0.0.1:${sitePort}/report.bin`,
+        });
+        const folder = join(serverTmp, `pi-pocket-downloads-${process.getuid!()}`);
+        const file = join(folder, String(local), "report.bin");
+
+        assert.ok(done.includes(`Downloaded ${file} (68 KB).`), done);
+        assert.deepEqual(readFileSync(file), REPORT);
+        assert.equal(statSync(folder).mode & 0o777, 0o700);
+        assert.equal(runner.opened, opened, "the runner opened nothing");
+        assert.deepEqual(incoming(), []);
     });
 
     it(

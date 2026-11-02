@@ -12,7 +12,7 @@
  *   pi-pocket runner start                  run with the saved link (services and the desktop app run this)
  *   pi-pocket runner link <server> <code>   link this computer, with a code from Menu > Runners
  *   pi-pocket runner settings [name value]  show or change a setting: confirm on|off, http allow|refuse,
- *                                           network allow|refuse
+ *                                           network allow|refuse, downloads <folder>|default
  *   pi-pocket runner status                 show the link and its settings
  *   pi-pocket runner service [remove]       keep it running as a systemd user service (Linux)
  *   pi-pocket runner unlink                 forget the link
@@ -38,7 +38,7 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import { createInterface as createQuestions } from "node:readline/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pocketVersion } from "../server/versions.ts";
 import {
     accent,
@@ -84,6 +84,9 @@ In a terminal, run pi-pocket runner for a menu. For scripts:
                            on your tailnet (default: refuse)
       network allow|refuse Sessions' browsers use this computer's network
                            (default: allow)
+      downloads <folder>|default
+                           Where sessions' browser downloads go, in a folder
+                           per session (default: the temporary folder)
   pi-pocket runner status
     Show the link, its settings, and the service.
   pi-pocket runner service
@@ -192,13 +195,30 @@ function writeLink(file: string, link: Link): void {
     }
 }
 
-/** The settings with their defaults filled in. */
-function settingsOf(link: Link | undefined): Required<RunnerSettings> {
+/** The settings with their defaults filled in; `downloads` undefined is the temporary folder. */
+type FullSettings = Required<Omit<RunnerSettings, "downloads">> & { downloads: string | undefined };
+
+function settingsOf(link: Link | undefined): FullSettings {
     return {
         confirm: link?.settings?.confirm !== false,
         allowHttp: link?.settings?.allowHttp === true,
         network: link?.settings?.network !== false,
+        downloads: link?.settings?.downloads,
     };
+}
+
+/** A downloads folder as the person typed it: `~` is the home folder, a relative one is from here. */
+function downloadsFolder(typed: string): string {
+    const folder = typed.trim();
+
+    return folder === "~" || folder.startsWith("~/")
+        ? join(homedir(), folder.slice(1))
+        : resolve(folder);
+}
+
+/** Where downloads go, as the settings say it. */
+function downloadsLine(settings: FullSettings): string {
+    return settings.downloads ?? "default (the temporary folder)";
 }
 
 /** Change settings in the link file, keeping the rest. */
@@ -354,11 +374,12 @@ async function link(file: string, args: string[]): Promise<void> {
 // ─── Settings ───────────────────────────────────────────────────────────
 
 /** The settings, one per line, as `settings` prints them and the desktop app reads them. */
-function settingsLines(settings: Required<RunnerSettings>): string[] {
+function settingsLines(settings: FullSettings): string[] {
     return [
         `confirm ${settings.confirm ? "on" : "off"}`,
         `http ${settings.allowHttp ? "allow" : "refuse"}`,
         `network ${settings.network ? "allow" : "refuse"}`,
+        `downloads ${settings.downloads ?? "default"}`,
     ];
 }
 
@@ -410,8 +431,21 @@ function settingsCommand(file: string, args: string[]): void {
             return;
         }
 
+        if (name === "downloads" && value !== undefined && value.trim() !== "") {
+            const folder = value === "default" ? undefined : downloadsFolder(value);
+
+            changeSettings(file, { downloads: folder });
+            console.log(
+                folder === undefined
+                    ? "Sessions' browser downloads go to this computer's temporary folder, in pi-pocket-downloads/<session>/."
+                    : `Sessions' browser downloads go to ${join(folder, "<session>")}. A running runner uses it once it reconnects.`,
+            );
+
+            return;
+        }
+
         throw new Problem(
-            "Use: pi-pocket runner settings confirm on|off, http allow|refuse, or network allow|refuse",
+            "Use: pi-pocket runner settings confirm on|off, http allow|refuse, network allow|refuse, or downloads <folder>|default",
         );
     } catch (error) {
         fail((error as Error).message);
@@ -749,6 +783,7 @@ async function status(file: string): Promise<string> {
         `Ask before new sessions: ${settings.confirm ? "on" : "off"}`,
         `Plain HTTP: ${settings.allowHttp ? "allowed to this server" : "only to this computer or your tailnet"}`,
         `Share the network with browsers: ${settings.network ? "on" : "off"}`,
+        `Browser downloads: ${downloadsLine(settings)}`,
         ...(serviceActive() ? [`Service: ${UNIT} (running)`] : []),
     ].join("\n");
 }
@@ -779,7 +814,7 @@ async function linkInteractively(file: string): Promise<Link | undefined> {
     console.log("");
 
     let server = "";
-    let settings: Required<RunnerSettings> = settingsOf(undefined);
+    let settings: FullSettings = settingsOf(undefined);
 
     while (server === "") {
         const given = await ask(
@@ -894,13 +929,17 @@ async function settingsMenu(file: string): Promise<void> {
                         ? "sessions' browsers browse from here"
                         : "sessions' browsers cannot open pages",
                 },
+                {
+                    label: `Browser downloads: ${downloadsLine(settings)}`,
+                    detail: "a folder per session",
+                },
                 { label: "Back", detail: "" },
             ],
             at,
             { clear: true },
         );
 
-        if (picked === undefined || picked === 3) {
+        if (picked === undefined || picked === 4) {
             return;
         }
 
@@ -910,8 +949,16 @@ async function settingsMenu(file: string): Promise<void> {
             changeSettings(file, { confirm: !settings.confirm });
         } else if (picked === 1) {
             changeSettings(file, { allowHttp: !settings.allowHttp });
-        } else {
+        } else if (picked === 2) {
             changeSettings(file, { network: !settings.network });
+        } else {
+            const typed = await ask("Downloads folder (default for the temporary folder)");
+
+            if (typed !== "") {
+                changeSettings(file, {
+                    downloads: typed === "default" ? undefined : downloadsFolder(typed),
+                });
+            }
         }
     }
 }
