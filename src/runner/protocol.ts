@@ -60,7 +60,30 @@ export type Hello = {
     received: number;
     /** The runner's Pi Pocket version, for the computers list. */
     version: string;
+    /**
+     * The runner answers `Confirm`: it decides on its computer whether a new session may start there. Absent (a runner
+     * older than this): the server does not ask, and sessions start as before.
+     */
+    asks?: boolean;
 };
+
+/**
+ * Server to runner, before a session starts on its computer: who wants it and where. The runner asks its person (or
+ * not, as its settings say) and answers with `Confirmed`.
+ */
+export type Confirm = {
+    type: "confirm";
+    id: string;
+    /** A new session, or a fork (a copy of one) that would run here too. */
+    kind: "new" | "fork";
+    /** Who asked, by their name on the server. */
+    person: string;
+    /** The folder on this computer. */
+    folder: string;
+};
+
+/** Runner to server: the answer to `Confirm`; `reason` says why not, in words for the person who asked. */
+export type Confirmed = { type: "confirmed"; id: string; allow: boolean; reason?: string };
 
 /** Server to runner, the answer to `Hello`. */
 export type Welcome = {
@@ -80,7 +103,7 @@ export type Ack = { type: "ack"; received: number };
 /** Either side, before it closes the link on purpose: why. */
 export type Bye = { type: "bye"; reason: string };
 
-export type ControlMessage = Hello | Welcome | Ack | Bye;
+export type ControlMessage = Hello | Welcome | Ack | Bye | Confirm | Confirmed;
 
 /** Parse a text message; undefined for anything that is not a control message. */
 export function parseControl(text: string): ControlMessage | undefined {
@@ -119,6 +142,19 @@ export function parseControl(text: string): ControlMessage | undefined {
             return count("received") ? (message as Ack) : undefined;
         case "bye":
             return typeof message.reason === "string" ? (message as Bye) : undefined;
+        case "confirm":
+            return typeof message.id === "string" &&
+                (message.kind === "new" || message.kind === "fork") &&
+                typeof message.person === "string" &&
+                typeof message.folder === "string"
+                ? (message as Confirm)
+                : undefined;
+        case "confirmed":
+            return typeof message.id === "string" &&
+                typeof message.allow === "boolean" &&
+                (message.reason === undefined || typeof message.reason === "string")
+                ? (message as Confirmed)
+                : undefined;
         default:
             return undefined;
     }

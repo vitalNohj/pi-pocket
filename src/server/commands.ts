@@ -416,6 +416,10 @@ export class Commands {
         }
 
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
+
+        // The computer's person allows it there (its runner asks, unless they turned asking off).
+        await app.runners.link(runner).confirm({ kind: "new", person: user.name, folder: cwd });
+
         const initial = this.#defaultModel();
         const now = Date.now();
         const conversation = await app.harness.createConversation(
@@ -2384,6 +2388,13 @@ export class Commands {
             ...fork.agent,
             ...(place.worktree === undefined ? {} : { cwd: place.cwd }),
         };
+
+        // A fork is a new session there too: the computer's person allows it, as for a new one.
+        if (runner !== undefined) {
+            await app.runners
+                .link(runner)
+                .confirm({ kind: "fork", person: user.name, folder: place.cwd });
+        }
 
         const now = Date.now();
         // A new session rather than a fork gets plan mode and the notes by hand.

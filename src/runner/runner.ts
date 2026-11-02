@@ -12,8 +12,10 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { localDaemon } from "@earendil-works/pi-env";
 import WebSocket from "ws";
+import { checkTransport, refusal, type Transport } from "./transport.ts";
 import {
     CLOSE,
+    type Confirm,
     type ControlMessage,
     FRAME,
     FrameSplitter,
@@ -45,7 +47,36 @@ const PING_MS = 10_000;
 const SILENT_MS = 30_000;
 
 /** What a runner needs to connect: kept in `runner.json` by `pi-pocket runner link`. */
-export type RunnerLinkFile = { server: string; id: string; name: string; key: string };
+export type RunnerLinkFile = {
+    server: string;
+    id: string;
+    name: string;
+    key: string;
+    /** The person's choices for this link (`pi-pocket runner settings`); absent: the defaults. */
+    settings?: RunnerSettings;
+};
+
+/** The runner's settings, kept with its link. */
+export type RunnerSettings = {
+    /** Ask before a new session starts on this computer. Default: true. */
+    confirm?: boolean;
+    /** Use plain HTTP to this server even where it is not this computer or a tailnet device. Default: false. */
+    allowHttp?: boolean;
+};
+
+/** A question the server asked this computer: a session would start here. */
+export type SessionQuestion = {
+    kind: "new" | "fork";
+    person: string;
+    folder: string;
+    server: string;
+    computer: string;
+    /** Aborts when the server stops waiting (the link dropped, or it gave up). */
+    signal: AbortSignal;
+};
+
+/** Whether a new session may start here, and why not, in words for the person who asked. */
+export type SessionAnswer = { allow: boolean; reason?: string };
 
 export type RunnerOptions = {
     link: RunnerLinkFile;
@@ -57,7 +88,19 @@ export type RunnerOptions = {
     log?: (line: string) => void;
     /** Reconnect waits; tests make them short. */
     retryMs?: readonly number[];
+    /** The link's settings now: read again for each connect and each question, so changes need no restart. */
+    settings?: () => RunnerSettings;
+    /**
+     * Ask the person here whether a session may start. Absent: nobody can be asked, so every session is refused
+     * while asking is on.
+     */
+    ask?: (question: SessionQuestion) => Promise<SessionAnswer>;
+    /** Check the server's transport before each connect; tests and HTTPS skip it. Default: `checkTransport`. */
+    transport?: (server: string, allowHttp: boolean) => Promise<Transport>;
 };
+
+/** How long the runner waits for its person; the server waits 10 s longer (`CONFIRM_MS` in `runners.ts`). */
+const ASK_MS = 110_000;
 
 /** Why a runner stopped for good: the server removed it, another one took its place, or the protocols differ. */
 export class RunnerStopped extends Error {}
@@ -192,6 +235,8 @@ export class Runner {
     #graceTimer: NodeJS.Timeout | undefined;
     #ackTimer: NodeJS.Timeout | undefined;
     #retryTimer: NodeJS.Timeout | undefined;
+    /** Why the last connect was refused before it began (`transport.ts`), so it is said once. */
+    #refused: string | undefined;
     #done!: (error?: Error) => void;
     /** Settles when the runner stops: resolves after `stop()`, rejects with `RunnerStopped` when the server ends it. */
     readonly finished: Promise<void>;
@@ -318,7 +363,57 @@ export class Runner {
         void this.#session.daemon.stop().then(() => this.#done(new RunnerStopped(message)));
     }
 
+    /** The link's settings now. */
+    #settings(): RunnerSettings {
+        return this.#options.settings?.() ?? this.#options.link.settings ?? {};
+    }
+
+    /** Check that the server may be reached this way (`transport.ts`), then connect; refused, it stops for good. */
     #connect(): void {
+        if (this.#stopping) {
+            return;
+        }
+
+        const check = this.#options.transport ?? checkTransport;
+
+        void check(this.#options.link.server, this.#settings().allowHttp === true).then(
+            (transport) => {
+                if (this.#stopping) {
+                    return;
+                }
+
+                // Refused: it tries again, since Tailscale may only be starting (at boot, say), and says why once.
+                if (!transport.ok) {
+                    const why = refusal(this.#options.link.server, transport);
+
+                    if (why !== this.#refused) {
+                        this.#refused = why;
+                        this.#log(why);
+                    }
+
+                    const wait = this.#retry[Math.min(this.#attempt, this.#retry.length - 1)]!;
+
+                    this.#attempt++;
+                    this.#retryTimer = setTimeout(() => this.#connect(), wait);
+
+                    return;
+                }
+
+                this.#refused = undefined;
+
+                if (this.#attempt === 0 && transport.why === "allowed") {
+                    this.#log(
+                        `Warning: plain HTTP to ${this.#options.link.server}, as allowed in this runner's settings. Anyone on the network can read this computer's key and its commands.`,
+                    );
+                }
+
+                this.#open();
+            },
+            (error: unknown) => this.#fail(`Could not check the server address: ${String(error)}`),
+        );
+    }
+
+    #open(): void {
         if (this.#stopping) {
             return;
         }
@@ -369,6 +464,8 @@ export class Runner {
                     session: this.#session.id,
                     received: this.#session.inbox.received,
                     version: this.#options.version,
+                    // This runner answers `confirm`: the server asks it before a session starts here.
+                    asks: true,
                 } satisfies ControlMessage),
             );
         });
@@ -535,6 +632,8 @@ export class Runner {
                 session.paused = false;
                 session.daemon.resume();
             }
+        } else if (message?.type === "confirm") {
+            void this.#answer(ws, message);
         } else if (message?.type === "bye") {
             this.#log(`Server message: ${message.reason}`);
         } else {
@@ -542,6 +641,76 @@ export class Runner {
         }
 
         return welcomed;
+    }
+
+    /**
+     * The server wants to start a session here: allow it at once when asking is off, else ask the person (`ask`).
+     * Nobody to ask, no answer in `ASK_MS`, or the link dropping: the session does not start.
+     */
+    async #answer(ws: WebSocket, question: Confirm): Promise<void> {
+        const link = this.#options.link;
+        const what = question.kind === "fork" ? "a copy of a session" : "a session";
+        let answer: SessionAnswer;
+
+        if (this.#settings().confirm === false) {
+            answer = { allow: true };
+            this.#log(`${question.person} started ${what} in ${question.folder} (asking is off).`);
+        } else if (this.#options.ask === undefined) {
+            answer = {
+                allow: false,
+                reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal. Turn off "Ask before new sessions" in its runner settings, or run it in a terminal.`,
+            };
+        } else {
+            const stop = new AbortController();
+            const timer = setTimeout(() => stop.abort(), ASK_MS);
+            const dropped = () => stop.abort();
+
+            ws.once("close", dropped);
+
+            try {
+                answer = await Promise.race([
+                    this.#options.ask({
+                        kind: question.kind,
+                        person: question.person,
+                        folder: question.folder,
+                        server: link.server,
+                        computer: link.name,
+                        signal: stop.signal,
+                    }),
+                    new Promise<SessionAnswer>((resolve) =>
+                        stop.signal.addEventListener("abort", () =>
+                            resolve({
+                                allow: false,
+                                reason: `Nobody answered on ${link.name} in time.`,
+                            }),
+                        ),
+                    ),
+                ]);
+            } catch (error) {
+                answer = { allow: false, reason: `${link.name} could not ask: ${String(error)}` };
+            } finally {
+                clearTimeout(timer);
+                ws.off("close", dropped);
+                stop.abort();
+            }
+
+            this.#log(
+                `${answer.allow ? "Allowed" : "Denied"} ${what} for ${question.person} in ${question.folder}.`,
+            );
+        }
+
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+                JSON.stringify({
+                    type: "confirmed",
+                    id: question.id,
+                    allow: answer.allow,
+                    ...(answer.allow
+                        ? {}
+                        : { reason: answer.reason ?? `${link.name} did not allow the session.` }),
+                } satisfies ControlMessage),
+            );
+        }
     }
 
     #onData(ws: WebSocket, bytes: Buffer): void {
