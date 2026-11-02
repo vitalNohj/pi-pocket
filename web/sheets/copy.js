@@ -6,6 +6,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { chooseFolder, copyDraft, modelOf, updateDraft, useCopyDraft } from "../copy-draft.js";
 import { shortPath } from "../folder-paths.js";
+import { waitOnComputer } from "../runner-wait.js";
 import {
     actions,
     api,
@@ -361,7 +362,7 @@ export function placeOf(draft) {
 let copying = false;
 
 /** Make the copy with `run` and open it. A second tap while the first is on its way does nothing. */
-export function startCopy(run, notice) {
+export function startCopy(run, notice, draft) {
     if (copying) {
         return Promise.resolve();
     }
@@ -369,7 +370,13 @@ export function startCopy(run, notice) {
     copying = true;
 
     return attempt(async () => {
-        const created = await run();
+        const created = await (draft?.runner
+            ? waitOnComputer(draft.runner, draft.cwd, "fork", run)
+            : run(undefined));
+
+        if (!created) {
+            return;
+        }
 
         navigate(created.id);
         notify("info", notice);
@@ -415,8 +422,9 @@ export function ForkSessionSheet({ id }) {
 
         setBusy(true);
         startCopy(
-            () => actions.forkSession(id, placeOf(draft)),
+            (signal) => actions.forkSession(id, placeOf(draft), signal),
             "Opened the fork. The original is unchanged.",
+            draft,
         ).finally(() => setBusy(false));
     };
 

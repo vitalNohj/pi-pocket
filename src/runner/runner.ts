@@ -230,6 +230,8 @@ export class Runner {
     #socket: WebSocket | undefined;
     #session!: Session;
     #stopping = false;
+    /** Questions that the server can withdraw while the person answers. */
+    readonly #questions = new Map<string, AbortController>();
     #attempt = 0;
     #graceMs = 2 * 60 * 1000;
     #graceTimer: NodeJS.Timeout | undefined;
@@ -466,6 +468,7 @@ export class Runner {
                     version: this.#options.version,
                     // This runner answers `confirm`: the server asks it before a session starts here.
                     asks: true,
+                    withdraws: true,
                 } satisfies ControlMessage),
             );
         });
@@ -634,6 +637,8 @@ export class Runner {
             }
         } else if (message?.type === "confirm") {
             void this.#answer(ws, message);
+        } else if (message?.type === "withdraw") {
+            this.#questions.get(message.id)?.abort("Withdrawn by the server.");
         } else if (message?.type === "bye") {
             this.#log(`Server message: ${message.reason}`);
         } else {
@@ -665,6 +670,7 @@ export class Runner {
             const timer = setTimeout(() => stop.abort(), ASK_MS);
             const dropped = () => stop.abort();
 
+            this.#questions.set(question.id, stop);
             ws.once("close", dropped);
 
             try {
@@ -681,7 +687,10 @@ export class Runner {
                         stop.signal.addEventListener("abort", () =>
                             resolve({
                                 allow: false,
-                                reason: `Nobody answered on ${link.name} in time.`,
+                                reason:
+                                    stop.signal.reason === "Withdrawn by the server."
+                                        ? "Withdrawn by the server."
+                                        : `Nobody answered on ${link.name} in time.`,
                             }),
                         ),
                     ),
@@ -691,7 +700,15 @@ export class Runner {
             } finally {
                 clearTimeout(timer);
                 ws.off("close", dropped);
+                this.#questions.delete(question.id);
                 stop.abort();
+            }
+
+            if (stop.signal.reason === "Withdrawn by the server.") {
+                answer = { allow: false, reason: "Withdrawn by the server." };
+                this.#log(`${question.person} cancelled ${what} in ${question.folder}.`);
+
+                return;
             }
 
             this.#log(

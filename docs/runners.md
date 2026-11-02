@@ -55,6 +55,8 @@ By default, the runner asks on the linked computer before a session starts there
 - In the desktop app, a dialog asks.
 - A systemd service cannot ask. With asking on, it refuses new sessions.
 
+While the computer asks, the page shows a waiting dialog with the computer, folder, and time left. A quick answer skips the dialog. **Cancel** stops the request and withdraws the question on a runner that supports cancellation; no session starts. Older runners can keep their question open, but their late answer does not start the cancelled session.
+
 To turn asking off, choose **Settings** in the `pi-pocket runner` menu, run `pi-pocket runner settings confirm off`, or turn off **Ask before new sessions** in the desktop app. Sessions that already run are not asked again.
 
 ## Plain HTTP
