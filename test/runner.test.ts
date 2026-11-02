@@ -2,7 +2,7 @@
 // real WebSocket, the runner, and the real pi-env daemon, all on this machine. Pi Durable's own conformance suite checks
 // that it acts as `NodeExecutionEnv` does; the rest checks linking, keys, and what survives a drop.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,7 +13,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { Runner, RunnerStopped } from "../src/runner/runner.ts";
 import { ConfigStore } from "../src/server/config.ts";
-import { Runners } from "../src/server/runners.ts";
+import { readableEntries, Runners } from "../src/server/runners.ts";
 
 const root = mkdtempSync(join(tmpdir(), "pi-pocket-runner-test-"));
 
@@ -217,6 +217,92 @@ describe("runner link", () => {
             await runner.stop();
             await close(setup);
         }
+    });
+
+    it("a folder lists every entry it can read, without the ones whose lstat fails", async () => {
+        const setup = await serve();
+        const { runner, id } = startRunner(setup, "Monolith");
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+
+            const folder = mkdtempSync(join(root, "home-"));
+
+            mkdirSync(join(folder, "alpha"));
+            mkdirSync(join(folder, "beta"));
+            writeFileSync(join(folder, "notes.txt"), "notes");
+            // A name the daemon cannot lstat: 255 bytes that are not UTF-8 become 765 bytes of U+FFFD, too long for
+            // Linux (ENAMETOOLONG), as `nul` on Windows fails with EISDIR.
+            writeFileSync(
+                Buffer.concat([Buffer.from(`${folder}/`), Buffer.alloc(255, 0xff)]),
+                "unreadable",
+            );
+
+            const listed = await setup.runners.folders(id, folder, false);
+
+            assert.deepEqual(
+                listed.dirs.map((dir) => dir.name),
+                ["alpha", "beta"],
+            );
+
+            const env = setup.runners.env(id, folder);
+            const all = await env.listDir(folder, context);
+
+            assert.ok(all.ok, all.ok ? "" : all.error.message);
+            assert.deepEqual(all.value.map((entry) => entry.name).sort(), [
+                "alpha",
+                "beta",
+                "notes.txt",
+            ]);
+
+            const reader = await env.openDirReader(folder, context);
+
+            assert.ok(reader.ok, reader.ok ? "" : reader.error.message);
+
+            const page = await reader.value.next(10, context);
+
+            await reader.value.close(context);
+            assert.ok(page.ok, page.ok ? "" : page.error.message);
+            assert.equal(page.value.entries.length, 3);
+            assert.equal(page.value.done, true);
+        } finally {
+            await runner.stop();
+            await close(setup);
+        }
+    });
+
+    it("an entry that fails with EISDIR (Windows' `nul`) is left out of its page", () => {
+        const page = {
+            json: {
+                entries: [
+                    { name: "Documents", info: { kind: "directory" } },
+                    {
+                        name: "nul",
+                        error: {
+                            code: "EISDIR",
+                            message:
+                                "EISDIR: illegal operation on a directory, lstat 'C:\\Users\\vital\\nul'",
+                        },
+                    },
+                    { name: "Projects", info: { kind: "directory" } },
+                ],
+                done: true,
+            },
+            payload: new Uint8Array(),
+            session: 1,
+        };
+
+        assert.deepEqual(readableEntries(page).json, {
+            entries: [
+                { name: "Documents", info: { kind: "directory" } },
+                { name: "Projects", info: { kind: "directory" } },
+            ],
+            done: true,
+        });
+
+        const clean = { ...page, json: { entries: [page.json.entries[0]], done: true } };
+
+        assert.equal(readableEntries(clean), clean);
     });
 
     it("a computer that is offline fails fast, and says so", async () => {
