@@ -410,7 +410,7 @@ test(
             "Open in new tab",
             "Copy link",
             "Rename",
-            "Fork",
+            "Fork…",
             "Share",
             "Select",
             "Archive",
