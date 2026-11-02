@@ -24,7 +24,7 @@ const capabilities = new Set(Array.isArray(host?.capabilities) ? host.capabiliti
 /**
  * Whether the host offers this: "menu" (items for the app's menu), "badge" (a count on its icon), "notify" (native
  * notifications, and their clicks), "visibility" (whether its window shows), "pinned" (the pinned sessions, for its
- * tray), "open" (it asks the page to open a session).
+ * tray), "open" (it asks the page to open a session), "newSession" (it asks the page to start a new session).
  */
 export const hostCan = (capability) => capabilities.has(capability);
 
@@ -43,18 +43,30 @@ export function callHost(name, ...args) {
     }
 }
 
-/** Listeners by event type: "visibility" ({ visible }), "open" ({ url }), "approve" ({ id, allow }). */
+/**
+ * Listeners by event type: "visibility" ({ visible }), "open" ({ url }), "approve" ({ id, allow }), "newSession" ({}).
+ */
 const listeners = new Map();
 
-callHost("subscribe", (event) => {
-    for (const listener of listeners.get(event?.type) ?? []) {
-        try {
-            listener(event);
-        } catch (error) {
-            console.error(error);
+/**
+ * The host's events this page's code handles, told to the host as it subscribes: an app sends an event that came after
+ * version 1 began (such as "newSession") only to a page that names it, and does something else for an older page.
+ */
+const EVENTS = ["visibility", "open", "approve", "newSession"];
+
+callHost(
+    "subscribe",
+    (event) => {
+        for (const listener of listeners.get(event?.type) ?? []) {
+            try {
+                listener(event);
+            } catch (error) {
+                console.error(error);
+            }
         }
-    }
-});
+    },
+    EVENTS,
+);
 
 /** Hear one type of the host's events. Returns the way to stop. */
 export function onHost(type, listener) {

@@ -22,7 +22,7 @@ The app's preload script puts one object in the top page of the server's origin,
 window.pocketHost = {
     kind: "pi-pocket-gui", // which app; for logs only
     apiVersion: 1,
-    capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open"],
+    capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open", "newSession"],
 
     menuItems(), // [{ id, label, hint? }]: items for the menu's Desktop group, at its end
     invoke(id), // one of them was chosen; false when it could not be done
@@ -30,7 +30,7 @@ window.pocketHost = {
     notify(message), // a notification for the app to show (below)
     visible(), // whether the app's window shows: false while hidden in a tray or minimized
     setPinned(list), // [{ id, title, state, label, url }]: the pinned sessions, in order
-    subscribe(listener), // the app's events (below)
+    subscribe(listener, events), // the app's events (below), and the ones this page handles
 
     // With the "runner" capability (runners.md): run session tools on the computer that runs the app.
     computerName(), // suggested name for this computer
@@ -51,6 +51,7 @@ window.pocketHost = {
 | `pinned`     | Calls `setPinned(list)` when a pinned session's title or state changes, for a tray menu. `state` is the square's shape, as the session list's `data-state` names it: `waiting`, `limited`, `working`, `failed`, `fresh` (finished, not read), or `seen`. `label` says it in words.    |
 | `runner`     | Offers **Link this computer** in Menu → **Runners** → **Link a computer**. Pi Pocket makes a one-time code and calls `linkRunner()`. The app runs `pi-pocket runner` on this computer while the app is open ([runners.md](runners.md)).                                               |
 | `open`       | Opens what the app asks for (an `open` event), also without `notify`.                                                                                                                                                                                                                 |
+| `newSession` | Opens the **New session** sheet when the app asks for it (a `newSession` event), as Alt+N does.                                                                                                                                                                                       |
 
 A page in an Electron window keeps running at full speed while the window hides in the tray, so `document.visibilityState` stays `visible` there. That is why `visible()` exists: without it, the server would think the person is looking, and hold every notification back.
 
@@ -91,6 +92,9 @@ The app chooses how much of an approval to show and whether to offer **Allow**, 
 - `{ type: "visibility" }`: its window was shown or hidden. The page reads `visible()` again.
 - `{ type: "open", url }`: open this, such as a notification or a tray item that was clicked. Only addresses of the server's own origin open.
 - `{ type: "approve", id, allow }`: the person answered an approval in a notification. The page answers it with its own sign-in.
+- `{ type: "newSession" }`: start a new session, such as from the app's menu (Cmd+N), its dock or tray menu, or a link the system opened. The page opens the **New session** sheet, as Alt+N does. It does nothing while signed out, or for a person who may not start sessions (a viewer, or a guest limited to some sessions).
+
+`subscribe`'s second argument, `events`, lists the event types this page handles, such as `["visibility", "open", "approve", "newSession"]`. Version 1 began without it, so an app must not count on it: a page that leaves it out handles `visibility`, `open`, and `approve` only. An event added to version 1 later, such as `newSession`, goes only to a page that names it. For any other page the app does what it can without it: for `newSession`, it shows its window.
 
 ## The window's buttons
 
