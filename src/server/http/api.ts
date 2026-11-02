@@ -620,15 +620,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
         if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
             requireOwner(user);
 
-            return json(
-                response,
-                200,
-                await app.runners.folders(
+            return json(response, 200, {
+                ...(await app.runners.folders(
                     second,
                     url.searchParams.get("path") ?? "~",
                     url.searchParams.get("hidden") === "1",
-                ),
-            );
+                )),
+                // The folders of this person's newest sessions on that computer.
+                recent: app.recentFolders(user, second),
+            });
         }
 
         if (first === "sessions" && second === undefined && method === "POST") {
@@ -730,12 +730,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             dirs.sort((a, b) => a.name.localeCompare(b.name));
-            // A workspace URI is not a folder the picker can open: its provider's module starts sessions there.
-            const local = app
-                .sessions(user)
-                .map((session) => session.cwd)
-                .filter((cwd) => app.workspaceScheme(cwd) === undefined);
-            const recent = [...new Set(local)].slice(0, 8);
+            // The folders of this person's newest sessions here: another computer's folders are not on this one.
+            const recent = app.recentFolders(user, undefined);
 
             return json(response, 200, {
                 path,
