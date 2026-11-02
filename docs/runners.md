@@ -7,12 +7,12 @@ As the server owner, you can link a computer in 2 ways:
 
     ```sh
     npm install -g pi-pocket@latest
-    pi-pocket runner serve
+    pi-pocket runner
     ```
 
     In Pi Pocket, go to Menu → **Runners** → **Link a computer**. Enter a name, then choose **Get a link code** in a browser, or **Link another computer** in the desktop app. The screen shows the commands above and a code. The code works once and expires after 10 minutes.
 
-    In the terminal, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. On Linux with systemd, it offers to run as a service. Otherwise, leave the terminal open. Press Ctrl+C to stop the runner and its commands.
+    `pi-pocket runner` opens a menu: use the arrow keys and Enter. Choose **Link this computer**, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. Then choose **Start**, and leave the terminal open. On Linux with systemd, **Run as a service** keeps it running after the terminal closes. Press Ctrl+C to stop the runner and its commands.
 
 Only the server owner can link computers. Only link a server you trust: its session commands run as your user account on the linked computer.
 
@@ -24,15 +24,16 @@ Run these commands on the linked computer:
 
 | Command                                 | What it does                                                                                                    |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `pi-pocket runner serve`                | Guides you through setup. If a link is saved, shows it and asks whether to use it. Then starts the runner.      |
+| `pi-pocket runner`                      | In a terminal, opens a menu: link, start, settings, service, unlink, and help. Without a terminal, it starts.   |
+| `pi-pocket runner start`                | Runs with the saved link, without questions. The service and the desktop app use this command.                  |
 | `pi-pocket runner link <server> <code>` | Saves a link without questions. Use the server address and a one-time code from **Runners**.                    |
-| `pi-pocket runner`                      | Runs with the saved link, without questions. The service and the desktop app use this command.                  |
+| `pi-pocket runner settings`             | Shows the settings. `settings confirm on\|off` and `settings http allow\|refuse` change them.                   |
 | `pi-pocket runner status`               | Shows the saved link and whether the systemd service is running. It does not check the connection.              |
 | `pi-pocket runner unlink`               | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key. |
 | `pi-pocket runner service`              | On Linux with systemd, starts a user service that keeps the runner running after you close the terminal.        |
 | `pi-pocket runner service remove`       | Stops and removes the service. Keeps the saved link.                                                            |
 
-For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner` or `pi-pocket runner service`. Plain `pi-pocket runner` never asks questions. Without a terminal, `serve` also uses the saved link without questions.
+For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner start` or `pi-pocket runner service`.
 
 The link file is `~/.pi-pocket/runner.json`. It contains this computer's key, and only your user account can read it. Do not share it. Use `--config FILE` or `PI_POCKET_RUNNER_CONFIG` to choose another file; `--config` takes priority. `PI_POCKET_RUNNER_DAEMON` selects a pi-env daemon instead of the packaged one.
 
@@ -42,9 +43,28 @@ The systemd user service starts with your user session. To keep it running while
 loginctl enable-linger $USER
 ```
 
-Run `pi-pocket runner serve` again to use or replace a saved link. If the service is already running, `serve` shows how to view its logs and stop it instead of starting a second runner. To delete the link as well as the service, run `pi-pocket runner service remove`, then `pi-pocket runner unlink`. Deleting the link file alone does not stop a runner that is already running.
+Run `pi-pocket runner` again to start, change, or replace a saved link. If the service is already running, the menu offers to stop it instead of starting a second runner. To delete the link as well as the service, run `pi-pocket runner service remove`, then `pi-pocket runner unlink`. Deleting the link file alone does not stop a runner that is already running.
 
 If your server uses a build that is not on npm, set `PI_POCKET_RUNNER_PACKAGE` on the server. For example, use the URL of a fork's package tarball. This changes the install command shown in **Runners**.
+
+## Asking before a session starts
+
+By default, the runner asks on the linked computer before a session starts there, including forks. It shows who asks, the server, and the folder. **Deny** is the default answer. If nobody answers within 2 minutes, the session does not start.
+
+- In a terminal, the runner asks with a menu and a bell.
+- In the desktop app, a dialog asks.
+- A systemd service cannot ask. With asking on, it refuses new sessions.
+
+To turn asking off, choose **Settings** in the `pi-pocket runner` menu, run `pi-pocket runner settings confirm off`, or turn off **Ask before new sessions** in the desktop app. Sessions that already run are not asked again.
+
+## Plain HTTP
+
+The runner sends this computer's key and every command to the server, so it uses HTTPS. It allows plain HTTP only:
+
+- To this computer (`localhost`, `127.x`).
+- To a device on your tailnet. The runner asks Tailscale itself (`tailscale whois`), so an address that only looks like a Tailscale address is not enough. Tailscale encrypts the traffic.
+
+To link a server on another plain HTTP address, choose **Allow plain HTTP** when the runner asks, or run `pi-pocket runner settings http allow`. Do this only on a network you trust.
 
 ## What works in a session
 

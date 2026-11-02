@@ -34,6 +34,8 @@ import {
     parseControl,
     readFrame,
     frame,
+    type Confirm,
+    type Confirmed,
     type Hello,
 } from "../runner/protocol.ts";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
@@ -80,6 +82,12 @@ const ACK_MS = 1000;
 /** WebSocket pings: one every PING_MS; a link that answers none for SILENT_MS is closed. */
 const PING_MS = 10_000;
 const SILENT_MS = 30_000;
+
+/**
+ * How long a session waits for its computer to allow it. The runner gives up 10 s sooner, so its answer (or its
+ * "nobody answered") comes back before this.
+ */
+const CONFIRM_MS = 120_000;
 
 /** How long a runner has to say hello after it connects. */
 const HELLO_MS = 10_000;
@@ -138,6 +146,10 @@ export class RunnerLink {
     #nextId = 1;
     #ackTimer: NodeJS.Timeout | undefined;
     #closed = false;
+    /** Whether its runner answers `confirm` (it said so in `hello`): older runners do not. */
+    #asks = false;
+    /** Questions sent to its runner, waiting for `confirmed`. */
+    readonly #questions = new Map<string, (answer: Confirmed) => void>();
 
     constructor(id: string, runners: Runners) {
         this.id = id;
@@ -312,6 +324,7 @@ export class RunnerLink {
         }
 
         this.#socket = socket;
+        this.#asks = hello.asks === true;
 
         const current = this.#session;
         const resent =
@@ -434,6 +447,8 @@ export class RunnerLink {
             if (!session.outbox.acknowledge(message.received)) {
                 this.#drop(1002, "Acknowledged bytes it was never sent");
             }
+        } else if (message?.type === "confirmed") {
+            this.#questions.get(message.id)?.(message);
         } else if (message?.type === "bye") {
             this.#runners.log(`${this.name} left: ${message.reason}`);
             this.#end(session, lost(`${this.name}: ${message.reason}`));
@@ -532,6 +547,46 @@ export class RunnerLink {
 
     #control(message: ControlMessage): void {
         this.#socket?.send(JSON.stringify(message));
+    }
+
+    /**
+     * Ask the computer whether a session may start there: its runner asks its person, or answers at once as its
+     * settings say. Throws 403 with the computer's reason when it says no, and 409 when it is offline or does not
+     * answer in time (the person was away). A runner older than asking is not asked.
+     */
+    async confirm(question: Omit<Confirm, "type" | "id">): Promise<void> {
+        if (this.#socket === undefined) {
+            throw new HttpError(
+                409,
+                `${this.name} is offline. Start Pi Pocket's runner there, then try again.`,
+            );
+        }
+
+        if (!this.#asks) {
+            return;
+        }
+
+        const id = randomUUID();
+        const answer = await new Promise<Confirmed | undefined>((resolve) => {
+            const timer = setTimeout(() => resolve(undefined), CONFIRM_MS);
+
+            this.#questions.set(id, (got) => {
+                clearTimeout(timer);
+                resolve(got);
+            });
+            this.#control({ type: "confirm", id, ...question });
+        }).finally(() => this.#questions.delete(id));
+
+        if (answer === undefined) {
+            throw new HttpError(
+                409,
+                `Nobody answered on ${this.name} in ${Math.round(CONFIRM_MS / 1000)} seconds. Allow the session there, or turn off "Ask before new sessions" in its runner settings.`,
+            );
+        }
+
+        if (!answer.allow) {
+            throw new HttpError(403, answer.reason ?? `${this.name} did not allow the session.`);
+        }
     }
 
     /** End a daemon session: what it was doing fails with `error`. */
