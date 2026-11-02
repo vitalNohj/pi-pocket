@@ -288,8 +288,11 @@ async function redeem(server: string, code: string, settings: RunnerSettings): P
             // As it is.
         }
 
+        // The server's message says what to do (a new code in Menu → Runners); say it only when it does not.
         throw new Problem(
-            `${server} did not accept the code: ${message || response.statusText}\nMake a new code in Menu > Runners > Link a computer, then try again.`,
+            message
+                ? `${server} did not accept the code: ${message}`
+                : `${server} did not accept the code (${response.statusText}). Get a new one in Menu > Runners > Link a computer.`,
         );
     }
 
