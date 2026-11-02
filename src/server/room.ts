@@ -149,6 +149,8 @@ export interface Client {
      * (`desktop-notify`).
      */
     readonly desktop?: boolean;
+    /** The tab's browser runs on the server's machine (`local-browser.ts`): its file manager is one the person sees. */
+    readonly local?: boolean;
     /** Entries this client has, so updates carry only new ones. */
     readonly sentEntries: Set<number>;
     orderKey: string;
