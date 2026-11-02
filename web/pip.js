@@ -1,7 +1,8 @@
-// PiP, "Pi in Pocket": the owner's assistant, in a small window over whatever is open. It stays out of the way until
-// called: Alt+A, the rail's PiP button, the places, the launcher, or `/pip`; and a small mark in the corner shows only
-// while PiP works, or has something new. The panel watches PiP's conversation through a view of its own (`pipview`
-// events), so the session behind it stays as it was.
+// PiP, "Pi in Pocket": the owner's assistant, in a small window over whatever is open, or (Appearance → PiP → Board)
+// in the conversation's place, as Running now is. It stays out of the way until called: Alt+A, the rail's PiP button,
+// the places, the launcher, or `/pip`; and a small mark in the corner shows only while PiP works, or has something new.
+// The panel watches PiP's conversation through a view of its own (`pipview` events), so the session behind it stays as
+// it was.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { followUpText } from "./artifact-bridge.js";
 import { useBack } from "./back.js";
@@ -11,6 +12,7 @@ import { createPipDraft } from "./pip-attachments.js";
 import { usePipResize } from "./pip-window.js";
 import { api, attempt, isRow, navigate, notify, openSheet, store, uid } from "./store.js";
 import { spendTap } from "./taps.js";
+import { prefs } from "./theme.js";
 import { memoryAvailable, useMemory } from "./sheets/memory.js";
 import { itemsOf, says, summarize } from "./turns.js";
 import {
@@ -143,18 +145,74 @@ function tellServer(on) {
     return asked;
 }
 
+/** Where PiP opens, as Appearance says: `"floating"` (the corner, or a phone's sheet), or `"board"`. */
+export const pipPlace = () => (prefs()?.pip === "board" ? "board" : "floating");
+
+/** What the store needs for PiP in the conversation's place: what is over or in that place goes, as for Running now. */
+const BOARD = {
+    board: "pip",
+    boardAgents: null,
+    drawer: false,
+    page: null,
+    sheet: null,
+    launcher: false,
+};
+
+// The panel kept open across a reload, as a board: back in the conversation's place.
+if (store.state.pipOpen && pipPlace() === "board") {
+    store.set({ board: "pip", boardAgents: null });
+}
+
+/** The place the open panel is in, so a change of the setting moves it. */
+let place = pipPlace();
+
 // A reconnect (or the first connection, with the panel kept open across a reload) gets the panel's view again; PiP
-// turned off in Extensions closes the panel.
+// turned off in Extensions closes the panel. As a board, PiP is the conversation's place: another board, a page, or a
+// session taking that place closes it; and the setting changed while it is open moves it.
 store.subscribe((state) => {
     syncDraftScope(state);
 
+    const now = pipPlace();
+    const moved = now !== place;
+
+    place = now;
+
     if (!state.pipOpen) {
+        // Never a board of PiP's without the panel open.
+        if (state.board === "pip") {
+            store.set({ board: false, boardAgents: null });
+        }
+
         return;
     }
 
     if (state.server && !pipAvailable()) {
         closePip();
-    } else if (state.streamId && state.streamId !== toldConnection) {
+
+        return;
+    }
+
+    if (moved) {
+        // To the board: what was in the conversation's place gives it up; the sheet that changed the setting stays.
+        // To the corner: the conversation, or the home screen, comes back under it.
+        store.set(
+            now === "board"
+                ? { board: "pip", boardAgents: null, page: null, drawer: false }
+                : state.board === "pip"
+                  ? { board: false, boardAgents: null }
+                  : {},
+        );
+
+        return;
+    }
+
+    if (now === "board" && state.board !== "pip") {
+        closePip();
+
+        return;
+    }
+
+    if (state.streamId && state.streamId !== toldConnection) {
         tellServer(true);
     }
 });
@@ -205,18 +263,29 @@ export function openPip(text) {
     }
 
     sessionStorage.setItem(OPEN_KEY, "1");
-    // The subscriber above tells the server, from inside this `set`: once, not twice.
-    store.set({ pipOpen: true, launcher: false, drawer: false });
+    // The subscriber above tells the server, from inside this `set`: once, not twice. As a board, PiP counts as open
+    // too: the server sends its view only while it is.
+    store.set(
+        pipPlace() === "board"
+            ? { pipOpen: true, ...BOARD }
+            : { pipOpen: true, launcher: false, drawer: false },
+    );
 }
 
 export function closePip() {
+    const board = store.state.board === "pip" ? { board: false, boardAgents: null } : {};
+
     if (!store.state.pipOpen) {
+        if (board.board === false) {
+            store.set(board);
+        }
+
         return;
     }
 
     sessionStorage.removeItem(OPEN_KEY);
     markSeen();
-    store.set({ pipOpen: false });
+    store.set({ pipOpen: false, ...board });
     tellServer(false);
 }
 
@@ -903,7 +972,11 @@ const pendingWhen = (item, busy) =>
 /** Who sent a message, as the server writes it at the start when several people use Pi (`FROM_PREFIX`). */
 const FROM = /^\[from: [^\]\n]{1,60}\] /;
 
-function PipPanel({ leaving, scrim }) {
+/**
+ * PiP's panel: a window in the corner (a sheet from the bottom on a phone), or `docked` in the conversation's place, as
+ * Running now is (Appearance → PiP → Board), with no size of its own to drag, no scrim, and no drag down to close.
+ */
+export function PipPanel({ leaving = false, scrim = null, docked = false }) {
     const { pip, pipView: view, me } = store.state;
     const ref = useRef(null);
     const body = useRef(null);
@@ -937,8 +1010,16 @@ function PipPanel({ leaving, scrim }) {
     // Where the focus was before the panel: read as it first renders, before its box takes the focus.
     const [before] = useState(() => document.activeElement);
 
-    usePipResize(ref, me?.id);
-    useDragToClose(ref, { dir: "down", onClose: closePip, enabled: NARROW.matches, scrim });
+    // Docked, no size is kept for it: its account is left out, so the hook does nothing.
+    usePipResize(ref, docked ? undefined : me?.id);
+    useDragToClose(ref, {
+        dir: "down",
+        onClose: closePip,
+        enabled: NARROW.matches && !docked,
+        scrim,
+    });
+    // Back closes it as it closes a board, back to what was in the conversation's place.
+    useBack(docked, closePip);
     // Focus goes back where it was when the panel closes.
     useEffect(() => {
         const panel = ref.current;
@@ -977,26 +1058,30 @@ function PipPanel({ leaving, scrim }) {
         event.preventDefault();
         navigate(session);
 
-        // On a phone the session is behind the panel: it steps aside.
-        if (NARROW.matches) {
+        // On a phone the session is behind the panel, and as a board it takes the session's place: it steps aside.
+        if (NARROW.matches || docked) {
             closePip();
         }
     };
 
     return html`<section
-        class=${`pip-panel ${leaving ? "leaving" : ""}`}
+        class=${`pip-panel ${docked ? "docked" : ""} ${leaving ? "leaving" : ""}`}
         data-part="pip"
+        data-place=${docked ? "board" : "floating"}
         data-state=${leaving ? "closing" : undefined}
         ref=${ref}
-        role="dialog"
-        aria-modal=${NARROW.matches ? "true" : undefined}
+        role=${docked ? "region" : "dialog"}
+        aria-modal=${NARROW.matches && !docked ? "true" : undefined}
         aria-label="PiP, your assistant"
     >
-        <div class="pip-resize pip-resize-left" data-pip-resize="left" aria-hidden="true"></div>
-        <div class="pip-resize pip-resize-top" data-pip-resize="top" aria-hidden="true"></div>
-        <div class="pip-resize pip-resize-corner" data-pip-resize="corner" aria-hidden="true"></div>
+        ${
+            !docked &&
+            html`<div class="pip-resize pip-resize-left" data-pip-resize="left" aria-hidden="true"></div>
+                <div class="pip-resize pip-resize-top" data-pip-resize="top" aria-hidden="true"></div>
+                <div class="pip-resize pip-resize-corner" data-pip-resize="corner" aria-hidden="true"></div>`
+        }
         <header class="pip-head">
-            <div class="grip"></div>
+            ${!docked && html`<div class="grip"></div>`}
             <span class=${`pip-mark ${busy ? "working" : ""}`} aria-hidden="true">
                 <${Icon} name="pip" size=${18} />
             </span>
@@ -1172,9 +1257,13 @@ function PipBubble() {
     </button>`;
 }
 
-/** PiP's panel while it is open (kept a moment after, to animate out), or its mark while it is not. */
+/**
+ * PiP's floating panel while it is open (kept a moment after, to animate out), or its mark while it is not. Open as a
+ * board, the panel is in the conversation's place (`app.js`), and here there is neither.
+ */
 export function PipHost() {
-    const open = store.state.pipOpen && pipAvailable();
+    const docked = store.state.board === "pip";
+    const open = store.state.pipOpen && pipAvailable() && !docked;
     const [kept, leaving] = usePresence(open || null, 180);
     // What a drag on the sheet dims as it goes: the scrim, not the app behind it.
     const scrim = useRef(null);
@@ -1182,7 +1271,8 @@ export function PipHost() {
     // Back closes it, as it closes a sheet.
     useBack(Boolean(open), closePip);
 
-    if (!pipAvailable()) {
+    // Never in both places: moved to the board, the window goes at once.
+    if (!pipAvailable() || docked) {
         return null;
     }
 

@@ -204,7 +204,7 @@ Each is a `data-part` attribute. Some elements have two (`data-part="composer-bu
 | `peeks`, `peek-tile` | The peek tiles' column or strip, and each tile                            |
 | `files-panel`        | The Files tile                                                            |
 | `browser-panel`      | The Browser panel                                                         |
-| `pip`                | PiP's panel                                                               |
+| `pip`                | PiP's panel, with `data-place` `floating` or `board` (since 0.28.0)       |
 | `subagents-board`    | The subagents board                                                       |
 | `running-board`      | The Running now board                                                     |
 | `running-timeline`   | Its Coming up timeline                                                    |
