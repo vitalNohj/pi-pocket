@@ -414,13 +414,10 @@ function memoryStore() {
     };
 }
 
-test("keep warm: every 75% of the lifetime, the owner's minutes win, 0 or no known lifetime is never", () => {
-    assert.equal(idleEveryMs(3_600_000, undefined, 75), 2_700_000);
-    assert.equal(idleEveryMs(3_600_000, 40, 75), 2_400_000);
-    assert.equal(idleEveryMs(3_600_000, 0, 75), undefined);
-    assert.equal(idleEveryMs(undefined, undefined, 75), undefined);
-    assert.equal(idleEveryMs(undefined, 20, 75), 1_200_000);
-    assert.equal(idleEveryMs(20_000, undefined, 100), 10_000, "10 seconds before the end at least");
+test("keep warm: every 75% of the lifetime; no known lifetime is never", () => {
+    assert.equal(idleEveryMs(3_600_000, 75), 2_700_000);
+    assert.equal(idleEveryMs(undefined, 75), undefined);
+    assert.equal(idleEveryMs(20_000, 100), 10_000, "10 seconds before the end at least");
 });
 
 test("keep warm: off by default, a finished run keeps nothing", async () => {
@@ -676,7 +673,7 @@ test("keep warm: Auto with no published prices stops at the refresh cap; the cap
     assert.equal(!status.warm && status.stopped, "the refresh cap was reached");
 });
 
-test("keep warm: the owner's lifetime and minutes for a model win over Pi's", async () => {
+test("keep warm: the owner's lifetime for a model wins over Pi's", async () => {
     const r = rig(false, {
         policy: POLICY,
         facts: { lifetimeMs: 3_600_000 },
@@ -684,12 +681,4 @@ test("keep warm: the owner's lifetime and minutes for a model win over Pi's", as
 
     await idleRun(r);
     assert.equal((r.timers[0]?.at ?? 0) - r.now(), 2_700_000, "75% of the owner's hour");
-
-    const minutes = rig(false, {
-        policy: POLICY,
-        facts: { minutes: 10, lifetimeMs: 3_600_000 },
-    });
-
-    await idleRun(minutes);
-    assert.equal((minutes.timers[0]?.at ?? 0) - minutes.now(), 600_000);
 });

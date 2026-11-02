@@ -126,8 +126,6 @@ export type KeepWarmTime = 0 | "auto" | number;
 
 /** The owner's values for one model, over what Pi knows of it. Each one left out: Pi's, or none. */
 export type KeepWarmModel = {
-    /** Minutes between refreshes; 0: never keep it warm. Absent: a share of its cache lifetime. */
-    minutes?: number;
     /** How long its prompt cache lives, in minutes. */
     lifetime?: number;
 };
@@ -176,10 +174,8 @@ export function keepWarmModelFrom(raw: unknown): KeepWarmModel | undefined {
     }
 
     const value = raw as Record<string, unknown>;
-    const minutes = finite(value.minutes, 0, 24 * 60);
     const lifetime = finite(value.lifetime, 1, 7 * 24 * 60);
     const model: KeepWarmModel = {
-        ...(minutes === undefined ? {} : { minutes: Math.round(minutes) }),
         ...(lifetime === undefined ? {} : { lifetime: Math.round(lifetime) }),
     };
 
@@ -196,17 +192,6 @@ export function keepWarmFrom(raw: unknown): KeepWarmSettings {
             const model = spec.indexOf("/") > 0 ? keepWarmModelFrom(each) : undefined;
 
             if (model !== undefined) {
-                models[spec] = model;
-            }
-        }
-    }
-
-    // Before 0.28 (not released): minutes by model alone, and null for no time limit.
-    if (typeof value.minutes === "object" && value.minutes !== null) {
-        for (const [spec, each] of Object.entries(value.minutes)) {
-            const model = spec.indexOf("/") > 0 ? keepWarmModelFrom({ minutes: each }) : undefined;
-
-            if (model !== undefined && models[spec] === undefined) {
                 models[spec] = model;
             }
         }

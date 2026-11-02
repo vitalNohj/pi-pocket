@@ -18743,54 +18743,33 @@ pre.gallery-code {
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr));
 }
 
-/* A model: its name and what keep warm does with it, then its four values side by side. */
+/* A model: its name, its cache cost, when its cache expires, and what keep warm does with it. */
 .keep-warm-model {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 8px 12px 10px;
+    gap: 4px;
+    padding: 10px 12px;
     border-top: 1px solid var(--hair);
 }
 
-.keep-warm-cells {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
-}
-
-.keep-warm-cell {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-}
-
-.keep-warm-cell .keep-warm-input {
-    display: flex;
-    gap: 0.2rem;
-    min-width: 0;
-}
-
-.keep-warm-cell .keep-warm-number {
-    min-width: 0;
-    flex: 1;
-}
-
-.keep-warm-model.never .keep-warm-model-name > span:first-child {
-    color: var(--muted);
-    text-decoration: line-through;
-}
-
 .keep-warm-model-name {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-
-.keep-warm-model-name > span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-weight: 500;
+}
+
+.keep-warm-model-row {
+    display: grid;
+    grid-template-columns: 8.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+}
+
+.keep-warm-model-row .keep-warm-input {
+    flex-wrap: wrap;
+    white-space: normal;
 }
 
 @media (min-width: 1000px) {

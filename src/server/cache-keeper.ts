@@ -15,7 +15,7 @@
  * on a person (an approval).
  *
  * **Keep warm** (idle), off until the owner turns it on (`idlePolicy`): after a run ends, it refreshes the cache of the
- * run's last request every `everyMs` (a share of the model's cache lifetime, or the owner's minutes for that model), for
+ * run's last request every `everyMs` (a share of the model's cache lifetime), for
  * as long as the owner's time limit, or with Auto until the refreshes have cost as much as one more cache write
  * (`breakEvenRefreshes`), within a cost and a refresh cap for each session. A new run (`runStarted`), a model change,
  * a compaction, New context, archiving (`forget`), the setting turned off (`reconsider`), or two failed refreshes in a
@@ -196,18 +196,10 @@ const IDLE_DEADLINE_MS = 5 * 60_000;
 const IDLE_RETRY_MS = 30_000;
 
 /**
- * How often an idle session is refreshed: the owner's minutes for this model (0: never), else `share` percent of its
- * known cache lifetime, and at least 10 seconds before it ends. Undefined: it is not kept warm.
+ * How often an idle session is refreshed: `share` percent of the model's cache lifetime, and at least 10 seconds before
+ * it ends. Undefined: the lifetime is not known, so it is not kept warm.
  */
-export function idleEveryMs(
-    ttlMs: number | undefined,
-    minutes: number | undefined,
-    share: number,
-): number | undefined {
-    if (minutes !== undefined) {
-        return minutes > 0 ? Math.floor(minutes * 60_000) : undefined;
-    }
-
+export function idleEveryMs(ttlMs: number | undefined, share: number): number | undefined {
     if (ttlMs === undefined) {
         return undefined;
     }
@@ -229,9 +221,7 @@ export function breakEvenRefreshes(prices: { read: number; write: number }): num
 
 /** What is known of one model for keep warm: the owner's values over Pi's. */
 export type ModelFacts = {
-    /** The owner's minutes between refreshes; 0: never. */
-    minutes?: number;
-    /** How long the cache lives, when the owner said; else the model's `promptCache` counts. */
+    /** How long the cache lives, as the owner or the maker's docs say; else the model's `promptCache` counts. */
     lifetimeMs?: number;
     /** Pi's published prices per million tokens to read and write the cache, for where Auto stops. Undefined: not published. */
     prices?: { read: number; write: number };
@@ -436,7 +426,7 @@ export type KeeperDeps = {
     disabled?: () => boolean;
     /** Whether, and how, a conversation is kept warm once its run ends; undefined: it is not. */
     idlePolicy?: (conversationId: number) => IdlePolicy | undefined;
-    /** What the owner and Pi know of a model (`provider/modelId`): its cache lifetime, prices, and minutes. */
+    /** What is known of a model (`provider/modelId`): its cache lifetime and published cache prices. */
     modelFacts?: (spec: string) => ModelFacts;
     /** A model by provider and id, to warm a saved entry after a restart. */
     modelOf?: (provider: string, modelId: string) => Model<Api> | undefined;
@@ -585,11 +575,8 @@ export class CacheKeeper {
     ): AssistantMessageEventStream {
         const key = options?.sessionId;
         const facts = this.#deps.modelFacts?.(specOf(model)) ?? {};
-        // The owner may know a lifetime or an interval for a model whose `promptCache` says nothing.
-        const known =
-            ttlMsOf(model, options) !== undefined ||
-            facts.lifetimeMs !== undefined ||
-            (facts.minutes ?? 0) > 0;
+        // The owner or the maker's docs may know a lifetime for a model whose `promptCache` says nothing.
+        const known = ttlMsOf(model, options) !== undefined || facts.lifetimeMs !== undefined;
 
         // Uncached calls (a compaction's, a model with no known lifetime) leave an existing entry alone.
         if (key === undefined || retentionOf(options) === "none" || !known) {
@@ -865,14 +852,13 @@ export class CacheKeeper {
 
         const facts = this.#deps.modelFacts?.(specOf(entry.model)) ?? {};
         const ttlMs = facts.lifetimeMs ?? entry.ttlMs;
-        const everyMs = idleEveryMs(ttlMs, facts.minutes, policy.share);
+        const everyMs = idleEveryMs(ttlMs, policy.share);
 
-        if (everyMs === undefined) {
+        if (ttlMs === undefined || everyMs === undefined) {
             return undefined;
         }
 
-        // A model with no known lifetime is assumed to keep its cache a third longer than the owner's interval.
-        const lifeMs = ttlMs ?? Math.floor((everyMs * 4) / 3);
+        const lifeMs = ttlMs;
         const base = { everyMs, lifeMs, since, maxCost: policy.maxCost };
 
         if (policy.hours !== "auto") {

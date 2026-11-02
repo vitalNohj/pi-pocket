@@ -28,11 +28,20 @@ import { HttpError } from "./errors.ts";
 /** A session's choice: the owner's default, or a time of its own (0: off, "auto", or hours). */
 export type KeepWarmChoice = "default" | KeepWarmTime;
 
-/** What Pi knows of a model for keep warm: its cache lifetime in minutes, and where Auto stops, in refreshes. */
-type PiFacts = { lifetime?: number; breakEven?: number };
+/**
+ * What is known of a model for the settings window: its cache lifetime in minutes from Pi or the maker's docs (the
+ * owner's own replaces it), its cache read price per million tokens, and where Auto stops, in refreshes.
+ */
+type Known = { lifetime?: number; read?: number; breakEven?: number };
 
-/** What the settings window lists for one model: Pi's facts, which the owner's own replace field by field. */
-type ModelRow = { spec: string; name: string; pi: PiFacts };
+/** What the settings window lists for one model. */
+type ModelRow = { spec: string; name: string; known: Known };
+
+/**
+ * Cache lifetimes in minutes that makers publish and Pi's list leaves out, by bare model id, as written in their docs
+ * (2026-11-02): OpenAI's default tier keeps a prompt at least 30 minutes. xAI publishes none for Grok.
+ */
+const PUBLISHED_LIFETIMES: readonly [RegExp, number][] = [[/^gpt-/, 30]];
 
 /** The cache tier requests use: Pi's `PI_CACHE_RETENTION`. */
 const tier = (): "short" | "long" => (process.env.PI_CACHE_RETENTION === "long" ? "long" : "short");
@@ -47,13 +56,20 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The fields of a model the owner may set; null takes one off. */
-const MODEL_FIELDS = ["minutes", "lifetime"] as const;
+const MODEL_FIELDS = ["lifetime"] as const;
 
 /** Providers that make the models they list: their published prices win over a reseller's or a cloud's. */
 const MAKERS = new Set(["anthropic", "openai", "xai", "google", "mistral", "deepseek"]);
 
 /** The last part of a model id, which a reseller's id (`cc/claude-opus-5-5`) shares with the maker's. */
 const bareId = (id: string) => id.slice(id.lastIndexOf("/") + 1).toLowerCase();
+
+/** A cache lifetime in minutes a maker publishes for this model, when Pi's list has none. */
+function publishedLifetime(id: string): number | undefined {
+    const bare = bareId(id);
+
+    return PUBLISHED_LIFETIMES.find(([pattern]) => pattern.test(bare))?.[1];
+}
 
 /**
  * A model's published cache prices per million tokens, for Auto's stop only: the read, and what a miss costs (the
@@ -114,9 +130,9 @@ export class KeepWarm {
     }
 
     /**
-     * What is known of a model (`provider/modelId`): the owner's minutes and lifetime, and Pi's published cache prices,
-     * which only decide where Auto stops (a model at $0, such as a subscription, takes the maker's for the same id).
-     * The keeper reads Pi's lifetime from the model itself, for the tier in use.
+     * What is known of a model (`provider/modelId`): its cache lifetime (the owner's, else one a maker publishes that
+     * Pi's list leaves out; the keeper reads Pi's own from the model), and Pi's published cache prices, which only decide
+     * where Auto stops (a model at $0, such as a subscription, takes the maker's for the same id).
      */
     facts(spec: string): ModelFacts {
         const own = this.#app.config.keepWarm.models[spec] ?? {};
@@ -126,10 +142,14 @@ export class KeepWarm {
         const prices =
             (model === undefined ? undefined : cachePrices(model, seconds)) ??
             (listed === undefined ? undefined : cachePrices(listed, seconds));
+        const minutes =
+            own.lifetime ??
+            (seconds === undefined && model !== undefined
+                ? publishedLifetime(model.id)
+                : undefined);
 
         return {
-            ...(own.minutes === undefined ? {} : { minutes: own.minutes }),
-            ...(own.lifetime === undefined ? {} : { lifetimeMs: own.lifetime * 60_000 }),
+            ...(minutes === undefined ? {} : { lifetimeMs: minutes * 60_000 }),
             ...(prices === undefined ? {} : { prices }),
         };
     }
@@ -267,7 +287,7 @@ export class KeepWarm {
 
                 for (const [field, value] of Object.entries(fields)) {
                     if (!(MODEL_FIELDS as readonly string[]).includes(field)) {
-                        throw new HttpError(400, `${field} is not minutes or lifetime`);
+                        throw new HttpError(400, `${field} is not lifetime`);
                     }
 
                     if (value === null) {
@@ -325,18 +345,21 @@ export class KeepWarm {
     }
 
     /** Every model people can pick, and every model the owner set values for, with Pi's facts. */
-    /** What Pi knows of a model: its cache lifetime, and Auto's stop from its published prices. */
-    #piFacts(model: Model<Api> | undefined): PiFacts {
+    /** What the settings window shows of a model before the owner's value: lifetime, read price, and Auto's stop. */
+    #known(model: Model<Api> | undefined): Known {
         if (model === undefined) {
             return {};
         }
 
         const seconds = model.promptCache?.[tier()];
+        const lifetime =
+            seconds === undefined ? publishedLifetime(model.id) : Math.round(seconds / 60);
         const prices = this.facts(specOf(model)).prices;
         const breakEven = prices === undefined ? 0 : breakEvenRefreshes(prices);
 
         return {
-            ...(seconds === undefined ? {} : { lifetime: Math.round(seconds / 60) }),
+            ...(lifetime === undefined ? {} : { lifetime }),
+            ...(prices === undefined ? {} : { read: prices.read }),
             ...(breakEven > 0 ? { breakEven } : {}),
         };
     }
@@ -350,7 +373,7 @@ export class KeepWarm {
             rows.set(spec, {
                 spec,
                 name: model.name,
-                pi: this.#piFacts(model),
+                known: this.#known(model),
             });
         }
 
@@ -361,7 +384,7 @@ export class KeepWarm {
                 rows.set(spec, {
                     spec,
                     name: model?.name ?? spec.slice(spec.indexOf("/") + 1),
-                    pi: this.#piFacts(model),
+                    known: this.#known(model),
                 });
             }
         }

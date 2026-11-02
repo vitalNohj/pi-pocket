@@ -62,24 +62,22 @@ export function keepWarmAvailable() {
 }
 
 /**
- * One model as keep warm sees it, the owner's values over Pi's: minutes between refreshes (undefined: not kept warm), its
- * cache lifetime, and where Auto stops, in minutes (Pi's published prices, else the owner's refresh cap). Mirrors `#plan`
- * in `src/server/cache-keeper.ts`.
+ * One model as keep warm sees it: how long its cache lasts (the owner's, else what is known), how often it is
+ * refreshed (undefined: not kept warm), and where Auto stops (Pi's published prices, else the owner's refresh cap).
+ * Mirrors `#plan` in `src/server/cache-keeper.ts`.
  */
 function modelPlan(model, settings) {
-    const own = settings.models[model.spec] ?? {};
-    const lifetime = own.lifetime ?? model.pi.lifetime;
-    const shared =
+    const own = settings.models[model.spec]?.lifetime;
+    const lifetime = own ?? model.known.lifetime;
+    const every =
         lifetime === undefined
             ? undefined
             : Math.floor(
                   Math.min(lifetime * settings.share * 600, lifetime * 60_000 - 10_000) / 60_000,
               ) || undefined;
-    const every = own.minutes === undefined ? shared : own.minutes > 0 ? own.minutes : undefined;
-    const refreshes = Math.min(model.pi.breakEven ?? Infinity, settings.maxRefreshes);
-    const autoStop = every === undefined ? undefined : refreshes * every;
+    const refreshes = Math.min(model.known.breakEven ?? Infinity, settings.maxRefreshes);
 
-    return { lifetime, shared, every, refreshes, autoStop, own };
+    return { own, lifetime, every, refreshes, autoStop: every && refreshes * every };
 }
 
 /** A number field that saves when it loses focus or Enter is pressed, and shows what the server kept. */
@@ -136,46 +134,38 @@ const AUTO_TABLE = [
     ["Grok 4.7", "?", "$0.500/M", "3 h (4)", "$0.300"],
 ];
 
-/** The values the owner may set for a model, and Pi's value of each. */
-const MODEL_FIELDS = [
-    { key: "lifetime", label: "Cache", min: 1, max: 10_080, pi: (model) => model.pi.lifetime },
-    { key: "minutes", label: "Every", min: 0, max: 1440, pi: (_model, plan) => plan.shared },
-];
-
-/** One model in the settings window: what keep warm does with it, and its cache time and interval, Pi's in grey. */
+/** One model in the settings window: its cache cost, when its cache expires, and what keep warm does with it. */
 function ModelCard({ model, plan, onSet }) {
     const { own, every, refreshes, autoStop } = plan;
-    const note =
-        own.minutes === 0
-            ? "never kept warm"
-            : every === undefined
-              ? html`<span class="warn">cache time not known: set Cache or Every</span>`
-              : `every ${durationLabel(every * 60_000)} · Auto: ${durationLabel(autoStop * 60_000)} (${refreshes})`;
+    const read = model.known.read;
 
-    return html`<div class=${`keep-warm-model ${own.minutes === 0 ? "never" : ""}`}>
-        <div class="keep-warm-model-name">
-            <span title=${model.spec}>${model.name}</span>
-            <span class="muted small">${note}</span>
+    return html`<div class="keep-warm-model">
+        <div class="keep-warm-model-name" title=${model.spec}>${model.name}</div>
+        <div class="keep-warm-model-row">
+            <span class="muted">Cache cost</span>
+            <span>${read === undefined ? "not published" : `${money(read)} per million tokens`}</span>
         </div>
-        <div class="keep-warm-cells">
-            ${MODEL_FIELDS.map((field) => {
-                const pi = field.pi(model, plan);
-
-                return html`<label class="keep-warm-cell" key=${field.key}>
-                    <span class="muted small">${field.label}</span>
-                    <span class="keep-warm-input">
-                        <${NumberField}
-                            value=${own[field.key]}
-                            min=${field.min}
-                            max=${field.max}
-                            width="100%"
-                            label=${`${field.label} for ${model.name}, in minutes`}
-                            placeholder=${pi === undefined ? "—" : String(pi)}
-                            onSave=${(value) => onSet(field.key, value)}
-                        /><span class="muted small">min</span>
-                    </span>
-                </label>`;
-            })}
+        <label class="keep-warm-model-row">
+            <span class="muted">Cache expires after</span>
+            <span class="keep-warm-input">
+                <${NumberField}
+                    value=${own}
+                    min=${1}
+                    max=${10_080}
+                    width="4rem"
+                    label=${`Minutes until the cache of ${model.name} expires`}
+                    placeholder=${model.known.lifetime === undefined ? "" : String(model.known.lifetime)}
+                    onSave=${(value) => onSet(value)}
+                />
+                <span class="muted small">min idle</span>
+            </span>
+        </label>
+        <div class="small ${every === undefined ? "warn" : "muted"}">
+            ${
+                every === undefined
+                    ? "Not kept warm: its maker publishes no cache time. Type it to turn it on."
+                    : `Refreshed every ${durationLabel(every * 60_000)} · Auto stops after ${durationLabel(autoStop * 60_000)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
+            }
         </div>
     </div>`;
 }
@@ -341,7 +331,8 @@ export function KeepWarmSheet() {
                     <span class="muted small">${warmable.length} of ${models.length} kept warm</span>
                 </div>
                 <p class="muted small">
-                    Cache: how long its cache lasts. Every: minutes between refreshes; 0: never. Grey: Pi's value.
+                    "Min idle": minutes from the last request until the cache is gone. Grey: the maker's published
+                    time; type your own to replace it, or clear it to go back.
                 </p>
                 <label class="search">
                     <${Icon} name="search" size=${16} />
@@ -368,7 +359,7 @@ export function KeepWarmSheet() {
                                         key=${model.spec}
                                         model=${model}
                                         plan=${plans.get(model.spec)}
-                                        onSet=${(field, value) => setModel(model.spec, field, value)}
+                                        onSet=${(value) => setModel(model.spec, "lifetime", value)}
                                     />`,
                                 )}
                             </div>
