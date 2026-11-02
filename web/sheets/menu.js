@@ -409,6 +409,7 @@ export function MenuSheet({ places = true }) {
     return html`<${MenuFrame} title=${conversation?.title ?? "Menu"}>
         ${places && html`<${Places} />`}
         <div class="menu-session">
+            ${conversation && html`<div class="group-title">Session</div>`}
             ${
                 conversation &&
                 collab() &&
@@ -482,7 +483,6 @@ export function MenuSheet({ places = true }) {
             ${conversation && trustAvailable() && item("Project trust", () => openSheet({ type: "trust" }), trustHint())}
             ${session && extensionMenuItems("session").map((each) => item(each.label, each.run, each.hint))}
             ${session && steer && driving && item("Instructions for Pi", () => openSheet({ type: "instructions" }), instructions ? "on" : "none")}
-            ${session && html`<${KeepWarmRow} />`}
             ${conversation && steer && driving && item("Compact context", () => openSheet({ type: "compact" }), "summarize older messages")}
             ${conversation && steer && driving && item("New context", () => openSheet({ type: "reset" }), "Pi starts fresh; history stays")}
             ${conversation && memoryAvailable() && item("Memory", () => openSheet({ type: "memory" }), memoryHint(memory))}
@@ -524,6 +524,7 @@ export function MenuSheet({ places = true }) {
                     setArchived([conversation.id], !conversation.archived);
                 })
             }
+            ${session && html`<${KeepWarmRow} />`}
         </div>
         ${
             view.subagents.length > 0 &&
