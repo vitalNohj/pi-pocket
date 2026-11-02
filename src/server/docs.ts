@@ -670,7 +670,11 @@ export type Lesson = {
  * Memory: short lessons Pi keeps across sessions, by id, for one project or everywhere. Pi gets those that apply in
  * its system prompt (`extensions/memory.ts`).
  */
-export const MemoryDoc = defineDoc<{ items: Record<string, Lesson> }>({
+export const MemoryDoc = defineDoc<{
+    items: Record<string, Lesson>;
+    /** Known copies of repositories, for people to choose lessons from without applying them automatically. */
+    projects?: Record<string, { name: string; repo?: string; runner?: string }>;
+}>({
     kind: "pocket.memory",
     version: 1,
     ...rebased,

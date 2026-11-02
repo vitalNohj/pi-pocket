@@ -28,7 +28,7 @@ Run these commands on the linked computer:
 | `pi-pocket runner start`                | Runs with the saved link, without questions. The service and the desktop app use this command.                  |
 | `pi-pocket runner link <server> <code>` | Saves a link without questions. Use the server address and a one-time code from **Runners**.                    |
 | `pi-pocket runner settings`             | Shows the settings. `settings confirm on\|off` and `settings http allow\|refuse` change them.                   |
-| `pi-pocket runner status`               | Shows the saved link and whether the systemd service is running. It does not check the connection.              |
+| `pi-pocket runner status`               | Shows the saved link, service state, and whether git and GitHub are ready. It does not check the connection.    |
 | `pi-pocket runner unlink`               | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key. |
 | `pi-pocket runner service`              | On Linux with systemd, starts a user service that keeps the runner running after you close the terminal.        |
 | `pi-pocket runner service remove`       | Stops and removes the service. Keeps the saved link.                                                            |
@@ -72,7 +72,11 @@ To link a server on another plain HTTP address, choose **Allow plain HTTP** when
 
 In Menu → **Runners**, choose **New session** next to an online computer, then choose a folder on it. The session's title, top bar, and Pi's system prompt identify the computer. Forks keep the same computer, unless you choose another one in the fork sheet's **Computer** row. A copy can go from this server to a linked computer, back, or from one linked computer to another. A copy on a linked computer runs with that computer's list of extensions; a copy back on this server gets all extensions again. Pi gets a note with the new computer and folder, because paths earlier in the conversation were on the old ones.
 
-Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, schedules, and codemode also work. Subagents and linked sessions that a session on a computer starts run on the same computer, and the computer asks before a linked session starts there.
+Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, schedules, codemode, memory, and PR watches also work. Subagents and linked sessions that a session on a computer starts run on the same computer, and the computer asks before a linked session starts there.
+
+Lessons stay with each project on its own computer; worktrees of that project share them. In **Memory**, **From …** sections offer approved lessons from other copies of the same GitHub repository. Choose **Add** to save one in this project; they never apply here automatically. PR watches read the origin and current branch on the linked computer, but poll GitHub from the server with the server's `gh` sign-in, not the computer's.
+
+The runner checks git, the GitHub CLI (`gh`), and its GitHub sign-in when it starts and reconnects. **Runners** and `pi-pocket runner status` show whether git and GitHub are ready, with an install command or `gh auth login` when needed. A computer without them still works.
 
 These also work, on that computer:
 

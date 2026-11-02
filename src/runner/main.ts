@@ -61,6 +61,7 @@ import {
     type SessionQuestion,
 } from "./runner.ts";
 import { checkTransport, refusal, unsafe } from "./transport.ts";
+import { checkTools, toolsStatus } from "./tools.ts";
 
 const HELP = `pi-pocket runner: run session tools on this computer.
 
@@ -714,11 +715,12 @@ function service(file: string, args: string[]): void {
     }
 }
 
-function status(file: string): string {
+async function status(file: string): Promise<string> {
     const saved = readLink(file);
+    const tools = toolsStatus(await checkTools(), process.platform);
 
     if (saved === undefined) {
-        return "This computer is not linked.\nIn a terminal, run pi-pocket runner to link it.";
+        return `This computer is not linked.\nIn a terminal, run pi-pocket runner to link it.\n${tools}`;
     }
 
     const settings = settingsOf(saved);
@@ -727,6 +729,7 @@ function status(file: string): string {
         `Computer: ${saved.name}`,
         `Server: ${saved.server}`,
         `Link file: ${file}`,
+        tools,
         `Ask before new sessions: ${settings.confirm ? "on" : "off"}`,
         `Plain HTTP: ${settings.allowHttp ? "allowed to this server" : "only to this computer or your tailnet"}`,
         ...(serviceActive() ? [`Service: ${UNIT} (running)`] : []),
@@ -1093,7 +1096,7 @@ export async function main(argv: string[]): Promise<void> {
             return settingsCommand(file, rest);
         case "status":
             try {
-                console.log(status(file));
+                console.log(await status(file));
             } catch (error) {
                 fail((error as Error).message);
             }

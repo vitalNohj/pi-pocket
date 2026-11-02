@@ -84,6 +84,8 @@ export interface StoredRunner {
     lastSeen?: number;
     /** What it reported when it last connected: its OS, architecture, home folder, and runner version. */
     platform?: { os: string; arch: string; home: string; version: string };
+    /** Programs ready on this computer, as its runner last reported. */
+    tools?: { git: boolean; gh: boolean; github: boolean };
 }
 
 /** A one-time code that links a computer, not yet used: kept by its sha256, for a few minutes. */
@@ -734,7 +736,7 @@ export class ConfigStore {
 
     updateRunner(
         id: string,
-        patch: Partial<Pick<StoredRunner, "name" | "lastSeen" | "platform">>,
+        patch: Partial<Pick<StoredRunner, "name" | "lastSeen" | "platform" | "tools">>,
     ): void {
         const runner = this.runnerById(id);
 

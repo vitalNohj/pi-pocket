@@ -10679,6 +10679,13 @@ textarea.notes {
 }
 
 /* Memory: a lesson Pi keeps, who saved it and where, and what can be done with it. */
+.lesson-copies > summary {
+    min-height: 40px;
+    padding-block: 10px;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
 .lesson {
     display: flex;
     flex-direction: column;
