@@ -65,6 +65,7 @@ test("unknown legacy content is discarded, and signing out erases every person's
         "pocket.draft.chat-1",
         "pocket.pastes.1",
         "pocket.attached.1",
+        'pocket.notesDraft.["owner",1]',
         "pocket.history",
         "pocket.history.v2",
         "pocket.pip.draft",

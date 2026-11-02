@@ -699,3 +699,112 @@ test(
         await inPage(`(await import("/pip.js")).closePip(); return "null";`);
     },
 );
+
+for (const action of ["Save", "Cancel", "Use theirs"]) {
+    test(`notes ${action} keeps a newer draft from the other window`, real, async () => {
+        const id = await newSession(app);
+        const newer = `The second window's newer edit after ${action}`;
+
+        await login(app.config.ownerToken, owner(app).id);
+        await page.navigate(`${base}/s/${id}`);
+        await peer.navigate(`${base}/s/${id}`);
+
+        for (const opened of [page, peer]) {
+            await until(
+                async () =>
+                    JSON.parse(
+                        await opened.evaluate(`return JSON.stringify(
+                (await import("/store.js")).store.state.notes !== null)`),
+                    ) as boolean,
+                "the saved notes",
+            );
+            await opened.evaluate(
+                `(await import("/store.js")).openSheet({ type: "chat", tab: "notes" })`,
+            );
+            await until(
+                async () =>
+                    JSON.parse(
+                        await opened.evaluate(`return JSON.stringify(
+                document.querySelector("textarea.notes") !== null)`),
+                    ) as boolean,
+                "the notes editor",
+            );
+        }
+
+        await type("textarea.notes", "The first window's older edit");
+
+        if (action === "Save") {
+            await page.evaluate(`
+                const original = fetch;
+                let release;
+                const held = new Promise((resolve) => { release = resolve; });
+
+                globalThis.releaseNotesSave = release;
+                globalThis.restoreNotesFetch = () => { globalThis.fetch = original; };
+                globalThis.fetch = async (url, ...args) => {
+                    const response = await original(url, ...args);
+
+                    if (String(url).endsWith("/notes")) {
+                        globalThis.notesSaveHeld = true;
+                        await held;
+                    }
+
+                    return response;
+                };
+                [...document.querySelectorAll(".people-content button")]
+                    .find((button) => button.textContent.trim() === "Save").click();
+            `);
+            await see(`globalThis.notesSaveHeld === true`, "the held Save response");
+        } else if (action === "Use theirs") {
+            await app.collab.saveNotes(id, owner(app), "Another editor's saved notes", 0);
+            await see(`document.body.textContent.includes("Use theirs")`, "the newer shared save");
+        }
+
+        await peerSees(
+            `(await import("/store.js")).store.state.notes?.rev === ${action === "Cancel" ? 0 : 1}`,
+            "the second window's current saved revision",
+        );
+
+        try {
+            await peer.evaluate(`
+                const box = document.querySelector("textarea.notes");
+                box.value = ${JSON.stringify(newer)};
+                box.dispatchEvent(new Event("input", { bubbles: true }));
+            `);
+
+            if (action === "Save") {
+                await page.evaluate(`globalThis.releaseNotesSave()`);
+            } else {
+                await page.evaluate(`
+                    [...document.querySelectorAll(".people-content button")]
+                        .find((button) => button.textContent.trim() === ${JSON.stringify(action)}).click();
+                `);
+            }
+
+            await see(
+                `(await import("/notes-drafts.js")).notesDrafts.get(
+                ${JSON.stringify(owner(app).id)}, ${Number(id)}).draft === null`,
+                "the first window's cleared edit",
+            );
+            assert.equal(
+                await inPeer<string>(`return JSON.stringify(
+                (await import("/person-storage.js")).personStorage.get("notesDraft.${id}"))`),
+                JSON.stringify({ text: newer, base: action === "Cancel" ? 0 : 1 }),
+            );
+            await peer.navigate(`${base}/s/${id}`);
+            await peer.evaluate(
+                `(await import("/store.js")).openSheet({ type: "chat", tab: "notes" })`,
+            );
+            await peerSees(
+                `document.querySelector("textarea.notes")?.value === ${JSON.stringify(newer)}`,
+                "the second window's newer draft after reload",
+            );
+        } finally {
+            if (action === "Save") {
+                await page.evaluate(
+                    `globalThis.releaseNotesSave(); globalThis.restoreNotesFetch()`,
+                );
+            }
+        }
+    });
+}
