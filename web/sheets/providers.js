@@ -94,18 +94,18 @@ function SubagentModels({ names }) {
 
     return html`<div class="subagent-models">
         <div class="subagent-models-heading">
-            <div class="label">Models</div>
+            <div class="label">Subagent models</div>
             <span class="subagent-models-tools">
                 <span class="small subagent-models-chosen" title=${summary} aria-live="polite">
-                    ${chosen.length} for subagents
+                    ${chosen.length} allowed
                 </span>
                 <${RefreshModelsButton} />
             </span>
         </div>
         <${RefreshModelsStatus} />
         <p class="muted small">
-            <strong>Checkbox:</strong> models subagents and linked sessions may use. With none checked, they use the
-            session's model. <strong>Star:</strong> only a shortcut in your model picker; it changes no permission.
+            Check the models subagents and linked sessions may use. With none checked, they use the session's model. A
+            star only pins a model in your model picker.
         </p>
         <div class="segmented model-filters" role="group" aria-label="Filter models">
             ${[
@@ -135,10 +135,10 @@ function SubagentModels({ names }) {
             </label>`
         }
         <div class="subagent-models-legend" aria-hidden="true">
-            <span><${Icon} name="check" size=${13} />${" "}Allowed for subagents</span>
+            <span><${Icon} name="check" size=${13} />${" "}Allowed</span>
             <span>Favorite${" "}<${Icon} name="star" size=${13} /></span>
         </div>
-        <div class="subagent-models-list" role="group" aria-label="Models for subagents">
+        <div class="subagent-models-list" role="group" aria-label="Subagent models">
             ${
                 groups.size === 0 &&
                 html`<p class="muted small">
@@ -491,7 +491,7 @@ export function ProvidersSheet() {
         <div class="providers-layout">
             ${
                 owner &&
-                html`<aside class="providers-side" aria-label="Models">
+                html`<aside class="providers-side" aria-label="Subagent models">
                     <${SubagentModels}
                         names=${Object.fromEntries(
                             (providers ?? []).map((each) => [each.id, each.name]),
