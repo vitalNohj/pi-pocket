@@ -8,6 +8,7 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState } from "preact
 import { shortPath } from "./folder-paths.js";
 import { useDragToClose } from "./gestures.js";
 import { highlight, langOf } from "./highlight.js";
+import { callHost, hostCan } from "./host.js";
 import { actions, filesShown, notify, openSheet, store } from "./store.js";
 
 export const html = htm.bind(h);
@@ -697,7 +698,42 @@ export function revealFile(path) {
     );
 }
 
-/** File paths in rendered markdown open in the viewer, or with Ctrl (⌘) held, in the file manager. */
+/** Save a file of the server session to this computer, through the desktop app or a browser download. */
+export async function downloadFile(path) {
+    const match = /^(.*?):(\d+)(?:-\d+)?$/.exec(path);
+    const target = match ? match[1] : path;
+    const url = `/api/c/${currentConversation()}/download?path=${encodeURIComponent(target)}`;
+    const name = target.split(/[\\/]/).pop() || "download";
+
+    if (hostCan("saveFile")) {
+        try {
+            const result = await callHost("saveFile", { url, name });
+
+            if (result !== undefined) {
+                notify(
+                    result.ok ? "info" : "error",
+                    result.ok ? "Saved to " + result.path : result.error,
+                );
+
+                return;
+            }
+        } catch (error) {
+            notify("error", error.message ?? String(error));
+
+            return;
+        }
+    }
+
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+}
+
+/** File paths open in the viewer; Ctrl (⌘) can reveal them, or save a server file in the desktop app. */
 document.addEventListener("click", (event) => {
     const target = event.target.closest?.(".md code[data-path], .md a[data-path]");
 
@@ -709,6 +745,18 @@ document.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         revealFile(target.dataset.path);
+
+        return;
+    }
+
+    if (
+        (APPLE ? event.metaKey : event.ctrlKey) &&
+        !store.state.view.conversation?.runner &&
+        hostCan("saveFile")
+    ) {
+        event.preventDefault();
+        event.stopPropagation();
+        void downloadFile(target.dataset.path);
 
         return;
     }
