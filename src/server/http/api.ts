@@ -22,6 +22,7 @@ import {
 import type { User } from "../config.ts";
 import { MAX_AVATAR, readAvatar } from "../avatars.ts";
 import { HttpError } from "../errors.ts";
+import { isLocalRequest, withReveal } from "../local-browser.ts";
 import { machineRoots, parentFolder } from "../paths.ts";
 import { desktopTheme, wallpaperFile } from "../omarchy.ts";
 import { runningBoard, runningNow } from "../running.ts";
@@ -159,7 +160,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "me" && method === "GET") {
-            return json(response, 200, await app.hello(user));
+            return json(
+                response,
+                200,
+                withReveal(await app.hello(user), user, isLocalRequest(request)),
+            );
         }
 
         if (first === "me" && second === undefined && method === "POST") {

@@ -150,6 +150,8 @@ export interface Client {
      * event. A page from before 0.28.0-beta.7, still open after an update, hears `desktop-notify`.
      */
     readonly embedder?: "embedder-notify" | "desktop-notify";
+    /** The tab's browser runs on the server's machine (`local-browser.ts`): its file manager is one the person sees. */
+    readonly local?: boolean;
     /** Entries this client has, so updates carry only new ones. */
     readonly sentEntries: Set<number>;
     orderKey: string;
