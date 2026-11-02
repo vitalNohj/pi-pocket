@@ -70,12 +70,12 @@ To link a server on another plain HTTP address, choose **Allow plain HTTP** when
 
 In Menu → **Runners**, choose **New session** next to an online computer, then choose a folder on it. The session's title, top bar, and Pi's system prompt identify the computer. Forks keep the same computer, unless you choose another one in the fork sheet's **Computer** row. A copy can go from this server to a linked computer, back, or from one linked computer to another. A copy on a linked computer runs with that computer's list of extensions; a copy back on this server gets all extensions again. Pi gets a note with the new computer and folder, because paths earlier in the conversation were on the old ones.
 
-Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, and schedules also work.
+Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, schedules, and codemode also work. Subagents and linked sessions that a session on a computer starts run on the same computer, and the computer asks before a linked session starts there.
 
 These features are not available yet in sessions on another computer, because they use the server's disk:
 
 - Background tasks, the browser, artifacts, design, and memory.
-- Subagents and teams, PR watches, and git worktrees.
+- PR watches and git worktrees.
 - The **Files** and **Changes** panels, and the folder's project context and skills.
 
 Files that people attach stay on the server. They are not copied to the linked computer.

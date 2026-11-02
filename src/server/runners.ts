@@ -44,9 +44,10 @@ import { HttpError } from "./errors.ts";
 
 /**
  * The extensions a session on another computer runs with: exactly these, in order, and none other (no drop-ins). Each
- * works through the session's environment, which is that computer's, or on app state only. The others read or run
- * things on this server's disk (background tasks, the browser, artifacts, design, memory, PR watches), or start
- * conversations that do not yet keep the computer (subagents, teams): they come back as they learn to.
+ * works through the session's environment, which is that computer's, or on app state only. Subagents and linked
+ * sessions keep the computer, and codemode calls its tools without saving output on this server. The others read or
+ * run things on this server's disk (background tasks, the browser, artifacts, design, memory, PR watches): they come
+ * back as they learn to.
  */
 export const REMOTE_EXTENSIONS = [
     "coding-tools",
@@ -58,6 +59,9 @@ export const REMOTE_EXTENSIONS = [
     "pocket-ask-someone",
     "pocket-schedules",
     "pocket-tool-search",
+    "pocket-subagents",
+    "pocket-agent-teams",
+    "pocket-codemode",
     "pocket-goals",
     "pocket-plan",
 ] as const;

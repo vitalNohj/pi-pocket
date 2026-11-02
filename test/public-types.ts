@@ -68,6 +68,7 @@ type Internal =
     | "watches"
     | "repoWatches"
     | "approvals"
+    | "runnerOf"
     | "guard"
     | "schedules"
     | "background"
