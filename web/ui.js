@@ -1113,6 +1113,8 @@ const ICONS = {
     globe: "M12 21a9 9 0 100-18 9 9 0 000 18zM3.5 9h17M3.5 15h17M12 3a14 14 0 010 18M12 3a14 14 0 000 18",
     reload: "M20 12a8 8 0 11-2.3-5.7M20 4v5h-5",
     copy: "M9 9h10a1 1 0 011 1v10a1 1 0 01-1 1H9a1 1 0 01-1-1V10a1 1 0 011-1zM5 15H4a1 1 0 01-1-1V4a1 1 0 011-1h10a1 1 0 011 1v1",
+    // An arrow down into a tray: save to this device.
+    download: "M12 4v11M7 10l5 5 5-5M5 20h14",
     undo: "M9 14L4 9l5-5M4 9h11a5 5 0 010 10h-4",
     phone: "M8 3h8a1 1 0 011 1v16a1 1 0 01-1 1H8a1 1 0 01-1-1V4a1 1 0 011-1zM11 18h2",
     tablet: "M5 4h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5a1 1 0 011-1zM11 17h2",
