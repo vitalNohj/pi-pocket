@@ -110,6 +110,29 @@ function lost(message: string): RemoteError {
     return new RemoteError({ code: "unknown", message, lost: true });
 }
 
+/**
+ * A page of a folder's entries (`readdir`) without the ones the daemon could not `lstat`. pi-env fails a whole listing
+ * (`listDir`, `openDirReader`) for one such entry, as Node's `readdir` does; here a listing shows what it can read, so
+ * the folder picker, the Files panel, and the agent's tools all see the rest. On Windows a file with a reserved name
+ * (`nul`, `con`, `com1.txt`, made by a POSIX tool) is one: its `lstat` reaches the device, not the file, and fails
+ * with `EISDIR`. The daemon sends no kind with a failed entry, so it is left out; reading it still fails, by itself.
+ */
+export function readableEntries(reply: Reply): Reply {
+    const entries = reply.json.entries;
+
+    if (!Array.isArray(entries)) {
+        return reply;
+    }
+
+    const readable = entries.filter(
+        (entry: unknown) => (entry as { error?: unknown } | null)?.error === undefined,
+    );
+
+    return readable.length === entries.length
+        ? reply
+        : { ...reply, json: { ...reply.json, entries: readable } };
+}
+
 type Pending = {
     resolve: (reply: Reply) => void;
     reject: (error: Error) => void;
@@ -200,14 +223,19 @@ export class RunnerLink {
                 throw lost(`${this.name}: its connection was lost`);
             }
 
-            return this.#send(current, op, json, options);
+            return this.#answer(op, this.#send(current, op, json, options));
         }
 
         const session = await this.#ready();
 
         await session.ready;
 
-        return this.#send(session, op, json, options);
+        return this.#answer(op, this.#send(session, op, json, options));
+    }
+
+    /** The daemon's answer as the env gets it: a folder's page without entries it could not read. */
+    async #answer(op: string, reply: Promise<Reply>): Promise<Reply> {
+        return op === "readdir" ? readableEntries(await reply) : reply;
     }
 
     /** Kill one `exec` without aborting it. */
