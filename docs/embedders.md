@@ -24,7 +24,7 @@ The embedder (in Electron, its preload script) puts one object in the top page o
 window.pocketHost = {
     kind: "my-app", // which embedder; for logs only
     apiVersion: 1,
-    capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open"],
+    capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open", "newSession"],
 
     menuTitle(), // the heading of the embedder's group in the menu, such as its name; optional
     menuItems(), // [{ id, label, hint? }]: the items of that group, at the menu's end
@@ -33,7 +33,7 @@ window.pocketHost = {
     notify(message), // a notification for the embedder to show (below)
     visible(), // whether the embedder's window shows: false while hidden in a tray or minimized
     setPinned(list), // [{ id, title, state, label, url }]: the pinned sessions, in order
-    subscribe(listener), // the embedder's events (below)
+    subscribe(listener, events), // the embedder's events (below), and the ones this page handles
 };
 ```
 
@@ -86,11 +86,14 @@ The embedder chooses how much of an approval to show and whether to offer **Allo
 
 ### The embedder's events
 
-`subscribe(listener)` takes one function. The embedder calls it with:
+`subscribe(listener, events)` takes a function, which the embedder calls with:
 
 - `{ type: "visibility" }`: its window was shown or hidden. The page reads `visible()` again.
 - `{ type: "open", url }`: open this, such as a notification or a tray item that was clicked. Only addresses of the server's own origin open.
 - `{ type: "approve", id, allow }`: the person answered an approval in a notification. The page answers it with its own sign-in.
+- `{ type: "newSession" }`: start a new session, such as from the app's menu (Cmd+N), its dock or tray menu, or a link the system opened. The page opens the **New session** sheet, as Alt+N does. It does nothing while signed out, or for a person who may not start sessions (a viewer, or a guest limited to some sessions).
+
+`subscribe`'s second argument, `events`, lists the event types this page handles, such as `["visibility", "open", "approve", "newSession"]`. Version 1 began without it, so an app must not count on it: a page that leaves it out handles `visibility`, `open`, and `approve` only. An event added to version 1 later, such as `newSession`, goes only to a page that names it. For any other page the app does what it can without it: for `newSession`, it shows its window.
 
 ## The window's buttons
 
