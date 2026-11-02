@@ -836,6 +836,7 @@ export class PocketApp {
             modelProblem: (ref, fresh) => this.providers.problem(ref, fresh),
             registerModelProvider: (provider, config) =>
                 this.#registerModelProvider(provider, config),
+            registerPiSessionCompanion: (companion) => this.piSessions.registerCompanion(companion),
             shapeModelRequests: (shape) => {
                 this.#shapers.push(shape);
 

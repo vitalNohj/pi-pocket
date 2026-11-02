@@ -28,6 +28,7 @@ import type { BrowserControl } from "./browser/page.ts";
 import type { CommandEnvProvider, HiddenValue } from "./hidden.ts";
 import type { AppEventName, AppEvents } from "./app-events.ts";
 import type { SettingField, SettingValue } from "./extension-settings.ts";
+import type { PiSessionCompanion } from "./pi-sessions.ts";
 
 export type { SettingField, SettingValue } from "./extension-settings.ts";
 
@@ -384,6 +385,12 @@ export interface PocketHost {
      * that is not the last one changes nothing.
      */
     registerModelProvider(provider: string, config: ProviderConfig): () => void;
+    /**
+     * Carry a file an extension keeps beside Pi's session files into a session continued here (`pi-sessions.ts`).
+     * Returns how to remove it again.
+     * @experimental @since 0.28.0
+     */
+    registerPiSessionCompanion(companion: PiSessionCompanion): () => void;
     /**
      * Shape the request every model call sends: `shape` returns a replacement payload, or undefined to keep it. It runs
      * after Pi and the caller shaped the request, closest to the wire. Returns how to stop shaping. Only the modules
