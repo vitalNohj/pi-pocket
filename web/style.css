@@ -18819,6 +18819,18 @@ pre.gallery-code {
     width: auto;
 }
 
+/* The calculator's fields share their column: an input shrinks before it overflows. */
+.keep-warm-calc .keep-warm-input {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.keep-warm-calc .keep-warm-number {
+    min-width: 0;
+    flex: 1;
+}
+
 .keep-warm-table-wrap {
     overflow-x: auto;
     border: 1px solid var(--hair);

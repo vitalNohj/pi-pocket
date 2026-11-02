@@ -11,6 +11,7 @@ import {
     CacheKeeper,
     decide,
     type IdlePolicy,
+    type ModelFacts,
     type IdleRecord,
     type IdleStore,
     breakEvenRefreshes,
@@ -40,7 +41,11 @@ const usage = {
 /** A model runtime plus a clock. `timers` are the keeper's pending timers; `advance` fires the next one. */
 function rig(
     disabled = false,
-    idle?: { policy?: IdlePolicy | (() => IdlePolicy | undefined); store?: IdleStore },
+    idle?: {
+        policy?: IdlePolicy | (() => IdlePolicy | undefined);
+        facts?: ModelFacts;
+        store?: IdleStore;
+    },
 ) {
     let now = 1_000_000;
     let warmUsage = usage;
@@ -88,6 +93,7 @@ function rig(
                   idlePolicy: () =>
                       typeof idle.policy === "function" ? idle.policy() : idle.policy,
               }),
+        ...(idle?.facts === undefined ? {} : { modelFacts: () => idle.facts! }),
         ...(idle?.store === undefined ? {} : { store: idle.store, modelOf: () => model }),
         setTimer: ((fn: () => void, ms: number) => {
             const t = { at: now + ms, fn };
@@ -372,7 +378,7 @@ test("a run that ended before the conversation lookup came back stops the warm",
 
 // ─── Keep warm (idle) ────────────────────────────────────────────────────
 
-const POLICY: IdlePolicy = { hours: 2, maxCost: 1, maxRefreshes: 30, share: 75, facts: () => ({}) };
+const POLICY: IdlePolicy = { hours: 2, maxCost: 1, maxRefreshes: 30, share: 75 };
 /** Claude's prices for a 1 hour cache: read $0.50, write $10 per million tokens, so 20 refreshes break even. */
 const CLAUDE = { read: 0.5, write: 10 };
 const HOUR_MODEL = { short: 3600 };
@@ -620,7 +626,8 @@ test("keep warm: break-even is the write price over the read price", () => {
 
 test("keep warm: Auto stops at break-even, with its own reason", async () => {
     const r = rig(false, {
-        policy: { ...POLICY, hours: "auto", facts: () => ({ prices: { read: 0.5, write: 2 } }) },
+        policy: { ...POLICY, hours: "auto" },
+        facts: { prices: { read: 0.5, write: 2 } },
     });
 
     await idleRun(r);
@@ -645,7 +652,8 @@ test("keep warm: Auto is not started for a model with no prices; the refresh cap
     assert.equal(none.keeper.idleStatus(3).warm, false);
 
     const capped = rig(false, {
-        policy: { ...POLICY, hours: "auto", maxRefreshes: 2, facts: () => ({ prices: CLAUDE }) },
+        policy: { ...POLICY, hours: "auto", maxRefreshes: 2 },
+        facts: { prices: CLAUDE },
     });
 
     await idleRun(capped);
@@ -662,14 +670,16 @@ test("keep warm: Auto is not started for a model with no prices; the refresh cap
 
 test("keep warm: the owner's lifetime and minutes for a model win over Pi's", async () => {
     const r = rig(false, {
-        policy: { ...POLICY, facts: () => ({ lifetimeMs: 3_600_000 }) },
+        policy: POLICY,
+        facts: { lifetimeMs: 3_600_000 },
     });
 
     await idleRun(r);
     assert.equal((r.timers[0]?.at ?? 0) - r.now(), 2_700_000, "75% of the owner's hour");
 
     const minutes = rig(false, {
-        policy: { ...POLICY, facts: () => ({ minutes: 10, lifetimeMs: 3_600_000 }) },
+        policy: POLICY,
+        facts: { minutes: 10, lifetimeMs: 3_600_000 },
     });
 
     await idleRun(minutes);

@@ -496,8 +496,7 @@ export class PocketApp {
                 };
             },
             idlePolicy: (conversationId) => this.keepWarm.policy(conversationId),
-            idleMinutes: (spec) => this.keepWarm.minutes(spec),
-            idleLifetimeMs: (spec) => this.keepWarm.lifetimeMs(spec),
+            modelFacts: (spec) => this.keepWarm.facts(spec),
             modelOf: (provider, modelId) => this.models?.getModel(provider, modelId),
             store: idleFiles(join(options.dataDir, "keep-warm"), (line) => this.#log(line)),
             changed: (conversationId) => this.#keepWarmChanged(conversationId as ConversationId),
@@ -3232,10 +3231,6 @@ export class PocketApp {
         );
     }
 
-    /**
-     * The owner chooses how many hours a run waits for a provider's limit to clear, at most; 0 turns waiting off, and
-     * runs that wait now go on at once.
-     */
     /** The owner changed keep warm's settings: tabs hear the new time limit, and open views show each session's state. */
     async keepWarmSettingsChanged(): Promise<void> {
         for (const pending of this.#rooms.values()) {
@@ -3248,6 +3243,10 @@ export class PocketApp {
         await this.#refreshClients();
     }
 
+    /**
+     * The owner chooses how many hours a run waits for a provider's limit to clear, at most; 0 turns waiting off, and
+     * runs that wait now go on at once.
+     */
     async setLimitWaitHours(user: User, hours: unknown): Promise<void> {
         if (user.role !== "owner") {
             throw new HttpError(403, "Only the owner can do that");

@@ -17,9 +17,9 @@
  * **Keep warm** (idle), off until the owner turns it on (`idlePolicy`): after a run ends, it refreshes the cache of the
  * run's last request every `everyMs` (a share of the model's cache lifetime, or the owner's minutes for that model), for
  * as long as the owner's time limit, or with Auto until the refreshes have cost as much as one more cache write
- * (`breakEvenRefreshes`), within a cost and a refresh cap for each session. A new real
- * request, a model change, a compaction, New context (`forget`), the setting turned off (`reconsider`), or two failed
- * refreshes in a row stop it. A refresh fails when it errs, or when it wrote the cache instead of reading it: the cache
+ * (`breakEvenRefreshes`), within a cost and a refresh cap for each session. A new run (`runStarted`), a model change,
+ * a compaction, New context, archiving (`forget`), the setting turned off (`reconsider`), or two failed refreshes in a
+ * row stop it. A refresh fails when it errs, or when it wrote the cache instead of reading it: the cache
  * was gone, so the interval is too long for that model. Idle warming has no price check: the owner chose to pay, and
  * the caps bound it. Its entries are saved (`IdleStore`), so warming goes on after a restart while the cache lives.
  *
@@ -172,13 +172,22 @@ function ttlMsOf(model: Model<Api>, options: SimpleStreamOptions | undefined): n
     return seconds === undefined ? undefined : seconds * 1000;
 }
 
-/** `provider/modelId`, the name the owner's per-model minutes use. */
-export function specOf(model: Model<Api>): string {
+/** `provider/modelId`, the name the owner's per-model values use. */
+export function specOf(model: { provider: string; id: string }): string {
     return `${model.provider}/${model.id}`;
 }
 
-/** The refresh share of a cache lifetime, until the owner says otherwise: 45 minutes of a 1 hour cache. */
-export const DEFAULT_IDLE_SHARE = 75;
+/** The request's options as a replay may repeat them: its abort signal and telemetry belong to the real request. */
+function replayOptions(options: SimpleStreamOptions): SimpleStreamOptions {
+    const {
+        signal: _signal,
+        telemetry: _telemetry,
+        ...rest
+    } = options as SimpleStreamOptions & { telemetry?: unknown };
+
+    return rest;
+}
+
 /** Failed refreshes in a row that stop keeping a session warm. */
 export const IDLE_FAILURES = 2;
 /** How long one idle refresh may take before it is given up. */
@@ -219,7 +228,7 @@ export function breakEvenRefreshes(prices: { read: number; write: number }): num
 }
 
 /** What is known of one model for keep warm: the owner's values over Pi's. */
-export type IdleFacts = {
+export type ModelFacts = {
     /** The owner's minutes between refreshes; 0: never. */
     minutes?: number;
     /** How long the cache lives, when the owner said; else the model's `promptCache` counts. */
@@ -238,8 +247,6 @@ export type IdlePolicy = {
     maxRefreshes: number;
     /** Percent of a model's cache lifetime between refreshes. */
     share: number;
-    /** What is known of a model (`provider/modelId`). */
-    facts: (spec: string) => IdleFacts;
 };
 
 type IdleState = {
@@ -251,8 +258,8 @@ type IdleState = {
     until?: number;
     maxCost: number;
     maxRefreshes: number;
-    /** Auto: `maxRefreshes` is where the refreshes cost as much as one cache write. */
-    auto: boolean;
+    /** Auto, and `maxRefreshes` is its break-even, which comes before the owner's refresh cap. */
+    breakEven: boolean;
     failures: number;
 };
 
@@ -409,7 +416,6 @@ export type IdleStatus =
           refreshes: number;
           /** The refreshes this stretch may have: Auto's break-even, or the owner's cap. */
           maxRefreshes: number;
-          auto: boolean;
           spent: number;
           model: string;
       }
@@ -430,16 +436,14 @@ export type KeeperDeps = {
     disabled?: () => boolean;
     /** Whether, and how, a conversation is kept warm once its run ends; undefined: it is not. */
     idlePolicy?: (conversationId: number) => IdlePolicy | undefined;
-    /** The owner's minutes for a model (`provider/modelId`), so a model with no known lifetime can be watched too. */
-    idleMinutes?: (spec: string) => number | undefined;
-    /** The owner's cache lifetime for a model, so it can be watched too. */
-    idleLifetimeMs?: (spec: string) => number | undefined;
+    /** What the owner and Pi know of a model (`provider/modelId`): its cache lifetime, prices, and minutes. */
+    modelFacts?: (spec: string) => ModelFacts;
     /** A model by provider and id, to warm a saved entry after a restart. */
     modelOf?: (provider: string, modelId: string) => Model<Api> | undefined;
     /** Where idle entries are kept between restarts. */
     store?: IdleStore;
-    /** Idle warming of a conversation started, refreshed, or stopped (`reason`: why it stopped, when it did). */
-    changed?: (conversationId: number, reason?: string) => void;
+    /** Idle warming of a conversation started, refreshed, or stopped (`idleStatus` says why it stopped). */
+    changed?: (conversationId: number) => void;
 };
 
 type OptionalDeps =
@@ -447,8 +451,7 @@ type OptionalDeps =
     | "isRunning"
     | "accountFor"
     | "idlePolicy"
-    | "idleMinutes"
-    | "idleLifetimeMs"
+    | "modelFacts"
     | "modelOf"
     | "store"
     | "changed";
@@ -515,7 +518,6 @@ export class CacheKeeper {
                     ...(entry.idle.until === undefined ? {} : { until: entry.idle.until }),
                     refreshes: entry.warms,
                     maxRefreshes: entry.idle.maxRefreshes,
-                    auto: entry.idle.auto,
                     spent: entry.spent,
                     model: specOf(entry.model),
                 };
@@ -582,16 +584,15 @@ export class CacheKeeper {
         options: SimpleStreamOptions | undefined,
     ): AssistantMessageEventStream {
         const key = options?.sessionId;
-        const ttlMs = ttlMsOf(model, options);
-        const minutes = this.#deps.idleMinutes?.(specOf(model));
-        const life = this.#deps.idleLifetimeMs?.(specOf(model));
+        const facts = this.#deps.modelFacts?.(specOf(model)) ?? {};
+        // The owner may know a lifetime or an interval for a model whose `promptCache` says nothing.
+        const known =
+            ttlMsOf(model, options) !== undefined ||
+            facts.lifetimeMs !== undefined ||
+            (facts.minutes ?? 0) > 0;
 
         // Uncached calls (a compaction's, a model with no known lifetime) leave an existing entry alone.
-        if (
-            key === undefined ||
-            retentionOf(options) === "none" ||
-            (ttlMs === undefined && life === undefined && !(minutes !== undefined && minutes > 0))
-        ) {
+        if (key === undefined || retentionOf(options) === "none" || !known) {
             return underlying(model, context, options);
         }
 
@@ -712,7 +713,7 @@ export class CacheKeeper {
 
             // The run ended before the lookup came back: its end was missed.
             if (this.#deps.isRunning?.(id) === false) {
-                this.#runOver(key, entry);
+                this.#toIdle(key, entry);
             }
         };
 
@@ -743,8 +744,11 @@ export class CacheKeeper {
         }
 
         for (const [key, entry] of [...this.#entries]) {
-            if (entry.conversationId === undefined || entry.conversationId === conversationId) {
-                this.#runOver(key, entry);
+            if (
+                entry.kind !== "idle" &&
+                (entry.conversationId === undefined || entry.conversationId === conversationId)
+            ) {
+                this.#toIdle(key, entry);
             }
         }
     }
@@ -786,20 +790,11 @@ export class CacheKeeper {
                 continue;
             }
 
-            const everyMs = plan.everyMs;
-
             Object.assign(entry.idle, plan);
 
+            // A refresh on its way plans the next itself.
             if (entry.abort === undefined) {
-                if (entry.timer !== undefined) {
-                    this.#deps.clearTimer(entry.timer);
-                }
-
-                this.#schedule(
-                    key,
-                    entry,
-                    Math.max(1, entry.lastTouch + everyMs - this.#deps.now()),
-                );
+                this.#scheduleIdle(key, entry);
             }
 
             this.#deps.changed?.(entry.conversationId!);
@@ -854,15 +849,6 @@ export class CacheKeeper {
         }
     }
 
-    /** The run is over: keep its last request warm when the owner wants that, else stop. */
-    #runOver(key: string, entry: Entry): void {
-        if (entry.kind === "idle") {
-            return;
-        }
-
-        this.#toIdle(key, entry);
-    }
-
     /**
      * How an entry is kept warm now, from the owner's settings and the session's choice: how often, how long its cache
      * lives, and when it stops. Undefined: it is not kept warm (off, or nothing says how often to refresh it).
@@ -877,7 +863,7 @@ export class CacheKeeper {
             return undefined;
         }
 
-        const facts = policy.facts(specOf(entry.model));
+        const facts = this.#deps.modelFacts?.(specOf(entry.model)) ?? {};
         const ttlMs = facts.lifetimeMs ?? entry.ttlMs;
         const everyMs = idleEveryMs(ttlMs, facts.minutes, policy.share);
 
@@ -887,33 +873,46 @@ export class CacheKeeper {
 
         // A model with no known lifetime is assumed to keep its cache a third longer than the owner's interval.
         const lifeMs = ttlMs ?? Math.floor((everyMs * 4) / 3);
-        let maxRefreshes = policy.maxRefreshes;
-        let until: number | undefined;
+        const base = { everyMs, lifeMs, since, maxCost: policy.maxCost };
 
-        if (policy.hours === "auto") {
-            const breakEven = facts.prices === undefined ? 0 : breakEvenRefreshes(facts.prices);
+        if (policy.hours !== "auto") {
+            return {
+                ...base,
+                until: since + policy.hours * 3_600_000,
+                maxRefreshes: policy.maxRefreshes,
+                breakEven: false,
+            };
+        }
 
-            // Auto needs both prices: without them it cannot know when keeping warm stops paying off.
-            if (breakEven === 0) {
-                return undefined;
-            }
+        const breakEven = facts.prices === undefined ? 0 : breakEvenRefreshes(facts.prices);
 
-            maxRefreshes = Math.min(maxRefreshes, breakEven);
-        } else {
-            until = since + policy.hours * 3_600_000;
+        // Auto needs both prices: without them it cannot know when keeping warm stops paying off.
+        if (breakEven === 0) {
+            return undefined;
         }
 
         return {
-            everyMs,
-            lifeMs,
-            since,
-            ...(until === undefined ? {} : { until }),
-            maxCost: policy.maxCost,
-            maxRefreshes,
-            auto: policy.hours === "auto",
+            ...base,
+            maxRefreshes: Math.min(policy.maxRefreshes, breakEven),
+            breakEven: breakEven < policy.maxRefreshes,
         };
     }
 
+    /** Plan the next idle refresh, `everyMs` after a request last touched the cache. */
+    #scheduleIdle(key: string, entry: Entry): void {
+        if (entry.timer !== undefined) {
+            this.#deps.clearTimer(entry.timer);
+            entry.timer = undefined;
+        }
+
+        this.#schedule(
+            key,
+            entry,
+            Math.max(1, entry.lastTouch + entry.idle!.everyMs - this.#deps.now()),
+        );
+    }
+
+    /** The run is over: keep its last request warm when the owner wants that, else stop. */
     #toIdle(key: string, entry: Entry, saved?: { since: number; failures: number }): void {
         const conversationId = entry.conversationId;
         const now = this.#deps.now();
@@ -932,17 +931,11 @@ export class CacheKeeper {
             return stop();
         }
 
-        const everyMs = plan.everyMs;
         const idle: IdleState = { ...plan, failures: saved?.failures ?? 0 };
 
         // The cache is gone already (a long restart): a refresh would only write it again.
         if (now >= entry.lastTouch + idle.lifeMs - 10_000) {
             return stop(saved === undefined ? undefined : "the cache expired during a restart");
-        }
-
-        if (entry.timer !== undefined) {
-            this.#deps.clearTimer(entry.timer);
-            entry.timer = undefined;
         }
 
         if (saved === undefined) {
@@ -954,7 +947,7 @@ export class CacheKeeper {
         entry.idle = idle;
         entry.account ??= this.#deps.accountFor?.(conversationId);
         this.#stopped.delete(conversationId);
-        this.#schedule(key, entry, Math.max(1, entry.lastTouch + everyMs - now));
+        this.#scheduleIdle(key, entry);
         this.#save(key, entry, true);
         this.#deps.changed?.(conversationId);
     }
@@ -966,12 +959,6 @@ export class CacheKeeper {
             return;
         }
 
-        const {
-            signal: _signal,
-            telemetry: _telemetry,
-            ...rest
-        } = entry.options as SimpleStreamOptions & { telemetry?: unknown };
-
         store.save(
             {
                 version: 1,
@@ -981,7 +968,10 @@ export class CacheKeeper {
                 modelId: entry.model.id,
                 messages: withContext ? entry.context.messages : [],
                 // Only what JSON keeps: a replay that differs because of a lost field fails the payload check.
-                options: JSON.parse(JSON.stringify(rest)) as Record<string, unknown>,
+                options: JSON.parse(JSON.stringify(replayOptions(entry.options))) as Record<
+                    string,
+                    unknown
+                >,
                 promptTokens: entry.promptTokens,
                 ...(entry.ttlMs === undefined ? {} : { ttlMs: entry.ttlMs }),
                 payloadHash: entry.payloadHash,
@@ -1043,9 +1033,7 @@ export class CacheKeeper {
         }
 
         if (entry.warms >= idle.maxRefreshes) {
-            return idle.auto &&
-                idle.maxRefreshes <
-                    (this.#deps.idlePolicy?.(entry.conversationId!)?.maxRefreshes ?? Infinity)
+            return idle.breakEven
                 ? "Auto: more refreshes would cost more than writing the cache again"
                 : "the refresh cap was reached";
         }
@@ -1109,13 +1097,6 @@ export class CacheKeeper {
             }
         }
 
-        const {
-            signal: _signal,
-            telemetry: _telemetry,
-            ...rest
-        } = entry.options as SimpleStreamOptions & {
-            telemetry?: unknown;
-        };
         const abort = new AbortController();
 
         entry.abort = abort;
@@ -1130,7 +1111,7 @@ export class CacheKeeper {
 
         let rejected = true;
         const options: ObservedOptions = {
-            ...rest,
+            ...replayOptions(entry.options),
             maxTokens: 1,
             maxRetries: 0,
             signal: abort.signal,
@@ -1298,7 +1279,7 @@ export class CacheKeeper {
                     this.#stopped.set(entry.conversationId, { reason, at: this.#deps.now() });
                 }
 
-                this.#deps.changed?.(entry.conversationId, reason);
+                this.#deps.changed?.(entry.conversationId);
             }
         }
     }

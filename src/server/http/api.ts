@@ -496,7 +496,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
             const id = conversationId(second);
 
-            // Keeping the session's cache warm once its run ends: who may is checked in `keep-warm.ts`.
+            // Keeping the session's cache warm once its run ends: anyone who can see and steer it chooses.
             if (body.keepWarm !== undefined) {
                 app.requireSee(user, id);
                 app.requireSteer(user);
@@ -653,8 +653,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "keep-warm" && second === undefined && method === "POST") {
-            app.keepWarm.setSettings(user, await readJson<unknown>(request));
-            await app.keepWarmSettingsChanged();
+            await app.keepWarm.setSettings(user, await readJson<unknown>(request));
 
             return json(response, 200, app.keepWarm.overview(user));
         }

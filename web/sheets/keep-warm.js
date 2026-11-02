@@ -25,8 +25,8 @@ const money = (amount) =>
           ? `$${amount.toFixed(2)}`
           : `$${amount.toFixed(3)}`;
 
-/** "45 min", "1 h", "1 h 30 min", "2 d 4 h". */
-export function minutesLabel(ms) {
+/** A span of time: "45 min", "1 h", "1 h 30 min", "2 d 4 h". */
+function durationLabel(ms) {
     const minutes = Math.round(ms / 60_000);
 
     if (minutes < 60) {
@@ -44,8 +44,8 @@ export function minutesLabel(ms) {
     return `${Math.floor(minutes / 60)} h${rest === 0 ? "" : ` ${rest} min`}`;
 }
 
-/** A time as a session's row names it: "Auto", "2 h", or "off". */
-export function defaultLabel(hours) {
+/** A keep-warm time in words: "Auto", "2 h", or "off". */
+function timeLabel(hours) {
     return hours === 0 ? "off" : hours === "auto" ? "Auto" : `${hours} h`;
 }
 
@@ -53,13 +53,17 @@ export function defaultLabel(hours) {
 export function keepWarmHint() {
     const hours = store.state.server?.keepWarm?.hours;
 
-    return hours === undefined ? "" : hours === 0 ? "off" : `after a run: ${defaultLabel(hours)}`;
+    return hours === undefined ? "" : hours === 0 ? "off" : `after a run: ${timeLabel(hours)}`;
 }
 
 /** Whether this server keeps sessions warm once their run ends. */
 export function keepWarmAvailable() {
     return store.state.server?.keepWarm !== undefined;
 }
+
+/** Refreshes that cost as much as one cache write; 0: the prices are not known. `breakEvenRefreshes` on the server. */
+const breakEvenOf = (read, write) =>
+    read > 0 && write > 0 ? Math.max(1, Math.floor(write / read)) : 0;
 
 /**
  * One model as keep warm sees it, the owner's values over Pi's: minutes between refreshes (undefined: not kept warm),
@@ -78,9 +82,14 @@ function modelPlan(model, settings) {
                   Math.min(lifetime * settings.share * 600, lifetime * 60_000 - 10_000) / 60_000,
               ) || undefined;
     const every = own.minutes === undefined ? shared : own.minutes > 0 ? own.minutes : undefined;
-    const breakEven = read > 0 && write > 0 ? Math.max(1, Math.floor(write / read)) : 0;
+    const breakEven = breakEvenOf(read, write);
+    // Where Auto stops, in minutes: at break-even or at the owner's refresh cap, whichever comes first.
+    const autoStop =
+        every === undefined || breakEven === 0
+            ? undefined
+            : Math.min(breakEven, settings.maxRefreshes) * every;
 
-    return { lifetime, read, write, shared, every, breakEven, own };
+    return { lifetime, read, write, shared, every, breakEven, autoStop, own };
 }
 
 /** A number field that saves when it loses focus or Enter is pressed, and shows what the server kept. */
@@ -147,6 +156,22 @@ const CONTEXTS = [
 /** The absences the table compares, in hours. */
 const AWAY = [1, 8, 24, 72, 144];
 
+/** A plain number input of the calculator: no saving, the number goes straight to `onChange`. */
+function CalcNumber({ value, onChange, min = 0, step = 1, unit, prefix, wide = false }) {
+    return html`<span class="keep-warm-input">
+        ${prefix}<input
+            type="number"
+            inputmode="decimal"
+            class="keep-warm-number"
+            style=${wide ? "width:7rem" : ""}
+            min=${min}
+            step=${step}
+            value=${value}
+            onInput=${(event) => onChange(Math.max(min, Number(event.currentTarget.value) || min))}
+        />${unit && html`<span class="muted small">${unit}</span>`}
+    </span>`;
+}
+
 const tokensLabel = (tokens) =>
     tokens >= 1e9
         ? `${(tokens / 1e9).toFixed(1)}B`
@@ -179,7 +204,7 @@ function Calculator({ models, settings }) {
     const millions = context / 1e6;
     const refresh = millions * r;
     const rewrite = millions * w;
-    const breakEven = r > 0 && w > 0 ? Math.max(1, Math.floor(w / r)) : 0;
+    const breakEven = breakEvenOf(r, w);
     // What the owner's settings let it do: Auto's break-even or the hours, and the caps.
     const stopsAfter = (() => {
         const byCap = Math.min(
@@ -203,7 +228,7 @@ function Calculator({ models, settings }) {
         const diff = rewrite - warm;
 
         return html`<tr class=${own ? "own" : ""} key=${own ? "own" : hours}>
-            <th scope="row">${minutesLabel(hours * 3_600_000)}</th>
+            <th scope="row">${durationLabel(hours * 3_600_000)}</th>
             <td>
                 ${money(warm)}
                 <span class=${`small ${diff >= 0 ? "ok" : "warn"}`}>
@@ -241,20 +266,20 @@ function Calculator({ models, settings }) {
             </label>
             <label class="keep-warm-field">
                 <span>Cache read</span>
-                <span class="keep-warm-input">$<input type="number" inputmode="decimal" class="keep-warm-number" min="0" step="0.01" value=${r} onInput=${(event) => setRead(Number(event.currentTarget.value) || 0)} /><span class="muted small">/M</span></span>
+                <${CalcNumber} value=${r} onChange=${setRead} step=${0.01} prefix="$" unit="/M" />
             </label>
             <label class="keep-warm-field">
                 <span>Cache write</span>
-                <span class="keep-warm-input">$<input type="number" inputmode="decimal" class="keep-warm-number" min="0" step="0.01" value=${w} onInput=${(event) => setWrite(Number(event.currentTarget.value) || 0)} /><span class="muted small">/M</span></span>
+                <${CalcNumber} value=${w} onChange=${setWrite} step=${0.01} prefix="$" unit="/M" />
             </label>
             <label class="keep-warm-field">
                 <span>Refresh every</span>
-                <span class="keep-warm-input"><input type="number" inputmode="decimal" class="keep-warm-number" min="1" value=${e} onInput=${(event) => setEvery(Math.max(1, Number(event.currentTarget.value) || 1))} /><span class="muted small">min</span></span>
+                <${CalcNumber} value=${e} onChange=${setEvery} min=${1} unit="min" />
             </label>
             <label class="keep-warm-field">
                 <span>Away for</span>
                 <span class="keep-warm-input">
-                    <input type="number" inputmode="decimal" class="keep-warm-number" min="0" value=${away} onInput=${(event) => setAway(Math.max(0, Number(event.currentTarget.value) || 0))} />
+                    <${CalcNumber} value=${away} onChange=${setAway} />
                     <select class="keep-warm-unit" value=${unit} onChange=${(event) => setUnit(Number(event.currentTarget.value))}>
                         <option value="1">hours</option>
                         <option value="24">days</option>
@@ -263,10 +288,7 @@ function Calculator({ models, settings }) {
             </label>
             <div class="keep-warm-field wide">
                 <span>Context</span>
-                <span class="keep-warm-input">
-                    <input type="number" inputmode="numeric" class="keep-warm-number" style="width:7rem" min="0" step="1000" value=${context} onInput=${(event) => setContext(Math.max(0, Number(event.currentTarget.value) || 0))} />
-                    <span class="muted small">tokens</span>
-                </span>
+                <${CalcNumber} value=${context} onChange=${setContext} step=${1000} unit="tokens" wide />
                 <div class="segmented" role="group" aria-label="Context size">
                     ${CONTEXTS.map(([tokens, label]) => html`<button class=${context === tokens ? "on" : ""} aria-pressed=${context === tokens} onClick=${() => setContext(tokens)}>${label}</button>`)}
                 </div>
@@ -274,7 +296,7 @@ function Calculator({ models, settings }) {
         </div>
         <p class="small">
             One refresh: <b>${money(refresh)}</b> · one cache write: <b>${money(rewrite)}</b> · keeping warm pays off
-            when you come back within <b>${breakEven > 0 ? minutesLabel(breakEven * e * 60_000) : "—"}</b>
+            when you come back within <b>${breakEven > 0 ? durationLabel(breakEven * e * 60_000) : "—"}</b>
             ${breakEven > 0 ? ` (${breakEven} refreshes)` : ""}.
         </p>
         <div class="keep-warm-table-wrap">
@@ -297,9 +319,84 @@ function Calculator({ models, settings }) {
             ${
                 stopsAfter === 0
                     ? "With your settings it is not kept warm, so you pay the cache write when you come back."
-                    : `With your settings it stops after ${stopsAfter} ${stopsAfter === 1 ? "refresh" : "refreshes"} (${minutesLabel(stopsAfter * e * 60_000)}, ${money(stopsAfter * refresh)}); away longer, you pay those and the cache write.`
+                    : `With your settings it stops after ${stopsAfter} ${stopsAfter === 1 ? "refresh" : "refreshes"} (${durationLabel(stopsAfter * e * 60_000)}, ${money(stopsAfter * refresh)}); away longer, you pay those and the cache write.`
             }${" "}Tokens read are what counts against a subscription's limits, where the prices are $0.
         </p>
+    </div>`;
+}
+
+/** The values the owner may set for a model: what it is called, its unit, the most it takes, and Pi's value. */
+const MODEL_FIELDS = [
+    {
+        key: "lifetime",
+        label: "Cache",
+        unit: "min",
+        min: 1,
+        max: 10_080,
+        pi: (model) => model.pi.lifetime,
+    },
+    {
+        key: "read",
+        label: "Read",
+        prefix: "$",
+        max: 10_000,
+        step: 0.01,
+        pi: (model) => model.pi.read,
+    },
+    {
+        key: "write",
+        label: "Write",
+        prefix: "$",
+        max: 10_000,
+        step: 0.01,
+        pi: (model) => model.pi.write,
+    },
+    { key: "minutes", label: "Every", unit: "min", max: 1440, pi: (_model, plan) => plan.shared },
+];
+
+/** One model in the settings window: what keep warm does with it, and its four values, Pi's in grey. */
+function ModelCard({ model, plan, onSet }) {
+    const { own, every, breakEven, autoStop } = plan;
+    const note =
+        own.minutes === 0
+            ? "never kept warm"
+            : every === undefined
+              ? html`<span class="warn">cache lifetime not known: set Cache or Every</span>`
+              : breakEven === 0
+                ? html`<span class="warn">prices not known: Auto skips it</span>`
+                : `every ${durationLabel(every * 60_000)} · Auto stops after ${durationLabel(autoStop * 60_000)}`;
+
+    return html`<div class=${`keep-warm-model ${own.minutes === 0 ? "never" : ""}`}>
+        <div class="keep-warm-model-name">
+            <span title=${model.spec}>${model.name}</span>
+            <span class="muted small">${note}</span>
+            ${
+                model.pi.pricesFrom &&
+                own.read === undefined &&
+                html`<span class="muted small">prices from ${model.pi.pricesFrom}</span>`
+            }
+        </div>
+        <div class="keep-warm-cells">
+            ${MODEL_FIELDS.map((field) => {
+                const pi = field.pi(model, plan);
+
+                return html`<label class="keep-warm-cell" key=${field.key}>
+                    <span class="muted small">${field.label}</span>
+                    <span class="keep-warm-input">
+                        ${field.prefix}<${NumberField}
+                            value=${own[field.key]}
+                            min=${field.min ?? 0}
+                            max=${field.max}
+                            step=${field.step ?? 1}
+                            width="100%"
+                            label=${`${field.label} for ${model.name}`}
+                            placeholder=${pi === undefined ? "—" : String(pi)}
+                            onSave=${(value) => onSet(field.key, value)}
+                        />${field.unit && html`<span class="muted small">${field.unit}</span>`}
+                    </span>
+                </label>`;
+            })}
+        </div>
     </div>`;
 }
 
@@ -357,11 +454,8 @@ export function KeepWarmSheet() {
     // Auto's stop for each model that is kept warm, as the owner's settings make it.
     const autoStops = warmable
         .map((model) => ({ model, plan: plans.get(model.spec) }))
-        .filter(({ plan }) => plan.breakEven > 0)
-        .map(
-            ({ model, plan }) =>
-                `${model.name}: ${minutesLabel(Math.min(plan.breakEven, settings.maxRefreshes) * plan.every * 60_000)}`,
-        );
+        .filter(({ plan }) => plan.autoStop !== undefined)
+        .map(({ model, plan }) => `${model.name}: ${durationLabel(plan.autoStop * 60_000)}`);
     const setModel = (spec, field, value) => save({ models: { [spec]: { [field]: value } } });
 
     return html`<${Sheet} title="Keep warm" onClose=${closeSheet} className="keep-warm-sheet">
@@ -505,59 +599,14 @@ export function KeepWarmSheet() {
                         ([provider, list]) => html`<div class="keep-warm-provider" key=${provider}>
                             <div class="subagent-models-head">${provider} <span class="muted">${list.length}</span></div>
                             <div class="keep-warm-model-grid">
-                                ${list.map((model) => {
-                                    const plan = plans.get(model.spec);
-                                    const { own, every, breakEven } = plan;
-                                    const field = (
-                                        key,
-                                        label,
-                                        unitText,
-                                        placeholder,
-                                        max,
-                                        step = 1,
-                                        prefix = "",
-                                    ) => html`<label class="keep-warm-cell">
-                                        <span class="muted small">${label}</span>
-                                        <span class="keep-warm-input">
-                                            ${prefix}<${NumberField}
-                                                value=${own[key]}
-                                                min=${key === "lifetime" ? 1 : 0}
-                                                max=${max}
-                                                step=${step}
-                                                width="100%"
-                                                label=${`${label} for ${model.name}`}
-                                                placeholder=${placeholder === undefined ? "—" : String(placeholder)}
-                                                onSave=${(value) => setModel(model.spec, key, value)}
-                                            />${unitText && html`<span class="muted small">${unitText}</span>`}
-                                        </span>
-                                    </label>`;
-                                    const note =
-                                        own.minutes === 0
-                                            ? "never kept warm"
-                                            : every === undefined
-                                              ? html`<span class="warn">cache lifetime not known: set Cache or Every</span>`
-                                              : breakEven === 0
-                                                ? html`<span class="warn">prices not known: Auto skips it</span>`
-                                                : `every ${minutesLabel(every * 60_000)} · Auto stops after ${minutesLabel(Math.min(breakEven, settings.maxRefreshes) * every * 60_000)}`;
-
-                                    return html`<div class=${`keep-warm-model ${own.minutes === 0 ? "never" : ""}`} key=${model.spec}>
-                                        <div class="keep-warm-model-name">
-                                            <span title=${model.spec}>${model.name}</span>
-                                            <span class="muted small">${note}</span>
-                                            ${
-                                                model.pi.pricesFrom &&
-                                                own.read === undefined &&
-                                                html`<span class="muted small">prices from ${model.pi.pricesFrom}</span>`
-                                            }
-                                        </div>
-                                        <div class="keep-warm-cells">
-                                            ${field("lifetime", "Cache", "min", model.pi.lifetime, 10080)}
-                                            ${field("read", "Read", "", model.pi.read, 10000, 0.01, "$")}
-                                            ${field("write", "Write", "", model.pi.write, 10000, 0.01, "$")}
-                                            ${field("minutes", "Every", "min", plan.shared, 1440)}
-                                        </div>
-                                    </div>`;
-                                })}
+                                ${list.map(
+                                    (model) => html`<${ModelCard}
+                                        key=${model.spec}
+                                        model=${model}
+                                        plan=${plans.get(model.spec)}
+                                        onSet=${(field, value) => setModel(model.spec, field, value)}
+                                    />`,
+                                )}
                             </div>
                         </div>`,
                     )}
@@ -590,11 +639,9 @@ export function KeepWarmRow() {
     const line = status.warm
         ? [
               `next ${time(status.nextAt)}`,
-              status.auto
-                  ? `${status.refreshes} of ${status.maxRefreshes} refreshes`
-                  : `${status.refreshes} ${status.refreshes === 1 ? "refresh" : "refreshes"}`,
+              `${status.refreshes} of ${status.maxRefreshes} refreshes`,
               money(status.spent),
-              `every ${minutesLabel(status.everyMs)}`,
+              `every ${durationLabel(status.everyMs)}`,
               status.until === undefined ? "" : `until ${time(status.until)}`,
           ]
               .filter(Boolean)
@@ -617,7 +664,7 @@ export function KeepWarmRow() {
                 ([value, label]) => html`<button
                     class=${state.choice === value ? "on" : ""}
                     aria-pressed=${state.choice === value}
-                    title=${value === "default" ? `The owner's: ${defaultLabel(server.keepWarm.hours)}` : value === "auto" ? AUTO : ""}
+                    title=${value === "default" ? `The owner's: ${timeLabel(server.keepWarm.hours)}` : value === "auto" ? AUTO : ""}
                     disabled=${!steer}
                     onClick=${() => state.choice !== value && choose(value)}
                 >
@@ -626,7 +673,7 @@ export function KeepWarmRow() {
             )}
         </div>
         <div class="muted small">
-            ${state.choice === "default" ? `Default: ${defaultLabel(server.keepWarm.hours)} · ` : ""}${line}
+            ${state.choice === "default" ? `Default: ${timeLabel(server.keepWarm.hours)} · ` : ""}${line}
         </div>
     </div>`;
 }
