@@ -5,7 +5,7 @@
 import { readdirSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import QRCode from "qrcode";
 import { MAX_PEEKS } from "../app.ts";
 import {
@@ -22,6 +22,7 @@ import {
 import type { User } from "../config.ts";
 import { MAX_AVATAR, readAvatar } from "../avatars.ts";
 import { HttpError } from "../errors.ts";
+import { machineRoots, parentFolder } from "../paths.ts";
 import { desktopTheme, wallpaperFile } from "../omarchy.ts";
 import { runningBoard, runningNow } from "../running.ts";
 import { serveImage } from "./assets.ts";
@@ -726,8 +727,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             return json(response, 200, {
                 path,
-                parent: dirname(path) === path ? null : dirname(path),
+                parent: parentFolder(path),
                 home: homedir(),
+                // This machine's top folders: `/`, or each Windows drive, as places to start from.
+                roots: await machineRoots(),
                 dirs: dirs.slice(0, 1000),
                 recent,
             });

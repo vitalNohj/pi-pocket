@@ -24,7 +24,7 @@ import { type Changes, changesIn, diffOf, editFacts, revertFile } from "./change
 import type { User } from "./config.ts";
 import { describe, HttpError } from "./errors.ts";
 import { FileLists, type FileListing, type FileView, viewFile } from "./files.ts";
-import { displayPath, expandHome } from "./paths.ts";
+import { displayPath, expandFolder, expandHome } from "./paths.ts";
 import type { ClientEntry } from "./projection.ts";
 
 /** How many sessions' Pi edits are kept between looks at Changes (`#edits`). */
@@ -199,7 +199,7 @@ export class Workspace {
             );
         }
 
-        const absolute = resolve(expandHome(path.trim() === "" ? "~" : path.trim()));
+        const absolute = resolve(expandFolder(path.trim() === "" ? "~" : path.trim()));
         let found;
 
         try {
@@ -250,10 +250,13 @@ export class Workspace {
             throw new HttpError(400, "Name the folder to make.");
         }
 
-        const expanded = expandHome(written);
+        const expanded = expandFolder(written);
 
         if (!isAbsolute(expanded)) {
-            throw new HttpError(400, "Give the folder's whole path, from / or ~.");
+            throw new HttpError(
+                400,
+                "Give the folder's whole path, from / or ~ (or a drive, as D:\\).",
+            );
         }
 
         const absolute = resolve(expanded);
