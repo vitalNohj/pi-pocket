@@ -157,6 +157,8 @@ export class RunnerLink {
     readonly #questions = new Map<string, (answer: Confirmed) => void>();
     /** The network streams of the current connection, when its runner opens them (`hello.network`). */
     #network: LinkNetwork | undefined;
+    /** The folder its runner keeps browser downloads in (`hello.downloads`); undefined: its temporary folder. */
+    downloads: string | undefined;
 
     constructor(id: string, runners: Runners) {
         this.id = id;
@@ -334,6 +336,10 @@ export class RunnerLink {
         this.#asks = hello.asks === true;
         this.#network?.drop();
         this.#network = hello.network === true ? this.#networkOf(socket) : undefined;
+        this.downloads =
+            typeof hello.downloads === "string" && hello.downloads !== ""
+                ? hello.downloads
+                : undefined;
 
         const network = this.#network;
 

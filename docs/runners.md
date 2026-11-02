@@ -22,16 +22,16 @@ The computer connects out to the server over a WebSocket. It needs no open port,
 
 Run these commands on the linked computer:
 
-| Command                                 | What it does                                                                                                                     |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `pi-pocket runner`                      | In a terminal, opens a menu: link, start, settings, service, unlink, and help. Without a terminal, it starts.                    |
-| `pi-pocket runner start`                | Runs with the saved link, without questions. The service and the desktop app use this command.                                   |
-| `pi-pocket runner link <server> <code>` | Saves a link without questions. Use the server address and a one-time code from **Runners**.                                     |
-| `pi-pocket runner settings`             | Shows the settings. `settings confirm on\|off`, `settings http allow\|refuse`, and `settings network allow\|refuse` change them. |
-| `pi-pocket runner status`               | Shows the saved link and whether the systemd service is running. It does not check the connection.                               |
-| `pi-pocket runner unlink`               | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                  |
-| `pi-pocket runner service`              | On Linux with systemd, starts a user service that keeps the runner running after you close the terminal.                         |
-| `pi-pocket runner service remove`       | Stops and removes the service. Keeps the saved link.                                                                             |
+| Command                                 | What it does                                                                                                                                                             |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pi-pocket runner`                      | In a terminal, opens a menu: link, start, settings, service, unlink, and help. Without a terminal, it starts.                                                            |
+| `pi-pocket runner start`                | Runs with the saved link, without questions. The service and the desktop app use this command.                                                                           |
+| `pi-pocket runner link <server> <code>` | Saves a link without questions. Use the server address and a one-time code from **Runners**.                                                                             |
+| `pi-pocket runner settings`             | Shows the settings. `settings confirm on\|off`, `settings http allow\|refuse`, `settings network allow\|refuse`, and `settings downloads <folder>\|default` change them. |
+| `pi-pocket runner status`               | Shows the saved link and whether the systemd service is running. It does not check the connection.                                                                       |
+| `pi-pocket runner unlink`               | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                                                          |
+| `pi-pocket runner service`              | On Linux with systemd, starts a user service that keeps the runner running after you close the terminal.                                                                 |
+| `pi-pocket runner service remove`       | Stops and removes the service. Keeps the saved link.                                                                                                                     |
 
 For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner start` or `pi-pocket runner service`.
 
@@ -93,9 +93,11 @@ How it works: these pages use a second Chromium on the server, with a proxy buil
 
 To stop sharing the network, choose **Settings** → **Share the network with browsers** in the `pi-pocket runner` menu, or run `pi-pocket runner settings network refuse`. The runner then refuses every connection, and pages show "<name> does not share its network". The change takes effect without a restart.
 
+**DNS rebinding guard.** The runner resolves each host name itself and connects to the address that it checked, not to the name again. If a public name resolves to a private address (`127.0.0.0/8`, `::1`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `fc00::/7`, `fe80::/10`, or their IPv4-mapped forms), the runner refuses the connection. Without the guard, a site could make its name point to the computer's network and read from it. IP addresses, `localhost`, single-label names such as `nas`, and names that end in `.local`, `.lan`, `.home.arpa`, `.internal`, `.ts.net`, or `.localhost` can still reach private addresses. This guard has no setting.
+
 The risk: a page in this browser can reach everything that the linked computer can reach, including its `localhost` and its local network. Pi and anyone who can steer the session's Browser panel can open such pages. Link only a server you trust, and turn off network sharing if the computer must not do this. Other programs on the server cannot use the proxy, because they do not have the credentials.
 
-**Downloads.** A file that a page downloads goes to the computer's temporary folder, in `pi-pocket-downloads/<session id>/` (on macOS, the per-user `$TMPDIR`, not `/tmp`). The tool result gives the full path. If the name is already used, the file gets a number, such as `report (2).pdf`. The bytes pass through the server: Chromium saves the file there, Pi Pocket copies it to the computer in parts, and then deletes the server copy at once, also when the copy fails. Downloads larger than 2 GiB fail. In a session on the server, downloads go to `~/.pi-pocket/downloads/<session id>/` on the server.
+**Downloads.** A file that a page downloads goes to the computer's temporary folder, in `pi-pocket-downloads/<session id>/` (on macOS, the per-user `$TMPDIR`, not `/tmp`). To use another folder, run `pi-pocket runner settings downloads <folder>`. The files then go to `<folder>/<session id>/`. `pi-pocket runner settings downloads default` returns to the temporary folder. The runner tells the server about the folder when it connects, so a running runner uses a new folder after its next reconnect. The tool result gives the full path and the size. If the name is already used, the file gets a number, such as `report (2).pdf`. The bytes pass through the server: Chromium saves the file there, Pi Pocket copies it to the computer in parts, and then deletes the server copy at once, also when the copy fails. Downloads larger than 2 GiB fail. In a session on the server, downloads go to `pi-pocket-downloads-<uid>/<session id>/` in the server's temporary folder. Only the server's user can open this folder (mode 0700). Pi Pocket refuses the folder if another user owns it or if it is a link.
 
 **macOS desktop app.** On macOS 15 and later, connections to devices on the local network (not `localhost`) can need the **Local Network** permission. The desktop app runs the runner as a child process, so macOS can ask for this permission on behalf of the app. The app's `Info.plist` does not have an `NSLocalNetworkUsageDescription` yet, so the system prompt has no explanation. If pages on the local network fail with "No route to host", allow Pi Pocket in System Settings → Privacy & Security → Local Network. This was not tested on a Mac.
 

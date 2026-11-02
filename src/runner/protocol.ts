@@ -72,6 +72,8 @@ export type Hello = {
     asks?: boolean;
     /** The runner opens network streams (`net-open`). Absent (an older runner): the server asks it for none. */
     network?: boolean;
+    /** The folder for its browser downloads, absolute (`settings downloads`). Absent: its temporary folder. */
+    downloads?: string;
 };
 
 /**

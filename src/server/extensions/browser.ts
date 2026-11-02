@@ -51,14 +51,14 @@ const MAX_TEXT = 20_000;
 const GUIDE = `The browser tool is a real Chromium on this machine. The people in this conversation see its page live in the Browser panel and can use it too: show and test web work there (local dev servers, HTML files on this machine, any site).
 - Start a dev server in the background with bash first (\`nohup npm run dev > /tmp/dev.log 2>&1 &\`), then navigate to it.
 - snapshot gives refs like [e12] for click, type, select, and hover, valid until the next snapshot. screenshot shows the layout; viewport changes the size. After a change, check console for errors.
-- A download goes to the server's folder for this conversation; the result says where. wait with download: true waits for it.`;
+- A download's result gives its path. wait with download: true waits for it.`;
 
 /** The guide for a session on another computer: the browser runs on the server, its pages load from the computer. */
 function remoteGuide(computer: string): string {
     return `The browser tool is a real Chromium that runs on the Pi Pocket server, but every page it opens loads through "${computer}": addresses such as localhost:5173 are that computer's. The people in this conversation see its page live in the Browser panel and can use it too.
 - Start a dev server there with bash first (\`nohup npm run dev > /tmp/dev.log 2>&1 &\`), then navigate to it. File paths and file:// URLs do not open: serve the files instead.
 - snapshot gives refs like [e12] for click, type, select, and hover, valid until the next snapshot. screenshot shows the layout; viewport changes the size. After a change, check console for errors.
-- A download goes to that computer's temporary folder; the result says where. wait with download: true waits for it.`;
+- A download goes to that computer; its result gives its path. wait with download: true waits for it.`;
 }
 
 function clip(text: string, max = MAX_TEXT): string {
