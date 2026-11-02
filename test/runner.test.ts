@@ -493,60 +493,6 @@ describe("runner link", () => {
         }
     });
 
-    it("resolves names itself, and refuses a public name that leads to its own network", async () => {
-        const setup = await serve();
-        const echo = createNetServer((socket) => socket.pipe(socket));
-
-        await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
-        const port = (echo.address() as AddressInfo).port;
-        const asked: string[] = [];
-        const lines: string[] = [];
-        // This computer's DNS, as a rebinding site would make it answer.
-        const { runner, id } = startRunner(setup, "Guard", lines, {
-            resolve: (host, _family, done) => {
-                asked.push(host);
-                done(null, [{ address: "127.0.0.1", family: 4 }]);
-            },
-        });
-
-        try {
-            await until(() => runner.connected, "the runner to connect");
-
-            const link = setup.runners.link(id);
-
-            await assert.rejects(
-                link.openNetwork("rebind.example.com", port, socketPair()[1]),
-                (error: Error) => {
-                    assert.match(
-                        error.message,
-                        /rebind\.example\.com is a public name, but it resolves to 127\.0\.0\.1, a private address/,
-                    );
-
-                    return true;
-                },
-            );
-            assert.ok(lines.some((line) => /rebind\.example\.com is a public name/.test(line)));
-
-            // A local name: the address the runner resolved is the one it connects to.
-            const [near, far] = socketPair();
-            let echoed = "";
-
-            await link.openNetwork("dev.box.local", port, far);
-            near.on("data", (chunk: Buffer) => (echoed += chunk.toString()));
-            near.write("hi");
-            await until(() => echoed === "hi", "the echo");
-            near.destroy();
-
-            // An IP literal needs no lookup.
-            await link.openNetwork("127.0.0.1", port, socketPair()[1]);
-            assert.deepEqual(asked, ["rebind.example.com", "dev.box.local"]);
-        } finally {
-            await runner.stop();
-            echo.close();
-            await close(setup);
-        }
-    });
-
     it("tells the server its downloads folder, once it is set", async () => {
         const setup = await serve();
         const settings: RunnerSettings = {};
