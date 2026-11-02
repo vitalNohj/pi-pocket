@@ -110,6 +110,10 @@ These examples work. `npm test` runs them (`test/docs-examples.test.ts`):
 
 Modules can carry a file that a Pi extension keeps beside each Pi session file into a session continued here. See [Files that come with Pi's sessions](extensions/pi-session-companions.md) and the experimental [`host.registerPiSessionCompanion`](extensions/reference/host.md#registerpisessioncompanion) API.
 
+## Files that come with Pi's sessions
+
+Modules can carry a file that a Pi extension keeps beside each Pi session file into a session continued here. See [Files that come with Pi's sessions](extensions/pi-session-companions.md) and the experimental [`host.registerPiSessionCompanion`](extensions/reference/host.md#registerpisessioncompanion) API.
+
 ## Rules that are easy to break
 
 - **Nothing two times.** A restart can run a hook or a safe tool again. Some work must occur one time only: a message that you send, money that you spend, a line that you add to a file. Put it behind `api.memo`, or behind a key that lets a second run find the first.
