@@ -65,6 +65,8 @@ export type Hello = {
      * older than this): the server does not ask, and sessions start as before.
      */
     asks?: boolean;
+    /** The runner understands `Withdraw`: a session question can be cancelled by the server. */
+    withdraws?: boolean;
 };
 
 /**
@@ -85,6 +87,9 @@ export type Confirm = {
 /** Runner to server: the answer to `Confirm`; `reason` says why not, in words for the person who asked. */
 export type Confirmed = { type: "confirmed"; id: string; allow: boolean; reason?: string };
 
+/** Server to runner: the session question with this id no longer stands. */
+export type Withdraw = { type: "withdraw"; id: string };
+
 /** Server to runner, the answer to `Hello`. */
 export type Welcome = {
     type: "welcome";
@@ -103,7 +108,7 @@ export type Ack = { type: "ack"; received: number };
 /** Either side, before it closes the link on purpose: why. */
 export type Bye = { type: "bye"; reason: string };
 
-export type ControlMessage = Hello | Welcome | Ack | Bye | Confirm | Confirmed;
+export type ControlMessage = Hello | Welcome | Ack | Bye | Confirm | Confirmed | Withdraw;
 
 /** Parse a text message; undefined for anything that is not a control message. */
 export function parseControl(text: string): ControlMessage | undefined {
@@ -149,6 +154,8 @@ export function parseControl(text: string): ControlMessage | undefined {
                 typeof message.folder === "string"
                 ? (message as Confirm)
                 : undefined;
+        case "withdraw":
+            return typeof message.id === "string" ? (message as Withdraw) : undefined;
         case "confirmed":
             return typeof message.id === "string" &&
                 typeof message.allow === "boolean" &&

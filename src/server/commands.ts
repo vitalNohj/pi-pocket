@@ -455,6 +455,7 @@ export class Commands {
         runner: string,
         request: { cwd?: string; worktree?: unknown },
         title: string | undefined,
+        signal?: AbortSignal,
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
 
@@ -476,7 +477,9 @@ export class Commands {
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
 
         // The computer's person allows it there (its runner asks, unless they turned asking off).
-        await app.runners.link(runner).confirm({ kind: "new", person: user.name, folder: cwd });
+        await app.runners
+            .link(runner)
+            .confirm({ kind: "new", person: user.name, folder: cwd }, signal);
 
         const initial = this.#defaultModel();
         const now = Date.now();
@@ -516,7 +519,10 @@ export class Commands {
     async createSession(
         user: User,
         request: { cwd?: string; title?: string; worktree?: unknown; runner?: unknown },
-        { projectDefaults = true }: { projectDefaults?: boolean } = {},
+        {
+            projectDefaults = true,
+            signal,
+        }: { projectDefaults?: boolean; signal?: AbortSignal } = {},
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
 
@@ -531,7 +537,7 @@ export class Commands {
         const runner = optionalText(request.runner, "runner");
 
         if (runner !== undefined) {
-            return this.#createRemote(user, runner, request, title);
+            return this.#createRemote(user, runner, request, title, signal);
         }
 
         const folder = app.workspace.checkDirectory(
@@ -2184,6 +2190,7 @@ export class Commands {
         id: ConversationId,
         user: User,
         request: { entryId?: unknown; worktree?: unknown; place?: unknown },
+        signal?: AbortSignal,
     ): Promise<{ id: ConversationId }> {
         this.#requireForkable(id, user);
         const place = checkPlace(request.place);
@@ -2192,13 +2199,18 @@ export class Commands {
 
         if (request.entryId === undefined) {
             return {
-                id: await this.#branch(id, user, {
-                    at: await this.#latestReply(id),
-                    label: "fork",
-                    worktree,
-                    place,
-                    ...(agent === undefined ? {} : { agent }),
-                }),
+                id: await this.#branch(
+                    id,
+                    user,
+                    {
+                        at: await this.#latestReply(id),
+                        label: "fork",
+                        worktree,
+                        place,
+                        ...(agent === undefined ? {} : { agent }),
+                    },
+                    signal,
+                ),
             };
         }
 
@@ -2220,13 +2232,18 @@ export class Commands {
         }
 
         return {
-            id: await this.#branch(id, user, {
-                at: entryId,
-                label: "fork",
-                worktree,
-                place,
-                ...(agent === undefined ? {} : { agent }),
-            }),
+            id: await this.#branch(
+                id,
+                user,
+                {
+                    at: entryId,
+                    label: "fork",
+                    worktree,
+                    place,
+                    ...(agent === undefined ? {} : { agent }),
+                },
+                signal,
+            ),
         };
     }
 
@@ -2277,6 +2294,7 @@ export class Commands {
             worktree?: unknown;
             place?: unknown;
         },
+        signal?: AbortSignal,
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
 
@@ -2363,14 +2381,19 @@ export class Commands {
             ),
         };
         const label = edit !== undefined ? "edit" : asked !== undefined ? model.name : "retry";
-        const forked = await this.#branch(id, user, {
-            at: previous?.id as unknown as number | undefined,
-            label,
-            agent,
-            worktree: place?.worktree ?? request.worktree === true,
-            place,
-            resend,
-        });
+        const forked = await this.#branch(
+            id,
+            user,
+            {
+                at: previous?.id as unknown as number | undefined,
+                label,
+                agent,
+                worktree: place?.worktree ?? request.worktree === true,
+                place,
+                resend,
+            },
+            signal,
+        );
         const submission = await (
             await app.conversation(forked)
         ).submit(
@@ -2627,6 +2650,7 @@ export class Commands {
             place?: CopyPlaceRequest | undefined;
             resend?: Resend;
         },
+        signal?: AbortSignal,
     ): Promise<ConversationId> {
         const meta = this.#app.sessionMeta(id)!;
         const sourceTitle = meta.title ?? "New session";
@@ -2634,7 +2658,7 @@ export class Commands {
         const destination = await this.#destination(id, user, branch.place, branch.worktree);
 
         return this.#inPlace(destination.cwd, branch.worktree, title, (place) =>
-            this.#fork(id, user, { ...branch, title, sourceTitle, place, destination }),
+            this.#fork(id, user, { ...branch, title, sourceTitle, place, destination }, signal),
         );
     }
 
@@ -2654,6 +2678,7 @@ export class Commands {
             destination: Destination;
             resend?: Resend;
         },
+        signal?: AbortSignal,
     ): Promise<ConversationId> {
         const app = this.#app;
         const source = await app.agentState(id);
@@ -2671,7 +2696,7 @@ export class Commands {
         if (runner !== undefined) {
             await app.runners
                 .link(runner)
-                .confirm({ kind: "fork", person: user.name, folder: place.cwd });
+                .confirm({ kind: "fork", person: user.name, folder: place.cwd }, signal);
         }
 
         const now = Date.now();
