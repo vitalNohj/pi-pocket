@@ -223,7 +223,14 @@ describe("a session on another computer", () => {
             assert.ok(tools.includes(name), `${name} is offered`);
         }
 
-        for (const name of ["background", "browser", "artifact", "design_preview"]) {
+        // The browser too, loaded when Pi asks for it: its pages load through that computer (`browser/proxy.ts`).
+        const deferred = (await (await app.conversation(id as never)).agent(context)).deferred.map(
+            (tool) => tool.name,
+        );
+
+        assert.ok(deferred.includes("browser"), "browser waits to be loaded");
+
+        for (const name of ["background", "artifact", "design_preview"]) {
             assert.ok(!tools.includes(name), `${name} is not offered`);
         }
     });

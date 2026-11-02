@@ -11,7 +11,8 @@
  *
  *   pi-pocket runner start                  run with the saved link (services and the desktop app run this)
  *   pi-pocket runner link <server> <code>   link this computer, with a code from Menu > Runners
- *   pi-pocket runner settings [name value]  show or change a setting: confirm on|off, http allow|refuse
+ *   pi-pocket runner settings [name value]  show or change a setting: confirm on|off, http allow|refuse,
+ *                                           network allow|refuse
  *   pi-pocket runner status                 show the link and its settings
  *   pi-pocket runner service [remove]       keep it running as a systemd user service (Linux)
  *   pi-pocket runner unlink                 forget the link
@@ -81,6 +82,8 @@ In a terminal, run pi-pocket runner for a menu. For scripts:
       confirm on|off       Ask here before a new session starts (default: on)
       http allow|refuse    Plain HTTP to a server that is not this computer or
                            on your tailnet (default: refuse)
+      network allow|refuse Sessions' browsers use this computer's network
+                           (default: allow)
   pi-pocket runner status
     Show the link, its settings, and the service.
   pi-pocket runner service
@@ -194,6 +197,7 @@ function settingsOf(link: Link | undefined): Required<RunnerSettings> {
     return {
         confirm: link?.settings?.confirm !== false,
         allowHttp: link?.settings?.allowHttp === true,
+        network: link?.settings?.network !== false,
     };
 }
 
@@ -354,6 +358,7 @@ function settingsLines(settings: Required<RunnerSettings>): string[] {
     return [
         `confirm ${settings.confirm ? "on" : "off"}`,
         `http ${settings.allowHttp ? "allow" : "refuse"}`,
+        `network ${settings.network ? "allow" : "refuse"}`,
     ];
 }
 
@@ -394,8 +399,19 @@ function settingsCommand(file: string, args: string[]): void {
             return;
         }
 
+        if (name === "network" && (value === "allow" || value === "refuse")) {
+            changeSettings(file, { network: value === "allow" });
+            console.log(
+                value === "allow"
+                    ? "Sessions' browsers open their connections from this computer: they reach what it reaches, including its localhost and local network."
+                    : "Sessions' browsers cannot open pages through this computer.",
+            );
+
+            return;
+        }
+
         throw new Problem(
-            "Use: pi-pocket runner settings confirm on|off, or: pi-pocket runner settings http allow|refuse",
+            "Use: pi-pocket runner settings confirm on|off, http allow|refuse, or network allow|refuse",
         );
     } catch (error) {
         fail((error as Error).message);
@@ -732,6 +748,7 @@ async function status(file: string): Promise<string> {
         tools,
         `Ask before new sessions: ${settings.confirm ? "on" : "off"}`,
         `Plain HTTP: ${settings.allowHttp ? "allowed to this server" : "only to this computer or your tailnet"}`,
+        `Share the network with browsers: ${settings.network ? "on" : "off"}`,
         ...(serviceActive() ? [`Service: ${UNIT} (running)`] : []),
     ].join("\n");
 }
@@ -871,13 +888,19 @@ async function settingsMenu(file: string): Promise<void> {
                         ? "to this server, on any network"
                         : "only this computer and your tailnet",
                 },
+                {
+                    label: `Share the network with browsers: ${settings.network ? "on" : "off"}`,
+                    detail: settings.network
+                        ? "sessions' browsers browse from here"
+                        : "sessions' browsers cannot open pages",
+                },
                 { label: "Back", detail: "" },
             ],
             at,
             { clear: true },
         );
 
-        if (picked === undefined || picked === 2) {
+        if (picked === undefined || picked === 3) {
             return;
         }
 
@@ -885,8 +908,10 @@ async function settingsMenu(file: string): Promise<void> {
 
         if (picked === 0) {
             changeSettings(file, { confirm: !settings.confirm });
-        } else {
+        } else if (picked === 1) {
             changeSettings(file, { allowHttp: !settings.allowHttp });
+        } else {
+            changeSettings(file, { network: !settings.network });
         }
     }
 }

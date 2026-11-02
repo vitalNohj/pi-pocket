@@ -37,7 +37,10 @@ import {
     type Confirm,
     type Confirmed,
     type Hello,
+    readStreamData,
+    STREAM_DATA,
 } from "../runner/protocol.ts";
+import { LinkNetwork, NetError, type OpenOptions } from "./runner-network.ts";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import type { ConfigStore, StoredRunner } from "./config.ts";
 import { HttpError } from "./errors.ts";
@@ -65,6 +68,8 @@ export const REMOTE_EXTENSIONS = [
     "pocket-plan",
     "pocket-memory",
     "pocket-triggers",
+    // Its pages load through the computer (`runner-network.ts`), and it opens no files of this server.
+    "pocket-browser",
 ] as const;
 
 /** How long a one-time link code works. */
@@ -183,6 +188,8 @@ export class RunnerLink {
     #withdraws = false;
     /** Questions sent to its runner, waiting for `confirmed`. */
     readonly #questions = new Map<string, (answer: Confirmed) => void>();
+    /** The network streams of the current connection, when its runner opens them (`hello.network`). */
+    #network: LinkNetwork | undefined;
 
     constructor(id: string, runners: Runners) {
         this.id = id;
@@ -370,6 +377,11 @@ export class RunnerLink {
         this.#withdraws = hello.withdraws === true;
         this.#runners.toolsSeen(this.id, hello.tools);
 
+        this.#network?.drop();
+        this.#network = hello.network === true ? this.#networkOf(socket) : undefined;
+
+        const network = this.#network;
+
         const current = this.#session;
         const resent =
             current !== undefined && current.live && hello.session === current.id
@@ -451,19 +463,36 @@ export class RunnerLink {
             }
 
             if (binary) {
-                this.#data(session, toBuffer(data));
+                const bytes = toBuffer(data);
+                const stream = bytes[0] === STREAM_DATA ? readStreamData(bytes) : undefined;
+
+                if (stream !== undefined && network !== undefined) {
+                    network.data(stream.id, stream.bytes);
+                } else if (bytes[0] === STREAM_DATA) {
+                    this.#drop(1002, "Stream data without network streams");
+                } else {
+                    this.#data(session, bytes);
+                }
             } else {
-                this.#onControl(session, parseControl(toBuffer(data).toString("utf8")));
+                const message = parseControl(toBuffer(data).toString("utf8"));
+
+                if (message?.type.startsWith("net-") === true && network !== undefined) {
+                    network.message(message as Parameters<LinkNetwork["message"]>[0]);
+                } else {
+                    this.#onControl(session, message);
+                }
             }
         });
         socket.on("close", () => {
             clearInterval(pinger);
+            network?.drop();
 
             if (this.#socket !== socket) {
                 return;
             }
 
             this.#socket = undefined;
+            this.#network = undefined;
             this.#runners.changed();
 
             if (!session.live || this.#session !== session) {
@@ -656,6 +685,53 @@ export class RunnerLink {
         if (!answer.allow) {
             throw new HttpError(403, answer.reason ?? `${this.name} did not allow the session.`);
         }
+    }
+
+    /**
+     * Open a TCP connection to `host`:`port` from the computer, and relay `socket` to it (`runner-network.ts`). Rejects
+     * with a `NetError` that names the computer when it is offline, its runner is too old, or it refused or failed.
+     */
+    openNetwork(host: string, port: number, socket: Duplex, options?: OpenOptions): Promise<void> {
+        if (this.#closed || this.#socket === undefined) {
+            return Promise.reject(
+                new NetError(
+                    "offline",
+                    `${this.name} is offline. Start Pi Pocket's runner there, then try again.`,
+                ),
+            );
+        }
+
+        if (this.#network === undefined) {
+            return Promise.reject(
+                new NetError(
+                    "unsupported",
+                    `${this.name} runs an older Pi Pocket runner, which cannot open pages for the browser: update its runner (npm install -g ${runnerPackage()}), then try again.`,
+                ),
+            );
+        }
+
+        return this.#network.open(host, port, socket, options);
+    }
+
+    /** Network streams over `socket`: their data waits behind pi-env's (`tunnels.ts`). */
+    #networkOf(socket: WebSocket): LinkNetwork {
+        return new LinkNetwork({
+            name: () => this.name,
+            send: (message, done) => {
+                if (this.#socket !== socket || socket.readyState !== socket.OPEN) {
+                    return false;
+                }
+
+                socket.send(message, done);
+
+                return true;
+            },
+            control: (message) => {
+                if (this.#socket === socket && socket.readyState === socket.OPEN) {
+                    socket.send(JSON.stringify(message));
+                }
+            },
+        });
     }
 
     /** End a daemon session: what it was doing fails with `error`. */
