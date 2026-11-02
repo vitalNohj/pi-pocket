@@ -5726,6 +5726,98 @@ pre.diff .del {
     mask: none;
 }
 
+/*
+ * A linked computer's session: the same states as the square, in an upward triangle. A 9px base keeps the hollow
+ * states legible at 8px high. Masks cut transparent holes, so outlines keep the row's normal, selected, or hovered
+ * background. Three small corner triangles, with one lit, replace the working square's four quadrants.
+ */
+.state-mark.remote,
+.agent-tile .state-mark.remote {
+    --triangle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'%3E%3Cpath fill='white' d='M1 0 2 2H0Z'/%3E%3C/svg%3E");
+    /* Inset the sloping sides by --line-w, perpendicular to each edge of the 9 × 8 triangle. */
+    --inner-top: calc(var(--line-w) * 2.04);
+    --inner-width: calc(9px - var(--line-w) * 3.42);
+    width: 9px;
+    height: 8px;
+    border-radius: 0;
+    clip-path: polygon(50% 0, 100% 100%, 0 100%);
+    box-shadow: none;
+}
+
+.state-mark.remote.seen:not(.failed) {
+    background: none;
+}
+
+/* A solid triangle minus an inset triangle: a true transparent outline, not a background-colored fill. */
+.state-mark.remote.seen::after,
+.state-mark.remote.limited::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: currentColor;
+    -webkit-mask:
+        linear-gradient(#000, #000),
+        var(--triangle) 50% var(--inner-top) / var(--inner-width)
+            calc(100% - var(--line-w) - var(--inner-top)) no-repeat;
+    -webkit-mask-composite: xor;
+    mask:
+        linear-gradient(#000, #000),
+        var(--triangle) 50% var(--inner-top) / var(--inner-width)
+            calc(100% - var(--line-w) - var(--inner-top)) no-repeat;
+    mask-composite: exclude;
+}
+
+.state-mark.remote.working {
+    background: var(--dim);
+    -webkit-mask:
+        var(--triangle) 50% 0 / 4px 3.5px no-repeat,
+        var(--triangle) 100% 100% / 4px 3.5px no-repeat,
+        var(--triangle) 0 100% / 4px 3.5px no-repeat;
+    mask:
+        var(--triangle) 50% 0 / 4px 3.5px no-repeat,
+        var(--triangle) 100% 100% / 4px 3.5px no-repeat,
+        var(--triangle) 0 100% / 4px 3.5px no-repeat;
+}
+
+/* Still (reduced motion), the top corner stays lit. Each corner lasts as long as one square quadrant. */
+.state-mark.remote.working::before {
+    left: 2.5px;
+    width: 4px;
+    height: 3.5px;
+    animation: state-corner 1.2s steps(1, end) infinite;
+}
+
+@keyframes state-corner {
+    0% {
+        transform: translate(0, 0);
+    }
+    33.333333% {
+        transform: translate(2.5px, 4.5px);
+    }
+    66.666667% {
+        transform: translate(-2.5px, 4.5px);
+    }
+}
+
+:root[data-motion="reduced"] .state-mark.remote.working::before {
+    animation: none;
+}
+
+.state-mark.remote.waiting {
+    background: linear-gradient(
+        90deg,
+        currentColor 0 2px,
+        transparent 0 3.5px,
+        currentColor 0 5.5px,
+        transparent 0 7px,
+        currentColor 0
+    );
+}
+
+.state-mark.remote.limited {
+    background: radial-gradient(circle at 50% 62%, currentColor 0 0.65px, transparent 0.9px);
+}
+
 .folder-mark {
     flex: none;
     width: 7px;

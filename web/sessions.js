@@ -774,9 +774,9 @@ function SessionRow({
                             <${Icon} name="check" size=${9} />
                         </span>`
                         : html`<span
-                            class=${`state-mark ${mark.shape}`}
+                            class=${`state-mark ${session.runner ? "remote " : ""}${mark.shape}`}
                             data-part="session-mark"
-                            style=${`--folder:${folderColor(session.cwd)}`}
+                            style=${`--folder:${folderColor(session.cwd, session.runner)}`}
                             role=${mark.label ? "img" : undefined}
                             aria-label=${mark.label || undefined}
                             aria-hidden=${mark.label ? undefined : "true"}
