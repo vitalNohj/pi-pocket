@@ -5,6 +5,7 @@ import htm from "htm";
 import { marked } from "marked";
 import { Component, createContext, h } from "preact";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { shortPath } from "./folder-paths.js";
 import { useDragToClose } from "./gestures.js";
 import { highlight, langOf } from "./highlight.js";
 import { actions, filesShown, notify, openSheet, store } from "./store.js";
@@ -1003,18 +1004,8 @@ export function replyText(entry) {
     return entry.blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 }
 
-/** `~/x` for paths under home. */
-export function shortPath(path, home) {
-    if (!path) {
-        return "";
-    }
-
-    if (home && (path === home || path.startsWith(`${home}/`))) {
-        return `~${path.slice(home.length)}`;
-    }
-
-    return path;
-}
+/** `~/x` for paths under home (`~\x` on Windows): `folder-paths.js`. */
+export { shortPath };
 
 const ICONS = {
     menu: "M3 6h18M3 12h18M3 18h18",
