@@ -51,7 +51,16 @@ const MAX_TEXT = 20_000;
 
 const GUIDE = `The browser tool is a real Chromium on this machine. The people in this conversation see its page live in the Browser panel and can use it too: show and test web work there (local dev servers, HTML files on this machine, any site).
 - Start a dev server in the background with bash first (\`nohup npm run dev > /tmp/dev.log 2>&1 &\`), then navigate to it.
-- snapshot gives refs like [e12] for click, type, select, and hover, valid until the next snapshot. screenshot shows the layout; viewport changes the size. After a change, check console for errors.`;
+- snapshot gives refs like [e12] for click, type, select, and hover, valid until the next snapshot. screenshot shows the layout; viewport changes the size. After a change, check console for errors.
+- A download goes to the server's folder for this conversation; the result says where. wait with download: true waits for it.`;
+
+/** The guide for a session on another computer: the browser runs on the server, its pages load from the computer. */
+function remoteGuide(computer: string): string {
+    return `The browser tool is a real Chromium that runs on the Pi Pocket server, but every page it opens loads through "${computer}": addresses such as localhost:5173 are that computer's. The people in this conversation see its page live in the Browser panel and can use it too.
+- Start a dev server there with bash first (\`nohup npm run dev > /tmp/dev.log 2>&1 &\`), then navigate to it. File paths and file:// URLs do not open: serve the files instead.
+- snapshot gives refs like [e12] for click, type, select, and hover, valid until the next snapshot. screenshot shows the layout; viewport changes the size. After a change, check console for errors.
+- A download goes to that computer's temporary folder; the result says where. wait with download: true waits for it.`;
+}
 
 function clip(text: string, max = MAX_TEXT): string {
     return text.length > max
@@ -80,16 +89,16 @@ export default function createBrowser(host: PocketHost) {
     const browser = defineTool({
         name: "browser",
         description:
-            "Use a real web browser (Chromium on this machine) that the people in this conversation watch live. Open pages (local dev servers, files, sites), read them as a snapshot with element refs, click, type, take screenshots you can see, read console errors, and run JavaScript in the page.",
+            "Use a real web browser (Chromium) that the people in this conversation watch live. Open pages (local dev servers, files, sites), read them as a snapshot with element refs, click, type, take screenshots you can see, read console errors, run JavaScript in the page, and download files.",
         parameters: Type.Object({
             action: StringEnum(ACTIONS, {
                 description:
-                    "navigate (url), snapshot, screenshot, click/hover (ref, selector, label, or x and y), type (text into ref/selector/label, or the focused element), press (key), select (value in a select element), scroll (to ref/selector/label, or by dy), wait (text, selector, or timeoutMs), evaluate (script), console, back, forward, reload, viewport.",
+                    "navigate (url), snapshot, screenshot, click/hover (ref, selector, label, or x and y), type (text into ref/selector/label, or the focused element), press (key), select (value in a select element), scroll (to ref/selector/label, or by dy), wait (text, selector, download, or timeoutMs), evaluate (script), console, back, forward, reload, viewport.",
             }),
             url: Type.Optional(
                 Type.String({
                     description:
-                        "navigate: an http(s) URL, host:port such as localhost:5173, or a path to an HTML file on this machine.",
+                        "navigate: an http(s) URL, host:port such as localhost:5173, or a path to an HTML file on this machine (not in a session on another computer).",
                 }),
             ),
             ref: Type.Optional(
@@ -171,6 +180,12 @@ export default function createBrowser(host: PocketHost) {
             clear: Type.Optional(
                 Type.Boolean({ description: "console: clear the lines after reading them." }),
             ),
+            download: Type.Optional(
+                Type.Boolean({
+                    description:
+                        "wait: wait until the downloads the page started have finished (timeoutMs, default 120000).",
+                }),
+            ),
         }),
         // Pages are shared and stateful: a round's calls run in order.
         executionMode: "sequential",
@@ -179,9 +194,13 @@ export default function createBrowser(host: PocketHost) {
             const action = args.action as Action;
             const agent = await api.snapshot(AgentDoc, api.conversationId, context);
             const cwd = agent?.cwd ?? process.cwd();
+            const conversation = Number(api.conversationId);
+            // A session on another computer: its pages load through that computer, and this server's files do not open.
+            const computer = host.browsers.computerOf(conversation);
+            const startedAt = Date.now();
             // A page opened again comes back at its last address, unless Pi is about to open another.
             const page = await awaitWithContext(
-                host.browsers.open(Number(api.conversationId), { restore: action !== "navigate" }),
+                host.browsers.open(conversation, { restore: action !== "navigate" }),
                 context,
             );
             const before = page.logSeq;
@@ -207,11 +226,19 @@ export default function createBrowser(host: PocketHost) {
             switch (action) {
                 case "navigate": {
                     need(args.url !== undefined && args.url.trim() !== "", "a url");
-                    const url = normalizeUrl(args.url!, { trusted: true, cwd });
+                    const url = normalizeUrl(args.url!, {
+                        trusted: true,
+                        cwd,
+                        ...(computer === undefined ? {} : { files: false }),
+                    });
 
                     if (url === undefined) {
                         throw new Error(
-                            `"${args.url}" is not an address the browser opens: give an http(s) URL, host:port, or a file path.`,
+                            computer === undefined
+                                ? `"${args.url}" is not an address the browser opens: give an http(s) URL, host:port, or a file path.`
+                                : normalizeUrl(args.url!, { trusted: true, cwd }) !== undefined
+                                  ? `"${args.url}" is a file: in a session on ${computer}, the browser opens web addresses only (its files are not on the server). Serve the file there, as with \`python3 -m http.server\`, and open localhost:<port>.`
+                                  : `"${args.url}" is not an address the browser opens: give an http(s) URL or host:port.`,
                         );
                     }
 
@@ -226,13 +253,27 @@ export default function createBrowser(host: PocketHost) {
                         }),
                     );
 
-                    if (result.error !== undefined) {
+                    const problem = host.browsers.networkProblem(conversation, startedAt);
+
+                    // The address is a file to download, not a page: Chromium stops the load, and the download begins.
+                    const download =
+                        result.error?.includes("ERR_ABORTED") === true &&
+                        (await host.browsers.downloads.beganSince(conversation, startedAt, 1000));
+
+                    if (download) {
+                        lines.push(`${url} is a download.`);
+                    } else if (result.error !== undefined) {
                         failed = true;
                         const refused = /CONNECTION_REFUSED/.test(result.error);
 
                         lines.push(
-                            `Could not open ${url}: ${result.error}.${refused ? " Nothing answers there: is the server running?" : ""}`,
+                            problem !== undefined
+                                ? `Could not open ${url}: ${problem}.`
+                                : `Could not open ${url}: ${result.error}.${refused ? " Nothing answers there: is the server running?" : ""}`,
                         );
+                    } else if (result.status === 502 && problem !== undefined) {
+                        failed = true;
+                        lines.push(`Could not open ${url}: ${problem}.`);
                     } else {
                         lines.push(
                             `Opened ${url}${result.status === undefined ? "" : ` (HTTP ${result.status})`}.`,
@@ -340,6 +381,26 @@ export default function createBrowser(host: PocketHost) {
                     break;
 
                 case "wait": {
+                    if (args.download === true) {
+                        const ended = await run(
+                            host.browsers.downloads.wait(
+                                conversation,
+                                args.timeoutMs ?? 120_000,
+                                signal,
+                            ),
+                        );
+
+                        if (!ended) {
+                            lines.push(
+                                host.browsers.downloads.pending(conversation)
+                                    ? "A download is still going: wait again."
+                                    : "No download is going: every one that began is reported above or before.",
+                            );
+                        }
+
+                        break;
+                    }
+
                     const found = await run(
                         page.waitFor({
                             ...(args.text === undefined ? {} : { text: args.text }),
@@ -443,6 +504,18 @@ export default function createBrowser(host: PocketHost) {
                 }
             }
 
+            lines.push(...host.browsers.downloads.report(conversation));
+
+            if (
+                computer !== undefined &&
+                action !== "navigate" &&
+                host.browsers.networkProblem(conversation, startedAt) !== undefined
+            ) {
+                lines.push(
+                    `A connection of the page failed: ${host.browsers.networkProblem(conversation, startedAt)}.`,
+                );
+            }
+
             lines.push(where(page));
             const content: (TextContent | ImageContent)[] = [
                 { type: "text", text: lines.join("\n") },
@@ -469,9 +542,18 @@ export default function createBrowser(host: PocketHost) {
         name: "pocket-browser",
         tools: [browser],
         sections: [
-            section("browser", (input) =>
-                input.agent.tools.some((tool) => tool.name === "browser") ? GUIDE : undefined,
-            ),
+            section("browser", (input) => {
+                if (!input.agent.tools.some((tool) => tool.name === "browser")) {
+                    return undefined;
+                }
+
+                // A session on another computer (its environment is a `RunnerEnv`, `runners.ts`).
+                const env = input.env as { computer?: () => { name: string } } | undefined;
+
+                return typeof env?.computer === "function"
+                    ? remoteGuide(env.computer().name)
+                    : GUIDE;
+            }),
         ],
     });
 }
