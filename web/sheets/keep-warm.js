@@ -44,9 +44,9 @@ function durationLabel(ms) {
     return `${Math.floor(minutes / 60)} h${rest === 0 ? "" : ` ${rest} min`}`;
 }
 
-/** A keep-warm time in words: "Auto", "2 h", or "off". */
+/** A keep-warm time in words: "Auto", "2 h", or "Off". */
 function timeLabel(hours) {
-    return hours === 0 ? "off" : hours === "auto" ? "Auto" : `${hours} h`;
+    return hours === 0 ? "Off" : hours === "auto" ? "Auto" : `${hours} h`;
 }
 
 /** The menu row's hint: the owner's time. */
@@ -399,7 +399,13 @@ export function KeepWarmRow() {
     const status = state.status;
     const time = (at) =>
         new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    const chosen = state.choice === "default" ? server.keepWarm.hours : state.choice;
+    const fallback = server.keepWarm.hours;
+    const chosen = state.choice === "default" ? fallback : state.choice;
+    // The owner's time is named in the Default button, so it is not a button of its own.
+    const choices = [
+        ["default", `Default: ${timeLabel(fallback)}`],
+        ...[...TIMES.slice(1), [0, "Off"]].filter(([value]) => value !== fallback),
+    ];
     const line = status.warm
         ? [
               `next ${time(status.nextAt)}`,
@@ -424,11 +430,11 @@ export function KeepWarmRow() {
             <span class=${`small ${status.warm ? "ok" : "muted"}`}>${status.warm ? "warm" : ""}</span>
         </div>
         <div class="segmented keep-warm-times" role="group" aria-label="Keep this session warm">
-            ${[["default", "Default"], ...TIMES.slice(1), [0, "Off"]].map(
+            ${choices.map(
                 ([value, label]) => html`<button
                     class=${state.choice === value ? "on" : ""}
                     aria-pressed=${state.choice === value}
-                    title=${value === "default" ? `The owner's: ${timeLabel(server.keepWarm.hours)}` : value === "auto" ? AUTO : ""}
+                    title=${value === "default" ? "The owner's default" : value === "auto" ? AUTO : ""}
                     disabled=${!steer}
                     onClick=${() => state.choice !== value && choose(value)}
                 >
@@ -436,8 +442,6 @@ export function KeepWarmRow() {
                 </button>`,
             )}
         </div>
-        <div class="muted small">
-            ${state.choice === "default" ? `Default: ${timeLabel(server.keepWarm.hours)} · ` : ""}${line}
-        </div>
+        <div class="muted small">${line}</div>
     </div>`;
 }
