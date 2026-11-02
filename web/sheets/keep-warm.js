@@ -73,8 +73,8 @@ const breakEvenOf = (read, write) =>
 function modelPlan(model, settings) {
     const own = settings.models[model.spec] ?? {};
     const lifetime = own.lifetime ?? model.pi.lifetime;
-    const read = own.read ?? model.pi.read;
-    const write = own.write ?? model.pi.write;
+    // Prices are the owner's only: Pocket reads none from Pi or a provider.
+    const { read, write } = own;
     const shared =
         lifetime === undefined
             ? undefined
@@ -145,6 +145,23 @@ function NumberField({
     />`;
 }
 
+/**
+ * Examples of where Auto stops, written here as text: each maker's list price per million tokens to read the cache, and
+ * what a miss costs (the cache write; OpenAI and xAI charge the plain input price). Pocket reads no prices from anywhere.
+ */
+const EXAMPLES = [
+    { name: "Claude Opus 5.5", read: 0.2, write: 8 },
+    { name: "GPT-6.1 Sol", read: 0.1, write: 2 },
+    { name: "GPT-6.1 Terra", read: 0.05, write: 1 },
+    { name: "Grok 4.7", read: 0.5, write: 2 },
+];
+
+/** Minutes between refreshes in the examples: 75% of a 1-hour cache. */
+const ESTIMATED_EVERY = 45;
+
+/** The context size the examples' cost is for, in tokens. */
+const EXAMPLE_CONTEXT = 150_000;
+
 /** Context sizes a tap fills in, in tokens. */
 const CONTEXTS = [
     [50_000, "50k"],
@@ -184,13 +201,24 @@ const tokensLabel = (tokens) =>
  * expire costs one cache write when you come back, however long you were away; keeping warm costs a read each refresh.
  */
 function Calculator({ models, settings }) {
-    const usable = models
-        .map((model) => ({ model, plan: modelPlan(model, settings) }))
-        .filter(({ plan }) => plan.read > 0 && plan.write > 0);
-    const [spec, setSpec] = useState(
-        () => (usable.find(({ plan }) => plan.every !== undefined) ?? usable[0])?.model.spec ?? "",
-    );
-    const chosen = usable.find(({ model }) => model.spec === spec)?.plan;
+    // The examples' list prices, then the models the owner priced.
+    const usable = [
+        ...EXAMPLES.map((example) => ({
+            key: `example:${example.name}`,
+            label: `${example.name} · list price`,
+            plan: { read: example.read, write: example.write, every: ESTIMATED_EVERY },
+        })),
+        ...models
+            .map((model) => ({ model, plan: modelPlan(model, settings) }))
+            .filter(({ plan }) => plan.read > 0 && plan.write > 0)
+            .map(({ model, plan }) => ({
+                key: model.spec,
+                label: `${model.name} · your prices`,
+                plan,
+            })),
+    ];
+    const [spec, setSpec] = useState(() => usable[0].key);
+    const chosen = usable.find((each) => each.key === spec)?.plan;
     const [read, setRead] = useState(null);
     const [write, setWrite] = useState(null);
     const [every, setEvery] = useState(null);
@@ -260,8 +288,7 @@ function Calculator({ models, settings }) {
                         setEvery(null);
                     }}
                 >
-                    ${usable.length === 0 && html`<option value="">No model with cache prices</option>`}
-                    ${usable.map(({ model }) => html`<option value=${model.spec}>${model.name} · ${model.spec.slice(0, model.spec.indexOf("/"))}</option>`)}
+                    ${usable.map(({ key, label }) => html`<option value=${key}>${label}</option>`)}
                 </select>
             </label>
             <label class="keep-warm-field">
@@ -341,7 +368,7 @@ const MODEL_FIELDS = [
         prefix: "$",
         max: 10_000,
         step: 0.01,
-        pi: (model) => model.pi.read,
+        pi: () => undefined,
     },
     {
         key: "write",
@@ -349,7 +376,7 @@ const MODEL_FIELDS = [
         prefix: "$",
         max: 10_000,
         step: 0.01,
-        pi: (model) => model.pi.write,
+        pi: () => undefined,
     },
     { key: "minutes", label: "Every", unit: "min", max: 1440, pi: (_model, plan) => plan.shared },
 ];
@@ -370,11 +397,6 @@ function ModelCard({ model, plan, onSet }) {
         <div class="keep-warm-model-name">
             <span title=${model.spec}>${model.name}</span>
             <span class="muted small">${note}</span>
-            ${
-                model.pi.pricesFrom &&
-                own.read === undefined &&
-                html`<span class="muted small">prices from ${model.pi.pricesFrom}</span>`
-            }
         </div>
         <div class="keep-warm-cells">
             ${MODEL_FIELDS.map((field) => {
@@ -399,15 +421,6 @@ function ModelCard({ model, plan, onSet }) {
         </div>
     </div>`;
 }
-
-/** The models whose Auto stop the settings window shows, by bare id: Claude Opus, GPT-6.1 Sol and Terra, and Grok. */
-const AUTO_EXAMPLES = [/^claude-opus-/, /^gpt-6\.1-sol$/, /^gpt-6\.1-terra$/, /^grok-\d[\d.]*$/];
-
-/** Minutes between refreshes assumed for a model whose cache lifetime is not known: 75% of an hour. */
-const ESTIMATED_EVERY = 45;
-
-/** A model's id without its provider or reseller prefix: "codex-lb/cc/grok-4.7" is "grok-4.7". */
-const bareSpec = (spec) => spec.slice(spec.lastIndexOf("/") + 1).toLowerCase();
 
 export function KeepWarmSheet() {
     const [data, setData] = useState(null);
@@ -460,30 +473,17 @@ export function KeepWarmSheet() {
     const plans = new Map(models.map((model) => [model.spec, modelPlan(model, settings)]));
     const custom = Object.keys(settings.models).length;
     const warmable = models.filter((model) => plans.get(model.spec).every !== undefined);
-    // Where Auto stops for a few well-known models, the first of each this server has with cache prices. A model with no
-    // known interval is estimated at a 1-hour cache.
-    const autoStops = AUTO_EXAMPLES.flatMap((pattern) => {
-        const found = models
-            .map((model) => ({ model, plan: plans.get(model.spec) }))
-            .filter(({ model, plan }) => pattern.test(bareSpec(model.spec)) && plan.breakEven > 0)
-            .sort(
-                (a, b) => Number(b.plan.every !== undefined) - Number(a.plan.every !== undefined),
-            )[0];
+    // Where Auto stops for the examples, at their list prices and a refresh every 45 minutes, within the refresh cap.
+    const autoStops = EXAMPLES.map(({ name, read, write }) => {
+        const refreshes = Math.min(breakEvenOf(read, write), settings.maxRefreshes);
 
-        if (found === undefined) {
-            return [];
-        }
-
-        const { model, plan } = found;
-        const refreshes = Math.min(plan.breakEven, settings.maxRefreshes);
-        const every = plan.every ?? ESTIMATED_EVERY;
-
-        return [
-            {
-                name: model.name.replace(/\s*\(.*\)$/, ""),
-                stop: `${durationLabel(refreshes * every * 60_000)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`,
-            },
-        ];
+        return {
+            name,
+            read,
+            time: durationLabel(refreshes * ESTIMATED_EVERY * 60_000),
+            refreshes,
+            cost: money((refreshes * read * EXAMPLE_CONTEXT) / 1e6),
+        };
     });
     const setModel = (spec, field, value) => save({ models: { [spec]: { [field]: value } } });
 
@@ -517,25 +517,32 @@ export function KeepWarmSheet() {
                     ${
                         settings.hours === "auto" &&
                         html`<p class="muted small">
-                            ${
-                                autoStops.length === 0
-                                    ? "No model has both cache prices: set them below."
-                                    : "Where it stops, about:"
-                            }
+                            Where it stops, about: list prices, a refresh every ${ESTIMATED_EVERY} min, and a
+                            ${tokensLabel(EXAMPLE_CONTEXT)} context.
                         </p>
-                        ${
-                            autoStops.length > 0 &&
-                            html`<ul class="keep-warm-stops small">
+                        <table class="keep-warm-stops small">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Model</th>
+                                    <th scope="col">Cache read</th>
+                                    <th scope="col">Stops after</th>
+                                    <th scope="col">Cost</th>
+                                </tr>
+                            </thead>
+                            <tbody>
                                 ${autoStops.map(
-                                    ({ name, stop }) =>
-                                        html`<li key=${name}><span>${name}</span><span class="muted">${stop}</span></li>`,
+                                    ({ name, read, time, refreshes, cost }) => html`<tr key=${name}>
+                                        <th scope="row">${name}</th>
+                                        <td>${money(read)}/M</td>
+                                        <td>${time} (${refreshes})</td>
+                                        <td>${cost}</td>
+                                    </tr>`,
                                 )}
-                            </ul>`
-                        }
+                            </tbody>
+                        </table>
                         <p class="muted small">
-                            The cheaper a cache read is next to a cache write, the longer Auto lasts. A model without
-                            cache prices is not kept warm on Auto; one without a cache time is kept warm once you set
-                            it below.
+                            The cheaper a cache read is next to a cache write, the longer Auto lasts. Auto keeps a model
+                            warm only once you set its Read and Write prices below; Pocket reads no prices itself.
                         </p>`
                     }
                     <p class="muted small">
@@ -618,8 +625,8 @@ export function KeepWarmSheet() {
                 </div>
                 <p class="muted small">
                     Grey numbers are what Pi knows; type one to replace it, or clear it to go back. Cache: how long the
-                    model's prompt cache lives. Read and write: its cache prices in dollars per million tokens; a
-                    subscription at $0 gets the same model's list prices. Every: minutes between refreshes, by default a
+                    model's prompt cache lives. Read and write: its cache prices in dollars per million tokens, yours
+                    only (Auto needs both). Every: minutes between refreshes, by default a
                     share of the cache; 0 never keeps it warm. Two refreshes in a row that find the cache gone stop it.
                 </p>
                 <label class="search">

@@ -22,11 +22,8 @@ import { HttpError } from "./errors.ts";
 /** A session's choice: the owner's default, or a time of its own (0: off, "auto", or hours). */
 export type KeepWarmChoice = "default" | KeepWarmTime;
 
-/**
- * What Pi knows of a model for keep warm: its cache lifetime in minutes, and its cache prices per million tokens.
- * `pricesFrom`: the model in Pi's own list the prices came from, when this one has none (a subscription at $0).
- */
-type PiFacts = { lifetime?: number; read?: number; write?: number; pricesFrom?: string };
+/** What Pi knows of a model for keep warm: only its cache lifetime in minutes. Keep warm reads no prices from Pi. */
+type PiFacts = { lifetime?: number };
 
 /** What the settings window lists for one model: Pi's facts, which the owner's own replace field by field. */
 type ModelRow = { spec: string; name: string; pi: PiFacts };
@@ -43,66 +40,13 @@ const ownerOnly = (user: User) => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Providers that make the models they list: their prices win over a reseller's or a cloud's. */
-const MAKERS = new Set(["anthropic", "openai", "xai", "google", "mistral", "deepseek"]);
-
 /** The fields of a model the owner may set; null takes one off. */
 const MODEL_FIELDS = ["minutes", "lifetime", "read", "write"] as const;
 
-/**
- * A model's cache prices per million tokens. A read price of 0 is not known (a subscription, or a `models.json` that left
- * it out). The write is what a miss costs: Anthropic charges twice the input price for a cache that lives an hour, where
- * Pi's price is the 5-minute write; a provider with no write price (OpenAI, xAI) charges the plain input price.
- */
-export function cachePrices(
-    model: Model<Api>,
-    seconds: number | undefined,
-): { read?: number; write?: number } {
-    const { input, cacheRead, cacheWrite } = model.cost;
-    const hourWrite = model.api === "anthropic-messages" && (seconds ?? 0) >= 3600 && input > 0;
+function piFacts(model: Model<Api> | undefined): PiFacts {
+    const seconds = model?.promptCache?.[tier()];
 
-    return {
-        ...(cacheRead > 0 ? { read: cacheRead } : {}),
-        ...(hourWrite
-            ? { write: input * 2 }
-            : cacheWrite > 0
-              ? { write: cacheWrite }
-              : input > 0
-                ? { write: input }
-                : {}),
-    };
-}
-
-/** The last part of a model id, which a reseller's id (`cc/claude-opus-5-5`) shares with the maker's. */
-const bareId = (id: string) => id.slice(id.lastIndexOf("/") + 1).toLowerCase();
-
-/** Pi's facts about a model; `priced` finds the same model from a provider that lists prices. */
-function piFacts(
-    model: Model<Api> | undefined,
-    priced: (id: string) => Model<Api> | undefined,
-): PiFacts {
-    if (model === undefined) {
-        return {};
-    }
-
-    const seconds = model.promptCache?.[tier()];
-    const own = cachePrices(model, seconds);
-    const lacking = own.read === undefined || own.write === undefined;
-    // No prices of its own: the same model from a provider that lists them, at this model's cache lifetime.
-    const twin = lacking ? priced(model.id) : undefined;
-    const theirs =
-        twin === undefined ? {} : cachePrices(twin, seconds ?? twin.promptCache?.[tier()]);
-    const read = own.read ?? theirs.read;
-    const write = own.write ?? theirs.write;
-    const borrowed =
-        twin !== undefined && (theirs.read !== undefined || theirs.write !== undefined);
-
-    return {
-        ...(seconds === undefined ? {} : { lifetime: Math.round(seconds / 60) }),
-        ...(read === undefined ? {} : { read }),
-        ...(write === undefined ? {} : { write }),
-        ...(borrowed ? { pricesFrom: specOf(twin) } : {}),
-    };
+    return seconds === undefined ? {} : { lifetime: Math.round(seconds / 60) };
 }
 
 export class KeepWarm {
@@ -144,22 +88,18 @@ export class KeepWarm {
     }
 
     /**
-     * What is known of a model (`provider/modelId`): the owner's minutes and lifetime, and cache prices, the owner's
-     * over Pi's. The lifetime is the owner's only: the keeper reads Pi's from the model itself, for the tier in use.
+     * What the owner set for a model (`provider/modelId`): minutes, lifetime, and cache prices. Prices are the owner's
+     * only, never Pi's; the keeper reads Pi's lifetime from the model itself, for the tier in use.
      */
     facts(spec: string): ModelFacts {
         const own = this.#app.config.keepWarm.models[spec] ?? {};
-        const pi =
-            own.read === undefined || own.write === undefined
-                ? piFacts(this.#model(spec), (id) => this.#priced(id))
-                : {};
-        const read = own.read ?? pi.read;
-        const write = own.write ?? pi.write;
 
         return {
             ...(own.minutes === undefined ? {} : { minutes: own.minutes }),
             ...(own.lifetime === undefined ? {} : { lifetimeMs: own.lifetime * 60_000 }),
-            ...(read === undefined || write === undefined ? {} : { prices: { read, write } }),
+            ...(own.read === undefined || own.write === undefined
+                ? {}
+                : { prices: { read: own.read, write: own.write } }),
         };
     }
 
@@ -318,37 +258,6 @@ export class KeepWarm {
         this.#app.cacheKeeper.reconsider();
     }
 
-    /** Pi's models with cache prices, by bare id; built again a minute later, as model lists change rarely. */
-    #pricedIndex: { at: number; byId: Map<string, Model<Api>> } | undefined;
-
-    /** A model Pi lists with cache prices, of the same bare id as `id`: the maker's, first. */
-    #priced(id: string): Model<Api> | undefined {
-        const now = Date.now();
-
-        if (this.#pricedIndex === undefined || now - this.#pricedIndex.at > 60_000) {
-            const byId = new Map<string, Model<Api>>();
-
-            for (const model of this.#app.models.getModels()) {
-                const key = bareId(model.id);
-                const known = byId.get(key);
-
-                // The maker's own listing wins over a cloud's (Bedrock, Vertex), whose ids and prices differ.
-                if (
-                    model.cost.cacheRead > 0 &&
-                    model.cost.input > 0 &&
-                    (known === undefined ||
-                        (MAKERS.has(model.provider) && known.provider !== model.provider))
-                ) {
-                    byId.set(key, model);
-                }
-            }
-
-            this.#pricedIndex = { at: now, byId };
-        }
-
-        return this.#pricedIndex.byId.get(bareId(id));
-    }
-
     #model(spec: string): Model<Api> | undefined {
         const slash = spec.indexOf("/");
 
@@ -367,7 +276,7 @@ export class KeepWarm {
             rows.set(spec, {
                 spec,
                 name: model.name,
-                pi: piFacts(model, (id) => this.#priced(id)),
+                pi: piFacts(model),
             });
         }
 
@@ -378,7 +287,7 @@ export class KeepWarm {
                 rows.set(spec, {
                     spec,
                     name: model?.name ?? spec.slice(spec.indexOf("/") + 1),
-                    pi: piFacts(model, (id) => this.#priced(id)),
+                    pi: piFacts(model),
                 });
             }
         }

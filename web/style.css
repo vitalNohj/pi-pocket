@@ -18938,21 +18938,28 @@ pre.gallery-code {
     gap: 0.5rem;
 }
 
-/* Auto's stop for each model family: name on the left, time on the right. */
+/* Where Auto stops for the examples: model, read price, time, cost. */
 .keep-warm-stops {
-    display: grid;
-    gap: 2px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
+    width: 100%;
+    border-collapse: collapse;
 }
 
-.keep-warm-stops li {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-}
-
-.keep-warm-stops li > span:last-child {
+.keep-warm-stops th,
+.keep-warm-stops td {
+    padding: 3px 0;
     text-align: right;
+    font-weight: normal;
+    white-space: nowrap;
+}
+
+.keep-warm-stops thead th {
+    color: var(--muted);
+}
+
+.keep-warm-stops th:first-child {
+    text-align: left;
+}
+
+.keep-warm-stops :is(th, td) + :is(th, td) {
+    padding-left: 10px;
 }
