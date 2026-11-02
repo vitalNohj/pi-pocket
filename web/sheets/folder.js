@@ -17,6 +17,8 @@ import {
     store,
 } from "../store.js";
 import { sessionStarted } from "../extension-ui.js";
+import { chooseFolder } from "../copy-draft.js";
+import { goBack } from "../back.js";
 import {
     crumbsOf,
     isWholePath,
@@ -125,16 +127,31 @@ function RunsOn({ runner, runners, onPick }) {
         </button>`;
 }
 
-export function CwdSheet({ mode, fromList = false, runner: given = null }) {
+/**
+ * The folder picker. `mode`: "new" starts a session in the folder; "change" moves this session there; "pick" returns
+ * the folder to the copy sheet under it (`copy.js`) and goes back to it, changing no session, with `start` the folder
+ * it opens in and `title` its caller's title.
+ */
+export function CwdSheet({
+    mode,
+    fromList = false,
+    runner: given = null,
+    start = null,
+    title = null,
+}) {
     const { view, server, runners } = store.state;
     const changing = mode === "change";
+    const picking = mode === "pick";
     // The computer whose folders these are (`runners.ts`): the one asked for, or the session's when moving it. Its
-    // folders are not this server's: no favorites, recent folders, default workspace, or worktrees.
-    // A new session can switch computer in the places list (Runs on); moving one keeps its computer.
+    // folders are not this server's: no default workspace or worktrees; its favorites and recent folders are its own.
+    // A new session can switch computer in the places list (Runs on); moving one keeps its computer, and so does a
+    // pick, whose computer the copy sheet chose.
     const [picked, setPicked] = useState(given);
     const runner = changing ? (view.conversation?.runner ?? null) : picked;
     const owner = store.state.me?.role === "owner";
-    const favorites = runner ? [] : store.state.folderFavorites;
+    const favorites = runner
+        ? (store.state.runnerFavorites[runner] ?? [])
+        : store.state.folderFavorites;
     const computer = runner
         ? (runners.find((each) => each.id === runner)?.name ??
           view.conversation?.runnerName ??
@@ -144,13 +161,15 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
         () => localStorage.getItem(ALWAYS_DEFAULT_KEY) === "1",
     );
     // Where it opens: default workspace if pinned, else the folder of the session you are in (Issue #96).
-    const initial = runner
-        ? changing
-            ? (view.agent?.cwd ?? "~")
-            : "~"
-        : !changing && alwaysDefault && server?.defaultCwd
-          ? server.defaultCwd
-          : (view.agent?.cwd ?? server?.defaultCwd ?? "~");
+    const initial = picking
+        ? (start ?? "~")
+        : runner
+          ? changing
+              ? (view.agent?.cwd ?? "~")
+              : "~"
+          : !changing && alwaysDefault && server?.defaultCwd
+            ? server.defaultCwd
+            : (view.agent?.cwd ?? server?.defaultCwd ?? "~");
     const [listing, setListing] = useState(null);
     const [failed, setFailed] = useState(null);
     // The folder a click selected (mouse only): Open takes it over the one you are in.
@@ -206,7 +225,7 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
                 }
 
                 // A favorite that does not open, however, gets the banner, which can remove it.
-                if (notThere(error, path) || store.state.folderFavorites.includes(path)) {
+                if (notThere(error, path) || favorites.includes(path)) {
                     setMissing(path);
                     setMissingWhy(notThere(error, path) ? null : error.message);
                     setEditing(null);
@@ -282,6 +301,14 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
             return;
         }
 
+        // Back to the copy sheet with the folder: no session starts or moves.
+        if (picking) {
+            chooseFolder(path);
+            goBack();
+
+            return;
+        }
+
         starting.current = true;
         setBusy(true);
 
@@ -310,7 +337,8 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
         }
     };
 
-    const mayStar = canSteer() && !scoped() && !runner;
+    // On a linked computer, only the person who linked it (the owner) keeps favorites.
+    const mayStar = canSteer() && !scoped() && (!runner || owner);
     const starred = target !== null && favorites.includes(target);
 
     /** Star or unstar a folder. The list changes when the server says it did, on every device. */
@@ -319,7 +347,7 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
             setSaving(true);
 
             try {
-                await api("folder-favorites", { path, starred: on });
+                await api("folder-favorites", { path, starred: on, ...(runner ? { runner } : {}) });
 
                 return true;
             } finally {
@@ -336,7 +364,7 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
     // Ctrl/⌘+1…9 starts a session in a favorite, while this is the New session picker on top. Caught before the
     // app's own keys; Alt+1…9 (sessions) has Alt, so it never gets here.
     useEffect(() => {
-        if (changing) {
+        if (changing || picking) {
             return;
         }
 
@@ -370,7 +398,7 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
         addEventListener("keydown", shortcut, true);
 
         return () => removeEventListener("keydown", shortcut, true);
-    }, [changing, favorites, worktree]);
+    }, [changing, picking, favorites, worktree]);
 
     const toggleHidden = () => {
         const next = !hidden;
@@ -477,7 +505,7 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
                       path: server.defaultCwd,
                       name: "Default workspace",
                       icon: "folder",
-                      pin: !changing,
+                      pin: !changing && !picking,
                   },
               ]
             : []),
@@ -519,12 +547,16 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
         ${key && html`<span class="fp-key">${key}</span>`}
     </button>`;
 
+    // A pick goes back to the copy sheet, which keeps its choices.
+    const cancel = picking ? goBack : closeSheet;
+
     return html`<${Sheet}
         title=${
+            title ??
             (changing ? "Move this session: pick a folder" : "New session: pick a folder") +
-            (computer ? ` on ${computer}` : "")
+                (computer ? ` on ${computer}` : "")
         }
-        onClose=${closeSheet}
+        onClose=${cancel}
         wide=${true}
         className="folder-sheet"
     >
@@ -651,16 +683,17 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
                         path,
                         favoriteLabels[index],
                         "star",
-                        !changing && !touch && index < 9
+                        !changing && !picking && !touch && index < 9
                             ? `${APPLE ? "⌘" : "Ctrl+"}${index + 1}`
                             : null,
                     ),
                 )}
                 ${recent.length > 0 && html`<div class="fp-places-title">Recent</div>`}
                 ${recent.map((path, index) => place(path, labels[index], "folder"))}
-                ${!changing && owner && html`<${RunsOn} runner=${runner} runners=${runners} onPick=${pick} />`}
+                ${!changing && !picking && owner && html`<${RunsOn} runner=${runner} runners=${runners} onPick=${pick} />`}
                 ${
                     !changing &&
+                    !picking &&
                     !runner &&
                     piSessionsAvailable() &&
                     html`<button
@@ -749,6 +782,7 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
             <div class="fp-options">
                 ${
                     !changing &&
+                    !picking &&
                     !runner &&
                     html`<label
                         class="check"
@@ -767,7 +801,7 @@ export function CwdSheet({ mode, fromList = false, runner: given = null }) {
                 </label>
             </div>
             <div class="fp-buttons">
-                <button type="button" class="button" onClick=${closeSheet}>Cancel</button>
+                <button type="button" class="button" onClick=${cancel}>Cancel</button>
                 <button
                     type="button"
                     class="button primary"
