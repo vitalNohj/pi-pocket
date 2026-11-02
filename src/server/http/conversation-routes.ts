@@ -11,8 +11,7 @@ import type { Attachment, SubmitRequest } from "../commands.ts";
 import { HttpError } from "../errors.ts";
 import type { CommandRequest } from "../extension-commands.ts";
 import { prepareModelImage } from "../model-images.ts";
-import { reveal } from "../reveal.ts";
-import { serveImage, TYPES } from "./assets.ts";
+import { serveImage, serveRemoteImage, TYPES } from "./assets.ts";
 import { type ApiRequest, json, readJson, send } from "./io.ts";
 
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -394,12 +393,12 @@ export async function conversationRoutes(
         });
     }
 
-    // Show a path in the file manager of the machine the server runs on: the owner's, at that machine (`reveal.ts`).
+    // Show a path in a file manager: this machine's, or a session's other computer's (`Workspace.reveal`).
     if (third === "reveal" && method === "POST") {
         app.requireSee(user, id);
 
         if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner opens the server's file manager");
+            throw new HttpError(403, "Only the owner opens a file manager");
         }
 
         const body = await readJson<{ path?: unknown }>(request);
@@ -408,7 +407,7 @@ export async function conversationRoutes(
             throw new HttpError(400, "path is required");
         }
 
-        await reveal(app.workspace.conversationPath(id, body.path));
+        await app.workspace.reveal(user, id, body.path);
 
         return json(response, 200, { ok: true });
     }
@@ -420,7 +419,12 @@ export async function conversationRoutes(
             throw new HttpError(400, "path is required");
         }
 
-        return serveImage(request, response, app.workspace.conversationFile(user, id, requested));
+        // A session on another computer: its images are there, but for its uploads, kept here.
+        const { file, access } = await app.workspace.imageFile(user, id, requested);
+
+        return access === undefined
+            ? serveImage(request, response, file)
+            : serveRemoteImage(request, response, file, access);
     }
 
     // A file of the session's folder as a download (a design's export): whom the file viewer lets read it, as it is.

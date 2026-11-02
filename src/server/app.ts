@@ -139,6 +139,14 @@ import { Transcripts } from "./transcripts.ts";
 import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { Runners } from "./runners.ts";
+import {
+    type FolderScan,
+    knownScan,
+    latestScan,
+    projectThere,
+    readRemoteText,
+    saveTrust,
+} from "./remote-context.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -3187,9 +3195,40 @@ export class PocketApp {
             throw new HttpError(403, "Only the owner decides which projects Pi trusts.");
         }
 
-        this.requireLocal(id, "Project trust");
+        const runner = this.runnerOf(id);
+
+        if (runner !== undefined) {
+            return projectThere(this.#knownFolder(id), runner, this.#remoteDirs()).trust;
+        }
 
         return readProjectTrust(this.cwdOf(id), this.#skillSources());
+    }
+
+    /** Where trust decisions and Pi's settings are, for a folder on another computer (`remote-context.ts`). */
+    #remoteDirs(): { dataDir: string; agentDir: string } {
+        return { dataDir: this.dataDir, agentDir: getAgentDir() };
+    }
+
+    /** The environment there of a session on another computer, unwrapped: what `remote-context.ts` reads through. */
+    #remoteEnv(id: ConversationId) {
+        return this.runners.env(this.runnerOf(id)!, this.cwdOf(id));
+    }
+
+    /**
+     * What is known of a session's folder on another computer, at once, for what answers without waiting (the trust
+     * routes): read again in the background when old. 409 before its first reading ends.
+     */
+    #knownFolder(id: ConversationId): FolderScan {
+        const scan = knownScan(this.#remoteEnv(id), this.cwdOf(id));
+
+        if (scan === undefined) {
+            throw new HttpError(
+                409,
+                `Pi Pocket is still reading this folder on ${this.runners.name(this.runnerOf(id)!)}. Try again in a moment.`,
+            );
+        }
+
+        return scan;
     }
 
     /** The owner's answer to "trust this project?", saved where Pi's CLI keeps its own, as its `/trust` does. */
@@ -3208,16 +3247,31 @@ export class PocketApp {
             throw new HttpError(400, "This folder has no folder above it.");
         }
 
-        saveProjectTrust(this.cwdOf(id), getAgentDir(), choice);
+        const runner = this.runnerOf(id);
+
+        if (runner === undefined) {
+            saveProjectTrust(this.cwdOf(id), getAgentDir(), choice);
+        } else {
+            // Kept here, by computer and path there: Pi's own store names this server's folders.
+            const { folder, paths } = this.#knownFolder(id);
+
+            saveTrust(this.dataDir, runner, folder, paths, choice);
+        }
 
         return this.projectTrust(id, user);
     }
 
-    /** Pi's skills in a conversation's folder, to run as `/skill:name`. */
+    /**
+     * Pi's skills in a conversation's folder, to run as `/skill:name`. For a session on another computer, those there, as
+     * last read (`remote-context.ts`): none before the first reading ends.
+     */
     skillCommands(id: ConversationId): SkillCommand[] {
-        // A session on another computer: its project's skills are there, and this server's would not fit it.
-        if (this.runnerOf(id) !== undefined) {
-            return [];
+        const runner = this.runnerOf(id);
+
+        if (runner !== undefined) {
+            const scan = knownScan(this.#remoteEnv(id), this.cwdOf(id));
+
+            return scan === undefined ? [] : this.#remoteSkills(scan, runner);
         }
 
         try {
@@ -3232,18 +3286,51 @@ export class PocketApp {
         }
     }
 
-    /** Pi's prompt templates, as a conversation in its folder offers them. */
-    promptTemplates(id: ConversationId): PromptTemplate[] {
-        if (this.runnerOf(id) !== undefined) {
-            return [];
+    #remoteSkills(scan: FolderScan, runner: string): SkillCommand[] {
+        return projectThere(scan, runner, this.#remoteDirs()).skills.map((skill) => ({
+            name: skill.name,
+            description: skill.description,
+            path: skill.filePath,
+            baseDir: skill.baseDir,
+        }));
+    }
+
+    /**
+     * `skillCommands` as they are now, and how to read a skill's file: for a session on another computer, its folder
+     * there read again when old (or as last read, when it cannot be reached), and the file read there.
+     */
+    async skillsToRun(
+        id: ConversationId,
+    ): Promise<{ skills: SkillCommand[]; read?: (path: string) => Promise<string> }> {
+        const runner = this.runnerOf(id);
+
+        if (runner === undefined) {
+            return { skills: this.skillCommands(id) };
         }
 
+        const env = this.#remoteEnv(id);
+        const scan = await latestScan(env, this.cwdOf(id));
+
+        return {
+            skills: scan === undefined ? [] : this.#remoteSkills(scan, runner),
+            read: (path) => readRemoteText(env, path),
+        };
+    }
+
+    /** Pi's prompt templates, as a conversation in its folder offers them. */
+    promptTemplates(id: ConversationId): PromptTemplate[] {
         let paths: string[] = [];
 
         try {
             paths = this.settings.getPromptTemplatePaths();
         } catch {
             // Unreadable settings: the default folders still count.
+        }
+
+        // A session on another computer: this server's own templates, in Pi's folder or where its settings say, with
+        // paths from Pi's folder. None of its project there: nothing here is read for its folder.
+        if (this.runnerOf(id) !== undefined) {
+            return loadPromptTemplates(getAgentDir(), getAgentDir(), paths, { project: false });
         }
 
         const cwd = this.cwdOf(id);

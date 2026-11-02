@@ -252,6 +252,8 @@ export function MessageSheet({ entryId }) {
         ${toPi && entry.presentation && html`<${PresentationChoice} presentation=${entry.presentation} />`}
         ${
             canBranch &&
+            // A session on another computer gets no worktree: its folder is there (`runners.ts`).
+            !view.conversation.runner &&
             view.conversation.inRepository &&
             html`<div class="sheet-list">
                 <div class="extension message-worktree">
