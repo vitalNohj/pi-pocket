@@ -124,16 +124,12 @@ export const DEFAULT_LIMIT_WAIT_HOURS = 6;
  */
 export type KeepWarmTime = 0 | "auto" | number;
 
-/** The owner's facts about one model, over what Pi knows of it. Each one left out: Pi's, or none. */
+/** The owner's values for one model, over what Pi knows of it. Each one left out: Pi's, or none. */
 export type KeepWarmModel = {
     /** Minutes between refreshes; 0: never keep it warm. Absent: a share of its cache lifetime. */
     minutes?: number;
     /** How long its prompt cache lives, in minutes. */
     lifetime?: number;
-    /** Dollars per million tokens to read the cache. */
-    read?: number;
-    /** Dollars per million tokens to write the cache. */
-    write?: number;
 };
 
 /** The owner's settings for keeping a session's prompt cache warm once its run ends. */
@@ -182,13 +178,9 @@ export function keepWarmModelFrom(raw: unknown): KeepWarmModel | undefined {
     const value = raw as Record<string, unknown>;
     const minutes = finite(value.minutes, 0, 24 * 60);
     const lifetime = finite(value.lifetime, 1, 7 * 24 * 60);
-    const read = finite(value.read, 0, 10_000);
-    const write = finite(value.write, 0, 10_000);
     const model: KeepWarmModel = {
         ...(minutes === undefined ? {} : { minutes: Math.round(minutes) }),
         ...(lifetime === undefined ? {} : { lifetime: Math.round(lifetime) }),
-        ...(read === undefined ? {} : { read }),
-        ...(write === undefined ? {} : { write }),
     };
 
     return Object.keys(model).length === 0 ? undefined : model;

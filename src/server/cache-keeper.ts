@@ -233,7 +233,7 @@ export type ModelFacts = {
     minutes?: number;
     /** How long the cache lives, when the owner said; else the model's `promptCache` counts. */
     lifetimeMs?: number;
-    /** Prices per million tokens to read and write the cache, for Auto. Undefined: not known. */
+    /** Pi's published prices per million tokens to read and write the cache, for where Auto stops. Undefined: not published. */
     prices?: { read: number; write: number };
 };
 
@@ -884,12 +884,9 @@ export class CacheKeeper {
             };
         }
 
-        const breakEven = facts.prices === undefined ? 0 : breakEvenRefreshes(facts.prices);
-
-        // Auto needs both prices: without them it cannot know when keeping warm stops paying off.
-        if (breakEven === 0) {
-            return undefined;
-        }
+        // Pi's published prices say where keeping warm stops paying off; with none, the owner's refresh cap does.
+        const breakEven =
+            (facts.prices === undefined ? 0 : breakEvenRefreshes(facts.prices)) || Infinity;
 
         return {
             ...base,

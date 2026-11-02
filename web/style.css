@@ -18754,7 +18754,7 @@ pre.gallery-code {
 
 .keep-warm-cells {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
 }
 
@@ -18774,100 +18774,6 @@ pre.gallery-code {
 .keep-warm-cell .keep-warm-number {
     min-width: 0;
     flex: 1;
-}
-
-/* The calculator: shut until asked for, as a line of text. */
-.keep-warm-disclosure {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    align-self: flex-start;
-    min-height: 40px;
-    color: var(--text);
-    font-weight: 500;
-}
-
-.keep-warm-disclosure svg {
-    transition: transform var(--t-hover) var(--ease-out);
-}
-
-.keep-warm-disclosure[aria-expanded="true"] svg {
-    transform: rotate(90deg);
-}
-
-.keep-warm-calc {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.keep-warm-calc-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px 14px;
-}
-
-.keep-warm-calc-grid .wide {
-    grid-column: 1 / -1;
-}
-
-.keep-warm-calc select {
-    padding: 0.45rem 0.6rem;
-}
-
-.keep-warm-calc .keep-warm-unit {
-    width: auto;
-}
-
-/* The calculator's fields share their column: an input shrinks before it overflows. */
-.keep-warm-calc .keep-warm-input {
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.keep-warm-calc .keep-warm-number {
-    min-width: 0;
-    flex: 1;
-}
-
-.keep-warm-table-wrap {
-    overflow-x: auto;
-    border: 1px solid var(--hair);
-    border-radius: var(--r-card);
-}
-
-.keep-warm-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12.5px;
-    font-variant-numeric: tabular-nums;
-}
-
-.keep-warm-table th,
-.keep-warm-table td {
-    padding: 6px 7px;
-    text-align: right;
-    white-space: nowrap;
-    border-top: 1px solid var(--hair);
-}
-
-.keep-warm-table thead th {
-    border-top: 0;
-    color: var(--faint);
-    font-weight: 500;
-}
-
-.keep-warm-table th:first-child {
-    text-align: left;
-}
-
-.keep-warm-table td .small {
-    display: block;
-}
-
-.keep-warm-table tr.own {
-    background: var(--hover);
 }
 
 .keep-warm-model.never .keep-warm-model-name > span:first-child {

@@ -645,11 +645,19 @@ test("keep warm: Auto stops at break-even, with its own reason", async () => {
     );
 });
 
-test("keep warm: Auto is not started for a model with no prices; the refresh cap below break-even wins", async () => {
-    const none = rig(false, { policy: { ...POLICY, hours: "auto" } });
+test("keep warm: Auto with no published prices stops at the refresh cap; the cap below break-even wins", async () => {
+    const none = rig(false, { policy: { ...POLICY, hours: "auto", maxRefreshes: 3 } });
 
     await idleRun(none);
-    assert.equal(none.keeper.idleStatus(3).warm, false);
+
+    for (let i = 0; i < 20 && none.timers.length > 0; i++) {
+        await none.advance();
+    }
+
+    const unpriced = none.keeper.idleStatus(3);
+
+    assert.equal(none.keeper.status().warms, 3);
+    assert.equal(!unpriced.warm && unpriced.stopped, "the refresh cap was reached");
 
     const capped = rig(false, {
         policy: { ...POLICY, hours: "auto", maxRefreshes: 2 },
