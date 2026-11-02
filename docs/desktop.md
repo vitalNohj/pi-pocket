@@ -22,7 +22,7 @@ The app's preload script puts one object in the top page of the server's origin,
 window.pocketHost = {
     kind: "pi-pocket-gui", // which app; for logs only
     apiVersion: 1,
-    capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open", "newSession"],
+    capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open", "newSession", "saveFile"],
 
     menuItems(), // [{ id, label, hint? }]: items for the menu's Desktop group, at its end
     invoke(id), // one of them was chosen; false when it could not be done
@@ -30,6 +30,7 @@ window.pocketHost = {
     notify(message), // a notification for the app to show (below)
     visible(), // whether the app's window shows: false while hidden in a tray or minimized
     setPinned(list), // [{ id, title, state, label, url }]: the pinned sessions, in order
+    saveFile({ url, name }), // save a file of a server session to this computer (below)
     subscribe(listener, events), // the app's events (below), and the ones this page handles
 };
 ```
@@ -46,9 +47,16 @@ window.pocketHost = {
 | `visibility` | Reads `visible()` with the page's own visibility: the page counts as hidden while either says so. It tells the server (`POST /api/visibility`), so the server knows the person is away and lets notifications through, and seen marks and peek tiles wait as they do in a hidden tab.                                                        |
 | `pinned`     | Calls `setPinned(list)` when a pinned session's title or state changes, for a tray menu. `state` is the square's shape from `sessionMark`: `waiting`, `limited`, `working`, `failed`, `fresh` (finished, not read), or `seen`. The session list's theme states `done` and `idle` do not change these bridge names. `label` says it in words. |
 | `open`       | Opens what the app asks for (an `open` event), also without `notify`.                                                                                                                                                                                                                                                                        |
+| `saveFile`   | Calls `saveFile({ url, name })` for the viewer's Download button or Cmd+click (Ctrl+click) on a server file's path, to save it to this computer.                                                                                                                                                                                             |
 | `newSession` | Opens the **New session** sheet when the app asks for it (a `newSession` event), as Alt+N does.                                                                                                                                                                                                                                              |
 
 A page in an Electron window keeps running at full speed while the window hides in the tray, so `document.visibilityState` stays `visible` there. That is why `visible()` exists: without it, the server would think the person is looking, and hold every notification back.
+
+### Saving files
+
+With `saveFile`, the viewer's **Download** button saves a file of a session on the server to this computer's Downloads folder and shows it in the file manager. Cmd+click (Ctrl+click) on its path in a reply does the same, unless the click already offers **Show in the file manager**. Sessions on runners keep their existing file-manager action. Without this capability, Download uses a normal browser download.
+
+`saveFile({ url, name })` takes a same-origin path, `/api/c/<id>/download?path=...`, and the file's last path part as `name`. It returns a promise of `{ ok: true, path }`, where `path` is where the file was saved, or `{ ok: false, error }`, with an error in words for a person. The app uses the person's sign-in for the request and must not save downloads from other origins through this call.
 
 ### Notifications
 
