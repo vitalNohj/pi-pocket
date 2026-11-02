@@ -72,8 +72,9 @@ In a terminal, run pi-pocket runner for a menu. For scripts:
 
   pi-pocket runner start
     Run with the saved link. Services and the desktop app use this.
-  pi-pocket runner link <server> <code>
+  pi-pocket runner link <server> <code> [--allow-http]
     Link this computer. Get a code in Pi Pocket: Menu > Runners > Link a computer.
+    --allow-http also allows plain HTTP to that server (only on a network you trust).
   pi-pocket runner settings
     Show the settings. Change one with: pi-pocket runner settings <name> <value>
       confirm on|off       Ask here before a new session starts (default: on)
@@ -311,7 +312,9 @@ async function redeem(server: string, code: string, settings: RunnerSettings): P
 
 /** `pi-pocket runner link <server> <code>`: no questions; plain HTTP only where `transport.ts` allows it. */
 async function link(file: string, args: string[]): Promise<void> {
-    const [given, code] = args;
+    // `--allow-http`: the person allowed plain HTTP to this server (the desktop app's switch); kept with the link.
+    const allow = args.includes("--allow-http");
+    const [given, code] = args.filter((arg) => arg !== "--allow-http");
 
     if (given === undefined || code === undefined) {
         fail(
@@ -321,7 +324,8 @@ async function link(file: string, args: string[]): Promise<void> {
 
     try {
         const server = serverAddress(given);
-        const kept = existsSync(file) ? settingsOf(readLink(file)) : settingsOf(undefined);
+        const saved = existsSync(file) ? settingsOf(readLink(file)) : settingsOf(undefined);
+        const kept = allow ? { ...saved, allowHttp: true } : saved;
         const transport = await checkTransport(server, kept.allowHttp);
 
         if (!transport.ok) {
