@@ -152,6 +152,12 @@ export class Memory {
         const now = app.now();
         let cached = this.#projects.get(cacheKey);
 
+        // An offline computer cannot say which repository the folder is in: its folder stands in for now, and is not
+        // kept, so the real project is back as soon as the computer is.
+        if (runner !== undefined && !app.runners.link(runner).online) {
+            return this.#resolveProject(folder, runner);
+        }
+
         if (cached === undefined || now - cached.at > PROJECT_FOR_MS) {
             cached = { at: now, project: this.#resolveProject(folder, runner) };
             this.#projects.set(cacheKey, cached);
