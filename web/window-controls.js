@@ -4,7 +4,7 @@ const overlay = navigator.windowControlsOverlay;
 const root = document.documentElement;
 
 const BARS =
-    ".tabstrip, .topbar, .viewer-head, .lightbox-bar, .board-head, .files-bar, .ext-panel-bar, .browser-bar, .people-head";
+    ".tabstrip, .topbar, .viewer-head, .lightbox-bar, .board-head, .pip-panel.docked > .pip-head, .files-bar, .ext-panel-bar, .browser-bar, .people-head";
 const PUSHED = ".drawer, .home-list, .layout > .window";
 const LAYOUT = `${BARS}, .drawer, .home-list, .layout, .window`;
 const NOTCH_GAP = 6;

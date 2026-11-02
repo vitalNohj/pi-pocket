@@ -33,6 +33,7 @@ import {
 } from "../theme.js";
 import { arranged, move, resetSlot, setShown, SLOTS } from "../slots.js";
 import { html, Icon, Sheet, Switch } from "../ui.js";
+import { pipAvailable } from "../pip.js";
 import { galleryAvailable } from "./gallery.js";
 
 // Key hints are for people with a keyboard: a touch screen has none.
@@ -724,6 +725,29 @@ export function AppearanceSheet() {
                     )}
                 </div>
             <//>
+            ${
+                pipAvailable() &&
+                html`<${SettingRow}
+                    title="PiP"
+                    detail="Floating: a window in the corner, or a sheet on a phone. Board: in the session's place, as Running now"
+                >
+                    <div class="segmented">
+                        ${[
+                            ["floating", "Floating"],
+                            ["board", "Board"],
+                        ].map(
+                            ([value, label]) =>
+                                html`<button
+                                    class=${p.pip === value ? "on" : ""}
+                                    aria-pressed=${p.pip === value}
+                                    onClick=${() => setPrefs({ pip: value })}
+                                >
+                                    ${label}
+                                </button>`,
+                        )}
+                    </div>
+                <//>`
+            }
             <${SettingRow}
                 title="Motion"
                 detail="Auto follows your system's reduced-motion setting. Fluid adds springs, staggered entrances, and layout changes that morph"
