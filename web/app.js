@@ -31,7 +31,7 @@ import {
     peeksWanted,
     togglePeeks,
 } from "./peeks.js";
-import { closePip, openPip, PipHost, PipPanel, pipAvailable, togglePip } from "./pip.js";
+import { closePip, openPip, PipHost, pipAvailable, pipBoard, togglePip } from "./pip.js";
 import { Drawer, RailNav, ResizeHandle, SessionList, toSessions } from "./sessions.js";
 import { SessionTabs } from "./session-tabs.js";
 // Loaded for what it does: it gives replies' Markdown the component for pages, images, and diffs in code blocks.
@@ -194,6 +194,19 @@ defineItem("topbar", {
             onClick=${() => openSheet({ type: "menu" })}
         >
             <${Icon} name="more" />
+        </button>`,
+});
+
+// PiP opened as a board (Appearance → PiP → Board): its × closes it, back to what was in the session's place.
+defineItem("topbar", {
+    id: "core:pip-close",
+    label: "Close PiP",
+    order: 1100,
+    fixed: true,
+    render: () =>
+        pipBoard() &&
+        html`<button class="icon-button" aria-label="Close PiP" title="Close PiP" onClick=${closePip}>
+            <${Icon} name="close" />
         </button>`,
 });
 
@@ -506,8 +519,8 @@ function App() {
     // The sidebar and the splash show only on wide screens (style.css): narrower, they are not drawn at all. A phone
     // drew the sidebar's session list beside its own, hidden, on each change and each Back.
     const sidebar = WIDE.matches;
-    // The subagents board, Running now, PiP as a board (Appearance → PiP), or an extension's page, takes the
-    // conversation's place, and the panels beside it give it their room.
+    // The subagents board, or an extension's page, takes the conversation's place, and the panels beside it give it
+    // their room.
     const board = state.board;
     const page = !board && state.page !== null;
     const placed = board || page;
@@ -541,14 +554,12 @@ function App() {
             ${
                 board === "running"
                     ? html`<${RunningBoard} />`
-                    : board === "pip"
-                      ? state.pipOpen && pipAvailable() && html`<${PipPanel} docked=${true} />`
-                      : board
-                        ? html`<${SubagentsBoard} />`
-                        : page
-                          ? html`<${ExtensionPage} key=${`${state.page.module}:${state.page.id}`} />`
-                          : inConversation
-                            ? html`${prefs().sessionTabs && html`<${SessionTabs} />`}<${Topbar} />
+                    : board
+                      ? html`<${SubagentsBoard} />`
+                      : page
+                        ? html`<${ExtensionPage} key=${`${state.page.module}:${state.page.id}`} />`
+                        : inConversation
+                          ? html`${prefs().sessionTabs && html`<${SessionTabs} />`}<${Topbar} />
                     ${
                         peeking &&
                         tiles.length > 0 &&
@@ -561,7 +572,7 @@ function App() {
                         !state.missing &&
                         html`<${Composer} key=${state.conversationId} />`
                     }`
-                            : html`<div class="home-list" data-part="home-list">
+                          : html`<div class="home-list" data-part="home-list">
                           <${RailNav} />
                           <${SessionList} />
                       </div>
@@ -903,8 +914,8 @@ startEdgeBack();
 startSwipes((where) => {
     const { conversationId, view, missing } = store.state;
 
-    // The subagents board, PiP as a board, or an extension's page in the conversation's place (or the home screen's):
-    // right goes back, as its × does.
+    // The subagents board or an extension's page in the conversation's place (or the home screen's): right goes back,
+    // as its × does.
     if (where === "board") {
         return { right: { path: iconPath("back"), label: "Back", run: goBack } };
     }

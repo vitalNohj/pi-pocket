@@ -729,7 +729,7 @@ export function AppearanceSheet() {
                 pipAvailable() &&
                 html`<${SettingRow}
                     title="PiP"
-                    detail="Floating: a window in the corner, or a sheet on a phone. Board: in the session's place, as Running now"
+                    detail="Floating: a window in the corner, or a sheet on a phone. Board: its conversation in the session's place, with every step and its menu"
                 >
                     <div class="segmented">
                         ${[
