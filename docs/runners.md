@@ -77,7 +77,7 @@ These also work, on that computer:
 - The **Files** and **Changes** panels, the branch list, and **Show in the file manager** (it opens there).
 - The folder's project context files (`AGENTS.md`, `CLAUDE.md`) and the skills there and in that computer's home folder. Project trust is kept for each computer.
 - Files mentioned with `@`, read on that computer.
-- Attachments: each is copied to `~/.pi-pocket/uploads/<session>/` on that computer when the message is sent, and the message gives that path.
+- Attachments: each is copied to `pi-pocket-uploads/<session>/` in that computer's temporary folder when the message is sent, and the message gives that path.
 
 These are not available yet in sessions on another computer, because they use the server's disk: background tasks, artifacts, design, git worktrees, and drop-in extensions. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
 

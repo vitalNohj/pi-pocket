@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -238,7 +239,7 @@ describe("a session on another computer", () => {
             { path: stored, name: "plan.txt", mime: "text/plain", size: 9 },
         ]);
 
-        const copy = join(remoteHome, ".pi-pocket", "uploads", String(id), "abc-12345678-plan.txt");
+        const copy = join(tmpdir(), "pi-pocket-uploads", String(id), "abc-12345678-plan.txt");
         const sent = (await modelTexts(app, id as never)).at(-2) ?? "";
 
         assert.equal(readFileSync(copy, "utf8"), "the plan\n");
@@ -249,6 +250,27 @@ describe("a session on another computer", () => {
         assert.deepEqual(attachedFile(`- ${copy} (plan.txt, text/plain, 9 bytes)`, uploads), [
             { path: stored, name: "plan.txt", mime: "text/plain", size: 9 },
         ]);
+    });
+
+    it("copies images too, and archiving removes the copies there", async () => {
+        const uploads = app.workspace.uploadDirectory(id as never);
+        const image = join(uploads, "def-12345678-shot.png");
+        const folder = join(tmpdir(), "pi-pocket-uploads", String(id));
+
+        writeFileSync(image, "not really a png");
+        await say(app, id as never, "look at this", [
+            { path: image, name: "shot.png", mime: "image/png", size: 16 },
+        ]);
+
+        assert.equal(
+            readFileSync(join(folder, "def-12345678-shot.png"), "utf8"),
+            "not really a png",
+        );
+        assert.equal(existsSync(join(folder, "abc-12345678-plan.txt")), true);
+
+        await app.commands.updateSession(id as never, owner(app), { archived: true });
+        await until(() => !existsSync(folder), "the copies there to go");
+        await app.commands.updateSession(id as never, owner(app), { archived: false });
     });
 
     it("sends the files a message names with @, read there", async () => {
@@ -266,7 +288,7 @@ describe("a session on another computer", () => {
         assert.match(sent, /a note on the laptop/);
     });
 
-    it("refuses attachments while the computer is offline, and still answers without them", async () => {
+    it("sends attachments while the computer is offline, with their paths here, and still answers", async () => {
         await runner.stop();
         await until(() => app.runners.list()[0]?.online === false, "the runner to go");
 
@@ -274,12 +296,13 @@ describe("a session on another computer", () => {
         const stored = join(uploads, "abc-87654321-later.txt");
 
         writeFileSync(stored, "later\n");
-        await assert.rejects(
-            say(app, id as never, "read this", [
-                { path: stored, name: "later.txt", mime: "text/plain", size: 6 },
-            ]),
-            /could not be copied to Laptop/,
-        );
+        await say(app, id as never, "read this", [
+            { path: stored, name: "later.txt", mime: "text/plain", size: 6 },
+        ]);
+
+        const sent = (await modelTexts(app, id as never)).at(-2) ?? "";
+
+        assert.ok(sent.includes(`- ${stored} (later.txt, text/plain, 6 bytes)`), sent);
 
         // A turn needs no context files to go: they are left as last read, or out.
         await say(app, id as never, "hello again");
