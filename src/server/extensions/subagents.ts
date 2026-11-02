@@ -1044,13 +1044,15 @@ export default function createSubagents(host: PocketHost, web?: ExtensionWeb) {
                         ownership: { kind: "task", taskId: anchor },
                     });
 
-                    // A remove edit starts from defaults, not the inherited selection. Keep the parent's list.
+                    // A remove edit starts from the defaults, not the inherited selection. A session on another
+                    // computer has a fixed list (`REMOTE_EXTENSIONS`): its subagent keeps that list, less these.
                     const removed = new Set([SubagentTools.name, AgentTeams.name, Ask.name]);
+                    const remote = host.runnerOf(api.conversationId) !== undefined;
 
                     await configure(tx, child.id, {
-                        extensions: parent.extensions.filter(
-                            (extension) => !removed.has(extension.name),
-                        ),
+                        extensions: remote
+                            ? parent.extensions.filter((extension) => !removed.has(extension.name))
+                            : { remove: [SubagentTools, AgentTeams, Ask] },
                         instructions: `You are the subagent "${name}". You work for another agent, not directly for a person, although a person may open your conversation and talk to you. Answer requests completely but concisely: your final answer is what gets reported back.`,
                         ...(model === undefined ? {} : { model }),
                         ...(thinking === undefined ? {} : { thinkingLevel: thinking }),
