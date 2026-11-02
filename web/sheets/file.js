@@ -287,7 +287,7 @@ function FileActions({ file, shown, previewable, preview, onPreview, running, on
             aria-label="Download"
             onClick=${() => downloadFile(file.path)}
         >
-            <${Icon} name="down" size=${16} />
+            <${Icon} name="download" size=${16} />
         </button>`
     }
     ${
