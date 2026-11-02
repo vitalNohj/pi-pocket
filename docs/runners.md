@@ -72,13 +72,14 @@ In Menu → **Runners**, choose **New session** next to an online computer, then
 
 Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, and schedules also work.
 
-These features are not available yet in sessions on another computer, because they use the server's disk:
+These also work, on that computer:
 
-- Background tasks, the browser, artifacts, design, and memory.
-- Subagents and teams, PR watches, and git worktrees.
-- The **Files** and **Changes** panels, and the folder's project context and skills.
+- The **Files** and **Changes** panels, the branch list, and **Show in the file manager** (it opens there).
+- The folder's project context files (`AGENTS.md`, `CLAUDE.md`) and the skills there and in that computer's home folder. Project trust is kept for each computer.
+- Files mentioned with `@`, read on that computer.
+- Attachments: each is copied to `~/.pi-pocket/uploads/<session>/` on that computer when the message is sent, and the message gives that path.
 
-Files that people attach stay on the server. They are not copied to the linked computer.
+These are not available yet in sessions on another computer, because they use the server's disk: background tasks, artifacts, design, git worktrees, and drop-in extensions. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
 
 ## Sharing
 
