@@ -43,6 +43,8 @@ const OUTBOX_LIMIT = 32 * 1024 * 1024;
 
 /** Reconnect waits, growing from the first to the last. */
 const RETRY_MS = [1000, 2000, 5000, 10_000, 20_000, 30_000];
+/** How long git and GitHub readiness is kept between connections (an install or a sign-in shows after this). */
+const TOOLS_FOR_MS = 5 * 60_000;
 
 /** WebSocket pings to the server; a link that answers none for SILENT_MS is closed and made again. */
 const PING_MS = 10_000;
@@ -226,6 +228,7 @@ class Session {
 
 export class Runner {
     readonly #options: RunnerOptions;
+    #toolsChecked: { at: number; tools: Promise<RunnerTools> } | undefined;
     readonly #url: URL;
     readonly #log: (line: string) => void;
     readonly #retry: readonly number[];
@@ -409,10 +412,24 @@ export class Runner {
                     );
                 }
 
-                void checkTools().then((tools) => this.#open(tools));
+                void this.#tools().then((tools) => this.#open(tools));
             },
             (error: unknown) => this.#fail(`Could not check the server address: ${String(error)}`),
         );
+    }
+
+    /**
+     * git and GitHub readiness for the hello. Checked again after `TOOLS_FOR_MS` only: a reconnect after a short drop
+     * must not wait for `gh auth status`, which asks GitHub.
+     */
+    #tools(): Promise<RunnerTools> {
+        const now = Date.now();
+
+        if (this.#toolsChecked === undefined || now - this.#toolsChecked.at > TOOLS_FOR_MS) {
+            this.#toolsChecked = { at: now, tools: checkTools() };
+        }
+
+        return this.#toolsChecked.tools;
     }
 
     #open(tools: RunnerTools): void {
