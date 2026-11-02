@@ -370,7 +370,19 @@ export async function conversationRoutes(
     }
 
     if (third === "fork" && method === "POST") {
-        return json(response, 200, await app.commands.fork(id, user, await readJson(request)));
+        const controller = new AbortController();
+
+        response.on("close", () => {
+            if (!response.writableEnded) {
+                controller.abort();
+            }
+        });
+
+        return json(
+            response,
+            200,
+            await app.commands.fork(id, user, await readJson(request), controller.signal),
+        );
     }
 
     // What the copy sheet starts from: the folder it suggests on a computer (`runner`: a computer's id, empty: this
@@ -401,7 +413,19 @@ export async function conversationRoutes(
     }
 
     if (third === "resend" && method === "POST") {
-        return json(response, 200, await app.commands.resend(id, user, await readJson(request)));
+        const controller = new AbortController();
+
+        response.on("close", () => {
+            if (!response.writableEnded) {
+                controller.abort();
+            }
+        });
+
+        return json(
+            response,
+            200,
+            await app.commands.resend(id, user, await readJson(request), controller.signal),
+        );
     }
 
     if (third === "compact" && method === "POST") {

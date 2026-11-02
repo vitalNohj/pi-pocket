@@ -19,6 +19,7 @@ import {
 import { sessionStarted } from "../extension-ui.js";
 import { chooseFolder } from "../copy-draft.js";
 import { goBack } from "../back.js";
+import { waitOnComputer } from "../runner-wait.js";
 import {
     crumbsOf,
     isWholePath,
@@ -317,10 +318,15 @@ export function CwdSheet({
                 await actions.configure({ cwd: path });
                 closeSheet();
             } else {
-                const created = await actions.createSession(
-                    path,
-                    runner ? { runner } : { worktree },
-                );
+                const created = await (runner
+                    ? waitOnComputer(runner, path, "new", (signal) =>
+                          actions.createSession(path, { runner }, signal),
+                      )
+                    : actions.createSession(path, { worktree }));
+
+                if (!created) {
+                    return;
+                }
 
                 navigate(created.id);
 
