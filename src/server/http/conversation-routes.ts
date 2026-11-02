@@ -10,6 +10,7 @@ import { outcome } from "../background.ts";
 import type { Attachment, SubmitRequest } from "../commands.ts";
 import { HttpError } from "../errors.ts";
 import type { CommandRequest } from "../extension-commands.ts";
+import { requireLocalBrowser } from "../local-browser.ts";
 import { prepareModelImage } from "../model-images.ts";
 import { reveal } from "../reveal.ts";
 import { serveImage, TYPES } from "./assets.ts";
@@ -400,6 +401,11 @@ export async function conversationRoutes(
 
         if (user.role !== "owner") {
             throw new HttpError(403, "Only the owner opens the server's file manager");
+        }
+
+        // This machine's file manager is for a browser on it; a session on another computer shows it there.
+        if (app.runnerOf(id) === undefined) {
+            requireLocalBrowser(request);
         }
 
         const body = await readJson<{ path?: unknown }>(request);

@@ -673,11 +673,19 @@ export function openFile(path) {
 }
 
 /**
- * Whether a click or key asks to show a path in the file manager rather than the viewer: Ctrl (⌘ on a Mac) held, by the
- * owner, whose machine the server runs on.
+ * Whether this browser is offered "Show in the file manager" for the open session: the owner's, and for a session on
+ * this server, only in a browser on its machine with a desktop (`canReveal`, `local-browser.ts`); a session on another
+ * computer shows it there.
  */
-export const revealAsked = (event) =>
-    (APPLE ? event.metaKey : event.ctrlKey) && store.state.me?.role === "owner";
+export const revealOffered = () =>
+    store.state.me?.role === "owner" &&
+    (Boolean(store.state.view.conversation?.runner) || store.state.server?.canReveal === true);
+
+/**
+ * Whether a click or key asks to show a path in the file manager rather than the viewer: Ctrl (⌘ on a Mac) held, where
+ * it is offered (`revealOffered`). Elsewhere it opens the viewer, as a plain click does.
+ */
+export const revealAsked = (event) => (APPLE ? event.metaKey : event.ctrlKey) && revealOffered();
 
 /** Show a file (or folder) of the session in the file manager of the machine the server runs on, selected. */
 export function revealFile(path) {

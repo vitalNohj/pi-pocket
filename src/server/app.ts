@@ -89,6 +89,7 @@ import {
     type WebAccess,
 } from "./host.ts";
 import { type GuardStatus, LancetGuard } from "./lancet.ts";
+import { withReveal } from "./local-browser.ts";
 import { takeLock } from "./lock.ts";
 import { Memory } from "./memory.ts";
 import { isThinkingLevel, modelInfo, modelList, resolveModel, THINKING_LEVELS } from "./models.ts";
@@ -2523,7 +2524,11 @@ export class PocketApp {
 
     /** A tab's hello: what everyone gets, and the id of its own connection, which its peek lists name. */
     #helloFor(client: Client, hello: Awaited<ReturnType<PocketApp["hello"]>>) {
-        return { ...hello, connection: client.connection };
+        return withReveal(
+            { ...hello, connection: client.connection },
+            client.user,
+            client.local === true,
+        );
     }
 
     #scheduleSessions(): void {
