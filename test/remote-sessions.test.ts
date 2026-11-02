@@ -195,9 +195,18 @@ describe("a session on another computer", () => {
         }
     });
 
-    it("refuses what reads this server's disk", async () => {
-        await assert.rejects(app.workspace.changes(id as never, owner(app)), /runs on Laptop/);
-        await assert.rejects(app.workspace.fileList(id as never, owner(app)), /runs on Laptop/);
+    it("reads its folder there for Files and Changes, not this server's disk", async () => {
+        // Not in a repository there: Pi's edits only, by where they are there.
+        const changes = await app.workspace.changes(id as never, owner(app));
+
+        assert.equal(changes.repo, undefined);
+        assert.deepEqual(
+            changes.piOnly.map((each) => each.path),
+            [join(there, "note.txt")],
+        );
+        assert.deepEqual((await app.workspace.fileList(id as never, owner(app))).files, [
+            "note.txt",
+        ]);
         assert.equal(app.workspace.head(id as never), undefined);
     });
 

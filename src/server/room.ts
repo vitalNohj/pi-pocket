@@ -529,9 +529,15 @@ export class Room {
         this.schedule();
     }
 
-    /** What the folder has checked out now, null outside a repository; kept as the branch this view last read. */
+    /**
+     * What the folder has checked out now, null outside a repository; kept as the branch this view last read. A folder
+     * on another computer answers later: what it said last now, and an update when it says something new.
+     */
     #readHead(): Head | null {
-        const head = this.#app.workspace.head(this.id) ?? null;
+        // A room closed meanwhile has no view to update.
+        const head =
+            this.#app.workspace.head(this.id, () => this.#view !== undefined && this.schedule()) ??
+            null;
 
         this.#head = JSON.stringify(head);
 

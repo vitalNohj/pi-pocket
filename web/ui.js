@@ -766,12 +766,22 @@ export function openFile(path) {
 export const revealAsked = (event) =>
     (APPLE ? event.metaKey : event.ctrlKey) && store.state.me?.role === "owner";
 
-/** Show a file (or folder) of the session in the file manager of the machine the server runs on, selected. */
+/**
+ * Show a file (or folder) of the session in a file manager, selected: on the machine the server runs on, or for a
+ * session on another computer, on that computer.
+ */
 export function revealFile(path) {
     const match = /^(.*?):(\d+)(?:-\d+)?$/.exec(path);
+    const computer = store.state.view.conversation?.runnerName;
 
     actions.reveal(match ? match[1] : path).then(
-        () => notify("info", "Shown in the file manager on the server's machine."),
+        () =>
+            notify(
+                "info",
+                computer
+                    ? `Shown in the file manager on ${computer}.`
+                    : "Shown in the file manager on the server's machine.",
+            ),
         (error) => notify("error", error.message ?? String(error)),
     );
 }

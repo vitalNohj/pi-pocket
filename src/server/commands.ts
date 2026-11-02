@@ -59,8 +59,10 @@ import {
 } from "./entry-format.ts";
 import { describe, HttpError, optionalText } from "./errors.ts";
 import { homePath } from "./paths.ts";
-import { forModel, MAX_INLINE_IMAGE, modelImage } from "./model-images.ts";
-import { mentionedPaths, viewFile } from "./files.ts";
+import { forModel, MAX_INLINE_IMAGE, modelImage, modelImageOf } from "./model-images.ts";
+import { Unreachable } from "./folder-access.ts";
+import { copyUploads } from "./remote-context.ts";
+import { type FileView, mentionedPaths, viewFile } from "./files.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./models.ts";
 import { writePiSession } from "./pi-sessions.ts";
 import { snippet } from "./projection.ts";
@@ -91,10 +93,51 @@ import {
 
 const context = BACKGROUND_CONTEXT;
 
+/** A mentioned file's text as it goes with a message, cut to `room` and `MAX_MENTIONED_FILE`; none without room. */
+function fileBlock(
+    file: string,
+    view: { text: string; truncated: boolean },
+    room: number,
+): { part: TextContent; length: number } | undefined {
+    if (room <= 0) {
+        return undefined;
+    }
+
+    const most = Math.min(MAX_MENTIONED_FILE, room);
+    const content = view.text.slice(0, most);
+    const cut =
+        view.truncated || view.text.length > most ? "\n… (the rest of the file is left out)" : "";
+
+    return {
+        part: { type: "text", text: `${FILE_BLOCK}${file}">\n${content}${cut}\n</file>` },
+        length: content.length,
+    };
+}
+
 export type Attachment = { path: string; name: string; mime: string; size: number };
 
-// A name can hold " (", so the path is the part that ends with "-name".
-function attachedFile(line: string, uploads: string): Attachment[] {
+/**
+ * The copy here of a file a session on another computer got as `~/.pi-pocket/uploads/<conversation>/<name>` there
+ * (`copyUploads`): the same name in the conversation's uploads, when it is still there.
+ */
+function uploadedCopy(path: string, uploads: string): string | undefined {
+    const stored = /[/\\]\.pi-pocket[/\\]uploads[/\\]\d+[/\\]([^/\\]+)$/.exec(path)?.[1];
+
+    if (stored === undefined || stored === "." || stored === "..") {
+        return undefined;
+    }
+
+    const copy = join(uploads, stored);
+
+    try {
+        return statSync(copy).isFile() ? copy : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+// A name can hold " (", so the path is the part that ends with "-name". Exported for tests.
+export function attachedFile(line: string, uploads: string): Attachment[] {
     const tail = /, ([^,]+), (\d+) bytes\)(?: \[Image: .*)?$/.exec(line);
 
     if (!line.startsWith("- ") || tail === null) {
@@ -107,10 +150,16 @@ function attachedFile(line: string, uploads: string): Attachment[] {
         const path = head.slice(0, at);
         const name = head.slice(at + 2);
 
-        if (path.startsWith(uploads + sep) && path.endsWith(`-${name}`)) {
+        if (!path.endsWith(`-${name}`)) {
+            continue;
+        }
+
+        const here = path.startsWith(uploads + sep) ? path : uploadedCopy(path, uploads);
+
+        if (here !== undefined) {
             const mime = tail[1] === "unknown type" ? "" : tail[1]!;
 
-            return [{ path, name, mime, size: Number(tail[2]) }];
+            return [{ path: here, name, mime, size: Number(tail[2]) }];
         }
     }
 
@@ -864,11 +913,16 @@ export class Commands {
         const conversation = await app.conversation(id);
         const typed = request.text.trim();
         // `/skill:name request` sends the skill with the request; `/name arguments`, Pi's prompt template of that name.
-        const expanded = typed.startsWith("/skill:")
-            ? (expandSkillCommand(typed, app.skillCommands(id)) ?? typed)
-            : typed.startsWith("/")
-              ? (expandPromptTemplate(typed, app.promptTemplates(id)) ?? typed)
-              : typed;
+        let expanded = typed;
+
+        if (typed.startsWith("/skill:")) {
+            const { skills, read } = await app.skillsToRun(id);
+
+            expanded = (await expandSkillCommand(typed, skills, read)) ?? typed;
+        } else if (typed.startsWith("/")) {
+            expanded = expandPromptTemplate(typed, app.promptTemplates(id)) ?? typed;
+        }
+
         // A value an extension hides (`host.hide`), pasted into the message, is never stored nor sent to the model.
         const text = app.hidden.replace(expanded, id);
         const attachments = request.attachments ?? [];
@@ -897,6 +951,7 @@ export class Commands {
         const made = await Promise.allSettled(
             images.map((file) => modelImage(file.path, file.mime)),
         );
+        const placed = await this.#placeAttachments(id, attachments);
         // What differs between a file and the image the model gets goes on the file's line.
         const notes = new Map<Attachment, string>();
 
@@ -906,9 +961,9 @@ export class Commands {
             }
         });
 
-        const lines = attachments.map((file) => {
+        const lines = attachments.map((file, index) => {
             const note = notes.get(file);
-            const line = `- ${file.path} (${file.name}, ${file.mime || "unknown type"}, ${file.size} bytes)`;
+            const line = `- ${placed[index]} (${file.name}, ${file.mime || "unknown type"}, ${file.size} bytes)`;
 
             return note === undefined ? line : `${line} ${note}`;
         });
@@ -1182,9 +1237,9 @@ export class Commands {
         const parts: (TextContent | ImageContent)[] = [];
         let total = 0;
 
-        // Its folder is on another computer: the mentions stay mentions, which Pi reads there.
+        // Its folder is on another computer: the files are read there.
         if (app.runnerOf(id) !== undefined) {
-            return parts;
+            return this.#mentionedThere(id, user, text, images);
         }
 
         for (const mention of mentionedPaths(text).slice(0, MAX_MENTIONED)) {
@@ -1219,30 +1274,160 @@ export class Commands {
                 }
 
                 const view = await viewFile(file);
+                const part =
+                    view.kind === "text"
+                        ? fileBlock(file, view, MAX_MENTIONED_TOTAL - total)
+                        : undefined;
 
-                if (view.kind !== "text" || total >= MAX_MENTIONED_TOTAL) {
-                    continue;
+                if (part !== undefined) {
+                    total += part.length;
+                    parts.push(part.part);
                 }
-
-                const room = Math.min(MAX_MENTIONED_FILE, MAX_MENTIONED_TOTAL - total);
-                const content = view.text.slice(0, room);
-
-                total += content.length;
-                const cut =
-                    view.truncated || view.text.length > room
-                        ? "\n… (the rest of the file is left out)"
-                        : "";
-
-                parts.push({
-                    type: "text",
-                    text: `${FILE_BLOCK}${file}">\n${content}${cut}\n</file>`,
-                });
             } catch (error) {
                 app.notice("warning", `Could not send ${mention.written}: ${describe(error)}`, id);
             }
         }
 
         return parts;
+    }
+
+    /**
+     * `#mentionedFiles` for a session on another computer: each file read there, as the person may read it there
+     * (`Workspace.remoteFile`), with the same limits. Every mention is looked up side by side, as each is a round trip.
+     * The computer offline: one warning, and the message goes without them.
+     */
+    async #mentionedThere(
+        id: ConversationId,
+        user: User,
+        text: string,
+        images: boolean,
+    ): Promise<(TextContent | ImageContent)[]> {
+        const app = this.#app;
+        let unreachable: unknown;
+
+        type Found =
+            | { mention: { written: string }; image: { bytes: Uint8Array; mime: string } }
+            | { mention: { written: string }; file: string; view: FileView };
+        const found = await Promise.all(
+            mentionedPaths(text)
+                .slice(0, MAX_MENTIONED)
+                .map(async (mention): Promise<Found | undefined> => {
+                    const mime = IMAGE_MIME[extname(mention.candidates[0]!).toLowerCase()];
+
+                    // Not sent to a model without images: not read either.
+                    if (mime !== undefined && !images) {
+                        return undefined;
+                    }
+
+                    for (const candidate of mention.candidates) {
+                        try {
+                            const { access, file } = await app.workspace.remoteFile(
+                                user,
+                                id,
+                                candidate,
+                            );
+
+                            if (mime !== undefined) {
+                                const peek = await access.peek(file, MAX_INLINE_IMAGE);
+
+                                if (peek.kind !== "file") {
+                                    continue;
+                                }
+
+                                return peek.size <= MAX_INLINE_IMAGE
+                                    ? { mention, image: { bytes: peek.bytes, mime } }
+                                    : undefined;
+                            }
+
+                            const view = await viewFile(file, access);
+
+                            if (view.kind !== "folder" && view.kind !== "other") {
+                                return { mention, file, view };
+                            }
+                        } catch (error) {
+                            // Not there, or not this person's to load; or the computer cannot be reached.
+                            if (
+                                error instanceof Unreachable ||
+                                (error instanceof HttpError && error.status === 409)
+                            ) {
+                                unreachable = error;
+
+                                return undefined;
+                            }
+                        }
+                    }
+
+                    return undefined;
+                }),
+        );
+
+        if (unreachable !== undefined) {
+            app.notice(
+                "warning",
+                `Could not send the files the message names: ${describe(unreachable)}`,
+                id,
+            );
+        }
+
+        const parts: (TextContent | ImageContent)[] = [];
+        let total = 0;
+
+        for (const each of found) {
+            if (each === undefined) {
+                continue;
+            }
+
+            try {
+                if ("image" in each) {
+                    parts.push((await modelImageOf(each.image.bytes, each.image.mime)).image);
+                    continue;
+                }
+
+                const part =
+                    each.view.kind === "text"
+                        ? fileBlock(each.file, each.view, MAX_MENTIONED_TOTAL - total)
+                        : undefined;
+
+                if (part !== undefined) {
+                    total += part.length;
+                    parts.push(part.part);
+                }
+            } catch (error) {
+                app.notice(
+                    "warning",
+                    `Could not send ${each.mention.written}: ${describe(error)}`,
+                    id,
+                );
+            }
+        }
+
+        return parts;
+    }
+
+    /**
+     * Where Pi finds the files a message brings: here, as uploaded. For a session on another computer, copies there
+     * (`~/.pi-pocket/uploads/<conversation>/`, with the same names, which `attachedFile` takes back to these). The
+     * computer offline: the message is refused, as Pi could not read them.
+     */
+    async #placeAttachments(
+        id: ConversationId,
+        attachments: readonly Attachment[],
+    ): Promise<string[]> {
+        const app = this.#app;
+        const runner = app.runnerOf(id);
+
+        if (runner === undefined || attachments.length === 0) {
+            return attachments.map((file) => file.path);
+        }
+
+        try {
+            return await copyUploads(app.runners.env(runner, app.cwdOf(id)), id, attachments);
+        } catch (error) {
+            throw new HttpError(
+                409,
+                `The attached files could not be copied to ${app.runners.name(runner)}: ${describe(error)}`,
+            );
+        }
     }
 
     /** A message to Pi as the model gets it: with more than one person on this server, it says who is talking. */

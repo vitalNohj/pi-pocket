@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, posix } from "node:path";
 import { APP_ROOT, modulesWith } from "../config.ts";
 import { HttpError } from "../errors.ts";
+import { type FolderAccess, Unreachable } from "../folder-access.ts";
 import {
     accepted,
     compressFile,
@@ -392,6 +393,84 @@ export async function serveFile(
     response.end(body);
 }
 
+/**
+ * An image file from a session's folder on another computer (`folder-access.ts`), with the same checks as one from this
+ * machine: its first bytes and its size in one round trip, then the whole file unless the browser has it already.
+ */
+export async function serveRemoteImage(
+    request: IncomingMessage,
+    response: ServerResponse,
+    file: string,
+    access: FolderAccess,
+): Promise<void> {
+    if (!IMAGE_EXTENSIONS.has(extname(file).toLowerCase())) {
+        throw new HttpError(415, "Only image files can be shown");
+    }
+
+    const peek = await access.peek(file, 1024).catch((error: unknown) => {
+        if (error instanceof Unreachable) {
+            throw new HttpError(409, error.message);
+        }
+
+        throw new HttpError(404, "Image not found");
+    });
+
+    if (peek.kind !== "file") {
+        throw new HttpError(404, "Image not found");
+    }
+
+    const type = sniffImage(peek.bytes);
+
+    if (type === undefined) {
+        throw new HttpError(415, "That file is not an image");
+    }
+
+    if (peek.size > MAX_IMAGE_FILE) {
+        throw new HttpError(413, "Image too large to show");
+    }
+
+    const headers = imageHeaders(peek.size, peek.mtimeMs);
+
+    if (request.headers["if-none-match"] === headers.etag) {
+        response.writeHead(304, headers);
+        response.end();
+
+        return;
+    }
+
+    // Small images came whole with their first bytes.
+    const whole =
+        peek.bytes.length >= peek.size
+            ? peek
+            : await access.peek(file, MAX_IMAGE_FILE).catch((error: unknown) => {
+                  throw new HttpError(
+                      error instanceof Unreachable ? 409 : 404,
+                      error instanceof Unreachable ? error.message : "Image not found",
+                  );
+              });
+
+    if (whole.kind !== "file" || whole.size > MAX_IMAGE_FILE) {
+        throw new HttpError(404, "Image not found");
+    }
+
+    // It can have changed in between: what is sent is what was read.
+    response.writeHead(200, {
+        ...imageHeaders(whole.bytes.length, whole.mtimeMs),
+        "content-type": type,
+        "content-length": String(whole.bytes.length),
+    });
+    response.end(whole.bytes);
+}
+
+/** The headers of an image either route sends: its version, from its size and time, and its sandbox. */
+function imageHeaders(size: number, mtime: number) {
+    return {
+        etag: `"${size.toString(36)}-${Math.floor(mtime).toString(36)}"`,
+        "cache-control": "private, no-cache",
+        "content-security-policy": IMAGE_CSP,
+    };
+}
+
 /** An image file from this machine, for `![alt](path)` in replies and for uploaded attachments. */
 export function serveImage(request: IncomingMessage, response: ServerResponse, file: string): void {
     if (!IMAGE_EXTENSIONS.has(extname(file).toLowerCase())) {
@@ -431,14 +510,9 @@ export function serveImage(request: IncomingMessage, response: ServerResponse, f
         throw new HttpError(413, "Image too large to show");
     }
 
-    const etag = `"${size.toString(36)}-${Math.floor(mtime).toString(36)}"`;
-    const headers = {
-        etag,
-        "cache-control": "private, no-cache",
-        "content-security-policy": IMAGE_CSP,
-    };
+    const headers = imageHeaders(size, mtime);
 
-    if (request.headers["if-none-match"] === etag) {
+    if (request.headers["if-none-match"] === headers.etag) {
         response.writeHead(304, headers);
         response.end();
 
