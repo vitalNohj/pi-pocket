@@ -2663,12 +2663,9 @@ export class Commands {
         // agent state.
         const runner = destination.runner;
         const fromRunner = app.sessionMeta(id)?.runner !== undefined;
-        const agent: AgentChange = {
-            ...fork.agent,
-            ...(place.worktree === undefined && destination.from === undefined
-                ? {}
-                : { cwd: place.cwd }),
-        };
+        // Always the folder it runs in now: a fork's agent state is the one at its entry (`AgentDoc` forks `asOf`), whose
+        // folder can be from before the session moved or was copied to another computer, and is no folder there.
+        const agent: AgentChange = { ...fork.agent, cwd: place.cwd };
 
         // A fork is a new session there too: the computer's person allows it, as for a new one.
         if (runner !== undefined) {
