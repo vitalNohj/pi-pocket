@@ -357,6 +357,13 @@ export async function conversationRoutes(
         return json(response, 200, await app.commands.fork(id, user, await readJson(request)));
     }
 
+    // The folder the copy sheet suggests on a computer (`runner`, empty: this server).
+    if (third === "copy-place" && method === "GET") {
+        const runner = url.searchParams.get("runner") || null;
+
+        return json(response, 200, app.commands.copySuggestion(id, user, runner));
+    }
+
     if (third === "resend" && method === "POST") {
         return json(response, 200, await app.commands.resend(id, user, await readJson(request)));
     }
