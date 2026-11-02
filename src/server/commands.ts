@@ -63,7 +63,7 @@ import { attribute } from "./fence.ts";
 import { homePath } from "./paths.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage, modelImageOf } from "./model-images.ts";
 import { Unreachable } from "./folder-access.ts";
-import { copyUploads } from "./remote-context.ts";
+import { clearUploads, copyUploads } from "./remote-context.ts";
 import { type FileView, mentionedPaths, viewFile } from "./files.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./models.ts";
 import { keepWarmLabel } from "./keep-warm.ts";
@@ -120,11 +120,11 @@ function fileBlock(
 export type Attachment = { path: string; name: string; mime: string; size: number };
 
 /**
- * The copy here of a file a session on another computer got as `~/.pi-pocket/uploads/<conversation>/<name>` there
+ * The copy here of a file a session on another computer got as `<temp>/pi-pocket-uploads/<conversation>/<name>` there
  * (`copyUploads`): the same name in the conversation's uploads, when it is still there.
  */
 function uploadedCopy(path: string, uploads: string): string | undefined {
-    const stored = /[/\\]\.pi-pocket[/\\]uploads[/\\]\d+[/\\]([^/\\]+)$/.exec(path)?.[1];
+    const stored = /[/\\]pi-pocket-uploads[/\\]\d+[/\\]([^/\\]+)$/.exec(path)?.[1];
 
     if (stored === undefined || stored === "." || stored === "..") {
         return undefined;
@@ -911,6 +911,13 @@ export class Commands {
             );
         }
 
+        // Archived on another computer: its attached files are removed from that computer's temporary folder.
+        const runner = patch.archived === true ? app.runnerOf(id) : undefined;
+
+        if (runner !== undefined) {
+            void clearUploads(app.runners.env(runner, app.cwdOf(id)), id);
+        }
+
         // Archiving leaves its repeating schedules running: the person is told how many.
         const repeating =
             patch.archived === true
@@ -1484,9 +1491,10 @@ export class Commands {
     }
 
     /**
-     * Where Pi finds the files a message brings: here, as uploaded. For a session on another computer, copies there
-     * (`~/.pi-pocket/uploads/<conversation>/`, with the same names, which `attachedFile` takes back to these). The
-     * computer offline: the message is refused, as Pi could not read them.
+     * Where Pi finds the files a message brings: here, as uploaded. For a session on another computer, they are copied
+     * to its temporary folder (`<temp>/pi-pocket-uploads/<conversation>/`, with the same names, which
+     * `attachedFile` takes back to these), and archiving the session removes them. A file that cannot be copied (the
+     * computer offline) keeps its path here, with a warning; the message is sent.
      */
     async #placeAttachments(
         id: ConversationId,
@@ -1499,14 +1507,22 @@ export class Commands {
             return attachments.map((file) => file.path);
         }
 
-        try {
-            return await copyUploads(app.runners.env(runner, app.cwdOf(id)), id, attachments);
-        } catch (error) {
-            throw new HttpError(
-                409,
-                `The attached files could not be copied to ${app.runners.name(runner)}: ${describe(error)}`,
+        // Every file goes to the computer's temporary folder; images also go to the model in the message.
+        const { paths, failed } = await copyUploads(
+            app.runners.env(runner, app.cwdOf(id)),
+            id,
+            attachments,
+        );
+
+        if (failed.length > 0) {
+            app.notice(
+                "warning",
+                `Could not copy ${failed.join(", ")} to ${app.runners.name(runner)}: Pi cannot open ${failed.length === 1 ? "it" : "them"} there.`,
+                id,
             );
         }
+
+        return paths;
     }
 
     /** A message to Pi as the model gets it: with more than one person on this server, it says who is talking. */

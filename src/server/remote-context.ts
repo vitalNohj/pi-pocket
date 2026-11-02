@@ -572,31 +572,71 @@ export async function readRemoteText(env: RemoteEnv, path: string): Promise<stri
 }
 
 /**
+ * The folder on the computer for a conversation's attached files: in its temporary folder, so they never pile up in a
+ * person's home. `clearUploads` empties it when the session is archived; the system clears what is left.
+ */
+async function uploadsThere(
+    env: RemoteEnv,
+    conversationId: number,
+): Promise<{ folder: string; paths: PathKit }> {
+    const info = await env.connection.info();
+    const paths = pathsFor(info.os);
+
+    return { folder: paths.join(info.tmpdir, "pi-pocket-uploads", String(conversationId)), paths };
+}
+
+/**
  * Copy files people attached (kept here, in the conversation's uploads) to the computer, into
- * `~/.pi-pocket/uploads/<conversation>/` there with the same names: the paths there, in order. Throws when one cannot
- * be copied.
+ * `<temp>/pi-pocket-uploads/<conversation>/` there with the same names: the paths there, in order (a file not copied
+ * keeps its path here). Images are copied too, so Pi's tools can use them there; the model also sees them in the
+ * message. Never throws: `failed` names the files that could not be copied.
  */
 export async function copyUploads(
     env: RemoteEnv,
     conversationId: number,
-    files: readonly { path: string; name: string }[],
-): Promise<string[]> {
-    const info = await env.connection.info();
-    const paths = pathsFor(info.os);
-    const folder = paths.join(info.home, ".pi-pocket", "uploads", String(conversationId));
+    files: readonly { path: string; name: string; mime: string }[],
+): Promise<{ paths: string[]; failed: string[] }> {
+    const failed: string[] = [];
+    let folder: { folder: string; paths: PathKit } | undefined;
 
-    return Promise.all(
+    try {
+        folder = files.length > 0 ? await uploadsThere(env, conversationId) : undefined;
+    } catch {
+        folder = undefined;
+    }
+
+    const paths = await Promise.all(
         files.map(async (file) => {
-            const target = paths.join(folder, basename(file.path));
-            const written = await env.writeFile(target, await readFile(file.path), context);
+            if (folder !== undefined) {
+                const target = folder.paths.join(folder.folder, basename(file.path));
+                const written = await readFile(file.path).then(
+                    (bytes) => env.writeFile(target, bytes, context),
+                    () => undefined,
+                );
 
-            if (!written.ok) {
-                throw written.error;
+                if (written?.ok === true) {
+                    return target;
+                }
             }
 
-            return target;
+            failed.push(file.name);
+
+            return file.path;
         }),
     );
+
+    return { paths, failed };
+}
+
+/** Remove a conversation's attached files from the computer (its session was archived). Errors are ignored. */
+export async function clearUploads(env: RemoteEnv, conversationId: number): Promise<void> {
+    try {
+        const { folder } = await uploadsThere(env, conversationId);
+
+        await env.remove(folder, { recursive: true, force: true }, context);
+    } catch {
+        // Offline, or already gone: the system's temporary folder clears it in time.
+    }
 }
 
 /** Trust decisions for folders on other computers: by computer, then by path there. */
