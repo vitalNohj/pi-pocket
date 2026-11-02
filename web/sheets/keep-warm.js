@@ -400,6 +400,15 @@ function ModelCard({ model, plan, onSet }) {
     </div>`;
 }
 
+/** The models whose Auto stop the settings window shows, by bare id: Claude Opus, GPT-6.1 Sol and Terra, and Grok. */
+const AUTO_EXAMPLES = [/^claude-opus-/, /^gpt-6\.1-sol$/, /^gpt-6\.1-terra$/, /^grok-\d[\d.]*$/];
+
+/** Minutes between refreshes assumed for a model whose cache lifetime is not known: 75% of an hour. */
+const ESTIMATED_EVERY = 45;
+
+/** A model's id without its provider or reseller prefix: "codex-lb/cc/grok-4.7" is "grok-4.7". */
+const bareSpec = (spec) => spec.slice(spec.lastIndexOf("/") + 1).toLowerCase();
+
 export function KeepWarmSheet() {
     const [data, setData] = useState(null);
     const [query, setQuery] = useState("");
@@ -451,21 +460,31 @@ export function KeepWarmSheet() {
     const plans = new Map(models.map((model) => [model.spec, modelPlan(model, settings)]));
     const custom = Object.keys(settings.models).length;
     const warmable = models.filter((model) => plans.get(model.spec).every !== undefined);
-    // Where Auto stops, once per model family ("Claude Opus 5.5 (1M ctx)" is "Claude Opus 5.5"), for each with prices.
-    const autoStops = [
-        ...new Map(
-            models
-                .map((model) => ({ model, plan: plans.get(model.spec) }))
-                .filter(({ plan }) => plan.breakEven > 0 && plan.own.minutes !== 0)
-                .map((each) => [each.model.name.replace(/\s*\(.*\)$/, ""), each]),
-        ),
-    ].map(([name, { plan }]) => ({
-        name,
-        stop:
-            plan.autoStop === undefined
-                ? `${plan.breakEven} refreshes, once its cache time is set`
-                : `${durationLabel(plan.autoStop * 60_000)} (${Math.min(plan.breakEven, settings.maxRefreshes)} refreshes)`,
-    }));
+    // Where Auto stops for a few well-known models, the first of each this server has with cache prices. A model with no
+    // known interval is estimated at a 1-hour cache.
+    const autoStops = AUTO_EXAMPLES.flatMap((pattern) => {
+        const found = models
+            .map((model) => ({ model, plan: plans.get(model.spec) }))
+            .filter(({ model, plan }) => pattern.test(bareSpec(model.spec)) && plan.breakEven > 0)
+            .sort(
+                (a, b) => Number(b.plan.every !== undefined) - Number(a.plan.every !== undefined),
+            )[0];
+
+        if (found === undefined) {
+            return [];
+        }
+
+        const { model, plan } = found;
+        const refreshes = Math.min(plan.breakEven, settings.maxRefreshes);
+        const every = plan.every ?? ESTIMATED_EVERY;
+
+        return [
+            {
+                name: model.name.replace(/\s*\(.*\)$/, ""),
+                stop: `${durationLabel(refreshes * every * 60_000)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`,
+            },
+        ];
+    });
     const setModel = (spec, field, value) => save({ models: { [spec]: { [field]: value } } });
 
     return html`<${Sheet} title="Keep warm" onClose=${closeSheet} className="keep-warm-sheet">
@@ -501,7 +520,7 @@ export function KeepWarmSheet() {
                             ${
                                 autoStops.length === 0
                                     ? "No model has both cache prices: set them below."
-                                    : "Where it stops:"
+                                    : "Where it stops, about:"
                             }
                         </p>
                         ${
@@ -515,7 +534,8 @@ export function KeepWarmSheet() {
                         }
                         <p class="muted small">
                             The cheaper a cache read is next to a cache write, the longer Auto lasts. A model without
-                            cache prices is not kept warm on Auto.
+                            cache prices is not kept warm on Auto; one without a cache time is kept warm once you set
+                            it below.
                         </p>`
                     }
                     <p class="muted small">
