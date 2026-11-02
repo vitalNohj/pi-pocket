@@ -18937,3 +18937,22 @@ pre.gallery-code {
     justify-content: space-between;
     gap: 0.5rem;
 }
+
+/* Auto's stop for each model family: name on the left, time on the right. */
+.keep-warm-stops {
+    display: grid;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.keep-warm-stops li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.keep-warm-stops li > span:last-child {
+    text-align: right;
+}

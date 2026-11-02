@@ -43,15 +43,18 @@ const ownerOnly = (user: User) => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** Providers that make the models they list: their prices win over a reseller's or a cloud's. */
+const MAKERS = new Set(["anthropic", "openai", "xai", "google", "mistral", "deepseek"]);
+
 /** The fields of a model the owner may set; null takes one off. */
 const MODEL_FIELDS = ["minutes", "lifetime", "read", "write"] as const;
 
 /**
- * A model's cache prices per million tokens. Prices of 0 are not known (a subscription, or a `models.json` that left them
- * out). Anthropic charges twice the input price to write a cache that lives an hour, where Pi's price is the 5-minute
- * write.
+ * A model's cache prices per million tokens. A read price of 0 is not known (a subscription, or a `models.json` that left
+ * it out). The write is what a miss costs: Anthropic charges twice the input price for a cache that lives an hour, where
+ * Pi's price is the 5-minute write; a provider with no write price (OpenAI, xAI) charges the plain input price.
  */
-function cachePrices(
+export function cachePrices(
     model: Model<Api>,
     seconds: number | undefined,
 ): { read?: number; write?: number } {
@@ -60,7 +63,13 @@ function cachePrices(
 
     return {
         ...(cacheRead > 0 ? { read: cacheRead } : {}),
-        ...(hourWrite ? { write: input * 2 } : cacheWrite > 0 ? { write: cacheWrite } : {}),
+        ...(hourWrite
+            ? { write: input * 2 }
+            : cacheWrite > 0
+              ? { write: cacheWrite }
+              : input > 0
+                ? { write: input }
+                : {}),
     };
 }
 
@@ -328,8 +337,7 @@ export class KeepWarm {
                     model.cost.cacheRead > 0 &&
                     model.cost.input > 0 &&
                     (known === undefined ||
-                        ((model.provider === "anthropic" || model.provider === "openai") &&
-                            known.provider !== model.provider))
+                        (MAKERS.has(model.provider) && known.provider !== model.provider))
                 ) {
                     byId.set(key, model);
                 }

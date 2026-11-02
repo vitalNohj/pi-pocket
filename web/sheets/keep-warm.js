@@ -451,11 +451,21 @@ export function KeepWarmSheet() {
     const plans = new Map(models.map((model) => [model.spec, modelPlan(model, settings)]));
     const custom = Object.keys(settings.models).length;
     const warmable = models.filter((model) => plans.get(model.spec).every !== undefined);
-    // Auto's stop for each model that is kept warm, as the owner's settings make it.
-    const autoStops = warmable
-        .map((model) => ({ model, plan: plans.get(model.spec) }))
-        .filter(({ plan }) => plan.autoStop !== undefined)
-        .map(({ model, plan }) => `${model.name}: ${durationLabel(plan.autoStop * 60_000)}`);
+    // Where Auto stops, once per model family ("Claude Opus 5.5 (1M ctx)" is "Claude Opus 5.5"), for each with prices.
+    const autoStops = [
+        ...new Map(
+            models
+                .map((model) => ({ model, plan: plans.get(model.spec) }))
+                .filter(({ plan }) => plan.breakEven > 0 && plan.own.minutes !== 0)
+                .map((each) => [each.model.name.replace(/\s*\(.*\)$/, ""), each]),
+        ),
+    ].map(([name, { plan }]) => ({
+        name,
+        stop:
+            plan.autoStop === undefined
+                ? `${plan.breakEven} refreshes, once its cache time is set`
+                : `${durationLabel(plan.autoStop * 60_000)} (${Math.min(plan.breakEven, settings.maxRefreshes)} refreshes)`,
+    }));
     const setModel = (spec, field, value) => save({ models: { [spec]: { [field]: value } } });
 
     return html`<${Sheet} title="Keep warm" onClose=${closeSheet} className="keep-warm-sheet">
@@ -490,9 +500,22 @@ export function KeepWarmSheet() {
                         html`<p class="muted small">
                             ${
                                 autoStops.length === 0
-                                    ? "No model kept warm has both cache prices: set them below."
-                                    : `Stops after about ${autoStops.join(" · ")}.`
-                            }${" "}A model without cache prices is not kept warm on Auto.
+                                    ? "No model has both cache prices: set them below."
+                                    : "Where it stops:"
+                            }
+                        </p>
+                        ${
+                            autoStops.length > 0 &&
+                            html`<ul class="keep-warm-stops small">
+                                ${autoStops.map(
+                                    ({ name, stop }) =>
+                                        html`<li key=${name}><span>${name}</span><span class="muted">${stop}</span></li>`,
+                                )}
+                            </ul>`
+                        }
+                        <p class="muted small">
+                            The cheaper a cache read is next to a cache write, the longer Auto lasts. A model without
+                            cache prices is not kept warm on Auto.
                         </p>`
                     }
                     <p class="muted small">
