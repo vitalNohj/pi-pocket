@@ -51,7 +51,10 @@ export function folderColor(path, runner) {
     let color = folderColors.get(key);
 
     if (color === undefined) {
-        const name = folder.replace(/\/+$/, "").split("/").pop();
+        const name = folder
+            .replace(/[\\/]+$/, "")
+            .split(/[\\/]/)
+            .pop();
 
         color = FOLDER_COLORS[hashOf(runner ? `${runner}:${name}` : name) % FOLDER_COLORS.length];
         folderColors.set(key, color);
