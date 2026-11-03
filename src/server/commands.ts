@@ -51,12 +51,14 @@ import {
 import { REMOTE_EXTENSIONS } from "./runners.ts";
 import {
     ATTACHMENTS_HEADING,
+    CONTEXT_BLOCK,
     FILE_BLOCK,
     FROM_PREFIX,
     NOTE_ENTRY,
     splitAttachments,
 } from "./entry-format.ts";
 import { describe, HttpError, optionalText } from "./errors.ts";
+import { attribute } from "./fence.ts";
 import { homePath } from "./paths.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage } from "./model-images.ts";
 import { mentionedPaths, viewFile } from "./files.ts";
@@ -128,6 +130,11 @@ export interface SubmitRequest {
     requestId: string;
     /** Send the files the message mentions with `@` along with it, so Pi need not read them first. */
     inlineFiles?: boolean;
+    /**
+     * PiP only: the session a passage quoted in the message came from (Ask PiP by a selection). PiP gets which session
+     * it is, unseen by people (`CONTEXT_BLOCK`).
+     */
+    about?: { session: number };
 }
 
 /** A send slower than this logs where its time went. */
@@ -880,6 +887,7 @@ export class Commands {
             user,
             via === undefined ? written : `[via ${via}] ${written}`,
         );
+        const about = this.#aboutSession(id, user, request.about);
         const mentioned =
             request.inlineFiles === true
                 ? await this.#mentionedFiles(id, user, typed, model.input.includes("image"))
@@ -890,6 +898,7 @@ export class Commands {
             ...mentioned.map((part) =>
                 part.type === "text" ? { ...part, text: app.hidden.replace(part.text, id) } : part,
             ),
+            ...(about === undefined ? [] : [{ type: "text" as const, text: about }]),
         ];
 
         // Most were made ready as they were uploaded (`model-images.ts`); the rest are made side by side, in their order.
@@ -1154,6 +1163,46 @@ export class Commands {
      * given on its command line, and images as images when the model takes them. Only files this person may load
      * through the session; anything else stays a mention, which Pi can read itself.
      */
+    /**
+     * For a message to PiP that asks about a passage: which session it came from, for PiP alone (`CONTEXT_BLOCK`). Only
+     * a session its person may see, and never another PiP; nothing for a message to anyone else.
+     */
+    #aboutSession(
+        id: ConversationId,
+        user: User,
+        about: SubmitRequest["about"],
+    ): string | undefined {
+        const app = this.#app;
+
+        if (about === undefined) {
+            return undefined;
+        }
+
+        const session = typeof about === "object" && about !== null ? about.session : undefined;
+
+        if (app.pip.ownerOf(id) === undefined) {
+            throw new HttpError(400, "Only a message to PiP says which session it is about");
+        }
+
+        if (typeof session !== "number" || !Number.isSafeInteger(session) || session <= 0) {
+            throw new HttpError(400, "about.session must be a session's number");
+        }
+
+        const target = session as unknown as ConversationId;
+        const meta = app.sessionMeta(target);
+
+        if (meta === undefined || meta.pip !== undefined) {
+            throw new HttpError(404, "There is no such session.");
+        }
+
+        app.requireSee(user, target);
+
+        const title = attribute(app.hidden.replace(meta.title ?? "untitled", target)).slice(0, 120);
+        const folder = attribute(meta.cwd);
+
+        return `${CONTEXT_BLOCK} session="${session}" title="${title}" folder="${folder}">\nThe quoted passage at the start of this message comes from Pi's reply in session ${session}. Read that session with session_read for more context when the question needs it.\n</pocket-context>`;
+    }
+
     async #mentionedFiles(
         id: ConversationId,
         user: User,
@@ -1768,6 +1817,8 @@ export class Commands {
         }
 
         await (await app.conversation(id)).reset(handoff, context);
+        // The next request starts from nothing: the cache kept warm is not read again.
+        app.cacheKeeper.forget(Number(id), "a new context started");
         await app.collab.activity(
             id,
             user,

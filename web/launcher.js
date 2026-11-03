@@ -21,6 +21,7 @@ import { setArchived, toggleBoard } from "./sessions.js";
 import { branchAvailable, headLabel } from "./sheets/branch.js";
 import { recentLabels } from "./sheets/folder.js";
 import { galleryAvailable } from "./sheets/gallery.js";
+import { keepWarmAvailable } from "./sheets/keep-warm.js";
 import { memoryAvailable } from "./sheets/memory.js";
 import { piSessionsAvailable } from "./sheets/pi-sessions.js";
 import {
@@ -37,6 +38,7 @@ import {
     sessionOrder,
     setUnread,
     signOut,
+    openId,
     store,
     workspaceOrder,
 } from "./store.js";
@@ -466,6 +468,14 @@ function actionItems() {
             icon: "monitor",
             run: () => openSheet({ type: "computers" }),
         },
+        me?.role === "owner" &&
+            keepWarmAvailable() && {
+                label: "Keep warm",
+                detail: "keep prompt caches warm after a run",
+                keywords: "cache prompt idle keepwarm",
+                icon: "reload",
+                run: () => openSheet({ type: "keep-warm" }),
+            },
         modelRefreshAvailable() && {
             label: "Refresh models",
             detail: store.state.modelRefresh.loading
@@ -564,7 +574,7 @@ function sessionItems() {
             detail: shortPath(session.cwd, server?.home),
             status:
                 [
-                    session.id === store.state.conversationId ? "Current" : null,
+                    session.id === openId() ? "Current" : null,
                     session.waiting ? "Waiting" : session.busy ? "Working" : null,
                     session.archived ? "Archived" : null,
                 ]
