@@ -89,8 +89,10 @@ export type Hello = {
 export type Confirm = {
     type: "confirm";
     id: string;
-    /** A new session, or a fork (a copy of one) that would run here too. */
-    kind: "new" | "fork";
+    /** A new session, a fork (a copy), or a change of working folder. */
+    kind: "new" | "fork" | "move";
+    /** Moves travel as kind new + move so older runners still ask rather than reject the message. */
+    move?: true;
     /** Who asked, by their name on the server. */
     person: string;
     /** The folder on this computer. */
@@ -226,7 +228,7 @@ export function parseControl(text: string): ControlMessage | undefined {
             return typeof message.reason === "string" ? (message as Bye) : undefined;
         case "confirm":
             return typeof message.id === "string" &&
-                (message.kind === "new" || message.kind === "fork") &&
+                (message.kind === "new" || message.kind === "fork" || message.kind === "move") &&
                 typeof message.person === "string" &&
                 typeof message.folder === "string"
                 ? (message as Confirm)

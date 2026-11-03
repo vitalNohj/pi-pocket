@@ -706,7 +706,7 @@ export class LinkedSessions implements LinkedSessionsApi {
 
         const cwd = await this.#directory(source, agent, request.cwd);
 
-        if (runner !== undefined) {
+        if (runner !== undefined && cwd !== (agent.cwd ?? app.cwdOf(source))) {
             await app.runners.link(runner).confirm({ kind: "new", person: user.name, folder: cwd });
         }
 

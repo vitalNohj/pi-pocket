@@ -1957,6 +1957,12 @@ export class Commands {
                   ? app.workspace.checkDirectory(request.cwd)
                   : await app.runners.checkFolder(runner, request.cwd);
 
+        if (runner !== undefined && cwd !== undefined && cwd !== (current?.cwd ?? app.cwdOf(id))) {
+            await app.runners
+                .link(runner)
+                .confirm({ kind: "move", person: user.name, folder: cwd });
+        }
+
         const change = {
             ...(request.model === undefined
                 ? {}

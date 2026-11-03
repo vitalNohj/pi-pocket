@@ -599,6 +599,42 @@ describe("a session on another computer", () => {
         }
     });
 
+    it("checks a moved folder on the computer and asks before changing it", async () => {
+        const folder = join(root, "move-destination");
+
+        mkdirSync(folder, { recursive: true });
+        const session = (
+            await app.commands.createSession(owner(app), { cwd: there, runner: runnerId })
+        ).id;
+
+        asked.length = 0;
+        await app.commands.configure(session as never, owner(app), { cwd: there });
+        assert.equal(asked.length, 0, "the same folder is not a move");
+        await assert.rejects(
+            app.commands.configure(session as never, owner(app), { cwd: join(folder, "missing") }),
+            /is not a folder on Laptop/,
+        );
+        assert.equal(asked.length, 0, "invalid folders do not ask");
+        answer = () => Promise.resolve({ allow: false, reason: "Move denied here." });
+
+        try {
+            await assert.rejects(
+                app.commands.configure(session as never, owner(app), { cwd: folder }),
+                /Move denied here/,
+            );
+            assert.equal(app.cwdOf(session as never), there, "a denied move keeps the old folder");
+            assert.deepEqual(
+                asked.map((each) => [each.kind, each.person, each.folder]),
+                [["move", owner(app).name, folder]],
+            );
+            answer = () => Promise.resolve({ allow: true });
+            await app.commands.configure(session as never, owner(app), { cwd: folder });
+            assert.equal(app.cwdOf(session as never), folder);
+        } finally {
+            answer = () => Promise.resolve({ allow: true });
+        }
+    });
+
     it("spawns a subagent with only remote extensions and runs its tools on the computer", async () => {
         await say(app, id as never, "spawn runner subagent");
         const spawned = (await app.harness.snapshot(SubagentsDoc, id as never, context))?.agents[
@@ -637,7 +673,7 @@ describe("a session on another computer", () => {
         }
     });
 
-    it("starts a team on the same computer and asks before creating its linked session", async () => {
+    it("starts a team in the same folder without another question", async () => {
         asked.length = 0;
         await say(app, id as never, "start runner team");
         const linked = app.sessions(owner(app)).findLast((each) => each.linkedFrom?.id === id);
@@ -649,10 +685,7 @@ describe("a session on another computer", () => {
             (await app.harness.snapshot(AgentDoc, linked.id as never, context))?.extensions,
             [...REMOTE_EXTENSIONS],
         );
-        assert.deepEqual(
-            asked.map((each) => [each.kind, each.person, each.folder]),
-            [["new", owner(app).name, there]],
-        );
+        assert.equal(asked.length, 0, "a team in the starting session folder does not ask");
         await until(
             async () =>
                 (await lastToolText(linked.id)).includes(there) && !app.isBusy(linked.id as never),
@@ -673,7 +706,9 @@ describe("a session on another computer", () => {
 
     it("checks an explicit team folder on the computer, and refuses a denied start", async () => {
         const before = app.sessions(owner(app)).length;
+        const otherFolder = join(root, "different-team-folder");
 
+        mkdirSync(otherFolder, { recursive: true });
         asked.length = 0;
         await assert.rejects(
             app.linkedSessions.start(
@@ -688,7 +723,11 @@ describe("a session on another computer", () => {
 
         try {
             await assert.rejects(
-                app.linkedSessions.start(id as never, { message: "hello" }, crypto.randomUUID()),
+                app.linkedSessions.start(
+                    id as never,
+                    { cwd: otherFolder, message: "hello" },
+                    crypto.randomUUID(),
+                ),
                 /Team start denied/,
             );
             assert.equal(asked.length, 1, "the computer was asked");

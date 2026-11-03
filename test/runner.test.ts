@@ -2,23 +2,40 @@
 // real WebSocket, the runner, and the real pi-env daemon, all on this machine. Pi Durable's own conformance suite checks
 // that it acts as `NodeExecutionEnv` does; the rest checks linking, keys, and what survives a drop.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { createServer, type Server } from "node:http";
 import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { Duplex } from "node:stream";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { homedir, tmpdir } from "node:os";
+import { join, parse } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { checkTools, toolsStatus } from "../src/runner/tools.ts";
+import {
+    broadFolder,
+    coveredFolder,
+    folderContains,
+    realFolder,
+    sameFolder,
+} from "../src/runner/folders.ts";
 import WebSocket from "ws";
-import { LINK_PATH, LINK_PROTOCOL, LINK_SUBPROTOCOL } from "../src/runner/protocol.ts";
+import {
+    LINK_PATH,
+    LINK_PROTOCOL,
+    LINK_SUBPROTOCOL,
+    parseControl,
+} from "../src/runner/protocol.ts";
 import {
     Runner,
     type RunnerOptions,
     type RunnerSettings,
+    type SessionQuestion,
     RunnerStopped,
 } from "../src/runner/runner.ts";
 import { ConfigStore } from "../src/server/config.ts";
@@ -599,6 +616,352 @@ describe("runner link", () => {
         } finally {
             await close(setup);
         }
+    });
+});
+
+describe("allowed folders", () => {
+    it("compares descendants, roots, and platform case without matching siblings", () => {
+        assert.equal(folderContains("/work/project", "/work/project/nested", "linux"), true);
+        assert.equal(folderContains("/work/project", "/work/project-two", "linux"), false);
+        assert.equal(folderContains("/Work", "/work/project", "linux"), false);
+        assert.equal(folderContains("/Work", "/work/project", "darwin"), true);
+        assert.equal(folderContains("C:\\Work", "c:\\work\\project", "win32"), true);
+        assert.equal(folderContains("C:\\Work", "c:\\work-two", "win32"), false);
+        assert.equal(folderContains("/", "/work", "linux"), true);
+        assert.equal(folderContains("C:\\", "C:\\work", "win32"), true);
+        assert.equal(folderContains("/work\\", "/work", "linux"), false);
+        assert.equal(broadFolder("/", "/home/person", "linux"), true);
+        assert.equal(broadFolder("/home", "/home/person", "linux"), true);
+        assert.equal(broadFolder("/home/person", "/home/person", "linux"), true);
+        assert.equal(broadFolder("/home/person/project", "/home/person", "linux"), false);
+        assert.equal(broadFolder("C:\\", "C:\\Users\\person", "win32"), true);
+        assert.equal(broadFolder("/USERS", "/Users/person", "darwin"), true);
+    });
+
+    it("uses real paths, skips deleted entries, and can remove an entry that no longer exists", async () => {
+        const folder = mkdtempSync(join(root, "real-"));
+        const alias = `${folder}-alias`;
+        const missing = join(folder, "missing");
+
+        symlinkSync(folder, alias, process.platform === "win32" ? "junction" : "dir");
+        assert.equal(await realFolder(alias), await realFolder(folder));
+        assert.equal(await coveredFolder(folder, [alias]), true);
+        assert.equal(await coveredFolder(missing, [missing]), false);
+        assert.equal(await realFolder(missing), missing);
+        assert.equal(await sameFolder(alias, folder), true);
+        assert.equal(await sameFolder(missing, missing), true);
+    });
+
+    it("allows descendants without asking, asks for siblings, and reads changed settings for each question", async () => {
+        const setup = await serve();
+        const parent = mkdtempSync(join(root, "allowed-"));
+        const child = join(parent, "child");
+        const sibling = `${parent}-sibling`;
+        const settings: RunnerSettings = { folders: [parent] };
+        const asked: SessionQuestion[] = [];
+        const lines: string[] = [];
+
+        mkdirSync(child);
+        mkdirSync(sibling);
+        const { runner, id } = startRunner(setup, "Folders", lines, {
+            settings: () => settings,
+            ask: async (question) => {
+                asked.push(question);
+
+                return { allow: false, reason: "Not this folder." };
+            },
+        });
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+            const link = setup.runners.link(id);
+
+            await link.confirm({ kind: "new", person: "Owner", folder: child });
+            assert.equal(asked.length, 0);
+            assert.ok(
+                lines.some((line) => line.includes(`Allowed: ${child} is in the allowed folders`)),
+            );
+            await assert.rejects(
+                link.confirm({ kind: "new", person: "Owner", folder: sibling }),
+                /Not this folder/,
+            );
+            assert.equal(asked.length, 1);
+            assert.equal(asked[0]!.broad, false);
+            settings.folders = [];
+            await assert.rejects(
+                link.confirm({ kind: "new", person: "Owner", folder: child }),
+                /Not this folder/,
+            );
+            assert.equal(asked.length, 2, "the removal takes effect without reconnecting");
+            settings.confirm = false;
+            await link.confirm({ kind: "new", person: "Owner", folder: sibling });
+            assert.equal(asked.length, 2);
+        } finally {
+            await runner.stop();
+            await close(setup);
+        }
+    });
+
+    it("saves Allow answers, including concurrent answers, but not broad folders or cancelled questions", async () => {
+        const setup = await serve();
+        const first = mkdtempSync(join(root, "first-"));
+        const second = mkdtempSync(join(root, "second-"));
+        const settings: RunnerSettings = {};
+        const asked: SessionQuestion[] = [];
+        let paused = false;
+        let late: ((answer: { allow: boolean }) => void) | undefined;
+        const { runner, id } = startRunner(setup, "Saving", [], {
+            settings: () => settings,
+            saveSettings: (change) => {
+                Object.assign(settings, change);
+            },
+            ask: async (question) => {
+                asked.push(question);
+
+                return paused
+                    ? new Promise((resolve) => {
+                          late = resolve;
+                      })
+                    : { allow: true };
+            },
+        });
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+            const link = setup.runners.link(id);
+
+            await Promise.all(
+                [first, second].map((folder) =>
+                    link.confirm({ kind: "new", person: "Owner", folder }),
+                ),
+            );
+            assert.deepEqual([...(settings.folders ?? [])].sort(), [first, second].sort());
+            await link.confirm({ kind: "fork", person: "Owner", folder: first });
+            assert.equal(asked.length, 2, "a covered folder does not ask or duplicate the entry");
+
+            for (const folder of [homedir(), parse(homedir()).root]) {
+                await link.confirm({ kind: "new", person: "Owner", folder });
+                assert.equal(asked.at(-1)!.broad, true);
+            }
+
+            assert.equal(settings.folders!.length, 2, "broad Allow saves nothing");
+            settings.folders = [];
+            paused = true;
+            const controller = new AbortController();
+            const pending = link.confirm(
+                { kind: "move", person: "Owner", folder: first },
+                controller.signal,
+            );
+            const rejected = assert.rejects(pending, /Cancelled/);
+
+            await until(() => late !== undefined, "the move question");
+            assert.equal(asked.at(-1)!.kind, "move");
+            controller.abort();
+            await rejected;
+            await until(() => asked.at(-1)!.signal.aborted, "the question to be withdrawn");
+            late!({ allow: true });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            assert.deepEqual(settings.folders, []);
+        } finally {
+            await runner.stop();
+            await close(setup);
+        }
+    });
+
+    it("parses kind move and asks older runners with a compatible new-session message", async () => {
+        const setup = await serve();
+        const { code } = setup.runners.makeCode("Old", "owner");
+        const linked = setup.runners.redeem(code);
+        const old = new WebSocket(
+            `${setup.address.replace("http", "ws")}${LINK_PATH}`,
+            LINK_SUBPROTOCOL,
+            {
+                headers: { authorization: `Bearer ${linked.key}` },
+            },
+        );
+        const question = {
+            type: "confirm",
+            id: "question",
+            kind: "move",
+            person: "Owner",
+            folder: root,
+        };
+
+        assert.deepEqual(parseControl(JSON.stringify(question)), question);
+        old.on("message", (data, binary) => {
+            if (binary) {
+                return;
+            }
+
+            const message = JSON.parse(data.toString());
+
+            if (message.type === "confirm") {
+                // The older parser accepts only new and fork. Extra fields are ignored.
+                assert.equal(message.kind, "new");
+                assert.equal(message.move, true);
+                old.send(JSON.stringify({ type: "confirmed", id: message.id, allow: true }));
+            }
+        });
+
+        try {
+            await new Promise((resolve) => old.once("open", resolve));
+            old.send(
+                JSON.stringify({
+                    type: "hello",
+                    protocol: LINK_PROTOCOL,
+                    session: null,
+                    received: 0,
+                    version: "0.27.0",
+                }),
+            );
+            await until(() => setup.runners.list()[0]?.online === true, "the old runner to link");
+            await setup.runners
+                .link(linked.id)
+                .confirm({ kind: "move", person: "Owner", folder: root });
+        } finally {
+            old.terminate();
+            await close(setup);
+        }
+    });
+
+    it("the terminal runner saves stdio Allow before ending a question, and sees CLI removals without restarting", async () => {
+        const setup = await serve();
+        const folder = mkdtempSync(join(root, "stdio-"));
+        const file = join(folder, "link.json");
+        const childFolder = join(folder, "child");
+        const { code } = setup.runners.makeCode("Terminal", "owner");
+        const linked = setup.runners.redeem(code);
+        const launcher = fileURLToPath(new URL("../bin/pi-pocket.js", import.meta.url));
+
+        mkdirSync(childFolder);
+        writeFileSync(file, JSON.stringify({ server: setup.address, ...linked }));
+        const proc = spawn(
+            process.execPath,
+            [launcher, "runner", "start", "--confirm-via", "stdio", "--config", file],
+            {
+                cwd: root,
+                stdio: ["pipe", "pipe", "pipe"],
+            },
+        );
+        const stopped = new Promise<void>((resolve) => proc.once("close", () => resolve()));
+        const questions: {
+            id: number;
+            kind: SessionQuestion["kind"];
+            broad: boolean;
+            folder: string;
+            person: string;
+        }[] = [];
+        const savedAtEnd: string[][] = [];
+        let errors = "";
+
+        proc.stderr.on("data", (chunk: Buffer) => {
+            errors += chunk.toString();
+        });
+        createInterface({ input: proc.stdout }).on("line", (line) => {
+            if (line.startsWith("PI-POCKET-CONFIRM ")) {
+                questions.push(JSON.parse(line.slice("PI-POCKET-CONFIRM ".length)));
+            } else if (line.startsWith("PI-POCKET-CONFIRM-END ")) {
+                savedAtEnd.push(JSON.parse(readFileSync(file, "utf8")).settings?.folders ?? []);
+            }
+        });
+        const answer = (allow: boolean) =>
+            proc.stdin.write(`${JSON.stringify({ id: questions.at(-1)!.id, allow })}\n`);
+
+        try {
+            await until(
+                () => setup.runners.list()[0]?.online === true,
+                `the CLI runner to connect (${errors})`,
+            );
+            const link = setup.runners.link(linked.id);
+            const move = link.confirm({ kind: "move", person: "Owner", folder });
+
+            await until(() => questions.length === 1, "the move question on stdout");
+            assert.partialDeepStrictEqual(questions[0], {
+                kind: "move",
+                broad: false,
+                folder: await realFolder(folder),
+                person: "Owner",
+            });
+            answer(true);
+            await move;
+            await until(() => savedAtEnd.length === 1, "the question end after saving");
+            assert.deepEqual(savedAtEnd[0], [await realFolder(folder)]);
+            await link.confirm({ kind: "new", person: "Owner", folder: childFolder });
+            assert.equal(questions.length, 1, "a descendant starts without a stdio question");
+            await promisify(execFile)(process.execPath, [
+                launcher,
+                "runner",
+                "folders",
+                "remove",
+                folder,
+                "--config",
+                file,
+            ]);
+            const denied = assert.rejects(
+                link.confirm({ kind: "new", person: "Owner", folder: childFolder }),
+                /denied/,
+            );
+
+            await until(() => questions.length === 2, "the new question after removal");
+            answer(false);
+            await denied;
+            const broad = link.confirm({
+                kind: "new",
+                person: "Owner",
+                folder: parse(homedir()).root,
+            });
+
+            await until(() => questions.length === 3, "the broad question");
+            assert.equal(questions[2]!.broad, true);
+            answer(true);
+            await broad;
+            assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).settings.folders, []);
+        } finally {
+            proc.kill("SIGTERM");
+            await stopped;
+            await close(setup);
+        }
+    });
+
+    it("lists and removes folders through the CLI with an explicit config, without touching running sessions", async () => {
+        const folder = mkdtempSync(join(root, "cli-"));
+        const file = join(folder, "link.json");
+        const allowed = join(folder, "allowed ");
+        const run = (args: string[]) =>
+            promisify(execFile)(process.execPath, [
+                fileURLToPath(new URL("../bin/pi-pocket.js", import.meta.url)),
+                "runner",
+                ...args,
+                "--config",
+                file,
+            ]);
+
+        mkdirSync(allowed);
+        writeFileSync(
+            file,
+            JSON.stringify({
+                server: "https://example.com",
+                id: "id",
+                name: "Computer",
+                key: "secret",
+                settings: { confirm: true, folders: [allowed] },
+            }),
+        );
+        assert.deepEqual(JSON.parse((await run(["folders", "--json"])).stdout), [allowed]);
+        assert.equal((await run(["folders"])).stdout, `${allowed}\n`);
+        await run(["folders", "remove", allowed]);
+        assert.deepEqual(JSON.parse((await run(["folders", "--json"])).stdout), []);
+        assert.equal((await run(["folders"])).stdout.trim(), "No allowed folders yet.");
+        assert.equal(JSON.parse(readFileSync(file, "utf8")).settings.confirm, true);
+        await assert.rejects(
+            run(["folders", "remove", allowed]),
+            (error: Error & { code?: number }) =>
+                error.code === 1 && error.message.includes("No allowed folder matches"),
+        );
+        await assert.rejects(
+            run(["service"]),
+            (error: Error & { code?: number }) => error.code === 1,
+        );
     });
 });
 
