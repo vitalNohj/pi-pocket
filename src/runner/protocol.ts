@@ -6,14 +6,20 @@
  * not read or change them, except that the runner sends the daemon a ping of its own every few seconds, between frames,
  * so the daemon keeps running while the link is down.
  *
- * The streams survive a short drop. Both sides count the bytes of each stream, keep what the other side has not
+ * The streams survive a drop of any length. Both sides count the bytes of each stream, keep what the other side has not
  * acknowledged, and send it again after a reconnect, starting where the other side says it stopped. Nothing is lost or
- * repeated, so the daemon's handles, watches, and commands stay valid. The server keeps its side for a grace period
- * (`DEFAULT_GRACE_MS`); after it, or after the server restarts, the runner starts a new daemon and the old work ends.
+ * repeated, so the daemon's handles, watches, and commands stay valid. The server keeps its side for as long as it runs
+ * (offline is offline, `docs/runners.md`); after it restarts, or when the runner quit, the runner starts a new daemon and
+ * the old work ends.
+ *
+ * Beside them, a runner that says `network` in its hello carries network streams (`tunnels.ts`): TCP connections that
+ * the server asks the runner to open on its computer, for the browser of a session there. They do not survive a drop.
  *
  * Messages:
  * - Text: JSON control messages (`ControlMessage`).
- * - Binary: stream data. 8 bytes of the data's offset in its stream (unsigned, big-endian), then the bytes.
+ * - Binary: pi-env stream data. 8 bytes of the data's offset in its stream (unsigned, big-endian), then the bytes.
+ *   Offsets stay below 2^53, so the first byte is 0.
+ * - Binary, first byte `STREAM_DATA`: network stream data. 4 bytes of the stream's id (big-endian), then the bytes.
  */
 
 /** The link protocol's version. Both sides refuse a different one. */
@@ -38,8 +44,12 @@ export const CLOSE = {
     protocol: 4002,
 } as const;
 
-/** How long the server keeps a dropped runner's work before it ends it. */
-export const DEFAULT_GRACE_MS = 2 * 60 * 1000;
+/**
+ * What the server says in `welcome.graceMs`. It keeps a dropped runner's work for as long as it runs, so this is only for
+ * runners from before that, which stop their daemon this long after a drop: about 23 days, under the 2^31 - 1 ms that a
+ * Node timer takes (a larger one fires at once).
+ */
+export const LEGACY_GRACE_MS = 2_000_000_000;
 
 /** The largest WebSocket message either side accepts: one pi-env frame (16 MiB) and some room. */
 export const MAX_MESSAGE = 17 * 1024 * 1024;
@@ -49,6 +59,9 @@ export const FRAME = { request: 1, result: 2, error: 3, event: 4, cancel: 5, pin
 
 /** pi-env's largest frame. */
 export const MAX_FRAME = 16 * 1024 * 1024;
+
+/** Programs ready on the runner, checked at each connection; older runners do not send this. */
+export type RunnerTools = { git: boolean; gh: boolean; github: boolean };
 
 /** Runner to server, first: who it is and where its stream from the server stopped. */
 export type Hello = {
@@ -65,6 +78,13 @@ export type Hello = {
      * older than this): the server does not ask, and sessions start as before.
      */
     asks?: boolean;
+    /** The runner understands `Withdraw`: a session question can be cancelled by the server. */
+    withdraws?: boolean;
+    tools?: RunnerTools;
+    /** The runner opens network streams (`net-open`). Absent (an older runner): the server asks it for none. */
+    network?: boolean;
+    /** The folder for its browser downloads, absolute (`settings downloads`). Absent: its temporary folder. */
+    downloads?: string;
 };
 
 /**
@@ -74,8 +94,10 @@ export type Hello = {
 export type Confirm = {
     type: "confirm";
     id: string;
-    /** A new session, or a fork (a copy of one) that would run here too. */
-    kind: "new" | "fork";
+    /** A new session, a fork (a copy), or a change of working folder. */
+    kind: "new" | "fork" | "move";
+    /** Moves travel as kind new + move so older runners still ask rather than reject the message. */
+    move?: true;
     /** Who asked, by their name on the server. */
     person: string;
     /** The folder on this computer. */
@@ -85,6 +107,9 @@ export type Confirm = {
 /** Runner to server: the answer to `Confirm`; `reason` says why not, in words for the person who asked. */
 export type Confirmed = { type: "confirmed"; id: string; allow: boolean; reason?: string };
 
+/** Server to runner: the session question with this id no longer stands. */
+export type Withdraw = { type: "withdraw"; id: string };
+
 /** Server to runner, the answer to `Hello`. */
 export type Welcome = {
     type: "welcome";
@@ -93,7 +118,7 @@ export type Welcome = {
     resume: boolean;
     /** Bytes of the runner's stream the server received in that session. */
     received: number;
-    /** How long the server keeps the session while the link is down. */
+    /** Unused since the server keeps the session while it runs (`LEGACY_GRACE_MS`); older runners read it. */
     graceMs: number;
 };
 
@@ -103,7 +128,39 @@ export type Ack = { type: "ack"; received: number };
 /** Either side, before it closes the link on purpose: why. */
 export type Bye = { type: "bye"; reason: string };
 
-export type ControlMessage = Hello | Welcome | Ack | Bye | Confirm | Confirmed;
+/** Server to runner: open a TCP connection to `host`:`port` on the computer, as stream `id`. */
+export type NetOpen = { type: "net-open"; id: number; host: string; port: number };
+
+/** Runner to server: stream `id` is connected. */
+export type NetOpened = { type: "net-opened"; id: number };
+
+/**
+ * Why a stream did not open: the runner does not share its network (`refused`), the connection failed (`unreachable`)
+ * or took too long (`timeout`), or too many streams are open (`limit`).
+ */
+export type NetFailure = "refused" | "unreachable" | "timeout" | "limit";
+
+/** Runner to server: stream `id` did not open; `message` says why, for people. */
+export type NetFailed = { type: "net-failed"; id: number; code: NetFailure; message: string };
+
+/** Either side: no more bytes of stream `id` come from this side. */
+export type NetEnd = { type: "net-end"; id: number };
+
+/** Either side: stream `id` is abandoned, in both directions. */
+export type NetReset = { type: "net-reset"; id: number; message?: string };
+
+/** Either side: the other side may send `bytes` more of stream `id` (`tunnels.ts`). */
+export type NetCredit = { type: "net-credit"; id: number; bytes: number };
+
+export type NetMessage = NetOpen | NetOpened | NetFailed | NetEnd | NetReset | NetCredit;
+
+export type ControlMessage =
+    Hello | Welcome | Ack | Bye | Confirm | Confirmed | Withdraw | NetMessage;
+
+/** The first byte of a network stream's binary message. */
+export const STREAM_DATA = 1;
+
+const NET_FAILURES = new Set(["refused", "unreachable", "timeout", "limit"]);
 
 /** Parse a text message; undefined for anything that is not a control message. */
 export function parseControl(text: string): ControlMessage | undefined {
@@ -122,13 +179,45 @@ export function parseControl(text: string): ControlMessage | undefined {
     const message = value as Record<string, unknown>;
     const count = (key: string) =>
         typeof message[key] === "number" && Number.isSafeInteger(message[key]) && message[key] >= 0;
+    const stream = count("id") && (message.id as number) <= 0xffffffff;
 
     switch (message.type) {
+        case "net-open":
+            return stream &&
+                typeof message.host === "string" &&
+                message.host !== "" &&
+                count("port") &&
+                (message.port as number) <= 65535
+                ? (message as NetOpen)
+                : undefined;
+        case "net-opened":
+        case "net-end":
+            return stream ? (message as NetOpened | NetEnd) : undefined;
+        case "net-failed":
+            return stream &&
+                NET_FAILURES.has(message.code as string) &&
+                typeof message.message === "string"
+                ? (message as NetFailed)
+                : undefined;
+        case "net-reset":
+            return stream && (message.message === undefined || typeof message.message === "string")
+                ? (message as NetReset)
+                : undefined;
+        case "net-credit":
+            return stream && count("bytes") ? (message as NetCredit) : undefined;
         case "hello":
             return typeof message.protocol === "number" &&
                 (message.session === null || typeof message.session === "string") &&
                 count("received") &&
-                typeof message.version === "string"
+                typeof message.version === "string" &&
+                (message.tools === undefined ||
+                    (typeof message.tools === "object" &&
+                        message.tools !== null &&
+                        ["git", "gh", "github"].every(
+                            (name) =>
+                                typeof (message.tools as Record<string, unknown>)[name] ===
+                                "boolean",
+                        )))
                 ? (message as Hello)
                 : undefined;
         case "welcome":
@@ -144,11 +233,13 @@ export function parseControl(text: string): ControlMessage | undefined {
             return typeof message.reason === "string" ? (message as Bye) : undefined;
         case "confirm":
             return typeof message.id === "string" &&
-                (message.kind === "new" || message.kind === "fork") &&
+                (message.kind === "new" || message.kind === "fork" || message.kind === "move") &&
                 typeof message.person === "string" &&
                 typeof message.folder === "string"
                 ? (message as Confirm)
                 : undefined;
+        case "withdraw":
+            return typeof message.id === "string" ? (message as Withdraw) : undefined;
         case "confirmed":
             return typeof message.id === "string" &&
                 typeof message.allow === "boolean" &&
@@ -168,6 +259,26 @@ export function dataMessage(offset: number, bytes: Uint8Array): Buffer {
     message.set(bytes, 8);
 
     return message;
+}
+
+/** A network stream's binary message: `bytes` of stream `id`. */
+export function streamData(id: number, bytes: Uint8Array): Buffer {
+    const message = Buffer.allocUnsafe(5 + bytes.length);
+
+    message.writeUInt8(STREAM_DATA, 0);
+    message.writeUInt32BE(id, 1);
+    message.set(bytes, 5);
+
+    return message;
+}
+
+/** Read a network stream's binary message; undefined when it is not one. */
+export function readStreamData(message: Buffer): { id: number; bytes: Buffer } | undefined {
+    if (message.length < 5 || message[0] !== STREAM_DATA) {
+        return undefined;
+    }
+
+    return { id: message.readUInt32BE(1), bytes: message.subarray(5) };
 }
 
 /** Read a binary message; undefined when it is too short to be one. */

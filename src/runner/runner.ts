@@ -2,17 +2,21 @@
  * The runner's work: start the pi-env daemon here, keep a link to the server, and relay pi-env frames both ways.
  * `main.ts` runs it from the command line; tests run it in the same process.
  *
- * The link survives short drops (`protocol.ts`). While it is down, the daemon keeps running, the runner pings it itself,
- * and its output waits here (reading stops when too much waits, as a full pipe would). When the server answers again,
- * both sides send what the other missed. When the server does not know the session anymore (after its grace period or
- * a restart), the runner stops the daemon, which stops what it ran, and starts a new one.
+ * The link survives drops of any length (`protocol.ts`). While it is down, the daemon keeps running, the runner pings it
+ * itself, and its output waits here (reading stops when too much waits, as a full pipe would). When the server answers
+ * again, both sides send what the other missed. When the server does not know the session anymore (it restarted), the
+ * runner stops the daemon, which stops what it ran, and starts a new one.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { connect as connectTcp, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { localDaemon } from "@earendil-works/pi-env";
 import WebSocket from "ws";
 import { checkTransport, refusal, type Transport } from "./transport.ts";
+import { checkTools } from "./tools.ts";
+import { broadFolder, coveredFolder, realFolder } from "./folders.ts";
+import type { RunnerTools } from "./protocol.ts";
 import {
     CLOSE,
     type Confirm,
@@ -25,9 +29,13 @@ import {
     LINK_PROTOCOL,
     LINK_SUBPROTOCOL,
     MAX_MESSAGE,
+    type NetOpen,
     Outbox,
     parseControl,
+    readStreamData,
+    STREAM_DATA,
 } from "./protocol.ts";
+import { CONNECT_MS, MAX_STREAMS, StreamLink } from "./tunnels.ts";
 
 /** Daemon pings, as pi-env's own client sends them: it stops everything after 30 s without a byte. */
 const DAEMON_PING_MS = 5000;
@@ -41,6 +49,8 @@ const OUTBOX_LIMIT = 32 * 1024 * 1024;
 
 /** Reconnect waits, growing from the first to the last. */
 const RETRY_MS = [1000, 2000, 5000, 10_000, 20_000, 30_000];
+/** How long git and GitHub readiness is kept between connections (an install or a sign-in shows after this). */
+const TOOLS_FOR_MS = 5 * 60_000;
 
 /** WebSocket pings to the server; a link that answers none for SILENT_MS is closed and made again. */
 const PING_MS = 10_000;
@@ -60,13 +70,21 @@ export type RunnerLinkFile = {
 export type RunnerSettings = {
     /** Ask before a new session starts on this computer. Default: true. */
     confirm?: boolean;
+    /** Real absolute folders allowed by the person here, including their descendants. */
+    folders?: string[];
     /** Use plain HTTP to this server even where it is not this computer or a tailnet device. Default: false. */
     allowHttp?: boolean;
+    /** Open the network connections of sessions' browsers from this computer. Default: true. */
+    network?: boolean;
+    /** Where sessions' browser downloads go, an absolute folder: `<folder>/<session>/`. Default: the temporary folder. */
+    downloads?: string;
 };
 
 /** A question the server asked this computer: a session would start here. */
 export type SessionQuestion = {
-    kind: "new" | "fork";
+    kind: "new" | "fork" | "move";
+    /** A root, home folder, or ancestor of home: allow this session only. */
+    broad: boolean;
     person: string;
     folder: string;
     server: string;
@@ -90,6 +108,8 @@ export type RunnerOptions = {
     retryMs?: readonly number[];
     /** The link's settings now: read again for each connect and each question, so changes need no restart. */
     settings?: () => RunnerSettings;
+    /** Save a local settings change, preserving other settings read from the file now. */
+    saveSettings?: (change: RunnerSettings) => void | Promise<void>;
     /**
      * Ask the person here whether a session may start. Absent: nobody can be asked, so every session is refused
      * while asking is on.
@@ -224,19 +244,27 @@ class Session {
 
 export class Runner {
     readonly #options: RunnerOptions;
+    #toolsChecked: { at: number; tools: Promise<RunnerTools> } | undefined;
     readonly #url: URL;
     readonly #log: (line: string) => void;
     readonly #retry: readonly number[];
     #socket: WebSocket | undefined;
     #session!: Session;
     #stopping = false;
+    /** Questions that the server can withdraw while the person answers. */
+    readonly #questions = new Map<string, AbortController>();
+    #folderSaves = Promise.resolve();
     #attempt = 0;
-    #graceMs = 2 * 60 * 1000;
-    #graceTimer: NodeJS.Timeout | undefined;
     #ackTimer: NodeJS.Timeout | undefined;
     #retryTimer: NodeJS.Timeout | undefined;
     /** Why the last connect was refused before it began (`transport.ts`), so it is said once. */
     #refused: string | undefined;
+    /** The network streams of the current connection. */
+    #streams: StreamLink | undefined;
+    /** Network connections opened so far, for tests. */
+    opened = 0;
+    /** Network connections still connecting, by stream id. */
+    readonly #connecting = new Map<number, Socket>();
     #done!: (error?: Error) => void;
     /** Settles when the runner stops: resolves after `stop()`, rejects with `RunnerStopped` when the server ends it. */
     readonly finished: Promise<void>;
@@ -277,7 +305,6 @@ export class Runner {
 
         this.#stopping = true;
         clearTimeout(this.#retryTimer);
-        clearTimeout(this.#graceTimer);
         clearTimeout(this.#ackTimer);
         this.#control({ type: "bye", reason: "The runner was stopped" });
         this.#socket?.close(1000, "Stopped");
@@ -358,7 +385,6 @@ export class Runner {
     #fail(message: string): void {
         this.#stopping = true;
         clearTimeout(this.#retryTimer);
-        clearTimeout(this.#graceTimer);
         this.#log(message);
         void this.#session.daemon.stop().then(() => this.#done(new RunnerStopped(message)));
     }
@@ -407,13 +433,27 @@ export class Runner {
                     );
                 }
 
-                this.#open();
+                void this.#tools().then((tools) => this.#open(tools));
             },
             (error: unknown) => this.#fail(`Could not check the server address: ${String(error)}`),
         );
     }
 
-    #open(): void {
+    /**
+     * git and GitHub readiness for the hello. Checked again after `TOOLS_FOR_MS` only: a reconnect after a short drop
+     * must not wait for `gh auth status`, which asks GitHub.
+     */
+    #tools(): Promise<RunnerTools> {
+        const now = Date.now();
+
+        if (this.#toolsChecked === undefined || now - this.#toolsChecked.at > TOOLS_FOR_MS) {
+            this.#toolsChecked = { at: now, tools: checkTools() };
+        }
+
+        return this.#toolsChecked.tools;
+    }
+
+    #open(tools: RunnerTools): void {
         if (this.#stopping) {
             return;
         }
@@ -426,6 +466,25 @@ export class Runner {
         });
 
         this.#socket = ws;
+
+        const streams = new StreamLink({
+            send: (message, done) => {
+                if (ws.readyState !== WebSocket.OPEN) {
+                    return false;
+                }
+
+                ws.send(message, done);
+
+                return true;
+            },
+            control: (message) => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify(message));
+                }
+            },
+        });
+
+        this.#streams = streams;
 
         let welcomed = false;
         let silent = Date.now();
@@ -466,6 +525,13 @@ export class Runner {
                     version: this.#options.version,
                     // This runner answers `confirm`: the server asks it before a session starts here.
                     asks: true,
+                    withdraws: true,
+                    tools,
+                    // And opens network streams (`net-open`), or refuses them as its settings say.
+                    network: true,
+                    ...(this.#settings().downloads === undefined
+                        ? {}
+                        : { downloads: this.#settings().downloads }),
                 } satisfies ControlMessage),
             );
         });
@@ -491,6 +557,16 @@ export class Runner {
                 return;
             }
 
+            if (bytes[0] === STREAM_DATA) {
+                const data = readStreamData(bytes);
+
+                if (data !== undefined) {
+                    streams.data(data.id, data.bytes);
+                }
+
+                return;
+            }
+
             this.#onData(ws, bytes);
         });
         ws.on("error", (error) => {
@@ -502,6 +578,18 @@ export class Runner {
         });
         ws.on("close", (code, reason) => {
             clearInterval(pinger);
+            // Network streams do not survive a drop: the browser on the server opens them again.
+            streams.dropAll();
+
+            for (const socket of this.#connecting.values()) {
+                socket.destroy();
+            }
+
+            this.#connecting.clear();
+
+            if (this.#streams === streams) {
+                this.#streams = undefined;
+            }
 
             if (this.#socket === ws) {
                 this.#socket = undefined;
@@ -539,20 +627,8 @@ export class Runner {
 
             if (welcomed) {
                 this.#log(
-                    `Disconnected${why === "" ? "" : ` (${why})`}. Reconnecting automatically. Commands keep running during a short drop.`,
+                    `Disconnected${why === "" ? "" : ` (${why})`}. Reconnecting automatically. Commands keep running; their sessions continue when the link is back.`,
                 );
-
-                // After the grace period the server has ended this session: stop what still runs for it.
-                this.#graceTimer ??= setTimeout(() => {
-                    this.#graceTimer = undefined;
-
-                    if (this.#session.id !== null && !this.connected) {
-                        this.#restart(
-                            "The connection was down too long. Stopping the previous commands and restarting the tool process.",
-                        );
-                    }
-                }, this.#graceMs + 5000);
-                this.#graceTimer.unref();
             }
 
             const wait = this.#retry[Math.min(this.#attempt, this.#retry.length - 1)]!;
@@ -568,9 +644,6 @@ export class Runner {
 
         if (message?.type === "welcome" && !welcomed) {
             this.#attempt = 0;
-            this.#graceMs = message.graceMs;
-            clearTimeout(this.#graceTimer);
-            this.#graceTimer = undefined;
 
             if (message.resume) {
                 const resent =
@@ -634,6 +707,21 @@ export class Runner {
             }
         } else if (message?.type === "confirm") {
             void this.#answer(ws, message);
+        } else if (message?.type === "withdraw") {
+            this.#questions.get(message.id)?.abort("Withdrawn by the server.");
+        } else if (message?.type === "net-open") {
+            this.#openStream(ws, message);
+        } else if (
+            message?.type === "net-end" ||
+            message?.type === "net-reset" ||
+            message?.type === "net-credit"
+        ) {
+            if (message.type === "net-reset") {
+                this.#connecting.get(message.id)?.destroy();
+                this.#connecting.delete(message.id);
+            }
+
+            this.#streams?.message(message);
         } else if (message?.type === "bye") {
             this.#log(`Server message: ${message.reason}`);
         } else {
@@ -643,63 +731,136 @@ export class Runner {
         return welcomed;
     }
 
-    /**
-     * The server wants to start a session here: allow it at once when asking is off, else ask the person (`ask`).
-     * Nobody to ask, no answer in `ASK_MS`, or the link dropping: the session does not start.
-     */
+    /** Ask locally unless asking is off or a saved folder covers this one. Nothing about the list leaves here. */
     async #answer(ws: WebSocket, question: Confirm): Promise<void> {
         const link = this.#options.link;
-        const what = question.kind === "fork" ? "a copy of a session" : "a session";
+        // Older runners reject an unknown kind. The server sends moves as new + move for those runners.
+        const kind = question.move === true ? "move" : question.kind;
+        const what =
+            kind === "move"
+                ? "a session move"
+                : kind === "fork"
+                  ? "a copy of a session"
+                  : "a session";
+        const stop = new AbortController();
+        const timer = setTimeout(() => stop.abort(), ASK_MS);
+        const dropped = () => stop.abort();
         let answer: SessionAnswer;
 
-        if (this.#settings().confirm === false) {
-            answer = { allow: true };
-            this.#log(`${question.person} started ${what} in ${question.folder} (asking is off).`);
-        } else if (this.#options.ask === undefined) {
-            answer = {
-                allow: false,
-                reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal. Turn off "Ask before new sessions" in its runner settings, or run it in a terminal.`,
-            };
-        } else {
-            const stop = new AbortController();
-            const timer = setTimeout(() => stop.abort(), ASK_MS);
-            const dropped = () => stop.abort();
+        this.#questions.set(question.id, stop);
+        ws.once("close", dropped);
 
-            ws.once("close", dropped);
+        try {
+            if (this.#settings().confirm === false) {
+                answer = { allow: true };
+                this.#log(
+                    `${question.person} started ${what} in ${question.folder} (asking is off).`,
+                );
+            } else {
+                const folder = await realFolder(question.folder);
+                const covered = await coveredFolder(folder, this.#settings().folders ?? []);
 
-            try {
-                answer = await Promise.race([
-                    this.#options.ask({
-                        kind: question.kind,
-                        person: question.person,
-                        folder: question.folder,
-                        server: link.server,
-                        computer: link.name,
-                        signal: stop.signal,
-                    }),
-                    new Promise<SessionAnswer>((resolve) =>
-                        stop.signal.addEventListener("abort", () =>
-                            resolve({
-                                allow: false,
-                                reason: `Nobody answered on ${link.name} in time.`,
-                            }),
-                        ),
-                    ),
-                ]);
-            } catch (error) {
-                answer = { allow: false, reason: `${link.name} could not ask: ${String(error)}` };
-            } finally {
-                clearTimeout(timer);
-                ws.off("close", dropped);
-                stop.abort();
+                if (covered) {
+                    answer = { allow: true };
+                    this.#log(`Allowed: ${folder} is in the allowed folders`);
+                } else if (this.#options.ask === undefined) {
+                    answer = {
+                        allow: false,
+                        reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal. Run it in a terminal or the Pi Pocket desktop app.`,
+                    };
+                } else if (stop.signal.aborted) {
+                    answer = { allow: false, reason: `Nobody answered on ${link.name} in time.` };
+                } else {
+                    const broad = broadFolder(folder, await realFolder(homedir()));
+
+                    answer = await Promise.race([
+                        this.#options.ask({
+                            kind,
+                            broad,
+                            person: question.person,
+                            folder,
+                            server: link.server,
+                            computer: link.name,
+                            signal: stop.signal,
+                        }),
+                        new Promise<SessionAnswer>((resolve) => {
+                            const denied = () =>
+                                resolve({
+                                    allow: false,
+                                    reason: `Nobody answered on ${link.name} in time.`,
+                                });
+
+                            if (stop.signal.aborted) {
+                                denied();
+                            } else {
+                                stop.signal.addEventListener("abort", denied, { once: true });
+                            }
+                        }),
+                    ]);
+
+                    if (
+                        answer.allow &&
+                        !broad &&
+                        !stop.signal.aborted &&
+                        ws.readyState === WebSocket.OPEN
+                    ) {
+                        // Two Allow answers must not overwrite each other while realpath is pending.
+                        this.#folderSaves = this.#folderSaves
+                            .catch(() => {})
+                            .then(async () => {
+                                if (
+                                    !(await coveredFolder(
+                                        folder,
+                                        this.#settings().folders ?? [],
+                                    )) &&
+                                    !stop.signal.aborted
+                                ) {
+                                    const change = {
+                                        folders: [...(this.#settings().folders ?? []), folder],
+                                    };
+
+                                    if (this.#options.saveSettings !== undefined) {
+                                        await this.#options.saveSettings(change);
+                                    } else {
+                                        link.settings = { ...link.settings, ...change };
+                                    }
+                                }
+                            });
+                        await this.#folderSaves;
+                    }
+
+                    // A question the server withdrew is logged as cancelled (below), not as answered.
+                    if (stop.signal.reason !== "Withdrawn by the server.") {
+                        this.#log(
+                            `${answer.allow ? "Allowed" : "Denied"} ${what} for ${question.person} in ${folder}.`,
+                        );
+                    }
+                }
             }
 
-            this.#log(
-                `${answer.allow ? "Allowed" : "Denied"} ${what} for ${question.person} in ${question.folder}.`,
-            );
+            if (stop.signal.aborted) {
+                answer = { allow: false, reason: `Nobody answered on ${link.name} in time.` };
+            }
+        } catch (error) {
+            answer = {
+                allow: false,
+                reason: `${link.name} could not ask or save its answer: ${String(error)}`,
+            };
+        } finally {
+            clearTimeout(timer);
+            ws.off("close", dropped);
+            this.#questions.delete(question.id);
+
+            if (stop.signal.reason === "Withdrawn by the server.") {
+                this.#log(`${question.person} cancelled ${what} in ${question.folder}.`);
+            }
         }
 
-        if (ws.readyState === WebSocket.OPEN) {
+        const withdrawn = stop.signal.reason === "Withdrawn by the server.";
+
+        stop.abort();
+
+        if (!withdrawn && ws.readyState === WebSocket.OPEN) {
             ws.send(
                 JSON.stringify({
                     type: "confirmed",
@@ -711,6 +872,92 @@ export class Runner {
                 } satisfies ControlMessage),
             );
         }
+    }
+
+    /**
+     * The server asks for a TCP connection from this computer, for a session's browser: open it here, with this
+     * computer's names and routes, unless its settings say not to share the network.
+     */
+    #openStream(ws: WebSocket, open: NetOpen): void {
+        const streams = this.#streams;
+
+        const fail = (code: "refused" | "unreachable" | "timeout" | "limit", message: string) => {
+            // Errors only, not every connection: a page opens many.
+            if (code !== "refused") {
+                this.#log(`Browser connection failed: ${message}`);
+            }
+
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                    JSON.stringify({
+                        type: "net-failed",
+                        id: open.id,
+                        code,
+                        message,
+                    } satisfies ControlMessage),
+                );
+            }
+        };
+
+        if (streams === undefined || streams.has(open.id) || this.#connecting.has(open.id)) {
+            ws.close(1002, "A stream id in use");
+
+            return;
+        }
+
+        if (this.#settings().network === false) {
+            fail("refused", `${this.#options.link.name} does not share its network`);
+
+            return;
+        }
+
+        if (streams.size + this.#connecting.size >= MAX_STREAMS) {
+            fail("limit", `${this.#options.link.name} has too many open connections`);
+
+            return;
+        }
+
+        const host = open.host.replace(/^\[|\]$/g, "");
+        const socket = connectTcp({ host, port: open.port, allowHalfOpen: true });
+        const timer = setTimeout(() => {
+            socket.destroy();
+            fail("timeout", `No answer from ${open.host}:${open.port} in ${CONNECT_MS / 1000} s`);
+        }, CONNECT_MS);
+
+        // Not `socket.connecting`: Node clears it before a failed connect's error event.
+        let connected = false;
+
+        timer.unref();
+        this.#connecting.set(open.id, socket);
+        socket.once("close", () => {
+            clearTimeout(timer);
+
+            if (this.#connecting.get(open.id) === socket) {
+                this.#connecting.delete(open.id);
+            }
+        });
+        socket.once("error", (error: NodeJS.ErrnoException) => {
+            if (!connected && this.#connecting.get(open.id) === socket) {
+                clearTimeout(timer);
+                this.#connecting.delete(open.id);
+                fail("unreachable", `${open.host}:${open.port}: ${error.code ?? error.message}`);
+            }
+        });
+        socket.once("connect", () => {
+            connected = true;
+            clearTimeout(timer);
+            this.#connecting.delete(open.id);
+
+            if (ws.readyState !== WebSocket.OPEN || this.#streams !== streams) {
+                socket.destroy();
+
+                return;
+            }
+
+            this.opened++;
+            ws.send(JSON.stringify({ type: "net-opened", id: open.id } satisfies ControlMessage));
+            streams.attach(open.id, socket);
+        });
     }
 
     #onData(ws: WebSocket, bytes: Buffer): void {

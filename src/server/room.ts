@@ -146,6 +146,8 @@ export interface Client {
      * server sends it each notification over this connection (`desktop-notify`).
      */
     readonly desktop?: boolean;
+    /** The tab's browser runs on the server's machine (`local-browser.ts`): its file manager is one the person sees. */
+    readonly local?: boolean;
     /** Entries this client has, so updates carry only new ones. */
     readonly sentEntries: Set<number>;
     orderKey: string;
@@ -527,9 +529,15 @@ export class Room {
         this.schedule();
     }
 
-    /** What the folder has checked out now, null outside a repository; kept as the branch this view last read. */
+    /**
+     * What the folder has checked out now, null outside a repository; kept as the branch this view last read. A folder
+     * on another computer answers later: what it said last now, and an update when it says something new.
+     */
     #readHead(): Head | null {
-        const head = this.#app.workspace.head(this.id) ?? null;
+        // A room closed meanwhile has no view to update.
+        const head =
+            this.#app.workspace.head(this.id, () => this.#view !== undefined && this.schedule()) ??
+            null;
 
         this.#head = JSON.stringify(head);
 

@@ -3,17 +3,18 @@
  *
  * It starts Earendil's pi-env daemon here and connects out to the server over a WebSocket, so this computer needs no
  * open port, SSH, or provider key. The server sends pi-env requests (read a file, run a command); the daemon answers.
- * The link survives short drops (`protocol.ts`): the daemon keeps running, its answers wait here, and both sides send
- * again what the other missed.
+ * The link survives drops of any length (`protocol.ts`): the daemon keeps running, its answers wait here, and both
+ * sides send again what the other missed.
  *
- * In a terminal, plain `pi-pocket runner` opens a menu: start, link, settings, the service, unlink, help. Each of
+ * In a terminal, plain `pi-pocket runner` opens a menu: start, link, settings, allowed folders, unlink, help. Each of
  * those is also a command for scripts, which never asks:
  *
- *   pi-pocket runner start                  run with the saved link (services and the desktop app run this)
+ *   pi-pocket runner start                  run with the saved link (also used by the desktop app)
  *   pi-pocket runner link <server> <code>   link this computer, with a code from Menu > Runners
- *   pi-pocket runner settings [name value]  show or change a setting: confirm on|off, http allow|refuse
+ *   pi-pocket runner settings [name value]  show or change a setting: confirm on|off, http allow|refuse,
+ *                                           network allow|refuse, downloads <folder>|default
  *   pi-pocket runner status                 show the link and its settings
- *   pi-pocket runner service [remove]       keep it running as a systemd user service (Linux)
+ *   pi-pocket runner folders [--json]       list allowed folders; `folders remove <folder>` removes one
  *   pi-pocket runner unlink                 forget the link
  *
  * Before a session starts here, the runner asks its person (setting `confirm`, on by default): on its terminal, or
@@ -21,23 +22,21 @@
  * device of this computer's tailnet, or the person allowed it (`transport.ts`).
  *
  * It exits with `STOPPED_BY_SERVER` when the server ends the link for good (the computer was removed, its key is
- * wrong): a service manager or the desktop app does not start it again then.
+ * wrong): the desktop app does not start it again then.
  */
 import {
     chmodSync,
     existsSync,
     mkdirSync,
     readFileSync,
-    realpathSync,
     renameSync,
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import { createInterface as createQuestions } from "node:readline/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pocketVersion } from "../server/versions.ts";
 import {
     accent,
@@ -60,7 +59,9 @@ import {
     type SessionAnswer,
     type SessionQuestion,
 } from "./runner.ts";
+import { sameFolder } from "./folders.ts";
 import { checkTransport, refusal, unsafe } from "./transport.ts";
+import { checkTools, toolsStatus } from "./tools.ts";
 
 const HELP = `pi-pocket runner: run session tools on this computer.
 
@@ -71,7 +72,7 @@ user account. Only link a server you trust.
 In a terminal, run pi-pocket runner for a menu. For scripts:
 
   pi-pocket runner start
-    Run with the saved link. Services and the desktop app use this.
+    Run with the saved link while this terminal or the desktop app is open.
   pi-pocket runner link <server> <code> [--allow-http]
     Link this computer. Get a code in Pi Pocket: Menu > Runners > Link a computer.
     --allow-http also allows plain HTTP to that server (only on a network you trust).
@@ -80,12 +81,17 @@ In a terminal, run pi-pocket runner for a menu. For scripts:
       confirm on|off       Ask here before a new session starts (default: on)
       http allow|refuse    Plain HTTP to a server that is not this computer or
                            on your tailnet (default: refuse)
+      network allow|refuse Sessions' browsers use this computer's network
+                           (default: allow)
+      downloads <folder>|default
+                           Where sessions' browser downloads go, in a folder
+                           per session (default: the temporary folder)
   pi-pocket runner status
-    Show the link, its settings, and the service.
-  pi-pocket runner service
-    Linux with systemd: keep the runner running after you close the terminal.
-  pi-pocket runner service remove
-    Stop and remove the service. Keep the saved link.
+    Show the link and its settings.
+  pi-pocket runner folders [--json]
+    Show allowed folders, one per line, or a JSON array for the desktop app.
+  pi-pocket runner folders remove <folder>
+    Ask again for future sessions there. Running sessions keep running.
   pi-pocket runner unlink
     Delete the saved link. Also remove this computer in Menu > Runners.
 
@@ -105,8 +111,6 @@ type Link = RunnerLinkFile;
 
 /** The exit code when the server ended the link for good: starting it again would not help. */
 export const STOPPED_BY_SERVER = 3;
-/** The systemd user unit `service` writes. */
-const UNIT = "pi-pocket-runner.service";
 /** What the desktop app reads on stdout: a question (`CONFIRM`), and that it no longer stands (`CONFIRM-END`). */
 const CONFIRM_LINE = "PI-POCKET-CONFIRM";
 const CONFIRM_END_LINE = "PI-POCKET-CONFIRM-END";
@@ -188,12 +192,31 @@ function writeLink(file: string, link: Link): void {
     }
 }
 
-/** The settings with their defaults filled in. */
-function settingsOf(link: Link | undefined): Required<RunnerSettings> {
+/** The settings with their defaults filled in; `downloads` undefined is the temporary folder. */
+type FullSettings = Required<Omit<RunnerSettings, "downloads">> & { downloads: string | undefined };
+
+function settingsOf(link: Link | undefined): FullSettings {
     return {
         confirm: link?.settings?.confirm !== false,
         allowHttp: link?.settings?.allowHttp === true,
+        network: link?.settings?.network !== false,
+        downloads: link?.settings?.downloads,
+        folders: link?.settings?.folders ?? [],
     };
+}
+
+/** A downloads folder as the person typed it: `~` is the home folder, a relative one is from here. */
+function downloadsFolder(typed: string): string {
+    const folder = typed.trim();
+
+    return folder === "~" || folder.startsWith("~/")
+        ? join(homedir(), folder.slice(1))
+        : resolve(folder);
+}
+
+/** Where downloads go, as the settings say it. */
+function downloadsLine(settings: FullSettings): string {
+    return settings.downloads ?? "default (the temporary folder)";
 }
 
 /** Change settings in the link file, keeping the rest. */
@@ -349,10 +372,12 @@ async function link(file: string, args: string[]): Promise<void> {
 // ─── Settings ───────────────────────────────────────────────────────────
 
 /** The settings, one per line, as `settings` prints them and the desktop app reads them. */
-function settingsLines(settings: Required<RunnerSettings>): string[] {
+function settingsLines(settings: FullSettings): string[] {
     return [
         `confirm ${settings.confirm ? "on" : "off"}`,
         `http ${settings.allowHttp ? "allow" : "refuse"}`,
+        `network ${settings.network ? "allow" : "refuse"}`,
+        `downloads ${settings.downloads ?? "default"}`,
     ];
 }
 
@@ -393,11 +418,114 @@ function settingsCommand(file: string, args: string[]): void {
             return;
         }
 
+        if (name === "network" && (value === "allow" || value === "refuse")) {
+            changeSettings(file, { network: value === "allow" });
+            console.log(
+                value === "allow"
+                    ? "Sessions' browsers open their connections from this computer: they reach what it reaches, including its localhost and local network."
+                    : "Sessions' browsers cannot open pages through this computer.",
+            );
+
+            return;
+        }
+
+        if (name === "downloads" && value !== undefined && value.trim() !== "") {
+            const folder = value === "default" ? undefined : downloadsFolder(value);
+
+            changeSettings(file, { downloads: folder });
+            console.log(
+                folder === undefined
+                    ? "Sessions' browser downloads go to this computer's temporary folder, in pi-pocket-downloads/<session>/."
+                    : `Sessions' browser downloads go to ${join(folder, "<session>")}. A running runner uses it once it reconnects.`,
+            );
+
+            return;
+        }
+
         throw new Problem(
-            "Use: pi-pocket runner settings confirm on|off, or: pi-pocket runner settings http allow|refuse",
+            "Use: pi-pocket runner settings confirm on|off, http allow|refuse, network allow|refuse, or downloads <folder>|default",
         );
     } catch (error) {
         fail((error as Error).message);
+    }
+}
+
+// ─── Allowed folders ────────────────────────────────────────────────────
+
+async function removeFolder(file: string, folder: string): Promise<void> {
+    const folders = readLink(file)?.settings?.folders ?? [];
+    const matches = await Promise.all(folders.map((saved) => sameFolder(saved, resolve(folder))));
+
+    if (!matches.some(Boolean)) {
+        throw new Problem(
+            `No allowed folder matches "${folder}". Run pi-pocket runner folders to see the list.`,
+        );
+    }
+
+    changeSettings(file, { folders: folders.filter((_, index) => !matches[index]) });
+}
+
+/** List or remove only: a folder can be added only by allowing a local question. */
+async function foldersCommand(file: string, args: string[]): Promise<void> {
+    try {
+        if (args.length === 0 || (args.length === 1 && args[0] === "--json")) {
+            const folders = readLink(file)?.settings?.folders ?? [];
+
+            console.log(
+                args[0] === "--json"
+                    ? JSON.stringify(folders)
+                    : folders.join("\n") || "No allowed folders yet.",
+            );
+
+            return;
+        }
+
+        if (args.length === 2 && args[0] === "remove" && !args[1]!.startsWith("--")) {
+            await removeFolder(file, args[1]!);
+            console.log(
+                `Removed "${args[1]}". Running sessions keep running; new sessions there can ask again.`,
+            );
+
+            return;
+        }
+
+        throw new Problem(
+            "Use: pi-pocket runner folders [--json], or pi-pocket runner folders remove <folder> [--config FILE]",
+        );
+    } catch (error) {
+        fail((error as Error).message);
+    }
+}
+
+async function foldersMenu(file: string): Promise<void> {
+    for (;;) {
+        const folders = readLink(file)?.settings?.folders ?? [];
+
+        if (folders.length === 0) {
+            console.log("  No allowed folders yet.");
+
+            return;
+        }
+
+        const picked = await choose(
+            "Allowed folders",
+            [
+                ...folders.map((folder) => ({
+                    label: folder,
+                    detail: "remove: ask again for future sessions",
+                })),
+                { label: "Back", detail: "" },
+            ],
+            folders.length,
+            { clear: true },
+        );
+
+        if (picked === undefined || picked === folders.length) {
+            return;
+        }
+
+        await removeFolder(file, folders[picked]!);
+        console.log("  Removed. Sessions that run there keep running.");
     }
 }
 
@@ -405,9 +533,12 @@ function settingsCommand(file: string, args: string[]): void {
 
 /** In words: what would start, by whom, where. */
 function describe(question: SessionQuestion): string {
-    const what = question.kind === "fork" ? "a copy of a session" : "a new session";
+    const action =
+        question.kind === "move"
+            ? `move a session to ${question.folder}`
+            : `start ${question.kind === "fork" ? "a copy of a session" : "a new session"} on this computer`;
 
-    return `${question.person} wants to start ${what} on this computer.\n  Server: ${question.server}\n  Folder: ${question.folder}\n  The session can read and change files and run commands as you, also outside this folder.`;
+    return `${question.person} wants to ${action}.\n  Server: ${question.server}\n  Folder: ${question.folder}\n  The session can read and change files and run commands as you, also outside this folder.`;
 }
 
 /** Ask on this terminal, with the arrow keys; one question at a time. */
@@ -423,13 +554,27 @@ function terminalAsker(): (question: SessionQuestion) => Promise<SessionAnswer> 
             process.stdout.write("\x07");
             console.log("");
             console.log(yellow(`  ${describe(question)}`));
+
+            if (question.broad) {
+                console.log(
+                    yellow(
+                        "  This folder holds everything in it. Saving it would allow sessions in all of it.",
+                    ),
+                );
+            }
+
             console.log("");
 
             const picked = await choose(
                 "Allow it?",
                 [
                     { label: "Deny", detail: "the session does not start" },
-                    { label: "Allow", detail: "start it on this computer" },
+                    {
+                        label: question.broad ? "Allow this session only" : "Allow",
+                        detail: question.broad
+                            ? "this folder holds everything in it; nothing is saved"
+                            : "also allow later sessions in this folder and its folders",
+                    },
                 ],
                 0,
                 { signal: question.signal, clear: true },
@@ -479,12 +624,16 @@ function stdioAsker(): (question: SessionQuestion) => Promise<SessionAnswer> {
     });
 
     return (question) => {
+        if (question.signal.aborted) {
+            return Promise.resolve({ allow: false, reason: "Nobody answered in time." });
+        }
+
         const id = next++;
 
         return new Promise<SessionAnswer>((resolve) => {
             const done = (answer: SessionAnswer) => {
                 waiting.delete(id);
-                question.signal.removeEventListener("abort", ended);
+                // Keep the end notice until the runner has saved the answer. The app refreshes its folder list then.
                 resolve(answer);
             };
 
@@ -503,6 +652,7 @@ function stdioAsker(): (question: SessionQuestion) => Promise<SessionAnswer> {
                     person: question.person,
                     folder: question.folder,
                     kind: question.kind,
+                    broad: question.broad,
                 })}`,
             );
         });
@@ -511,22 +661,7 @@ function stdioAsker(): (question: SessionQuestion) => Promise<SessionAnswer> {
 
 // ─── Running ────────────────────────────────────────────────────────────
 
-/** Whether the runner runs as the systemd user service already. */
-function serviceActive(): boolean {
-    return (
-        process.platform === "linux" &&
-        spawnSync("systemctl", ["--user", "is-active", "--quiet", UNIT]).status === 0
-    );
-}
-
-function canService(): boolean {
-    return process.platform === "linux" && spawnSync("systemctl", ["--version"]).status === 0;
-}
-
-/**
- * Run with the saved link until stopped. `via`: how to ask before sessions (this terminal, the desktop app, or
- * nobody: a service has no one to ask, so with asking on its sessions are refused, and it says so).
- */
+/** Run with the saved link until stopped, asking on this terminal or through the desktop app. */
 async function serve(file: string, via: "terminal" | "stdio" | "none"): Promise<void> {
     let saved: Link | undefined;
 
@@ -555,6 +690,9 @@ async function serve(file: string, via: "terminal" | "stdio" | "none"): Promise<
             } catch {
                 return saved.settings ?? {};
             }
+        },
+        saveSettings: (change) => {
+            changeSettings(file, change);
         },
         ...(ask === undefined ? {} : { ask }),
     });
@@ -611,114 +749,12 @@ async function serve(file: string, via: "terminal" | "stdio" | "none"): Promise<
     }
 }
 
-// ─── The service ────────────────────────────────────────────────────────
-
-/** `systemctl --user …`, its output shown; false when it failed. */
-function systemctl(...args: string[]): boolean {
-    return spawnSync("systemctl", ["--user", ...args], { stdio: "inherit" }).status === 0;
-}
-
-/**
- * Keep the runner running as a systemd user service, with this Node, this Pi Pocket, this link file, and this PATH
- * (the tools sessions run find what this shell finds). Linux only: elsewhere, the person keeps the runner running
- * their own way, or the desktop app does.
- */
-function service(file: string, args: string[]): void {
-    if (!canService()) {
-        fail(
-            "The service command needs Linux with systemd. Keep the runner open in a terminal, or use the Pi Pocket desktop app.",
-        );
-    }
-
-    const unit = join(
-        process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
-        "systemd",
-        "user",
-        UNIT,
-    );
-
-    if (args[0] === "remove") {
-        systemctl("disable", "--now", UNIT);
-        rmSync(unit, { force: true });
-        systemctl("daemon-reload");
-        console.log(`Stopped and removed ${UNIT}. The saved link is still in ${file}.`);
-
-        return;
-    }
-
-    let saved: Link | undefined;
-
-    try {
-        saved = readLink(file);
-    } catch (error) {
-        fail((error as Error).message);
-    }
-
-    if (saved === undefined) {
-        fail("This computer is not linked. In a terminal, run: pi-pocket runner");
-    }
-
-    const launcher = realpathSync(process.argv[1] ?? "");
-
-    // npx's copy is a cache npm can clear: the service would stop starting.
-    if (launcher.includes("_npx")) {
-        fail(
-            "A service cannot use Pi Pocket from the npx cache. Install it with: npm install -g pi-pocket@latest\nThen run: pi-pocket runner service",
-        );
-    }
-
-    const quote = (value: string) => `"${value.replace(/(["\\])/g, "\\$1")}"`;
-
-    mkdirSync(dirname(unit), { recursive: true });
-    writeFileSync(
-        unit,
-        [
-            "[Unit]",
-            "Description=Pi Pocket runner: run session tools on this computer",
-            "After=network-online.target",
-            "Wants=network-online.target",
-            "",
-            "[Service]",
-            // `start`: it serves the saved link and never asks on a terminal.
-            `ExecStart=${quote(process.execPath)} ${quote(launcher)} runner start --config ${quote(file)}`,
-            `Environment=${quote(`PATH=${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`)}`,
-            "Restart=on-failure",
-            "RestartSec=5",
-            // The server removed this computer, or its key is wrong: starting again would not help.
-            `RestartPreventExitStatus=${String(STOPPED_BY_SERVER)}`,
-            "",
-            "[Install]",
-            "WantedBy=default.target",
-            "",
-        ].join("\n"),
-    );
-
-    if (!systemctl("daemon-reload") || !systemctl("enable", "--now", UNIT)) {
-        fail(
-            `The service file is in ${unit}, but the runner did not start. Check the error with: systemctl --user status ${UNIT}`,
-        );
-    }
-
-    console.log(`The runner is running as ${UNIT}. It starts with your user session.`);
-    console.log(`  View logs: journalctl --user -u ${UNIT} -f`);
-    console.log(
-        `  To run while you are logged out: loginctl enable-linger ${process.env.USER ?? "$USER"}`,
-    );
-
-    if (settingsOf(saved).confirm) {
-        console.log(
-            yellow(
-                "  A service cannot ask before new sessions, so with asking on, sessions on this computer are refused.\n  To start them without asking: pi-pocket runner settings confirm off",
-            ),
-        );
-    }
-}
-
-function status(file: string): string {
+async function status(file: string): Promise<string> {
     const saved = readLink(file);
+    const tools = toolsStatus(await checkTools(), process.platform);
 
     if (saved === undefined) {
-        return "This computer is not linked.\nIn a terminal, run pi-pocket runner to link it.";
+        return `This computer is not linked.\nIn a terminal, run pi-pocket runner to link it.\n${tools}`;
     }
 
     const settings = settingsOf(saved);
@@ -727,9 +763,11 @@ function status(file: string): string {
         `Computer: ${saved.name}`,
         `Server: ${saved.server}`,
         `Link file: ${file}`,
+        tools,
         `Ask before new sessions: ${settings.confirm ? "on" : "off"}`,
         `Plain HTTP: ${settings.allowHttp ? "allowed to this server" : "only to this computer or your tailnet"}`,
-        ...(serviceActive() ? [`Service: ${UNIT} (running)`] : []),
+        `Share the network with browsers: ${settings.network ? "on" : "off"}`,
+        `Browser downloads: ${downloadsLine(settings)}`,
     ].join("\n");
 }
 
@@ -759,7 +797,7 @@ async function linkInteractively(file: string): Promise<Link | undefined> {
     console.log("");
 
     let server = "";
-    let settings: Required<RunnerSettings> = settingsOf(undefined);
+    let settings: FullSettings = settingsOf(undefined);
 
     while (server === "") {
         const given = await ask(
@@ -868,13 +906,23 @@ async function settingsMenu(file: string): Promise<void> {
                         ? "to this server, on any network"
                         : "only this computer and your tailnet",
                 },
+                {
+                    label: `Share the network with browsers: ${settings.network ? "on" : "off"}`,
+                    detail: settings.network
+                        ? "sessions' browsers browse from here"
+                        : "sessions' browsers cannot open pages",
+                },
+                {
+                    label: `Browser downloads: ${downloadsLine(settings)}`,
+                    detail: "a folder per session",
+                },
                 { label: "Back", detail: "" },
             ],
             at,
             { clear: true },
         );
 
-        if (picked === undefined || picked === 2) {
+        if (picked === undefined || picked === 4) {
             return;
         }
 
@@ -882,8 +930,18 @@ async function settingsMenu(file: string): Promise<void> {
 
         if (picked === 0) {
             changeSettings(file, { confirm: !settings.confirm });
-        } else {
+        } else if (picked === 1) {
             changeSettings(file, { allowHttp: !settings.allowHttp });
+        } else if (picked === 2) {
+            changeSettings(file, { network: !settings.network });
+        } else {
+            const typed = await ask("Downloads folder (default for the temporary folder)");
+
+            if (typed !== "") {
+                changeSettings(file, {
+                    downloads: typed === "default" ? undefined : downloadsFolder(typed),
+                });
+            }
         }
     }
 }
@@ -903,13 +961,11 @@ async function menu(file: string): Promise<void> {
             fail((error as Error).message);
         }
 
-        const running = serviceActive();
-
         console.log("");
         console.log(
             saved === undefined
                 ? `  ${yellow("Not linked yet.")}`
-                : `  Linked as ${bold(saved.name)} to ${saved.server}${running ? green(" · running as a service") : ""}`,
+                : `  Linked as ${bold(saved.name)} to ${saved.server}`,
         );
         console.log("");
 
@@ -939,10 +995,7 @@ async function menu(file: string): Promise<void> {
                 : [
                       {
                           label: "Start",
-                          detail: running
-                              ? "already running as a service"
-                              : "run here until Ctrl+C",
-                          disabled: running,
+                          detail: "run here until Ctrl+C",
                           run: async () => {
                               await serve(file, "terminal");
 
@@ -958,29 +1011,15 @@ async function menu(file: string): Promise<void> {
                               return false;
                           },
                       },
-                      ...(canService()
-                          ? [
-                                running
-                                    ? {
-                                          label: "Stop the service",
-                                          detail: "keep the link",
-                                          run: async () => {
-                                              service(file, ["remove"]);
+                      {
+                          label: "Allowed folders",
+                          detail: "folders where new sessions start without asking",
+                          run: async () => {
+                              await foldersMenu(file);
 
-                                              return false;
-                                          },
-                                      }
-                                    : {
-                                          label: "Run as a service",
-                                          detail: "keep running after this terminal closes",
-                                          run: async () => {
-                                              service(file, []);
-
-                                              return false;
-                                          },
-                                      },
-                            ]
-                          : []),
+                              return false;
+                          },
+                      },
                       {
                           label: "Link again",
                           detail: "replace the link with a new code",
@@ -1008,10 +1047,6 @@ async function menu(file: string): Promise<void> {
                               );
 
                               if (sure === 1) {
-                                  if (running) {
-                                      service(file, ["remove"]);
-                                  }
-
                                   rmSync(file, { force: true });
                                   console.log(
                                       "  Deleted the link. In Pi Pocket, also remove this computer in Menu > Runners.",
@@ -1080,7 +1115,7 @@ export async function main(argv: string[]): Promise<void> {
 
     switch (command) {
         case undefined:
-            // A person at a terminal gets the menu; anything else (an older service, the desktop app) serves.
+            // A person at a terminal gets the menu; the desktop app runs with stdio confirmation.
             return via === undefined && interactive ? menu(file) : serve(file, via ?? "none");
         case "start":
             return serve(file, via ?? (interactive ? "terminal" : "none"));
@@ -1093,14 +1128,14 @@ export async function main(argv: string[]): Promise<void> {
             return settingsCommand(file, rest);
         case "status":
             try {
-                console.log(status(file));
+                console.log(await status(file));
             } catch (error) {
                 fail((error as Error).message);
             }
 
             return;
-        case "service":
-            return service(file, rest);
+        case "folders":
+            return foldersCommand(file, rest);
         case "unlink":
             rmSync(file, { force: true });
             console.log(

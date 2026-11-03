@@ -2,7 +2,8 @@
 // connects over a real WebSocket to a real pi-env daemon, and Pi's tools in a session there run there. Here the "other
 // computer" is this one, in a folder of its own that the server's sessions never use.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -13,13 +14,24 @@ import {
     fauxToolCall,
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Runner, type SessionAnswer, type SessionQuestion } from "../src/runner/runner.ts";
+import {
+    Runner,
+    type RunnerOptions,
+    type SessionAnswer,
+    type SessionQuestion,
+} from "../src/runner/runner.ts";
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
+import { AgentDoc } from "@earendil-works/pi-durable";
+import { type Lesson, SubagentsDoc } from "../src/server/docs.ts";
+import { createHandler } from "../src/server/http.ts";
+import { ExtensionRequest } from "../src/server/extension-request.ts";
 import {
     type App,
     cleanUp,
     context,
     lastText,
+    loadTools,
+    newSession,
     openApp,
     owner,
     root,
@@ -33,6 +45,7 @@ const there = join(root, "there");
 let app: App;
 let server: Server;
 let runner: Runner;
+let runnerOptions: RunnerOptions;
 let runnerId: string;
 /** The system sections of the newest request to the model. */
 let sections: Record<string, string> = {};
@@ -52,6 +65,26 @@ const route: FauxResponseStep = (context) => {
 
     if (role === "toolResult") {
         return fauxAssistantMessage([fauxText(`tool said: ${text}`)]);
+    }
+
+    if (text.includes("spawn runner subagent")) {
+        return call("subagent", {
+            action: "spawn",
+            name: "remote-probe",
+            message: "run runner directory probe",
+        });
+    }
+
+    if (text.includes("start runner team")) {
+        return call("team", { action: "start", message: "run runner directory probe" });
+    }
+
+    if (text.includes("run runner directory probe")) {
+        return call("bash", { command: "pwd" });
+    }
+
+    if (text.includes("long runner codemode")) {
+        return call("codemode", { code: 'text("remote-output-".repeat(6000));' });
     }
 
     if (text.includes("write the note")) {
@@ -84,9 +117,12 @@ async function lastToolText(id: number): Promise<string> {
 before(async () => {
     mkdirSync(there, { recursive: true });
     app = await openApp(scriptedModel(route));
+    await app.setExtensionEnabled(owner(app), "agent-teams.ts", true);
     app.config.lastModel ??= { provider: "faux", modelId: "faux-1", thinkingLevel: "off" };
 
-    server = createServer((request, response) => response.writeHead(404).end());
+    server = createServer(
+        createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
+    );
     server.on("upgrade", (request, socket, head) => {
         if (!app.runners.upgrade(request, socket, head)) {
             socket.destroy();
@@ -99,7 +135,7 @@ before(async () => {
     const linked = app.runners.redeem(code);
 
     runnerId = linked.id;
-    runner = new Runner({
+    runnerOptions = {
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",
         cwd: there,
@@ -112,7 +148,8 @@ before(async () => {
 
             return answer(question);
         },
-    });
+    };
+    runner = new Runner(runnerOptions);
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
 });
@@ -179,25 +216,43 @@ describe("a session on another computer", () => {
             (tool) => tool.name,
         );
 
-        for (const name of ["read", "write", "edit", "bash"]) {
+        for (const name of [
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "subagent",
+            "team",
+            "codemode",
+            "memory",
+        ]) {
             assert.ok(tools.includes(name), `${name} is offered`);
         }
 
-        for (const name of [
-            "background",
-            "browser",
-            "artifact",
-            "subagent",
-            "design_preview",
-            "memory",
-        ]) {
+        // The browser too, loaded when Pi asks for it: its pages load through that computer (`browser/proxy.ts`).
+        const deferred = (await (await app.conversation(id as never)).agent(context)).deferred.map(
+            (tool) => tool.name,
+        );
+
+        assert.ok(deferred.includes("browser"), "browser waits to be loaded");
+
+        for (const name of ["background", "artifact", "design_preview"]) {
             assert.ok(!tools.includes(name), `${name} is not offered`);
         }
     });
 
-    it("refuses what reads this server's disk", async () => {
-        await assert.rejects(app.workspace.changes(id as never, owner(app)), /runs on Laptop/);
-        await assert.rejects(app.workspace.fileList(id as never, owner(app)), /runs on Laptop/);
+    it("reads its folder there for Files and Changes, not this server's disk", async () => {
+        // Not in a repository there: Pi's edits only, by where they are there.
+        const changes = await app.workspace.changes(id as never, owner(app));
+
+        assert.equal(changes.repo, undefined);
+        assert.deepEqual(
+            changes.piOnly.map((each) => each.path),
+            [join(there, "note.txt")],
+        );
+        assert.deepEqual((await app.workspace.fileList(id as never, owner(app))).files, [
+            "note.txt",
+        ]);
         assert.equal(app.workspace.head(id as never), undefined);
     });
 
@@ -288,6 +343,255 @@ describe("a session on another computer", () => {
         }
     });
 
+    it("cancels new sessions and whole-session forks, even when their person allows them late", async () => {
+        for (const kind of ["new", "fork"] as const) {
+            const before = app.sessions(owner(app)).length;
+            const controller = new AbortController();
+            let late!: (answer: SessionAnswer) => void;
+
+            asked.length = 0;
+            answer = () =>
+                new Promise((resolve) => {
+                    late = resolve;
+                });
+
+            try {
+                const result =
+                    kind === "new"
+                        ? app.commands.createSession(
+                              owner(app),
+                              { cwd: there, runner: runnerId },
+                              { signal: controller.signal },
+                          )
+                        : app.commands.fork(id as never, owner(app), {}, controller.signal);
+                const rejected = assert.rejects(result, { status: 409, message: "Cancelled." });
+
+                await until(() => asked.length === 1, "the session question");
+                controller.abort();
+                await rejected;
+                await until(() => asked[0]!.signal.aborted, "the runner question to be withdrawn");
+                assert.equal(asked[0]!.signal.reason, "Withdrawn by the server.");
+                late({ allow: true });
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                assert.equal(
+                    app.sessions(owner(app)).length,
+                    before,
+                    "no cancelled session was made",
+                );
+            } finally {
+                controller.abort();
+                answer = () => Promise.resolve({ allow: true });
+            }
+        }
+    });
+
+    it("still starts a session when its person allows it immediately", async () => {
+        asked.length = 0;
+        const before = app.sessions(owner(app)).length;
+        const created = await app.commands.createSession(owner(app), {
+            cwd: there,
+            runner: runnerId,
+        });
+
+        assert.equal(asked.length, 1);
+        assert.equal(app.runnerOf(created.id), runnerId);
+        assert.equal(app.sessions(owner(app)).length, before + 1);
+    });
+
+    it("keeps lessons on their computer and offers approved lessons from other copies to add", async () => {
+        const localFolder = join(root, "local-memory");
+        const remoteFolder = join(root, "runner-memory");
+
+        for (const [folder, url] of [
+            [localFolder, "git@github.com:Acme/Memory.git"],
+            [remoteFolder, "https://github.com/acme/memory.git"],
+        ]) {
+            mkdirSync(folder!, { recursive: true });
+            execFileSync("git", ["init", "-q"], { cwd: folder });
+            execFileSync("git", ["remote", "add", "origin", url!], { cwd: folder });
+        }
+
+        const local = (await app.commands.createSession(owner(app), { cwd: localFolder })).id;
+        const remote = (
+            await app.commands.createSession(owner(app), { cwd: remoteFolder, runner: runnerId })
+        ).id;
+        const localProject = (await app.memory.project(local, localFolder))!;
+        const remoteProject = (await app.memory.project(remote, remoteFolder))!;
+
+        assert.match(remoteProject.key, new RegExp(`^runner:${runnerId}:`));
+        assert.equal(localProject.key, join(localFolder, ".git"));
+        assert.equal(remoteProject.runner, runnerId);
+        assert.equal(localProject.repo?.toLowerCase(), remoteProject.repo?.toLowerCase());
+        const localLesson = await app.memory.remember(local, owner(app), {
+            text: "Build with make check.",
+        });
+        const remoteLesson = await app.memory.remember(remote, owner(app), {
+            text: "Keep commands on the runner.",
+        });
+
+        await app.memory.remember(local, owner(app), { text: "Shared lesson." });
+        await app.memory.remember(remote, owner(app), { text: "  Shared lesson.  " });
+        await app.memory.remember(local, owner(app), { text: "Already pending there." });
+        const pi = { userId: owner(app).id, byPi: true, name: "Pi" };
+
+        await app.memory.add(remote, remoteFolder, pi, {
+            text: "Already pending there.",
+            scope: "project",
+        });
+        await app.memory.add(local, localFolder, pi, {
+            text: "Unapproved source.",
+            scope: "project",
+        });
+        assert.ok(
+            (await app.memory.inForce(remote, remoteFolder)).lessons.some(
+                (lesson) => lesson.id === remoteLesson.id,
+            ),
+        );
+        assert.ok(
+            !(await app.memory.inForce(local, localFolder)).lessons.some(
+                (lesson) => lesson.id === remoteLesson.id,
+            ),
+        );
+        assert.ok(
+            !(await app.memory.inForce(remote, remoteFolder)).lessons.some(
+                (lesson) => lesson.id === localLesson.id,
+            ),
+        );
+
+        const view = await app.memory.view(remote, owner(app));
+
+        assert.deepEqual(
+            view.others?.map((other) => [
+                other.project,
+                other.name,
+                other.computer,
+                other.lessons.map((lesson) => lesson.id),
+            ]),
+            [[localProject.key, localProject.name, "this server", [localLesson.id]]],
+        );
+        const localView = await app.memory.view(local, owner(app));
+
+        assert.deepEqual(
+            localView.others?.map((other) => [
+                other.computer,
+                other.lessons.map((lesson) => lesson.id),
+            ]),
+            [["Laptop", [remoteLesson.id]]],
+        );
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/c/${remote}/memory`;
+        const copy = (lesson: string) =>
+            fetch(url, {
+                method: "POST",
+                headers: {
+                    authorization: `Bearer ${app.config.ownerToken}`,
+                    "x-pocket": "1",
+                    "content-type": "application/json",
+                },
+                body: JSON.stringify({ copy: lesson }),
+            });
+
+        for (const invalid of [remoteLesson.id, "missing"]) {
+            const rejected = await copy(invalid);
+
+            assert.equal(rejected.status, 404);
+            assert.match(
+                await rejected.text(),
+                /That lesson is not in another copy of this repository\./,
+            );
+        }
+
+        const response = await copy(localLesson.id);
+
+        assert.equal(response.status, 200);
+        const copied = (await response.json()) as Lesson;
+
+        assert.notEqual(copied.id, localLesson.id);
+        assert.equal(copied.text, localLesson.text);
+        assert.equal(copied.project, remoteProject.key);
+        assert.equal(copied.pending, undefined);
+        assert.equal(copied.from?.conversationId, remote);
+        assert.equal((await app.memory.view(remote, owner(app))).others, undefined);
+        assert.equal((await copy(localLesson.id)).status, 404);
+
+        await say(app, remote, "check my saved lessons");
+        assert.match(sections.memory ?? "", /Keep commands on the runner/);
+        assert.match(sections.memory ?? "", /Build with make check/);
+    });
+
+    it("starts PR watches using the runner's origin and branch but gh on the server", async () => {
+        const folder = join(root, "runner-watch");
+
+        mkdirSync(folder, { recursive: true });
+        execFileSync("git", ["init", "-q", "-b", "runner-branch"], { cwd: folder });
+        execFileSync(
+            "git",
+            [
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "initial",
+            ],
+            { cwd: folder },
+        );
+        execFileSync("git", ["remote", "add", "origin", "git@github.com:acme/app.git"], {
+            cwd: folder,
+        });
+        const session = (
+            await app.commands.createSession(owner(app), { cwd: folder, runner: runnerId })
+        ).id;
+        const previous = app.watches.gh;
+        const calls: { args: string[]; cwd?: string }[] = [];
+
+        // The same server-side gh seam as triggers.test.ts, never a gh command sent to the runner.
+        app.watches.gh = async (args, cwd) => {
+            calls.push({ args, cwd });
+
+            if (args[0] === "api") {
+                return args[1] === "user"
+                    ? "me\n"
+                    : JSON.stringify({ full_name: "acme/app", permissions: { push: true } });
+            }
+
+            return JSON.stringify({
+                number: 23,
+                url: "https://github.com/acme/app/pull/23",
+                title: "Runner PR",
+                state: "OPEN",
+                headRefName: "runner-branch",
+            });
+        };
+
+        try {
+            await loadTools(app, session, "watch_pr");
+            const tools = (await (await app.conversation(session)).agent(context)).tools.map(
+                (tool) => tool.name,
+            );
+
+            assert.ok(tools.includes("watch_pr"));
+
+            for (const pr of [undefined, "23", "https://github.com/acme/app/pull/23"]) {
+                calls.length = 0;
+                await app.watches.start(session, owner(app).id, {
+                    ...(pr === undefined ? {} : { pr }),
+                    byPi: true,
+                });
+                const call = calls.find(({ args }) => args[0] === "pr" && args[1] === "view")!;
+
+                assert.equal(call.cwd, undefined, "server gh never receives the runner's folder");
+                assert.equal(call.args[call.args.indexOf("--repo") + 1], "acme/app");
+                assert.equal(call.args[call.args.indexOf("--") + 1], pr ?? "runner-branch");
+                await app.watches.stop(session);
+            }
+        } finally {
+            await app.watches.stop(session);
+            app.watches.gh = previous;
+        }
+    });
+
     it("starts sessions without asking when its person turned asking off", async () => {
         asked.length = 0;
         answer = () => Promise.reject(new Error("must not be asked"));
@@ -302,13 +606,265 @@ describe("a session on another computer", () => {
         }
     });
 
-    it("fails a tool, not the server, when the computer is offline", async () => {
+    it("checks a moved folder on the computer and asks before changing it", async () => {
+        const folder = join(root, "move-destination");
+
+        mkdirSync(folder, { recursive: true });
+        const session = (
+            await app.commands.createSession(owner(app), { cwd: there, runner: runnerId })
+        ).id;
+
+        asked.length = 0;
+        await app.commands.configure(session as never, owner(app), { cwd: there });
+        assert.equal(asked.length, 0, "the same folder is not a move");
+        await assert.rejects(
+            app.commands.configure(session as never, owner(app), { cwd: join(folder, "missing") }),
+            /is not a folder on Laptop/,
+        );
+        assert.equal(asked.length, 0, "invalid folders do not ask");
+        answer = () => Promise.resolve({ allow: false, reason: "Move denied here." });
+
+        try {
+            await assert.rejects(
+                app.commands.configure(session as never, owner(app), { cwd: folder }),
+                /Move denied here/,
+            );
+            assert.equal(app.cwdOf(session as never), there, "a denied move keeps the old folder");
+            assert.deepEqual(
+                asked.map((each) => [each.kind, each.person, each.folder]),
+                [["move", owner(app).name, folder]],
+            );
+            answer = () => Promise.resolve({ allow: true });
+            await app.commands.configure(session as never, owner(app), { cwd: folder });
+            assert.equal(app.cwdOf(session as never), folder);
+        } finally {
+            answer = () => Promise.resolve({ allow: true });
+        }
+    });
+
+    it("spawns a subagent with only remote extensions and runs its tools on the computer", async () => {
+        await say(app, id as never, "spawn runner subagent");
+        const spawned = (await app.harness.snapshot(SubagentsDoc, id as never, context))?.agents[
+            "remote-probe"
+        ];
+
+        assert.ok(spawned, "the subagent was spawned");
+        const child = spawned.conversationId;
+
+        await until(
+            async () => (await lastToolText(Number(child))).includes(there) && !app.isBusy(child),
+            "the subagent's remote directory probe",
+        );
+        assert.equal(app.runnerOf(child), runnerId);
+        assert.equal(app.cwdOf(child), there);
+        const childAgent = await (await app.conversation(child)).agent(context);
+        const parentAgent = await (await app.conversation(id as never)).agent(context);
+        const remoteTools = new Set(parentAgent.callable.map((tool) => tool.name));
+
+        for (const tool of childAgent.callable) {
+            assert.ok(remoteTools.has(tool.name), `${tool.name} comes from a remote extension`);
+        }
+
+        for (const extension of childAgent.extensions) {
+            assert.ok(
+                (REMOTE_EXTENSIONS as readonly string[]).includes(extension.name),
+                `${extension.name} is a remote extension`,
+            );
+        }
+
+        for (const name of ["subagent", "team", "ask"]) {
+            assert.ok(
+                !childAgent.callable.some((tool) => tool.name === name),
+                `${name} is removed`,
+            );
+        }
+    });
+
+    it("starts a team in the same folder without another question", async () => {
+        asked.length = 0;
+        await say(app, id as never, "start runner team");
+        const linked = app.sessions(owner(app)).findLast((each) => each.linkedFrom?.id === id);
+
+        assert.ok(linked, "the team started a linked session");
+        assert.equal(app.sessionMeta(linked.id as never)?.runner, runnerId);
+        assert.equal(app.cwdOf(linked.id as never), there);
+        assert.deepEqual(
+            (await app.harness.snapshot(AgentDoc, linked.id as never, context))?.extensions,
+            [...REMOTE_EXTENSIONS],
+        );
+        assert.equal(asked.length, 0, "a team in the starting session folder does not ask");
+        await until(
+            async () =>
+                (await lastToolText(linked.id)).includes(there) && !app.isBusy(linked.id as never),
+            "the linked session's remote directory probe",
+        );
+
+        for (const cwd of ["", "   "]) {
+            const { session } = await app.linkedSessions.start(
+                id as never,
+                { cwd, message: "hello" },
+                crypto.randomUUID(),
+            );
+
+            assert.equal(app.cwdOf(session), there, `blank cwd ${JSON.stringify(cwd)}`);
+            assert.equal(app.runnerOf(session), runnerId);
+        }
+    });
+
+    it("checks an explicit team folder on the computer, and refuses a denied start", async () => {
+        const before = app.sessions(owner(app)).length;
+        const otherFolder = join(root, "different-team-folder");
+
+        mkdirSync(otherFolder, { recursive: true });
+        asked.length = 0;
+        await assert.rejects(
+            app.linkedSessions.start(
+                id as never,
+                { cwd: join(there, "missing-team-folder"), message: "hello" },
+                crypto.randomUUID(),
+            ),
+            /missing-team-folder is not a folder on Laptop/,
+        );
+        assert.equal(asked.length, 0, "an invalid folder never asks");
+        answer = () => Promise.resolve({ allow: false, reason: "Team start denied." });
+
+        try {
+            await assert.rejects(
+                app.linkedSessions.start(
+                    id as never,
+                    { cwd: otherFolder, message: "hello" },
+                    crypto.randomUUID(),
+                ),
+                /Team start denied/,
+            );
+            assert.equal(asked.length, 1, "the computer was asked");
+            assert.equal(app.sessions(owner(app)).length, before, "no linked session was made");
+        } finally {
+            answer = () => Promise.resolve({ allow: true });
+        }
+    });
+
+    it("keeps the runner for a human team start and restricts starts to the computer's linker", async () => {
+        const actor = new ExtensionRequest(app, owner(app).id, "owner", id as never);
+
+        actor.bindSource((await app.agentState(id as never))!);
+
+        try {
+            const { session } = await app.linkedSessions
+                .forRequest(id as never, actor)
+                .start({ cwd: there, message: "hello" }, crypto.randomUUID());
+
+            assert.equal(app.runnerOf(session), runnerId);
+            assert.equal(app.cwdOf(session), there);
+        } finally {
+            actor.close();
+        }
+
+        const other = app.config.users.find((each) => each.name === "Co-owner")!;
+
+        await app.setSharedRunnerSessions(owner(app), true);
+
+        try {
+            const { submissionId } = await app.commands.submit(id as never, other, {
+                text: "hello from a co-owner",
+                requestId: crypto.randomUUID(),
+            });
+
+            await (await app.harness.submission(submissionId, context))!.wait(context);
+            const before = app.sessions(owner(app)).length;
+
+            asked.length = 0;
+            await assert.rejects(
+                app.linkedSessions.start(id as never, { message: "hello" }, crypto.randomUUID()),
+                /Only the person who linked this computer can start sessions on it/,
+            );
+            assert.equal(asked.length, 0, "a non-linker cannot ask the computer");
+            assert.equal(app.sessions(owner(app)).length, before);
+        } finally {
+            await app.setSharedRunnerSessions(owner(app), false);
+            await say(app, id as never, "hello from the linker");
+        }
+    });
+
+    it("starts a server team without assigning a runner or asking the computer", async () => {
+        const source = await newSession(app);
+
+        asked.length = 0;
+        await say(app, source, "start runner team");
+        const linked = app.sessions(owner(app)).findLast((each) => each.linkedFrom?.id === source);
+
+        assert.ok(linked);
+        assert.equal(app.sessionMeta(linked.id as never)?.runner, undefined);
+        assert.equal(app.cwdOf(linked.id as never), app.cwdOf(source));
+        assert.equal(asked.length, 0);
+    });
+
+    it("does not save truncated codemode output in a file the remote session cannot read", async () => {
+        const directory = join(root, "codemode-output");
+        const previous = process.env.TMPDIR;
+
+        mkdirSync(directory);
+        process.env.TMPDIR = directory;
+
+        try {
+            await say(app, id as never, "long runner codemode");
+            const result = await lastToolText(id);
+
+            assert.match(result, /Warning: output truncated/);
+            assert.ok(
+                result.includes(
+                    "[Full output not saved: this session runs on another computer. Make the script return less, or write the output to a file there.]",
+                ),
+            );
+            assert.doesNotMatch(result, /Full output:|pi-pocket-codemode-/);
+            assert.deepEqual(
+                readdirSync(directory),
+                [],
+                "no output file was written on the server",
+            );
+        } finally {
+            if (previous === undefined) {
+                delete process.env.TMPDIR;
+            } else {
+                process.env.TMPDIR = previous;
+            }
+        }
+    });
+
+    it("offline is offline: a message waits for the computer, Stop ends the wait, and it goes on when back", async () => {
         await runner.stop();
         await until(() => app.runners.list()[0]?.online === false, "the runner to go");
-        writeFileSync(join(there, "note.txt"), "changed while away\n");
 
-        await say(app, id as never, "run pwd");
-        assert.match(await lastToolText(id), /Laptop is offline/);
+        // Stop while it waits: the turn ends, and nothing failed on the server.
+        const first = await app.commands.submit(id as never, owner(app), {
+            text: "run pwd",
+            requestId: crypto.randomUUID(),
+        });
+        const stopped = (await app.harness.submission(first.submissionId, context))!.wait(context);
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await app.commands.abort(id as never, owner(app));
+        await stopped;
+
+        // Sent again while offline: it waits, and runs there when the computer is back.
+        const second = await app.commands.submit(id as never, owner(app), {
+            text: "run pwd",
+            requestId: crypto.randomUUID(),
+        });
+        const done = (await app.harness.submission(second.submissionId, context))!.wait(context);
+        let answered = false;
+
+        void done.then(() => (answered = true));
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        assert.equal(answered, false);
+
+        runner = new Runner(runnerOptions);
+        runner.start();
+        await done;
+        assert.match(
+            await lastToolText(id),
+            new RegExp(there.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        );
     });
 });
 

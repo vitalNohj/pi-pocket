@@ -1,8 +1,17 @@
 // The desktop host bridge's page side, in a real Chromium: a page in a desktop app names the host events it handles as
 // it subscribes, and a `newSession` event opens the New session sheet, as Alt+N does.
-import { type App, cleanUp, openApp, root, scriptedModel, until } from "./helpers.ts";
+import {
+    type App,
+    cleanUp,
+    newSession,
+    openApp,
+    root,
+    scriptedModel,
+    until,
+    work,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -24,6 +33,10 @@ const fakeHost = (capabilities: string[]) => `(() => {
         kind: "test",
         apiVersion: 1,
         capabilities: ${JSON.stringify(capabilities)},
+        saveFile(input) {
+            (window.savedFiles ??= []).push(input);
+            return Promise.resolve(window.saveFileResult ?? { ok: true, path: "/Downloads/notes.txt" });
+        },
         subscribe(listener, events) {
             window.hostListener = listener;
             window.hostEvents = events;
@@ -102,6 +115,7 @@ before(async () => {
         return;
     }
 
+    mkdirSync(work, { recursive: true });
     app = await openApp(scriptedModel());
     server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
@@ -151,6 +165,180 @@ test(
         }
     },
 );
+
+/** Open a server session and one real file in its viewer. */
+async function filePage(capabilities: string[]) {
+    const id = await newSession(app);
+    const path = join(work, "download-notes.txt");
+
+    writeFileSync(path, "a file to save\n");
+
+    const page = await openPage(capabilities);
+
+    await page.evaluate(`import("/store.js").then(({ navigate }) => navigate(${id}))`);
+    await until(
+        () =>
+            page.evaluate<boolean>(
+                `import("/store.js").then(({ store }) => store.state.view.conversation?.id === ${id})`,
+            ),
+        "the server session",
+    );
+    await page.evaluate(
+        `import("/ui.js").then(({ openFile }) => openFile(${JSON.stringify(path)}))`,
+    );
+    await until(
+        () =>
+            page.evaluate<boolean>(
+                `Boolean(document.querySelector('.file-viewer [aria-label="Download"]'))`,
+            ),
+        "the viewer's Download button",
+    );
+
+    return { ...page, id, path };
+}
+
+test(
+    "Download is offered to readers of server files, but not for folders or runner files",
+    real,
+    async () => {
+        const page = await filePage([]);
+        const downloadShows = () =>
+            page.evaluate<boolean>(
+                `Boolean(document.querySelector('.file-viewer [aria-label="Download"]'))`,
+            );
+
+        try {
+            await page.evaluate(
+                `import("/store.js").then(({ store }) => store.set({ me: { ...store.state.me, role: "viewer" } }))`,
+            );
+            assert.equal(await downloadShows(), true, "a reader can download");
+
+            await page.evaluate(
+                `import("/store.js").then(({ store }) => store.set({ view: { ...store.state.view, conversation: { ...store.state.view.conversation, runner: "test-runner" } } }))`,
+            );
+            await until(async () => !(await downloadShows()), "no Download for a runner file");
+
+            await page.evaluate(
+                `import("/store.js").then(({ store }) => store.set({ view: { ...store.state.view, conversation: { ...store.state.view.conversation, runner: undefined } } }))`,
+            );
+            await until(downloadShows, "Download for the server file again");
+            await page.evaluate(
+                `import("/ui.js").then(({ openFile }) => openFile(${JSON.stringify(work)}))`,
+            );
+            await until(
+                () =>
+                    page.evaluate<boolean>(
+                        `Array.from(document.querySelectorAll(".file-viewer .file-entry")).some((entry) => entry.textContent.includes("download-notes.txt"))`,
+                    ),
+                "the folder",
+            );
+            assert.equal(await downloadShows(), false, "a folder has no Download");
+        } finally {
+            await page.close();
+        }
+    },
+);
+
+test("Download and a modifier click call saveFile; reveal still goes first", real, async () => {
+    const page = await filePage(["saveFile"]);
+
+    try {
+        await page.evaluate(
+            `document.querySelector('.file-viewer [aria-label="Download"]').click()`,
+        );
+        assert.deepEqual(await page.evaluate<Json>("window.savedFiles"), [
+            {
+                url: `/api/c/${page.id}/download?path=${encodeURIComponent(page.path)}`,
+                name: "download-notes.txt",
+            },
+        ]);
+        assert.equal(
+            await page.evaluate<boolean>(
+                `import("/store.js").then(({ store }) => store.state.notices.some((notice) => notice.message === "Saved to /Downloads/notes.txt"))`,
+            ),
+            true,
+        );
+
+        await page.evaluate(
+            `import("/store.js").then(({ store }) => store.set({ server: { ...store.state.server, canReveal: false } }))`,
+        );
+        await page.evaluate(`(() => {
+            const md = document.createElement("div");
+            md.className = "md";
+            const code = document.createElement("code");
+            code.dataset.path = ${JSON.stringify(page.path + ":2-3")};
+            md.append(code);
+            document.body.append(md);
+            code.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true, metaKey: true }));
+            md.remove();
+        })()`);
+        assert.equal(await page.evaluate<number>("window.savedFiles.length"), 2);
+        assert.deepEqual(await page.evaluate<Json>("window.savedFiles[1]"), {
+            url: `/api/c/${page.id}/download?path=${encodeURIComponent(page.path)}`,
+            name: "download-notes.txt",
+        });
+
+        await page.evaluate(`import("/store.js").then(({ store, actions }) => {
+            actions.reveal = async (path) => { window.revealed = path; };
+            store.set({ server: { ...store.state.server, canReveal: true } });
+        })`);
+        await page.evaluate(`(() => {
+            const md = document.createElement("div");
+            md.className = "md";
+            const code = document.createElement("code");
+            code.dataset.path = ${JSON.stringify(page.path)};
+            md.append(code);
+            document.body.append(md);
+            code.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true, metaKey: true }));
+            md.remove();
+        })()`);
+        assert.equal(await page.evaluate<string>("window.revealed"), page.path);
+        assert.equal(
+            await page.evaluate<number>("window.savedFiles.length"),
+            2,
+            "reveal goes first",
+        );
+
+        await page.evaluate(
+            `window.saveFileResult = { ok: false, error: "Could not save notes" }; import("/ui.js").then(({ downloadFile }) => downloadFile(${JSON.stringify(page.path)}))`,
+        );
+        assert.equal(
+            await page.evaluate<boolean>(
+                `import("/store.js").then(({ store }) => store.state.notices.some((notice) => notice.level === "error" && notice.message === "Could not save notes"))`,
+            ),
+            true,
+        );
+    } finally {
+        await page.close();
+    }
+});
+
+test("without a working saveFile host, Download uses a browser download", real, async () => {
+    for (const capabilities of [[], ["saveFile"]]) {
+        const page = await filePage(capabilities);
+
+        try {
+            await page.evaluate(`(() => {
+                window.browserDownloads = [];
+                HTMLAnchorElement.prototype.click = function () {
+                    window.browserDownloads.push({ url: this.getAttribute("href"), name: this.download });
+                };
+                window.pocketHost.saveFile = () => undefined;
+            })()`);
+            await page.evaluate(
+                `import("/ui.js").then(({ downloadFile }) => downloadFile(${JSON.stringify(page.path + ":4")}))`,
+            );
+            assert.deepEqual(await page.evaluate<Json>("window.browserDownloads"), [
+                {
+                    url: `/api/c/${page.id}/download?path=${encodeURIComponent(page.path)}`,
+                    name: "download-notes.txt",
+                },
+            ]);
+        } finally {
+            await page.close();
+        }
+    }
+});
 
 test("without the newSession capability, the event opens nothing", real, async () => {
     const page = await openPage(["open"]);

@@ -4,8 +4,10 @@
  * one `RunnerLink`, which talks to its daemon as pi-env's own `Connection` does to a daemon it started; a session that
  * runs there gets a `RemoteExecutionEnv` on that link (`RunnerEnv`). The agent, models, keys, and history stay here.
  *
- * The link survives short drops (`src/runner/protocol.ts`): while a runner is away, requests and their answers wait, up
- * to the grace period. After it, or when the runner had to start a new daemon, what was in flight fails as lost.
+ * Offline is offline (`docs/runners.md`): while a computer is away, its daemon session is kept for as long as this server
+ * runs, and requests and their answers wait for it, however long that is. Nothing fails because a computer is offline.
+ * Only when its runner had to start a new daemon (it quit, or this server restarted) does what was in flight fail as
+ * lost: those processes are gone.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -21,7 +23,7 @@ import {
 import { type RawData, type WebSocket, WebSocketServer } from "ws";
 import {
     type ControlMessage,
-    DEFAULT_GRACE_MS,
+    LEGACY_GRACE_MS,
     FRAME,
     FrameSplitter,
     Inbox,
@@ -37,16 +39,20 @@ import {
     type Confirm,
     type Confirmed,
     type Hello,
+    readStreamData,
+    STREAM_DATA,
 } from "../runner/protocol.ts";
+import { LinkNetwork, NetError, type OpenOptions } from "./runner-network.ts";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import type { ConfigStore, StoredRunner } from "./config.ts";
 import { HttpError } from "./errors.ts";
 
 /**
  * The extensions a session on another computer runs with: exactly these, in order, and none other (no drop-ins). Each
- * works through the session's environment, which is that computer's, or on app state only. The others read or run
- * things on this server's disk (background tasks, the browser, artifacts, design, memory, PR watches), or start
- * conversations that do not yet keep the computer (subagents, teams): they come back as they learn to.
+ * works through the session's environment, which is that computer's, or on app state only. Subagents and linked
+ * sessions keep the computer, and codemode calls its tools without saving output on this server. The others read or
+ * run things on this server's disk (background tasks, artifacts, design): they come back as they learn
+ * to.
  */
 export const REMOTE_EXTENSIONS = [
     "coding-tools",
@@ -58,8 +64,15 @@ export const REMOTE_EXTENSIONS = [
     "pocket-ask-someone",
     "pocket-schedules",
     "pocket-tool-search",
+    "pocket-subagents",
+    "pocket-agent-teams",
+    "pocket-codemode",
     "pocket-goals",
     "pocket-plan",
+    "pocket-memory",
+    "pocket-triggers",
+    // Its pages load through the computer (`runner-network.ts`), and it opens no files of this server.
+    "pocket-browser",
 ] as const;
 
 /** How long a one-time link code works. */
@@ -97,13 +110,16 @@ export type RunnerView = {
     id: string;
     name: string;
     online: boolean;
-    /** Away, with its work kept for the grace period. */
+    /** The runner asks before starting a session. */
+    asks: boolean;
+    /** Offline, with its work waiting for it (its daemon session is kept until it is back). */
     away: boolean;
     lastSeen?: number;
     os?: string;
     arch?: string;
     home?: string;
     version?: string;
+    tools?: Hello["tools"];
 };
 
 function lost(message: string): RemoteError {
@@ -148,7 +164,8 @@ class LinkSession {
     readonly pending = new Map<number, Pending>();
     live = true;
     ready!: Promise<RemoteInfo>;
-    grace: NodeJS.Timeout | undefined;
+    /** Whether its daemon has said hello: `ready` is settled, so `info` answers without the computer. */
+    known = false;
     readonly number: number;
 
     constructor(number: number) {
@@ -171,8 +188,16 @@ export class RunnerLink {
     #closed = false;
     /** Whether its runner answers `confirm` (it said so in `hello`): older runners do not. */
     #asks = false;
+    /** Whether the runner understands `withdraw`. */
+    #withdraws = false;
     /** Questions sent to its runner, waiting for `confirmed`. */
     readonly #questions = new Map<string, (answer: Confirmed) => void>();
+    /** The network streams of the current connection, when its runner opens them (`hello.network`). */
+    #network: LinkNetwork | undefined;
+    /** The folder its runner keeps browser downloads in (`hello.downloads`); undefined: its temporary folder. */
+    downloads: string | undefined;
+    /** Who waits for the computer to be online with a daemon that said hello (`whenOnline`). */
+    readonly #waiting = new Set<{ resolve: () => void; reject: (error: Error) => void }>();
 
     constructor(id: string, runners: Runners) {
         this.id = id;
@@ -190,25 +215,117 @@ export class RunnerLink {
         return platform === undefined ? {} : { os: platform.os, arch: platform.arch };
     }
 
+    get asks(): boolean {
+        return this.#asks;
+    }
+
     get online(): boolean {
         return this.#socket !== undefined;
     }
 
-    /** Away: dropped, but its daemon session is kept until the grace period ends. */
+    /** Offline with work waiting: its daemon session is kept until it is back. */
     get away(): boolean {
         return this.#socket === undefined && this.#session?.live === true;
     }
 
+    /**
+     * Wait until the computer is online and its daemon said hello. A session's turn and each of its tool calls wait here
+     * (`app.ts`), so Pi does not start on a message, or a tool, while its computer is offline. Ends when `signal` aborts,
+     * and fails only when the computer was removed.
+     */
+    async whenOnline(signal?: AbortSignal): Promise<void> {
+        for (;;) {
+            if (this.#closed || this.#runners.stored(this.id) === undefined) {
+                throw lost(`${this.name} was removed from this server`);
+            }
+
+            signal?.throwIfAborted();
+
+            const session = this.#session;
+
+            if (this.#socket !== undefined && session !== undefined && session.live) {
+                try {
+                    await session.ready;
+
+                    return;
+                } catch {
+                    // That daemon failed its hello: wait for the next connection.
+                }
+            }
+
+            await new Promise<void>((resolve, reject) => {
+                const waiter = {
+                    resolve: () => {
+                        signal?.removeEventListener("abort", aborted);
+                        resolve();
+                    },
+                    reject: (error: Error) => {
+                        signal?.removeEventListener("abort", aborted);
+                        reject(error);
+                    },
+                };
+
+                const aborted = () => {
+                    this.#waiting.delete(waiter);
+                    reject(signal!.reason);
+                };
+
+                this.#waiting.add(waiter);
+                signal?.addEventListener("abort", aborted, { once: true });
+            });
+        }
+    }
+
+    /** Tell whoever waits for the computer (`whenOnline`) to look again. */
+    #wake(error?: Error): void {
+        const waiting = [...this.#waiting];
+
+        this.#waiting.clear();
+
+        for (const waiter of waiting) {
+            if (error === undefined) {
+                waiter.resolve();
+            } else {
+                waiter.reject(error);
+            }
+        }
+    }
+
+    /**
+     * What its daemon said in `hello`. Known after it first connected (also while it is offline since): then at once;
+     * else when it is first online. pi-env asks for it before most operations.
+     */
     async info(): Promise<RemoteInfo> {
-        return (await this.#ready()).ready;
+        const session = this.#session;
+
+        if (session?.live === true && session.known) {
+            return session.ready;
+        }
+
+        await this.whenOnline();
+
+        return this.#session!.ready;
+    }
+
+    /**
+     * `info`, for what a person waits on (a panel, the folder picker): a 409 that says the computer is offline, at once,
+     * rather than waiting for it.
+     */
+    async infoNow(): Promise<RemoteInfo> {
+        if (!this.online) {
+            throw new HttpError(
+                409,
+                `${this.name} is offline. It continues when its runner is back.`,
+            );
+        }
+
+        return this.info();
     }
 
     async session(): Promise<number> {
-        const session = await this.#ready();
+        await this.info();
 
-        await session.ready;
-
-        return session.number;
+        return this.#ready().number;
     }
 
     async request(
@@ -226,11 +343,9 @@ export class RunnerLink {
             return this.#answer(op, this.#send(current, op, json, options));
         }
 
-        const session = await this.#ready();
+        await this.info();
 
-        await session.ready;
-
-        return this.#answer(op, this.#send(session, op, json, options));
+        return this.#answer(op, this.#send(this.#ready(), op, json, options));
     }
 
     /** The daemon's answer as the env gets it: a folder's page without entries it could not read. */
@@ -255,6 +370,7 @@ export class RunnerLink {
             this.#end(this.#session, lost(`${this.name} was removed from this server`));
         }
 
+        this.#wake(lost(`${this.name} was removed from this server`));
         this.#drop(CLOSE.removed, "This computer was removed from the server");
     }
 
@@ -264,20 +380,15 @@ export class RunnerLink {
      */
     shutdown(): void {
         this.#closed = true;
-        clearTimeout(this.#session?.grace);
         this.#drop(1001, "The server is restarting");
     }
 
-    /** The live session, or an error saying why there is none. */
-    async #ready(): Promise<LinkSession> {
-        if (this.#closed || this.#runners.stored(this.id) === undefined) {
-            throw lost(`${this.name} was removed from this server`);
-        }
-
+    /** The live session, after `info` waited for one; lost when its runner started over meanwhile. */
+    #ready(): LinkSession {
         const session = this.#session;
 
         if (session === undefined || !session.live) {
-            throw lost(`${this.name} is offline. Start Pi Pocket's runner there, then try again.`);
+            throw lost(`${this.name} restarted, so the command it was running stopped`);
         }
 
         return session;
@@ -353,6 +464,16 @@ export class RunnerLink {
 
         this.#socket = socket;
         this.#asks = hello.asks === true;
+        this.#withdraws = hello.withdraws === true;
+        this.#runners.toolsSeen(this.id, hello.tools);
+        this.#network?.drop();
+        this.#network = hello.network === true ? this.#networkOf(socket) : undefined;
+        this.downloads =
+            typeof hello.downloads === "string" && hello.downloads !== ""
+                ? hello.downloads
+                : undefined;
+
+        const network = this.#network;
 
         const current = this.#session;
         const resent =
@@ -363,14 +484,12 @@ export class RunnerLink {
 
         if (current !== undefined && resent !== undefined) {
             session = current;
-            clearTimeout(session.grace);
-            session.grace = undefined;
             this.#control({
                 type: "welcome",
                 session: session.id,
                 resume: true,
                 received: session.inbox.received,
-                graceMs: this.#runners.graceMs,
+                graceMs: LEGACY_GRACE_MS,
             });
 
             for (const message of resent) {
@@ -393,7 +512,7 @@ export class RunnerLink {
                 session: session.id,
                 resume: false,
                 received: 0,
-                graceMs: this.#runners.graceMs,
+                graceMs: LEGACY_GRACE_MS,
             });
             session.ready = this.#send(session, "hello", { protocol: 1 }, {}).then((reply) => {
                 if (reply.json.protocol !== 1) {
@@ -404,15 +523,23 @@ export class RunnerLink {
 
                 const info = reply.json as unknown as RemoteInfo;
 
+                session.known = true;
                 this.#runners.seen(this.id, info, hello.version);
 
                 return info;
             });
-            session.ready.catch(() => {});
+            session.ready.then(
+                () => this.#wake(),
+                () => this.#wake(),
+            );
             this.#runners.log(`${this.name} connected (pi-env session ${session.number}).`);
         }
 
         this.#runners.changed();
+
+        if (session.known) {
+            this.#wake();
+        }
 
         let silent = Date.now();
         const pinger = setInterval(() => {
@@ -435,38 +562,43 @@ export class RunnerLink {
             }
 
             if (binary) {
-                this.#data(session, toBuffer(data));
+                const bytes = toBuffer(data);
+                const stream = bytes[0] === STREAM_DATA ? readStreamData(bytes) : undefined;
+
+                if (stream !== undefined && network !== undefined) {
+                    network.data(stream.id, stream.bytes);
+                } else if (bytes[0] === STREAM_DATA) {
+                    this.#drop(1002, "Stream data without network streams");
+                } else {
+                    this.#data(session, bytes);
+                }
             } else {
-                this.#onControl(session, parseControl(toBuffer(data).toString("utf8")));
+                const message = parseControl(toBuffer(data).toString("utf8"));
+
+                if (message?.type.startsWith("net-") === true && network !== undefined) {
+                    network.message(message as Parameters<LinkNetwork["message"]>[0]);
+                } else {
+                    this.#onControl(session, message);
+                }
             }
         });
         socket.on("close", () => {
             clearInterval(pinger);
+            network?.drop();
 
             if (this.#socket !== socket) {
                 return;
             }
 
             this.#socket = undefined;
+            this.#network = undefined;
             this.#runners.changed();
 
             if (!session.live || this.#session !== session) {
                 return;
             }
 
-            this.#runners.log(
-                `${this.name} dropped; its work is kept for ${Math.round(this.#runners.graceMs / 1000)} s.`,
-            );
-            session.grace = setTimeout(() => {
-                this.#end(
-                    session,
-                    lost(
-                        `${this.name} was disconnected too long, so the command it was running stopped`,
-                    ),
-                );
-                this.#runners.changed();
-            }, this.#runners.graceMs);
-            session.grace.unref();
+            this.#runners.log(`${this.name} went offline; its work waits until it is back.`);
         });
     }
 
@@ -582,7 +714,11 @@ export class RunnerLink {
      * settings say. Throws 403 with the computer's reason when it says no, and 409 when it is offline or does not
      * answer in time (the person was away). A runner older than asking is not asked.
      */
-    async confirm(question: Omit<Confirm, "type" | "id">): Promise<void> {
+    async confirm(question: Omit<Confirm, "type" | "id">, signal?: AbortSignal): Promise<void> {
+        if (signal?.aborted) {
+            throw new HttpError(409, "Cancelled.");
+        }
+
         if (this.#socket === undefined) {
             throw new HttpError(
                 409,
@@ -595,15 +731,42 @@ export class RunnerLink {
         }
 
         const id = randomUUID();
-        const answer = await new Promise<Confirmed | undefined>((resolve) => {
-            const timer = setTimeout(() => resolve(undefined), CONFIRM_MS);
+        let timer: NodeJS.Timeout | undefined;
+        let cancelled: (() => void) | undefined;
+        const answer = await new Promise<Confirmed | undefined>((resolve, reject) => {
+            timer = setTimeout(() => resolve(undefined), CONFIRM_MS);
 
-            this.#questions.set(id, (got) => {
-                clearTimeout(timer);
-                resolve(got);
+            cancelled = () => {
+                this.#questions.delete(id);
+
+                if (this.#withdraws) {
+                    this.#control({ type: "withdraw", id });
+                }
+
+                reject(new HttpError(409, "Cancelled."));
+            };
+
+            signal?.addEventListener("abort", cancelled, { once: true });
+            this.#questions.set(id, resolve);
+            // Older runners close the link for an unknown kind. They can still ask a generic session question.
+            this.#control({
+                type: "confirm",
+                id,
+                ...question,
+                ...(question.kind === "move" ? ({ kind: "new", move: true } as const) : {}),
             });
-            this.#control({ type: "confirm", id, ...question });
-        }).finally(() => this.#questions.delete(id));
+        }).finally(() => {
+            clearTimeout(timer);
+            this.#questions.delete(id);
+
+            if (cancelled !== undefined) {
+                signal?.removeEventListener("abort", cancelled);
+            }
+        });
+
+        if (signal?.aborted) {
+            throw new HttpError(409, "Cancelled.");
+        }
 
         if (answer === undefined) {
             throw new HttpError(
@@ -617,6 +780,53 @@ export class RunnerLink {
         }
     }
 
+    /**
+     * Open a TCP connection to `host`:`port` from the computer, and relay `socket` to it (`runner-network.ts`). Rejects
+     * with a `NetError` that names the computer when it is offline, its runner is too old, or it refused or failed.
+     */
+    openNetwork(host: string, port: number, socket: Duplex, options?: OpenOptions): Promise<void> {
+        if (this.#closed || this.#socket === undefined) {
+            return Promise.reject(
+                new NetError(
+                    "offline",
+                    `${this.name} is offline. Start Pi Pocket's runner there, then try again.`,
+                ),
+            );
+        }
+
+        if (this.#network === undefined) {
+            return Promise.reject(
+                new NetError(
+                    "unsupported",
+                    `${this.name} runs an older Pi Pocket runner, which cannot open pages for the browser: update its runner (npm install -g ${runnerPackage()}), then try again.`,
+                ),
+            );
+        }
+
+        return this.#network.open(host, port, socket, options);
+    }
+
+    /** Network streams over `socket`: their data waits behind pi-env's (`tunnels.ts`). */
+    #networkOf(socket: WebSocket): LinkNetwork {
+        return new LinkNetwork({
+            name: () => this.name,
+            send: (message, done) => {
+                if (this.#socket !== socket || socket.readyState !== socket.OPEN) {
+                    return false;
+                }
+
+                socket.send(message, done);
+
+                return true;
+            },
+            control: (message) => {
+                if (this.#socket === socket && socket.readyState === socket.OPEN) {
+                    socket.send(JSON.stringify(message));
+                }
+            },
+        });
+    }
+
     /** End a daemon session: what it was doing fails with `error`. */
     #end(session: LinkSession, error: Error): void {
         if (!session.live) {
@@ -624,7 +834,6 @@ export class RunnerLink {
         }
 
         session.live = false;
-        clearTimeout(session.grace);
 
         if (this.#session === session) {
             this.#session = undefined;
@@ -675,7 +884,6 @@ export class RunnerEnv extends RemoteExecutionEnv {
 
 /** The computers whose runners may connect, and their links. */
 export class Runners {
-    readonly graceMs: number;
     readonly #config: ConfigStore;
     readonly #log: (line: string) => void;
     readonly #onChange: () => void;
@@ -692,12 +900,10 @@ export class Runners {
         config: ConfigStore;
         log: (line: string) => void;
         onChange?: () => void;
-        graceMs?: number;
     }) {
         this.#config = options.config;
         this.#log = options.log;
         this.#onChange = options.onChange ?? (() => {});
-        this.graceMs = options.graceMs ?? DEFAULT_GRACE_MS;
     }
 
     log(line: string): void {
@@ -716,10 +922,33 @@ export class Runners {
     seen(id: string, info: RemoteInfo, version: string): void {
         this.#config.updateRunner(id, {
             lastSeen: Date.now(),
-            platform: { os: info.os, arch: info.arch, home: info.home, version },
+            platform: {
+                os: info.os,
+                arch: info.arch,
+                home: info.home,
+                version,
+                tmpdir: info.tmpdir,
+            },
         });
         // Its system shows in Runners from now: the list went out when it connected, before this was known.
         this.#onChange();
+    }
+
+    /**
+     * The system of computer `id` as it last said (`hello`), also while it is offline: its OS and temporary folder.
+     * Undefined before a runner that tells its temporary folder first connected.
+     */
+    system(id: string): { os: string; tmpdir: string } | undefined {
+        const platform = this.stored(id)?.platform;
+
+        return platform?.tmpdir === undefined
+            ? undefined
+            : { os: platform.os, tmpdir: platform.tmpdir };
+    }
+
+    /** Each hello refreshes readiness, including a resumed daemon session. */
+    toolsSeen(id: string, tools: Hello["tools"]): void {
+        this.#config.updateRunner(id, { tools });
     }
 
     /** The link to a computer, made when first asked for, also for a computer not (or no longer) here. */
@@ -771,9 +1000,11 @@ export class Runners {
         this.require(id);
 
         const info = await this.link(id)
-            .info()
+            .infoNow()
             .catch((error: unknown) => {
-                throw new HttpError(409, error instanceof Error ? error.message : String(error));
+                throw error instanceof HttpError
+                    ? error
+                    : new HttpError(409, error instanceof Error ? error.message : String(error));
             });
         const env = this.env(id, info.home);
         const trimmed = path.trim() === "" ? "~" : path.trim();
@@ -883,9 +1114,11 @@ export class Runners {
                 id: runner.id,
                 name: runner.name,
                 online: link?.online === true,
+                asks: link?.asks === true,
                 away: link?.away === true,
                 ...(runner.lastSeen === undefined ? {} : { lastSeen: runner.lastSeen }),
                 ...(runner.platform ?? {}),
+                ...(runner.tools === undefined ? {} : { tools: runner.tools }),
             };
         });
     }

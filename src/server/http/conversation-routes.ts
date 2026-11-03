@@ -10,9 +10,9 @@ import { outcome } from "../background.ts";
 import type { Attachment, SubmitRequest } from "../commands.ts";
 import { HttpError } from "../errors.ts";
 import type { CommandRequest } from "../extension-commands.ts";
+import { requireLocalBrowser } from "../local-browser.ts";
 import { prepareModelImage } from "../model-images.ts";
-import { reveal } from "../reveal.ts";
-import { serveImage, TYPES } from "./assets.ts";
+import { serveImage, serveRemoteImage, TYPES } from "./assets.ts";
 import { type ApiRequest, json, readJson, send } from "./io.ts";
 
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -354,11 +354,62 @@ export async function conversationRoutes(
     }
 
     if (third === "fork" && method === "POST") {
-        return json(response, 200, await app.commands.fork(id, user, await readJson(request)));
+        const controller = new AbortController();
+
+        response.on("close", () => {
+            if (!response.writableEnded) {
+                controller.abort();
+            }
+        });
+
+        return json(
+            response,
+            200,
+            await app.commands.fork(id, user, await readJson(request), controller.signal),
+        );
+    }
+
+    // What the copy sheet starts from: the folder it suggests on a computer (`runner`: a computer's id, empty: this
+    // server, absent: the session's own), or `cwd`, the one the person picked; whether a folder here is a git
+    // repository (for a worktree); and the session's own computer, folder, model, and thinking level.
+    if (third === "copy-place" && method === "GET") {
+        const source = app.sessionMeta(id)?.runner ?? null;
+        const asked = url.searchParams.get("runner");
+        const runner = asked === null ? source : asked || null;
+        const suggested = app.commands.copySuggestion(id, user, runner);
+        const picked = url.searchParams.get("cwd");
+        const place = picked ? { cwd: picked, reason: "picked" } : suggested;
+        const agent = await app.agentState(id);
+
+        return json(response, 200, {
+            ...place,
+            runner,
+            ...(runner === null ? { inRepository: app.workspace.inRepository(place.cwd) } : {}),
+            from: {
+                runner: source,
+                cwd: app.cwdOf(id),
+                ...(agent?.model === undefined ? {} : { model: agent.model }),
+                ...(agent?.thinkingLevel === undefined
+                    ? {}
+                    : { thinkingLevel: agent.thinkingLevel }),
+            },
+        });
     }
 
     if (third === "resend" && method === "POST") {
-        return json(response, 200, await app.commands.resend(id, user, await readJson(request)));
+        const controller = new AbortController();
+
+        response.on("close", () => {
+            if (!response.writableEnded) {
+                controller.abort();
+            }
+        });
+
+        return json(
+            response,
+            200,
+            await app.commands.resend(id, user, await readJson(request), controller.signal),
+        );
     }
 
     if (third === "compact" && method === "POST") {
@@ -394,12 +445,17 @@ export async function conversationRoutes(
         });
     }
 
-    // Show a path in the file manager of the machine the server runs on: the owner's, at that machine (`reveal.ts`).
+    // Show a path in a file manager: this machine's, or a session's other computer's (`Workspace.reveal`).
     if (third === "reveal" && method === "POST") {
         app.requireSee(user, id);
 
         if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner opens the server's file manager");
+            throw new HttpError(403, "Only the owner opens a file manager");
+        }
+
+        // This machine's file manager is for a browser on it; a session on another computer shows it there.
+        if (app.runnerOf(id) === undefined) {
+            requireLocalBrowser(request);
         }
 
         const body = await readJson<{ path?: unknown }>(request);
@@ -408,7 +464,7 @@ export async function conversationRoutes(
             throw new HttpError(400, "path is required");
         }
 
-        await reveal(app.workspace.conversationPath(id, body.path));
+        await app.workspace.reveal(user, id, body.path);
 
         return json(response, 200, { ok: true });
     }
@@ -420,7 +476,12 @@ export async function conversationRoutes(
             throw new HttpError(400, "path is required");
         }
 
-        return serveImage(request, response, app.workspace.conversationFile(user, id, requested));
+        // A session on another computer: its images are there, but for its uploads, kept here.
+        const { file, access } = await app.workspace.imageFile(user, id, requested);
+
+        return access === undefined
+            ? serveImage(request, response, file)
+            : serveRemoteImage(request, response, file, access);
     }
 
     // A file of the session's folder as a download (a design's export): whom the file viewer lets read it, as it is.

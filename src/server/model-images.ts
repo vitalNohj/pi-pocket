@@ -25,7 +25,12 @@ export function forModel(mime: string, size: number): boolean {
  * a conversation holds many, and then every request fails until they leave its context.
  */
 async function make(path: string, mimeType: string): Promise<ImageContent> {
-    const image = await resizeImage(await readFile(path), mimeType);
+    return modelImageOf(await readFile(path), mimeType);
+}
+
+/** An image for the model from its bytes: one read from another computer, which has no path on this server. */
+export async function modelImageOf(bytes: Uint8Array, mimeType: string): Promise<ImageContent> {
+    const image = await resizeImage(bytes, mimeType);
 
     if (image === null) {
         throw new Error("it could not be made small enough for the model");

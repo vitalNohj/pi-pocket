@@ -585,7 +585,7 @@ function sessionItems() {
             keys: number >= 0 && number < 9 ? `Alt ${number + 1}` : undefined,
             rank: session.archived ? -20 : -number * 0.01,
             run: () => navigate(session.id),
-            folder: folderColor(session.cwd),
+            folder: folderColor(session.cwd, session.runner),
             tone: session.waiting ? "waiting" : session.busy ? "working" : "quiet",
         };
     });

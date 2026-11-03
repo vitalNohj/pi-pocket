@@ -243,6 +243,8 @@ export const store = {
         sessions: [],
         /** This person's favorite folders, in shortcut order, sent by the server to every signed-in device. */
         folderFavorites: [],
+        /** Their favorite folders on each computer they linked, by the computer's id (`folder-favorites.ts`). */
+        runnerFavorites: {},
         /** False until the server's first session list arrives: an empty list until then means "not here yet". */
         sessionsLoaded: false,
         /** Sessions on their way into the archive (true) or out of it (false), by id, until the list catches up (`sessions.js`). */
@@ -1825,6 +1827,8 @@ const handlers = {
             me: kept(state.me, data.user),
             users: keptEach(state.users, data.users),
             folderFavorites: kept(state.folderFavorites, data.folderFavorites ?? []),
+            // An older server keeps none on other computers.
+            runnerFavorites: kept(state.runnerFavorites, data.runnerFavorites ?? {}),
             // Linked computers: the owner's; an older server sends none.
             runners: kept(state.runners, Array.isArray(data.runners) ? data.runners : []),
             models: kept(state.models, data.models),
@@ -1861,6 +1865,8 @@ const handlers = {
     },
     "folder-favorites": (folderFavorites) =>
         setChanged({ folderFavorites: kept(store.state.folderFavorites, folderFavorites) }),
+    "runner-favorites": (runnerFavorites) =>
+        setChanged({ runnerFavorites: kept(store.state.runnerFavorites, runnerFavorites) }),
     models: (models) => setChanged({ models: kept(store.state.models, models) }),
     // A theme folder came, went, or changed (`theme.js` loads its new version).
     themes: (themeList) => setChanged({ themeList: kept(store.state.themeList, themeList) }),
@@ -2642,12 +2648,32 @@ export const actions = {
     compact: (instructions) => api(`c/${current()}/compact`, { instructions }),
     reset: (note) => api(`c/${current()}/reset`, { note }),
     setInstructions: (text) => api(`c/${current()}/instructions`, { text }),
-    /** A new session with this one's history through `entryId`. */
-    fork: (entryId, { worktree = false } = {}) =>
-        api(`c/${current()}/fork`, { entryId, ...(worktree ? { worktree } : {}) }),
-    forkSession: (id) => api(`c/${id}/fork`, {}),
-    /** Send a message to Pi again in a fork that ends just before it: `{ text }` edits it, `{ model }` picks another model. */
-    resend: (entryId, change = {}) => api(`c/${current()}/resend`, { entryId, ...change }),
+    /**
+     * A new session with this one's history through `entryId`; `place`, where it runs and with which model
+     * (`commands.ts` `CopyPlaceRequest`), absent: as this one does.
+     */
+    fork: (entryId, { worktree = false, place } = {}, signal) =>
+        api(
+            `c/${current()}/fork`,
+            {
+                entryId,
+                ...(worktree ? { worktree } : {}),
+                ...(place ? { place } : {}),
+            },
+            { signal },
+        ),
+    /** A new session with all of session `id`'s history, run as `place` says. */
+    forkSession: (id, place, signal) => api(`c/${id}/fork`, place ? { place } : {}, { signal }),
+    /**
+     * Send a message to Pi again in a fork that ends just before it: `{ text }` edits it, `{ model }` picks another
+     * model, `{ place }` where it runs and with which model and thinking level.
+     */
+    resend: (entryId, { place, ...change } = {}, signal) =>
+        api(
+            `c/${current()}/resend`,
+            { entryId, ...change, ...(place ? { place } : {}) },
+            { signal },
+        ),
     setPlan: (on) => api(`c/${current()}/plan`, { on }),
     approvePlan: () => api(`c/${current()}/plan`, { approve: true }),
     prompts: () => api(`c/${current()}/prompts`),
@@ -2676,8 +2702,12 @@ export const actions = {
     approve: (id, allow, values) =>
         api(`approvals/${encodeURIComponent(id)}`, { allow, ...(values ? { values } : {}) }),
     /** `worktree`: the session works in a git worktree of its own, made from the folder. */
-    createSession: (cwd, { worktree = false, runner } = {}) =>
-        api("sessions", { cwd, ...(worktree ? { worktree } : {}), ...(runner ? { runner } : {}) }),
+    createSession: (cwd, { worktree = false, runner } = {}, signal) =>
+        api(
+            "sessions",
+            { cwd, ...(worktree ? { worktree } : {}), ...(runner ? { runner } : {}) },
+            { signal },
+        ),
     updateSession: (id, patch) => api(`sessions/${id}`, patch),
     upload: (file) => api(`c/${current()}/upload?name=${encodeURIComponent(file.name)}`, file),
     fullEntry: (entryId) => api(`c/${current()}/entry/${entryId}`),

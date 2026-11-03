@@ -65,6 +65,7 @@ import {
     ChatDoc,
     type ChatMessage,
     DecisionsDoc,
+    type FolderFavorites as FolderFavoritesValue,
     FolderFavoritesDoc,
     MemoryDoc,
     type SessionMeta,
@@ -89,6 +90,7 @@ import {
     type WebAccess,
 } from "./host.ts";
 import { type GuardStatus, LancetGuard } from "./lancet.ts";
+import { withReveal } from "./local-browser.ts";
 import { takeLock } from "./lock.ts";
 import { Memory } from "./memory.ts";
 import { isThinkingLevel, modelInfo, modelList, resolveModel, THINKING_LEVELS } from "./models.ts";
@@ -149,6 +151,14 @@ import { Transcripts } from "./transcripts.ts";
 import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { Runners } from "./runners.ts";
+import {
+    type FolderScan,
+    knownScan,
+    latestScan,
+    projectThere,
+    readRemoteText,
+    saveTrust,
+} from "./remote-context.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -452,6 +462,8 @@ export class PocketApp {
     readonly #rooms = new Map<ConversationId, Promise<Room>>();
     readonly #envs = new Map<string, NodeExecutionEnv>();
     readonly #busy = new Set<ConversationId>();
+    /** Copies of attached files on their way to a session's computer (`uploadsCopied`), by conversation. */
+    readonly #uploads = new Map<ConversationId, Promise<void>>();
     /** When each conversation's last run ended, since this server started: peek tiles show sessions done since a look. */
     readonly #endedAt = new Map<ConversationId, number>();
     /**
@@ -572,6 +584,24 @@ export class PocketApp {
             dataDir: options.dataDir,
             ...(options.browser === undefined ? {} : { executable: options.browser }),
             log: (line) => this.#log(line),
+            remote: {
+                runnerOf: (id) => this.runnerOf(id as unknown as ConversationId),
+                name: (runner) => this.runners.name(runner),
+                connect: (runner, host, port, socket, open) =>
+                    this.runners.link(runner).openNetwork(host, port, socket, open),
+                computer: async (runner) => {
+                    const link = this.runners.link(runner);
+                    const info = await link.info();
+
+                    return {
+                        name: this.runners.name(runner),
+                        env: this.runners.env(runner, info.home),
+                        tmpdir: info.tmpdir,
+                        separator: info.separator,
+                        ...(link.downloads === undefined ? {} : { folder: link.downloads }),
+                    };
+                },
+            },
             load: async (id) =>
                 (await this.harness.snapshot(
                     BrowserDoc,
@@ -891,6 +921,7 @@ export class PocketApp {
             },
             fetchPublic: createPublicFetch(),
             requesterOf: (conversationId) => this.attribution.requesterOf(conversationId),
+            runnerOf: (conversationId) => this.runnerOf(conversationId),
             roleOf: (personId) => this.config.userById(personId)?.role,
             on: (event, listener) => this.events.on(event, listener),
             ask: (request, askContext) => ask(this.approvals, request, askContext),
@@ -975,8 +1006,19 @@ export class PocketApp {
                 registry,
                 settings: this.#harnessSettings(),
                 now: this.now,
-                env: ({ conversationId, cwd }) =>
-                    this.#wrapped(conversationId, cwd ?? this.defaultCwd),
+                env: async ({ conversationId, cwd }, context) => {
+                    // Offline is offline (`docs/runners.md`): a turn or tool call of a session on another computer waits
+                    // here until that computer is back, rather than failing. Stop ends the wait.
+                    const runner = this.runnerOf(conversationId);
+
+                    if (runner !== undefined) {
+                        await this.runners.link(runner).whenOnline(context.abortSignal);
+                        // The files its messages brought are there before Pi looks for them.
+                        await this.#uploads.get(conversationId as ConversationId);
+                    }
+
+                    return this.#wrapped(conversationId, cwd ?? this.defaultCwd);
+                },
                 conversationCreated: async (tx, conversation) => {
                     // Every conversation gets the app's documents up front, so views can read them from the start.
                     await tx.doc(AuthorsDoc, conversation.id);
@@ -1337,9 +1379,7 @@ export class PocketApp {
                 );
             }
         } else if (kind === FolderFavoritesDoc.definition.kind) {
-            this.folderFavorites.committed(
-                change.value as { users: Record<string, string[]> } | null,
-            );
+            this.folderFavorites.committed(change.value as FolderFavoritesValue | null);
         } else if (kind === MemoryDoc.definition.kind) {
             this.memory.committed();
         } else if (ROOM_DOCS.has(kind) && id !== undefined) {
@@ -1514,8 +1554,24 @@ export class PocketApp {
 
     /**
      * A folder's environment, with what extensions add to each command and hide from its output in this session. A
-     * session on another computer gets that computer's, never this machine's: when it is offline, its tools fail.
+     * session on another computer gets that computer's, never this machine's: when it is offline, what uses it waits.
      */
+    /**
+     * Note that files a message brought are being copied to session `id`'s computer (`commands.ts`): its turns and
+     * tool calls wait for the copy (the Harness's `env`). Copies of one session run one after another.
+     */
+    uploadsCopied(id: ConversationId, copy: Promise<void>): void {
+        const before = this.#uploads.get(id) ?? Promise.resolve();
+        const after = before.then(() => copy).catch(() => {});
+
+        this.#uploads.set(id, after);
+        void after.then(() => {
+            if (this.#uploads.get(id) === after) {
+                this.#uploads.delete(id);
+            }
+        });
+    }
+
     #wrapped(id: ConversationId, cwd: string): ExecutionEnv {
         const runner = this.runnerOf(id);
         const base = runner === undefined ? this.#env(cwd) : this.runners.env(runner, cwd);
@@ -1523,7 +1579,10 @@ export class PocketApp {
         return wrapEnv(base, Number(id), cwd, this.commandEnvs, this.hidden);
     }
 
-    /** The computers list changed (linked, removed, online, away): tell the owner's tabs. */
+    /**
+     * The computers list changed (linked, removed, online, away): tell the owner's tabs, and when a computer came or went,
+     * everyone who sees its sessions (the session list's offline mark, a session's "offline, reconnecting…").
+     */
     #runnersChanged(): void {
         const list = this.runners.list();
 
@@ -1532,7 +1591,32 @@ export class PocketApp {
                 client.send("runners", list);
             }
         }
+
+        const online = new Set(list.filter((runner) => runner.online).map((runner) => runner.id));
+        const before = this.#runnersOnline;
+
+        this.#runnersOnline = online;
+
+        if (before.size === online.size && [...online].every((id) => before.has(id))) {
+            return;
+        }
+
+        this.#scheduleSessions();
+
+        for (const pending of this.#rooms.values()) {
+            void pending.then(
+                (room) => {
+                    if (this.runnerOf(room.id) !== undefined) {
+                        room.schedule();
+                    }
+                },
+                () => {},
+            );
+        }
     }
+
+    /** Which computers were online when the list last changed (`#runnersChanged`). */
+    #runnersOnline = new Set<string>();
 
     #env(cwd: string): NodeExecutionEnv {
         let env = this.#envs.get(cwd);
@@ -2600,6 +2684,8 @@ export class PocketApp {
             },
             // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
             folderFavorites: await this.folderFavorites.list(user),
+            // The same, on each computer they linked (`runners.ts`), by its id.
+            runnerFavorites: await this.folderFavorites.runners(user),
             // Linked computers (`runners.ts`), for the owner's Runners sheet and New session's Runs on.
             ...(user.role === "owner" ? { runners: this.runners.list() } : {}),
             // Every theme folder, for Appearance and for the look this tab uses (`theme.js`).
@@ -2624,7 +2710,11 @@ export class PocketApp {
 
     /** A tab's hello: what everyone gets, and the id of its own connection, which its peek lists name. */
     #helloFor(client: Client, hello: Awaited<ReturnType<PocketApp["hello"]>>) {
-        return { ...hello, connection: client.connection };
+        return withReveal(
+            { ...hello, connection: client.connection },
+            client.user,
+            client.local === true,
+        );
     }
 
     #scheduleSessions(): void {
@@ -2783,6 +2873,10 @@ export class PocketApp {
                     ...linkage,
                     busy,
                     waiting: waiting.has(id),
+                    // Its computer is offline: the list marks it, and its work waits for it.
+                    ...(meta.runner !== undefined && !this.runners.link(meta.runner).online
+                        ? { offline: true }
+                        : {}),
                     ...(limited.has(id) ? { limited: limited.get(id)! } : {}),
                     ...(endedAt === undefined ? {} : { endedAt }),
                     ...(failure === undefined ? {} : { failed: true, failure }),
@@ -2821,6 +2915,20 @@ export class PocketApp {
                 ? { other: true as const }
                 : {}),
         };
+    }
+
+    /**
+     * The folders of the newest sessions `user` sees on one computer (`runner`; undefined: this server), newest first,
+     * at most 8: the folder picker's Recent for that computer.
+     */
+    recentFolders(user: User, runner: string | undefined): string[] {
+        return [
+            ...new Set(
+                this.sessions(user)
+                    .filter((session) => session.runner === runner)
+                    .map((session) => session.cwd),
+            ),
+        ].slice(0, 8);
     }
 
     isBusy(id: ConversationId): boolean {
@@ -2909,6 +3017,8 @@ export class PocketApp {
                 : {
                       runner: this.runnerOf(room.id)!,
                       runnerName: this.runners.name(this.runnerOf(room.id)!),
+                      // Offline is offline: the view says so, and what is sent waits for it.
+                      runnerOnline: this.runners.link(this.runnerOf(room.id)!).online,
                   }),
         };
     }
@@ -3315,9 +3425,40 @@ export class PocketApp {
             throw new HttpError(403, "Only the owner decides which projects Pi trusts.");
         }
 
-        this.requireLocal(id, "Project trust");
+        const runner = this.runnerOf(id);
+
+        if (runner !== undefined) {
+            return projectThere(this.#knownFolder(id), runner, this.#remoteDirs()).trust;
+        }
 
         return readProjectTrust(this.cwdOf(id), this.#skillSources());
+    }
+
+    /** Where trust decisions and Pi's settings are, for a folder on another computer (`remote-context.ts`). */
+    #remoteDirs(): { dataDir: string; agentDir: string } {
+        return { dataDir: this.dataDir, agentDir: getAgentDir() };
+    }
+
+    /** The environment there of a session on another computer, unwrapped: what `remote-context.ts` reads through. */
+    #remoteEnv(id: ConversationId) {
+        return this.runners.env(this.runnerOf(id)!, this.cwdOf(id));
+    }
+
+    /**
+     * What is known of a session's folder on another computer, at once, for what answers without waiting (the trust
+     * routes): read again in the background when old. 409 before its first reading ends.
+     */
+    #knownFolder(id: ConversationId): FolderScan {
+        const scan = knownScan(this.#remoteEnv(id), this.cwdOf(id));
+
+        if (scan === undefined) {
+            throw new HttpError(
+                409,
+                `Pi Pocket is still reading this folder on ${this.runners.name(this.runnerOf(id)!)}. Try again in a moment.`,
+            );
+        }
+
+        return scan;
     }
 
     /** The owner's answer to "trust this project?", saved where Pi's CLI keeps its own, as its `/trust` does. */
@@ -3336,16 +3477,31 @@ export class PocketApp {
             throw new HttpError(400, "This folder has no folder above it.");
         }
 
-        saveProjectTrust(this.cwdOf(id), getAgentDir(), choice);
+        const runner = this.runnerOf(id);
+
+        if (runner === undefined) {
+            saveProjectTrust(this.cwdOf(id), getAgentDir(), choice);
+        } else {
+            // Kept here, by computer and path there: Pi's own store names this server's folders.
+            const { folder, paths } = this.#knownFolder(id);
+
+            saveTrust(this.dataDir, runner, folder, paths, choice);
+        }
 
         return this.projectTrust(id, user);
     }
 
-    /** Pi's skills in a conversation's folder, to run as `/skill:name`. */
+    /**
+     * Pi's skills in a conversation's folder, to run as `/skill:name`. For a session on another computer, those there, as
+     * last read (`remote-context.ts`): none before the first reading ends.
+     */
     skillCommands(id: ConversationId): SkillCommand[] {
-        // A session on another computer: its project's skills are there, and this server's would not fit it.
-        if (this.runnerOf(id) !== undefined) {
-            return [];
+        const runner = this.runnerOf(id);
+
+        if (runner !== undefined) {
+            const scan = knownScan(this.#remoteEnv(id), this.cwdOf(id));
+
+            return scan === undefined ? [] : this.#remoteSkills(scan, runner);
         }
 
         try {
@@ -3360,18 +3516,51 @@ export class PocketApp {
         }
     }
 
-    /** Pi's prompt templates, as a conversation in its folder offers them. */
-    promptTemplates(id: ConversationId): PromptTemplate[] {
-        if (this.runnerOf(id) !== undefined) {
-            return [];
+    #remoteSkills(scan: FolderScan, runner: string): SkillCommand[] {
+        return projectThere(scan, runner, this.#remoteDirs()).skills.map((skill) => ({
+            name: skill.name,
+            description: skill.description,
+            path: skill.filePath,
+            baseDir: skill.baseDir,
+        }));
+    }
+
+    /**
+     * `skillCommands` as they are now, and how to read a skill's file: for a session on another computer, its folder
+     * there read again when old (or as last read, when it cannot be reached), and the file read there.
+     */
+    async skillsToRun(
+        id: ConversationId,
+    ): Promise<{ skills: SkillCommand[]; read?: (path: string) => Promise<string> }> {
+        const runner = this.runnerOf(id);
+
+        if (runner === undefined) {
+            return { skills: this.skillCommands(id) };
         }
 
+        const env = this.#remoteEnv(id);
+        const scan = await latestScan(env, this.cwdOf(id));
+
+        return {
+            skills: scan === undefined ? [] : this.#remoteSkills(scan, runner),
+            read: (path) => readRemoteText(env, path),
+        };
+    }
+
+    /** Pi's prompt templates, as a conversation in its folder offers them. */
+    promptTemplates(id: ConversationId): PromptTemplate[] {
         let paths: string[] = [];
 
         try {
             paths = this.settings.getPromptTemplatePaths();
         } catch {
             // Unreadable settings: the default folders still count.
+        }
+
+        // A session on another computer: this server's own templates, in Pi's folder or where its settings say, with
+        // paths from Pi's folder. None of its project there: nothing here is read for its folder.
+        if (this.runnerOf(id) !== undefined) {
+            return loadPromptTemplates(getAgentDir(), getAgentDir(), paths, { project: false });
         }
 
         const cwd = this.cwdOf(id);

@@ -2,16 +2,42 @@
 // real WebSocket, the runner, and the real pi-env daemon, all on this machine. Pi Durable's own conformance suite checks
 // that it acts as `NodeExecutionEnv` does; the rest checks linking, keys, and what survives a drop.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { type AddressInfo, createServer as createNetServer } from "node:net";
+import { Duplex } from "node:stream";
+import { createInterface } from "node:readline";
+import { homedir, tmpdir } from "node:os";
+import { join, parse } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { Runner, RunnerStopped } from "../src/runner/runner.ts";
+import { checkTools, toolsStatus } from "../src/runner/tools.ts";
+import {
+    broadFolder,
+    coveredFolder,
+    folderContains,
+    realFolder,
+    sameFolder,
+} from "../src/runner/folders.ts";
+import WebSocket from "ws";
+import {
+    LINK_PATH,
+    LINK_PROTOCOL,
+    LINK_SUBPROTOCOL,
+    parseControl,
+} from "../src/runner/protocol.ts";
+import {
+    Runner,
+    type RunnerOptions,
+    type RunnerSettings,
+    type SessionQuestion,
+    RunnerStopped,
+} from "../src/runner/runner.ts";
 import { ConfigStore } from "../src/server/config.ts";
 import { readableEntries, Runners } from "../src/server/runners.ts";
 
@@ -25,10 +51,10 @@ type Setup = {
     lines: string[];
 };
 
-async function serve(graceMs = 60_000): Promise<Setup> {
+async function serve(): Promise<Setup> {
     const config = new ConfigStore(mkdtempSync(join(root, "data-")));
     const lines: string[] = [];
-    const runners = new Runners({ config, log: (line) => lines.push(line), graceMs });
+    const runners = new Runners({ config, log: (line) => lines.push(line) });
     const server = createServer((request, response) => {
         response.writeHead(404).end();
     });
@@ -50,20 +76,67 @@ function startRunner(
     setup: Setup,
     name: string,
     lines: string[] = [],
+    more: Partial<RunnerOptions> = {},
 ): { runner: Runner; id: string } {
     const { code } = setup.runners.makeCode(name, "owner");
     const linked = setup.runners.redeem(code);
-    const runner = new Runner({
+    const options: RunnerOptions = {
         link: { server: setup.address, ...linked },
         version: "test",
         cwd: root,
         log: (line) => lines.push(line),
         retryMs: [50, 100, 200],
-    });
+        ...more,
+    };
+    const runner = new Runner(options);
 
+    started.set(runner, options);
     runner.start();
 
     return { runner, id: linked.id };
+}
+
+/** The options each test runner started with, to start it again (`startRunnerFor`). */
+const started = new WeakMap<Runner, RunnerOptions>();
+
+/** A new runner linked as `before` was (the same link file): as when the app starts again. */
+function startRunnerFor(before: Runner): { runner: Runner } {
+    const runner = new Runner(started.get(before)!);
+
+    started.set(runner, started.get(before)!);
+    runner.start();
+
+    return { runner };
+}
+
+/** Two connected in-memory streams, as a socket and its peer. */
+function socketPair(): [Duplex, Duplex] {
+    let a: Duplex;
+    let b: Duplex;
+    const make = (peer: () => Duplex) =>
+        new Duplex({
+            write(chunk, _encoding, done) {
+                peer().push(chunk);
+                done();
+            },
+            final(done) {
+                peer().push(null);
+                done();
+            },
+            read() {},
+            destroy(error, done) {
+                if (!peer().destroyed) {
+                    peer().destroy();
+                }
+
+                done(error);
+            },
+        });
+
+    a = make(() => b);
+    b = make(() => a);
+
+    return [a, b];
 }
 
 async function until(check: () => boolean, what: string, ms = 10_000): Promise<void> {
@@ -149,8 +222,77 @@ async function exec(env: ExecutionEnv, command: string): Promise<string> {
     return output;
 }
 
+describe("runner tools", () => {
+    it("reports missing programs without crashing, and checks GitHub sign-in separately", async () => {
+        const folder = mkdtempSync(join(root, "tools-"));
+        const previous = process.env.PATH;
+
+        process.env.PATH = folder;
+
+        try {
+            assert.deepEqual(await checkTools(), { git: false, gh: false, github: false });
+            writeFileSync(join(folder, "git"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+            writeFileSync(join(folder, "gh"), '#!/bin/sh\n[ "$1" = "--version" ]\n', {
+                mode: 0o700,
+            });
+            assert.deepEqual(await checkTools(), { git: true, gh: true, github: false });
+            writeFileSync(join(folder, "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+            assert.deepEqual(await checkTools(), { git: true, gh: true, github: true });
+        } finally {
+            process.env.PATH = previous;
+        }
+    });
+
+    it("gives installation and sign-in commands for each system", () => {
+        const absent = { git: false, gh: false, github: false };
+
+        assert.match(toolsStatus(absent, "darwin"), /xcode-select --install.*brew install gh/);
+        assert.match(
+            toolsStatus(absent, "win32"),
+            /winget install Git.Git.*winget install GitHub.cli/,
+        );
+        assert.match(
+            toolsStatus(absent, "linux"),
+            /sudo apt install git.*https:\/\/github.com\/cli\/cli#installation/,
+        );
+        assert.match(
+            toolsStatus({ git: true, gh: true, github: false }, "linux"),
+            /git ✓.*gh auth login/,
+        );
+        assert.equal(
+            toolsStatus({ git: true, gh: true, github: true }, "linux"),
+            "git ✓ · GitHub ✓",
+        );
+    });
+
+    it("carries tools in Hello, exposes them in RunnerView, and refreshes them at reconnect", async () => {
+        const setup = await serve();
+        const { runner, id } = startRunner(setup, "Tools");
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+            const tools = await checkTools();
+
+            assert.deepEqual(setup.runners.list()[0]?.tools, tools);
+            assert.deepEqual(setup.config.runnerById(id)?.tools, tools);
+            setup.config.updateRunner(id, {
+                tools: { git: !tools.git, gh: !tools.gh, github: !tools.github },
+            });
+            runner.drop();
+            await until(
+                () => runner.connected && setup.runners.list()[0]?.tools?.git === tools.git,
+                "tools to refresh after reconnect",
+            );
+            assert.deepEqual(setup.runners.list()[0]?.tools, tools);
+        } finally {
+            await runner.stop();
+            await close(setup);
+        }
+    });
+});
+
 describe("runner link", () => {
-    it("a command keeps running across a short drop, and its output arrives", async () => {
+    it("a command keeps running across a drop, and its output arrives", async () => {
         const setup = await serve();
         const { runner, id } = startRunner(setup, "Laptop");
 
@@ -182,39 +324,73 @@ describe("runner link", () => {
         }
     });
 
-    it("after the grace period, work in flight fails as lost and a new session starts", async () => {
-        const setup = await serve(300);
+    it("offline is offline: a command keeps running however long the link is down, and finishes when it is back", async () => {
+        const setup = await serve();
         const { runner, id } = startRunner(setup, "Desktop");
 
         try {
             await until(() => runner.connected, "the runner to connect");
 
             const env = setup.runners.env(id, root);
-            const first = await env.exec("echo $$", {}, context);
+            const pending = exec(env, "echo start; sleep 2; echo end");
 
-            assert.ok(first.ok);
-
-            const pending = env.exec("sleep 30", {}, context);
-
-            await new Promise((resolve) => setTimeout(resolve, 200));
-            // The link stays down longer than the grace period: block the runner's reconnects for a while.
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            // The link stays down well past the command's end: the server refuses the runner's reconnects for a while.
             const listener = setup.server.listeners("upgrade")[0] as (...args: unknown[]) => void;
 
             setup.server.removeAllListeners("upgrade");
             setup.server.on("upgrade", (_request, socket) => socket.destroy());
             runner.drop();
+            await until(() => setup.runners.list()[0]!.away, "the computer to be offline");
+            await new Promise((resolve) => setTimeout(resolve, 3_000));
 
-            const result = await pending;
+            // Nothing failed meanwhile, and work asked for while it is offline waits too.
+            const later = exec(env, "echo later");
+            let settled = false;
 
-            assert.equal(result.ok, false);
-            assert.match(result.ok ? "" : result.error.message, /disconnected too long/);
+            void pending.finally(() => (settled = true));
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            assert.equal(settled, false);
+            assert.ok(setup.lines.some((line) => line.includes("went offline; its work waits")));
 
             setup.server.removeAllListeners("upgrade");
             setup.server.on("upgrade", listener);
-            await until(() => runner.connected, "the runner to start over");
-            assert.equal(await exec(env, "echo again"), "again\n");
+
+            assert.equal(await pending, "start\nend\n");
+            assert.equal(await later, "later\n");
         } finally {
             await runner.stop();
+            await close(setup);
+        }
+    });
+
+    it("when the runner started over, what was in flight fails as lost, and new work runs", async () => {
+        const setup = await serve();
+        const { runner, id } = startRunner(setup, "Desktop");
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+
+            const env = setup.runners.env(id, root);
+            const pending = env.exec("sleep 30", {}, context);
+
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            // The app quit: its runner and the commands it ran are gone. A new runner connects as the same computer.
+            await runner.stop();
+
+            const { runner: again } = startRunnerFor(runner);
+
+            try {
+                const result = await pending;
+
+                assert.equal(result.ok, false);
+                // Stopped on purpose (the app quit), it says so; one that crashed says it restarted.
+                assert.match(result.ok ? "" : result.error.message, /stopped|restarted/);
+                assert.equal(await exec(env, "echo again"), "again\n");
+            } finally {
+                await again.stop();
+            }
+        } finally {
             await close(setup);
         }
     });
@@ -305,7 +481,7 @@ describe("runner link", () => {
         assert.equal(readableEntries(clean), clean);
     });
 
-    it("a computer that is offline fails fast, and says so", async () => {
+    it("a computer that is offline: work waits for it, and an abort ends the wait", async () => {
         const setup = await serve();
 
         try {
@@ -315,10 +491,142 @@ describe("runner link", () => {
             await gone.stop();
             await until(() => !setup.runners.list()[0]!.online, "the computer to be offline");
 
-            const result = await setup.runners.env(id, root).exec("true", {}, context);
+            const link = setup.runners.link(id);
+            const controller = new AbortController();
+            const waiting = link.whenOnline(controller.signal);
 
-            assert.equal(result.ok, false);
-            assert.match(result.ok ? "" : result.error.message, /is offline/);
+            setTimeout(() => controller.abort(new Error("stopped")), 200);
+            await assert.rejects(waiting, /stopped/);
+            // What a person waits on says it at once.
+            await assert.rejects(link.infoNow(), /Away is offline/);
+
+            // Its system is still known, from when it was online.
+            assert.ok(setup.runners.system(id)?.tmpdir);
+
+            const ran = exec(setup.runners.env(id, root), "echo back");
+            const { runner: again } = startRunnerFor(gone);
+
+            try {
+                assert.equal(await ran, "back\n");
+            } finally {
+                await again.stop();
+            }
+        } finally {
+            await close(setup);
+        }
+    });
+
+    it("opens network connections on the computer, and resets them when the link drops", async () => {
+        const setup = await serve();
+        const echo = createNetServer((socket) => socket.pipe(socket));
+        const gone = createNetServer();
+
+        await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+        await new Promise<void>((resolve) => gone.listen(0, "127.0.0.1", resolve));
+        // A port nothing listens on any more.
+        const closedPort = (gone.address() as AddressInfo).port;
+
+        await new Promise((resolve) => gone.close(resolve));
+        const { runner, id } = startRunner(setup, "Net");
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+
+            const link = setup.runners.link(id);
+            const [near, far] = socketPair();
+            const opened = runner.opened;
+
+            await link.openNetwork("localhost", (echo.address() as AddressInfo).port, far, {
+                first: [Buffer.from("first ")],
+            });
+            assert.equal(runner.opened, opened + 1);
+
+            let echoed = "";
+
+            near.on("data", (chunk: Buffer) => (echoed += chunk.toString()));
+            // A megabyte each way: more than a credit window, so credit has to come back.
+            const big = "x".repeat(1024 * 1024);
+
+            near.write(big);
+            await until(() => echoed.length === 6 + big.length, "the echo");
+            assert.ok(echoed.startsWith("first x"));
+
+            // Nothing listens: the computer's error comes back.
+            await assert.rejects(
+                link.openNetwork("127.0.0.1", closedPort, socketPair()[1]),
+                (error: Error) => /refused/i.test(error.message),
+            );
+
+            const closed = new Promise((resolve) => near.once("close", resolve));
+
+            runner.drop();
+            await closed;
+            await until(() => runner.connected, "the runner to reconnect");
+            await runner.stop();
+            await until(() => !setup.runners.list()[0]!.online, "the computer to be offline");
+            await assert.rejects(
+                link.openNetwork("localhost", 80, socketPair()[1]),
+                /Net is offline/,
+            );
+        } finally {
+            await runner.stop();
+            echo.close();
+            await close(setup);
+        }
+    });
+
+    it("tells the server its downloads folder, once it is set", async () => {
+        const setup = await serve();
+        const settings: RunnerSettings = {};
+        const { runner, id } = startRunner(setup, "Folder", [], { settings: () => settings });
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+            assert.equal(setup.runners.link(id).downloads, undefined);
+
+            // A new setting reaches the server with the next hello.
+            settings.downloads = join(root, "My Downloads");
+            runner.drop();
+            await until(
+                () => setup.runners.link(id).downloads === join(root, "My Downloads"),
+                "the folder in the hello",
+            );
+        } finally {
+            await runner.stop();
+            await close(setup);
+        }
+    });
+
+    it("an older runner, without network streams, is told to update", async () => {
+        const setup = await serve();
+
+        try {
+            const { code } = setup.runners.makeCode("Old", "owner");
+            const linked = setup.runners.redeem(code);
+            const old = new WebSocket(
+                `${setup.address.replace("http", "ws")}${LINK_PATH}`,
+                LINK_SUBPROTOCOL,
+                {
+                    headers: { authorization: `Bearer ${linked.key}` },
+                },
+            );
+
+            await new Promise((resolve) => old.once("open", resolve));
+            old.send(
+                JSON.stringify({
+                    type: "hello",
+                    protocol: LINK_PROTOCOL,
+                    session: null,
+                    received: 0,
+                    version: "0.27.0",
+                }),
+            );
+            await until(() => setup.runners.list()[0]?.online === true, "the old runner to link");
+            await assert.rejects(
+                setup.runners.link(linked.id).openNetwork("localhost", 80, socketPair()[1]),
+                /Old runs an older Pi Pocket runner.*update its runner/,
+            );
+            old.terminate();
         } finally {
             await close(setup);
         }
@@ -373,6 +681,352 @@ describe("runner link", () => {
         } finally {
             await close(setup);
         }
+    });
+});
+
+describe("allowed folders", () => {
+    it("compares descendants, roots, and platform case without matching siblings", () => {
+        assert.equal(folderContains("/work/project", "/work/project/nested", "linux"), true);
+        assert.equal(folderContains("/work/project", "/work/project-two", "linux"), false);
+        assert.equal(folderContains("/Work", "/work/project", "linux"), false);
+        assert.equal(folderContains("/Work", "/work/project", "darwin"), true);
+        assert.equal(folderContains("C:\\Work", "c:\\work\\project", "win32"), true);
+        assert.equal(folderContains("C:\\Work", "c:\\work-two", "win32"), false);
+        assert.equal(folderContains("/", "/work", "linux"), true);
+        assert.equal(folderContains("C:\\", "C:\\work", "win32"), true);
+        assert.equal(folderContains("/work\\", "/work", "linux"), false);
+        assert.equal(broadFolder("/", "/home/person", "linux"), true);
+        assert.equal(broadFolder("/home", "/home/person", "linux"), true);
+        assert.equal(broadFolder("/home/person", "/home/person", "linux"), true);
+        assert.equal(broadFolder("/home/person/project", "/home/person", "linux"), false);
+        assert.equal(broadFolder("C:\\", "C:\\Users\\person", "win32"), true);
+        assert.equal(broadFolder("/USERS", "/Users/person", "darwin"), true);
+    });
+
+    it("uses real paths, skips deleted entries, and can remove an entry that no longer exists", async () => {
+        const folder = mkdtempSync(join(root, "real-"));
+        const alias = `${folder}-alias`;
+        const missing = join(folder, "missing");
+
+        symlinkSync(folder, alias, process.platform === "win32" ? "junction" : "dir");
+        assert.equal(await realFolder(alias), await realFolder(folder));
+        assert.equal(await coveredFolder(folder, [alias]), true);
+        assert.equal(await coveredFolder(missing, [missing]), false);
+        assert.equal(await realFolder(missing), missing);
+        assert.equal(await sameFolder(alias, folder), true);
+        assert.equal(await sameFolder(missing, missing), true);
+    });
+
+    it("allows descendants without asking, asks for siblings, and reads changed settings for each question", async () => {
+        const setup = await serve();
+        const parent = mkdtempSync(join(root, "allowed-"));
+        const child = join(parent, "child");
+        const sibling = `${parent}-sibling`;
+        const settings: RunnerSettings = { folders: [parent] };
+        const asked: SessionQuestion[] = [];
+        const lines: string[] = [];
+
+        mkdirSync(child);
+        mkdirSync(sibling);
+        const { runner, id } = startRunner(setup, "Folders", lines, {
+            settings: () => settings,
+            ask: async (question) => {
+                asked.push(question);
+
+                return { allow: false, reason: "Not this folder." };
+            },
+        });
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+            const link = setup.runners.link(id);
+
+            await link.confirm({ kind: "new", person: "Owner", folder: child });
+            assert.equal(asked.length, 0);
+            assert.ok(
+                lines.some((line) => line.includes(`Allowed: ${child} is in the allowed folders`)),
+            );
+            await assert.rejects(
+                link.confirm({ kind: "new", person: "Owner", folder: sibling }),
+                /Not this folder/,
+            );
+            assert.equal(asked.length, 1);
+            assert.equal(asked[0]!.broad, false);
+            settings.folders = [];
+            await assert.rejects(
+                link.confirm({ kind: "new", person: "Owner", folder: child }),
+                /Not this folder/,
+            );
+            assert.equal(asked.length, 2, "the removal takes effect without reconnecting");
+            settings.confirm = false;
+            await link.confirm({ kind: "new", person: "Owner", folder: sibling });
+            assert.equal(asked.length, 2);
+        } finally {
+            await runner.stop();
+            await close(setup);
+        }
+    });
+
+    it("saves Allow answers, including concurrent answers, but not broad folders or cancelled questions", async () => {
+        const setup = await serve();
+        const first = mkdtempSync(join(root, "first-"));
+        const second = mkdtempSync(join(root, "second-"));
+        const settings: RunnerSettings = {};
+        const asked: SessionQuestion[] = [];
+        let paused = false;
+        let late: ((answer: { allow: boolean }) => void) | undefined;
+        const { runner, id } = startRunner(setup, "Saving", [], {
+            settings: () => settings,
+            saveSettings: (change) => {
+                Object.assign(settings, change);
+            },
+            ask: async (question) => {
+                asked.push(question);
+
+                return paused
+                    ? new Promise((resolve) => {
+                          late = resolve;
+                      })
+                    : { allow: true };
+            },
+        });
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+            const link = setup.runners.link(id);
+
+            await Promise.all(
+                [first, second].map((folder) =>
+                    link.confirm({ kind: "new", person: "Owner", folder }),
+                ),
+            );
+            assert.deepEqual([...(settings.folders ?? [])].sort(), [first, second].sort());
+            await link.confirm({ kind: "fork", person: "Owner", folder: first });
+            assert.equal(asked.length, 2, "a covered folder does not ask or duplicate the entry");
+
+            for (const folder of [homedir(), parse(homedir()).root]) {
+                await link.confirm({ kind: "new", person: "Owner", folder });
+                assert.equal(asked.at(-1)!.broad, true);
+            }
+
+            assert.equal(settings.folders!.length, 2, "broad Allow saves nothing");
+            settings.folders = [];
+            paused = true;
+            const controller = new AbortController();
+            const pending = link.confirm(
+                { kind: "move", person: "Owner", folder: first },
+                controller.signal,
+            );
+            const rejected = assert.rejects(pending, /Cancelled/);
+
+            await until(() => late !== undefined, "the move question");
+            assert.equal(asked.at(-1)!.kind, "move");
+            controller.abort();
+            await rejected;
+            await until(() => asked.at(-1)!.signal.aborted, "the question to be withdrawn");
+            late!({ allow: true });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            assert.deepEqual(settings.folders, []);
+        } finally {
+            await runner.stop();
+            await close(setup);
+        }
+    });
+
+    it("parses kind move and asks older runners with a compatible new-session message", async () => {
+        const setup = await serve();
+        const { code } = setup.runners.makeCode("Old", "owner");
+        const linked = setup.runners.redeem(code);
+        const old = new WebSocket(
+            `${setup.address.replace("http", "ws")}${LINK_PATH}`,
+            LINK_SUBPROTOCOL,
+            {
+                headers: { authorization: `Bearer ${linked.key}` },
+            },
+        );
+        const question = {
+            type: "confirm",
+            id: "question",
+            kind: "move",
+            person: "Owner",
+            folder: root,
+        };
+
+        assert.deepEqual(parseControl(JSON.stringify(question)), question);
+        old.on("message", (data, binary) => {
+            if (binary) {
+                return;
+            }
+
+            const message = JSON.parse(data.toString());
+
+            if (message.type === "confirm") {
+                // The older parser accepts only new and fork. Extra fields are ignored.
+                assert.equal(message.kind, "new");
+                assert.equal(message.move, true);
+                old.send(JSON.stringify({ type: "confirmed", id: message.id, allow: true }));
+            }
+        });
+
+        try {
+            await new Promise((resolve) => old.once("open", resolve));
+            old.send(
+                JSON.stringify({
+                    type: "hello",
+                    protocol: LINK_PROTOCOL,
+                    session: null,
+                    received: 0,
+                    version: "0.27.0",
+                }),
+            );
+            await until(() => setup.runners.list()[0]?.online === true, "the old runner to link");
+            await setup.runners
+                .link(linked.id)
+                .confirm({ kind: "move", person: "Owner", folder: root });
+        } finally {
+            old.terminate();
+            await close(setup);
+        }
+    });
+
+    it("the terminal runner saves stdio Allow before ending a question, and sees CLI removals without restarting", async () => {
+        const setup = await serve();
+        const folder = mkdtempSync(join(root, "stdio-"));
+        const file = join(folder, "link.json");
+        const childFolder = join(folder, "child");
+        const { code } = setup.runners.makeCode("Terminal", "owner");
+        const linked = setup.runners.redeem(code);
+        const launcher = fileURLToPath(new URL("../bin/pi-pocket.js", import.meta.url));
+
+        mkdirSync(childFolder);
+        writeFileSync(file, JSON.stringify({ server: setup.address, ...linked }));
+        const proc = spawn(
+            process.execPath,
+            [launcher, "runner", "start", "--confirm-via", "stdio", "--config", file],
+            {
+                cwd: root,
+                stdio: ["pipe", "pipe", "pipe"],
+            },
+        );
+        const stopped = new Promise<void>((resolve) => proc.once("close", () => resolve()));
+        const questions: {
+            id: number;
+            kind: SessionQuestion["kind"];
+            broad: boolean;
+            folder: string;
+            person: string;
+        }[] = [];
+        const savedAtEnd: string[][] = [];
+        let errors = "";
+
+        proc.stderr.on("data", (chunk: Buffer) => {
+            errors += chunk.toString();
+        });
+        createInterface({ input: proc.stdout }).on("line", (line) => {
+            if (line.startsWith("PI-POCKET-CONFIRM ")) {
+                questions.push(JSON.parse(line.slice("PI-POCKET-CONFIRM ".length)));
+            } else if (line.startsWith("PI-POCKET-CONFIRM-END ")) {
+                savedAtEnd.push(JSON.parse(readFileSync(file, "utf8")).settings?.folders ?? []);
+            }
+        });
+        const answer = (allow: boolean) =>
+            proc.stdin.write(`${JSON.stringify({ id: questions.at(-1)!.id, allow })}\n`);
+
+        try {
+            await until(
+                () => setup.runners.list()[0]?.online === true,
+                `the CLI runner to connect (${errors})`,
+            );
+            const link = setup.runners.link(linked.id);
+            const move = link.confirm({ kind: "move", person: "Owner", folder });
+
+            await until(() => questions.length === 1, "the move question on stdout");
+            assert.partialDeepStrictEqual(questions[0], {
+                kind: "move",
+                broad: false,
+                folder: await realFolder(folder),
+                person: "Owner",
+            });
+            answer(true);
+            await move;
+            await until(() => savedAtEnd.length === 1, "the question end after saving");
+            assert.deepEqual(savedAtEnd[0], [await realFolder(folder)]);
+            await link.confirm({ kind: "new", person: "Owner", folder: childFolder });
+            assert.equal(questions.length, 1, "a descendant starts without a stdio question");
+            await promisify(execFile)(process.execPath, [
+                launcher,
+                "runner",
+                "folders",
+                "remove",
+                folder,
+                "--config",
+                file,
+            ]);
+            const denied = assert.rejects(
+                link.confirm({ kind: "new", person: "Owner", folder: childFolder }),
+                /denied/,
+            );
+
+            await until(() => questions.length === 2, "the new question after removal");
+            answer(false);
+            await denied;
+            const broad = link.confirm({
+                kind: "new",
+                person: "Owner",
+                folder: parse(homedir()).root,
+            });
+
+            await until(() => questions.length === 3, "the broad question");
+            assert.equal(questions[2]!.broad, true);
+            answer(true);
+            await broad;
+            assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).settings.folders, []);
+        } finally {
+            proc.kill("SIGTERM");
+            await stopped;
+            await close(setup);
+        }
+    });
+
+    it("lists and removes folders through the CLI with an explicit config, without touching running sessions", async () => {
+        const folder = mkdtempSync(join(root, "cli-"));
+        const file = join(folder, "link.json");
+        const allowed = join(folder, "allowed ");
+        const run = (args: string[]) =>
+            promisify(execFile)(process.execPath, [
+                fileURLToPath(new URL("../bin/pi-pocket.js", import.meta.url)),
+                "runner",
+                ...args,
+                "--config",
+                file,
+            ]);
+
+        mkdirSync(allowed);
+        writeFileSync(
+            file,
+            JSON.stringify({
+                server: "https://example.com",
+                id: "id",
+                name: "Computer",
+                key: "secret",
+                settings: { confirm: true, folders: [allowed] },
+            }),
+        );
+        assert.deepEqual(JSON.parse((await run(["folders", "--json"])).stdout), [allowed]);
+        assert.equal((await run(["folders"])).stdout, `${allowed}\n`);
+        await run(["folders", "remove", allowed]);
+        assert.deepEqual(JSON.parse((await run(["folders", "--json"])).stdout), []);
+        assert.equal((await run(["folders"])).stdout.trim(), "No allowed folders yet.");
+        assert.equal(JSON.parse(readFileSync(file, "utf8")).settings.confirm, true);
+        await assert.rejects(
+            run(["folders", "remove", allowed]),
+            (error: Error & { code?: number }) =>
+                error.code === 1 && error.message.includes("No allowed folder matches"),
+        );
+        await assert.rejects(
+            run(["service"]),
+            (error: Error & { code?: number }) => error.code === 1,
+        );
     });
 });
 

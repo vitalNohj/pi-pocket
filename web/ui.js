@@ -8,6 +8,7 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState } from "preact
 import { shortPath } from "./folder-paths.js";
 import { useDragToClose } from "./gestures.js";
 import { highlight, langOf } from "./highlight.js";
+import { callHost, hostCan } from "./host.js";
 import { actions, filesShown, notify, openSheet, store } from "./store.js";
 
 export const html = htm.bind(h);
@@ -673,23 +674,76 @@ export function openFile(path) {
 }
 
 /**
- * Whether a click or key asks to show a path in the file manager rather than the viewer: Ctrl (⌘ on a Mac) held, by the
- * owner, whose machine the server runs on.
+ * Whether this browser is offered "Show in the file manager" for the open session: the owner's, and for a session on
+ * this server, only in a browser on its machine with a desktop (`canReveal`, `local-browser.ts`); a session on another
+ * computer shows it there.
  */
-export const revealAsked = (event) =>
-    (APPLE ? event.metaKey : event.ctrlKey) && store.state.me?.role === "owner";
+export const revealOffered = () =>
+    store.state.me?.role === "owner" &&
+    (Boolean(store.state.view.conversation?.runner) || store.state.server?.canReveal === true);
 
-/** Show a file (or folder) of the session in the file manager of the machine the server runs on, selected. */
+/**
+ * Whether a click or key asks to show a path in the file manager rather than the viewer: Ctrl (⌘ on a Mac) held, where
+ * it is offered (`revealOffered`). Elsewhere it opens the viewer, as a plain click does.
+ */
+export const revealAsked = (event) => (APPLE ? event.metaKey : event.ctrlKey) && revealOffered();
+
+/**
+ * Show a file (or folder) of the session in a file manager, selected: on the machine the server runs on, or for a
+ * session on another computer, on that computer.
+ */
 export function revealFile(path) {
     const match = /^(.*?):(\d+)(?:-\d+)?$/.exec(path);
+    const computer = store.state.view.conversation?.runnerName;
 
     actions.reveal(match ? match[1] : path).then(
-        () => notify("info", "Shown in the file manager on the server's machine."),
+        () =>
+            notify(
+                "info",
+                computer
+                    ? `Shown in the file manager on ${computer}.`
+                    : "Shown in the file manager on the server's machine.",
+            ),
         (error) => notify("error", error.message ?? String(error)),
     );
 }
 
-/** File paths in rendered markdown open in the viewer, or with Ctrl (⌘) held, in the file manager. */
+/** Save a file of the server session to this computer, through the desktop app or a browser download. */
+export async function downloadFile(path) {
+    const match = /^(.*?):(\d+)(?:-\d+)?$/.exec(path);
+    const target = match ? match[1] : path;
+    const url = `/api/c/${currentConversation()}/download?path=${encodeURIComponent(target)}`;
+    const name = target.split(/[\\/]/).pop() || "download";
+
+    if (hostCan("saveFile")) {
+        try {
+            const result = await callHost("saveFile", { url, name });
+
+            if (result !== undefined) {
+                notify(
+                    result.ok ? "info" : "error",
+                    result.ok ? "Saved to " + result.path : result.error,
+                );
+
+                return;
+            }
+        } catch (error) {
+            notify("error", error.message ?? String(error));
+
+            return;
+        }
+    }
+
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+}
+
+/** File paths open in the viewer; Ctrl (⌘) can reveal them, or save a server file in the desktop app. */
 document.addEventListener("click", (event) => {
     const target = event.target.closest?.(".md code[data-path], .md a[data-path]");
 
@@ -701,6 +755,18 @@ document.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         revealFile(target.dataset.path);
+
+        return;
+    }
+
+    if (
+        (APPLE ? event.metaKey : event.ctrlKey) &&
+        !store.state.view.conversation?.runner &&
+        hostCan("saveFile")
+    ) {
+        event.preventDefault();
+        event.stopPropagation();
+        void downloadFile(target.dataset.path);
 
         return;
     }
@@ -1058,6 +1124,8 @@ const ICONS = {
     globe: "M12 21a9 9 0 100-18 9 9 0 000 18zM3.5 9h17M3.5 15h17M12 3a14 14 0 010 18M12 3a14 14 0 000 18",
     reload: "M20 12a8 8 0 11-2.3-5.7M20 4v5h-5",
     copy: "M9 9h10a1 1 0 011 1v10a1 1 0 01-1 1H9a1 1 0 01-1-1V10a1 1 0 011-1zM5 15H4a1 1 0 01-1-1V4a1 1 0 011-1h10a1 1 0 011 1v1",
+    // An arrow down into a tray: save to this device.
+    download: "M12 4v11M7 10l5 5 5-5M5 20h14",
     undo: "M9 14L4 9l5-5M4 9h11a5 5 0 010 10h-4",
     phone: "M8 3h8a1 1 0 011 1v16a1 1 0 01-1 1H8a1 1 0 01-1-1V4a1 1 0 011-1zM11 18h2",
     tablet: "M5 4h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5a1 1 0 011-1zM11 17h2",
