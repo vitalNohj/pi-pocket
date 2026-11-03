@@ -571,7 +571,12 @@ const agentRows = new Map();
 
 function agentsOf(session, peek, peeks) {
     const list = peek?.agents ?? [];
-    const from = [peek, session.cwd, ...list.map((agent) => peeks?.[agent.conversationId])];
+    const from = [
+        peek,
+        session.cwd,
+        session.runner,
+        ...list.map((agent) => peeks?.[agent.conversationId]),
+    ];
     const kept = agentRows.get(session.id);
 
     if (
@@ -594,7 +599,8 @@ function agentsOf(session, peek, peeks) {
             return {
                 ...agent,
                 peek: peeks?.[agent.conversationId],
-                folder: folderColor(session.cwd),
+                folder: folderColor(session.cwd, session.runner),
+                runner: session.runner,
                 ...(approval === undefined
                     ? {}
                     : {
@@ -629,6 +635,7 @@ function AgentRows({ agents, compact }) {
                     key=${agent.conversationId}
                     agent=${agent}
                     folder=${agent.folder}
+                    runner=${agent.runner}
                     onActivate=${() => navigate(agent.conversationId)}
                 />`,
         )}
@@ -730,8 +737,8 @@ class PeekTile extends Component {
             <button class="peek-head" title=${`Open ${title}`} onClick=${open}>
                 <span class="peek-name">
                     <span
-                        class=${`state-mark ${SHAPES[status]}`}
-                        style=${`--folder:${folderColor(session.cwd)}`}
+                        class=${`state-mark ${session.runner ? "remote " : ""}${SHAPES[status]}`}
+                        style=${`--folder:${folderColor(session.cwd, session.runner)}`}
                         aria-hidden="true"
                     ></span>
                     <span class="peek-title">${title}</span>
