@@ -12,6 +12,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { Runner, RunnerStopped } from "../src/runner/runner.ts";
+import { checkTools, toolsStatus } from "../src/runner/tools.ts";
 import { ConfigStore } from "../src/server/config.ts";
 import { readableEntries, Runners } from "../src/server/runners.ts";
 
@@ -148,6 +149,75 @@ async function exec(env: ExecutionEnv, command: string): Promise<string> {
 
     return output;
 }
+
+describe("runner tools", () => {
+    it("reports missing programs without crashing, and checks GitHub sign-in separately", async () => {
+        const folder = mkdtempSync(join(root, "tools-"));
+        const previous = process.env.PATH;
+
+        process.env.PATH = folder;
+
+        try {
+            assert.deepEqual(await checkTools(), { git: false, gh: false, github: false });
+            writeFileSync(join(folder, "git"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+            writeFileSync(join(folder, "gh"), '#!/bin/sh\n[ "$1" = "--version" ]\n', {
+                mode: 0o700,
+            });
+            assert.deepEqual(await checkTools(), { git: true, gh: true, github: false });
+            writeFileSync(join(folder, "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+            assert.deepEqual(await checkTools(), { git: true, gh: true, github: true });
+        } finally {
+            process.env.PATH = previous;
+        }
+    });
+
+    it("gives installation and sign-in commands for each system", () => {
+        const absent = { git: false, gh: false, github: false };
+
+        assert.match(toolsStatus(absent, "darwin"), /xcode-select --install.*brew install gh/);
+        assert.match(
+            toolsStatus(absent, "win32"),
+            /winget install Git.Git.*winget install GitHub.cli/,
+        );
+        assert.match(
+            toolsStatus(absent, "linux"),
+            /sudo apt install git.*https:\/\/github.com\/cli\/cli#installation/,
+        );
+        assert.match(
+            toolsStatus({ git: true, gh: true, github: false }, "linux"),
+            /git ✓.*gh auth login/,
+        );
+        assert.equal(
+            toolsStatus({ git: true, gh: true, github: true }, "linux"),
+            "git ✓ · GitHub ✓",
+        );
+    });
+
+    it("carries tools in Hello, exposes them in RunnerView, and refreshes them at reconnect", async () => {
+        const setup = await serve();
+        const { runner, id } = startRunner(setup, "Tools");
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+            const tools = await checkTools();
+
+            assert.deepEqual(setup.runners.list()[0]?.tools, tools);
+            assert.deepEqual(setup.config.runnerById(id)?.tools, tools);
+            setup.config.updateRunner(id, {
+                tools: { git: !tools.git, gh: !tools.gh, github: !tools.github },
+            });
+            runner.drop();
+            await until(
+                () => runner.connected && setup.runners.list()[0]?.tools?.git === tools.git,
+                "tools to refresh after reconnect",
+            );
+            assert.deepEqual(setup.runners.list()[0]?.tools, tools);
+        } finally {
+            await runner.stop();
+            await close(setup);
+        }
+    });
+});
 
 describe("runner link", () => {
     it("a command keeps running across a short drop, and its output arrives", async () => {

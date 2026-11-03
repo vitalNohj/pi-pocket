@@ -46,8 +46,8 @@ import { HttpError } from "./errors.ts";
  * The extensions a session on another computer runs with: exactly these, in order, and none other (no drop-ins). Each
  * works through the session's environment, which is that computer's, or on app state only. Subagents and linked
  * sessions keep the computer, and codemode calls its tools without saving output on this server. The others read or
- * run things on this server's disk (background tasks, the browser, artifacts, design, memory, PR watches): they come
- * back as they learn to.
+ * run things on this server's disk (background tasks, the browser, artifacts, design): they come back as they learn
+ * to.
  */
 export const REMOTE_EXTENSIONS = [
     "coding-tools",
@@ -64,6 +64,8 @@ export const REMOTE_EXTENSIONS = [
     "pocket-codemode",
     "pocket-goals",
     "pocket-plan",
+    "pocket-memory",
+    "pocket-triggers",
 ] as const;
 
 /** How long a one-time link code works. */
@@ -110,6 +112,7 @@ export type RunnerView = {
     arch?: string;
     home?: string;
     version?: string;
+    tools?: Hello["tools"];
 };
 
 function lost(message: string): RemoteError {
@@ -366,6 +369,7 @@ export class RunnerLink {
         this.#socket = socket;
         this.#asks = hello.asks === true;
         this.#withdraws = hello.withdraws === true;
+        this.#runners.toolsSeen(this.id, hello.tools);
 
         const current = this.#session;
         const resent =
@@ -760,6 +764,11 @@ export class Runners {
         this.#onChange();
     }
 
+    /** Each hello refreshes readiness, including a resumed daemon session. */
+    toolsSeen(id: string, tools: Hello["tools"]): void {
+        this.#config.updateRunner(id, { tools });
+    }
+
     /** The link to a computer, made when first asked for, also for a computer not (or no longer) here. */
     link(id: string): RunnerLink {
         let link = this.#links.get(id);
@@ -925,6 +934,7 @@ export class Runners {
                 away: link?.away === true,
                 ...(runner.lastSeen === undefined ? {} : { lastSeen: runner.lastSeen }),
                 ...(runner.platform ?? {}),
+                ...(runner.tools === undefined ? {} : { tools: runner.tools }),
             };
         });
     }
