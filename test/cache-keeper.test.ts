@@ -506,7 +506,8 @@ test("keep warm: after the run ends it refreshes until the time limit", async ()
     assert.equal(r.timers.length, 1);
     assert.equal(r.timers[0]?.at, start + 270_000 * (75 / 90), "75% of a 5 minute cache");
 
-    for (let i = 0; i < 100 && r.timers.length > 0; i++) {
+    // Until it stops: the request then stays parked until its cache expires, in case the limit grows.
+    for (let i = 0; i < 100 && r.keeper.idleStatus(3).warm; i++) {
         await r.advance();
     }
 
@@ -670,6 +671,112 @@ test("keep warm: a request kept while Off goes when its cache expires, or a new 
     policy = POLICY;
     r.keeper.reconsider();
     assert.equal(r.keeper.idleStatus(3).warm, false, "a new run replaced it");
+});
+
+test("keep warm: off and on again keeps the stretch's counts, time limit, and failures", async () => {
+    let policy: IdlePolicy | undefined = { ...POLICY, hours: 1000, maxRefreshes: 3 };
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    await r.advance();
+    await r.advance();
+    assert.equal(r.keeper.status().warms, 2);
+    const since = r.keeper.idleStatus(3);
+
+    policy = undefined;
+    r.keeper.reconsider();
+    policy = { ...POLICY, hours: 1000, maxRefreshes: 3 };
+    r.keeper.reconsider();
+    const again = r.keeper.idleStatus(3);
+
+    assert.equal(again.warm && again.refreshes, 2, "the 2 refreshes still count");
+    assert.equal(again.warm && again.spent, since.warm && since.spent);
+    await r.advance();
+    assert.equal(r.keeper.status().warms, 3);
+    await r.advance();
+    assert.equal(r.keeper.status().warms, 3, "no 4th refresh");
+    const capped = r.keeper.idleStatus(3);
+
+    assert.equal(
+        !capped.warm && capped.stopped,
+        "the refresh cap was reached",
+        "the cap of 3 holds",
+    );
+});
+
+test("keep warm: a run that ends during a tool wait while Off can be turned on", async () => {
+    let policy: IdlePolicy | undefined;
+    const r = rig(false, { policy: () => policy });
+
+    await r.send("s", "toolUse");
+    await new Promise((x) => setImmediate(x));
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(r.keeper.status().warming, 0, "nothing warms while Off");
+
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
+});
+
+test("keep warm: turned off while a refresh is on its way, it can still be turned on", async () => {
+    let policy: IdlePolicy | undefined = POLICY;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    const release = r.holdNext(true);
+    const next = r.timers.sort((a, b) => a.at - b.at)[0]!;
+
+    r.timers.splice(r.timers.indexOf(next), 1);
+    r.setNow(next.at);
+    next.fn();
+    await new Promise((x) => setImmediate(x));
+    policy = undefined;
+    r.keeper.reconsider();
+    release();
+    await new Promise((x) => setTimeout(x, 5));
+
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
+});
+
+test("keep warm: a time limit that stopped it gives way to a longer time while the cache lives", async () => {
+    let policy: IdlePolicy = { ...POLICY, hours: 1000, maxRefreshes: 1 };
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    await r.advance();
+    await r.advance();
+    const stopped = r.keeper.idleStatus(3);
+
+    assert.equal(!stopped.warm && stopped.stopped, "the refresh cap was reached");
+
+    policy = { ...POLICY, hours: 1000, maxRefreshes: 5 };
+    r.keeper.reconsider();
+    const again = r.keeper.idleStatus(3);
+
+    assert.equal(again.warm, true, "a higher cap picks it up");
+    assert.equal(!again.warm || again.refreshes, 1);
+});
+
+test("keep warm: a refresh that finds the session Off parks it, and shows no stop", async () => {
+    let policy: IdlePolicy | undefined = POLICY;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    // Turned off without a reconsider (the commit is still on its way): the refresh's own check finds it.
+    policy = undefined;
+    await r.advance();
+    const off = r.keeper.idleStatus(3);
+
+    assert.equal(off.warm, false);
+    assert.equal(!off.warm && off.stopped, undefined);
+    assert.equal(r.calls.length, 1, "nothing was sent");
+
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
 });
 
 test("keep warm: a 1 hour cache is kept warm when idle, though a tool wait never warms it", async () => {
@@ -971,7 +1078,12 @@ test("keep warm: a refresh is not sent once its session is turned off", async ()
     assert.equal(r.keeper.status().warms, 0);
     const status = r.keeper.idleStatus(3);
 
-    assert.equal(!status.warm && status.stopped, "turned off");
+    // Off is a choice: no stop is shown, and turning it on again picks the request up.
+    assert.equal(status.warm, false);
+    assert.equal(!status.warm && status.stopped, undefined);
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
 });
 
 test("keep warm: a tool-wait refresh renews the cache's age for keep warm", async () => {
