@@ -12,7 +12,6 @@ import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { Runner, RunnerStopped } from "../src/runner/runner.ts";
 import { checkTools, toolsStatus } from "../src/runner/tools.ts";
 import WebSocket from "ws";
 import { LINK_PATH, LINK_PROTOCOL, LINK_SUBPROTOCOL } from "../src/runner/protocol.ts";
