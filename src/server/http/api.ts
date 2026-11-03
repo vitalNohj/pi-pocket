@@ -622,6 +622,14 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "sessions" && second === undefined && method === "POST") {
+            const controller = new AbortController();
+
+            response.on("close", () => {
+                if (!response.writableEnded) {
+                    controller.abort();
+                }
+            });
+
             const body = await readJson<{
                 cwd?: string;
                 title?: string;
@@ -629,7 +637,13 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 runner?: unknown;
             }>(request);
 
-            return json(response, 200, await app.commands.createSession(user, body));
+            return json(
+                response,
+                200,
+                await app.commands.createSession(user, body, {
+                    signal: controller.signal,
+                }),
+            );
         }
 
         if (first === "sessions" && second !== undefined && method === "POST") {

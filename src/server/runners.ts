@@ -97,6 +97,8 @@ export type RunnerView = {
     id: string;
     name: string;
     online: boolean;
+    /** The runner asks before starting a session. */
+    asks: boolean;
     /** Away, with its work kept for the grace period. */
     away: boolean;
     lastSeen?: number;
@@ -171,6 +173,8 @@ export class RunnerLink {
     #closed = false;
     /** Whether its runner answers `confirm` (it said so in `hello`): older runners do not. */
     #asks = false;
+    /** Whether the runner understands `withdraw`. */
+    #withdraws = false;
     /** Questions sent to its runner, waiting for `confirmed`. */
     readonly #questions = new Map<string, (answer: Confirmed) => void>();
 
@@ -188,6 +192,10 @@ export class RunnerLink {
         const platform = this.#runners.stored(this.id)?.platform;
 
         return platform === undefined ? {} : { os: platform.os, arch: platform.arch };
+    }
+
+    get asks(): boolean {
+        return this.#asks;
     }
 
     get online(): boolean {
@@ -353,6 +361,7 @@ export class RunnerLink {
 
         this.#socket = socket;
         this.#asks = hello.asks === true;
+        this.#withdraws = hello.withdraws === true;
 
         const current = this.#session;
         const resent =
@@ -582,7 +591,11 @@ export class RunnerLink {
      * settings say. Throws 403 with the computer's reason when it says no, and 409 when it is offline or does not
      * answer in time (the person was away). A runner older than asking is not asked.
      */
-    async confirm(question: Omit<Confirm, "type" | "id">): Promise<void> {
+    async confirm(question: Omit<Confirm, "type" | "id">, signal?: AbortSignal): Promise<void> {
+        if (signal?.aborted) {
+            throw new HttpError(409, "Cancelled.");
+        }
+
         if (this.#socket === undefined) {
             throw new HttpError(
                 409,
@@ -595,15 +608,36 @@ export class RunnerLink {
         }
 
         const id = randomUUID();
-        const answer = await new Promise<Confirmed | undefined>((resolve) => {
-            const timer = setTimeout(() => resolve(undefined), CONFIRM_MS);
+        let timer: NodeJS.Timeout | undefined;
+        let cancelled: (() => void) | undefined;
+        const answer = await new Promise<Confirmed | undefined>((resolve, reject) => {
+            timer = setTimeout(() => resolve(undefined), CONFIRM_MS);
 
-            this.#questions.set(id, (got) => {
-                clearTimeout(timer);
-                resolve(got);
-            });
+            cancelled = () => {
+                this.#questions.delete(id);
+
+                if (this.#withdraws) {
+                    this.#control({ type: "withdraw", id });
+                }
+
+                reject(new HttpError(409, "Cancelled."));
+            };
+
+            signal?.addEventListener("abort", cancelled, { once: true });
+            this.#questions.set(id, resolve);
             this.#control({ type: "confirm", id, ...question });
-        }).finally(() => this.#questions.delete(id));
+        }).finally(() => {
+            clearTimeout(timer);
+            this.#questions.delete(id);
+
+            if (cancelled !== undefined) {
+                signal?.removeEventListener("abort", cancelled);
+            }
+        });
+
+        if (signal?.aborted) {
+            throw new HttpError(409, "Cancelled.");
+        }
 
         if (answer === undefined) {
             throw new HttpError(
@@ -883,6 +917,7 @@ export class Runners {
                 id: runner.id,
                 name: runner.name,
                 online: link?.online === true,
+                asks: link?.asks === true,
                 away: link?.away === true,
                 ...(runner.lastSeen === undefined ? {} : { lastSeen: runner.lastSeen }),
                 ...(runner.platform ?? {}),

@@ -442,6 +442,45 @@ describe("a copy with a place", () => {
         assert.equal(count(), before, "no copy was made, here or there");
     });
 
+    it("withdraws reply forks and resends without making their copies", async () => {
+        const { id, reply, prompt } = await talked();
+
+        for (const kind of ["fork", "resend"] as const) {
+            const before = app.sessions(owner(app)).length;
+            const controller = new AbortController();
+            let late!: (answer: SessionAnswer) => void;
+
+            asked.length = 0;
+            answer = () =>
+                new Promise((resolve) => {
+                    late = resolve;
+                });
+
+            try {
+                const request = {
+                    entryId: kind === "fork" ? reply : prompt,
+                    place: { runner: laptop.id },
+                };
+                const result =
+                    kind === "fork"
+                        ? app.commands.fork(id, owner(app), request, controller.signal)
+                        : app.commands.resend(id, owner(app), request, controller.signal);
+                const rejected = assert.rejects(result, { status: 409, message: "Cancelled." });
+
+                await until(() => asked.length === 1, "the copy question");
+                controller.abort();
+                await rejected;
+                await until(() => asked[0]!.signal.aborted, "the copy question to be withdrawn");
+                late({ allow: true });
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                assert.equal(app.sessions(owner(app)).length, before, "no cancelled copy was made");
+            } finally {
+                controller.abort();
+                answer = () => Promise.resolve({ allow: true });
+            }
+        }
+    });
+
     it("sends a message again on another computer with another model", async () => {
         const { id, prompt } = await talked();
         const copy = await app.commands.resend(id, owner(app), {

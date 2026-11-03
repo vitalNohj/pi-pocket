@@ -297,6 +297,61 @@ describe("a session on another computer", () => {
         }
     });
 
+    it("cancels new sessions and whole-session forks, even when their person allows them late", async () => {
+        for (const kind of ["new", "fork"] as const) {
+            const before = app.sessions(owner(app)).length;
+            const controller = new AbortController();
+            let late!: (answer: SessionAnswer) => void;
+
+            asked.length = 0;
+            answer = () =>
+                new Promise((resolve) => {
+                    late = resolve;
+                });
+
+            try {
+                const result =
+                    kind === "new"
+                        ? app.commands.createSession(
+                              owner(app),
+                              { cwd: there, runner: runnerId },
+                              { signal: controller.signal },
+                          )
+                        : app.commands.fork(id as never, owner(app), {}, controller.signal);
+                const rejected = assert.rejects(result, { status: 409, message: "Cancelled." });
+
+                await until(() => asked.length === 1, "the session question");
+                controller.abort();
+                await rejected;
+                await until(() => asked[0]!.signal.aborted, "the runner question to be withdrawn");
+                assert.equal(asked[0]!.signal.reason, "Withdrawn by the server.");
+                late({ allow: true });
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                assert.equal(
+                    app.sessions(owner(app)).length,
+                    before,
+                    "no cancelled session was made",
+                );
+            } finally {
+                controller.abort();
+                answer = () => Promise.resolve({ allow: true });
+            }
+        }
+    });
+
+    it("still starts a session when its person allows it immediately", async () => {
+        asked.length = 0;
+        const before = app.sessions(owner(app)).length;
+        const created = await app.commands.createSession(owner(app), {
+            cwd: there,
+            runner: runnerId,
+        });
+
+        assert.equal(asked.length, 1);
+        assert.equal(app.runnerOf(created.id), runnerId);
+        assert.equal(app.sessions(owner(app)).length, before + 1);
+    });
+
     it("starts sessions without asking when its person turned asking off", async () => {
         asked.length = 0;
         answer = () => Promise.reject(new Error("must not be asked"));

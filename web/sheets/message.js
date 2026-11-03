@@ -160,8 +160,9 @@ function ReplySheet({ entry, canBranch }) {
 
         setBusy(true);
         startCopy(
-            () => actions.fork(entry.id, { place: placeOf(draft) }),
+            (signal) => actions.fork(entry.id, { place: placeOf(draft) }, signal),
             "Opened the fork. The original is unchanged.",
+            draft,
         ).finally(() => setBusy(false));
     }, [canBranch, busy, draft, entry.id]);
 
@@ -225,12 +226,17 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
 
         setBusy(true);
         startCopy(
-            () =>
-                actions.resend(entry.id, {
-                    ...(edited ? { text: written } : {}),
-                    place: placeOf(draft),
-                }),
+            (signal) =>
+                actions.resend(
+                    entry.id,
+                    {
+                        ...(edited ? { text: written } : {}),
+                        place: placeOf(draft),
+                    },
+                    signal,
+                ),
             "Opened the new session. The original is unchanged.",
+            draft,
         ).finally(() => setBusy(false));
     }, [again, busy, draft, edited, written, entry.id, filesAlone]);
 

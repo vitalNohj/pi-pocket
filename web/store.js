@@ -2241,20 +2241,28 @@ export const actions = {
      * A new session with this one's history through `entryId`; `place`, where it runs and with which model
      * (`commands.ts` `CopyPlaceRequest`), absent: as this one does.
      */
-    fork: (entryId, { worktree = false, place } = {}) =>
-        api(`c/${current()}/fork`, {
-            entryId,
-            ...(worktree ? { worktree } : {}),
-            ...(place ? { place } : {}),
-        }),
+    fork: (entryId, { worktree = false, place } = {}, signal) =>
+        api(
+            `c/${current()}/fork`,
+            {
+                entryId,
+                ...(worktree ? { worktree } : {}),
+                ...(place ? { place } : {}),
+            },
+            { signal },
+        ),
     /** A new session with all of session `id`'s history, run as `place` says. */
-    forkSession: (id, place) => api(`c/${id}/fork`, place ? { place } : {}),
+    forkSession: (id, place, signal) => api(`c/${id}/fork`, place ? { place } : {}, { signal }),
     /**
      * Send a message to Pi again in a fork that ends just before it: `{ text }` edits it, `{ model }` picks another
      * model, `{ place }` where it runs and with which model and thinking level.
      */
-    resend: (entryId, { place, ...change } = {}) =>
-        api(`c/${current()}/resend`, { entryId, ...change, ...(place ? { place } : {}) }),
+    resend: (entryId, { place, ...change } = {}, signal) =>
+        api(
+            `c/${current()}/resend`,
+            { entryId, ...change, ...(place ? { place } : {}) },
+            { signal },
+        ),
     setPlan: (on) => api(`c/${current()}/plan`, { on }),
     approvePlan: () => api(`c/${current()}/plan`, { approve: true }),
     prompts: () => api(`c/${current()}/prompts`),
@@ -2283,8 +2291,12 @@ export const actions = {
     approve: (id, allow, values) =>
         api(`approvals/${encodeURIComponent(id)}`, { allow, ...(values ? { values } : {}) }),
     /** `worktree`: the session works in a git worktree of its own, made from the folder. */
-    createSession: (cwd, { worktree = false, runner } = {}) =>
-        api("sessions", { cwd, ...(worktree ? { worktree } : {}), ...(runner ? { runner } : {}) }),
+    createSession: (cwd, { worktree = false, runner } = {}, signal) =>
+        api(
+            "sessions",
+            { cwd, ...(worktree ? { worktree } : {}), ...(runner ? { runner } : {}) },
+            { signal },
+        ),
     updateSession: (id, patch) => api(`sessions/${id}`, patch),
     upload: (file) => api(`c/${current()}/upload?name=${encodeURIComponent(file.name)}`, file),
     fullEntry: (entryId) => api(`c/${current()}/entry/${entryId}`),
