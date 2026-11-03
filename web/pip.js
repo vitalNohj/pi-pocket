@@ -5,7 +5,7 @@
 // events), so the session behind it stays as it was.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { followUpText } from "./artifact-bridge.js";
-import { goBack, useBack } from "./back.js";
+import { backRoute, routeState, useBack } from "./back.js";
 import { boxKey, keyBox } from "./box-keys.js";
 import { useDragToClose } from "./gestures.js";
 import { createPipDraft } from "./pip-attachments.js";
@@ -172,12 +172,11 @@ export const pipBoard = (state = store.state) =>
 export const pipShown = (state = store.state) => state.pipOpen || pipBoard(state);
 
 /**
- * PiP's conversation was opened as a board from this tab, over the route before it: closing it goes back there. Any
- * other way there (a link, a reload, the address) has no route of the app's under it, so closing it goes home.
+ * What PiP's board keeps on its route's history entry: the route it was opened over, `{ id }` with a session's id or
+ * null for home. On the entry, it holds through back and forward and a reload; reached another way (the address), the
+ * entry has none, and closing PiP goes home.
  */
-let boardOver = false;
-/** The route PiP's board was opened over: a session's id, or null for the home screen. */
-let boardFrom = null;
+const BOARD_FROM = "pipFrom";
 /** The place the open panel is in, so a change of the setting moves it. */
 let place = pipPlace();
 
@@ -194,9 +193,7 @@ store.subscribe((state) => {
 
     const board = pipBoard(state);
 
-    if (!inPip(state)) {
-        boardOver = false;
-    } else if (board && state.pip?.endedAt !== undefined) {
+    if (board && state.pip?.endedAt !== undefined) {
         // Its conversation in view counts as seen, as the panel does.
         markSeen();
     }
@@ -206,12 +203,14 @@ store.subscribe((state) => {
     if (now !== place) {
         place = now;
 
-        // Moved after this change has reached every listener: a change made from inside one would reach the
-        // listeners after it out of order.
+        // Moved after this change has reached every listener (a change made from inside one would reach the listeners
+        // after it out of order), and only if the setting and PiP's place are still what they were by then.
         if (now === "board" && state.pipOpen) {
             queueMicrotask(() => {
-                closePip();
-                openBoard(undefined, true);
+                if (pipPlace() === "board" && store.state.pipOpen) {
+                    closePip();
+                    openBoard(undefined, true);
+                }
             });
 
             return;
@@ -219,8 +218,10 @@ store.subscribe((state) => {
 
         if (now === "floating" && board) {
             queueMicrotask(() => {
-                closePip();
-                openPip();
+                if (pipPlace() === "floating" && pipBoard()) {
+                    closePip();
+                    openPip();
+                }
             });
 
             return;
@@ -267,44 +268,76 @@ export function pipUnread(state = store.state) {
     );
 }
 
-/** PiP's conversation's id; asked of the server (which makes PiP the first time) when this tab does not know it yet. */
-async function pipConversation() {
-    if (store.state.pip?.id !== undefined) {
-        return store.state.pip.id;
+/** How long PiP's board waits for the tab to know who it is and to connect, as a page opens from a notification. */
+const CONNECT_MS = 15_000;
+
+/** Resolves once the tab knows its person and has a connection to the server, or after `CONNECT_MS` anyway. */
+function connected() {
+    const ready = (state) => state.me?.id !== undefined && Boolean(state.streamId);
+
+    if (ready(store.state)) {
+        return Promise.resolve();
     }
 
-    const pip = await tellServer(true);
+    return new Promise((resolve) => {
+        const done = () => {
+            clearTimeout(timer);
+            stop();
+            resolve();
+        };
 
-    // Asked only for the id: no panel shows, so the server sends no view of it.
-    if (!store.state.pipOpen) {
-        tellServer(false);
-    }
-
-    return pip?.id;
+        const stop = store.subscribe((state) => ready(state) && done());
+        const timer = setTimeout(done, CONNECT_MS);
+    });
 }
+
+/**
+ * PiP's conversation's id, for the person signed in now; asked of the server (which makes PiP the first time) when this
+ * tab does not know it yet. Undefined when there is none, or the person changed meanwhile.
+ */
+async function pipConversation() {
+    await connected();
+    const account = store.state.me?.id;
+    let id = store.state.pip?.id;
+
+    if (id === undefined) {
+        id = (await tellServer(true))?.id;
+
+        // Asked only for the id: no panel shows, so the server sends no view of it.
+        if (!store.state.pipOpen) {
+            tellServer(false);
+        }
+    }
+
+    return account !== undefined && account === store.state.me?.id ? id : undefined;
+}
+
+/** What is in the session's place now, to see whether the person went somewhere else while PiP's id came. */
+const placeNow = () => {
+    const { conversationId, board, page } = store.state;
+
+    return `${conversationId}:${board}:${page?.module}:${page?.id}`;
+};
 
 /**
  * Open PiP's conversation in the session's place, as a session opens; with `text`, put it in its message box. What is
  * over that place goes, as for Running now, but with `keepSheet` the sheet that moved it there (Appearance) stays.
  */
 async function openBoard(text, keepSheet = false) {
-    const account = store.state.me?.id;
+    const before = placeNow();
     const id = await pipConversation();
 
-    if (id === undefined || account !== store.state.me?.id || !pipAvailable()) {
+    // Nothing to open, or the person went elsewhere (or chose Floating) while the id came: they are not taken back.
+    if (id === undefined || !pipAvailable() || pipPlace() !== "board" || placeNow() !== before) {
         return;
     }
 
-    // Opened from here: closing it goes back to the route under it. Set after `navigate`, whose own changes say that
-    // the route is not PiP's yet.
-    const over = boardOver || store.state.conversationId !== id;
-    const from = store.state.conversationId === id ? boardFrom : store.state.conversationId;
-
     // Also when its conversation is under Running now, or an extension's page: they give the place back. A sheet kept
-    // stays over the new route.
-    navigate(id, keepSheet ? { sheet: store.state.sheet } : {});
-    boardOver = over;
-    boardFrom = from;
+    // stays over the new route. Its new entry keeps the route it was opened over, for closing it.
+    navigate(id, {
+        ...(keepSheet ? { sheet: store.state.sheet } : {}),
+        state: { [BOARD_FROM]: { id: store.state.conversationId } },
+    });
     store.set({
         launcher: false,
         drawer: false,
@@ -312,21 +345,20 @@ async function openBoard(text, keepSheet = false) {
         ...(keepSheet ? {} : { sheet: null }),
     });
 
+    // Into PiP's own box only, once its conversation shows.
     if (text) {
-        insertIntoComposer(text);
+        insertIntoComposer(text, [], { conversationId: id });
     }
 }
 
-/** Open PiP where Appearance says; with `text`, put it in PiP's message box. */
+/** Open PiP where Appearance says; with `text`, put it in PiP's message box. Resolves once it is open as a board. */
 export function openPip(text) {
     if (!pipAvailable()) {
-        return;
+        return Promise.resolve();
     }
 
     if (pipPlace() === "board") {
-        openBoard(text);
-
-        return;
+        return openBoard(text);
     }
 
     if (text) {
@@ -336,12 +368,14 @@ export function openPip(text) {
     if (store.state.pipOpen) {
         focusComposer();
 
-        return;
+        return Promise.resolve();
     }
 
     sessionStorage.setItem(OPEN_KEY, "1");
     // The subscriber above tells the server, from inside this `set`: once, not twice.
     store.set({ pipOpen: true, launcher: false, drawer: false });
+
+    return Promise.resolve();
 }
 
 /** Close PiP in either place: its conversation in the session's place gives way to what was there before. */
@@ -349,20 +383,15 @@ export function closePip() {
     const open = store.state.pipOpen;
 
     if (pipBoard()) {
-        // Its own history entry, pushed as it opened: back from it is the route under it. (`canGoBack` cannot say so: a
-        // first page's entry has no count of its own.)
+        const from = routeState(BOARD_FROM);
         const { sheet } = store.state;
-        const to = boardOver ? boardFrom : null;
-        const back = boardOver && !sheet;
 
-        boardOver = false;
-
-        // With a sheet open (Appearance, moving PiP), back would close the sheet: the route under it comes back, and
-        // the sheet stays over it.
-        if (back) {
-            goBack();
+        // Back to the route it was opened over, past whatever is open over it. A sheet still open (Appearance, moving
+        // PiP to the corner) stays, over that route; and reached another way, it gives the place to the home screen.
+        if (from !== undefined && !sheet) {
+            backRoute();
         } else {
-            navigate(to, { sheet });
+            navigate(from?.id ?? null, { sheet });
         }
     }
 
@@ -402,9 +431,8 @@ export async function askPip(text) {
 
     const account = store.state.me?.id;
 
-    openPip();
-    const board = pipPlace() === "board" ? await pipConversation() : undefined;
-    const pip = store.state.pip ?? (board === undefined ? await opening : { id: board });
+    await openPip();
+    const pip = store.state.pip ?? (await opening);
 
     if (account !== store.state.me?.id) {
         return false;
@@ -1337,7 +1365,8 @@ export function PipHost() {
     // Back closes it, as it closes a sheet.
     useBack(Boolean(open), closePip);
 
-    if (!pipAvailable()) {
+    // As a board, not even the floating panel on its way out.
+    if (!pipAvailable() || pipBoard()) {
         return null;
     }
 

@@ -52,7 +52,11 @@ type Seen = {
 const inPage = async <T>(script: string): Promise<T> =>
     JSON.parse(await page.evaluate(script)) as T;
 const see = (condition: string, what: string) =>
-    until(() => inPage<boolean>(`return JSON.stringify(Boolean(${condition}))`), what, 20_000);
+    until(
+        () => inPage<boolean>(`return JSON.stringify(Boolean(await (${condition})))`),
+        what,
+        20_000,
+    );
 const settle = () =>
     page.evaluate(`
     await Promise.all(document.getAnimations()
@@ -95,7 +99,7 @@ async function boarded(what: string): Promise<void> {
                 document.querySelector('.pane .topbar [aria-label="Close PiP"]') !== null &&
                 document.querySelector('.pane .composer textarea') !== null &&
                 document.querySelector('.pip-panel:not(.leaving)') === null &&
-                document.querySelector('.rail-pip')?.classList.contains('open');
+                (document.querySelector('.rail-pip')?.classList.contains('open') ?? true);
         })()`,
         what,
     );
@@ -454,7 +458,7 @@ test("Changing the setting while PiP shows moves it, never into both places", re
         const { pipShown } = await import('/pip.js');
         new MutationObserver(() => {
             const board = document.querySelector('.topbar [aria-label="Close PiP"]') !== null;
-            const floating = document.querySelector('.pip-panel:not(.leaving)') !== null;
+            const floating = document.querySelector('.pip-panel') !== null;
             window.pipBoth += board && floating ? 1 : 0;
         }).observe(document.body, { childList: true, subtree: true });
     `);
@@ -497,6 +501,94 @@ test("Changing the setting while PiP shows moves it, never into both places", re
     await page.evaluate(`(await import('/pip.js')).closePip()`);
     await shut("closed");
     await place("floating");
+});
+
+test(
+    "Board: × closes PiP past a panel over it, back to the session it was opened over",
+    real,
+    async () => {
+        await fresh("board", VIEWPORTS.mobile);
+        await page.evaluate(`(await import('/pip.js')).openPip()`);
+        await boarded("PiP as a board");
+        // The Files tile covers the conversation on a phone, with its own back entry.
+        await page.evaluate(`(await import('/files-panel.js')).setFilesOpen(true)`);
+        await see(
+            `document.querySelector('.files-tile:not(.leaving)') !== null`,
+            "the Files tile over PiP",
+        );
+        await settle();
+        await page.evaluate(`(await import('/pip.js')).closePip()`);
+        await shut("× closed PiP, not only the tile");
+        await backTo(background, "the session PiP was opened over");
+        await see(
+            `document.querySelector('.files-tile:not(.leaving)') === null`,
+            "the tile closed too",
+        );
+        await page.setViewport(VIEWPORTS.desktop);
+    },
+);
+
+test("Board: back and forward keep where PiP closes to", real, async () => {
+    const other = await newSession(app, project);
+
+    await fresh("board");
+    await page.evaluate(`(await import('/pip.js')).openPip()`);
+    await boarded("PiP over the background session");
+    await page.evaluate(`(await import('/store.js')).navigate(${Number(other)})`);
+    await backTo(other, "another session");
+    await page.evaluate(`history.back()`);
+    await boarded("PiP again, by back");
+    await page.click({ selector: '.topbar [aria-label="Close PiP"]' });
+    await shut("closed");
+    await backTo(background, "the session PiP was first opened over, not home");
+});
+
+test(
+    "Board: text for PiP goes into PiP's box only, even when a session shows first",
+    real,
+    async () => {
+        await fresh("board");
+        await page.evaluate(
+            `(await import('/store.js')).insertIntoComposer('only for pip', [], { conversationId: ${Number(pip)} })`,
+        );
+        await settle();
+        assert.equal(
+            await inPage<string>(
+                `return JSON.stringify(document.querySelector('.pane .composer textarea').value)`,
+            ),
+            "",
+            "the session's box does not take it",
+        );
+        await page.evaluate(`(await import('/pip.js')).openPip()`);
+        await boarded("PiP");
+        await see(
+            `document.querySelector('.pane .composer textarea')?.value.includes('only for pip')`,
+            "PiP's box has it",
+        );
+        await page.evaluate(`
+        const box = document.querySelector('.pane .composer textarea');
+        box.value = '';
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        (await import('/pip.js')).closePip();
+    `);
+        await shut("closed");
+    },
+);
+
+test("A setting changed and changed back at once moves nothing", real, async () => {
+    await fresh("floating");
+    await page.evaluate(`(await import('/pip.js')).openPip()`);
+    await floating("floating");
+    await page.evaluate(`
+        const { setPrefs } = await import('/theme.js');
+        setPrefs({ pip: 'board' });
+        setPrefs({ pip: 'floating' });
+    `);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await floating("still floating");
+    await backTo(background, "the session stays");
+    await page.evaluate(`(await import('/pip.js')).closePip()`);
+    await shut("closed");
 });
 
 test("Phones: Board is the session's screen; Floating keeps the sheet", real, async () => {
