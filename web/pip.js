@@ -23,7 +23,7 @@ import {
 } from "./store.js";
 import { spendTap } from "./taps.js";
 import { prefs } from "./theme.js";
-import { memoryAvailable, useMemory } from "./sheets/memory.js";
+import { memoryAvailable, PendingMemories } from "./sheets/memory.js";
 import { itemsOf, says, summarize } from "./turns.js";
 import {
     contextLevel,
@@ -1045,40 +1045,6 @@ function Composer({ id, busy }) {
     </div>`;
 }
 
-/** The owner's private review queue, not just the memories that apply in the conversation behind PiP. */
-function PendingMemories({ id }) {
-    const data = useMemory(id, true);
-    const count = data?.pendingAll === true ? data.lessons.length : null;
-    const hint = data?.restartRequired
-        ? "Restart required"
-        : count === null
-          ? "Loading…"
-          : `${count} pending`;
-
-    return html`<div class="pip-memory">
-        <button
-            type="button"
-            class="button small ghost"
-            aria-label="Pending memories"
-            aria-describedby="pip-memory-count"
-            onClick=${() => {
-                closePip();
-                openSheet({ type: "memory", conversationId: id, pendingOnly: true });
-            }}
-        >
-            <span>Pending memories</span>
-            <span
-                id="pip-memory-count"
-                class=${`pip-memory-count ${count > 0 ? "waiting" : ""}`}
-                aria-live="polite"
-                aria-atomic="true"
-            >
-                ${hint}
-            </span>
-        </button>
-    </div>`;
-}
-
 /** When PiP takes a message that waits: a steer at its next pause, a queued one when it finishes its work. */
 const pendingWhen = (item, busy) =>
     !busy
@@ -1317,7 +1283,7 @@ function PipPanel({ leaving, scrim }) {
             ready &&
             me?.role === "owner" &&
             memoryAvailable(id) &&
-            html`<${PendingMemories} id=${id} />`
+            html`<${PendingMemories} id=${id} before=${closePip} />`
         }
         <${Composer} id=${id} busy=${busy} />
     </section>`;
