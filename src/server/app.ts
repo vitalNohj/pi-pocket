@@ -467,6 +467,8 @@ export class PocketApp {
         { token: symbol; provider: WorkspaceProvider }[]
     >();
     readonly #busy = new Set<ConversationId>();
+    /** Copies of attached files on their way to a session's computer (`uploadsCopied`), by conversation. */
+    readonly #uploads = new Map<ConversationId, Promise<void>>();
     /** When each conversation's last run ended, since this server started: peek tiles show sessions done since a look. */
     readonly #endedAt = new Map<ConversationId, number>();
     /**
@@ -1009,8 +1011,19 @@ export class PocketApp {
                 registry,
                 settings: this.#harnessSettings(),
                 now: this.now,
-                env: ({ conversationId, cwd }) =>
-                    this.#wrapped(conversationId, cwd ?? this.defaultCwd),
+                env: async ({ conversationId, cwd }, context) => {
+                    // Offline is offline (`docs/runners.md`): a turn or tool call of a session on another computer waits
+                    // here until that computer is back, rather than failing. Stop ends the wait.
+                    const runner = this.runnerOf(conversationId);
+
+                    if (runner !== undefined) {
+                        await this.runners.link(runner).whenOnline(context.abortSignal);
+                        // The files its messages brought are there before Pi looks for them.
+                        await this.#uploads.get(conversationId as ConversationId);
+                    }
+
+                    return this.#wrapped(conversationId, cwd ?? this.defaultCwd);
+                },
                 conversationCreated: async (tx, conversation) => {
                     // Every conversation gets the app's documents up front, so views can read them from the start.
                     await tx.doc(AuthorsDoc, conversation.id);
@@ -1627,8 +1640,24 @@ export class PocketApp {
 
     /**
      * A folder's environment, with what extensions add to each command and hide from its output in this session. A
-     * session on another computer gets that computer's, never this machine's: when it is offline, its tools fail.
+     * session on another computer gets that computer's, never this machine's: when it is offline, what uses it waits.
      */
+    /**
+     * Note that files a message brought are being copied to session `id`'s computer (`commands.ts`): its turns and
+     * tool calls wait for the copy (the Harness's `env`). Copies of one session run one after another.
+     */
+    uploadsCopied(id: ConversationId, copy: Promise<void>): void {
+        const before = this.#uploads.get(id) ?? Promise.resolve();
+        const after = before.then(() => copy).catch(() => {});
+
+        this.#uploads.set(id, after);
+        void after.then(() => {
+            if (this.#uploads.get(id) === after) {
+                this.#uploads.delete(id);
+            }
+        });
+    }
+
     #wrapped(id: ConversationId, cwd: string): ExecutionEnv {
         const runner = this.runnerOf(id);
         const base = runner === undefined ? this.#env(cwd) : this.runners.env(runner, cwd);
@@ -1636,7 +1665,10 @@ export class PocketApp {
         return wrapEnv(base, Number(id), cwd, this.commandEnvs, this.hidden);
     }
 
-    /** The computers list changed (linked, removed, online, away): tell the owner's tabs. */
+    /**
+     * The computers list changed (linked, removed, online, away): tell the owner's tabs, and when a computer came or went,
+     * everyone who sees its sessions (the session list's offline mark, a session's "offline, reconnecting…").
+     */
     #runnersChanged(): void {
         const list = this.runners.list();
 
@@ -1645,7 +1677,32 @@ export class PocketApp {
                 client.send("runners", list);
             }
         }
+
+        const online = new Set(list.filter((runner) => runner.online).map((runner) => runner.id));
+        const before = this.#runnersOnline;
+
+        this.#runnersOnline = online;
+
+        if (before.size === online.size && [...online].every((id) => before.has(id))) {
+            return;
+        }
+
+        this.#scheduleSessions();
+
+        for (const pending of this.#rooms.values()) {
+            void pending.then(
+                (room) => {
+                    if (this.runnerOf(room.id) !== undefined) {
+                        room.schedule();
+                    }
+                },
+                () => {},
+            );
+        }
     }
+
+    /** Which computers were online when the list last changed (`#runnersChanged`). */
+    #runnersOnline = new Set<string>();
 
     #env(cwd: string): ExecutionEnv {
         const scheme = this.workspaceScheme(cwd);
@@ -2904,6 +2961,10 @@ export class PocketApp {
                     ...linkage,
                     busy,
                     waiting: waiting.has(id),
+                    // Its computer is offline: the list marks it, and its work waits for it.
+                    ...(meta.runner !== undefined && !this.runners.link(meta.runner).online
+                        ? { offline: true }
+                        : {}),
                     ...(limited.has(id) ? { limited: limited.get(id)! } : {}),
                     ...(endedAt === undefined ? {} : { endedAt }),
                     ...(failure === undefined ? {} : { failed: true, failure }),
@@ -3098,6 +3159,8 @@ export class PocketApp {
                 : {
                       runner: this.runnerOf(room.id)!,
                       runnerName: this.runners.name(this.runnerOf(room.id)!),
+                      // Offline is offline: the view says so, and what is sent waits for it.
+                      runnerOnline: this.runners.link(this.runnerOf(room.id)!).online,
                   }),
         };
     }

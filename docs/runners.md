@@ -115,14 +115,19 @@ By default, a session on a linked computer is private to its creator. Other peop
 
 The owner can turn on **Let others use these sessions** in Menu → **Runners** (`sharedRunnerSessions` in the server's `config.json`). These sessions then follow the usual sharing rules. People who can see a session can prompt it, and its commands run on the linked computer for them too. Turning sharing off closes those sessions in everyone else's tabs at once.
 
-This setting applies to the whole server. In the future, sharing could be chosen per session: who can see it, who can prompt it, and whether tool calls need the linker's approval when someone else requested them.
+This setting applies to the whole server. A switch for each session (who can see it, who can prompt it, and whether tool calls need the linker's approval when someone else requested them) was considered. It was left out to keep sharing simple: Runners already holds the settings for all linked computers, so one setting there covers them.
 
-## When the connection drops
+## When the computer is offline
 
-| What happens                             | What happens to the work                                                                                                                                   |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A short drop, up to 2 minutes            | Nothing is lost. Commands keep running. Their output arrives when the runner reconnects.                                                                   |
-| A longer drop, such as sleep or app exit | Running commands stop, and Pi is told the computer "was disconnected too long". New tool calls fail at once with "is offline" until the runner reconnects. |
-| The server restarts                      | As with sessions on the server, running commands return as interrupted. The session continues.                                                             |
+Offline is offline. While a linked computer is offline, its sessions are offline too: there is no grace period, and nothing fails because the computer is away. The server keeps the link's work and waits. The session shows "<computer> offline, reconnecting…", and its mark in the session list is dimmed.
+
+| What happens                                             | What happens to the work                                                                                                                             |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The connection drops, for any length of time             | Nothing is lost. Commands keep running on the computer. Their output arrives when the runner reconnects, and the session continues where it stopped. |
+| A tool call, or a message, while the computer is offline | It waits for the computer. Attached files are copied there when it is back. **Stop** ends the wait.                                                  |
+| The runner quits, or the computer restarts               | Commands that were running stopped with it, and come back as interrupted. The session continues when the runner is back.                             |
+| The server restarts                                      | As with sessions on the server, running commands return as interrupted. The session continues.                                                       |
+
+Panels that show the computer's files (Files, Changes, the folder picker) say that the computer is offline instead of waiting. A new session, a fork, or a move to another folder on an offline computer cannot start: the computer must answer whether it allows the folder.
 
 Removing a computer in **Runners** stops its runner and cancels its key. A runner that the server removed exits with code 3. The desktop app does not restart it.

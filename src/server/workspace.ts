@@ -138,11 +138,12 @@ export class Workspace {
             return localAccess;
         }
 
+        // What a person waits on: a computer that is offline says so at once.
         const info = await this.#app.runners
             .link(runner)
-            .info()
+            .infoNow()
             .catch((error: unknown) => {
-                throw new HttpError(409, describe(error));
+                throw error instanceof HttpError ? error : new HttpError(409, describe(error));
             });
 
         return remoteAccess(this.#app.runners.env(runner, this.#app.cwdOf(id)), info);
@@ -421,7 +422,7 @@ export class Workspace {
         }
 
         const { access, file } = await this.remoteFile(user, id, path);
-        const info = await this.#app.runners.link(runner).info();
+        const info = await this.#app.runners.link(runner).infoNow();
         const kind = await access
             .peek(file, 0)
             .then((found) => found.kind)
@@ -561,7 +562,7 @@ export class Workspace {
     ): Promise<{ access: FolderAccess; file: string; home: string }> {
         const runner = this.#app.runnerOf(id)!;
         const access = await this.#access(id);
-        const { home } = await this.#app.runners.link(runner).info();
+        const { home } = await this.#app.runners.link(runner).infoNow();
         const paths = access.path;
         const trimmed = path.trim();
         const expanded =

@@ -16,7 +16,7 @@ import {
     fauxText,
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner, type RunnerOptions } from "../src/runner/runner.ts";
 import { attachedFile } from "../src/server/commands.ts";
 import { readFolder, savedTrust, scanSettings, TRUST_FILE } from "../src/server/remote-context.ts";
 import {
@@ -39,6 +39,7 @@ const folder = join(repo, "app");
 let app: App;
 let server: Server;
 let runner: Runner;
+let runnerOptions: RunnerOptions;
 let runnerId: string;
 let id: number;
 let sections: Record<string, string> = {};
@@ -98,7 +99,7 @@ before(async () => {
     const linked = app.runners.redeem(code);
 
     runnerId = linked.id;
-    runner = new Runner({
+    runnerOptions = {
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",
         cwd: remoteHome,
@@ -106,7 +107,8 @@ before(async () => {
         retryMs: [50, 100, 200],
         settings: () => ({ confirm: false }),
         ask: () => Promise.resolve({ allow: true }),
-    });
+    };
+    runner = new Runner(runnerOptions);
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
     id = (await app.commands.createSession(owner(app), { cwd: folder, runner: runnerId }))
@@ -288,24 +290,42 @@ describe("a session on another computer", () => {
         assert.match(sent, /a note on the laptop/);
     });
 
-    it("sends attachments while the computer is offline, with their paths here, and still answers", async () => {
+    it("a message sent while the computer is offline waits, and goes on when it is back, its files copied there", async () => {
         await runner.stop();
         await until(() => app.runners.list()[0]?.online === false, "the runner to go");
 
         const uploads = app.workspace.uploadDirectory(id as never);
         const stored = join(uploads, "abc-87654321-later.txt");
+        const copy = join(tmpdir(), "pi-pocket-uploads", String(id), "abc-87654321-later.txt");
+        const before = (await modelTexts(app, id as never)).length;
 
         writeFileSync(stored, "later\n");
-        await say(app, id as never, "read this", [
-            { path: stored, name: "later.txt", mime: "text/plain", size: 6 },
-        ]);
 
-        const sent = (await modelTexts(app, id as never)).at(-2) ?? "";
+        // Sent at once, with the path there; Pi does not start until the computer is back.
+        const { submissionId } = await app.commands.submit(id as never, owner(app), {
+            text: "read this",
+            requestId: crypto.randomUUID(),
+            attachments: [{ path: stored, name: "later.txt", mime: "text/plain", size: 6 }],
+        });
+        const done = (await app.harness.submission(submissionId, context))!.wait(context);
+        let answered = false;
 
-        assert.ok(sent.includes(`- ${stored} (later.txt, text/plain, 6 bytes)`), sent);
+        void done.then(() => (answered = true));
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        assert.equal(answered, false);
+        assert.equal(existsSync(copy), false);
 
-        // A turn needs no context files to go: they are left as last read, or out.
-        await say(app, id as never, "hello again");
-        assert.match(sections.environment ?? "", /copied to that computer/);
+        runner = new Runner(runnerOptions);
+        runner.start();
+        await done;
+
+        const texts = await modelTexts(app, id as never);
+        const sent = texts.at(-2) ?? "";
+
+        assert.ok(texts.length > before);
+        assert.ok(sent.includes(`- ${copy} (later.txt, text/plain, 6 bytes)`), sent);
+        assert.equal(readFileSync(copy, "utf8"), "later\n");
+        // Its context came from the folder there, read once it was back.
+        assert.match(sections.project_context ?? "", /Repository rules from the laptop/);
     });
 });

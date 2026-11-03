@@ -152,10 +152,10 @@ export class Memory {
         const now = app.now();
         let cached = this.#projects.get(cacheKey);
 
-        // An offline computer cannot say which repository the folder is in: its folder stands in for now, and is not
-        // kept, so the real project is back as soon as the computer is.
+        // Pi's turns and tools reach this only with the computer online (they wait for it, `app.ts`). The Memory sheet
+        // does not wait: while the computer is offline it shows the project as last found, or the folder until then.
         if (runner !== undefined && !app.runners.link(runner).online) {
-            return this.#resolveProject(folder, runner);
+            return cached?.project ?? this.#resolveProject(folder, runner);
         }
 
         if (cached === undefined || now - cached.at > PROJECT_FOR_MS) {
