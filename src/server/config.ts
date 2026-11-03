@@ -128,6 +128,8 @@ export type KeepWarmTime = 0 | "auto" | number;
 export type KeepWarmModel = {
     /** How long its prompt cache lives, in minutes. */
     lifetime?: number;
+    /** Dollars per million tokens to read its cache, for a model whose maker publishes none. */
+    read?: number;
 };
 
 /** The owner's settings for keeping a session's prompt cache warm once its run ends. */
@@ -175,8 +177,10 @@ export function keepWarmModelFrom(raw: unknown): KeepWarmModel | undefined {
 
     const value = raw as Record<string, unknown>;
     const lifetime = finite(value.lifetime, 1, 7 * 24 * 60);
+    const read = finite(value.read, 0, 10_000);
     const model: KeepWarmModel = {
         ...(lifetime === undefined ? {} : { lifetime: Math.round(lifetime) }),
+        ...(read === undefined ? {} : { read }),
     };
 
     return Object.keys(model).length === 0 ? undefined : model;

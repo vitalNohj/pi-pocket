@@ -30,7 +30,8 @@ export type KeepWarmChoice = "default" | KeepWarmTime;
 
 /**
  * What is known of a model for the settings window: its cache lifetime in minutes from Pi or the maker's docs (the
- * owner's own replaces it), its cache read price per million tokens, and where Auto stops, in refreshes.
+ * owner's own replaces it), its published cache read price per million tokens (none: the owner may type one), and
+ * where Auto stops, in refreshes.
  */
 type Known = { lifetime?: number; read?: number; breakEven?: number };
 
@@ -56,7 +57,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The fields of a model the owner may set; null takes one off. */
-const MODEL_FIELDS = ["lifetime"] as const;
+const MODEL_FIELDS = ["lifetime", "read"] as const;
 
 /** Providers that make the models they list: their published prices win over a reseller's or a cloud's. */
 const MAKERS = new Set(["anthropic", "openai", "xai", "google", "mistral", "deepseek"]);
@@ -79,16 +80,17 @@ function publishedLifetime(id: string): number | undefined {
 export function cachePrices(
     model: Model<Api>,
     seconds: number | undefined,
+    read = model.cost.cacheRead,
 ): { read: number; write: number } | undefined {
-    const { input, cacheRead, cacheWrite } = model.cost;
+    const { input, cacheWrite } = model.cost;
 
-    if (cacheRead <= 0 || input <= 0) {
+    if (read <= 0 || input <= 0) {
         return undefined;
     }
 
     const hourWrite = model.api === "anthropic-messages" && (seconds ?? 0) >= 3600;
 
-    return { read: cacheRead, write: hourWrite ? input * 2 : cacheWrite > 0 ? cacheWrite : input };
+    return { read, write: hourWrite ? input * 2 : cacheWrite > 0 ? cacheWrite : input };
 }
 
 export class KeepWarm {
@@ -141,7 +143,8 @@ export class KeepWarm {
         const listed = model === undefined ? undefined : this.#published(model.id);
         const prices =
             (model === undefined ? undefined : cachePrices(model, seconds)) ??
-            (listed === undefined ? undefined : cachePrices(listed, seconds));
+            (listed === undefined ? undefined : cachePrices(listed, seconds)) ??
+            this.#ownPrices(own.read, model, listed, seconds);
         const minutes =
             own.lifetime ??
             (seconds === undefined && model !== undefined
@@ -152,6 +155,30 @@ export class KeepWarm {
             ...(minutes === undefined ? {} : { lifetimeMs: minutes * 60_000 }),
             ...(prices === undefined ? {} : { prices }),
         };
+    }
+
+    /**
+     * The owner's read price for a model with none published, with the write its input price implies (the model's, else
+     * the maker's for the same id). No input price: only the read is known, and Auto stops at the refresh cap.
+     */
+    #ownPrices(
+        read: number | undefined,
+        model: Model<Api> | undefined,
+        listed: Model<Api> | undefined,
+        seconds: number | undefined,
+    ): ModelFacts["prices"] {
+        if (read === undefined || read <= 0) {
+            return undefined;
+        }
+
+        const priced = [model, listed].find((each) => (each?.cost.input ?? 0) > 0);
+
+        return (
+            (priced === undefined ? undefined : cachePrices(priced, seconds, read)) ?? {
+                read,
+                write: 0,
+            }
+        );
     }
 
     /** Pi's models with published cache prices, by bare id; built again a minute later, as model lists change rarely. */
@@ -287,7 +314,7 @@ export class KeepWarm {
 
                 for (const [field, value] of Object.entries(fields)) {
                     if (!(MODEL_FIELDS as readonly string[]).includes(field)) {
-                        throw new HttpError(400, `${field} is not lifetime`);
+                        throw new HttpError(400, `${field} is not lifetime or read`);
                     }
 
                     if (value === null) {
@@ -356,10 +383,12 @@ export class KeepWarm {
             seconds === undefined ? publishedLifetime(model.id) : Math.round(seconds / 60);
         const prices = this.facts(specOf(model)).prices;
         const breakEven = prices === undefined ? 0 : breakEvenRefreshes(prices);
+        const listed = this.#published(model.id);
+        const published = (model.cost.cacheRead > 0 ? model : listed)?.cost.cacheRead;
 
         return {
             ...(lifetime === undefined ? {} : { lifetime }),
-            ...(prices === undefined ? {} : { read: prices.read }),
+            ...(published === undefined || published <= 0 ? {} : { read: published }),
             ...(breakEven > 0 ? { breakEven } : {}),
         };
     }

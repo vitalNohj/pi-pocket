@@ -81,7 +81,16 @@ function modelPlan(model, settings) {
 }
 
 /** A number field that saves when it loses focus or Enter is pressed, and shows what the server kept. */
-function NumberField({ value, min, max, label, placeholder = "", onSave, width = "4.5rem" }) {
+function NumberField({
+    value,
+    min,
+    max,
+    step = "1",
+    label,
+    placeholder = "",
+    onSave,
+    width = "4.5rem",
+}) {
     const [draft, setDraft] = useState(null);
     const shown = draft ?? (value === undefined || value === null ? "" : String(value));
 
@@ -114,6 +123,7 @@ function NumberField({ value, min, max, label, placeholder = "", onSave, width =
         style=${`width:${width}`}
         min=${min}
         max=${max}
+        step=${step}
         aria-label=${label}
         placeholder=${placeholder}
         value=${shown}
@@ -135,16 +145,36 @@ const AUTO_TABLE = [
 ];
 
 /** One model in the settings window: its cache cost, when its cache expires, and what keep warm does with it. */
-function ModelCard({ model, plan, onSet }) {
+function ModelCard({ model, plan, settings, onSet }) {
     const { own, every, refreshes, autoStop } = plan;
     const read = model.known.read;
 
     return html`<div class="keep-warm-model">
         <div class="keep-warm-model-name" title=${model.spec}>${model.name}</div>
-        <div class="keep-warm-model-row">
-            <span class="muted">Cache cost</span>
-            <span>${read === undefined ? "not published" : `${money(read)} per million tokens`}</span>
-        </div>
+        ${
+            read === undefined
+                ? html`<label class="keep-warm-model-row">
+                      <span class="muted">Cache cost</span>
+                      <span class="keep-warm-input">
+                          <span class="muted small">$</span>
+                          <${NumberField}
+                              value=${settings.models[model.spec]?.read}
+                              min=${0}
+                              max=${10_000}
+                              step="any"
+                              width="4.5rem"
+                              label=${`Dollars per million tokens to read the cache of ${model.name}`}
+                              placeholder="?"
+                              onSave=${(value) => onSet("read", value)}
+                          />
+                          <span class="muted small">per million tokens</span>
+                      </span>
+                  </label>`
+                : html`<div class="keep-warm-model-row">
+                      <span class="muted">Cache cost</span>
+                      <span>${money(read)} per million tokens</span>
+                  </div>`
+        }
         <label class="keep-warm-model-row">
             <span class="muted">Cache expires after</span>
             <span class="keep-warm-input">
@@ -155,7 +185,7 @@ function ModelCard({ model, plan, onSet }) {
                     width="4rem"
                     label=${`Minutes until the cache of ${model.name} expires`}
                     placeholder=${model.known.lifetime === undefined ? "" : String(model.known.lifetime)}
-                    onSave=${(value) => onSet(value)}
+                    onSave=${(value) => onSet("lifetime", value)}
                 />
                 <span class="muted small">min idle</span>
             </span>
@@ -359,7 +389,8 @@ export function KeepWarmSheet() {
                                         key=${model.spec}
                                         model=${model}
                                         plan=${plans.get(model.spec)}
-                                        onSet=${(value) => setModel(model.spec, "lifetime", value)}
+                                        settings=${settings}
+                                        onSet=${(field, value) => setModel(model.spec, field, value)}
                                     />`,
                                 )}
                             </div>
