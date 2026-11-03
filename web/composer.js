@@ -1618,7 +1618,7 @@ defineItem("composer", {
     id: "core:model",
     label: "Model",
     order: 300,
-    render: ({ agent, level }) =>
+    render: ({ agent, level, view }) =>
         html`<button
             class=${`model-chip ${agent?.available === false ? "warn" : ""}`}
             data-part="model-chip"
@@ -1626,7 +1626,12 @@ defineItem("composer", {
             title=${`Model and thinking: ${modelLabel(agent)}${level ? `, ${level}` : ""}`}
             onClick=${() => openSheet({ type: "model" })}
         >
-            <${Icon} name="sparkle" size=${12} class="model-spark" />
+            ${
+                // While keep warm holds this session's cache alive, a flame takes the star's place; nothing else changes.
+                view.conversation?.keepWarm?.status?.warm
+                    ? html`<${Icon} name="flame" size=${13} stroke=${2} class="model-spark warm" />`
+                    : html`<${Icon} name="sparkle" size=${12} class="model-spark" />`
+            }
             <span class="model-name">${shortModel(agent)}</span>
             ${level && html`<span class="model-level">${level}</span>`}
             <${Icon} name="chevron" size=${12} stroke=${2.2} class="model-caret" />

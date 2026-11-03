@@ -3570,6 +3570,11 @@ pre.diff .del {
     color: var(--accent);
 }
 
+/* Keep warm holds the session's cache alive. */
+.model-chip .model-spark.warm {
+    color: var(--o-orange);
+}
+
 .model-chip .model-name {
     min-width: 4ch;
     overflow: hidden;
@@ -18846,13 +18851,24 @@ pre.gallery-code {
     padding: 4px 9px;
 }
 
-.keep-warm-session-head {
-    display: flex;
-    justify-content: space-between;
-    gap: 0.5rem;
+/* The card's title, first in the row of choices. */
+.keep-warm-session-title {
+    display: inline-flex;
+    flex-basis: 100%;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 4px 8px 2px;
+    color: var(--text);
 }
 
-/* Where Auto stops for the examples: model, read price, time, cost. */
+.keep-warm-session-title .warm {
+    color: var(--o-orange);
+}
+
+.keep-warm-times {
+    align-self: stretch;
+}
+
 /* What the chosen time does for the example model: a quiet card under the times. */
 .keep-warm-estimate {
     display: grid;

@@ -519,30 +519,30 @@ export function KeepWarmRow() {
             ([value]) => value !== fallback && (owner || value === 0 || value === state.choice),
         ),
     ];
+    const hoursLabel = (hours) =>
+        hours === 0.5 ? "30 minutes" : hours === 1 ? "1 hour" : `${hours} hours`;
     const line = status.warm
         ? [
-              `next ${time(status.nextAt)}`,
+              `Keeping cache alive · next ${time(status.nextAt)}`,
               `${status.refreshes} of ${status.maxRefreshes} refreshes`,
               money(status.spent),
-              `every ${durationLabel(status.everyMs)}`,
               status.until === undefined ? "" : `until ${time(status.until)}`,
           ]
               .filter(Boolean)
               .join(" · ")
         : status.stopped
-          ? `stopped: ${status.stopped}`
+          ? `Stopped: ${status.stopped}`
           : chosen === 0
-            ? "not kept warm"
-            : chosen === "break-even"
-              ? "until it has cost as much as one message without a cache"
-              : `${timeLabel(chosen)} after Pi finishes`;
+            ? "Not keeping cache warm"
+            : chosen === "break-even" || chosen === "auto"
+              ? "Until it costs as much as one uncached message, keep cache alive"
+              : `${hoursLabel(chosen)} after Pi finishes, keep cache alive`;
 
     return html`<div class="keep-warm-session">
-        <div class="keep-warm-session-head">
-            <span>Keep this session warm</span>
-            <span class=${`small ${status.warm ? "ok" : "muted"}`}>${status.warm ? "warm" : ""}</span>
-        </div>
         <div class="segmented keep-warm-times" role="group" aria-label="Keep this session warm">
+            <span class="keep-warm-session-title">
+                ${status.warm && html`<${Icon} name="flame" size=${13} stroke=${2} class="warm" />`} Keep warm
+            </span>
             ${choices.map(
                 ([value, label]) => html`<button
                     class=${state.choice === value ? "on" : ""}
