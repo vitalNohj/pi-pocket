@@ -25,14 +25,27 @@ const model = {
     cost: COST,
     promptCache: { short: 300, long: 3600 },
 } as unknown as Model<Api>;
-const usage = {
-    input: 10,
-    output: 5,
-    cacheRead: 50_000,
-    cacheWrite: 0,
-    totalTokens: 50_015,
-    cost: { input: 0, output: 0, cacheRead: 0.015, cacheWrite: 0, total: 0.015 },
-};
+
+/** Bill each token type at the model's prices per million tokens. */
+function billedUsage({ input = 10, output = 5, cacheRead = 50_000, cacheWrite = 0 } = {}) {
+    const cost = {
+        input: (input * COST.input) / 1_000_000,
+        output: (output * COST.output) / 1_000_000,
+        cacheRead: (cacheRead * COST.cacheRead) / 1_000_000,
+        cacheWrite: (cacheWrite * COST.cacheWrite) / 1_000_000,
+    };
+
+    return {
+        input,
+        output,
+        cacheRead,
+        cacheWrite,
+        totalTokens: input + output + cacheRead + cacheWrite,
+        cost: { ...cost, total: cost.input + cost.output + cost.cacheRead + cost.cacheWrite },
+    };
+}
+
+const usage = billedUsage();
 
 /** A model runtime plus a clock. `timers` are the keeper's pending timers; `advance` fires the next one. */
 function rig(
@@ -41,12 +54,12 @@ function rig(
         policy?: IdlePolicy | (() => IdlePolicy | undefined);
         /** Provider session ids to conversations; default: a 1, b 2, s 3. */
         conversations?: Map<string, number>;
-        facts?: ModelFacts;
+        facts?: ModelFacts | ((spec: string, tier?: "short" | "long") => ModelFacts);
         store?: IdleStore;
     },
 ) {
     let now = 1_000_000;
-    let warmUsage = usage;
+    let warmUsage = billedUsage({ output: 1 });
     let off = disabled;
     const timers: { at: number; fn: () => void }[] = [];
     let failNext = false;
@@ -124,7 +137,12 @@ function rig(
                   idlePolicy: () =>
                       typeof idle.policy === "function" ? idle.policy() : idle.policy,
               }),
-        ...(idle?.facts === undefined ? {} : { modelFacts: () => idle.facts! }),
+        ...(idle?.facts === undefined
+            ? {}
+            : {
+                  modelFacts: (spec: string, tier?: "short" | "long") =>
+                      typeof idle.facts === "function" ? idle.facts(spec, tier) : idle.facts!,
+              }),
         ...(idle?.store === undefined ? {} : { store: idle.store, modelOf: () => model }),
         setTimer: ((fn: () => void, ms: number) => {
             const t = { at: now + ms, fn };
@@ -189,11 +207,11 @@ function rig(
             failNext = true;
         },
         rewriteOnWarm: () => {
-            warmUsage = { ...usage, cacheRead: 0, cacheWrite: 50_000 };
+            warmUsage = billedUsage({ output: 1, cacheRead: 0, cacheWrite: 50_000 });
         },
         /** OpenAI and xAI: a miss is billed as plain input, with no cache write. */
         missOnWarm: () => {
-            warmUsage = { ...usage, input: 50_000, cacheRead: 0, cacheWrite: 0 };
+            warmUsage = billedUsage({ input: 50_000, output: 1, cacheRead: 0 });
         },
         endRun: (id: number) => {
             ended.add(id);
@@ -439,6 +457,7 @@ async function idleRun(r: ReturnType<typeof rig>) {
 
 function memoryStore() {
     const saved = new Map<string, IdleRecord>();
+    let budgets: Record<string, number> = {};
 
     return {
         saved,
@@ -455,6 +474,10 @@ function memoryStore() {
                 saved.delete(key);
             },
             load: async () => [...saved.values()],
+            saveBudgets: (spent: Record<string, number>) => {
+                budgets = { ...spent };
+            },
+            loadBudgets: async () => ({ ...budgets }),
             flush: async () => {},
         } satisfies IdleStore,
     };
@@ -974,7 +997,13 @@ test("keep warm: the cost cap counts the next refresh at its worst, so a rewrite
         await r.advance();
     }
 
+    assert.equal(
+        r.keeper.status().spent,
+        billedUsage({ output: 1, cacheRead: 0, cacheWrite: 50_000 }).cost.total,
+        "only one full rewrite fits the cap",
+    );
     assert.ok(r.keeper.status().spent <= 0.25, String(r.keeper.status().spent));
+    assert.equal(r.calls.length, 2, "one real request and one refresh");
 });
 
 test("keep warm: the cost cap is the session's, its subagents' refreshes and stopped ones included", async () => {
@@ -1000,4 +1029,110 @@ test("keep warm: the cost cap is the session's, its subagents' refreshes and sto
 
     // Each could have refreshed twice on its own ($0.015 + $0.1875 at worst fits $0.21); together they stop after two.
     assert.equal(r.keeper.status().warms, 2);
+});
+
+/** The root session and its subagent share one idle cost cap. */
+async function idlePair(r: ReturnType<typeof rig>) {
+    await idleRun(r);
+    await r.send("a", "stop");
+    r.endRun(1);
+    r.keeper.runEnded(1);
+}
+
+test("keep warm: an in-flight refresh reserves the session budget for its subagent", async () => {
+    const r = rig(false, { policy: { ...POLICY, maxCost: 0.25 } });
+
+    await idlePair(r);
+    const release = r.holdNext(true);
+
+    try {
+        await r.advance();
+        assert.equal(r.calls.length, 3, "the root refresh is in flight");
+        await r.advance();
+        assert.equal(r.calls.length, 3, "the subagent cannot spend the reserved budget");
+        const status = r.keeper.idleStatus(1);
+
+        assert.equal(!status.warm && status.stopped, "the cost cap was reached");
+    } finally {
+        release();
+        await r.keeper.close();
+    }
+});
+
+test("keep warm: a refresh dropped in flight still counts against the session cost cap", async () => {
+    const r = rig(false, { policy: { ...POLICY, maxCost: 0.2 } });
+
+    await idlePair(r);
+    const release = r.holdNext(true);
+
+    try {
+        await r.advance();
+        r.keeper.forget(3, "the model changed");
+        release();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(r.keeper.status().spent, billedUsage({ output: 1 }).cost.total);
+        await r.advance();
+        assert.equal(r.calls.length, 3, "the late response leaves too little for the subagent");
+        const status = r.keeper.idleStatus(1);
+
+        assert.equal(!status.warm && status.stopped, "the cost cap was reached");
+    } finally {
+        release();
+        await r.keeper.close();
+    }
+});
+
+test("keep warm: restore retains the session spend of entries that already stopped", async () => {
+    const memory = memoryStore();
+    const policy = { ...POLICY, maxCost: 0.21 };
+    const first = rig(false, { policy, store: memory.store });
+
+    await idlePair(first);
+    await first.advance();
+    await first.advance();
+    assert.equal(first.keeper.status().spent, 2 * billedUsage({ output: 1 }).cost.total);
+    first.keeper.forget(1, "the subagent stopped");
+    await first.keeper.close();
+    assert.equal(memory.saved.size, 1, "only the root's entry remains");
+
+    const second = rig(false, { policy, store: memory.store });
+
+    second.setNow(first.now() + 1000);
+    second.endRun(3);
+    await second.keeper.restore();
+    await second.advance();
+    assert.equal(second.calls.length, 0, "the stopped subagent's spend still counts");
+    const status = second.keeper.idleStatus(3);
+
+    assert.equal(!status.warm && status.stopped, "the cost cap was reached");
+    await second.keeper.close();
+});
+
+test("keep warm: a 1-hour Anthropic miss reserves twice the input price", async () => {
+    const r = rig(false, { policy: { ...POLICY, maxCost: 0.25 } });
+
+    await r.send("s", "stop", "long");
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    await r.advance();
+    assert.equal(r.calls.length, 1, "a $0.30 rewrite cannot fit a $0.25 cap");
+    assert.equal(r.keeper.status().spent, 0);
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(!status.warm && status.stopped, "the cost cap was reached");
+});
+
+test("keep warm: Break-even uses the request's cache tier for its prices", async () => {
+    const r = rig(false, {
+        policy: { ...POLICY, hours: "break-even" },
+        facts: (_spec, tier) => ({ prices: { read: 0.3, write: tier === "long" ? 6 : 3.75 } }),
+    });
+
+    await r.send("s", "stop", "long");
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    const status = r.keeper.idleStatus(3);
+
+    assert.ok(status.warm);
+    assert.equal(status.maxRefreshes, 19, "the request uses the 1-hour write price");
 });

@@ -528,7 +528,7 @@ export class PocketApp {
                 };
             },
             idlePolicy: (conversationId) => this.keepWarm.policy(conversationId),
-            modelFacts: (spec) => this.keepWarm.facts(spec),
+            modelFacts: (spec, tier) => this.keepWarm.facts(spec, tier),
             modelOf: (provider, modelId) => this.models?.getModel(provider, modelId),
             store: idleFiles(join(options.dataDir, "keep-warm"), (line) => this.#log(line)),
             changed: (conversationId) => this.#keepWarmChanged(conversationId as ConversationId),

@@ -101,6 +101,9 @@ export type IdleStore = {
     save: (record: IdleRecord, withContext: boolean) => void;
     delete: (key: string) => void;
     load: () => Promise<IdleRecord[]>;
+    /** Completed spend of each session's idle stretch. Reservations are not saved. */
+    saveBudgets?: (budgets: Record<string, number>) => void;
+    loadBudgets?: () => Promise<Record<string, number>>;
     /** Wait for the writes on their way. */
     flush: () => Promise<void>;
 };
@@ -113,6 +116,7 @@ export function idleFiles(
 ): IdleStore {
     let line = Promise.resolve();
     const name = idleFileName;
+    const budgetsFile = join(folder, "budgets.json");
 
     const write = async (file: string, text: string) => {
         await writeFile(`${file}.tmp`, text, { mode: 0o600 });
@@ -153,7 +157,12 @@ export function idleFiles(
             const names = await readdir(folder).catch(() => [] as string[]);
             const records: IdleRecord[] = [];
             const states = new Set(
-                names.filter((file) => file.endsWith(".json") && !file.endsWith(".context.json")),
+                names.filter(
+                    (file) =>
+                        file !== "budgets.json" &&
+                        file.endsWith(".json") &&
+                        !file.endsWith(".context.json"),
+                ),
             );
             const remove = (file: string) =>
                 rm(join(folder, file), { force: true }).catch(() => {});
@@ -194,6 +203,37 @@ export function idleFiles(
             }
 
             return records;
+        },
+        saveBudgets: (budgets) => {
+            const text = JSON.stringify(budgets);
+
+            queue(async () => {
+                await mkdir(folder, { recursive: true, mode: 0o700 });
+                await write(budgetsFile, text);
+            });
+        },
+        loadBudgets: async () => {
+            await line;
+
+            try {
+                const budgets: unknown = JSON.parse(await readFile(budgetsFile, "utf8"));
+
+                if (
+                    typeof budgets === "object" &&
+                    budgets !== null &&
+                    !Array.isArray(budgets) &&
+                    Object.values(budgets).every(
+                        (value) =>
+                            typeof value === "number" && Number.isFinite(value) && value >= 0,
+                    )
+                ) {
+                    return budgets as Record<string, number>;
+                }
+            } catch {
+                // A missing or damaged file contributes no saved spend.
+            }
+
+            return {};
         },
         flush: () => line,
     };

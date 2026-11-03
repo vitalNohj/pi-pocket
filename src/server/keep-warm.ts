@@ -20,7 +20,7 @@ import { HttpError } from "./errors.ts";
 import { breakEvenRefreshes, type IdlePolicy, idlePlan, type ModelFacts } from "./idle-plan.ts";
 import { cachePrices, cacheTier, publishedLifetime, PublishedPrices } from "./model-cache-facts.ts";
 
-/** The tier requests use when they say nothing: the lifetime the settings window and Break-even count with. */
+/** The tier requests use when they say nothing, also shown in the settings window. */
 const defaultTier = () => (cacheTier() === "long" ? "long" : "short");
 
 /** The settings, sessions, models, and keeper calls that keep warm uses. */
@@ -119,10 +119,10 @@ export class KeepWarm {
      * Pi's list leaves out; the keeper reads Pi's own from the model), and Pi's published cache prices, which only decide
      * where Break-even stops (a model at $0, such as a subscription, takes the maker's for the same id).
      */
-    facts(spec: string): ModelFacts {
+    facts(spec: string, tier?: "short" | "long"): ModelFacts {
         const own = this.#deps.settings().models[spec] ?? {};
         const model = this.#model(spec);
-        const seconds = model?.promptCache?.[defaultTier()];
+        const seconds = model?.promptCache?.[tier ?? defaultTier()];
         const listed = model === undefined ? undefined : this.#published.lookup(model.id);
         const prices =
             (model === undefined ? undefined : cachePrices(model, seconds)) ??

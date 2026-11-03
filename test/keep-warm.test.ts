@@ -56,6 +56,25 @@ const fakeDeps = (overrides: Partial<KeepWarmDeps> = {}): KeepWarmDeps => ({
     ...overrides,
 });
 
+test("keep warm: facts use the selected tier's Anthropic write price for Break-even", () => {
+    const cached: Model<Api> = {
+        ...model("anthropic-messages", { input: 4, cacheRead: 0.2, cacheWrite: 5 }),
+        provider: "anthropic",
+        id: "cached-model",
+        promptCache: { short: 300, long: 3600 },
+    };
+    const keepWarm = new KeepWarm(fakeDeps({ model: () => cached }));
+
+    assert.deepEqual(keepWarm.facts("anthropic/cached-model", "long").prices, {
+        read: 0.2,
+        write: 8,
+    });
+    assert.deepEqual(keepWarm.facts("anthropic/cached-model", "short").prices, {
+        read: 0.2,
+        write: 5,
+    });
+});
+
 test("keep warm: policy uses the owner's hours and excludes PiP, archived sessions, and disallowed subagents", () => {
     const settings = keepWarmFrom({ hours: 4 });
     const meta: SessionMeta = { cwd: "/tmp", createdAt: 0, updatedAt: 0 };

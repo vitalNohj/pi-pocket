@@ -39,6 +39,29 @@ export function publishedLifetime(id: string): number | undefined {
     return PUBLISHED_LIFETIMES.find(([pattern]) => pattern.test(bare))?.[1];
 }
 
+/** What a cache write costs per million tokens for its lifetime. */
+function writePrice(model: Model<Api>, seconds: number | undefined): number {
+    const { input, cacheWrite } = model.cost;
+    const hourWrite = model.api === "anthropic-messages" && (seconds ?? 0) >= 3600;
+
+    return hourWrite ? input * 2 : cacheWrite > 0 ? cacheWrite : input;
+}
+
+/**
+ * The worst prompt price per million tokens for a refresh: a cache miss at the request's tier, or at `lifetime` seconds
+ * when the cache is known to live that long (an owner's lifetime for a model Pi lists none for).
+ */
+export function missPrice(
+    model: Model<Api>,
+    options?: Parameters<typeof cacheTier>[0],
+    lifetime?: number,
+): number {
+    const tier = cacheTier(options);
+    const seconds = lifetime ?? (tier === "none" ? undefined : model.promptCache?.[tier]);
+
+    return Math.max(writePrice(model, seconds), model.cost.cacheRead);
+}
+
 /**
  * A model's published cache prices per million tokens, for Break-even's stop only: the read, and what a miss costs (the
  * write). Anthropic's 1-hour write is twice the input price, where Pi's price is the 5-minute write; a maker with no
@@ -49,15 +72,11 @@ export function cachePrices(
     seconds: number | undefined,
     read = model.cost.cacheRead,
 ): { read: number; write: number } | undefined {
-    const { input, cacheWrite } = model.cost;
-
-    if (read <= 0 || input <= 0) {
+    if (read <= 0 || model.cost.input <= 0) {
         return undefined;
     }
 
-    const hourWrite = model.api === "anthropic-messages" && (seconds ?? 0) >= 3600;
-
-    return { read, write: hourWrite ? input * 2 : cacheWrite > 0 ? cacheWrite : input };
+    return { read, write: writePrice(model, seconds) };
 }
 
 /** Pi's models with published cache prices, by bare id. */
