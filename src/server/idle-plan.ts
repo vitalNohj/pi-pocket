@@ -61,12 +61,13 @@ export function idleEveryMs(ttlMs: number | undefined, share: number): number | 
 }
 
 /**
- * Refreshes that cost as much as writing the cache once more: `write / read`, the prices per token. The prompt's size
- * cancels out. A session kept warm this long and no longer pays at most about twice what letting it expire would.
+ * Refreshes that cost as much as one message without a cache: `write / read - 1`, the prices per token, as the next
+ * message reads a warm cache too (one read more). The prompt's size cancels out. A session kept warm this long and no
+ * longer pays at most about twice what letting it expire would.
  */
 export function breakEvenRefreshes(prices: { read: number; write: number }): number {
     return prices.read > 0 && prices.write > 0
-        ? Math.max(1, Math.floor(prices.write / prices.read))
+        ? Math.max(1, Math.floor(prices.write / prices.read) - 1)
         : 0;
 }
 

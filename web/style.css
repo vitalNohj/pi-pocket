@@ -18774,36 +18774,65 @@ pre.gallery-code {
 
 @media (min-width: 1000px) {
     .sheet.keep-warm-sheet {
-        max-width: 1240px;
-        height: min(88dvh, 920px);
+        max-width: 760px;
     }
-    .keep-warm-sheet .sheet-body {
-        overflow-y: hidden;
-    }
-    .keep-warm-layout {
-        flex: 1;
-        min-height: 0;
-        display: grid;
-        grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
-        gap: 24px;
-    }
-    .keep-warm-settings {
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        padding-right: 4px;
-    }
-    .keep-warm-models {
-        padding: 14px 16px 16px;
-        border: 1px solid var(--hair);
-        border-radius: var(--r-card);
-        background: var(--card);
-    }
-    .keep-warm-model-list {
-        flex: 1;
-        min-height: 0;
-        overflow-y: auto;
-        overscroll-behavior: contain;
-    }
+}
+
+/* Advanced: a quiet row that opens in place, its chevron turned down when open. */
+.keep-warm-disclosure {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    border-top: 1px solid var(--line);
+    background: none;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.keep-warm-disclosure > .muted {
+    flex: 1;
+    min-width: 0;
+}
+
+.keep-warm-disclosure svg {
+    transition: transform 0.15s;
+}
+
+.keep-warm-disclosure[aria-expanded="true"] svg {
+    transform: rotate(90deg);
+}
+
+.keep-warm-advanced {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* A provider's models stay folded until opened (or a search finds them). */
+.keep-warm-provider > summary {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-height: 40px;
+    padding: 8px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.keep-warm-provider > summary::-webkit-details-marker {
+    display: none;
+}
+
+.keep-warm-provider[open] > summary {
+    border-bottom: 1px solid var(--hair);
 }
 
 .keep-warm-session {

@@ -662,12 +662,12 @@ test("keep warm: a new run stops it with nothing to report", async () => {
     assert.equal(r.timers.length, 0);
 });
 
-test("keep warm: break-even is the write price over the read price", () => {
-    assert.equal(breakEvenRefreshes(CLAUDE), 20);
+test("keep warm: break-even is the write price over the read price, less the next message's own read", () => {
+    assert.equal(breakEvenRefreshes(CLAUDE), 19);
     assert.equal(
         breakEvenRefreshes({ read: 0.5, write: 6.25 }),
-        12,
-        "the 5 minute write: 12.5, rounded down",
+        11,
+        "the 5 minute write: 12.5, rounded down, less one",
     );
     assert.equal(breakEvenRefreshes({ read: 0, write: 10 }), 0, "no read price: not known");
     assert.equal(breakEvenRefreshes({ read: 1, write: 0.5 }), 1);
@@ -685,7 +685,11 @@ test("keep warm: Break-even stops at break-even, with its own reason", async () 
         await r.advance();
     }
 
-    assert.equal(r.keeper.status().warms, 4, "write 4× the read: 4 refreshes");
+    assert.equal(
+        r.keeper.status().warms,
+        3,
+        "write 4× the read: 3 refreshes and the next message's read",
+    );
     const status = r.keeper.idleStatus(3);
 
     assert.equal(
