@@ -26,6 +26,7 @@ import { ChooseModelError, HttpError } from "./errors.ts";
 import { defang, INVISIBLE_CLASS } from "./fence.ts";
 import { isThinkingLevel, levelFor, resolveModel, THINKING_LEVELS } from "./models.ts";
 import { requestFor } from "./requests.ts";
+import { REMOTE_EXTENSIONS } from "./runners.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -541,7 +542,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             const selected = this.#selection(agent, request, true);
 
             approved = {
-                cwd: this.#directory(source, agent, request.cwd),
+                cwd: await this.#directory(source, agent, request.cwd),
                 model: selected.model,
                 thinkingLevel: selected.thinking,
             };
@@ -569,11 +570,8 @@ export class LinkedSessions implements LinkedSessionsApi {
         return { session, address };
     }
 
-    /** Use the normal folder-picker validation for an explicit working directory. */
-    #directory(source: ConversationId, agent: AgentState, cwd?: string): string {
-        // Its folder is on another computer, and a linked session does not keep the computer yet.
-        this.#app.requireLocal(source, "Starting linked sessions");
-
+    /** Use the source computer's folder-picker validation for an explicit working directory. */
+    async #directory(source: ConversationId, agent: AgentState, cwd?: string): Promise<string> {
         // A blank field (an empty form input) is no folder, not the home folder.
         if (cwd === undefined || (typeof cwd === "string" && cwd.trim() === "")) {
             return agent.cwd ?? this.#app.cwdOf(source);
@@ -583,7 +581,11 @@ export class LinkedSessions implements LinkedSessionsApi {
             throw new HttpError(400, "The working directory must be a folder path.");
         }
 
-        return this.#app.workspace.checkDirectory(cwd);
+        const runner = this.#app.runnerOf(source);
+
+        return runner === undefined
+            ? this.#app.workspace.checkDirectory(cwd)
+            : this.#app.runners.checkFolder(runner, cwd);
     }
 
     /** Refuse a model the owner does not allow: with a list, the asker's fix is to choose from it. */
@@ -671,6 +673,14 @@ export class LinkedSessions implements LinkedSessionsApi {
     ): Promise<ConversationId> {
         const app = this.#app;
         const title = request.title;
+        const runner = app.runnerOf(source);
+
+        if (runner !== undefined && app.runners.require(runner).createdBy !== user.id) {
+            throw new HttpError(
+                403,
+                "Only the person who linked this computer can start sessions on it.",
+            );
+        }
 
         if (user.sessions !== undefined) {
             throw new HttpError(403, "You were invited to one session and cannot start new ones.");
@@ -694,7 +704,12 @@ export class LinkedSessions implements LinkedSessionsApi {
             throw new HttpError(400, `The model ${spec} cannot be used now: ${problem}.`);
         }
 
-        const cwd = this.#directory(source, agent, request.cwd);
+        const cwd = await this.#directory(source, agent, request.cwd);
+
+        if (runner !== undefined) {
+            await app.runners.link(runner).confirm({ kind: "new", person: user.name, folder: cwd });
+        }
+
         const now = Date.now();
 
         return app.harness.commit(async (tx) => {
@@ -739,14 +754,22 @@ export class LinkedSessions implements LinkedSessionsApi {
             const sessions = await tx.doc(SessionsDoc);
             const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
 
-            Object.assign(await tx.doc(AgentDoc, child.id), inherited, {
+            const childAgent = await tx.doc(AgentDoc, child.id);
+
+            Object.assign(childAgent, inherited, {
                 cwd,
                 model,
                 thinkingLevel: thinking,
             });
+
+            if (runner !== undefined) {
+                childAgent.extensions = [...REMOTE_EXTENSIONS];
+            }
+
             sessions.items[String(child.id)] = {
                 cwd,
                 title,
+                ...(runner === undefined ? {} : { runner }),
                 createdAt: now,
                 updatedAt: now,
                 createdBy: user.id,
