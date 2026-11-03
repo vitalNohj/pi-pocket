@@ -127,14 +127,17 @@ export function keepWarmHint() {
     return hours === undefined ? "" : hours === 0 ? "off" : `after a run: ${timeLabel(hours)}`;
 }
 
+/** Resolve a session's choice against the owner's current default. */
+function chosenTime(choice) {
+    return choice === "default" ? store.state.server?.keepWarm?.hours : choice;
+}
+
 /** Whether keep warm is on for a session: its own time, or the owner's default, is not Off. */
 export function keepWarmOn(conversation) {
     const choice = conversation?.keepWarm?.choice;
     const hours = store.state.server?.keepWarm?.hours;
 
-    return (
-        choice !== undefined && hours !== undefined && (choice === "default" ? hours : choice) !== 0
-    );
+    return choice !== undefined && hours !== undefined && chosenTime(choice) !== 0;
 }
 
 /** Whether this server keeps sessions warm once their run ends. */
@@ -287,7 +290,7 @@ function KeepWarmModels({ models, settings, onSet }) {
         }
     }
 
-    return html`<section class="keep-warm-models">
+    return html`<section class="keep-warm-group keep-warm-models">
         <div class="keep-warm-models-head">
             <div class="label">Models</div>
             <span class="muted small">${known} of ${models.length} with a known cache time</span>
@@ -597,7 +600,7 @@ export function KeepWarmCard({ compact = false }) {
     const time = (at) =>
         new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const fallback = server.keepWarm.hours;
-    const chosen = choice === "default" ? fallback : choice;
+    const chosen = chosenTime(choice);
     const on = chosen !== 0;
     const warming = on && status.warm;
     // The same times as the owner's, the session's own (or the owner's default) selected. Picking the owner's default
@@ -631,8 +634,8 @@ export function KeepWarmCard({ compact = false }) {
         : status.stopped && on
           ? `Stopped: ${status.stopped}`
           : undefined;
-    const flame = html`<${Icon} name="flame" size=${compact ? 17 : 18} stroke=${2} />`;
-    const tile = `keep-warm-flame ${on ? "" : "off"} ${warming ? "warming" : ""}`;
+    const flame = html`<${Icon} name="flame" size=${compact ? 17 : 18} stroke=${2} class=${warming ? "warming" : ""} />`;
+    const tile = `keep-warm-flame ${on ? "" : "off"}`;
     const times = compact ? TIMES.slice(1) : TIMES;
 
     return html`<div class=${`keep-warm-card ${compact ? "compact" : ""}`}>

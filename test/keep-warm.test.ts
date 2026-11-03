@@ -11,30 +11,24 @@ import { cleanUp, context, newSession, openApp, owner, scriptedModel } from "./h
 const model = (api: string, cost: Partial<Model<Api>["cost"]>) =>
     ({ api, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...cost } }) as Model<Api>;
 
-test("cache prices: the published read and write; Anthropic's 1-hour write is twice the input", () => {
+test("cache prices: published and owner read prices, tiered writes, and missing prices", () => {
     const claude = model("anthropic-messages", { input: 4, cacheRead: 0.2, cacheWrite: 5 });
 
-    assert.deepEqual(cachePrices(claude, 300), { read: 0.2, write: 5 });
-    assert.deepEqual(cachePrices(claude, 3600), { read: 0.2, write: 8 });
-});
-
-test("cache prices: no write price is the input price; no read or input price is not published", () => {
-    assert.deepEqual(
-        cachePrices(model("openai-responses", { input: 2, cacheRead: 0.1 }), undefined),
-        {
-            read: 0.1,
-            write: 2,
-        },
-    );
-    assert.equal(cachePrices(model("openai-responses", { input: 2 }), undefined), undefined);
-    assert.equal(cachePrices(model("openai-responses", { cacheRead: 0.1 }), undefined), undefined);
-});
-
-test("cache prices: the owner's read for a model with none published, with the write its input implies", () => {
-    assert.deepEqual(cachePrices(model("openai-completions", { input: 2 }), undefined, 0.5), {
-        read: 0.5,
-        write: 2,
-    });
+    for (const [entry, seconds, read, expected] of [
+        [claude, 300, undefined, { read: 0.2, write: 5 }],
+        [claude, 3600, undefined, { read: 0.2, write: 8 }],
+        [
+            model("openai-responses", { input: 2, cacheRead: 0.1 }),
+            undefined,
+            undefined,
+            { read: 0.1, write: 2 },
+        ],
+        [model("openai-responses", { input: 2 }), undefined, undefined, undefined],
+        [model("openai-responses", { cacheRead: 0.1 }), undefined, undefined, undefined],
+        [model("openai-completions", { input: 2 }), undefined, 0.5, { read: 0.5, write: 2 }],
+    ] as const) {
+        assert.deepEqual(cachePrices(entry, seconds, read), expected);
+    }
 });
 
 const fakeDeps = (overrides: Partial<KeepWarmDeps> = {}): KeepWarmDeps => ({
@@ -48,7 +42,6 @@ const fakeDeps = (overrides: Partial<KeepWarmDeps> = {}): KeepWarmDeps => ({
     keeper: {
         idleSummary: () => ({ warm: 0, refreshes: 0, spent: 0 }),
         idleStatus: () => ({ warm: false }),
-        reconsider: () => {},
     },
     settingsChanged: async () => {},
     ...overrides,

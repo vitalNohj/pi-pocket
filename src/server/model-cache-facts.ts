@@ -26,6 +26,11 @@ export function cacheTier(options?: {
         : "short";
 }
 
+/** The tier used for cache facts; no cache counts as short. Without options, use the request default. */
+export function factsTier(options?: Parameters<typeof cacheTier>[0]): "short" | "long" {
+    return cacheTier(options) === "long" ? "long" : "short";
+}
+
 /** Providers that make the models they list: their published prices win over a reseller's or a cloud's. */
 const MAKERS = new Set(["anthropic", "openai", "xai", "google", "mistral", "deepseek"]);
 

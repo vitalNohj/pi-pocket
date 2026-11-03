@@ -803,8 +803,7 @@ kbd {
     :root:not([data-motion="full"], [data-motion="fluid"]) .agents-dot.working,
     :root:not([data-motion="full"], [data-motion="fluid"]) .session-working,
     :root:not([data-motion="full"], [data-motion="fluid"]) .session-placeholder span,
-    :root:not([data-motion="full"], [data-motion="fluid"]) .icon.warming,
-    :root:not([data-motion="full"], [data-motion="fluid"]) .keep-warm-flame.warming .icon {
+    :root:not([data-motion="full"], [data-motion="fluid"]) .icon.warming {
         animation: none !important;
     }
 }
@@ -18737,13 +18736,8 @@ pre.gallery-code {
 }
 
 .keep-warm-models {
-    display: flex;
-    flex-direction: column;
     gap: 8px;
     min-width: 0;
-    min-height: 0;
-    padding-top: 10px;
-    border-top: 1px solid var(--line);
 }
 
 .keep-warm-models-head {
@@ -18911,8 +18905,6 @@ pre.gallery-code {
     padding: 0;
     border: 0;
     border-radius: var(--r-control);
-    background: color-mix(in srgb, var(--o-orange) 15%, transparent);
-    color: var(--o-orange);
     transition:
         background var(--t-hover) var(--ease-out),
         color var(--t-hover) var(--ease-out);
@@ -18923,14 +18915,16 @@ pre.gallery-code {
     height: 32px;
 }
 
+.keep-warm-pill,
+.keep-warm-flame {
+    background: color-mix(in srgb, var(--o-orange) 15%, transparent);
+    color: var(--o-orange);
+}
+
+.keep-warm-pill.off,
 .keep-warm-flame.off {
     background: var(--raised);
     color: var(--muted);
-}
-
-.keep-warm-flame.warming .icon {
-    transform-origin: 50% 90%;
-    animation: flicker 1.6s ease-in-out infinite;
 }
 
 .keep-warm-card-title {
@@ -18949,15 +18943,8 @@ pre.gallery-code {
     flex: none;
     padding: 2px 9px;
     border-radius: var(--r-pill);
-    background: color-mix(in srgb, var(--o-orange) 15%, transparent);
-    color: var(--o-orange);
     font-size: 12px;
     white-space: nowrap;
-}
-
-.keep-warm-pill.off {
-    background: var(--raised);
-    color: var(--muted);
 }
 
 /* The times, as one bar: a raised button is the choice. */

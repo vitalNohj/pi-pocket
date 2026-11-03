@@ -360,7 +360,6 @@ export class PocketApp {
         keeper: {
             idleSummary: () => this.cacheKeeper.idleSummary(),
             idleStatus: (id) => this.cacheKeeper.idleStatus(id),
-            reconsider: () => this.cacheKeeper.reconsider(),
         },
         settingsChanged: () => this.keepWarmSettingsChanged(),
     });
@@ -3253,13 +3252,8 @@ export class PocketApp {
 
     /** The owner changed keep warm's settings: tabs hear the new time limit, and open views show each session's state. */
     async keepWarmSettingsChanged(): Promise<void> {
-        for (const pending of this.#rooms.values()) {
-            void pending.then(
-                (room) => room.schedule(),
-                () => {},
-            );
-        }
-
+        this.cacheKeeper.reconsider();
+        this.refreshViews();
         await this.#refreshClients();
     }
 

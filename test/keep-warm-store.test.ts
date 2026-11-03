@@ -91,15 +91,15 @@ test("keep warm files: damaged budgets are ignored without losing the idle recor
         ]) {
             await writeFile(join(folder, "budgets.json"), damaged);
             assert.deepEqual(await store.load(), [record], "the idle record remains valid");
-            assert.deepEqual(await store.loadBudgets?.(), {}, "ignore the whole damaged budget");
+            assert.deepEqual(await store.loadBudgets(), {}, "ignore the whole damaged budget");
         }
 
-        store.saveBudgets?.({ "3": 0.12, "4": 0 });
+        store.saveBudgets({ "3": 0.12, "4": 0 });
         await store.flush();
-        assert.deepEqual(await store.loadBudgets?.(), { "3": 0.12, "4": 0 });
+        assert.deepEqual(await store.loadBudgets(), { "3": 0.12, "4": 0 });
         assert.equal((await stat(join(folder, "budgets.json"))).mode & 0o777, 0o600);
         assert.deepEqual(await store.load(), [record], "budgets.json is not an idle record");
-        assert.deepEqual(await store.loadBudgets?.(), { "3": 0.12, "4": 0 });
+        assert.deepEqual(await store.loadBudgets(), { "3": 0.12, "4": 0 });
         assert.equal((await readdir(folder)).length, 3, "one record, its context, and the budgets");
     } finally {
         await rm(folder, { recursive: true, force: true });

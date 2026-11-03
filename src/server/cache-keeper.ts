@@ -1,30 +1,13 @@
 /**
- * The cache keeper: it re-sends the last model request with a one-token output cap just before its prompt cache entry
- * expires, so the next real request reads the cache instead of writing it again. Pi's own cache warmer
- * (`cache-warmer.ts` in pi-coding-agent) does this for Pi's CLI; Pi Durable has none. It has two modes.
- *
- * **During a run** (a tool wait), on by default: a request that ended in a tool call will be followed by another when
- * the tool ends, so the chance of a real request is high. At each refresh point: warm when
- * `hazard * missCost > warmCost`.
- *   - `warmCost`  a cache read of the whole prompt plus one output token.
- *   - `missCost`  what the next real request pays more if the entry is gone: a cache write instead of a read.
- *   - `hazard`    the chance that the run's next request comes in the next interval (`TOOL_HAZARD`).
- * A new real request, the run ending or being stopped (`runEnded`), an error, shutdown, or the age cap (`MAX_AGE_MS`,
- * 30 minutes) stops it. An entry whose first refresh would fall after the cap (the 1h tier) is never started.
- * The cap is the best of 10 to 60 minutes on the owner's own tool-call gaps, and it bounds the loss when a tool waits
- * on a person (an approval).
- *
- * **Keep warm** (idle), off until the owner turns it on (`idlePolicy`): after a run ends, it refreshes the cache of the
- * run's last request every `everyMs` (a share of the model's cache lifetime), for
- * as long as the owner's time limit, or with Break-even until the refreshes have cost as much as one more cache write
- * (`breakEvenRefreshes`), within a cost and a refresh cap for each session. A new run (`runStarted`), a model change,
- * a compaction, New context, archiving (`forget`), the setting turned off (`reconsider`), or two failed refreshes in a
- * row stop it. A refresh fails when it errs, or when it wrote the cache instead of reading it: the cache
- * was gone, so the interval is too long for that model. Idle warming has no price check: the owner chose to pay, and
- * the caps bound it. Its entries are saved (`IdleStore`), so warming goes on after a restart while the cache lives.
- *
- * `install` wraps `models.streamSimple` in place, as `timing.ts` and `limit-gate.ts` do. The warm request goes to the
- * wrapped function, so it is not recorded as a real request. `PI_POCKET_CACHE_KEEPER=off` turns both modes off.
+ * The cache keeper replays the last model request with one output token before its prompt cache expires.
+ * Tool waits warm by default when the expected savings exceed the cost, within a 30-minute age cap.
+ * Keep warm is off by default: the owner's idle policy chooses its interval, time, and caps.
+ * Idle entries and completed session spend are saved, so warming can continue after a restart.
+ * A real request replaces its entry; run and session changes stop or reconsider it.
+ * `install` wraps `models.streamSimple`; warm requests bypass observation as real requests.
+ * The final payload observer allows only output-cap fields to differ on a replay.
+ * `PI_POCKET_CACHE_KEEPER=off` turns both modes off.
+ * See docs/architecture.md, "Prompt cache keeper", for decisions, limits, storage, and lifecycle.
  */
 import { createHash } from "node:crypto";
 import {
@@ -35,7 +18,7 @@ import {
     type ModelFacts,
 } from "./idle-plan.ts";
 import { type IdleRecord, type IdleStore, savedOptions } from "./keep-warm-store.ts";
-import { cacheTier, missPrice } from "./model-cache-facts.ts";
+import { cacheTier, factsTier, missPrice } from "./model-cache-facts.ts";
 import { noWait } from "./limit-gate.ts";
 import type {
     Api,
@@ -165,11 +148,6 @@ function ttlMsOf(model: Model<Api>, options: SimpleStreamOptions | undefined): n
     return seconds === undefined ? undefined : seconds * 1000;
 }
 
-/** The cache tier of a request, as `modelFacts` takes it: no cache counts as the short tier. */
-function tierOf(options: SimpleStreamOptions | undefined): "short" | "long" {
-    return cacheTier(options) === "long" ? "long" : "short";
-}
-
 /** `provider/modelId`, the name the owner's per-model values use. */
 export function specOf(model: { provider: string; id: string }): string {
     return `${model.provider}/${model.id}`;
@@ -242,16 +220,13 @@ export type IdleStatus =
     | {
           warm: true;
           nextAt: number;
-          everyMs: number;
-          lifeMs: number;
           until?: number;
           refreshes: number;
           /** The refreshes this stretch may have: Break-even's break-even, or the owner's cap. */
           maxRefreshes: number;
           spent: number;
-          model: string;
       }
-    | { warm: false; stopped?: string; at?: number };
+    | { warm: false; stopped?: string };
 
 export type KeeperDeps = {
     now?: () => number;
@@ -278,16 +253,6 @@ export type KeeperDeps = {
     changed?: (conversationId: number) => void;
 };
 
-type OptionalDeps =
-    | "conversationOf"
-    | "isRunning"
-    | "accountFor"
-    | "idlePolicy"
-    | "modelFacts"
-    | "modelOf"
-    | "store"
-    | "changed";
-
 /** Completed spend and in-flight reservations for each session's idle stretch. */
 class SessionBudget {
     readonly #sessions = new Map<number, { spent: number; reserved: number }>();
@@ -296,10 +261,6 @@ class SessionBudget {
         const budget = this.#sessions.get(session);
 
         return budget === undefined ? 0 : budget.spent + budget.reserved;
-    }
-
-    available(session: number, maxCost: number): number {
-        return maxCost === 0 ? Infinity : maxCost - this.used(session);
     }
 
     reserve(session: number, amount: number): void {
@@ -355,12 +316,13 @@ class SessionBudget {
 }
 
 export class CacheKeeper {
-    readonly #deps: Required<Omit<KeeperDeps, OptionalDeps>> & Pick<KeeperDeps, OptionalDeps>;
+    readonly #deps: KeeperDeps &
+        Required<Pick<KeeperDeps, "now" | "setTimer" | "clearTimer" | "log" | "disabled">>;
     readonly #entries = new Map<string, Entry>();
     readonly #requests = new Map<string, PendingRequest>();
     readonly #pending = new Set<Promise<void>>();
     /** Why idle warming last stopped, by conversation, while nothing warms it. */
-    readonly #stopped = new Map<number, { reason: string; at: number }>();
+    readonly #stopped = new Map<number, string>();
     readonly #budgets = new SessionBudget();
     /** Counts requests and stops, so that each can tell which came first. */
     #seq = 0;
@@ -427,22 +389,17 @@ export class CacheKeeper {
                 return {
                     warm: true,
                     nextAt: entry.dueAt,
-                    everyMs: entry.idle.everyMs,
-                    lifeMs: entry.idle.lifeMs,
                     ...(entry.idle.until === undefined ? {} : { until: entry.idle.until }),
                     refreshes: entry.warms,
                     maxRefreshes: entry.idle.maxRefreshes,
                     spent: entry.spent,
-                    model: specOf(entry.model),
                 };
             }
         }
 
         const stopped = this.#stopped.get(conversationId);
 
-        return stopped === undefined
-            ? { warm: false }
-            : { warm: false, stopped: stopped.reason, at: stopped.at };
+        return stopped === undefined ? { warm: false } : { warm: false, stopped };
     }
 
     /** Shutdown: no warm goes out after this. Idle entries stay saved, so the next start goes on warming them. */
@@ -773,7 +730,7 @@ export class CacheKeeper {
         }
 
         const began = ++this.#seq;
-        const [budgets = {}, records] = await Promise.all([store.loadBudgets?.(), store.load()]);
+        const [budgets, records] = await Promise.all([store.loadBudgets(), store.load()]);
 
         this.#budgets.load(budgets);
 
@@ -829,12 +786,6 @@ export class CacheKeeper {
         }
 
         // A session with nothing left to warm has no stretch to cap: a new run would clear it anyway.
-        this.#budgets.retain(this.#idleSessions());
-        this.#saveBudgets();
-    }
-
-    /** The sessions with an idle entry now. */
-    #idleSessions(): Set<number> {
         const sessions = new Set<number>();
 
         for (const entry of this.#entries.values()) {
@@ -843,7 +794,8 @@ export class CacheKeeper {
             }
         }
 
-        return sessions;
+        this.#budgets.retain(sessions);
+        this.#saveBudgets();
     }
 
     /**
@@ -860,7 +812,7 @@ export class CacheKeeper {
             ? undefined
             : idlePlan(
                   policy,
-                  this.#deps.modelFacts?.(specOf(entry.model), tierOf(entry.options)) ?? {},
+                  this.#deps.modelFacts?.(specOf(entry.model), factsTier(entry.options)) ?? {},
                   entry.ttlMs,
                   since,
               );
@@ -897,13 +849,13 @@ export class CacheKeeper {
             if (reason === undefined) {
                 this.#stopped.delete(entry.conversationId);
             } else {
-                this.#stopped.set(entry.conversationId, { reason, at: this.#deps.now() });
+                this.#stopped.set(entry.conversationId, reason);
             }
         }
 
         const life =
             lifeMs ??
-            this.#deps.modelFacts?.(specOf(entry.model), tierOf(entry.options)).lifetimeMs ??
+            this.#deps.modelFacts?.(specOf(entry.model), factsTier(entry.options)).lifetimeMs ??
             entry.ttlMs ??
             MAX_AGE_MS;
 
@@ -957,7 +909,7 @@ export class CacheKeeper {
                 this.#deps.idlePolicy !== undefined &&
                 !this.#closed &&
                 !this.#deps.disabled()
-                ? this.#park(key, entry, this.#stopped.get(conversationId)?.reason)
+                ? this.#park(key, entry, this.#stopped.get(conversationId))
                 : stop();
         }
 
@@ -997,7 +949,7 @@ export class CacheKeeper {
     }
 
     #saveBudgets(): void {
-        this.#deps.store?.saveBudgets?.(Object.fromEntries(this.#budgets.entries()));
+        this.#deps.store?.saveBudgets(Object.fromEntries(this.#budgets.entries()));
     }
 
     #save(key: string, entry: Entry, withContext: boolean): void {
@@ -1074,11 +1026,6 @@ export class CacheKeeper {
         });
     }
 
-    /** Completed spend and reservations in a session's idle stretch, including entries that stopped. */
-    #sessionSpent(session: number): number {
-        return this.#budgets.used(session);
-    }
-
     /** A cache miss for the full prompt and one output token, in dollars, at the lifetime the entry is warmed for. */
     #idleWorst(entry: Entry): number {
         const seconds = entry.idle === undefined ? undefined : entry.idle.lifeMs / 1000;
@@ -1137,7 +1084,7 @@ export class CacheKeeper {
         // next refresh at its worst: a cache that is gone is written again in full. So the cap is never passed.
         if (
             idle.maxCost > 0 &&
-            this.#sessionSpent(idle.session) + this.#idleWorst(entry) > idle.maxCost
+            this.#budgets.used(idle.session) + this.#idleWorst(entry) > idle.maxCost
         ) {
             return "the cost cap was reached";
         }
@@ -1302,7 +1249,7 @@ export class CacheKeeper {
             if (entry.kind === "parked") {
                 if (!failed && message.usage.cacheRead > 0) {
                     entry.lastTouch = now;
-                    this.#park(key, entry, this.#stopped.get(entry.conversationId!)?.reason);
+                    this.#park(key, entry, this.#stopped.get(entry.conversationId!));
                 }
 
                 return;
@@ -1428,7 +1375,7 @@ export class CacheKeeper {
 
             if (entry.conversationId !== undefined) {
                 if (reason !== undefined) {
-                    this.#stopped.set(entry.conversationId, { reason, at: this.#deps.now() });
+                    this.#stopped.set(entry.conversationId, reason);
                 }
 
                 this.#deps.changed?.(entry.conversationId);

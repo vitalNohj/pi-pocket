@@ -11,17 +11,13 @@ import {
     type KeepWarmModel,
     type KeepWarmSettings,
     type KeepWarmTime,
-    keepWarmFrom,
     keepWarmModelFrom,
     type User,
 } from "./config.ts";
 import type { SessionMeta } from "./docs.ts";
 import { HttpError } from "./errors.ts";
-import { breakEvenRefreshes, type IdlePolicy, idlePlan, type ModelFacts } from "./idle-plan.ts";
-import { cachePrices, cacheTier, publishedLifetime, PublishedPrices } from "./model-cache-facts.ts";
-
-/** The tier requests use when they say nothing, also shown in the settings window. */
-const defaultTier = () => (cacheTier() === "long" ? "long" : "short");
+import { type IdlePolicy, idlePlan, type ModelFacts } from "./idle-plan.ts";
+import { cachePrices, factsTier, publishedLifetime, PublishedPrices } from "./model-cache-facts.ts";
 
 /** The settings, sessions, models, and keeper calls that keep warm uses. */
 export type KeepWarmDeps = {
@@ -35,7 +31,6 @@ export type KeepWarmDeps = {
     keeper: {
         idleSummary(): { warm: number; refreshes: number; spent: number };
         idleStatus(id: number): IdleStatus;
-        reconsider(): void;
     };
     settingsChanged: () => Promise<void>;
 };
@@ -58,10 +53,9 @@ export function keepWarmLabel(time: KeepWarmTime): string {
 
 /**
  * What is known of a model for the settings window: its cache lifetime in minutes from Pi or the maker's docs (the
- * owner's own replaces it), its published cache read price per million tokens (none: the owner may type one), and
- * where Break-even stops, in refreshes.
+ * owner's own replaces it), and its published cache read price per million tokens (none: the owner may type one).
  */
-type Known = { lifetime?: number; read?: number; breakEven?: number };
+type Known = { lifetime?: number; read?: number };
 
 /** What the settings window lists for one model. */
 type ModelRow = {
@@ -69,7 +63,7 @@ type ModelRow = {
     name: string;
     known: Known;
     /** How Break-even keeps it warm: undefined fields when no cache time is known, so it is not kept warm. */
-    plan: { lifetime?: number; everyMs?: number; refreshes?: number; breakEvenStopMs?: number };
+    plan: { everyMs?: number; refreshes?: number; breakEvenStopMs?: number };
 };
 
 const ownerOnly = (user: User) => {
@@ -132,7 +126,7 @@ export class KeepWarm {
     facts(spec: string, tier?: "short" | "long"): ModelFacts {
         const own = this.#deps.settings().models[spec] ?? {};
         const model = this.#model(spec);
-        const seconds = model?.promptCache?.[tier ?? defaultTier()];
+        const seconds = model?.promptCache?.[tier ?? factsTier()];
         const listed = model === undefined ? undefined : this.#published.lookup(model.id);
         const prices =
             (model === undefined ? undefined : cachePrices(model, seconds)) ??
@@ -300,8 +294,7 @@ export class KeepWarm {
             }
         }
 
-        this.#deps.saveSettings(keepWarmFrom(next));
-        this.#deps.keeper.reconsider();
+        this.#deps.saveSettings(next);
         await this.#deps.settingsChanged();
     }
 
@@ -346,31 +339,28 @@ export class KeepWarm {
             : undefined;
     }
 
-    /** What the settings window shows of a model before the owner's value: lifetime, read price, and Break-even's stop. */
+    /** What the settings window shows of a model before the owner's value: lifetime and read price. */
     #known(model: Model<Api> | undefined): Known {
         if (model === undefined) {
             return {};
         }
 
-        const seconds = model.promptCache?.[defaultTier()];
+        const seconds = model.promptCache?.[factsTier()];
         const lifetime =
             seconds === undefined ? publishedLifetime(model.id) : Math.round(seconds / 60);
-        const prices = this.facts(specOf(model)).prices;
-        const breakEven = prices === undefined ? 0 : breakEvenRefreshes(prices);
         const listed = this.#published.lookup(model.id);
         const published = (model.cost.cacheRead > 0 ? model : listed)?.cost.cacheRead;
 
         return {
             ...(lifetime === undefined ? {} : { lifetime }),
             ...(published === undefined || published <= 0 ? {} : { read: published }),
-            ...(breakEven > 0 ? { breakEven } : {}),
         };
     }
 
     /** One model's cache facts and its Break-even plan for the settings window, from the same `idlePlan` the keeper follows. */
     #row(spec: string, model: Model<Api> | undefined, settings: KeepWarmSettings): ModelRow {
         const known = this.#known(model);
-        const lifetime = settings.models[spec]?.lifetime ?? known.lifetime;
+        const seconds = model?.promptCache?.[factsTier()];
         const plan = idlePlan(
             {
                 session: 0,
@@ -379,11 +369,9 @@ export class KeepWarm {
                 maxRefreshes: settings.maxRefreshes,
                 share: settings.share,
             },
-            {
-                ...this.facts(spec),
-                ...(lifetime === undefined ? {} : { lifetimeMs: lifetime * 60_000 }),
-            },
-            undefined,
+            this.facts(spec),
+            // Keep the whole-minute lifetime the settings window has always used.
+            seconds === undefined ? undefined : Math.round(seconds / 60) * 60_000,
             0,
         );
 
@@ -391,16 +379,14 @@ export class KeepWarm {
             spec,
             name: model?.name ?? spec.slice(spec.indexOf("/") + 1),
             known,
-            plan: {
-                ...(lifetime === undefined ? {} : { lifetime }),
-                ...(plan === undefined
+            plan:
+                plan === undefined
                     ? {}
                     : {
                           everyMs: plan.everyMs,
                           refreshes: plan.maxRefreshes,
                           breakEvenStopMs: plan.maxRefreshes * plan.everyMs,
-                      }),
-            },
+                      },
         };
     }
 
