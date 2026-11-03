@@ -125,7 +125,14 @@ import { CustomProviders } from "./custom-providers.ts";
 import { type DesktopMessage, PushStore } from "./push.ts";
 import { type ExtensionInfo, ExtensionLoader, linkTypes, prepareDropInFolder } from "./reload.ts";
 import { ResendTask } from "./resend.ts";
-import { type Client, reportingOf, Room, ROOM_DOCS, subagentView } from "./room.ts";
+import {
+    type Client,
+    reportingOf,
+    Room,
+    ROOM_DOCS,
+    type SubagentModel,
+    subagentView,
+} from "./room.ts";
 import { whyUnanswered } from "./subagent-runs.ts";
 import { Schedules } from "./schedules.ts";
 import { BackgroundTasks } from "./background.ts";
@@ -1443,6 +1450,16 @@ export class PocketApp {
                 this.#agents.set(id, change.value as AgentState);
             }
 
+            const parent = this.#parents.get(id);
+
+            // A subagent's row in its parent's subagents bar shows its model.
+            if (parent !== undefined) {
+                void this.#rooms.get(parent)?.then(
+                    (room) => room.schedule(),
+                    () => {},
+                );
+            }
+
             sessionsChanged = true;
         } else if (kind === SessionsDoc.definition.kind) {
             const before = this.#sessions;
@@ -2673,6 +2690,7 @@ export class PocketApp {
                         this.#busy.has(record.conversationId),
                         reporting.has(name),
                         limited.get(Number(record.conversationId)),
+                        this.subagentModel(record.conversationId),
                     ),
                     ...(ask === undefined
                         ? {}
@@ -3099,6 +3117,31 @@ export class PocketApp {
                     .map((session) => session.cwd),
             ),
         ].slice(0, 8);
+    }
+
+    /**
+     * The model a subagent runs on, for its row in the subagents bar and on the board, and whether it is another model
+     * than its parent's; none before its agent is known.
+     */
+    subagentModel(id: ConversationId): SubagentModel | undefined {
+        const agent = this.#agents.get(id);
+        const ref = agent?.model;
+
+        if (ref === undefined) {
+            return undefined;
+        }
+
+        const parent = this.#parents.get(id);
+        const theirs = parent === undefined ? undefined : this.#agents.get(parent)?.model;
+
+        return {
+            name: this.models.getModel(ref.provider, ref.modelId)?.name ?? ref.modelId,
+            ...(agent?.thinkingLevel === undefined ? {} : { thinking: agent.thinkingLevel }),
+            ...(theirs !== undefined &&
+            (theirs.provider !== ref.provider || theirs.modelId !== ref.modelId)
+                ? { other: true as const }
+                : {}),
+        };
     }
 
     isBusy(id: ConversationId): boolean {
