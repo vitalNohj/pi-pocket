@@ -424,10 +424,13 @@ export function KeepWarmRow() {
         new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     const fallback = server.keepWarm.hours;
     const chosen = state.choice === "default" ? fallback : state.choice;
-    // The owner's time is named in the Default button, so it is not a button of its own.
+    // The owner's time is named in the Default button, so it is not a button of its own. Only the owner turns it on.
+    const owner = store.state.me?.role === "owner";
     const choices = [
         ["default", `Default: ${timeLabel(fallback)}`],
-        ...[...TIMES.slice(1), [0, "Off"]].filter(([value]) => value !== fallback),
+        ...[...TIMES.slice(1), [0, "Off"]].filter(
+            ([value]) => value !== fallback && (owner || value === 0 || value === state.choice),
+        ),
     ];
     const line = status.warm
         ? [

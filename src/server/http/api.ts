@@ -496,15 +496,19 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
             const id = conversationId(second);
 
-            // Keeping the session's cache warm once its run ends: anyone who can see and steer it chooses.
+            // Checked first, so that a bad request changes nothing: keeping the session's cache warm once its run ends.
             if (body.keepWarm !== undefined) {
                 app.requireSee(user, id);
                 app.requireSteer(user);
-                await app.keepWarm.setSession(id, body.keepWarm);
+                app.keepWarm.checkChoice(user, body.keepWarm);
             }
 
             if (body.title !== undefined || body.archived !== undefined) {
                 await app.commands.updateSession(id, user, body);
+            }
+
+            if (body.keepWarm !== undefined) {
+                await app.keepWarm.setSession(user, id, body.keepWarm);
             }
 
             return json(response, 200, { ok: true });

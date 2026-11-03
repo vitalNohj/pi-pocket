@@ -1396,8 +1396,11 @@ export class PocketApp {
             }
 
             if ((meta.archived === true) !== (was.archived === true)) {
+                // Its subagents too: none of them is kept warm, nor refreshed on the way.
                 if (meta.archived === true) {
-                    this.cacheKeeper.forget(conversationId, "the session was archived");
+                    for (const each of this.conversationsOf(conversationId as ConversationId)) {
+                        this.cacheKeeper.forget(Number(each), "the session was archived");
+                    }
                 }
 
                 this.events.emit("session.archived", {

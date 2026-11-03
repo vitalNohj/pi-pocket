@@ -1,5 +1,8 @@
 // The cache keeper with fake streams and a fake clock: when it warms, when it stops, and what it never does.
 import assert from "node:assert/strict";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
     type Api,
@@ -16,6 +19,7 @@ import {
     type IdleStore,
     breakEvenRefreshes,
     idleEveryMs,
+    idleFiles,
     MAX_AGE_MS,
     refreshDelayMs,
 } from "../src/server/cache-keeper.ts";
@@ -55,6 +59,9 @@ function rig(
     const ended = new Set<number>();
     const calls: { maxTokens?: number; maxRetries?: number }[] = [];
     let stopReason = "stop";
+    /** Set: the next answer waits until it is called, before its payload is sent, or after (`holdSent`). */
+    let hold: Promise<void> | undefined;
+    let holdSent = false;
     const models = {
         streamSimple(m: Model<Api>, _c: unknown, options?: SimpleStreamOptions) {
             const stream = createAssistantMessageEventStream();
@@ -74,8 +81,37 @@ function rig(
                 timestamp: now,
             };
 
+            const wait = hold;
+            const sentFirst = holdSent;
+
+            hold = undefined;
+            holdSent = false;
             queueMicrotask(async () => {
-                await options?.onPayload?.({ model: m.id, max_tokens: options.maxTokens }, m);
+                if (!sentFirst) {
+                    await wait;
+                }
+
+                // As a provider does: a payload hook that throws, or an abort, ends the stream with an error.
+                try {
+                    await options?.onPayload?.({ model: m.id, max_tokens: options.maxTokens }, m);
+
+                    if (sentFirst) {
+                        await wait;
+                    }
+
+                    options?.signal?.throwIfAborted();
+                } catch {
+                    const aborted = options?.signal?.aborted === true;
+
+                    stream.push({
+                        type: "error",
+                        reason: aborted ? "aborted" : "error",
+                        error: { ...message, stopReason: aborted ? "aborted" : "error" },
+                    } as never);
+
+                    return;
+                }
+
                 stream.push({ type: "done", reason: "stop", message } as never);
             });
 
@@ -169,6 +205,17 @@ function rig(
         },
         startRun: (id: number) => {
             ended.delete(id);
+        },
+        /** The next stream answers only once the returned function is called. */
+        holdNext: (sent = false) => {
+            let release = () => {};
+
+            holdSent = sent;
+            hold = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+
+            return release;
         },
     };
 }
@@ -475,7 +522,7 @@ test("keep warm: the refresh cap and the cost cap stop it", async () => {
         await cost.advance();
     }
 
-    assert.equal(cost.keeper.status().warms, 3, "$0.015 a refresh: the third passes $0.04");
+    assert.equal(cost.keeper.status().warms, 2, "$0.015 a refresh: a third would pass $0.04");
     const two = cost.keeper.idleStatus(3);
 
     assert.equal(!two.warm && two.stopped, "the cost cap was reached");
@@ -740,4 +787,175 @@ test("keep warm: a miss billed as plain input (OpenAI, xAI) counts as the cache 
 
     assert.equal(status.warm, false);
     assert.match(!status.warm ? (status.stopped ?? "") : "", /already gone 2 times/);
+});
+
+test("keep warm: a request on its way when the model changes is not kept warm", async () => {
+    const r = rig(false, { policy: POLICY });
+    const release = r.holdNext();
+    const sent = r.send("s", "stop");
+
+    await new Promise((x) => setImmediate(x));
+    r.keeper.forget(3, "the model changed");
+    release();
+    await sent;
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(r.keeper.idleStatus(3).warm, false);
+    assert.equal(r.timers.length, 0);
+});
+
+test("keep warm: a model change while saved entries load is not undone by the restore", async () => {
+    const memory = memoryStore();
+    const first = rig(false, { policy: POLICY, store: memory.store });
+
+    await idleRun(first);
+    await first.keeper.close();
+
+    const second = rig(false, { policy: POLICY, store: memory.store });
+
+    let loaded = () => {};
+
+    const load = memory.store.load;
+
+    memory.store.load = async () => {
+        await new Promise<void>((resolve) => {
+            loaded = resolve;
+        });
+
+        return load();
+    };
+
+    second.endRun(3);
+    const restoring = second.keeper.restore();
+
+    second.keeper.forget(3, "the model changed");
+    loaded();
+    await restoring;
+    assert.equal(second.keeper.idleStatus(3).warm, false);
+    assert.equal(memory.saved.size, 0, "the old entry is deleted");
+});
+
+test("keep warm: a refresh on its way at shutdown counts after the restart", async () => {
+    const memory = memoryStore();
+    const first = rig(false, {
+        policy: { ...POLICY, hours: 1000, maxRefreshes: 1 },
+        store: memory.store,
+    });
+
+    await idleRun(first);
+    // Sent to the provider already: the abort at shutdown still comes back with usage to pay.
+    const release = first.holdNext(true);
+    const next = first.timers.sort((a, b) => a.at - b.at)[0]!;
+
+    first.timers.splice(first.timers.indexOf(next), 1);
+    first.setNow(next.at);
+    next.fn();
+    await new Promise((x) => setImmediate(x));
+    const closing = first.keeper.close();
+
+    release();
+    await closing;
+    assert.equal(memory.saved.get("s")?.warms, 1, "the refresh that was on its way is saved");
+
+    const second = rig(false, {
+        policy: { ...POLICY, hours: 1000, maxRefreshes: 1 },
+        store: memory.store,
+    });
+
+    second.setNow(first.now() + 1000);
+    second.endRun(3);
+    await second.keeper.restore();
+    await second.advance().catch(() => {});
+    assert.equal(second.calls.length, 0, "the cap of 1 was reached before the restart");
+});
+
+test("keep warm: a refresh is not sent once its session is turned off", async () => {
+    let policy: IdlePolicy | undefined = POLICY;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    const release = r.holdNext();
+    const next = r.timers.sort((a, b) => a.at - b.at)[0]!;
+
+    r.timers.splice(r.timers.indexOf(next), 1);
+    r.setNow(next.at);
+    next.fn();
+    // Archived (or turned off) while the refresh is being prepared: it must not be sent.
+    policy = undefined;
+    release();
+    await new Promise((x) => setTimeout(x, 5));
+    assert.equal(r.keeper.status().warms, 0);
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(!status.warm && status.stopped, "turned off");
+});
+
+test("keep warm: a tool-wait refresh renews the cache's age for keep warm", async () => {
+    const r = rig(false, { policy: POLICY });
+
+    await r.send("s", "toolUse");
+    await r.advance();
+    // The run ends after the first request's 5 minutes, but within 5 minutes of the refresh.
+    r.setNow(r.now() + 60_000);
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(r.keeper.idleStatus(3).warm, true);
+});
+
+test("keep warm: the cost cap counts the next refresh, so it is never passed", async () => {
+    const r = rig(false, { policy: { ...POLICY, hours: 1000, maxCost: 0.02 } });
+
+    await idleRun(r);
+
+    for (let i = 0; i < 10 && r.timers.length > 0; i++) {
+        await r.advance();
+    }
+
+    assert.ok(r.keeper.status().spent <= 0.02, String(r.keeper.status().spent));
+});
+
+test("keep warm files: an edited or damaged record is never warmed, and leaves nothing behind", async () => {
+    const folder = await mkdtemp(join(tmpdir(), "keep-warm-"));
+
+    try {
+        const store = idleFiles(
+            folder,
+            () => {},
+            () => 2_000_000,
+        );
+        const record: IdleRecord = {
+            version: 1,
+            key: "s",
+            conversationId: 3,
+            provider: "anthropic",
+            modelId: "m",
+            messages: [],
+            options: { sessionId: "s", apiKey: "planted", headers: { x: "1" } },
+            promptTokens: 10,
+            payloadHash: "h",
+            lastTouch: 1_000_000,
+            since: 1_000_000,
+            warms: 0,
+            spent: 0,
+            failures: 0,
+        };
+
+        store.save(record, true);
+        store.save({ ...record, key: "t", options: { sessionId: "t" }, warms: -5 }, true);
+        await store.flush();
+        await writeFile(join(folder, "orphan.context.json"), "[]");
+        await writeFile(join(folder, "cut.json.tmp"), "{");
+
+        const loaded = await store.load();
+
+        assert.equal(loaded.length, 1, "the record with a negative count is dropped");
+        assert.deepEqual(loaded[0]?.options, { sessionId: "s" }, "no key, headers, or address");
+        assert.equal(
+            (await readdir(folder)).length,
+            2,
+            "only the good record's two files are left",
+        );
+    } finally {
+        await rm(folder, { recursive: true, force: true });
+    }
 });

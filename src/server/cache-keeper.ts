@@ -188,6 +188,80 @@ function replayOptions(options: SimpleStreamOptions): SimpleStreamOptions {
     return rest;
 }
 
+/**
+ * The options a saved entry keeps, and the only ones a restored entry takes: what shapes the payload, never where it
+ * goes or how it signs in (`apiKey`, `headers`, `baseUrl`, `env`), which a file on disk must not decide.
+ */
+const SAVED_OPTIONS = new Set([
+    "sessionId",
+    "cacheRetention",
+    "reasoning",
+    "thinkingBudgets",
+    "temperature",
+    "maxTokens",
+    "maxRetryDelayMs",
+    "timeoutMs",
+    "toolChoice",
+    "transport",
+    "identity",
+    "metadata",
+]);
+
+function savedOptions(options: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(Object.entries(options).filter(([key]) => SAVED_OPTIONS.has(key)));
+}
+
+const isCount = (value: unknown, max = Number.MAX_SAFE_INTEGER): value is number =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= max;
+
+/** A record read from disk as the keeper wrote it, or undefined: a damaged or edited file is never warmed. */
+function idleRecordFrom(
+    state: unknown,
+    messages: unknown,
+    name: string,
+    now: number,
+): IdleRecord | undefined {
+    if (typeof state !== "object" || state === null || !Array.isArray(messages)) {
+        return undefined;
+    }
+
+    const r = state as Record<string, unknown>;
+
+    if (
+        r.version !== 1 ||
+        typeof r.key !== "string" ||
+        name !== idleFileName(r.key) ||
+        !Number.isSafeInteger(r.conversationId) ||
+        typeof r.provider !== "string" ||
+        typeof r.modelId !== "string" ||
+        typeof r.payloadHash !== "string" ||
+        typeof r.options !== "object" ||
+        r.options === null ||
+        // The provider session id it was sent under: the key it is filed by, and the conversation `restore` checks.
+        (r.options as Record<string, unknown>).sessionId !== r.key ||
+        !isCount(r.promptTokens) ||
+        (r.ttlMs !== undefined && !isCount(r.ttlMs)) ||
+        !isCount(r.since, now) ||
+        !isCount(r.lastTouch, now) ||
+        !isCount(r.warms) ||
+        !isCount(r.spent) ||
+        !isCount(r.failures, IDLE_FAILURES)
+    ) {
+        return undefined;
+    }
+
+    return {
+        ...(r as unknown as Omit<IdleRecord, "messages">),
+        options: savedOptions(r.options as Record<string, unknown>),
+        messages,
+    };
+}
+
+/** The file name of an idle entry: a hash of its key, so a key never names a path. */
+function idleFileName(key: string): string {
+    return createHash("sha256").update(key).digest("hex").slice(0, 32);
+}
+
 /** Failed refreshes in a row that stop keeping a session warm. */
 export const IDLE_FAILURES = 2;
 /** How long one idle refresh may take before it is given up. */
@@ -277,7 +351,12 @@ type Entry = {
     deadline?: ReturnType<typeof setTimeout>;
     account?: WarmAccount;
     idle?: IdleState;
+    /** Dropped at shutdown but kept on disk: a refresh on its way still saves what it counted. */
+    keptSaved?: boolean;
 };
+
+/** A real request on its way: `seq` orders it against stops (`forget`), and the lookup fills in its conversation. */
+type PendingRequest = { seq: number; conversationId?: number };
 
 type WarmAccount = {
     /** Check the captured payer's current spend limits immediately before each warm; `idle` allows a run that ended. */
@@ -315,9 +394,13 @@ export type IdleStore = {
 };
 
 /** Idle entries in a folder: a small state file and the request's messages for each, written atomically, mode 0600. */
-export function idleFiles(folder: string, log: (line: string) => void = () => {}): IdleStore {
+export function idleFiles(
+    folder: string,
+    log: (line: string) => void = () => {},
+    now: () => number = Date.now,
+): IdleStore {
     let line = Promise.resolve();
-    const name = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 32);
+    const name = idleFileName;
 
     const write = async (file: string, text: string) => {
         await writeFile(`${file}.tmp`, text, { mode: 0o600 });
@@ -357,34 +440,44 @@ export function idleFiles(folder: string, log: (line: string) => void = () => {}
             await line;
             const names = await readdir(folder).catch(() => [] as string[]);
             const records: IdleRecord[] = [];
+            const states = new Set(
+                names.filter((file) => file.endsWith(".json") && !file.endsWith(".context.json")),
+            );
+            const remove = (file: string) =>
+                rm(join(folder, file), { force: true }).catch(() => {});
 
             for (const file of names) {
-                if (!file.endsWith(".json") || file.endsWith(".context.json")) {
-                    continue;
+                // A write a crash cut off, or a context whose state is gone: nothing warms it.
+                if (
+                    file.endsWith(".tmp") ||
+                    (file.endsWith(".context.json") &&
+                        !states.has(file.replace(/\.context\.json$/, ".json")))
+                ) {
+                    await remove(file);
                 }
+            }
+
+            for (const file of states) {
+                const context = file.replace(/\.json$/, ".context.json");
+                let record: IdleRecord | undefined;
 
                 try {
-                    const state = JSON.parse(await readFile(join(folder, file), "utf8")) as Omit<
-                        IdleRecord,
-                        "messages"
-                    >;
-                    const messages = JSON.parse(
-                        await readFile(
-                            join(folder, file.replace(/\.json$/, ".context.json")),
-                            "utf8",
-                        ),
-                    ) as unknown[];
-
-                    if (
-                        state.version === 1 &&
-                        typeof state.key === "string" &&
-                        Array.isArray(messages)
-                    ) {
-                        records.push({ ...state, messages });
-                    }
+                    record = idleRecordFrom(
+                        JSON.parse(await readFile(join(folder, file), "utf8")),
+                        JSON.parse(await readFile(join(folder, context), "utf8")),
+                        file.replace(/\.json$/, ""),
+                        now(),
+                    );
                 } catch {
-                    // A damaged or half-written entry is not warmed: the cache only expires.
-                    await rm(join(folder, file), { force: true }).catch(() => {});
+                    record = undefined;
+                }
+
+                if (record === undefined) {
+                    // A damaged, edited, or older entry is not warmed, and its conversation is not left on disk.
+                    await remove(file);
+                    await remove(context);
+                } else {
+                    records.push(record);
                 }
             }
 
@@ -449,10 +542,17 @@ type OptionalDeps =
 export class CacheKeeper {
     readonly #deps: Required<Omit<KeeperDeps, OptionalDeps>> & Pick<KeeperDeps, OptionalDeps>;
     readonly #entries = new Map<string, Entry>();
-    readonly #requests = new Map<string, { conversationId?: number }>();
+    readonly #requests = new Map<string, PendingRequest>();
     readonly #pending = new Set<Promise<void>>();
     /** Why idle warming last stopped, by conversation, while nothing warms it. */
     readonly #stopped = new Map<number, { reason: string; at: number }>();
+    /** Counts requests and stops, so that each can tell which came first. */
+    #seq = 0;
+    /**
+     * When each conversation's cache last stopped counting (`forget`: another model or context, archived; `runStarted`):
+     * a request that began before it, or an entry saved before the restart, is never kept warm.
+     */
+    readonly #invalidated = new Map<number, number>();
     #underlying: StreamSimple | undefined;
     #closed = false;
     #warms = 0;
@@ -600,7 +700,7 @@ export class CacheKeeper {
 
         // A real request that writes the cache replaces the entry, so stop warming the old one.
         this.#drop(key);
-        const request: { conversationId?: number } = {};
+        const request: PendingRequest = { seq: ++this.#seq };
 
         this.#requests.set(key, request);
         void this.#deps.conversationOf?.(key).then(
@@ -630,6 +730,15 @@ export class CacheKeeper {
         return stream;
     }
 
+    /** Whether a request that began at `seq` still counts for this conversation: no stop came after it began. */
+    #current(conversationId: number, seq: number): boolean {
+        return (this.#invalidated.get(conversationId) ?? 0) < seq;
+    }
+
+    #invalidate(conversationId: number): void {
+        this.#invalidated.set(conversationId, ++this.#seq);
+    }
+
     #onSettled(
         key: string,
         model: Model<Api>,
@@ -637,7 +746,7 @@ export class CacheKeeper {
         options: SimpleStreamOptions | undefined,
         message: AssistantMessage,
         fingerprint: string | undefined,
-        request: { conversationId?: number },
+        request: PendingRequest,
     ): void {
         const finished =
             message.stopReason === "toolUse" ||
@@ -649,6 +758,13 @@ export class CacheKeeper {
         }
 
         if (this.#closed || this.#deps.disabled() || !isReplayable(model, options)) {
+            return;
+        }
+
+        if (
+            request.conversationId !== undefined &&
+            !this.#current(request.conversationId, request.seq)
+        ) {
             return;
         }
 
@@ -695,6 +811,11 @@ export class CacheKeeper {
         }
 
         const known = (id: number) => {
+            // A stop came for this conversation while the request was on its way: its cache is not the one used next.
+            if (!this.#current(id, request.seq)) {
+                return this.#drop(key);
+            }
+
             entry.conversationId = id;
             entry.account = this.#deps.accountFor?.(id);
 
@@ -756,6 +877,8 @@ export class CacheKeeper {
      * archived, or its session no longer wants it.
      */
     forget(conversationId: number, reason: string): void {
+        this.#invalidate(conversationId);
+
         for (const [key, entry] of [...this.#entries]) {
             if (entry.conversationId === conversationId) {
                 this.#drop(key, entry.kind === "idle" ? reason : undefined);
@@ -798,10 +921,17 @@ export class CacheKeeper {
             return;
         }
 
+        const began = ++this.#seq;
+
         for (const record of await store.load()) {
+            // The provider session id must still be this conversation's: a record never warms another's context.
+            const owner = await this.#deps.conversationOf?.(record.key).catch(() => undefined);
             const model = this.#deps.modelOf?.(record.provider, record.modelId);
 
             if (
+                owner !== record.conversationId ||
+                // Another model, a new context, or archiving came while the saved entries were loading.
+                !this.#current(record.conversationId, began) ||
                 this.#closed ||
                 this.#deps.disabled() ||
                 model === undefined ||
@@ -953,10 +1083,12 @@ export class CacheKeeper {
                 modelId: entry.model.id,
                 messages: withContext ? entry.context.messages : [],
                 // Only what JSON keeps: a replay that differs because of a lost field fails the payload check.
-                options: JSON.parse(JSON.stringify(replayOptions(entry.options))) as Record<
-                    string,
-                    unknown
-                >,
+                options: savedOptions(
+                    JSON.parse(JSON.stringify(replayOptions(entry.options))) as Record<
+                        string,
+                        unknown
+                    >,
+                ),
                 promptTokens: entry.promptTokens,
                 ...(entry.ttlMs === undefined ? {} : { ttlMs: entry.ttlMs }),
                 payloadHash: entry.payloadHash,
@@ -1028,7 +1160,10 @@ export class CacheKeeper {
                 : "the refresh cap was reached";
         }
 
-        if (idle.maxCost > 0 && entry.spent >= idle.maxCost) {
+        // What the next refresh is likely to cost (its prompt read from the cache) counts too, so it does not go over.
+        const next = (entry.promptTokens * entry.model.cost.cacheRead) / 1_000_000;
+
+        if (idle.maxCost > 0 && entry.spent + next > idle.maxCost) {
             return "the cost cap was reached";
         }
 
@@ -1111,6 +1246,19 @@ export class CacheKeeper {
                 rejected = true;
                 abort.signal.throwIfAborted();
 
+                // The last moment before it is sent: an idle session archived or turned off meanwhile is not refreshed.
+                if (
+                    entry.kind === "idle" &&
+                    (entry.conversationId === undefined ||
+                        this.#deps.idlePolicy?.(entry.conversationId) === undefined)
+                ) {
+                    if (this.#entries.get(key) === entry) {
+                        this.#drop(key, "turned off");
+                    }
+
+                    throw new Error("Keep warm was turned off for this session.");
+                }
+
                 let matches = false;
 
                 try {
@@ -1157,6 +1305,11 @@ export class CacheKeeper {
             entry.spent += message.usage.cost.total;
 
             if (this.#entries.get(key) !== entry) {
+                // Shutdown came while it was on its way: the next start must count this refresh against the caps.
+                if (entry.keptSaved === true) {
+                    this.#save(key, entry, false);
+                }
+
                 return;
             }
 
@@ -1169,7 +1322,14 @@ export class CacheKeeper {
                 return this.#idleAfter(key, entry, entry.idle!, message, failed);
             }
 
-            return failed ? this.#drop(key) : this.#schedule(key, entry, delay);
+            if (failed) {
+                return this.#drop(key);
+            }
+
+            // The refresh read the cache, so it lives from now: keep warm, when the run ends, counts from here.
+            entry.lastTouch = now;
+
+            return this.#schedule(key, entry, delay);
         } catch (error) {
             this.#deps.log(
                 `Cache keeper stopped for a session: ${error instanceof Error ? error.message : String(error)}`,
@@ -1260,6 +1420,10 @@ export class CacheKeeper {
 
         entry.abort?.abort();
         this.#entries.delete(key);
+
+        if (keepSaved) {
+            entry.keptSaved = true;
+        }
 
         if (entry.kind === "idle" && !keepSaved) {
             this.#deps.store?.delete(key);

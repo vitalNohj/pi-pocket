@@ -341,11 +341,23 @@ export class KeepWarm {
         await this.#app.keepWarmSettingsChanged();
     }
 
-    /** Someone who can steer chooses for one session; the owner's caps bound every choice. */
-    async setSession(id: ConversationId, choice: unknown): Promise<void> {
+    /**
+     * Whether `user` may choose `choice` for a session. Only the owner turns keep warm on or makes it last longer than
+     * their default, as a refresh may be charged to whoever pays for the session; anyone who can steer may turn it off.
+     */
+    checkChoice(user: User, choice: unknown): void {
         if (choice !== "default" && !isKeepWarmTime(choice)) {
             throw new HttpError(400, 'keepWarm must be "default", 0, "auto", 1, 2, 4, or 8');
         }
+
+        if (user.role !== "owner" && choice !== "default" && choice !== 0) {
+            throw new HttpError(403, "Only the owner can keep a session warm for longer");
+        }
+    }
+
+    /** Someone who can steer chooses for one session (`checkChoice`); the owner's caps bound every choice. */
+    async setSession(user: User, id: ConversationId, choice: unknown): Promise<void> {
+        this.checkChoice(user, choice);
 
         await this.#app.harness.commit(async (tx) => {
             const meta = (await tx.doc(SessionsDoc)).items[String(id)];
@@ -357,7 +369,7 @@ export class KeepWarm {
             if (choice === "default") {
                 delete meta.keepWarm;
             } else {
-                meta.keepWarm = choice;
+                meta.keepWarm = choice as KeepWarmTime;
             }
         }, BACKGROUND_CONTEXT);
         this.#app.cacheKeeper.reconsider();
