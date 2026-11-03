@@ -491,9 +491,21 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "sessions" && second !== undefined && method === "POST") {
-            const body = await readJson<{ title?: string; archived?: boolean }>(request);
+            const body = await readJson<{ title?: string; archived?: boolean; keepWarm?: unknown }>(
+                request,
+            );
+            const id = conversationId(second);
 
-            await app.commands.updateSession(conversationId(second), user, body);
+            // Keeping the session's cache warm once its run ends: anyone who can see and steer it chooses.
+            if (body.keepWarm !== undefined) {
+                app.requireSee(user, id);
+                app.requireSteer(user);
+                await app.keepWarm.setSession(id, body.keepWarm);
+            }
+
+            if (body.title !== undefined || body.archived !== undefined) {
+                await app.commands.updateSession(id, user, body);
+            }
 
             return json(response, 200, { ok: true });
         }
@@ -633,6 +645,17 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             return json(response, 200, { ok: true });
+        }
+
+        // Keep warm's settings window: every setting, model lifetimes, and what is warm now. The owner's.
+        if (first === "keep-warm" && second === undefined && method === "GET") {
+            return json(response, 200, app.keepWarm.overview(user));
+        }
+
+        if (first === "keep-warm" && second === undefined && method === "POST") {
+            await app.keepWarm.setSettings(user, await readJson<unknown>(request));
+
+            return json(response, 200, app.keepWarm.overview(user));
         }
 
         // One model allowed for subagents, or no longer: the rest stay as they are. The owner's (checked in `app.ts`).

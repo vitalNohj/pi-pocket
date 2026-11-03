@@ -31,6 +31,7 @@ import { defineItem, slotItems } from "../slots.js";
 import { isPinned, lookLabel, togglePin } from "../theme.js";
 import { currentTrust, trustAvailable } from "../trust.js";
 import { branchAvailable } from "./branch.js";
+import { KeepWarmRow, keepWarmAvailable, keepWarmHint } from "./keep-warm.js";
 import { memoryAvailable, memoryHint, useMemory } from "./memory.js";
 import { defaultLabel, defaultsKept } from "./model.js";
 import { copyText, html, Icon, item, PlaceTile, Sheet, shortPath } from "../ui.js";
@@ -408,6 +409,7 @@ export function MenuSheet({ places = true }) {
     return html`<${MenuFrame} title=${conversation?.title ?? "Menu"}>
         ${places && html`<${Places} />`}
         <div class="menu-session">
+            ${conversation && html`<div class="group-title">Session</div>`}
             ${
                 conversation &&
                 collab() &&
@@ -522,6 +524,7 @@ export function MenuSheet({ places = true }) {
                     setArchived([conversation.id], !conversation.archived);
                 })
             }
+            ${session && html`<${KeepWarmRow} />`}
         </div>
         ${
             view.subagents.length > 0 &&
@@ -557,6 +560,7 @@ export function MenuSheet({ places = true }) {
             ${item("Spend", () => openSheet({ type: "spend" }), me?.role === "owner" ? "by person and session, limits" : "yours")}
             ${triggersOn() && me?.role !== "viewer" && item("Webhooks and watches", () => openSheet({ type: "hooks" }), "GitHub, other services")}
             ${me?.role === "owner" && item("Providers", () => openSheet({ type: "providers" }))}
+            ${me?.role === "owner" && keepWarmAvailable() && item("Keep warm", () => openSheet({ type: "keep-warm" }), keepWarmHint())}
             ${modelRefreshAvailable() && item("Refresh models", refreshModels, store.state.modelRefresh.loading ? "refreshing…" : "models.json and providers")}
             ${extensionMenuItems().map((each) => item(each.label, each.run, each.hint))}
             ${item("Extensions", () => openSheet({ type: "extensions" }), extensionsHint())}
