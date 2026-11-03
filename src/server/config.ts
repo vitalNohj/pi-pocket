@@ -119,10 +119,10 @@ interface PocketConfig {
 export const DEFAULT_LIMIT_WAIT_HOURS = 6;
 
 /**
- * How long a session is kept warm once its run ends: 0 is off; "auto" until the refreshes have cost as much as one more
- * cache write (`breakEvenRefreshes` in `idle-plan.ts`); a number is that many hours.
+ * How long a session is kept warm once its run ends: 0 is off; "break-even" until the refreshes have cost as much as
+ * one more cache write (`breakEvenRefreshes` in `idle-plan.ts`); a number is that many hours (0.5: 30 minutes).
  */
-export type KeepWarmTime = 0 | "auto" | number;
+export type KeepWarmTime = 0 | "break-even" | number;
 
 /** The owner's values for one model, over what Pi knows of it. Each one left out: Pi's, or none. */
 export type KeepWarmModel = {
@@ -148,10 +148,10 @@ export type KeepWarmSettings = {
 };
 
 /** The fixed time limits on offer, in hours. */
-export const KEEP_WARM_HOURS: readonly number[] = [1, 2, 4, 8];
+export const KEEP_WARM_HOURS: readonly number[] = [0.5, 1, 2, 4, 8];
 
 export const DEFAULT_KEEP_WARM: Readonly<KeepWarmSettings> = Object.freeze({
-    hours: 0,
+    hours: 0.5,
     maxCost: 2,
     maxRefreshes: 30,
     share: 75,
@@ -159,9 +159,18 @@ export const DEFAULT_KEEP_WARM: Readonly<KeepWarmSettings> = Object.freeze({
     models: {},
 });
 
-/** Whether `value` is a time a session may be kept warm for: off, auto, or one of the fixed hours. */
+/** Whether `value` is a time a session may be kept warm for: off, break-even, or one of the fixed hours. */
 export function isKeepWarmTime(value: unknown): value is KeepWarmTime {
-    return value === 0 || value === "auto" || KEEP_WARM_HOURS.includes(value as number);
+    return value === 0 || value === "break-even" || KEEP_WARM_HOURS.includes(value as number);
+}
+
+/** A saved time as a time, or undefined. Before 0.28 (not released), break-even was saved as "auto" (or null). */
+export function savedKeepWarmTime(value: unknown): KeepWarmTime | undefined {
+    return value === "auto" || value === null
+        ? "break-even"
+        : isKeepWarmTime(value)
+          ? value
+          : undefined;
 }
 
 const finite = (each: unknown, low: number, high: number): number | undefined =>
@@ -202,12 +211,7 @@ export function keepWarmFrom(raw: unknown): KeepWarmSettings {
     }
 
     return {
-        hours:
-            value.hours === null
-                ? "auto"
-                : isKeepWarmTime(value.hours)
-                  ? value.hours
-                  : DEFAULT_KEEP_WARM.hours,
+        hours: savedKeepWarmTime(value.hours) ?? DEFAULT_KEEP_WARM.hours,
         maxCost: finite(value.maxCost, 0, 1000) ?? DEFAULT_KEEP_WARM.maxCost,
         maxRefreshes: Math.round(
             finite(value.maxRefreshes, 1, 10_000) ?? DEFAULT_KEEP_WARM.maxRefreshes,

@@ -40,7 +40,7 @@ export type SessionMeta = {
     linkedFrom?: { id: number };
     /** The most Pi may spend here, in dollars, subagents included. */
     budget?: number;
-    /** Keeping the prompt cache warm once a run ends: 0 never, "auto", or hours (`KeepWarmTime`); absent: the owner's. */
+    /** Keeping the prompt cache warm once a run ends: 0 never, "break-even", or hours (`KeepWarmTime`); absent: the owner's. */
     keepWarm?: KeepWarmTime;
     /** The git worktree the session works in, when it has one of its own. */
     worktree?: Worktree;

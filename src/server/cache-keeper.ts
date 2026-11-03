@@ -16,7 +16,7 @@
  *
  * **Keep warm** (idle), off until the owner turns it on (`idlePolicy`): after a run ends, it refreshes the cache of the
  * run's last request every `everyMs` (a share of the model's cache lifetime), for
- * as long as the owner's time limit, or with Auto until the refreshes have cost as much as one more cache write
+ * as long as the owner's time limit, or with Break-even until the refreshes have cost as much as one more cache write
  * (`breakEvenRefreshes`), within a cost and a refresh cap for each session. A new run (`runStarted`), a model change,
  * a compaction, New context, archiving (`forget`), the setting turned off (`reconsider`), or two failed refreshes in a
  * row stop it. A refresh fails when it errs, or when it wrote the cache instead of reading it: the cache
@@ -236,7 +236,7 @@ export type IdleStatus =
           lifeMs: number;
           until?: number;
           refreshes: number;
-          /** The refreshes this stretch may have: Auto's break-even, or the owner's cap. */
+          /** The refreshes this stretch may have: Break-even's break-even, or the owner's cap. */
           maxRefreshes: number;
           spent: number;
           model: string;
@@ -661,7 +661,7 @@ export class CacheKeeper {
                 continue;
             }
 
-            // Auto and Off have no deadline: one left from a time limit must not stay.
+            // Break-even and Off have no deadline: one left from a time limit must not stay.
             delete entry.idle.until;
             Object.assign(entry.idle, plan);
 
@@ -905,7 +905,7 @@ export class CacheKeeper {
 
         if (entry.warms >= idle.maxRefreshes) {
             return idle.breakEven
-                ? "Auto: more refreshes would cost more than writing the cache again"
+                ? "Break-even: more refreshes would cost more than writing the cache again"
                 : "the refresh cap was reached";
         }
 

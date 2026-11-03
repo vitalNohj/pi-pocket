@@ -1,5 +1,5 @@
 /**
- * Keep warm's arithmetic, with no state: how often an idle session's cache is refreshed, where Auto stops, and the plan
+ * Keep warm's arithmetic, with no state: how often an idle session's cache is refreshed, where Break-even stops, and the plan
  * a cache keeper follows for one entry. The keeper (`cache-keeper.ts`) refreshes on a plan; the settings
  * (`keep-warm.ts`) and the settings window show the same plan, so both read it from here.
  */
@@ -8,7 +8,7 @@
 export type ModelFacts = {
     /** How long the cache lives, as the owner or the maker's docs say; else the model's `promptCache` counts. */
     lifetimeMs?: number;
-    /** Prices per million tokens to read and write the cache, for where Auto stops. Undefined: not known. */
+    /** Prices per million tokens to read and write the cache, for where Break-even stops. Undefined: not known. */
     prices?: { read: number; write: number };
 };
 
@@ -16,8 +16,8 @@ export type ModelFacts = {
 export type IdlePolicy = {
     /** The session the conversation belongs to (itself, or a subagent's session): the cost cap is the session's. */
     session: number;
-    /** Hours to keep warm after the run ends, or "auto": until the refreshes cost as much as one cache write. */
-    hours: number | "auto";
+    /** Hours to keep warm after the run ends, or "break-even": until the refreshes cost as much as one cache write. */
+    hours: number | "break-even";
     /** Dollars at most for a session's idle stretch, its subagents' refreshes included; 0: no cost cap. */
     maxCost: number;
     /** Refreshes at most for each conversation's idle stretch (each has a cache of its own). */
@@ -35,11 +35,11 @@ export type IdlePlan = {
     lifeMs: number;
     /** When the run ended: the time limit counts from here. */
     since: number;
-    /** When a time limit ends it; undefined: none (Auto). */
+    /** When a time limit ends it; undefined: none (Break-even). */
     until?: number;
     maxCost: number;
     maxRefreshes: number;
-    /** Auto, and `maxRefreshes` is its break-even, which comes before the owner's refresh cap. */
+    /** Break-even, and `maxRefreshes` is its break-even, which comes before the owner's refresh cap. */
     breakEven: boolean;
 };
 
@@ -89,7 +89,7 @@ export function idlePlan(
 
     const base = { session: policy.session, everyMs, lifeMs, since, maxCost: policy.maxCost };
 
-    if (policy.hours !== "auto") {
+    if (policy.hours !== "break-even") {
         return {
             ...base,
             until: since + policy.hours * 3_600_000,

@@ -7,6 +7,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { type IdleStatus, specOf } from "./cache-keeper.ts";
 import {
     isKeepWarmTime,
+    savedKeepWarmTime,
     type KeepWarmModel,
     type KeepWarmSettings,
     type KeepWarmTime,
@@ -19,7 +20,7 @@ import { HttpError } from "./errors.ts";
 import { breakEvenRefreshes, type IdlePolicy, idlePlan, type ModelFacts } from "./idle-plan.ts";
 import { cachePrices, cacheTier, publishedLifetime, PublishedPrices } from "./model-cache-facts.ts";
 
-/** The tier requests use when they say nothing: the lifetime the settings window and Auto count with. */
+/** The tier requests use when they say nothing: the lifetime the settings window and Break-even count with. */
 const defaultTier = () => (cacheTier() === "long" ? "long" : "short");
 
 /** The settings, sessions, models, and keeper calls that keep warm uses. */
@@ -42,13 +43,13 @@ export type KeepWarmDeps = {
     settingsChanged: () => Promise<void>;
 };
 
-/** A session's choice: the owner's default, or a time of its own (0: off, "auto", or hours). */
+/** A session's choice: the owner's default, or a time of its own (0: off, "break-even", or hours). */
 export type KeepWarmChoice = "default" | KeepWarmTime;
 
 /**
  * What is known of a model for the settings window: its cache lifetime in minutes from Pi or the maker's docs (the
  * owner's own replaces it), its published cache read price per million tokens (none: the owner may type one), and
- * where Auto stops, in refreshes.
+ * where Break-even stops, in refreshes.
  */
 type Known = { lifetime?: number; read?: number; breakEven?: number };
 
@@ -57,7 +58,7 @@ type ModelRow = {
     spec: string;
     name: string;
     known: Known;
-    /** How Auto keeps it warm: undefined fields when no cache time is known, so it is not kept warm. */
+    /** How Break-even keeps it warm: undefined fields when no cache time is known, so it is not kept warm. */
     plan: { lifetime?: number; everyMs?: number; refreshes?: number; autoStopMs?: number };
 };
 
@@ -98,7 +99,7 @@ export class KeepWarm {
             return undefined;
         }
 
-        const hours = isKeepWarmTime(meta.keepWarm) ? meta.keepWarm : settings.hours;
+        const hours = savedKeepWarmTime(meta.keepWarm) ?? settings.hours;
 
         if (hours === 0) {
             return undefined;
@@ -116,7 +117,7 @@ export class KeepWarm {
     /**
      * What is known of a model (`provider/modelId`): its cache lifetime (the owner's, else one a maker publishes that
      * Pi's list leaves out; the keeper reads Pi's own from the model), and Pi's published cache prices, which only decide
-     * where Auto stops (a model at $0, such as a subscription, takes the maker's for the same id).
+     * where Break-even stops (a model at $0, such as a subscription, takes the maker's for the same id).
      */
     facts(spec: string): ModelFacts {
         const own = this.#deps.settings().models[spec] ?? {};
@@ -141,7 +142,7 @@ export class KeepWarm {
 
     /**
      * The owner's read price for a model with none published, with the write its input price implies (the model's, else
-     * the maker's for the same id). No input price: only the read is known, and Auto stops at the refresh cap.
+     * the maker's for the same id). No input price: only the read is known, and Break-even stops at the refresh cap.
      */
     #ownPrices(
         read: number | undefined,
@@ -189,7 +190,7 @@ export class KeepWarm {
         }
 
         return {
-            choice: isKeepWarmTime(meta.keepWarm) ? meta.keepWarm : "default",
+            choice: savedKeepWarmTime(meta.keepWarm) ?? "default",
             status: this.#deps.keeper.idleStatus(Number(id)),
         };
     }
@@ -208,7 +209,7 @@ export class KeepWarm {
 
         if ("hours" in asked) {
             if (!isKeepWarmTime(asked.hours)) {
-                throw new HttpError(400, 'hours must be 0, "auto", 1, 2, 4, or 8');
+                throw new HttpError(400, 'hours must be 0, "break-even", 0.5, 1, 2, 4, or 8');
             }
 
             next.hours = asked.hours;
@@ -302,17 +303,20 @@ export class KeepWarm {
         user: User,
         id: ConversationId,
         choice: unknown,
-        current?: KeepWarmTime,
+        current?: unknown,
     ): KeepWarmChoice {
         this.#deps.requireAccess(user, id);
 
         if (choice !== "default" && !isKeepWarmTime(choice)) {
-            throw new HttpError(400, 'keepWarm must be "default", 0, "auto", 1, 2, 4, or 8');
+            throw new HttpError(
+                400,
+                'keepWarm must be "default", 0, "break-even", 0.5, 1, 2, 4, or 8',
+            );
         }
 
         const turnsOn =
             choice === "default"
-                ? current === 0 && this.#deps.settings().hours !== 0
+                ? savedKeepWarmTime(current) === 0 && this.#deps.settings().hours !== 0
                 : choice !== 0;
 
         if (user.role !== "owner" && turnsOn) {
@@ -345,7 +349,7 @@ export class KeepWarm {
             : undefined;
     }
 
-    /** What the settings window shows of a model before the owner's value: lifetime, read price, and Auto's stop. */
+    /** What the settings window shows of a model before the owner's value: lifetime, read price, and Break-even's stop. */
     #known(model: Model<Api> | undefined): Known {
         if (model === undefined) {
             return {};
@@ -366,14 +370,14 @@ export class KeepWarm {
         };
     }
 
-    /** One model's cache facts and its Auto plan for the settings window, from the same `idlePlan` the keeper follows. */
+    /** One model's cache facts and its Break-even plan for the settings window, from the same `idlePlan` the keeper follows. */
     #row(spec: string, model: Model<Api> | undefined, settings: KeepWarmSettings): ModelRow {
         const known = this.#known(model);
         const lifetime = settings.models[spec]?.lifetime ?? known.lifetime;
         const plan = idlePlan(
             {
                 session: 0,
-                hours: "auto",
+                hours: "break-even",
                 maxCost: settings.maxCost,
                 maxRefreshes: settings.maxRefreshes,
                 share: settings.share,

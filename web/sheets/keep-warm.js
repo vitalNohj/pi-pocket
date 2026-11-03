@@ -4,19 +4,32 @@ import { useEffect, useState } from "preact/hooks";
 import { actions, api, attempt, canSteer, closeSheet, store } from "../store.js";
 import { html, Icon, Loader, Sheet } from "../ui.js";
 
-/** The times on offer: off, Auto, or hours. The server takes these only. */
+/** The times on offer: off, hours (0.5: 30 minutes), or Break-even. The server takes these only. */
 const TIMES = [
     [0, "Off"],
-    ["auto", "Auto"],
+    [0.5, "30 min"],
     [1, "1 h"],
     [2, "2 h"],
     [4, "4 h"],
     [8, "8 h"],
+    ["break-even", "Break-even"],
 ];
 
-/** What Auto means, said the same way wherever it can be chosen. */
-const AUTO =
-    "Auto keeps the cache warm until the refreshes have cost as much as writing the cache once more, then lets it expire. Come back before then and you save; stay away longer and you pay at most about twice what letting it expire would have cost.";
+/** What Break-even means, said the same way wherever it can be chosen. */
+const BREAK_EVEN =
+    "Keeps the cache warm until it has cost as much as one message without a cache, then stops.";
+
+/**
+ * The example every estimate uses, as text the owner approved: Claude Opus 5.5's list prices (2026-11-02) per million
+ * tokens, its 1-hour cache, and a 150k context. Nothing here is read from a model or a provider.
+ */
+const EXAMPLE = {
+    name: "Claude Opus 5.5",
+    read: 0.2,
+    write: 8,
+    cacheMinutes: 60,
+    context: 150_000,
+};
 
 const money = (amount) =>
     amount >= 100
@@ -44,9 +57,58 @@ function durationLabel(ms) {
     return `${Math.floor(minutes / 60)} h${rest === 0 ? "" : ` ${rest} min`}`;
 }
 
-/** A keep-warm time in words: "Auto", "2 h", or "Off". */
+/** A keep-warm time in words: "Off", "30 min", "2 h", or "Break-even". */
 function timeLabel(hours) {
-    return hours === 0 ? "Off" : hours === "auto" ? "Auto" : `${hours} h`;
+    return TIMES.find(([value]) => value === hours)?.[1] ?? `${hours} h`;
+}
+
+/**
+ * What a time costs for the example model under the owner's refresh share and cap: refreshes, their cost, and what
+ * one message costs without a cache. The same arithmetic as `idleEveryMs` and `breakEvenRefreshes`.
+ */
+function estimate(hours, settings) {
+    const every = Math.floor(
+        Math.min((EXAMPLE.cacheMinutes * settings.share) / 100, EXAMPLE.cacheMinutes - 1 / 6),
+    );
+    const perRefresh = (EXAMPLE.context * EXAMPLE.read) / 1_000_000;
+    const refreshes =
+        hours === "break-even"
+            ? Math.min(Math.floor(EXAMPLE.write / EXAMPLE.read), settings.maxRefreshes)
+            : Math.floor((hours * 60) / every);
+
+    return {
+        refreshes,
+        cost: refreshes * perRefresh,
+        lasts: refreshes * every,
+        uncached: (EXAMPLE.context * EXAMPLE.write) / 1_000_000,
+    };
+}
+
+/** The estimate under the times: what the chosen time does for the example model, in two short lines. */
+function Estimate({ hours, settings }) {
+    const { refreshes, cost, lasts, uncached } = estimate(hours, settings);
+    const example = `${EXAMPLE.name}, 150k context:`;
+    const plural = (count) => `${count} ${count === 1 ? "refresh" : "refreshes"}`;
+    let what;
+
+    if (hours === 0) {
+        what = html`once its cache expires, the next message costs about <b>${money(uncached)}</b>.`;
+    } else if (hours === "break-even") {
+        what = html`at most <b>${money(uncached)}</b>, the cost of one message without a cache. ${
+            refreshes < Math.floor(EXAMPLE.write / EXAMPLE.read)
+                ? html`Your refresh cap stops it sooner: ${plural(refreshes)}, <b>${money(cost)}</b>, about ${durationLabel(lasts * 60_000)}.`
+                : html`About ${plural(refreshes)} over ${durationLabel(lasts * 60_000)}.`
+        }`;
+    } else if (refreshes === 0) {
+        what = html`<b>no refreshes</b>, as its cache already lasts ${EXAMPLE.cacheMinutes} min. This time helps models with a shorter cache.`;
+    } else {
+        what = html`about ${plural(refreshes)} in ${timeLabel(hours)}, <b>${money(cost)}</b>. Without keep warm, the next message costs about <b>${money(uncached)}</b>.`;
+    }
+
+    return html`<div class="keep-warm-estimate small">
+        ${hours === "break-even" && html`<div>${BREAK_EVEN}</div>`}
+        <div><span class="muted">${example}</span> ${what}</div>
+    </div>`;
 }
 
 /** The menu row's hint: the owner's time. */
@@ -115,14 +177,14 @@ function NumberField({
 }
 
 /**
- * Where Auto stops, as text, as the owner approved it: the makers' list prices and cache times (2026-11-02), a refresh
- * at 75% of the cache time, a 150k context, and a 30-refresh cap. Nothing here is read from a model or a provider.
+ * Where Break-even stops, as text, as the owner approved it: the makers' list prices and cache times (2026-11-02), a
+ * refresh at 75% of the cache time, a 150k context, and a 30-refresh cap. Nothing here is read from a model or a
+ * provider. Keep warm's whole cost to that stop, and one message's without a cache.
  */
-const AUTO_TABLE = [
-    ["Claude Opus 5.5", "1 h", "$0.200/M", "22 h 30 min (30)", "$0.900"],
-    ["GPT-6.1 Sol", "30 min", "$0.100/M", "9 h 10 min (25)", "$0.375"],
-    ["GPT-6.1 Terra", "30 min", "$0.050/M", "9 h 10 min (25)", "$0.188"],
-    ["Grok 4.7", "?", "$0.500/M", "3 h (4)", "$0.300"],
+const BREAK_EVEN_TABLE = [
+    ["Claude Opus 5.5", "1 h", "22 h 30 min", 30, "$0.90", "$1.20"],
+    ["GPT-6.1 Sol", "30 min", "9 h 10 min", 25, "$0.38", "$0.38"],
+    ["GPT-6.1 Terra", "30 min", "9 h 10 min", 25, "$0.19", "$0.19"],
 ];
 
 /** One model in the settings window: its cache cost, when its cache expires, and what keep warm does with it. */
@@ -176,7 +238,7 @@ function ModelCard({ model, settings, onSet }) {
             ${
                 everyMs === undefined
                     ? "Not kept warm: its maker publishes no cache time. Type it to turn it on."
-                    : `Refreshed every ${durationLabel(everyMs)} · Auto stops after ${durationLabel(autoStopMs)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
+                    : `Refreshed every ${durationLabel(everyMs)} · Break-even stops after ${durationLabel(autoStopMs)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
             }
         </div>
     </div>`;
@@ -235,10 +297,6 @@ export function KeepWarmSheet() {
     return html`<${Sheet} title="Keep warm" onClose=${closeSheet} className="keep-warm-sheet">
         <div class="keep-warm-layout">
             <div class="keep-warm-settings">
-                <p class="muted small">
-                    Pocket sends the smallest possible request to keep the cache alive. This is cheaper than no
-                    cache, until you have paid what you would have paid anyway (Auto).
-                </p>
                 ${
                     now.warm > 0 &&
                     html`<p class="small keep-warm-now">
@@ -246,41 +304,52 @@ export function KeepWarmSheet() {
                         ${now.refreshes} ${now.refreshes === 1 ? "refresh" : "refreshes"} · ${money(now.spent)}
                     </p>`
                 }
+                <p class="muted small">
+                    Pocket sends the smallest possible request to keep the cache alive. This is cheaper than no
+                    cache, until you have paid what you would have paid anyway (Break-even).
+                </p>
                 <section class="keep-warm-group">
                     <div class="label">After a run ends, keep sessions warm for</div>
                     ${segmented("How long to keep sessions warm", TIMES, settings.hours, "hours")}
+                    <${Estimate} hours=${settings.hours} settings=${settings} />
+                </section>
+                <section class="keep-warm-group">
+                    <div class="label">Where Break-even stops</div>
+                    <table class="keep-warm-stops small">
+                        <thead>
+                            <tr>
+                                <th scope="col">Model</th>
+                                <th scope="col">Stops after</th>
+                                <th scope="col">Keep warm</th>
+                                <th scope="col">No cache</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${BREAK_EVEN_TABLE.map(
+                                ([
+                                    name,
+                                    cache,
+                                    stops,
+                                    refreshes,
+                                    warm,
+                                    uncached,
+                                ]) => html`<tr key=${name}>
+                                    <th scope="row">
+                                        ${name}<span class="muted">${cache} cache</span>
+                                    </th>
+                                    <td>${stops}<span class="muted">${refreshes} refreshes</span></td>
+                                    <td>${warm}</td>
+                                    <td>${uncached}</td>
+                                </tr>`,
+                            )}
+                        </tbody>
+                    </table>
                     <p class="muted small">
-                        ${
-                            settings.hours === 0
-                                ? "Off. A session can still be kept warm from its menu."
-                                : settings.hours === "auto"
-                                  ? AUTO
-                                  : `Stops ${settings.hours} h after the run ended, or at a cap below.`
-                        }
+                        Keep warm: what all its refreshes cost until it stops. No cache: one message after the cache
+                        expired. List prices, a 150k context. These are estimates only: they can be wrong, and prices and cache
+                        times can change at any time. As a rule, keeping a session warm for 30 minutes to 3 hours saves
+                        money when you step away.
                     </p>
-                    ${
-                        settings.hours === "auto" &&
-                        html`<table class="keep-warm-stops small">
-                            <thead>
-                                <tr>
-                                    <th scope="col">Model</th>
-                                    <th scope="col">Cache</th>
-                                    <th scope="col">Read</th>
-                                    <th scope="col">Stops after</th>
-                                    <th scope="col">Cost</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${AUTO_TABLE.map(
-                                    ([name, ...cells]) => html`<tr key=${name}>
-                                        <th scope="row">${name}</th>
-                                        ${cells.map((cell, index) => html`<td key=${index}>${cell}</td>`)}
-                                    </tr>`,
-                                )}
-                            </tbody>
-                        </table>
-                        <p class="muted small">List prices, a 150k context. Grok publishes no cache time.</p>`
-                    }
                 </section>
                 <section class="keep-warm-group keep-warm-grid">
                     <label class="keep-warm-field">
@@ -384,7 +453,7 @@ export function KeepWarmSheet() {
 }
 
 /**
- * A session's own time, in its menu and a reply's menu: the owner's default, Auto, a fixed time, or off. Shows when the
+ * A session's own time, in its menu and a reply's menu: the owner's default, Break-even, a fixed time, or off. Shows when the
  * next refresh goes out and when it stops, or why it last stopped.
  */
 export function KeepWarmRow() {
@@ -428,9 +497,9 @@ export function KeepWarmRow() {
           ? `stopped: ${status.stopped}`
           : chosen === 0
             ? "not kept warm"
-            : chosen === "auto"
-              ? "until keeping warm stops paying off"
-              : `${chosen} h after Pi finishes`;
+            : chosen === "break-even"
+              ? "until it has cost as much as one message without a cache"
+              : `${timeLabel(chosen)} after Pi finishes`;
 
     return html`<div class="keep-warm-session">
         <div class="keep-warm-session-head">
@@ -442,7 +511,7 @@ export function KeepWarmRow() {
                 ([value, label]) => html`<button
                     class=${state.choice === value ? "on" : ""}
                     aria-pressed=${state.choice === value}
-                    title=${value === "default" ? "The owner's default" : value === "auto" ? AUTO : ""}
+                    title=${value === "default" ? "The owner's default" : value === "break-even" ? BREAK_EVEN : ""}
                     disabled=${!steer}
                     onClick=${() => state.choice !== value && choose(value)}
                 >

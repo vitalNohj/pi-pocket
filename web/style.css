@@ -18824,14 +18824,33 @@ pre.gallery-code {
 }
 
 /* Where Auto stops for the examples: model, read price, time, cost. */
+/* What the chosen time does for the example model: a quiet card under the times. */
+.keep-warm-estimate {
+    display: grid;
+    gap: 4px;
+    margin: 8px 0 0;
+    padding: 6px 10px;
+    border-left: 3px solid var(--accent);
+    border-radius: 0 var(--r-control) var(--r-control) 0;
+    background: var(--card);
+}
+
 .keep-warm-stops {
     width: 100%;
     border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+}
+
+/* A cell's second line: the model's cache time, or the refreshes. */
+.keep-warm-stops :is(th, td) > span {
+    display: block;
+    font-size: 0.92em;
 }
 
 .keep-warm-stops th,
 .keep-warm-stops td {
-    padding: 3px 0;
+    padding: 4px 0;
+    vertical-align: top;
     text-align: right;
     font-weight: normal;
     white-space: nowrap;

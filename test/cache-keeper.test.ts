@@ -673,9 +673,9 @@ test("keep warm: break-even is the write price over the read price", () => {
     assert.equal(breakEvenRefreshes({ read: 1, write: 0.5 }), 1);
 });
 
-test("keep warm: Auto stops at break-even, with its own reason", async () => {
+test("keep warm: Break-even stops at break-even, with its own reason", async () => {
     const r = rig(false, {
-        policy: { ...POLICY, hours: "auto" },
+        policy: { ...POLICY, hours: "break-even" },
         facts: { prices: { read: 0.5, write: 2 } },
     });
 
@@ -690,12 +690,12 @@ test("keep warm: Auto stops at break-even, with its own reason", async () => {
 
     assert.equal(
         !status.warm && status.stopped,
-        "Auto: more refreshes would cost more than writing the cache again",
+        "Break-even: more refreshes would cost more than writing the cache again",
     );
 });
 
-test("keep warm: Auto with no published prices stops at the refresh cap; the cap below break-even wins", async () => {
-    const none = rig(false, { policy: { ...POLICY, hours: "auto", maxRefreshes: 3 } });
+test("keep warm: Break-even with no published prices stops at the refresh cap; the cap below break-even wins", async () => {
+    const none = rig(false, { policy: { ...POLICY, hours: "break-even", maxRefreshes: 3 } });
 
     await idleRun(none);
 
@@ -709,7 +709,7 @@ test("keep warm: Auto with no published prices stops at the refresh cap; the cap
     assert.equal(!unpriced.warm && unpriced.stopped, "the refresh cap was reached");
 
     const capped = rig(false, {
-        policy: { ...POLICY, hours: "auto", maxRefreshes: 2 },
+        policy: { ...POLICY, hours: "break-even", maxRefreshes: 2 },
         facts: { prices: CLAUDE },
     });
 
@@ -735,7 +735,7 @@ test("keep warm: the owner's lifetime for a model wins over Pi's", async () => {
     assert.equal((r.timers[0]?.at ?? 0) - r.now(), 2_700_000, "75% of the owner's hour");
 });
 
-test("keep warm: changing a time limit to Auto drops the old deadline", async () => {
+test("keep warm: changing a time limit to Break-even drops the old deadline", async () => {
     let policy: IdlePolicy = { ...POLICY, hours: 1 };
     const r = rig(false, { policy: () => policy, facts: { prices: CLAUDE } });
 
@@ -744,11 +744,11 @@ test("keep warm: changing a time limit to Auto drops the old deadline", async ()
 
     assert.ok(before.warm && before.until !== undefined, "a 1 h limit has a deadline");
 
-    policy = { ...POLICY, hours: "auto" };
+    policy = { ...POLICY, hours: "break-even" };
     r.keeper.reconsider();
     const after = r.keeper.idleStatus(3);
 
-    assert.ok(after.warm && after.until === undefined, "Auto has none");
+    assert.ok(after.warm && after.until === undefined, "Break-even has none");
     assert.equal(r.timers.length, 1, "one timer after the change");
 });
 

@@ -82,7 +82,7 @@ test("keep warm: policy uses the owner's hours and excludes PiP, archived sessio
     assert.equal(keepWarm.policy(session)?.hours, settings.hours);
 });
 
-test("keep warm: overview gives each model's refresh interval and Auto cap", () => {
+test("keep warm: overview gives each model's refresh interval and Break-even cap", () => {
     const cached: Model<Api> = {
         ...model("anthropic-messages", { input: 4, cacheRead: 0.2, cacheWrite: 5 }),
         provider: "anthropic",
@@ -118,7 +118,7 @@ test("keep warm: a guest may turn a session's keep warm off, and only the owner 
         const guest = app.config.addUser("Alex", "guest").user;
         const id = await newSession(app);
 
-        for (const choice of ["auto", 8, 1]) {
+        for (const choice of ["break-even", 8, 1]) {
             assert.throws(() => app.keepWarm.checkChoice(guest, id, choice), /Only the owner/);
         }
 
@@ -128,14 +128,14 @@ test("keep warm: a guest may turn a session's keep warm off, and only the owner 
         assert.throws(() => app.keepWarm.checkChoice(owner(app), id, 3), /must be/);
         await app.keepWarm.setSession(guest, id, 0);
         assert.equal(app.sessionMeta(id)?.keepWarm, 0);
-        await assert.rejects(app.keepWarm.setSession(guest, id, "auto"), /Only the owner/);
+        await assert.rejects(app.keepWarm.setSession(guest, id, "break-even"), /Only the owner/);
 
         // The owner's default is on: a guest's Default would turn the session back on.
-        await app.keepWarm.setSettings(owner(app), { hours: "auto" });
+        await app.keepWarm.setSettings(owner(app), { hours: "break-even" });
         await assert.rejects(app.keepWarm.setSession(guest, id, "default"), /Only the owner/);
         assert.equal(app.sessionMeta(id)?.keepWarm, 0);
-        await app.keepWarm.setSession(owner(app), id, "auto");
-        assert.equal(app.sessionMeta(id)?.keepWarm, "auto");
+        await app.keepWarm.setSession(owner(app), id, "break-even");
+        assert.equal(app.sessionMeta(id)?.keepWarm, "break-even");
         await app.keepWarm.setSession(guest, id, "default");
         assert.equal(
             app.sessionMeta(id)?.keepWarm,
@@ -151,4 +151,26 @@ test("keep warm: a guest may turn a session's keep warm off, and only the owner 
         await app.close();
         cleanUp();
     }
+});
+
+test("keep warm: 30 minutes is the default; break-even saved as auto before 0.28 still reads as break-even", () => {
+    assert.equal(keepWarmFrom({}).hours, 0.5);
+    assert.equal(keepWarmFrom({ hours: 0.5 }).hours, 0.5);
+    assert.equal(keepWarmFrom({ hours: "auto" }).hours, "break-even");
+    assert.equal(keepWarmFrom({ hours: null }).hours, "break-even");
+    assert.equal(keepWarmFrom({ hours: 3 }).hours, 0.5, "a time not on offer is the default");
+
+    const meta: SessionMeta = {
+        cwd: "/tmp",
+        createdAt: 0,
+        updatedAt: 0,
+        keepWarm: "auto" as never,
+    };
+    const session = 3 as ConversationId;
+    const keepWarm = new KeepWarm(
+        fakeDeps({ settings: () => keepWarmFrom({ hours: 2 }), sessionMeta: () => meta }),
+    );
+
+    assert.equal(keepWarm.policy(session)?.hours, "break-even");
+    assert.equal(keepWarm.session(session)?.choice, "break-even");
 });

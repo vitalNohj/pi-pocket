@@ -40,7 +40,7 @@ export function publishedLifetime(id: string): number | undefined {
 }
 
 /**
- * A model's published cache prices per million tokens, for Auto's stop only: the read, and what a miss costs (the
+ * A model's published cache prices per million tokens, for Break-even's stop only: the read, and what a miss costs (the
  * write). Anthropic's 1-hour write is twice the input price, where Pi's price is the 5-minute write; a maker with no
  * write price (OpenAI, xAI) charges the plain input price. Undefined: not published.
  */
