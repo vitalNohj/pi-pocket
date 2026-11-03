@@ -5,7 +5,7 @@
 import { readdirSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import QRCode from "qrcode";
 import { MAX_PEEKS } from "../app.ts";
 import {
@@ -22,6 +22,7 @@ import {
 import type { User } from "../config.ts";
 import { MAX_AVATAR, readAvatar } from "../avatars.ts";
 import { HttpError } from "../errors.ts";
+import { machineRoots, parentFolder } from "../paths.ts";
 import { desktopTheme, wallpaperFile } from "../omarchy.ts";
 import { runningBoard, runningNow } from "../running.ts";
 import { serveImage } from "./assets.ts";
@@ -609,15 +610,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
         if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
             requireOwner(user);
 
-            return json(
-                response,
-                200,
-                await app.runners.folders(
+            return json(response, 200, {
+                ...(await app.runners.folders(
                     second,
                     url.searchParams.get("path") ?? "~",
                     url.searchParams.get("hidden") === "1",
-                ),
-            );
+                )),
+                // The folders of this person's newest sessions on that computer.
+                recent: app.recentFolders(user, second),
+            });
         }
 
         if (first === "sessions" && second === undefined && method === "POST") {
@@ -707,15 +708,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             dirs.sort((a, b) => a.name.localeCompare(b.name));
-            const recent = [...new Set(app.sessions(user).map((session) => session.cwd))].slice(
-                0,
-                8,
-            );
+            // The folders of this person's newest sessions here: another computer's folders are not on this one.
+            const recent = app.recentFolders(user, undefined);
 
             return json(response, 200, {
                 path,
-                parent: dirname(path) === path ? null : dirname(path),
+                parent: parentFolder(path),
                 home: homedir(),
+                // This machine's top folders: `/`, or each Windows drive, as places to start from.
+                roots: await machineRoots(),
                 dirs: dirs.slice(0, 1000),
                 recent,
             });

@@ -65,6 +65,7 @@ import {
     ChatDoc,
     type ChatMessage,
     DecisionsDoc,
+    type FolderFavorites as FolderFavoritesValue,
     FolderFavoritesDoc,
     MemoryDoc,
     type SessionMeta,
@@ -1262,9 +1263,7 @@ export class PocketApp {
                 );
             }
         } else if (kind === FolderFavoritesDoc.definition.kind) {
-            this.folderFavorites.committed(
-                change.value as { users: Record<string, string[]> } | null,
-            );
+            this.folderFavorites.committed(change.value as FolderFavoritesValue | null);
         } else if (kind === MemoryDoc.definition.kind) {
             this.memory.committed();
         } else if (ROOM_DOCS.has(kind) && id !== undefined) {
@@ -2507,6 +2506,8 @@ export class PocketApp {
             },
             // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
             folderFavorites: await this.folderFavorites.list(user),
+            // The same, on each computer they linked (`runners.ts`), by its id.
+            runnerFavorites: await this.folderFavorites.runners(user),
             // Linked computers (`runners.ts`), for the owner's Runners sheet and New session's Runs on.
             ...(user.role === "owner" ? { runners: this.runners.list() } : {}),
             // Every theme folder, for Appearance and for the look this tab uses (`theme.js`).
@@ -2703,6 +2704,20 @@ export class PocketApp {
                 };
             })
             .sort((a, b) => b.updatedAt - a.updatedAt);
+    }
+
+    /**
+     * The folders of the newest sessions `user` sees on one computer (`runner`; undefined: this server), newest first,
+     * at most 8: the folder picker's Recent for that computer.
+     */
+    recentFolders(user: User, runner: string | undefined): string[] {
+        return [
+            ...new Set(
+                this.sessions(user)
+                    .filter((session) => session.runner === runner)
+                    .map((session) => session.cwd),
+            ),
+        ].slice(0, 8);
     }
 
     isBusy(id: ConversationId): boolean {

@@ -29,7 +29,7 @@ import { describe, HttpError } from "./errors.ts";
 import { FileLists, type FileListing, type FileView, viewFile } from "./files.ts";
 import { type FolderAccess, localAccess, remoteAccess, Unreachable } from "./folder-access.ts";
 import { GitError } from "./git.ts";
-import { displayPath, expandHome } from "./paths.ts";
+import { displayPath, expandFolder, expandHome } from "./paths.ts";
 import { reveal, revealOn } from "./reveal.ts";
 import type { ClientEntry } from "./projection.ts";
 
@@ -300,7 +300,7 @@ export class Workspace {
 
     /** A folder to work in, as its whole path: a 404 when it is not there, so the folder picker can offer to make it. */
     checkDirectory(path: string): string {
-        const absolute = resolve(expandHome(path.trim() === "" ? "~" : path.trim()));
+        const absolute = resolve(expandFolder(path.trim() === "" ? "~" : path.trim()));
         let found;
 
         try {
@@ -351,10 +351,13 @@ export class Workspace {
             throw new HttpError(400, "Name the folder to make.");
         }
 
-        const expanded = expandHome(written);
+        const expanded = expandFolder(written);
 
         if (!isAbsolute(expanded)) {
-            throw new HttpError(400, "Give the folder's whole path, from / or ~.");
+            throw new HttpError(
+                400,
+                "Give the folder's whole path, from / or ~ (or a drive, as D:\\).",
+            );
         }
 
         const absolute = resolve(expanded);

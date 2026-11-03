@@ -4586,8 +4586,7 @@ pre.diff .del {
     background: var(--bg);
 }
 
-.notifications-sheet .extension,
-.message-worktree {
+.notifications-sheet .extension {
     align-items: center;
 }
 
@@ -8786,34 +8785,226 @@ div.group-head {
     text-overflow: ellipsis;
 }
 
-.message-actions > .group-title {
-    margin: 0;
-    padding: 8px 14px;
+/* The copy sheet (`sheets/copy.js`, `sheets/message.js`): what is copied, rows of choices, one main button, small
+ * actions. Each row: its label on the left, its value on the right, a chevron where a tap opens a picker. */
+.copy-what {
+    overflow-wrap: anywhere;
+    border-radius: var(--r-card);
+    background: var(--card);
+    padding: calc(10px * var(--space-y)) calc(14px * var(--space-x));
+    color: var(--body);
+    font-size: 13.5px;
+    font-weight: 500;
+}
+
+/* Two lines of a reply, clipped by a clear border: the clamp cuts at the padding's edge. */
+.copy-preview {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    padding: 0;
+    border: solid transparent;
+    border-width: calc(10px * var(--space-y)) calc(14px * var(--space-x));
+    font-weight: 400;
+}
+
+textarea.copy-text {
+    min-height: 6.5em;
+    max-height: 40vh;
+    resize: vertical;
+    font-size: 13.5px;
+    line-height: 1.5;
+    border-radius: var(--r-card);
+}
+
+.choice-rows {
+    overflow: hidden;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--bg);
+}
+
+.choice-rows > :not(:first-child) {
+    border-top: 1px solid var(--hair);
+}
+
+.choice-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: calc(32px + 12px * var(--space-y));
+    padding: calc(10px * var(--space-y)) calc(14px * var(--space-x));
+    text-align: left;
+    font-size: 13.5px;
+    color: var(--text);
+    background: var(--bg);
+    transition: background-color var(--t-hover) var(--ease-out);
+}
+
+button.choice-row:focus-visible {
+    outline-offset: -2px;
+}
+
+@media (hover: hover) {
+    button.choice-row:hover {
+        background: var(--card);
+    }
+}
+
+button.choice-row:active {
+    background: var(--pressed);
+}
+
+.choice-row.off .choice-label {
+    color: var(--faint);
+}
+
+.choice-label {
+    flex: none;
+    min-width: 7.5rem;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.choice-value {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: flex-end;
+    min-width: 0;
+    text-align: right;
+}
+
+.choice-main {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* A long folder keeps its end in view: the ellipsis goes at its start. */
+.choice-main:has(> bdi) {
+    direction: rtl;
+}
+
+.choice-main > bdi {
+    font-family: var(--mono);
+    font-size: 12.5px;
+}
+
+.choice-sub {
+    color: var(--faint);
+    font-size: 12px;
+}
+
+.choice-computer {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.choice-chev {
+    flex: none;
+    color: var(--faint);
+}
+
+.choice-options {
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
     background: var(--card);
 }
 
-/* A viewer has nothing to do with a message of files alone: no empty box. */
-.message-actions:empty {
+.choice-rows > .choice-options {
+    border-top: 1px solid var(--hair);
+}
+
+.choice-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: calc(30px + 8px * var(--space-y));
+    padding: 6px 10px;
+    border-radius: var(--r-row);
+    font-size: 13.5px;
+    color: var(--text);
+    text-align: left;
+}
+
+@media (hover: hover) {
+    .choice-option:hover:not(:disabled) {
+        background: var(--hover);
+    }
+}
+
+.choice-option.on {
+    color: var(--accent);
+}
+
+.choice-option:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.copy-asks {
+    margin: calc(-6px * var(--space-y)) 2px 0 !important;
+}
+
+.copy-go {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.copy-go > .button {
+    min-height: 42px;
+}
+
+.copy-go > p {
+    padding: 0 2px;
+    text-align: center;
+}
+
+.copy-minors {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px 18px;
+}
+
+.copy-minors:empty {
     display: none;
 }
 
-.message-model-search {
-    padding: 8px 14px;
+.copy-minor {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: var(--r-row);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 500;
 }
 
-.message-preview {
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    overflow-wrap: anywhere;
-    /* Room as a clear border, not padding: the clamp clips at the padding's edge, so a fourth line would show in it. */
-    border: solid transparent;
-    border-width: 12px 14px;
-    border-radius: var(--r-card);
-    background: var(--card);
-    color: var(--body);
-    font-size: 13.5px;
+.copy-minor-hint {
+    color: var(--faint);
+    font-size: 11.5px;
+    font-weight: 400;
+}
+
+@media (hover: hover) {
+    .copy-minor:hover {
+        background: var(--hover);
+    }
+}
+
+@media (max-width: 480px) {
+    .choice-label {
+        min-width: 4.5rem;
+    }
 }
 
 @media (max-width: 480px) {

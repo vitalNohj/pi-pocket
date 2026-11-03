@@ -18,6 +18,7 @@ import {
     GalleryUpdateSheet,
 } from "./sheets/gallery.js";
 import { ComputersSheet } from "./sheets/computers.js";
+import { ForkSessionSheet } from "./sheets/copy.js";
 import { CwdSheet } from "./sheets/folder.js";
 import { MemorySheet } from "./sheets/memory.js";
 import { MenuSheet, PlacesSheet } from "./sheets/menu.js";
@@ -203,6 +204,8 @@ function sheetBody(sheet) {
                 mode=${sheet.mode}
                 fromList=${sheet.fromList === true}
                 runner=${sheet.runner ?? null}
+                start=${sheet.start ?? null}
+                title=${sheet.title ?? null}
             />`;
             break;
         case "artifacts":
@@ -276,6 +279,12 @@ function sheetBody(sheet) {
             break;
         case "menu":
             body = html`<${MenuSheet} places=${!sheet.fromPlaces} />`;
+            break;
+        // Session menu → Fork: the copy sheet for the whole session (`copy.js`).
+        case "fork":
+            body = store.state.sessions.some((each) => each.id === sheet.id)
+                ? html`<${ForkSessionSheet} key=${sheet.id} id=${sheet.id} />`
+                : null;
             break;
         case "session":
             body = store.state.sessions.some((each) => each.id === sheet.id)

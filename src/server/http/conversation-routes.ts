@@ -356,6 +356,33 @@ export async function conversationRoutes(
         return json(response, 200, await app.commands.fork(id, user, await readJson(request)));
     }
 
+    // What the copy sheet starts from: the folder it suggests on a computer (`runner`: a computer's id, empty: this
+    // server, absent: the session's own), or `cwd`, the one the person picked; whether a folder here is a git
+    // repository (for a worktree); and the session's own computer, folder, model, and thinking level.
+    if (third === "copy-place" && method === "GET") {
+        const source = app.sessionMeta(id)?.runner ?? null;
+        const asked = url.searchParams.get("runner");
+        const runner = asked === null ? source : asked || null;
+        const suggested = app.commands.copySuggestion(id, user, runner);
+        const picked = url.searchParams.get("cwd");
+        const place = picked ? { cwd: picked, reason: "picked" } : suggested;
+        const agent = await app.agentState(id);
+
+        return json(response, 200, {
+            ...place,
+            runner,
+            ...(runner === null ? { inRepository: app.workspace.inRepository(place.cwd) } : {}),
+            from: {
+                runner: source,
+                cwd: app.cwdOf(id),
+                ...(agent?.model === undefined ? {} : { model: agent.model }),
+                ...(agent?.thinkingLevel === undefined
+                    ? {}
+                    : { thinkingLevel: agent.thinkingLevel }),
+            },
+        });
+    }
+
     if (third === "resend" && method === "POST") {
         return json(response, 200, await app.commands.resend(id, user, await readJson(request)));
     }

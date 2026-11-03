@@ -6,6 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, extname, join, sep } from "node:path";
 import { type Context, copyJson } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -58,6 +59,7 @@ import {
 } from "./entry-format.ts";
 import { describe, HttpError, optionalText } from "./errors.ts";
 import { homePath } from "./paths.ts";
+import { localRepo, remoteRepo } from "./repo.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage, modelImageOf } from "./model-images.ts";
 import { Unreachable } from "./folder-access.ts";
 import { clearUploads, copyUploads } from "./remote-context.ts";
@@ -252,6 +254,62 @@ function checkModel(asked: { provider?: unknown; modelId?: unknown } | undefined
     ) {
         throw new HttpError(400, "model must name a provider and a model id");
     }
+}
+
+/**
+ * Where a copy of a session runs, as a person picked it in the copy sheet (`POST /api/c/:id/fork` and `/resend`'s
+ * `place`): the computer (`null`, this server; absent, the session's own), the folder there, the model and thinking
+ * level, and a git worktree of its own (this server only). Absent fields keep the session's.
+ */
+export type CopyPlaceRequest = {
+    runner?: string | null;
+    cwd?: string;
+    model?: { provider: string; modelId: string };
+    thinkingLevel?: string;
+    worktree?: boolean;
+};
+
+/** A copy's place, checked: the computer (undefined: this server), the folder, whether it moved, and the worktree. */
+type Destination = {
+    runner: string | undefined;
+    cwd: string;
+    worktree: boolean;
+    /** The source session's computer and folder, when the copy runs elsewhere: Pi is told. */
+    from?: { runner: string | undefined; cwd: string };
+};
+
+/** Check the shape of a request's `place`: every field optional, each of its type. */
+function checkPlace(place: unknown): CopyPlaceRequest | undefined {
+    if (place === undefined || place === null) {
+        return undefined;
+    }
+
+    if (typeof place !== "object" || Array.isArray(place)) {
+        throw new HttpError(400, "place must be an object");
+    }
+
+    const given = place as Record<string, unknown>;
+    const runner = given.runner;
+
+    if (runner !== undefined && runner !== null && (typeof runner !== "string" || runner === "")) {
+        throw new HttpError(400, "place.runner must be a computer's id, or null for this server");
+    }
+
+    optionalText(given.cwd, "place.cwd");
+    checkModel(given.model as { provider?: unknown; modelId?: unknown } | undefined);
+
+    if (given.thinkingLevel !== undefined && !isThinkingLevel(given.thinkingLevel)) {
+        throw new HttpError(
+            400,
+            `place.thinkingLevel must be one of ${THINKING_LEVELS.join(", ")}`,
+        );
+    }
+
+    if (given.worktree !== undefined && typeof given.worktree !== "boolean") {
+        throw new HttpError(400, "place.worktree must be true or false");
+    }
+
+    return given as CopyPlaceRequest;
 }
 
 /** A person's message to a failed subagent (`subagent`, its conversation), followed to its end; `failure`, its own then. */
@@ -498,6 +556,8 @@ export class Commands {
             context,
         );
 
+        void this.recordRepo(conversation.id, cwd);
+
         return { id: conversation.id };
     }
 
@@ -561,6 +621,8 @@ export class Commands {
                     context,
                 );
 
+                void this.recordRepo(conversation.id, cwd);
+
                 return { id: conversation.id };
             },
         );
@@ -615,6 +677,8 @@ export class Commands {
             },
             context,
         );
+
+        void this.recordRepo(conversation.id, cwd);
 
         return { id: conversation.id };
     }
@@ -1918,6 +1982,7 @@ export class Commands {
                     meta.cwd = cwd;
                 }
             }, context);
+            void this.recordRepo(id, cwd);
         }
 
         if (ref !== undefined && request.pipPanel !== true) {
@@ -2312,19 +2377,28 @@ export class Commands {
         }
     }
 
+    /**
+     * Copy a session up to one of Pi's replies (`entryId`), or up to its latest. `place` says where the copy runs and
+     * with which model (`CopyPlaceRequest`); without it, as the session does.
+     */
     async fork(
         id: ConversationId,
         user: User,
-        request: { entryId?: unknown; worktree?: unknown },
+        request: { entryId?: unknown; worktree?: unknown; place?: unknown },
     ): Promise<{ id: ConversationId }> {
         this.#requireForkable(id, user);
+        const place = checkPlace(request.place);
+        const worktree = place?.worktree ?? request.worktree === true;
+        const agent = await this.#copyAgent(id, place);
 
         if (request.entryId === undefined) {
             return {
                 id: await this.#branch(id, user, {
                     at: await this.#latestReply(id),
                     label: "fork",
-                    worktree: request.worktree === true,
+                    worktree,
+                    place,
+                    ...(agent === undefined ? {} : { agent }),
                 }),
             };
         }
@@ -2350,8 +2424,43 @@ export class Commands {
             id: await this.#branch(id, user, {
                 at: entryId,
                 label: "fork",
-                worktree: request.worktree === true,
+                worktree,
+                place,
+                ...(agent === undefined ? {} : { agent }),
             }),
+        };
+    }
+
+    /** The model and thinking level a copy gets when its place names them; undefined: the session's. */
+    async #copyAgent(
+        id: ConversationId,
+        place: CopyPlaceRequest | undefined,
+    ): Promise<AgentChange | undefined> {
+        if (place?.model === undefined && place?.thinkingLevel === undefined) {
+            return undefined;
+        }
+
+        const source = await this.#app.agentState(id);
+        const ref = place.model ?? source?.model;
+        const model =
+            ref === undefined ? undefined : this.#app.models.getModel(ref.provider, ref.modelId);
+
+        if (place.model !== undefined && model === undefined) {
+            throw new HttpError(
+                400,
+                `Unknown model ${place.model.provider}/${place.model.modelId}`,
+            );
+        }
+
+        const wanted = (place.thinkingLevel ??
+            source?.thinkingLevel ??
+            "off") as ModelThinkingLevel;
+
+        return {
+            ...(place.model === undefined
+                ? {}
+                : { model: { provider: place.model.provider, modelId: place.model.modelId } }),
+            thinkingLevel: model === undefined ? wanted : clampThinkingLevel(model, wanted),
         };
     }
 
@@ -2362,16 +2471,31 @@ export class Commands {
     async resend(
         id: ConversationId,
         user: User,
-        request: { entryId?: unknown; text?: unknown; model?: unknown; worktree?: unknown },
+        request: {
+            entryId?: unknown;
+            text?: unknown;
+            model?: unknown;
+            worktree?: unknown;
+            place?: unknown;
+        },
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
 
         this.#requireForkable(id, user);
         const entryId = entryIdOf(request.entryId);
         const edited = optionalText(request.text, "text")?.trim();
-        const asked = request.model as { provider?: unknown; modelId?: unknown } | undefined;
+        const place = checkPlace(request.place);
 
-        checkModel(asked);
+        checkModel(request.model as { provider?: unknown; modelId?: unknown } | undefined);
+        const given = (place?.model ?? request.model) as
+            { provider: string; modelId: string } | undefined;
+        const current = (await app.agentState(id))?.model;
+        // The session's own model, named again, is no other model.
+        const asked =
+            given !== undefined &&
+            (given.provider !== current?.provider || given.modelId !== current?.modelId)
+                ? given
+                : undefined;
 
         const entry = await app.transcripts.visibleEntry(id, entryId);
 
@@ -2436,7 +2560,7 @@ export class Commands {
             model: ref,
             thinkingLevel: clampThinkingLevel(
                 model,
-                (source?.thinkingLevel ?? "off") as ModelThinkingLevel,
+                (place?.thinkingLevel ?? source?.thinkingLevel ?? "off") as ModelThinkingLevel,
             ),
         };
         const label = edit !== undefined ? "edit" : asked !== undefined ? model.name : "retry";
@@ -2444,7 +2568,8 @@ export class Commands {
             at: previous?.id as unknown as number | undefined,
             label,
             agent,
-            worktree: request.worktree === true,
+            worktree: place?.worktree ?? request.worktree === true,
+            place,
             resend,
         });
         const submission = await (
@@ -2499,6 +2624,125 @@ export class Commands {
         return undefined;
     }
 
+    /** A computer and a folder on it, as people read them: "Macbook in ~/work/app", "This server in ~/pi-pocket". */
+    #where(runner: string | undefined, cwd: string): string {
+        if (runner === undefined) {
+            return `This server in ${homePath(cwd)}`;
+        }
+
+        const home = this.#app.runners.stored(runner)?.platform?.home;
+        const short =
+            home !== undefined &&
+            (cwd === home || cwd.startsWith(`${home}/`) || cwd.startsWith(`${home}\\`))
+                ? `~${cwd.slice(home.length)}`
+                : cwd;
+
+        return `${this.#app.runners.name(runner)} in ${short}`;
+    }
+
+    /**
+     * The repository folder `cwd` is a checkout of, on computer `runner` (undefined: this server), for `SessionMeta.repo`.
+     * Undefined when there is none, or the lookup failed or took too long (`repo.ts`): it never fails a session.
+     */
+    async repoOf(runner: string | undefined, cwd: string): Promise<string | undefined> {
+        try {
+            return runner === undefined
+                ? await localRepo(cwd)
+                : await remoteRepo(this.#app.runners.env(runner, cwd), cwd, context);
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
+     * Note session `id`'s repository (`SessionMeta.repo`) for its folder `cwd`, after it was made or moved: in the
+     * background, so nothing waits for git. A folder that changed again meanwhile keeps the newer answer.
+     */
+    recordRepo(id: ConversationId, cwd: string): Promise<void> {
+        const app = this.#app;
+        const runner = app.sessionMeta(id)?.runner;
+
+        return this.repoOf(runner, cwd)
+            .then((repo) =>
+                app.harness.commit(async (tx) => {
+                    const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+
+                    if (meta === undefined || meta.cwd !== cwd || meta.repo === repo) {
+                        return;
+                    }
+
+                    if (repo === undefined) {
+                        delete meta.repo;
+                    } else {
+                        meta.repo = repo;
+                    }
+                }, context),
+            )
+            .catch((error: unknown) => app.log(`repository of ${cwd}: ${describe(error)}`));
+    }
+
+    /**
+     * The folder the copy sheet suggests for a copy of session `id` on computer `runner` (null: this server): on the
+     * session's own computer, its folder; on another, the folder of the newest session there in the same repository,
+     * else of the newest one there in a folder of the same name, else home. Read from the session catalogue only.
+     */
+    copySuggestion(
+        id: ConversationId,
+        user: User,
+        runner: string | null,
+    ): { cwd: string; reason: "current" | "repository" | "name" | "home" } {
+        const app = this.#app;
+
+        this.#requireForkable(id, user);
+        const meta = app.sessionMeta(id)!;
+        const target = runner ?? undefined;
+
+        if (target !== undefined && app.runners.require(target).createdBy !== user.id) {
+            throw new HttpError(
+                403,
+                "Only the person who linked this computer can start sessions on it.",
+            );
+        }
+
+        if (target === meta.runner) {
+            return { cwd: app.cwdOf(id), reason: "current" };
+        }
+
+        const last = (path: string) => path.split(/[\\/]/).findLast((part) => part !== "") ?? "";
+        const name = last(app.cwdOf(id)).toLowerCase();
+        const there = Object.entries(app.sessionCatalogue())
+            .filter(
+                ([each, other]) =>
+                    other.runner === target &&
+                    other.pip === undefined &&
+                    each !== String(id) &&
+                    app.canSee(user, Number(each) as unknown as ConversationId),
+            )
+            .map(([, other]) => other)
+            .sort((a, b) => b.updatedAt - a.updatedAt);
+        const same =
+            meta.repo === undefined ? undefined : there.find((other) => other.repo === meta.repo);
+
+        if (same !== undefined) {
+            return { cwd: same.cwd, reason: "repository" };
+        }
+
+        const named =
+            name === "" ? undefined : there.find((other) => last(other.cwd).toLowerCase() === name);
+
+        if (named !== undefined) {
+            return { cwd: named.cwd, reason: "name" };
+        }
+
+        return {
+            cwd:
+                target === undefined
+                    ? homedir()
+                    : (app.runners.stored(target)?.platform?.home ?? "~"),
+            reason: "home",
+        };
+    }
+
     /** Forks are new sessions: who may start one may fork, from a session they can see. */
     #requireForkable(id: ConversationId, user: User): void {
         const app = this.#app;
@@ -2518,17 +2762,55 @@ export class Commands {
         if (app.sessionMeta(id)?.pip !== undefined) {
             throw new HttpError(400, "PiP's conversation cannot be forked. Start fresh instead.");
         }
+    }
 
-        // A fork is a new session on the same computer, run as that computer's person: starting one is theirs alone,
-        // also when the owner shares these sessions (`sharedRunnerSessions`).
-        const runner = app.sessionMeta(id)?.runner;
+    /**
+     * Where a copy of session `id` runs: on the computer and in the folder `place` names, else where the session runs.
+     * A copy is a new session there: on another computer, only the person who linked it may start one (also when the
+     * owner shares these sessions, `sharedRunnerSessions`), the folder must be there, and there is no worktree. A
+     * computer that is gone or offline fails with its name; the copy is never made here instead.
+     */
+    async #destination(
+        id: ConversationId,
+        user: User,
+        place: CopyPlaceRequest | undefined,
+        worktree: boolean,
+    ): Promise<Destination> {
+        const app = this.#app;
+        const meta = app.sessionMeta(id)!;
+        const own = { runner: meta.runner, cwd: (await app.agentState(id))?.cwd ?? meta.cwd };
+        const runner = place?.runner === undefined ? own.runner : (place.runner ?? undefined);
 
-        if (runner !== undefined && app.runners.stored(runner)?.createdBy !== user.id) {
-            throw new HttpError(
-                403,
-                "Only the person who linked this computer can start sessions on it, including forks.",
-            );
+        if (runner !== undefined) {
+            if (app.runners.stored(runner)?.createdBy !== user.id) {
+                throw new HttpError(
+                    403,
+                    app.runners.stored(runner) === undefined
+                        ? "That computer is not linked to this server."
+                        : "Only the person who linked this computer can start sessions on it, including forks.",
+                );
+            }
+
+            if (worktree) {
+                throw new HttpError(
+                    400,
+                    "Worktrees are not available for sessions on another computer yet.",
+                );
+            }
         }
+
+        const asked = place?.cwd?.trim() || undefined;
+        const cwd =
+            runner === undefined
+                ? app.workspace.checkDirectory(
+                      asked ?? (own.runner === undefined ? own.cwd : app.defaultCwd),
+                  )
+                : asked === undefined && runner === own.runner
+                  ? own.cwd
+                  : await app.runners.checkFolder(runner, asked ?? "~");
+        const moved = runner !== own.runner || cwd !== own.cwd;
+
+        return { runner, cwd, worktree, ...(moved ? { from: own } : {}) };
     }
 
     /**
@@ -2543,24 +2825,17 @@ export class Commands {
             label: string;
             agent?: AgentChange;
             worktree: boolean;
+            place?: CopyPlaceRequest | undefined;
             resend?: Resend;
         },
     ): Promise<ConversationId> {
-        const app = this.#app;
-        const meta = app.sessionMeta(id)!;
-        const source = await app.agentState(id);
+        const meta = this.#app.sessionMeta(id)!;
         const sourceTitle = meta.title ?? "New session";
         const title = `${sourceTitle} · ${branch.label}`.slice(0, MAX_TITLE);
+        const destination = await this.#destination(id, user, branch.place, branch.worktree);
 
-        if (meta.runner !== undefined && branch.worktree) {
-            throw new HttpError(
-                400,
-                "Worktrees are not available for sessions on another computer yet.",
-            );
-        }
-
-        return this.#inPlace(source?.cwd ?? meta.cwd, branch.worktree, title, (place) =>
-            this.#fork(id, user, { ...branch, title, sourceTitle, place }),
+        return this.#inPlace(destination.cwd, branch.worktree, title, (place) =>
+            this.#fork(id, user, { ...branch, title, sourceTitle, place, destination }),
         );
     }
 
@@ -2577,18 +2852,21 @@ export class Commands {
             sourceTitle: string;
             agent?: AgentChange;
             place: Place;
+            destination: Destination;
             resend?: Resend;
         },
     ): Promise<ConversationId> {
         const app = this.#app;
         const source = await app.agentState(id);
-        const { at, title, place } = fork;
-        // A fork runs where its session runs, with the same extensions (a fresh one copies no agent state).
-        const runner = app.sessionMeta(id)?.runner;
-        const agent: AgentChange = {
-            ...fork.agent,
-            ...(place.worktree === undefined ? {} : { cwd: place.cwd }),
-        };
+        const { at, title, place, destination } = fork;
+        // A copy runs on the computer it was sent to: one on another computer with the extensions that work there, one
+        // here with all of them, also when its session ran elsewhere (the inherited list goes). A fresh one copies no
+        // agent state.
+        const runner = destination.runner;
+        const fromRunner = app.sessionMeta(id)?.runner !== undefined;
+        // Always the folder it runs in now: a fork's agent state is the one at its entry (`AgentDoc` forks `asOf`), whose
+        // folder can be from before the session moved or was copied to another computer, and is no folder there.
+        const agent: AgentChange = { ...fork.agent, cwd: place.cwd };
 
         // A fork is a new session there too: the computer's person allows it, as for a new one.
         if (runner !== undefined) {
@@ -2598,6 +2876,11 @@ export class Commands {
         }
 
         const now = Date.now();
+        const from = destination.from;
+        const moved =
+            from === undefined
+                ? undefined
+                : `made this copy to run on ${this.#where(runner, place.cwd)}. Paths earlier in this conversation were on ${this.#where(from.runner, from.cwd)}`;
         // A new session rather than a fork gets plan mode and the notes by hand.
         const plan =
             at === undefined ? await app.harness.snapshot(PlanDoc, id, context) : undefined;
@@ -2617,9 +2900,29 @@ export class Commands {
                 ...(runner === undefined ? {} : { runner }),
                 ...(place.worktree === undefined ? {} : { worktree: place.worktree }),
             };
+            const forkedAgent = await tx.doc(AgentDoc, forked);
 
             if (runner !== undefined) {
-                (await tx.doc(AgentDoc, forked)).extensions = [...REMOTE_EXTENSIONS];
+                forkedAgent.extensions = [...REMOTE_EXTENSIONS];
+            } else if (fromRunner) {
+                // Copied from a session on another computer: here it runs with everything again.
+                delete forkedAgent.extensions;
+            }
+
+            // Paths in the history it inherited are on the other computer, or in the other folder: Pi reads this with
+            // its next message, before the one a resend sends.
+            if (moved !== undefined && at !== undefined) {
+                await tx.appendEntry(forked, {
+                    kind: NOTE_ENTRY,
+                    data: { text: moved, by: user.id, name: user.name },
+                    model: [
+                        {
+                            role: "user",
+                            content: [{ type: "text", text: `[note] ${user.name} ${moved}` }],
+                            timestamp: now,
+                        },
+                    ],
+                });
             }
 
             if (fork.resend !== undefined) {
@@ -2692,9 +2995,11 @@ export class Commands {
                       await app.conversation(id)
                   ).fork(at as unknown as EntryId, { ownership, agent, init }, context);
         const where =
-            place.worktree === undefined
-                ? ""
-                : ` into a worktree on ${place.worktree.branch}${place.skipped.length === 0 ? "" : ` (${place.skipped.length} big new files were not copied)`}`;
+            place.worktree !== undefined
+                ? ` into a worktree on ${place.worktree.branch}${place.skipped.length === 0 ? "" : ` (${place.skipped.length} big new files were not copied)`}`
+                : from !== undefined
+                  ? ` to run on ${this.#where(runner, place.cwd)}`
+                  : "";
 
         await app.collab.activity(
             forked.id,
@@ -2703,6 +3008,7 @@ export class Commands {
             false,
         );
         await app.collab.activity(id, user, `forked “${title}” from this session${where}`, false);
+        void this.recordRepo(forked.id, place.cwd);
 
         return forked.id;
     }
