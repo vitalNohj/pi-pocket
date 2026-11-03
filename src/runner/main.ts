@@ -3,8 +3,8 @@
  *
  * It starts Earendil's pi-env daemon here and connects out to the server over a WebSocket, so this computer needs no
  * open port, SSH, or provider key. The server sends pi-env requests (read a file, run a command); the daemon answers.
- * The link survives short drops (`protocol.ts`): the daemon keeps running, its answers wait here, and both sides send
- * again what the other missed.
+ * The link survives drops of any length (`protocol.ts`): the daemon keeps running, its answers wait here, and both
+ * sides send again what the other missed.
  *
  * In a terminal, plain `pi-pocket runner` opens a menu: start, link, settings, allowed folders, unlink, help. Each of
  * those is also a command for scripts, which never asks:

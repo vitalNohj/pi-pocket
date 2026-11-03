@@ -6,10 +6,11 @@
  * not read or change them, except that the runner sends the daemon a ping of its own every few seconds, between frames,
  * so the daemon keeps running while the link is down.
  *
- * The streams survive a short drop. Both sides count the bytes of each stream, keep what the other side has not
+ * The streams survive a drop of any length. Both sides count the bytes of each stream, keep what the other side has not
  * acknowledged, and send it again after a reconnect, starting where the other side says it stopped. Nothing is lost or
- * repeated, so the daemon's handles, watches, and commands stay valid. The server keeps its side for a grace period
- * (`DEFAULT_GRACE_MS`); after it, or after the server restarts, the runner starts a new daemon and the old work ends.
+ * repeated, so the daemon's handles, watches, and commands stay valid. The server keeps its side for as long as it runs
+ * (offline is offline, `docs/runners.md`); after it restarts, or when the runner quit, the runner starts a new daemon and
+ * the old work ends.
  *
  * Beside them, a runner that says `network` in its hello carries network streams (`tunnels.ts`): TCP connections that
  * the server asks the runner to open on its computer, for the browser of a session there. They do not survive a drop.
@@ -43,8 +44,12 @@ export const CLOSE = {
     protocol: 4002,
 } as const;
 
-/** How long the server keeps a dropped runner's work before it ends it. */
-export const DEFAULT_GRACE_MS = 2 * 60 * 1000;
+/**
+ * What the server says in `welcome.graceMs`. It keeps a dropped runner's work for as long as it runs, so this is only for
+ * runners from before that, which stop their daemon this long after a drop: about 23 days, under the 2^31 - 1 ms that a
+ * Node timer takes (a larger one fires at once).
+ */
+export const LEGACY_GRACE_MS = 2_000_000_000;
 
 /** The largest WebSocket message either side accepts: one pi-env frame (16 MiB) and some room. */
 export const MAX_MESSAGE = 17 * 1024 * 1024;
@@ -113,7 +118,7 @@ export type Welcome = {
     resume: boolean;
     /** Bytes of the runner's stream the server received in that session. */
     received: number;
-    /** How long the server keeps the session while the link is down. */
+    /** Unused since the server keeps the session while it runs (`LEGACY_GRACE_MS`); older runners read it. */
     graceMs: number;
 };
 

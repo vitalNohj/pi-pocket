@@ -51,10 +51,10 @@ type Setup = {
     lines: string[];
 };
 
-async function serve(graceMs = 60_000): Promise<Setup> {
+async function serve(): Promise<Setup> {
     const config = new ConfigStore(mkdtempSync(join(root, "data-")));
     const lines: string[] = [];
-    const runners = new Runners({ config, log: (line) => lines.push(line), graceMs });
+    const runners = new Runners({ config, log: (line) => lines.push(line) });
     const server = createServer((request, response) => {
         response.writeHead(404).end();
     });
@@ -80,18 +80,33 @@ function startRunner(
 ): { runner: Runner; id: string } {
     const { code } = setup.runners.makeCode(name, "owner");
     const linked = setup.runners.redeem(code);
-    const runner = new Runner({
+    const options: RunnerOptions = {
         link: { server: setup.address, ...linked },
         version: "test",
         cwd: root,
         log: (line) => lines.push(line),
         retryMs: [50, 100, 200],
         ...more,
-    });
+    };
+    const runner = new Runner(options);
 
+    started.set(runner, options);
     runner.start();
 
     return { runner, id: linked.id };
+}
+
+/** The options each test runner started with, to start it again (`startRunnerFor`). */
+const started = new WeakMap<Runner, RunnerOptions>();
+
+/** A new runner linked as `before` was (the same link file): as when the app starts again. */
+function startRunnerFor(before: Runner): { runner: Runner } {
+    const runner = new Runner(started.get(before)!);
+
+    started.set(runner, started.get(before)!);
+    runner.start();
+
+    return { runner };
 }
 
 /** Two connected in-memory streams, as a socket and its peer. */
@@ -277,7 +292,7 @@ describe("runner tools", () => {
 });
 
 describe("runner link", () => {
-    it("a command keeps running across a short drop, and its output arrives", async () => {
+    it("a command keeps running across a drop, and its output arrives", async () => {
         const setup = await serve();
         const { runner, id } = startRunner(setup, "Laptop");
 
@@ -309,39 +324,73 @@ describe("runner link", () => {
         }
     });
 
-    it("after the grace period, work in flight fails as lost and a new session starts", async () => {
-        const setup = await serve(300);
+    it("offline is offline: a command keeps running however long the link is down, and finishes when it is back", async () => {
+        const setup = await serve();
         const { runner, id } = startRunner(setup, "Desktop");
 
         try {
             await until(() => runner.connected, "the runner to connect");
 
             const env = setup.runners.env(id, root);
-            const first = await env.exec("echo $$", {}, context);
+            const pending = exec(env, "echo start; sleep 2; echo end");
 
-            assert.ok(first.ok);
-
-            const pending = env.exec("sleep 30", {}, context);
-
-            await new Promise((resolve) => setTimeout(resolve, 200));
-            // The link stays down longer than the grace period: block the runner's reconnects for a while.
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            // The link stays down well past the command's end: the server refuses the runner's reconnects for a while.
             const listener = setup.server.listeners("upgrade")[0] as (...args: unknown[]) => void;
 
             setup.server.removeAllListeners("upgrade");
             setup.server.on("upgrade", (_request, socket) => socket.destroy());
             runner.drop();
+            await until(() => setup.runners.list()[0]!.away, "the computer to be offline");
+            await new Promise((resolve) => setTimeout(resolve, 3_000));
 
-            const result = await pending;
+            // Nothing failed meanwhile, and work asked for while it is offline waits too.
+            const later = exec(env, "echo later");
+            let settled = false;
 
-            assert.equal(result.ok, false);
-            assert.match(result.ok ? "" : result.error.message, /disconnected too long/);
+            void pending.finally(() => (settled = true));
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            assert.equal(settled, false);
+            assert.ok(setup.lines.some((line) => line.includes("went offline; its work waits")));
 
             setup.server.removeAllListeners("upgrade");
             setup.server.on("upgrade", listener);
-            await until(() => runner.connected, "the runner to start over");
-            assert.equal(await exec(env, "echo again"), "again\n");
+
+            assert.equal(await pending, "start\nend\n");
+            assert.equal(await later, "later\n");
         } finally {
             await runner.stop();
+            await close(setup);
+        }
+    });
+
+    it("when the runner started over, what was in flight fails as lost, and new work runs", async () => {
+        const setup = await serve();
+        const { runner, id } = startRunner(setup, "Desktop");
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+
+            const env = setup.runners.env(id, root);
+            const pending = env.exec("sleep 30", {}, context);
+
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            // The app quit: its runner and the commands it ran are gone. A new runner connects as the same computer.
+            await runner.stop();
+
+            const { runner: again } = startRunnerFor(runner);
+
+            try {
+                const result = await pending;
+
+                assert.equal(result.ok, false);
+                // Stopped on purpose (the app quit), it says so; one that crashed says it restarted.
+                assert.match(result.ok ? "" : result.error.message, /stopped|restarted/);
+                assert.equal(await exec(env, "echo again"), "again\n");
+            } finally {
+                await again.stop();
+            }
+        } finally {
             await close(setup);
         }
     });
@@ -432,7 +481,7 @@ describe("runner link", () => {
         assert.equal(readableEntries(clean), clean);
     });
 
-    it("a computer that is offline fails fast, and says so", async () => {
+    it("a computer that is offline: work waits for it, and an abort ends the wait", async () => {
         const setup = await serve();
 
         try {
@@ -442,10 +491,26 @@ describe("runner link", () => {
             await gone.stop();
             await until(() => !setup.runners.list()[0]!.online, "the computer to be offline");
 
-            const result = await setup.runners.env(id, root).exec("true", {}, context);
+            const link = setup.runners.link(id);
+            const controller = new AbortController();
+            const waiting = link.whenOnline(controller.signal);
 
-            assert.equal(result.ok, false);
-            assert.match(result.ok ? "" : result.error.message, /is offline/);
+            setTimeout(() => controller.abort(new Error("stopped")), 200);
+            await assert.rejects(waiting, /stopped/);
+            // What a person waits on says it at once.
+            await assert.rejects(link.infoNow(), /Away is offline/);
+
+            // Its system is still known, from when it was online.
+            assert.ok(setup.runners.system(id)?.tmpdir);
+
+            const ran = exec(setup.runners.env(id, root), "echo back");
+            const { runner: again } = startRunnerFor(gone);
+
+            try {
+                assert.equal(await ran, "back\n");
+            } finally {
+                await again.stop();
+            }
         } finally {
             await close(setup);
         }

@@ -207,6 +207,8 @@ function Topbar() {
         .split(/[\\/]/)
         .pop();
     const computer = conversation?.runnerName;
+    // Offline is offline (`docs/runners.md`): its work waits for the computer, and the top bar says so.
+    const offline = Boolean(computer) && conversation?.runnerOnline === false;
     const branch = headLabel(view.branch) || conversation?.worktree?.branch;
     const { sessions, conversationId } = store.state;
     // The top bar draws with each update of the conversation, as an answer streams: the session list is looked
@@ -274,6 +276,12 @@ function Topbar() {
                               computer &&
                               html`<span class="title-folder title-computer" aria-hidden="true">
                                   on ${computer}
+                              </span>`
+                          }
+                          ${
+                              offline &&
+                              html`<span class="title-offline" role="status">
+                                  ${computer} offline, reconnecting…
                               </span>`
                           }
                           ${

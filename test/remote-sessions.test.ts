@@ -3,7 +3,7 @@
 // computer" is this one, in a folder of its own that the server's sessions never use.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -14,7 +14,12 @@ import {
     fauxToolCall,
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Runner, type SessionAnswer, type SessionQuestion } from "../src/runner/runner.ts";
+import {
+    Runner,
+    type RunnerOptions,
+    type SessionAnswer,
+    type SessionQuestion,
+} from "../src/runner/runner.ts";
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
 import { AgentDoc } from "@earendil-works/pi-durable";
 import { type Lesson, SubagentsDoc } from "../src/server/docs.ts";
@@ -40,6 +45,7 @@ const there = join(root, "there");
 let app: App;
 let server: Server;
 let runner: Runner;
+let runnerOptions: RunnerOptions;
 let runnerId: string;
 /** The system sections of the newest request to the model. */
 let sections: Record<string, string> = {};
@@ -129,7 +135,7 @@ before(async () => {
     const linked = app.runners.redeem(code);
 
     runnerId = linked.id;
-    runner = new Runner({
+    runnerOptions = {
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",
         cwd: there,
@@ -142,7 +148,8 @@ before(async () => {
 
             return answer(question);
         },
-    });
+    };
+    runner = new Runner(runnerOptions);
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
 });
@@ -824,13 +831,40 @@ describe("a session on another computer", () => {
         }
     });
 
-    it("fails a tool, not the server, when the computer is offline", async () => {
+    it("offline is offline: a message waits for the computer, Stop ends the wait, and it goes on when back", async () => {
         await runner.stop();
         await until(() => app.runners.list()[0]?.online === false, "the runner to go");
-        writeFileSync(join(there, "note.txt"), "changed while away\n");
 
-        await say(app, id as never, "run pwd");
-        assert.match(await lastToolText(id), /Laptop is offline/);
+        // Stop while it waits: the turn ends, and nothing failed on the server.
+        const first = await app.commands.submit(id as never, owner(app), {
+            text: "run pwd",
+            requestId: crypto.randomUUID(),
+        });
+        const stopped = (await app.harness.submission(first.submissionId, context))!.wait(context);
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await app.commands.abort(id as never, owner(app));
+        await stopped;
+
+        // Sent again while offline: it waits, and runs there when the computer is back.
+        const second = await app.commands.submit(id as never, owner(app), {
+            text: "run pwd",
+            requestId: crypto.randomUUID(),
+        });
+        const done = (await app.harness.submission(second.submissionId, context))!.wait(context);
+        let answered = false;
+
+        void done.then(() => (answered = true));
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        assert.equal(answered, false);
+
+        runner = new Runner(runnerOptions);
+        runner.start();
+        await done;
+        assert.match(
+            await lastToolText(id),
+            new RegExp(there.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        );
     });
 });
 

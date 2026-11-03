@@ -112,7 +112,7 @@ export async function browserRoutes(
         // A session on another computer opens that computer's localhost: its ports, as far as it tells.
         if (runner !== undefined) {
             const link = app.runners.link(runner);
-            const info = await link.info().catch(() => undefined);
+            const info = link.online ? await link.info().catch(() => undefined) : undefined;
 
             return json(response, 200, {
                 servers:

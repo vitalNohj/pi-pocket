@@ -112,12 +112,15 @@ export function knownScan(env: RemoteEnv, cwd: string): FolderScan | undefined {
     return value;
 }
 
-/** The folder read again, or its last scan when the computer cannot be reached now; undefined without one. */
+/**
+ * The folder read again. A computer that is offline is waited for (`runners.ts`): what calls this runs in a turn, which
+ * starts only when the computer is back. Undefined when the reading fails.
+ */
 export async function latestScan(env: RemoteEnv, cwd: string): Promise<FolderScan | undefined> {
     try {
         return await scanFolder(env, cwd);
     } catch {
-        return scans.get(keyOf(env, cwd))?.value;
+        return undefined;
     }
 }
 
@@ -571,67 +574,66 @@ export async function readRemoteText(env: RemoteEnv, path: string): Promise<stri
     return text.value;
 }
 
-/**
- * The folder on the computer for a conversation's attached files: in its temporary folder, so they never pile up in a
- * person's home. `clearUploads` empties it when the session is archived; the system clears what is left.
- */
-async function uploadsThere(
-    env: RemoteEnv,
-    conversationId: number,
-): Promise<{ folder: string; paths: PathKit }> {
-    const info = await env.connection.info();
-    const paths = pathsFor(info.os);
+/** Where a conversation's attached files go on a computer: `<temp>/pi-pocket-uploads/<conversation>/` there. */
+export type UploadsFolder = { folder: string; paths: PathKit };
 
-    return { folder: paths.join(info.tmpdir, "pi-pocket-uploads", String(conversationId)), paths };
+/**
+ * The folder on the computer for a conversation's attached files, from what it said of its system (`hello`, also kept
+ * while it is offline): in its temporary folder, so they never pile up in a person's home. `clearUploads` empties it
+ * when the session is archived; the system clears what is left.
+ */
+export function uploadsFolder(
+    system: { os: string; tmpdir: string },
+    conversationId: number,
+): UploadsFolder {
+    const paths = pathsFor(system.os);
+
+    return {
+        folder: paths.join(system.tmpdir, "pi-pocket-uploads", String(conversationId)),
+        paths,
+    };
+}
+
+/** Where file `path` (in the conversation's uploads here) is on the computer, once `copyUploads` copied it. */
+export function uploadedThere(folder: UploadsFolder, path: string): string {
+    return folder.paths.join(folder.folder, basename(path));
 }
 
 /**
- * Copy files people attached (kept here, in the conversation's uploads) to the computer, into
- * `<temp>/pi-pocket-uploads/<conversation>/` there with the same names: the paths there, in order (a file not copied
- * keeps its path here). Images are copied too, so Pi's tools can use them there; the model also sees them in the
- * message. Never throws: `failed` names the files that could not be copied.
+ * Copy files people attached (kept here, in the conversation's uploads) to the computer, into `folder` there with the
+ * same names (`uploadedThere`). Images are copied too, so Pi's tools can use them there; the model also sees them in
+ * the message. A computer that is offline is waited for. Never throws: the names of the files that could not be copied.
  */
 export async function copyUploads(
     env: RemoteEnv,
-    conversationId: number,
-    files: readonly { path: string; name: string; mime: string }[],
-): Promise<{ paths: string[]; failed: string[] }> {
+    folder: UploadsFolder,
+    files: readonly { path: string; name: string }[],
+): Promise<string[]> {
     const failed: string[] = [];
-    let folder: { folder: string; paths: PathKit } | undefined;
 
-    try {
-        folder = files.length > 0 ? await uploadsThere(env, conversationId) : undefined;
-    } catch {
-        folder = undefined;
-    }
-
-    const paths = await Promise.all(
+    await Promise.all(
         files.map(async (file) => {
-            if (folder !== undefined) {
-                const target = folder.paths.join(folder.folder, basename(file.path));
-                const written = await readFile(file.path).then(
-                    (bytes) => env.writeFile(target, bytes, context),
-                    () => undefined,
-                );
+            const written = await readFile(file.path).then(
+                (bytes) => env.writeFile(uploadedThere(folder, file.path), bytes, context),
+                () => undefined,
+            );
 
-                if (written?.ok === true) {
-                    return target;
-                }
+            if (written?.ok !== true) {
+                failed.push(file.name);
             }
-
-            failed.push(file.name);
-
-            return file.path;
         }),
     );
 
-    return { paths, failed };
+    return failed;
 }
 
-/** Remove a conversation's attached files from the computer (its session was archived). Errors are ignored. */
+/**
+ * Remove a conversation's attached files from the computer (its session was archived): when it is offline, once it is
+ * back. Errors are ignored.
+ */
 export async function clearUploads(env: RemoteEnv, conversationId: number): Promise<void> {
     try {
-        const { folder } = await uploadsThere(env, conversationId);
+        const { folder } = uploadsFolder(await env.connection.info(), conversationId);
 
         await env.remove(folder, { recursive: true, force: true }, context);
     } catch {

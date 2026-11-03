@@ -12,7 +12,7 @@ function status(runner) {
     }
 
     if (runner.away) {
-        return "Reconnecting";
+        return "Offline, its work waits";
     }
 
     if (!runner.lastSeen) {
