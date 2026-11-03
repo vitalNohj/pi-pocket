@@ -4,13 +4,7 @@
  */
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import {
-    breakEvenRefreshes,
-    type IdlePolicy,
-    type IdleStatus,
-    type ModelFacts,
-    specOf,
-} from "./cache-keeper.ts";
+import { type IdleStatus, specOf } from "./cache-keeper.ts";
 import {
     isKeepWarmTime,
     type KeepWarmModel,
@@ -22,11 +16,16 @@ import {
 } from "./config.ts";
 import type { SessionMeta } from "./docs.ts";
 import { HttpError } from "./errors.ts";
-import { idleEveryMs } from "./idle-plan.ts";
-import { cachePrices, publishedLifetime, PublishedPrices, tier } from "./model-cache-facts.ts";
+import { breakEvenRefreshes, type IdlePolicy, idlePlan, type ModelFacts } from "./idle-plan.ts";
+import { cachePrices, cacheTier, publishedLifetime, PublishedPrices } from "./model-cache-facts.ts";
+
+/** The tier requests use when they say nothing: the lifetime the settings window and Auto count with. */
+const defaultTier = () => (cacheTier() === "long" ? "long" : "short");
 
 /** The settings, sessions, models, and keeper calls that keep warm uses. */
 export type KeepWarmDeps = {
+    /** Throws unless `user` may see and steer the session. */
+    requireAccess: (user: User, id: ConversationId) => void;
     settings: () => KeepWarmSettings;
     saveSettings: (next: KeepWarmSettings) => void;
     sessionMeta: (id: ConversationId) => SessionMeta | undefined;
@@ -58,12 +57,8 @@ type ModelRow = {
     spec: string;
     name: string;
     known: Known;
-    plan: {
-        lifetime?: number;
-        everyMinutes?: number;
-        refreshes: number;
-        autoStopMinutes?: number;
-    };
+    /** How Auto keeps it warm: undefined fields when no cache time is known, so it is not kept warm. */
+    plan: { lifetime?: number; everyMs?: number; refreshes?: number; autoStopMs?: number };
 };
 
 const ownerOnly = (user: User) => {
@@ -110,6 +105,7 @@ export class KeepWarm {
         }
 
         return {
+            session: Number(root),
             hours,
             maxCost: settings.maxCost,
             maxRefreshes: settings.maxRefreshes,
@@ -125,7 +121,7 @@ export class KeepWarm {
     facts(spec: string): ModelFacts {
         const own = this.#deps.settings().models[spec] ?? {};
         const model = this.#model(spec);
-        const seconds = model?.promptCache?.[tier()];
+        const seconds = model?.promptCache?.[defaultTier()];
         const listed = model === undefined ? undefined : this.#published.lookup(model.id);
         const prices =
             (model === undefined ? undefined : cachePrices(model, seconds)) ??
@@ -298,28 +294,44 @@ export class KeepWarm {
     }
 
     /**
-     * Whether `user` may choose `choice` for a session. Only the owner turns keep warm on or makes it last longer than
-     * their default, as a refresh may be charged to whoever pays for the session; anyone who can steer may turn it off.
+     * Check that `user` may choose `choice` for a session that has `current` now, and give the choice. Anyone who can see
+     * and steer the session may turn it off. Only the owner turns it on or picks a time, as a refresh may be charged to
+     * whoever pays for the session: so another person's Default may not turn on what is off.
      */
-    checkChoice(user: User, choice: unknown): void {
+    checkChoice(
+        user: User,
+        id: ConversationId,
+        choice: unknown,
+        current?: KeepWarmTime,
+    ): KeepWarmChoice {
+        this.#deps.requireAccess(user, id);
+
         if (choice !== "default" && !isKeepWarmTime(choice)) {
             throw new HttpError(400, 'keepWarm must be "default", 0, "auto", 1, 2, 4, or 8');
         }
 
-        if (user.role !== "owner" && choice !== "default" && choice !== 0) {
-            throw new HttpError(403, "Only the owner can keep a session warm for longer");
+        const turnsOn =
+            choice === "default"
+                ? current === 0 && this.#deps.settings().hours !== 0
+                : choice !== 0;
+
+        if (user.role !== "owner" && turnsOn) {
+            throw new HttpError(403, "Only the owner can keep a session warm");
         }
+
+        return choice;
     }
 
     /** Someone who can steer chooses for one session (`checkChoice`); the owner's caps bound every choice. */
     async setSession(user: User, id: ConversationId, choice: unknown): Promise<void> {
-        this.checkChoice(user, choice);
-
         await this.#deps.commitSession(id, (meta) => {
-            if (choice === "default") {
+            // Checked against the choice in the same commit, so two requests at once cannot pass it together.
+            const chosen = this.checkChoice(user, id, choice, meta.keepWarm);
+
+            if (chosen === "default") {
                 delete meta.keepWarm;
             } else {
-                meta.keepWarm = choice as KeepWarmTime;
+                meta.keepWarm = chosen;
             }
         });
         this.#deps.keeper.reconsider();
@@ -339,7 +351,7 @@ export class KeepWarm {
             return {};
         }
 
-        const seconds = model.promptCache?.[tier()];
+        const seconds = model.promptCache?.[defaultTier()];
         const lifetime =
             seconds === undefined ? publishedLifetime(model.id) : Math.round(seconds / 60);
         const prices = this.facts(specOf(model)).prices;
@@ -354,27 +366,39 @@ export class KeepWarm {
         };
     }
 
-    /** One model's cache facts and plan for the settings window. */
+    /** One model's cache facts and its Auto plan for the settings window, from the same `idlePlan` the keeper follows. */
     #row(spec: string, model: Model<Api> | undefined, settings: KeepWarmSettings): ModelRow {
         const known = this.#known(model);
         const lifetime = settings.models[spec]?.lifetime ?? known.lifetime;
-        const everyMs = idleEveryMs(
-            lifetime === undefined ? undefined : lifetime * 60_000,
-            settings.share,
+        const plan = idlePlan(
+            {
+                session: 0,
+                hours: "auto",
+                maxCost: settings.maxCost,
+                maxRefreshes: settings.maxRefreshes,
+                share: settings.share,
+            },
+            {
+                ...this.facts(spec),
+                ...(lifetime === undefined ? {} : { lifetimeMs: lifetime * 60_000 }),
+            },
+            undefined,
+            0,
         );
-        const everyMinutes =
-            everyMs === undefined ? undefined : Math.floor(everyMs / 60_000) || undefined;
-        const refreshes = Math.min(known.breakEven ?? Infinity, settings.maxRefreshes);
 
         return {
             spec,
             name: model?.name ?? spec.slice(spec.indexOf("/") + 1),
             known,
             plan: {
-                lifetime,
-                everyMinutes,
-                refreshes,
-                autoStopMinutes: everyMinutes === undefined ? undefined : refreshes * everyMinutes,
+                ...(lifetime === undefined ? {} : { lifetime }),
+                ...(plan === undefined
+                    ? {}
+                    : {
+                          everyMs: plan.everyMs,
+                          refreshes: plan.maxRefreshes,
+                          autoStopMs: plan.maxRefreshes * plan.everyMs,
+                      }),
             },
         };
     }

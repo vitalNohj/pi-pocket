@@ -338,7 +338,7 @@ export class PocketApp {
     readonly providers = new Providers(this);
     /** Model requests that hit a limit wait for it to clear, then go on (`limit-gate.ts`). */
     readonly limits: LimitGate;
-    /** Keeps the prompt cache warm while a run waits on a tool call (`cache-keeper.ts`). */
+    /** Keeps the prompt cache warm while a run waits on a tool call, and with keep warm once it ends (`cache-keeper.ts`). */
     readonly cacheKeeper: CacheKeeper;
     readonly schedules = new Schedules(this);
     /** Commands Pi runs in the background, watched until they end (`background.ts`). */
@@ -348,6 +348,10 @@ export class PocketApp {
     readonly spend = new Spend(this);
     /** The owner's keep-warm settings and each session's choice (`keep-warm.ts`). */
     readonly keepWarm = new KeepWarm({
+        requireAccess: (user, id) => {
+            this.requireSee(user, id);
+            this.requireSteer(user);
+        },
         settings: () => this.config.keepWarm,
         saveSettings: (next) => {
             this.config.keepWarm = next;

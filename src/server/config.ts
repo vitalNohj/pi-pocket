@@ -120,7 +120,7 @@ export const DEFAULT_LIMIT_WAIT_HOURS = 6;
 
 /**
  * How long a session is kept warm once its run ends: 0 is off; "auto" until the refreshes have cost as much as one more
- * cache write (`breakEvenRefreshes` in `cache-keeper.ts`); a number is that many hours.
+ * cache write (`breakEvenRefreshes` in `idle-plan.ts`); a number is that many hours.
  */
 export type KeepWarmTime = 0 | "auto" | number;
 

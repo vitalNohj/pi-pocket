@@ -127,7 +127,7 @@ const AUTO_TABLE = [
 
 /** One model in the settings window: its cache cost, when its cache expires, and what keep warm does with it. */
 function ModelCard({ model, settings, onSet }) {
-    const { everyMinutes, refreshes, autoStopMinutes } = model.plan;
+    const { everyMs, refreshes, autoStopMs } = model.plan;
     const own = settings.models[model.spec]?.lifetime;
     const read = model.known.read;
 
@@ -172,11 +172,11 @@ function ModelCard({ model, settings, onSet }) {
                 <span class="muted small">min idle</span>
             </span>
         </label>
-        <div class="small ${everyMinutes === undefined ? "warn" : "muted"}">
+        <div class="small ${everyMs === undefined ? "warn" : "muted"}">
             ${
-                everyMinutes === undefined
+                everyMs === undefined
                     ? "Not kept warm: its maker publishes no cache time. Type it to turn it on."
-                    : `Refreshed every ${durationLabel(everyMinutes * 60_000)} · Auto stops after ${durationLabel(autoStopMinutes * 60_000)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
+                    : `Refreshed every ${durationLabel(everyMs)} · Auto stops after ${durationLabel(autoStopMs)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
             }
         </div>
     </div>`;
@@ -229,7 +229,7 @@ export function KeepWarmSheet() {
             </button>`,
         )}
     </div>`;
-    const warmable = models.filter((model) => model.plan.everyMinutes !== undefined);
+    const warmable = models.filter((model) => model.plan.everyMs !== undefined);
     const setModel = (spec, field, value) => save({ models: { [spec]: { [field]: value } } });
 
     return html`<${Sheet} title="Keep warm" onClose=${closeSheet} className="keep-warm-sheet">
@@ -295,7 +295,7 @@ export function KeepWarmSheet() {
                                 onSave=${(value) => value !== null && save({ maxCost: value })}
                             />
                         </span>
-                        <span class="muted small">per session; 0: no cap</span>
+                        <span class="muted small">per session, subagents included; 0: no cap</span>
                     </label>
                     <label class="keep-warm-field">
                         <span>Most refreshes</span>
@@ -308,7 +308,7 @@ export function KeepWarmSheet() {
                                 onSave=${(value) => value !== null && save({ maxRefreshes: value })}
                             />
                         </span>
-                        <span class="muted small">per session</span>
+                        <span class="muted small">per conversation</span>
                     </label>
                     <label class="keep-warm-field">
                         <span>Refresh at</span>
@@ -406,8 +406,10 @@ export function KeepWarmRow() {
     const chosen = state.choice === "default" ? fallback : state.choice;
     // The owner's time is named in the Default button, so it is not a button of its own. Only the owner turns it on.
     const owner = store.state.me?.role === "owner";
+    // Another person's Default may not turn on a session the owner turned off (the server checks it too).
+    const defaultTurnsOn = state.choice === 0 && fallback !== 0;
     const choices = [
-        ["default", `Default: ${timeLabel(fallback)}`],
+        ...(owner || !defaultTurnsOn ? [["default", `Default: ${timeLabel(fallback)}`]] : []),
         ...[...TIMES.slice(1), [0, "Off"]].filter(
             ([value]) => value !== fallback && (owner || value === 0 || value === state.choice),
         ),

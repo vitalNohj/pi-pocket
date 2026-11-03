@@ -38,6 +38,7 @@ test("cache prices: the owner's read for a model with none published, with the w
 });
 
 const fakeDeps = (overrides: Partial<KeepWarmDeps> = {}): KeepWarmDeps => ({
+    requireAccess: () => {},
     settings: () => keepWarmFrom({}),
     saveSettings: () => {},
     sessionMeta: () => undefined,
@@ -106,7 +107,7 @@ test("keep warm: overview gives each model's refresh interval and Auto cap", () 
     });
 
     assert.equal(overview.models.length, 1);
-    assert.equal(overview.models[0]!.plan.everyMinutes, 45);
+    assert.equal(overview.models[0]!.plan.everyMs, 2_700_000);
     assert.equal(overview.models[0]!.plan.refreshes, 30);
 });
 
@@ -118,18 +119,34 @@ test("keep warm: a guest may turn a session's keep warm off, and only the owner 
         const id = await newSession(app);
 
         for (const choice of ["auto", 8, 1]) {
-            assert.throws(() => app.keepWarm.checkChoice(guest, choice), /Only the owner/);
+            assert.throws(() => app.keepWarm.checkChoice(guest, id, choice), /Only the owner/);
         }
 
-        app.keepWarm.checkChoice(guest, 0);
-        app.keepWarm.checkChoice(guest, "default");
-        app.keepWarm.checkChoice(owner(app), 8);
-        assert.throws(() => app.keepWarm.checkChoice(owner(app), 3), /must be/);
+        app.keepWarm.checkChoice(guest, id, 0);
+        app.keepWarm.checkChoice(guest, id, "default");
+        app.keepWarm.checkChoice(owner(app), id, 8);
+        assert.throws(() => app.keepWarm.checkChoice(owner(app), id, 3), /must be/);
         await app.keepWarm.setSession(guest, id, 0);
         assert.equal(app.sessionMeta(id)?.keepWarm, 0);
         await assert.rejects(app.keepWarm.setSession(guest, id, "auto"), /Only the owner/);
+
+        // The owner's default is on: a guest's Default would turn the session back on.
+        await app.keepWarm.setSettings(owner(app), { hours: "auto" });
+        await assert.rejects(app.keepWarm.setSession(guest, id, "default"), /Only the owner/);
+        assert.equal(app.sessionMeta(id)?.keepWarm, 0);
         await app.keepWarm.setSession(owner(app), id, "auto");
         assert.equal(app.sessionMeta(id)?.keepWarm, "auto");
+        await app.keepWarm.setSession(guest, id, "default");
+        assert.equal(
+            app.sessionMeta(id)?.keepWarm,
+            undefined,
+            "from a time back to Default is allowed",
+        );
+
+        // Someone who cannot see the session chooses nothing for it.
+        const stranger = app.config.addUser("Bea", "viewer").user;
+
+        assert.throws(() => app.keepWarm.checkChoice(stranger, id, 0));
     } finally {
         await app.close();
         cleanUp();

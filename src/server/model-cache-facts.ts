@@ -7,9 +7,24 @@ import type { Api, Model } from "@earendil-works/pi-ai";
  */
 const PUBLISHED_LIFETIMES: readonly [RegExp, number][] = [[/^gpt-/, 30]];
 
-/** The cache tier requests use: Pi's `PI_CACHE_RETENTION`. */
-export const tier = (): "short" | "long" =>
-    process.env.PI_CACHE_RETENTION === "long" ? "long" : "short";
+/**
+ * The cache tier a request asks for: its `cacheRetention`, else Pi's `PI_CACHE_RETENTION` (the request's `env`, then
+ * the server's). Without options: the tier requests use by default.
+ */
+export function cacheTier(options?: {
+    cacheRetention?: string;
+    env?: Record<string, string | undefined>;
+}): "none" | "short" | "long" {
+    if (options?.cacheRetention === "none") {
+        return "none";
+    }
+
+    return options?.cacheRetention === "long" ||
+        (options?.cacheRetention === undefined &&
+            (options?.env?.PI_CACHE_RETENTION ?? process.env.PI_CACHE_RETENTION) === "long")
+        ? "long"
+        : "short";
+}
 
 /** Providers that make the models they list: their published prices win over a reseller's or a cloud's. */
 const MAKERS = new Set(["anthropic", "openai", "xai", "google", "mistral", "deepseek"]);

@@ -35,14 +35,7 @@ import {
     type ModelFacts,
 } from "./idle-plan.ts";
 import { type IdleRecord, type IdleStore, savedOptions } from "./keep-warm-store.ts";
-
-export {
-    breakEvenRefreshes,
-    IDLE_FAILURES,
-    idleEveryMs,
-    type IdlePolicy,
-    type ModelFacts,
-} from "./idle-plan.ts";
+import { cacheTier } from "./model-cache-facts.ts";
 import { noWait } from "./limit-gate.ts";
 import type {
     Api,
@@ -159,23 +152,9 @@ export function isReplayable(model: Model<Api>, options: SimpleStreamOptions | u
     );
 }
 
-type Retention = "none" | "short" | "long";
-
-function retentionOf(options: SimpleStreamOptions | undefined): Retention {
-    if (options?.cacheRetention === "none") {
-        return "none";
-    }
-
-    return options?.cacheRetention === "long" ||
-        (options?.cacheRetention === undefined &&
-            (options?.env?.PI_CACHE_RETENTION ?? process.env.PI_CACHE_RETENTION) === "long")
-        ? "long"
-        : "short";
-}
-
 /** The model's cache lifetime for the tier in use, as its `promptCache` says; undefined when not known or not cached. */
 function ttlMsOf(model: Model<Api>, options: SimpleStreamOptions | undefined): number | undefined {
-    const retention = retentionOf(options);
+    const retention = cacheTier(options);
 
     if (retention === "none") {
         return undefined;
@@ -306,6 +285,11 @@ export class CacheKeeper {
     readonly #pending = new Set<Promise<void>>();
     /** Why idle warming last stopped, by conversation, while nothing warms it. */
     readonly #stopped = new Map<number, { reason: string; at: number }>();
+    /**
+     * What the conversations of a session that stopped warming in its idle stretch spent, so a stop does not reset the
+     * session's cost cap. A new run in the session ends the stretch (`runStarted`).
+     */
+    readonly #sessionStopped = new Map<number, number>();
     /** Counts requests and stops, so that each can tell which came first. */
     #seq = 0;
     /**
@@ -336,7 +320,15 @@ export class CacheKeeper {
     }
 
     status(): KeeperStatus {
-        return { warming: this.#entries.size, warms: this.#warms, spent: this.#spent };
+        let warming = 0;
+
+        for (const entry of this.#entries.values()) {
+            if (entry.kind !== "parked") {
+                warming++;
+            }
+        }
+
+        return { warming, warms: this.#warms, spent: this.#spent };
     }
 
     /** Idle warming now: how many conversations, and their refreshes and spend in this stretch. */
@@ -439,7 +431,7 @@ export class CacheKeeper {
         const known = ttlMsOf(model, options) !== undefined || facts.lifetimeMs !== undefined;
 
         // Uncached calls (a compaction's, a model with no known lifetime) leave an existing entry alone.
-        if (key === undefined || retentionOf(options) === "none" || !known) {
+        if (key === undefined || cacheTier(options) === "none" || !known) {
             return underlying(model, context, options);
         }
 
@@ -540,8 +532,14 @@ export class CacheKeeper {
         // A tool wait is warmed when its first refresh falls inside the cap: a longer cache outlives any wait it allows.
         const tool = message.stopReason === "toolUse" && delay !== undefined && delay < MAX_AGE_MS;
 
-        // The run's last request is kept for keep warm only when it may be wanted.
-        if (!tool && this.#deps.idlePolicy === undefined) {
+        // The run's last request is parked for keep warm only when its conversation has a policy now, or is not known
+        // yet; `#toIdle` asks again when the run ends.
+        if (
+            !tool &&
+            (this.#deps.idlePolicy === undefined ||
+                (request.conversationId !== undefined &&
+                    this.#deps.idlePolicy(request.conversationId) === undefined))
+        ) {
             return;
         }
 
@@ -630,6 +628,9 @@ export class CacheKeeper {
                 this.#drop(key);
             }
         }
+
+        // A session's new run ends its idle stretch: the next one starts its cost cap from nothing.
+        this.#sessionStopped.delete(conversationId);
     }
 
     /**
@@ -876,6 +877,19 @@ export class CacheKeeper {
         });
     }
 
+    /** What a session's idle stretch has cost: its conversations warm now, and those that stopped since it began. */
+    #sessionSpent(session: number): number {
+        let spent = this.#sessionStopped.get(session) ?? 0;
+
+        for (const entry of this.#entries.values()) {
+            if (entry.kind === "idle" && entry.idle?.session === session) {
+                spent += entry.spent;
+            }
+        }
+
+        return spent;
+    }
+
     /** Why an idle entry may not refresh now; undefined: it may. */
     #idleStop(entry: Entry, now: number): string | undefined {
         const idle = entry.idle!;
@@ -895,10 +909,15 @@ export class CacheKeeper {
                 : "the refresh cap was reached";
         }
 
-        // What the next refresh is likely to cost (its prompt read from the cache) counts too, so it does not go over.
-        const next = (entry.promptTokens * entry.model.cost.cacheRead) / 1_000_000;
+        // The session's whole idle stretch counts (its subagents' too), and the next refresh at its worst: a cache that
+        // is gone is written again in full. So the cap is never passed.
+        const rates = entry.model.cost;
+        const worst =
+            (entry.promptTokens * Math.max(rates.cacheWrite, rates.input, rates.cacheRead) +
+                rates.output) /
+            1_000_000;
 
-        if (idle.maxCost > 0 && entry.spent + next > idle.maxCost) {
+        if (idle.maxCost > 0 && this.#sessionSpent(idle.session) + worst > idle.maxCost) {
             return "the cost cap was reached";
         }
 
@@ -1158,6 +1177,16 @@ export class CacheKeeper {
 
         if (keepSaved) {
             entry.keptSaved = true;
+        }
+
+        // What it spent still counts against its session's cost cap for the rest of the stretch.
+        if (entry.kind === "idle" && entry.idle !== undefined && !keepSaved && entry.spent > 0) {
+            const session = entry.idle.session;
+
+            this.#sessionStopped.set(
+                session,
+                (this.#sessionStopped.get(session) ?? 0) + entry.spent,
+            );
         }
 
         if (entry.kind === "idle" && !keepSaved) {

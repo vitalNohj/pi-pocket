@@ -498,9 +498,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             // Checked first, so that a bad request changes nothing: keeping the session's cache warm once its run ends.
             if (body.keepWarm !== undefined) {
-                app.requireSee(user, id);
-                app.requireSteer(user);
-                app.keepWarm.checkChoice(user, body.keepWarm);
+                app.keepWarm.checkChoice(user, id, body.keepWarm, app.sessionMeta(id)?.keepWarm);
             }
 
             if (body.title !== undefined || body.archived !== undefined) {

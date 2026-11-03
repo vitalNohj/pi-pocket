@@ -7,16 +7,13 @@ import {
     type Model,
     type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { CacheKeeper, decide, MAX_AGE_MS, refreshDelayMs } from "../src/server/cache-keeper.ts";
 import {
-    CacheKeeper,
-    decide,
-    type IdlePolicy,
-    type ModelFacts,
     breakEvenRefreshes,
+    type IdlePolicy,
     idleEveryMs,
-    MAX_AGE_MS,
-    refreshDelayMs,
-} from "../src/server/cache-keeper.ts";
+    type ModelFacts,
+} from "../src/server/idle-plan.ts";
 import type { IdleRecord, IdleStore } from "../src/server/keep-warm-store.ts";
 
 // Claude Sonnet prices per million tokens, with a 5 minute cache.
@@ -42,6 +39,8 @@ function rig(
     disabled = false,
     idle?: {
         policy?: IdlePolicy | (() => IdlePolicy | undefined);
+        /** Provider session ids to conversations; default: a 1, b 2, s 3. */
+        conversations?: Map<string, number>;
         facts?: ModelFacts;
         store?: IdleStore;
     },
@@ -115,7 +114,8 @@ function rig(
     };
     const keeper = new CacheKeeper({
         now: () => now,
-        conversationOf: async (sessionId) => ({ a: 1, b: 2, s: 3 })[sessionId],
+        conversationOf: async (sessionId) =>
+            idle?.conversations?.get(sessionId) ?? { a: 1, b: 2, s: 3 }[sessionId],
         isRunning: (id) => !ended.has(id),
         disabled: () => off,
         ...(idle?.policy === undefined
@@ -424,7 +424,7 @@ test("a run that ended before the conversation lookup came back stops the warm",
 
 // ─── Keep warm (idle) ────────────────────────────────────────────────────
 
-const POLICY: IdlePolicy = { hours: 2, maxCost: 1, maxRefreshes: 30, share: 75 };
+const POLICY: IdlePolicy = { session: 3, hours: 2, maxCost: 1, maxRefreshes: 30, share: 75 };
 /** Claude's prices for a 1 hour cache: read $0.50, write $10 per million tokens, so 20 refreshes break even. */
 const CLAUDE = { read: 0.5, write: 10 };
 const HOUR_MODEL = { short: 3600 };
@@ -509,7 +509,9 @@ test("keep warm: the refresh cap and the cost cap stop it", async () => {
 
     assert.equal(!one.warm && one.stopped, "the refresh cap was reached");
 
-    const cost = rig(false, { policy: { ...POLICY, hours: 1000, maxCost: 0.04 } });
+    // A refresh reads $0.015; at worst (the cache gone) it writes 50,010 tokens at $3.75/M, about $0.1875. After two
+    // ($0.03), a third at its worst would pass $0.21.
+    const cost = rig(false, { policy: { ...POLICY, hours: 1000, maxCost: 0.21 } });
 
     await idleRun(cost);
 
@@ -517,7 +519,11 @@ test("keep warm: the refresh cap and the cost cap stop it", async () => {
         await cost.advance();
     }
 
-    assert.equal(cost.keeper.status().warms, 2, "$0.015 a refresh: a third would pass $0.04");
+    assert.equal(
+        cost.keeper.status().warms,
+        2,
+        "$0.03 spent plus a third at its worst would pass $0.21",
+    );
     const two = cost.keeper.idleStatus(3);
 
     assert.equal(!two.warm && two.stopped, "the cost cap was reached");
@@ -897,14 +903,41 @@ test("keep warm: a tool-wait refresh renews the cache's age for keep warm", asyn
     assert.equal(r.keeper.idleStatus(3).warm, true);
 });
 
-test("keep warm: the cost cap counts the next refresh, so it is never passed", async () => {
-    const r = rig(false, { policy: { ...POLICY, hours: 1000, maxCost: 0.02 } });
+test("keep warm: the cost cap counts the next refresh at its worst, so a rewrite never passes it", async () => {
+    const r = rig(false, { policy: { ...POLICY, hours: 1000, maxCost: 0.25 } });
 
     await idleRun(r);
+    // The cache is gone at every refresh: each one writes it again, which a read's price would not foresee.
+    r.rewriteOnWarm();
 
     for (let i = 0; i < 10 && r.timers.length > 0; i++) {
         await r.advance();
     }
 
-    assert.ok(r.keeper.status().spent <= 0.02, String(r.keeper.status().spent));
+    assert.ok(r.keeper.status().spent <= 0.25, String(r.keeper.status().spent));
+});
+
+test("keep warm: the cost cap is the session's, its subagents' refreshes and stopped ones included", async () => {
+    const memory = new Map<string, number>([
+        ["s", 3],
+        ["a", 1],
+    ]);
+    const policy: IdlePolicy = { ...POLICY, session: 3, hours: 1000, maxCost: 0.21 };
+    const r = rig(false, { policy, conversations: memory });
+
+    // The session and one subagent both go idle under session 3.
+    await r.send("s", "stop");
+    await r.send("a", "stop");
+    await new Promise((x) => setImmediate(x));
+    r.endRun(3);
+    r.endRun(1);
+    r.keeper.runEnded(3);
+    r.keeper.runEnded(1);
+
+    for (let i = 0; i < 20 && r.timers.length > 0; i++) {
+        await r.advance();
+    }
+
+    // Each could have refreshed twice on its own ($0.015 + $0.1875 at worst fits $0.21); together they stop after two.
+    assert.equal(r.keeper.status().warms, 2);
 });

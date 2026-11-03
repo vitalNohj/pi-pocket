@@ -14,11 +14,13 @@ export type ModelFacts = {
 
 /** What the owner's settings and the session's choice allow for one conversation's idle warming. */
 export type IdlePolicy = {
+    /** The session the conversation belongs to (itself, or a subagent's session): the cost cap is the session's. */
+    session: number;
     /** Hours to keep warm after the run ends, or "auto": until the refreshes cost as much as one cache write. */
     hours: number | "auto";
-    /** Dollars at most for each idle stretch of a conversation; 0: no cost cap. */
+    /** Dollars at most for a session's idle stretch, its subagents' refreshes included; 0: no cost cap. */
     maxCost: number;
-    /** Refreshes at most for each idle stretch. */
+    /** Refreshes at most for each conversation's idle stretch (each has a cache of its own). */
     maxRefreshes: number;
     /** Percent of a model's cache lifetime between refreshes. */
     share: number;
@@ -26,6 +28,8 @@ export type IdlePolicy = {
 
 /** How one entry is kept warm: how often, how long its cache lives, and when it stops. */
 export type IdlePlan = {
+    /** The session whose cost cap it counts against. */
+    session: number;
     everyMs: number;
     /** How long the cache lives after a request touches it. */
     lifeMs: number;
@@ -83,7 +87,7 @@ export function idlePlan(
         return undefined;
     }
 
-    const base = { everyMs, lifeMs, since, maxCost: policy.maxCost };
+    const base = { session: policy.session, everyMs, lifeMs, since, maxCost: policy.maxCost };
 
     if (policy.hours !== "auto") {
         return {
