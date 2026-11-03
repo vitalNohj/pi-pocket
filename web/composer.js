@@ -14,6 +14,7 @@ import {
 import { withQuote } from "./quote-text.js";
 import { loadFiles, mentionAt, mentionText, suggestFiles } from "./files.js";
 import { remember, searchHistory, sentHistory } from "./history.js";
+import { personStorage } from "./person-storage.js";
 import {
     actions,
     attempt,
@@ -88,18 +89,18 @@ const REMEMBER_CHARS = 20_000;
 const MENTIONS_FILE = /(?:^|[\s([{])@(?:"[^"\n]+"|[^\s"]*[./][^\s"]*)/;
 const INLINE_KEY = "pocket.inlineFiles";
 
-const pasteKey = (id) => `pocket.pastes.${id ?? "home"}`;
+const pasteKey = (id) => `pastes.${id ?? "home"}`;
 
 /** Each conversation's pastes by number, kept with its draft so a reload keeps them. */
 function loadPastes(id) {
     try {
-        return JSON.parse(localStorage.getItem(pasteKey(id)) ?? "{}");
+        return JSON.parse(personStorage.get(pasteKey(id)) ?? "{}");
     } catch {
         return {};
     }
 }
 
-const attachedKey = (id) => `pocket.attached.${id ?? "home"}`;
+const attachedKey = (id) => `attached.${id ?? "home"}`;
 
 /**
  * Each conversation's uploaded files, kept with its draft: the browser drops a tab in the background, or reloads it after
@@ -107,7 +108,7 @@ const attachedKey = (id) => `pocket.attached.${id ?? "home"}`;
  */
 function loadAttached(id) {
     try {
-        const list = JSON.parse(localStorage.getItem(attachedKey(id)) ?? "[]");
+        const list = JSON.parse(personStorage.get(attachedKey(id)) ?? "[]");
 
         return list.map((attachment) => ({
             key: uid(),
@@ -125,25 +126,16 @@ function loadAttached(id) {
 function saveAttached(id, files) {
     const list = files.filter((file) => file.state === "done").map((file) => file.attachment);
 
-    try {
-        if (list.length === 0) {
-            localStorage.removeItem(attachedKey(id));
-        } else {
-            localStorage.setItem(attachedKey(id), JSON.stringify(list));
-        }
-    } catch {
-        // No room: the files stay attached until the page goes.
-    }
+    personStorage.set(attachedKey(id), list.length === 0 ? null : JSON.stringify(list));
 }
 
 function savePastes(id, pastes) {
-    try {
-        if (Object.keys(pastes).length === 0) {
-            localStorage.removeItem(pasteKey(id));
-        } else {
-            localStorage.setItem(pasteKey(id), JSON.stringify(pastes));
-        }
-    } catch {
+    const saved = personStorage.set(
+        pasteKey(id),
+        Object.keys(pastes).length === 0 ? null : JSON.stringify(pastes),
+    );
+
+    if (!saved) {
         notify("warning", "This browser has no room to keep the paste after a reload.");
     }
 }
@@ -538,7 +530,11 @@ export function Composer() {
     const insert = store.state.composerInsert;
 
     useEffect(() => {
-        if (!insert || insert.n <= insertedUpTo) {
+        if (
+            !insert ||
+            insert.n <= insertedUpTo ||
+            (insert.conversationId !== undefined && insert.conversationId !== conversationId)
+        ) {
             return;
         }
 

@@ -1762,6 +1762,8 @@ export class Commands {
         }
 
         await (await app.conversation(id)).reset(handoff, context);
+        // The next request starts from nothing: the cache kept warm is not read again.
+        app.cacheKeeper.forget(Number(id), "a new context started");
         await app.collab.activity(
             id,
             user,
