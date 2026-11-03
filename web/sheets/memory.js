@@ -51,7 +51,23 @@ export function useMemory(conversationId, pendingOnly = false) {
     const revision = (state) => `${state.memoryRev ?? 0}:${state.streamId ?? ""}`;
     const [rev, setRev] = useState(() => revision(store.state));
 
-    useEffect(() => store.subscribe((state) => setRev(revision(state))), []);
+    useEffect(() => {
+        let memoryRev;
+        let streamId;
+
+        // Most changes are neither (an answer streaming in): each card's listener passes them by.
+        const follow = (state) => {
+            if (state.memoryRev !== memoryRev || state.streamId !== streamId) {
+                ({ memoryRev, streamId } = state);
+                setRev(revision(state));
+            }
+        };
+
+        // A change between the first draw and now counts too.
+        follow(store.state);
+
+        return store.subscribe(follow);
+    }, []);
     const on = memoryAvailable(id) && (!pendingOnly || me?.role === "owner");
     const [data, setData] = useState(last?.key === key ? last : null);
     // Asked again a few times when a fetch fails (a dropped connection, a restart), rather than loading for ever.

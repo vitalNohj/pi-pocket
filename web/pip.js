@@ -180,9 +180,29 @@ if (store.state.pipOpen && place === "board") {
     store.set({ pipOpen: false });
 }
 
+/** What the listener below reads: a change to nothing else (an answer streaming in, say) passes it by at once. */
+const WATCHED = [
+    "me",
+    "server",
+    "streamId",
+    "pip",
+    "pipOpen",
+    "conversationId",
+    "board",
+    "page",
+    "appearance",
+];
+/** Those values as the listener last saw them. */
+let watched = {};
+
 // A reconnect (or the first connection, with the panel kept open across a reload) gets the panel's view again; PiP
 // turned off in Extensions closes the panel. The setting changed while PiP shows moves it to the other place.
 store.subscribe((state) => {
+    if (WATCHED.every((key) => state[key] === watched[key])) {
+        return;
+    }
+
+    watched = Object.fromEntries(WATCHED.map((key) => [key, state[key]]));
     syncDraftScope(state);
 
     const board = pipBoard(state);
@@ -240,11 +260,25 @@ navigator.serviceWorker?.addEventListener("message", (event) => {
     }
 });
 
-/** PiP's answers seen up to now: what the panel last showed, by the server's clock. */
+const readSeen = () => Number(localStorage.getItem(SEEN_KEY) ?? 0);
+/**
+ * PiP's answers seen up to now in this browser (`SEEN_KEY`), by the server's clock. Kept here, as the rail and the mark
+ * ask on every draw: storage is read once, and again only when another tab writes it.
+ */
+let seenUpTo = readSeen();
+
+addEventListener("storage", (event) => {
+    if (event.key === SEEN_KEY || event.key === null) {
+        seenUpTo = readSeen();
+    }
+});
+
+/** PiP's answers seen up to now: what the panel last showed. */
 function markSeen() {
     const ended = store.state.pip?.endedAt;
 
-    if (ended !== undefined && ended > Number(localStorage.getItem(SEEN_KEY) ?? 0)) {
+    if (ended !== undefined && ended > seenUpTo) {
+        seenUpTo = ended;
         localStorage.setItem(SEEN_KEY, String(ended));
     }
 }
@@ -254,11 +288,7 @@ export function pipUnread(state = store.state) {
     const pip = state.pip;
 
     return Boolean(
-        pip &&
-        !pipShown(state) &&
-        !pip.busy &&
-        pip.endedAt !== undefined &&
-        pip.endedAt > Number(localStorage.getItem(SEEN_KEY) ?? 0),
+        pip && !pipShown(state) && !pip.busy && pip.endedAt !== undefined && pip.endedAt > seenUpTo,
     );
 }
 
