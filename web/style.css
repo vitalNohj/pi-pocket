@@ -1087,7 +1087,6 @@ kbd {
         .viewer-head,
         .lightbox-bar,
         .board-head,
-        .pip-panel.docked > .pip-head,
         .files-bar,
         .ext-panel-bar,
         .browser-bar,
@@ -1169,16 +1168,8 @@ kbd {
     right: 0;
 }
 
-/* Something over the app (a sheet's scrim, the launcher, a viewer, floating PiP) takes clicks under the strip too. */
-:is(
-    .overlay,
-    .launcher-overlay,
-    .viewer,
-    .lightbox,
-    .pip-panel:not(.docked),
-    .notices,
-    .sheet-host > *
-) {
+/* Something over the app (a sheet's scrim, the launcher, a viewer, PiP) takes clicks under the strip too. */
+:is(.overlay, .launcher-overlay, .viewer, .lightbox, .pip-panel, .notices, .sheet-host > *) {
     app-region: no-drag;
 }
 
@@ -17763,34 +17754,6 @@ textarea.notes {
 
 .pip-resize {
     display: none;
-}
-
-/*
- * PiP as a board (Appearance → PiP → Board): in the conversation's place, as Running now is, so its pane is its window
- * (tiled, themed, framed as the conversation's). No corner, size, shadow, or rounded edge of its own; the same inside.
- * Two classes, so it wins over the corner's and the phone sheet's sizes at every width.
- */
-.pip-panel.docked {
-    position: relative;
-    inset: auto;
-    flex: 1;
-    width: auto;
-    height: auto;
-    min-height: 0;
-    max-width: none;
-    max-height: none;
-    z-index: auto;
-    padding: 0 var(--inset-r) env(safe-area-inset-bottom) var(--inset-l);
-    background: var(--bg);
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
-    transform-origin: center;
-    animation: fade var(--t-fade) var(--ease-almost);
-}
-
-.pip-panel.docked > .pip-head {
-    padding-top: calc(10px + env(safe-area-inset-top));
 }
 
 @media (min-width: 768px) {
