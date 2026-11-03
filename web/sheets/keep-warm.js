@@ -517,18 +517,23 @@ export function KeepWarmRow() {
     const status = state.status;
     const time = (at) =>
         new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    const fallback = server.keepWarm.hours;
-    const chosen = state.choice === "default" ? fallback : state.choice;
-    // The owner's time is named in the Default button, so it is not a button of its own. Only the owner turns it on.
+    // A server from before 0.28 (not released) still calls Break-even "auto".
+    const fallback = server.keepWarm.hours === "auto" ? "break-even" : server.keepWarm.hours;
+    const chosen =
+        state.choice === "default"
+            ? fallback
+            : state.choice === "auto"
+              ? "break-even"
+              : state.choice;
+    // The same times as the owner's, the session's own (or the owner's default) selected. Picking the owner's default
+    // follows it again ("default"), so a later change of the default reaches this session too.
+    const choices = [...TIMES.slice(1), [0, "Off"]];
+    const valueOf = (value) => (value === fallback ? "default" : value);
+    // Only the owner turns a session on or picks another time; anyone who can steer may turn it off, or back to the
+    // default where that keeps it off (the server checks it too).
     const owner = store.state.me?.role === "owner";
-    // Another person's Default may not turn on a session the owner turned off (the server checks it too).
-    const defaultTurnsOn = state.choice === 0 && fallback !== 0;
-    const choices = [
-        ...(owner || !defaultTurnsOn ? [["default", `Default: ${timeLabel(fallback)}`]] : []),
-        ...[...TIMES.slice(1), [0, "Off"]].filter(
-            ([value]) => value !== fallback && (owner || value === 0 || value === state.choice),
-        ),
-    ];
+    const allowed = (value) =>
+        owner || value === 0 || (value === fallback && (state.choice !== 0 || fallback === 0));
     const hoursLabel = (hours) =>
         hours === 0.5 ? "30 minutes" : hours === 1 ? "1 hour" : `${hours} hours`;
     const line = status.warm
@@ -544,7 +549,7 @@ export function KeepWarmRow() {
           ? `Stopped: ${status.stopped}`
           : chosen === 0
             ? "Not keeping cache warm"
-            : chosen === "break-even" || chosen === "auto"
+            : chosen === "break-even"
               ? "Until it costs as much as one uncached message, keep cache alive"
               : `${hoursLabel(chosen)} after Pi finishes, keep cache alive`;
 
@@ -560,15 +565,21 @@ export function KeepWarmRow() {
                         class=${`warm ${status.warm ? "warming" : ""}`}
                     />`
                 }
-                Keep warm
+                Keep this session warm
             </span>
             ${choices.map(
                 ([value, label]) => html`<button
-                    class=${state.choice === value ? "on" : ""}
-                    aria-pressed=${state.choice === value}
-                    title=${value === "default" ? "The owner's default" : value === "break-even" ? BREAK_EVEN : ""}
-                    disabled=${!steer}
-                    onClick=${() => state.choice !== value && choose(value)}
+                    class=${chosen === value ? "on" : ""}
+                    aria-pressed=${chosen === value}
+                    title=${
+                        value === fallback
+                            ? "The owner's default"
+                            : value === "break-even"
+                              ? BREAK_EVEN
+                              : ""
+                    }
+                    disabled=${!steer || !allowed(value)}
+                    onClick=${() => state.choice !== valueOf(value) && choose(valueOf(value))}
                 >
                     ${label}
                 </button>`,
