@@ -18794,17 +18794,52 @@ pre.gallery-code {
     font-weight: 500;
 }
 
+/* Label on the left; the value or box on the right, its unit a fixed width so the boxes line up. */
 .keep-warm-model-row {
-    display: grid;
-    grid-template-columns: 8.5rem minmax(0, 1fr);
+    display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 8px;
+    min-height: 40px;
     font-size: 13px;
+    color: var(--muted);
 }
 
-.keep-warm-model-row .keep-warm-input {
-    flex-wrap: wrap;
-    white-space: normal;
+.keep-warm-model-value {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.keep-warm-model-value b {
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.keep-warm-model-value .keep-warm-unit {
+    width: 7.5rem;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.keep-warm-model-note {
+    font-size: 12px;
+    color: var(--muted);
+}
+
+/* No known cache time: said quietly, with a small dot rather than warning text. */
+.keep-warm-model-note.off::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--warn);
+    opacity: 0.7;
+    vertical-align: 1px;
 }
 
 @media (min-width: 1000px) {

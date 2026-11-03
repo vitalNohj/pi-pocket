@@ -225,16 +225,16 @@ function ModelCard({ model, settings, onSet }) {
     const { everyMs, refreshes, breakEvenStopMs } = model.plan;
     const own = settings.models[model.spec]?.lifetime;
     const read = model.known.read;
+    const kept = everyMs !== undefined;
 
     return html`<div class="keep-warm-model">
         <div class="keep-warm-model-name" title=${model.spec}>${model.name}</div>
-        ${
-            read === undefined
-                ? html`<label class="keep-warm-model-row">
-                      <span class="muted">Cache cost</span>
-                      <span class="keep-warm-input">
-                          <span class="muted small">$</span>
-                          <${NumberField}
+        <label class="keep-warm-model-row">
+            <span>Cache cost</span>
+            ${
+                read === undefined
+                    ? html`<span class="keep-warm-model-value">
+                          $<${NumberField}
                               value=${settings.models[model.spec]?.read}
                               min=${0}
                               max=${10_000}
@@ -244,36 +244,33 @@ function ModelCard({ model, settings, onSet }) {
                               placeholder="?"
                               clearable=${true}
                               onSave=${(value) => onSet("read", value)}
-                          />
-                          <span class="muted small">per million tokens</span>
-                      </span>
-                  </label>`
-                : html`<div class="keep-warm-model-row">
-                      <span class="muted">Cache cost</span>
-                      <span>${money(read)} per million tokens</span>
-                  </div>`
-        }
+                          /><span class="keep-warm-unit">per million tokens</span>
+                      </span>`
+                    : html`<span class="keep-warm-model-value">
+                          <b>${money(read)}</b><span class="keep-warm-unit">per million tokens</span>
+                      </span>`
+            }
+        </label>
         <label class="keep-warm-model-row">
-            <span class="muted">Cache expires after</span>
-            <span class="keep-warm-input">
+            <span>Cache expires after</span>
+            <span class="keep-warm-model-value">
                 <${NumberField}
                     value=${own}
                     min=${1}
                     max=${10_080}
-                    width="4rem"
+                    width="4.5rem"
                     label=${`Minutes until the cache of ${model.name} expires`}
                     placeholder=${model.known.lifetime === undefined ? "" : String(model.known.lifetime)}
                     clearable=${true}
                     onSave=${(value) => onSet("lifetime", value)}
-                />
-                <span class="muted small">min idle</span>
+                /><span class="keep-warm-unit">minutes idle</span>
             </span>
         </label>
-        <div class="small ${everyMs === undefined ? "warn" : "muted"}">
+        <div class=${`keep-warm-model-note ${kept ? "" : "off"}`}>
             ${
-                everyMs === undefined
-                    ? "Not kept warm: its maker publishes no cache time. Type it to turn it on."
-                    : `Refreshed every ${durationLabel(everyMs)} · Break-even stops after ${durationLabel(breakEvenStopMs)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
+                kept
+                    ? `Refreshed every ${durationLabel(everyMs)} · Break-even after ${durationLabel(breakEvenStopMs)}, ${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"}`
+                    : "Not kept warm: no published cache time. Type one to turn it on."
             }
         </div>
     </div>`;
