@@ -29,6 +29,21 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+    IDLE_FAILURES,
+    type IdlePlan,
+    type IdlePolicy,
+    idlePlan,
+    type ModelFacts,
+} from "./idle-plan.ts";
+
+export {
+    breakEvenRefreshes,
+    IDLE_FAILURES,
+    idleEveryMs,
+    type IdlePolicy,
+    type ModelFacts,
+} from "./idle-plan.ts";
 import { noWait } from "./limit-gate.ts";
 import type {
     Api,
@@ -262,70 +277,12 @@ function idleFileName(key: string): string {
     return createHash("sha256").update(key).digest("hex").slice(0, 32);
 }
 
-/** Failed refreshes in a row that stop keeping a session warm. */
-export const IDLE_FAILURES = 2;
 /** How long one idle refresh may take before it is given up. */
 const IDLE_DEADLINE_MS = 5 * 60_000;
 /** A refresh that erred is tried again this much later, while the cache lives. */
 const IDLE_RETRY_MS = 30_000;
 
-/**
- * How often an idle session is refreshed: `share` percent of the model's cache lifetime, and at least 10 seconds before
- * it ends. Undefined: the lifetime is not known, so it is not kept warm.
- */
-export function idleEveryMs(ttlMs: number | undefined, share: number): number | undefined {
-    if (ttlMs === undefined) {
-        return undefined;
-    }
-
-    const every = Math.floor(Math.min((ttlMs * share) / 100, ttlMs - 10_000));
-
-    return every > 0 ? every : undefined;
-}
-
-/**
- * Refreshes that cost as much as writing the cache once more: `write / read`, the prices per token. The prompt's size
- * cancels out. A session kept warm this long and no longer pays at most about twice what letting it expire would.
- */
-export function breakEvenRefreshes(prices: { read: number; write: number }): number {
-    return prices.read > 0 && prices.write > 0
-        ? Math.max(1, Math.floor(prices.write / prices.read))
-        : 0;
-}
-
-/** What is known of one model for keep warm: the owner's values over Pi's. */
-export type ModelFacts = {
-    /** How long the cache lives, as the owner or the maker's docs say; else the model's `promptCache` counts. */
-    lifetimeMs?: number;
-    /** Pi's published prices per million tokens to read and write the cache, for where Auto stops. Undefined: not published. */
-    prices?: { read: number; write: number };
-};
-
-/** What the owner's settings and the session's choice allow for one conversation's idle warming. */
-export type IdlePolicy = {
-    /** Hours to keep warm after the run ends, or "auto": until the refreshes cost as much as one cache write. */
-    hours: number | "auto";
-    /** Dollars at most for each idle stretch of a conversation; 0: no cost cap. */
-    maxCost: number;
-    /** Refreshes at most for each idle stretch. */
-    maxRefreshes: number;
-    /** Percent of a model's cache lifetime between refreshes. */
-    share: number;
-};
-
-type IdleState = {
-    everyMs: number;
-    /** How long the cache lives after a request touches it. */
-    lifeMs: number;
-    /** When the run ended: the time limit counts from here. */
-    since: number;
-    until?: number;
-    maxCost: number;
-    maxRefreshes: number;
-    /** Auto, and `maxRefreshes` is its break-even, which comes before the owner's refresh cap. */
-    breakEven: boolean;
-    failures: number;
-};
+type IdleState = IdlePlan & { failures: number };
 
 type Entry = {
     /** `tool`: a run waits on a tool. `parked`: the run's last request, kept until the run ends. `idle`: kept warm. */
@@ -972,45 +929,20 @@ export class CacheKeeper {
      * How an entry is kept warm now, from the owner's settings and the session's choice: how often, how long its cache
      * lives, and when it stops. Undefined: it is not kept warm (off, or nothing says how often to refresh it).
      */
-    #plan(entry: Entry, since: number): Omit<IdleState, "failures"> | undefined {
+    #plan(entry: Entry, since: number): IdlePlan | undefined {
         const policy =
             entry.conversationId === undefined || this.#closed || this.#deps.disabled()
                 ? undefined
                 : this.#deps.idlePolicy?.(entry.conversationId);
 
-        if (policy === undefined) {
-            return undefined;
-        }
-
-        const facts = this.#deps.modelFacts?.(specOf(entry.model)) ?? {};
-        const ttlMs = facts.lifetimeMs ?? entry.ttlMs;
-        const everyMs = idleEveryMs(ttlMs, policy.share);
-
-        if (ttlMs === undefined || everyMs === undefined) {
-            return undefined;
-        }
-
-        const lifeMs = ttlMs;
-        const base = { everyMs, lifeMs, since, maxCost: policy.maxCost };
-
-        if (policy.hours !== "auto") {
-            return {
-                ...base,
-                until: since + policy.hours * 3_600_000,
-                maxRefreshes: policy.maxRefreshes,
-                breakEven: false,
-            };
-        }
-
-        // Pi's published prices say where keeping warm stops paying off; with none, the owner's refresh cap does.
-        const breakEven =
-            (facts.prices === undefined ? 0 : breakEvenRefreshes(facts.prices)) || Infinity;
-
-        return {
-            ...base,
-            maxRefreshes: Math.min(policy.maxRefreshes, breakEven),
-            breakEven: breakEven < policy.maxRefreshes,
-        };
+        return policy === undefined
+            ? undefined
+            : idlePlan(
+                  policy,
+                  this.#deps.modelFacts?.(specOf(entry.model)) ?? {},
+                  entry.ttlMs,
+                  since,
+              );
     }
 
     /** Plan the next idle refresh, `everyMs` after a request last touched the cache. */
