@@ -667,7 +667,13 @@ export class RunnerLink {
 
             signal?.addEventListener("abort", cancelled, { once: true });
             this.#questions.set(id, resolve);
-            this.#control({ type: "confirm", id, ...question });
+            // Older runners close the link for an unknown kind. They can still ask a generic session question.
+            this.#control({
+                type: "confirm",
+                id,
+                ...question,
+                ...(question.kind === "move" ? ({ kind: "new", move: true } as const) : {}),
+            });
         }).finally(() => {
             clearTimeout(timer);
             this.#questions.delete(id);
