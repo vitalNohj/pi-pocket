@@ -9,6 +9,7 @@
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { connect as connectTcp, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { localDaemon } from "@earendil-works/pi-env";
 import WebSocket from "ws";
@@ -27,9 +28,13 @@ import {
     LINK_PROTOCOL,
     LINK_SUBPROTOCOL,
     MAX_MESSAGE,
+    type NetOpen,
     Outbox,
     parseControl,
+    readStreamData,
+    STREAM_DATA,
 } from "./protocol.ts";
+import { CONNECT_MS, MAX_STREAMS, StreamLink } from "./tunnels.ts";
 
 /** Daemon pings, as pi-env's own client sends them: it stops everything after 30 s without a byte. */
 const DAEMON_PING_MS = 5000;
@@ -66,6 +71,10 @@ export type RunnerSettings = {
     confirm?: boolean;
     /** Use plain HTTP to this server even where it is not this computer or a tailnet device. Default: false. */
     allowHttp?: boolean;
+    /** Open the network connections of sessions' browsers from this computer. Default: true. */
+    network?: boolean;
+    /** Where sessions' browser downloads go, an absolute folder: `<folder>/<session>/`. Default: the temporary folder. */
+    downloads?: string;
 };
 
 /** A question the server asked this computer: a session would start here. */
@@ -244,6 +253,12 @@ export class Runner {
     #retryTimer: NodeJS.Timeout | undefined;
     /** Why the last connect was refused before it began (`transport.ts`), so it is said once. */
     #refused: string | undefined;
+    /** The network streams of the current connection. */
+    #streams: StreamLink | undefined;
+    /** Network connections opened so far, for tests. */
+    opened = 0;
+    /** Network connections still connecting, by stream id. */
+    readonly #connecting = new Map<number, Socket>();
     #done!: (error?: Error) => void;
     /** Settles when the runner stops: resolves after `stop()`, rejects with `RunnerStopped` when the server ends it. */
     readonly finished: Promise<void>;
@@ -448,6 +463,25 @@ export class Runner {
 
         this.#socket = ws;
 
+        const streams = new StreamLink({
+            send: (message, done) => {
+                if (ws.readyState !== WebSocket.OPEN) {
+                    return false;
+                }
+
+                ws.send(message, done);
+
+                return true;
+            },
+            control: (message) => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify(message));
+                }
+            },
+        });
+
+        this.#streams = streams;
+
         let welcomed = false;
         let silent = Date.now();
         const pinger = setInterval(() => {
@@ -489,6 +523,11 @@ export class Runner {
                     asks: true,
                     withdraws: true,
                     tools,
+                    // And opens network streams (`net-open`), or refuses them as its settings say.
+                    network: true,
+                    ...(this.#settings().downloads === undefined
+                        ? {}
+                        : { downloads: this.#settings().downloads }),
                 } satisfies ControlMessage),
             );
         });
@@ -514,6 +553,16 @@ export class Runner {
                 return;
             }
 
+            if (bytes[0] === STREAM_DATA) {
+                const data = readStreamData(bytes);
+
+                if (data !== undefined) {
+                    streams.data(data.id, data.bytes);
+                }
+
+                return;
+            }
+
             this.#onData(ws, bytes);
         });
         ws.on("error", (error) => {
@@ -525,6 +574,18 @@ export class Runner {
         });
         ws.on("close", (code, reason) => {
             clearInterval(pinger);
+            // Network streams do not survive a drop: the browser on the server opens them again.
+            streams.dropAll();
+
+            for (const socket of this.#connecting.values()) {
+                socket.destroy();
+            }
+
+            this.#connecting.clear();
+
+            if (this.#streams === streams) {
+                this.#streams = undefined;
+            }
 
             if (this.#socket === ws) {
                 this.#socket = undefined;
@@ -659,6 +720,19 @@ export class Runner {
             void this.#answer(ws, message);
         } else if (message?.type === "withdraw") {
             this.#questions.get(message.id)?.abort("Withdrawn by the server.");
+        } else if (message?.type === "net-open") {
+            this.#openStream(ws, message);
+        } else if (
+            message?.type === "net-end" ||
+            message?.type === "net-reset" ||
+            message?.type === "net-credit"
+        ) {
+            if (message.type === "net-reset") {
+                this.#connecting.get(message.id)?.destroy();
+                this.#connecting.delete(message.id);
+            }
+
+            this.#streams?.message(message);
         } else if (message?.type === "bye") {
             this.#log(`Server message: ${message.reason}`);
         } else {
@@ -748,6 +822,92 @@ export class Runner {
                 } satisfies ControlMessage),
             );
         }
+    }
+
+    /**
+     * The server asks for a TCP connection from this computer, for a session's browser: open it here, with this
+     * computer's names and routes, unless its settings say not to share the network.
+     */
+    #openStream(ws: WebSocket, open: NetOpen): void {
+        const streams = this.#streams;
+
+        const fail = (code: "refused" | "unreachable" | "timeout" | "limit", message: string) => {
+            // Errors only, not every connection: a page opens many.
+            if (code !== "refused") {
+                this.#log(`Browser connection failed: ${message}`);
+            }
+
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                    JSON.stringify({
+                        type: "net-failed",
+                        id: open.id,
+                        code,
+                        message,
+                    } satisfies ControlMessage),
+                );
+            }
+        };
+
+        if (streams === undefined || streams.has(open.id) || this.#connecting.has(open.id)) {
+            ws.close(1002, "A stream id in use");
+
+            return;
+        }
+
+        if (this.#settings().network === false) {
+            fail("refused", `${this.#options.link.name} does not share its network`);
+
+            return;
+        }
+
+        if (streams.size + this.#connecting.size >= MAX_STREAMS) {
+            fail("limit", `${this.#options.link.name} has too many open connections`);
+
+            return;
+        }
+
+        const host = open.host.replace(/^\[|\]$/g, "");
+        const socket = connectTcp({ host, port: open.port, allowHalfOpen: true });
+        const timer = setTimeout(() => {
+            socket.destroy();
+            fail("timeout", `No answer from ${open.host}:${open.port} in ${CONNECT_MS / 1000} s`);
+        }, CONNECT_MS);
+
+        // Not `socket.connecting`: Node clears it before a failed connect's error event.
+        let connected = false;
+
+        timer.unref();
+        this.#connecting.set(open.id, socket);
+        socket.once("close", () => {
+            clearTimeout(timer);
+
+            if (this.#connecting.get(open.id) === socket) {
+                this.#connecting.delete(open.id);
+            }
+        });
+        socket.once("error", (error: NodeJS.ErrnoException) => {
+            if (!connected && this.#connecting.get(open.id) === socket) {
+                clearTimeout(timer);
+                this.#connecting.delete(open.id);
+                fail("unreachable", `${open.host}:${open.port}: ${error.code ?? error.message}`);
+            }
+        });
+        socket.once("connect", () => {
+            connected = true;
+            clearTimeout(timer);
+            this.#connecting.delete(open.id);
+
+            if (ws.readyState !== WebSocket.OPEN || this.#streams !== streams) {
+                socket.destroy();
+
+                return;
+            }
+
+            this.opened++;
+            ws.send(JSON.stringify({ type: "net-opened", id: open.id } satisfies ControlMessage));
+            streams.attach(open.id, socket);
+        });
     }
 
     #onData(ws: WebSocket, bytes: Buffer): void {
