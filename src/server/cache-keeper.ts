@@ -191,6 +191,7 @@ type Entry = {
     /** When the next refresh should go out; a refresh later than the slack after it would pay a full rewrite. */
     dueAt: number;
     timer?: ReturnType<typeof setTimeout>;
+    /** The refresh on its way: only that refresh clears it, so no second one goes out beside it, even once parked. */
     abort?: AbortController;
     deadline?: ReturnType<typeof setTimeout>;
     account?: WarmAccount;
@@ -835,7 +836,6 @@ export class CacheKeeper {
         entry.timer = undefined;
         entry.deadline = undefined;
         entry.abort?.abort();
-        entry.abort = undefined;
 
         if (entry.idle !== undefined) {
             entry.stretch = { since: entry.idle.since, failures: entry.idle.failures };
@@ -904,12 +904,13 @@ export class CacheKeeper {
         }
 
         // Off for this session now: kept as it is while its cache lives, in case it is turned on.
+        // Off is a choice, so a limit's old stop is not shown. A saved entry is not loaded again only to be parked.
         if (plan === undefined) {
-            return saved === undefined &&
+            return restored === undefined &&
                 this.#deps.idlePolicy !== undefined &&
                 !this.#closed &&
                 !this.#deps.disabled()
-                ? this.#park(key, entry, this.#stopped.get(conversationId))
+                ? this.#park(key, entry)
                 : stop();
         }
 
@@ -939,9 +940,13 @@ export class CacheKeeper {
         entry.account ??= this.#deps.accountFor?.(conversationId);
         this.#stopped.delete(conversationId);
 
-        // A tool-wait refresh on its way plans the next itself, as an idle one, when it settles.
+        // A refresh on its way (a tool wait's, or one parked on its way) plans the next itself when it settles; the
+        // parked entry's expiry goes.
         if (entry.abort === undefined) {
             this.#scheduleIdle(key, entry);
+        } else if (entry.timer !== undefined) {
+            this.#deps.clearTimer(entry.timer);
+            entry.timer = undefined;
         }
 
         this.#save(key, entry, true);
@@ -1146,10 +1151,11 @@ export class CacheKeeper {
         }
 
         let actual = 0;
+        const abort = new AbortController();
+        // Parked while it was on its way (and maybe turned on again): its abort is no failure of the refresh.
+        const interrupted = () => abort.signal.aborted && this.#entries.get(key) === entry;
 
         try {
-            const abort = new AbortController();
-
             entry.abort = abort;
             entry.deadline = this.#deps.setTimer(
                 () => {
@@ -1217,6 +1223,10 @@ export class CacheKeeper {
 
             // Parked while it was on its way (turned off, or the payload hook found it Off): it stays parked.
             if (rejected) {
+                if (interrupted()) {
+                    return this.#resumeAfter(key, entry, abort);
+                }
+
                 if (this.#entries.get(key) === entry && entry.kind !== "parked") {
                     this.#drop(key, why("a refresh could not be sent"));
                 }
@@ -1243,17 +1253,19 @@ export class CacheKeeper {
 
             const failed = message.stopReason === "error" || message.stopReason === "aborted";
 
-            entry.abort = undefined;
-
-            // Parked while it was on its way: a refresh that read the cache keeps it alive from now, and nothing is planned.
-            if (entry.kind === "parked") {
-                if (!failed && message.usage.cacheRead > 0) {
-                    entry.lastTouch = now;
-                    this.#park(key, entry, this.#stopped.get(entry.conversationId!));
-                }
-
-                return;
+            // Parked while it was on its way, and maybe turned on again: a refresh that read the cache keeps it alive
+            // from now.
+            if (interrupted()) {
+                return this.#resumeAfter(
+                    key,
+                    entry,
+                    abort,
+                    !failed && message.usage.cacheRead > 0,
+                    now,
+                );
             }
+
+            entry.abort = undefined;
 
             // The run ended while a tool-wait refresh was on its way: it counts as the entry's first idle refresh.
             if (entry.kind === "idle") {
@@ -1273,10 +1285,16 @@ export class CacheKeeper {
                 `Cache keeper stopped for a session: ${error instanceof Error ? error.message : String(error)}`,
             );
 
-            if (this.#entries.get(key) === entry && entry.kind !== "parked") {
+            if (interrupted()) {
+                this.#resumeAfter(key, entry, abort);
+            } else if (this.#entries.get(key) === entry && entry.kind !== "parked") {
                 this.#drop(key, why("a refresh failed"));
             }
         } finally {
+            if (entry.abort === abort) {
+                entry.abort = undefined;
+            }
+
             const session = idle?.session ?? entry.idle?.session;
 
             if (session !== undefined) {
@@ -1288,6 +1306,33 @@ export class CacheKeeper {
                 this.#deps.clearTimer(entry.deadline);
                 entry.deadline = undefined;
             }
+        }
+    }
+
+    /**
+     * A refresh that was parked on its way has settled (`touched`: it read the cache at `now`). An entry turned on again
+     * meanwhile plans its next refresh; one still parked expires from the new touch.
+     */
+    #resumeAfter(
+        key: string,
+        entry: Entry,
+        abort: AbortController,
+        touched = false,
+        now = 0,
+    ): void {
+        if (entry.abort === abort) {
+            entry.abort = undefined;
+        }
+
+        if (touched) {
+            entry.lastTouch = now;
+        }
+
+        if (entry.kind === "idle") {
+            this.#scheduleIdle(key, entry);
+            this.#save(key, entry, false);
+        } else if (touched && entry.kind === "parked") {
+            this.#park(key, entry, this.#stopped.get(entry.conversationId!));
         }
     }
 
