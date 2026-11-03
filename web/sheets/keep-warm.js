@@ -121,6 +121,16 @@ export function keepWarmHint() {
     return hours === undefined ? "" : hours === 0 ? "off" : `after a run: ${timeLabel(hours)}`;
 }
 
+/** Whether keep warm is on for a session: its own time, or the owner's default, is not Off. */
+export function keepWarmOn(conversation) {
+    const choice = conversation?.keepWarm?.choice;
+    const hours = store.state.server?.keepWarm?.hours;
+
+    return (
+        choice !== undefined && hours !== undefined && (choice === "default" ? hours : choice) !== 0
+    );
+}
+
 /** Whether this server keeps sessions warm once their run ends. */
 export function keepWarmAvailable() {
     return store.state.server?.keepWarm !== undefined;
@@ -541,7 +551,7 @@ export function KeepWarmRow() {
     return html`<div class="keep-warm-session">
         <div class="segmented keep-warm-times" role="group" aria-label="Keep this session warm">
             <span class="keep-warm-session-title">
-                ${status.warm && html`<${Icon} name="flame" size=${13} stroke=${2} class="warm" />`} Keep warm
+                ${chosen !== 0 && html`<${Icon} name="flame" size=${13} stroke=${2} class="warm" />`} Keep warm
             </span>
             ${choices.map(
                 ([value, label]) => html`<button

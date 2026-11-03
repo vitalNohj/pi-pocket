@@ -28,6 +28,7 @@ import {
     uid,
 } from "./store.js";
 import { useDock } from "./dock.js";
+import { keepWarmOn } from "./sheets/keep-warm.js";
 import { defineItem, slotItems } from "./slots.js";
 import { SubagentsBar } from "./subagents.js";
 import { TrustBar } from "./trust.js";
@@ -1627,8 +1628,8 @@ defineItem("composer", {
             onClick=${() => openSheet({ type: "model" })}
         >
             ${
-                // While keep warm holds this session's cache alive, a flame takes the star's place; nothing else changes.
-                view.conversation?.keepWarm?.status?.warm
+                // While keep warm is on for this session, a flame takes the star's place; nothing else changes.
+                keepWarmOn(view.conversation)
                     ? html`<${Icon} name="flame" size=${13} stroke=${2} class="model-spark warm" />`
                     : html`<${Icon} name="sparkle" size=${12} class="model-spark" />`
             }
