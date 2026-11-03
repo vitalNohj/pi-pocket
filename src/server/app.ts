@@ -348,27 +348,12 @@ export class PocketApp {
     readonly spend = new Spend(this);
     /** The owner's keep-warm settings and each session's choice (`keep-warm.ts`). */
     readonly keepWarm = new KeepWarm({
-        requireAccess: (user, id) => {
-            this.requireSee(user, id);
-            this.requireSteer(user);
-        },
         settings: () => this.config.keepWarm,
         saveSettings: (next) => {
             this.config.keepWarm = next;
         },
         sessionMeta: (id) => this.sessionMeta(id),
         rootOf: (id) => this.rootOf(id),
-        commitSession: async (id, change) => {
-            await this.harness.commit(async (tx) => {
-                const meta = (await tx.doc(SessionsDoc)).items[String(id)];
-
-                if (meta === undefined || meta.pip !== undefined) {
-                    throw new HttpError(404, "Not a session");
-                }
-
-                change(meta);
-            }, BACKGROUND_CONTEXT);
-        },
         model: (provider, id) => this.models.getModel(provider, id),
         models: () => [...this.models.getModels()],
         availableModels: () => [...this.models.getAvailableSnapshot()],

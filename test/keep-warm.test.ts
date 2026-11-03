@@ -3,10 +3,10 @@ import { test } from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { keepWarmFrom } from "../src/server/config.ts";
-import type { SessionMeta } from "../src/server/docs.ts";
-import { KeepWarm, type KeepWarmDeps } from "../src/server/keep-warm.ts";
+import { ChatDoc, type SessionMeta } from "../src/server/docs.ts";
+import { KeepWarm, type KeepWarmDeps, keepWarmLabel } from "../src/server/keep-warm.ts";
 import { cachePrices } from "../src/server/model-cache-facts.ts";
-import { cleanUp, newSession, openApp, owner, scriptedModel } from "./helpers.ts";
+import { cleanUp, context, newSession, openApp, owner, scriptedModel } from "./helpers.ts";
 
 const model = (api: string, cost: Partial<Model<Api>["cost"]>) =>
     ({ api, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...cost } }) as Model<Api>;
@@ -38,12 +38,10 @@ test("cache prices: the owner's read for a model with none published, with the w
 });
 
 const fakeDeps = (overrides: Partial<KeepWarmDeps> = {}): KeepWarmDeps => ({
-    requireAccess: () => {},
     settings: () => keepWarmFrom({}),
     saveSettings: () => {},
     sessionMeta: () => undefined,
     rootOf: (id) => id,
-    commitSession: async () => {},
     model: () => undefined,
     models: () => [],
     availableModels: () => [],
@@ -130,66 +128,129 @@ test("keep warm: overview gives each model's refresh interval and Break-even cap
     assert.equal(overview.models[0]!.plan.refreshes, 30);
 });
 
-test("keep warm: a guest may turn a session's keep warm off, and only the owner turns it on", async () => {
+test("keep warm: session changes validate together, check permissions, and record activity", async (t) => {
     const app = await openApp(scriptedModel());
 
     try {
         const guest = app.config.addUser("Alex", "guest").user;
         const id = await newSession(app);
+        const before = structuredClone(app.sessionMeta(id));
+        const activityBefore = await app.harness.snapshot(ChatDoc, id, context);
 
         for (const choice of ["break-even", 8, 1]) {
-            assert.throws(() => app.keepWarm.checkChoice(guest, id, choice), /Only the owner/);
+            await assert.rejects(
+                app.commands.updateSession(id, guest, {
+                    title: "Rejected",
+                    archived: true,
+                    keepWarm: choice,
+                }),
+                /Only the owner/,
+            );
+            assert.deepEqual(
+                app.sessionMeta(id),
+                before,
+                "a rejected choice must not rename or archive",
+            );
         }
 
-        app.keepWarm.checkChoice(guest, id, 0);
-        app.keepWarm.checkChoice(guest, id, "default");
-        app.keepWarm.checkChoice(owner(app), id, 8);
-        assert.throws(() => app.keepWarm.checkChoice(owner(app), id, 3), /must be/);
-        await app.keepWarm.setSession(guest, id, 0);
+        await assert.rejects(
+            app.commands.updateSession(id, owner(app), { title: "Invalid time", keepWarm: 3 }),
+            /must be/,
+        );
+        assert.deepEqual(app.sessionMeta(id), before);
+        assert.deepEqual(await app.harness.snapshot(ChatDoc, id, context), activityBefore);
+
+        const reconsider = t.mock.method(app.cacheKeeper, "reconsider");
+
+        await app.commands.updateSession(id, guest, { keepWarm: 0 });
         assert.equal(app.sessionMeta(id)?.keepWarm, 0);
-        await assert.rejects(app.keepWarm.setSession(guest, id, "break-even"), /Only the owner/);
+        assert.equal(reconsider.mock.callCount(), 1);
+        await app.commands.updateSession(id, guest, { keepWarm: 0 });
+        assert.equal(reconsider.mock.callCount(), 1, "an unchanged choice does not reconsider");
+        await app.commands.updateSession(id, guest, { keepWarm: "default" });
+        assert.equal(app.sessionMeta(id)?.keepWarm, undefined, "the default is off");
+        await app.commands.updateSession(id, guest, { keepWarm: 0 });
 
         // The owner's default is on: a guest's Default would turn the session back on.
         await app.keepWarm.setSettings(owner(app), { hours: "break-even" });
-        await assert.rejects(app.keepWarm.setSession(guest, id, "default"), /Only the owner/);
+        await assert.rejects(
+            app.commands.updateSession(id, guest, { keepWarm: "default" }),
+            /Only the owner/,
+        );
         assert.equal(app.sessionMeta(id)?.keepWarm, 0);
-        await app.keepWarm.setSession(owner(app), id, "break-even");
+        await app.commands.updateSession(id, owner(app), { keepWarm: "break-even" });
         assert.equal(app.sessionMeta(id)?.keepWarm, "break-even");
-        await app.keepWarm.setSession(guest, id, "default");
+        await app.commands.updateSession(id, guest, { keepWarm: "default" });
         assert.equal(
             app.sessionMeta(id)?.keepWarm,
             undefined,
             "from a time back to Default is allowed",
         );
 
-        // Someone who cannot see the session chooses nothing for it.
-        const stranger = app.config.addUser("Bea", "viewer").user;
+        // A viewer cannot steer, and a guest with access to another session cannot change this one.
+        const viewer = app.config.addUser("Bea", "viewer").user;
+        const stranger = app.config.addUser("Chris", "guest", []).user;
 
-        assert.throws(() => app.keepWarm.checkChoice(stranger, id, 0));
+        await assert.rejects(app.commands.updateSession(id, viewer, { keepWarm: 0 }));
+        await assert.rejects(app.commands.updateSession(id, stranger, { keepWarm: 0 }));
+
+        for (const choice of [0.5, 1, 2, "break-even", 0, "default"] as const) {
+            await app.commands.updateSession(id, owner(app), { keepWarm: choice });
+        }
+
+        const chat = await app.harness.snapshot(ChatDoc, id, context);
+
+        assert.ok(chat);
+        const lines = chat.messages.filter(
+            (message) => message.kind === "event" && message.text.startsWith("set keep warm to "),
+        );
+
+        assert.deepEqual(
+            lines.map((message) => message.text),
+            [
+                "set keep warm to off",
+                "set keep warm to the default (off)",
+                "set keep warm to off",
+                "set keep warm to Break-even",
+                "set keep warm to the default (Break-even)",
+                "set keep warm to 30 minutes",
+                "set keep warm to 1 hour",
+                "set keep warm to 2 hours",
+                "set keep warm to Break-even",
+                "set keep warm to off",
+                "set keep warm to the default (Break-even)",
+            ],
+        );
+        assert.equal(lines[0]?.userId, guest.id);
     } finally {
         await app.close();
         cleanUp();
     }
 });
 
-test("keep warm: 30 minutes is the default; break-even saved as auto before 0.28 still reads as break-even", () => {
-    assert.equal(keepWarmFrom({}).hours, 0.5);
+test("keep warm: off is the default; the owner's saved times stay valid", () => {
+    assert.equal(keepWarmFrom({}).hours, 0);
     assert.equal(keepWarmFrom({ hours: 0.5 }).hours, 0.5);
-    assert.equal(keepWarmFrom({ hours: "auto" }).hours, "break-even");
-    assert.equal(keepWarmFrom({ hours: null }).hours, "break-even");
-    assert.equal(keepWarmFrom({ hours: 3 }).hours, 0.5, "a time not on offer is the default");
+    assert.equal(keepWarmFrom({ hours: "break-even" }).hours, "break-even");
+    assert.equal(keepWarmFrom({ hours: 3 }).hours, 0, "a time not on offer is the default");
 
-    const meta: SessionMeta = {
-        cwd: "/tmp",
-        createdAt: 0,
-        updatedAt: 0,
-        keepWarm: "auto" as never,
-    };
     const session = 3 as ConversationId;
     const keepWarm = new KeepWarm(
-        fakeDeps({ settings: () => keepWarmFrom({ hours: 2 }), sessionMeta: () => meta }),
+        fakeDeps({ sessionMeta: () => ({ cwd: "/tmp", createdAt: 0, updatedAt: 0 }) }),
     );
 
-    assert.equal(keepWarm.policy(session)?.hours, "break-even");
-    assert.equal(keepWarm.session(session)?.choice, "break-even");
+    assert.equal(keepWarm.policy(session), undefined);
+    assert.equal(keepWarm.session(session)?.choice, "default");
+});
+
+test("keep warm: activity uses the same time labels for every choice", () => {
+    assert.deepEqual(([0, 0.5, 1, 2, 4, 8, "break-even"] as const).map(keepWarmLabel), [
+        "off",
+        "30 minutes",
+        "1 hour",
+        "2 hours",
+        "4 hours",
+        "8 hours",
+        "Break-even",
+    ]);
 });

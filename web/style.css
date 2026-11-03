@@ -18656,18 +18656,9 @@ pre.gallery-code {
     overflow: hidden;
 }
 
-/*
- * Keep warm: the owner's settings. A phone stacks the settings over the models; a wide screen puts them side by side,
- * and the models fill the height in as many columns as fit.
- */
+/* Keep warm: settings in one column, with Advanced models grouped by provider. */
 .keep-warm-sheet p {
     margin: 0;
-}
-
-.keep-warm-layout {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
 }
 
 .keep-warm-settings {
@@ -18714,11 +18705,29 @@ pre.gallery-code {
     white-space: nowrap;
 }
 
+.keep-warm-number-field {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    white-space: normal;
+}
+
+.keep-warm-number-field .warn {
+    max-width: 12rem;
+}
+
 .keep-warm-number {
     min-height: 36px;
     padding: 0 8px;
     text-align: right;
     appearance: textfield;
+}
+
+@media (pointer: coarse) {
+    .keep-warm-number {
+        min-height: 44px;
+    }
 }
 
 .keep-warm-number::-webkit-inner-spin-button,

@@ -1,6 +1,6 @@
 // Keep warm: the owner's settings for keeping a session's prompt cache warm once its run ends, and the row a session
 // chooses its own time with.
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { actions, api, attempt, canSteer, closeSheet, store } from "../store.js";
 import { html, Icon, Loader, Sheet } from "../ui.js";
 
@@ -15,26 +15,31 @@ const TIMES = [
     ["break-even", "Break-even"],
 ];
 
+/** This tab's keep-warm saves, sent one after another so answers arrive in the order asked. */
+let saving = Promise.resolve();
+
+function queueSave(action) {
+    const next = saving.then(action);
+
+    saving = next.catch(() => {});
+
+    return next;
+}
+
 /** What Break-even means, said the same way wherever it can be chosen. */
 const BREAK_EVEN =
-    "Keeps the cache warm until it has cost as much as one message without a cache, then stops.";
+    "Keeps the cache warm until the refreshes and the next cache read cost as much as writing the cache once more, then stops.";
 
-/**
- * The example every estimate uses, as text the owner approved: Claude Opus 5.5's list prices (2026-11-02) per million
- * tokens, its 1-hour cache, and a 150k context. Nothing here is read from a model or a provider.
- */
-const EXAMPLE = {
-    name: "Claude Opus 5.5",
-    read: 0.2,
-    write: 8,
-    cacheMinutes: 60,
-    context: 150_000,
-};
+/** Fixed list prices per million tokens (2026-11-02), not fetched from a provider. Each example uses a 150k context. */
+const EXAMPLES = [
+    { name: "Claude Opus 5.5", input: 4, read: 0.2, writeMultiplier: 2, cacheMinutes: 60 },
+    { name: "GPT-6.1 Sol", input: 2, read: 0.1, writeMultiplier: 1, cacheMinutes: 30 },
+];
 
 const money = (amount) =>
     amount >= 100
         ? `$${Math.round(amount)}`
-        : amount >= 0.995 || amount === 0
+        : amount >= 0.995 || Math.abs(amount * 100 - Math.round(amount * 100)) < 1e-8
           ? `$${amount.toFixed(2)}`
           : `$${amount.toFixed(3)}`;
 
@@ -43,7 +48,7 @@ function durationLabel(ms) {
     const minutes = Math.round(ms / 60_000);
 
     if (minutes < 60) {
-        return `${Math.max(minutes, 1)} min`;
+        return `${Math.max(minutes, ms > 0 ? 1 : 0)} min`;
     }
 
     if (minutes >= 48 * 60) {
@@ -59,53 +64,54 @@ function durationLabel(ms) {
 
 /** A keep-warm time in words: "Off", "30 min", "2 h", or "Break-even". */
 function timeLabel(hours) {
-    // A server from before 0.28 (not released) still calls Break-even "auto".
-    return hours === "auto"
-        ? "Break-even"
-        : (TIMES.find(([value]) => value === hours)?.[1] ?? `${hours} h`);
+    return TIMES.find(([value]) => value === hours)?.[1] ?? `${hours} h`;
 }
 
 /**
- * What a time costs for the example model under the owner's refresh share and cap: refreshes, their cost, and what
- * one message costs without a cache. The same arithmetic as `idleEveryMs` and `breakEvenRefreshes`.
+ * One fixed example under the current settings: refreshes, dollars, elapsed milliseconds, and one uncached prompt.
+ * Anthropic's 1-hour write is input × 2; OpenAI has no write price, so its write uses the input price.
+ * The interval and Break-even follow `idleEveryMs` and `breakEvenRefreshes`; the estimate also applies both caps.
  */
-function estimate(hours, settings) {
-    const every = Math.floor(
-        Math.min((EXAMPLE.cacheMinutes * settings.share) / 100, EXAMPLE.cacheMinutes - 1 / 6),
-    );
-    const perRefresh = (EXAMPLE.context * EXAMPLE.read) / 1_000_000;
-    const refreshes =
-        hours === "break-even"
-            ? Math.min(Math.floor(EXAMPLE.write / EXAMPLE.read) - 1, settings.maxRefreshes)
-            : Math.floor((hours * 60) / every);
+export function estimate(hours, settings, example = EXAMPLES[0]) {
+    const cacheMs = example.cacheMinutes * 60_000;
+    const everyMs = Math.floor(Math.min((cacheMs * settings.share) / 100, cacheMs - 10_000));
+    const write = example.input * example.writeMultiplier;
+    const perRefresh = (150_000 * example.read) / 1_000_000;
+    const breakEven = Math.max(0, Math.floor(write / example.read) - 1);
+    const asked = hours === "break-even" ? breakEven : Math.floor((hours * 3_600_000) / everyMs);
+    const costCap = settings.maxCost === 0 ? Infinity : Math.floor(settings.maxCost / perRefresh);
+    let refreshes = Math.max(0, Math.min(asked, settings.maxRefreshes, costCap));
+
+    // A floating-point product must not cross a cap at an exact dollar boundary.
+    if (settings.maxCost > 0 && refreshes * perRefresh > settings.maxCost) {
+        refreshes--;
+    }
 
     return {
         refreshes,
         cost: refreshes * perRefresh,
-        lasts: refreshes * every,
-        uncached: (EXAMPLE.context * EXAMPLE.write) / 1_000_000,
+        lasts: refreshes * everyMs,
+        uncached: (150_000 * example.input) / 1_000_000,
+        everyMs,
+        breakEven,
     };
 }
 
 /** The estimate under the times: what the chosen time does for the example model, in two short lines. */
 function Estimate({ hours, settings }) {
-    const { refreshes, cost, lasts, uncached } = estimate(hours, settings);
-    const example = `${EXAMPLE.name}, 150k context:`;
+    const { refreshes, cost, lasts, uncached, breakEven } = estimate(hours, settings);
+    const example = `${EXAMPLES[0].name}, 150k context:`;
     const plural = (count) => `${count} ${count === 1 ? "refresh" : "refreshes"}`;
     let what;
 
     if (hours === 0) {
         what = html`once its cache expires, the next message costs about <b>${money(uncached)}</b>.`;
     } else if (hours === "break-even") {
-        what = html`at most <b>${money(uncached)}</b>, the cost of one message without a cache. ${
-            refreshes < Math.floor(EXAMPLE.write / EXAMPLE.read) - 1
-                ? html`Your refresh cap stops it sooner: ${plural(refreshes)}, <b>${money(cost)}</b>, about ${durationLabel(lasts * 60_000)}.`
-                : html`About ${plural(refreshes)} over ${durationLabel(lasts * 60_000)}.`
-        }`;
+        what = html`${plural(refreshes)} over about ${durationLabel(lasts)}, <b>${money(cost)}</b>. ${refreshes < breakEven ? "Your caps stop it sooner. " : ""}Without keep warm, the next message costs about <b>${money(uncached)}</b>.`;
     } else if (refreshes === 0) {
-        what = html`<b>no refreshes</b>, as its cache already lasts ${EXAMPLE.cacheMinutes} min. This time helps models with a shorter cache.`;
+        what = html`<b>no refreshes</b> within this time and your caps. Its cache already lasts ${EXAMPLES[0].cacheMinutes} min.`;
     } else {
-        what = html`about ${plural(refreshes)} in ${timeLabel(hours)}, <b>${money(cost)}</b>. Without keep warm, the next message costs about <b>${money(uncached)}</b>.`;
+        what = html`about ${plural(refreshes)} over ${durationLabel(lasts)}, <b>${money(cost)}</b>. Without keep warm, the next message costs about <b>${money(uncached)}</b>.`;
     }
 
     return html`<div class="keep-warm-estimate small">
@@ -144,10 +150,13 @@ function NumberField({
     step = "1",
     label,
     placeholder = "",
+    clearable = false,
     onSave,
     width = "4.5rem",
 }) {
     const [draft, setDraft] = useState(null);
+    const [invalid, setInvalid] = useState(false);
+    const revision = useRef(0);
     const shown = draft ?? (value === undefined || value === null ? "" : String(value));
 
     const save = () => {
@@ -156,53 +165,57 @@ function NumberField({
         }
 
         const text = draft.trim();
+        const number = text === "" && clearable ? null : Number(text);
 
-        setDraft(null);
-
-        if (text === "") {
-            onSave(null);
+        if (
+            (!clearable && text === "") ||
+            (number !== null && (!Number.isFinite(number) || number < min || number > max))
+        ) {
+            setInvalid(true);
 
             return;
         }
 
-        const number = Number(text);
+        const edited = revision.current;
 
-        if (Number.isFinite(number) && number >= min && number <= max) {
-            onSave(number);
-        }
+        setInvalid(false);
+        attempt(async () => {
+            await onSave(number);
+
+            if (revision.current === edited) {
+                setDraft(null);
+            }
+        });
     };
 
-    return html`<input
-        type="number"
-        inputmode="decimal"
-        class="keep-warm-number"
-        style=${`width:${width}`}
-        min=${min}
-        max=${max}
-        step=${step}
-        aria-label=${label}
-        placeholder=${placeholder}
-        value=${shown}
-        onInput=${(event) => setDraft(event.currentTarget.value)}
-        onBlur=${save}
-        onKeyDown=${(event) => event.key === "Enter" && event.currentTarget.blur()}
-    />`;
+    return html`<span class="keep-warm-number-field">
+        <input
+            type="number"
+            inputmode="decimal"
+            class="keep-warm-number"
+            style=${`width:${width}`}
+            min=${min}
+            max=${max}
+            step=${step}
+            aria-label=${label}
+            aria-invalid=${invalid}
+            placeholder=${placeholder}
+            value=${shown}
+            onInput=${(event) => {
+                revision.current++;
+                setDraft(event.currentTarget.value);
+                setInvalid(false);
+            }}
+            onBlur=${save}
+            onKeyDown=${(event) => event.key === "Enter" && event.currentTarget.blur()}
+        />
+        ${invalid && html`<span class="small warn" role="alert">Use a number from ${min} to ${max}</span>`}
+    </span>`;
 }
-
-/**
- * Where Break-even stops, as text, as the owner approved it: the makers' list prices and cache times (2026-11-02), a
- * refresh at 75% of the cache time, a 150k context, and a 30-refresh cap. Nothing here is read from a model or a
- * provider. Keep warm's whole cost to that stop, and one message's without a cache.
- */
-const BREAK_EVEN_TABLE = [
-    ["Claude Opus 5.5", "1 h", "22 h 30 min", 30, "$0.90", "$1.20"],
-    ["GPT-6.1 Sol", "30 min", "8 h 48 min", 24, "$0.36", "$0.38"],
-    ["GPT-6.1 Terra", "30 min", "8 h 48 min", 24, "$0.18", "$0.19"],
-];
 
 /** One model in the settings window: its cache cost, when its cache expires, and what keep warm does with it. */
 function ModelCard({ model, settings, onSet }) {
-    const { everyMs, refreshes, autoStopMs } = model.plan;
+    const { everyMs, refreshes, breakEvenStopMs } = model.plan;
     const own = settings.models[model.spec]?.lifetime;
     const read = model.known.read;
 
@@ -222,6 +235,7 @@ function ModelCard({ model, settings, onSet }) {
                               width="4.5rem"
                               label=${`Dollars per million tokens to read the cache of ${model.name}`}
                               placeholder="?"
+                              clearable=${true}
                               onSave=${(value) => onSet("read", value)}
                           />
                           <span class="muted small">per million tokens</span>
@@ -242,6 +256,7 @@ function ModelCard({ model, settings, onSet }) {
                     width="4rem"
                     label=${`Minutes until the cache of ${model.name} expires`}
                     placeholder=${model.known.lifetime === undefined ? "" : String(model.known.lifetime)}
+                    clearable=${true}
                     onSave=${(value) => onSet("lifetime", value)}
                 />
                 <span class="muted small">min idle</span>
@@ -251,36 +266,18 @@ function ModelCard({ model, settings, onSet }) {
             ${
                 everyMs === undefined
                     ? "Not kept warm: its maker publishes no cache time. Type it to turn it on."
-                    : `Refreshed every ${durationLabel(everyMs)} · Break-even stops after ${durationLabel(autoStopMs)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
+                    : `Refreshed every ${durationLabel(everyMs)} · Break-even stops after ${durationLabel(breakEvenStopMs)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
             }
         </div>
     </div>`;
 }
 
-export function KeepWarmSheet() {
-    const [data, setData] = useState(null);
+/** Advanced model facts, grouped by provider and filtered without changing the owner's saved values. */
+function KeepWarmModels({ models, settings, onSet }) {
     const [query, setQuery] = useState("");
-    const [advanced, setAdvanced] = useState(false);
-    const load = () => attempt(async () => setData(await api("keep-warm")));
-
-    useEffect(() => {
-        load();
-    }, []);
-
-    const save = (patch) =>
-        attempt(async () => {
-            setData(await api("keep-warm", patch));
-        });
-
-    if (data === null) {
-        return html`<${Sheet} title="Keep warm" onClose=${closeSheet}>
-            <${Loader} label="Loading" />
-        <//>`;
-    }
-
-    const { settings, models, now } = data;
     const needle = query.trim().toLowerCase();
     const groups = new Map();
+    const known = models.filter((model) => model.plan.everyMs !== undefined).length;
 
     for (const model of models) {
         const provider = model.spec.slice(0, model.spec.indexOf("/"));
@@ -290,6 +287,110 @@ export function KeepWarmSheet() {
         }
     }
 
+    return html`<section class="keep-warm-models">
+        <div class="keep-warm-models-head">
+            <div class="label">Models</div>
+            <span class="muted small">${known} of ${models.length} with a known cache time</span>
+        </div>
+        <p class="muted small">
+            Each model's cache cost, and how long its cache lasts once idle. Grey: the maker's published values; type your own to replace one, or clear it to go back.
+        </p>
+        <label class="search">
+            <${Icon} name="search" size=${16} />
+            <input
+                placeholder="Find a model"
+                aria-label="Find a model to keep warm"
+                value=${query}
+                onInput=${(event) => setQuery(event.currentTarget.value)}
+            />
+        </label>
+        <div class="keep-warm-model-list" role="group" aria-label="Keep warm by model">
+            ${
+                groups.size === 0 &&
+                html`<p class="muted small">
+                ${models.length === 0 ? "No models: sign in to a provider first." : "No model matches."}
+            </p>`
+            }
+            ${[...groups].map(([provider, list]) => {
+                const known = list.filter((model) => model.plan.everyMs !== undefined).length;
+
+                return html`<details class="keep-warm-provider" key=${provider} open=${needle !== ""}>
+                    <summary>
+                        <span>${provider}</span>
+                        <span class="muted small">${known} of ${list.length} with a known cache time</span>
+                    </summary>
+                    <div class="keep-warm-model-grid">
+                        ${list.map(
+                            (model) => html`<${ModelCard}
+                            key=${model.spec}
+                            model=${model}
+                            settings=${settings}
+                            onSet=${(field, value) => onSet(model.spec, field, value)}
+                        />`,
+                        )}
+                    </div>
+                </details>`;
+            })}
+        </div>
+    </section>`;
+}
+
+/** Apply one pending change over the last answer without replacing another model's fields. */
+function withSettings(settings, patch) {
+    const next = { ...settings, ...patch, models: { ...settings.models } };
+
+    for (const [spec, fields] of Object.entries(patch.models ?? {})) {
+        const model = { ...next.models[spec] };
+
+        for (const [field, value] of Object.entries(fields)) {
+            if (value === null) {
+                delete model[field];
+            } else {
+                model[field] = value;
+            }
+        }
+
+        next.models[spec] = model;
+    }
+
+    return next;
+}
+
+/** The settings window keeps later edits visible while each earlier save finishes. */
+export function KeepWarmSheet() {
+    const [data, setData] = useState(null);
+    const [asked, setAsked] = useState([]);
+    const [advanced, setAdvanced] = useState(false);
+
+    useEffect(() => {
+        attempt(async () => setData(await api("keep-warm")));
+    }, []);
+
+    const save = (patch) => {
+        const change = { patch };
+
+        setAsked((was) => [...was, change]);
+
+        return queueSave(async () => {
+            try {
+                setData(await api("keep-warm", patch));
+            } finally {
+                setAsked((was) => was.filter((item) => item !== change));
+            }
+        });
+    };
+
+    if (data === null) {
+        return html`<${Sheet} title="Keep warm" onClose=${closeSheet}>
+            <${Loader} label="Loading" />
+        <//>`;
+    }
+
+    const { models, now } = data;
+    const settings = asked.reduce(
+        (current, change) => withSettings(current, change.patch),
+        data.settings,
+    );
     const segmented = (label, options, current, key) => html`<div
         class="segmented"
         role="group"
@@ -299,214 +400,153 @@ export function KeepWarmSheet() {
             ([value, text]) => html`<button
                 class=${current === value ? "on" : ""}
                 aria-pressed=${current === value}
-                onClick=${() => save({ [key]: value })}
+                onClick=${() => attempt(() => save({ [key]: value }))}
             >
                 ${text}
             </button>`,
         )}
     </div>`;
-    const warmable = models.filter((model) => model.plan.everyMs !== undefined);
-    const unknown = models.length - warmable.length;
     const setModel = (spec, field, value) => save({ models: { [spec]: { [field]: value } } });
 
     return html`<${Sheet} title="Keep warm" onClose=${closeSheet} className="keep-warm-sheet">
-        <div class="keep-warm-layout">
-            <div class="keep-warm-settings">
-                ${
-                    now.warm > 0 &&
-                    html`<p class="small keep-warm-now">
-                        <span class="pulse"></span> ${now.warm === 1 ? "1 session" : `${now.warm} sessions`} warm now ·
-                        ${now.refreshes} ${now.refreshes === 1 ? "refresh" : "refreshes"} · ${money(now.spent)}
-                    </p>`
-                }
-                <p class="muted small">
-                    Pocket sends the smallest possible request to keep the cache alive. This is cheaper than no
-                    cache, until you have paid what you would have paid anyway (Break-even).
-                </p>
-                <section class="keep-warm-group">
-                    <div class="label">After a run ends, keep sessions warm for</div>
-                    ${segmented("How long to keep sessions warm", TIMES, settings.hours, "hours")}
-                    <${Estimate} hours=${settings.hours} settings=${settings} />
-                </section>
-                <section class="keep-warm-group">
-                    <div class="label">Where Break-even stops</div>
-                    <table class="keep-warm-stops small">
-                        <thead>
-                            <tr>
-                                <th scope="col">Model</th>
-                                <th scope="col">Stops after</th>
-                                <th scope="col">Keep warm</th>
-                                <th scope="col">No cache</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${BREAK_EVEN_TABLE.map(
-                                ([
-                                    name,
-                                    cache,
-                                    stops,
-                                    refreshes,
-                                    warm,
-                                    uncached,
-                                ]) => html`<tr key=${name}>
-                                    <th scope="row">
-                                        ${name}<span class="muted">${cache} cache</span>
-                                    </th>
-                                    <td>${stops}<span class="muted">${refreshes} refreshes</span></td>
-                                    <td>${warm}</td>
-                                    <td>${uncached}</td>
-                                </tr>`,
-                            )}
-                        </tbody>
-                    </table>
-                    <p class="muted small">
-                        Keep warm: what all its refreshes cost until it stops. No cache: one message after the cache
-                        expired. List prices, a 150k context. These are estimates only: they can be wrong, and prices and cache
-                        times can change at any time. As a rule, keeping a session warm for 30 minutes to 3 hours saves
-                        money when you step away.
-                    </p>
-                </section>
-                <section class="keep-warm-group keep-warm-grid">
-                    <label class="keep-warm-field">
-                        <span>Most it may spend</span>
-                        <span class="keep-warm-input">
-                            $<${NumberField}
-                                value=${settings.maxCost}
-                                min=${0}
-                                max=${1000}
-                                step="any"
-                                label="Most a session may spend on keeping warm, in dollars"
-                                onSave=${(value) => value !== null && save({ maxCost: value })}
-                            />
-                        </span>
-                        <span class="muted small">per session, subagents included; 0: no cap</span>
-                    </label>
-                    <div class="keep-warm-field">
-                        <span>Subagents too</span>
-                        ${segmented(
-                            "Keep subagents warm too",
-                            [
-                                [false, "No"],
-                                [true, "Yes"],
-                            ],
-                            settings.subagents,
-                            "subagents",
-                        )}
-                    </div>
-                </section>
-                <button
-                    class="keep-warm-disclosure"
-                    aria-expanded=${advanced}
-                    onClick=${() => setAdvanced(!advanced)}
-                >
-                    <span>Advanced</span>
-                    <span class="muted small">
-                        refreshes, timing, and ${models.length} ${models.length === 1 ? "model" : "models"}${
-                            unknown > 0 ? ` (${unknown} not kept warm)` : ""
-                        }
-                    </span>
-                    <${Icon} name="chevron" size=${14} />
-                </button>
-                ${
-                    advanced &&
-                    html`<div class="keep-warm-advanced">
-                        <section class="keep-warm-grid">
-                            <label class="keep-warm-field">
-                                <span>Most refreshes</span>
-                                <span class="keep-warm-input">
-                                    <${NumberField}
-                                        value=${settings.maxRefreshes}
-                                        min=${1}
-                                        max=${10000}
-                                        label="Most refreshes for a conversation"
-                                        onSave=${(value) => value !== null && save({ maxRefreshes: value })}
-                                    />
-                                </span>
-                                <span class="muted small">per conversation</span>
-                            </label>
-                            <label class="keep-warm-field">
-                                <span>Refresh at</span>
-                                <span class="keep-warm-input">
-                                    <${NumberField}
-                                        value=${settings.share}
-                                        min=${10}
-                                        max=${95}
-                                        label="Share of a cache lifetime between refreshes, in percent"
-                                        onSave=${(value) => value !== null && save({ share: value })}
-                                    />%
-                                </span>
-                                <span class="muted small">of the cache time</span>
-                            </label>
-                        </section>
-                        <section class="keep-warm-models">
-                            <div class="keep-warm-models-head">
-                                <div class="label">Models</div>
-                                <span class="muted small">${warmable.length} of ${models.length} kept warm</span>
-                            </div>
-                            <p class="muted small">
-                                Each model's cache cost, and how long its cache lasts once idle. Grey: the maker's
-                                published values; type your own to replace one, or clear it to go back.
-                            </p>
-                            <label class="search">
-                                <${Icon} name="search" size=${16} />
-                                <input
-                                    placeholder="Find a model"
-                                    aria-label="Find a model to keep warm"
-                                    value=${query}
-                                    onInput=${(event) => setQuery(event.currentTarget.value)}
-                                />
-                            </label>
-                            <div class="keep-warm-model-list" role="group" aria-label="Keep warm by model">
-                                ${
-                                    groups.size === 0 &&
-                                    html`<p class="muted small">
-                                        ${models.length === 0 ? "No models: sign in to a provider first." : "No model matches."}
-                                    </p>`
-                                }
-                                ${[...groups].map(([provider, list]) => {
-                                    const cold = list.filter(
-                                        (model) => model.plan.everyMs === undefined,
-                                    ).length;
+        <div class="keep-warm-settings">
+            ${
+                now.warm > 0 &&
+                html`<p class="small keep-warm-now">
+                    <span class="pulse"></span> ${now.warm === 1 ? "1 session" : `${now.warm} sessions`} warm now ·
+                    ${now.refreshes} ${now.refreshes === 1 ? "refresh" : "refreshes"} · ${money(now.spent)}
+                </p>`
+            }
+            <p class="muted small">
+                Pocket sends the smallest possible request to keep the cache alive. This is cheaper than no
+                cache, until you have paid what you would have paid anyway (Break-even).
+            </p>
+            <section class="keep-warm-group">
+                <div class="label">After a run ends, keep sessions warm for</div>
+                ${segmented("How long to keep sessions warm", TIMES, settings.hours, "hours")}
+                <${Estimate} hours=${settings.hours} settings=${settings} />
+            </section>
+            <section class="keep-warm-group">
+                <div class="label">Fixed examples</div>
+                <table class="keep-warm-stops small">
+                    <thead>
+                        <tr>
+                            <th scope="col">Model</th>
+                            <th scope="col">Stops after</th>
+                            <th scope="col">Keep warm</th>
+                            <th scope="col">No cache</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${EXAMPLES.map((example) => {
+                            const { refreshes, cost, lasts, uncached } = estimate(
+                                "break-even",
+                                settings,
+                                example,
+                            );
 
-                                    return html`<details class="keep-warm-provider" key=${provider} open=${needle !== ""}>
-                                        <summary>
-                                            <span>${provider}</span>
-                                            <span class="muted small">
-                                                ${list.length} ${list.length === 1 ? "model" : "models"}${
-                                                    cold > 0 ? ` · ${cold} not kept warm` : ""
-                                                }
-                                            </span>
-                                        </summary>
-                                        <div class="keep-warm-model-grid">
-                                            ${list.map(
-                                                (model) => html`<${ModelCard}
-                                                    key=${model.spec}
-                                                    model=${model}
-                                                    settings=${settings}
-                                                    onSet=${(field, value) => setModel(model.spec, field, value)}
-                                                />`,
-                                            )}
-                                        </div>
-                                    </details>`;
-                                })}
-                            </div>
-                        </section>
-                    </div>`
-                }
-            </div>
+                            return html`<tr key=${example.name}>
+                                <th scope="row">
+                                    ${example.name}<span class="muted">${durationLabel(example.cacheMinutes * 60_000)} cache</span>
+                                </th>
+                                <td>${durationLabel(lasts)}<span class="muted">${refreshes} refreshes</span></td>
+                                <td>${money(cost)}</td>
+                                <td>${money(uncached)}</td>
+                            </tr>`;
+                        })}
+                    </tbody>
+                </table>
+                <p class="muted small">
+                    List prices on 2026-11-02, a 150k context, and your current Refresh at and caps. Estimates only: prices and cache times can change.
+                </p>
+                <p class="muted small">
+                    As a rule, keeping a session warm for 30 minutes to 3 hours saves money when you step away.
+                </p>
+            </section>
+            <section class="keep-warm-group keep-warm-grid">
+                <label class="keep-warm-field">
+                    <span>Most it may spend</span>
+                    <span class="keep-warm-input">
+                        $<${NumberField}
+                            value=${settings.maxCost}
+                            min=${0}
+                            max=${1000}
+                            step="any"
+                            label="Most a session may spend on keeping warm, in dollars"
+                            onSave=${(value) => value !== null && save({ maxCost: value })}
+                        />
+                    </span>
+                    <span class="muted small">per session, subagents included; 0: no cap</span>
+                </label>
+                <div class="keep-warm-field">
+                    <span>Subagents too</span>
+                    ${segmented(
+                        "Keep subagents warm too",
+                        [
+                            [false, "No"],
+                            [true, "Yes"],
+                        ],
+                        settings.subagents,
+                        "subagents",
+                    )}
+                </div>
+            </section>
+            <button
+                class="keep-warm-disclosure"
+                aria-expanded=${advanced}
+                onClick=${() => setAdvanced(!advanced)}
+            >
+                <span>Advanced</span>
+                <span class="muted small">
+                    refreshes, timing, and ${models.length} ${models.length === 1 ? "model" : "models"}
+                </span>
+                <${Icon} name="chevron" size=${14} />
+            </button>
+            ${
+                advanced &&
+                html`<div class="keep-warm-advanced">
+                    <section class="keep-warm-grid">
+                        <label class="keep-warm-field">
+                            <span>Most refreshes</span>
+                            <span class="keep-warm-input">
+                                <${NumberField}
+                                    value=${settings.maxRefreshes}
+                                    min=${1}
+                                    max=${10000}
+                                    label="Most refreshes for a conversation"
+                                    onSave=${(value) => value !== null && save({ maxRefreshes: value })}
+                                />
+                            </span>
+                            <span class="muted small">per conversation</span>
+                        </label>
+                        <label class="keep-warm-field">
+                            <span>Refresh at</span>
+                            <span class="keep-warm-input">
+                                <${NumberField}
+                                    value=${settings.share}
+                                    min=${10}
+                                    max=${95}
+                                    label="Share of a cache lifetime between refreshes, in percent"
+                                    onSave=${(value) => value !== null && save({ share: value })}
+                                />%
+                            </span>
+                            <span class="muted small">of the cache time</span>
+                        </label>
+                    </section>
+                    <${KeepWarmModels} models=${models} settings=${settings} onSet=${setModel} />
+                </div>`
+            }
         </div>
     <//>`;
 }
 
 /**
- * A session's own time, in its menu and a reply's menu: the owner's default, Break-even, a fixed time, or off. Shows when the
- * next refresh goes out and when it stops, or why it last stopped.
- */
-/**
  * A session's keep warm, as a card: `compact` for the session menu (the flame turns it on and off, and the bar holds the
  * times), else the reply menu's fuller card (Off is the bar's first choice, and a line says what the time does).
  */
 export function KeepWarmCard({ compact = false }) {
+    const [pending, setPending] = useState(null);
+    const asked = useRef(null);
     const { view, server } = store.state;
     const conversation = view.conversation;
     const state = conversation?.keepWarm;
@@ -516,19 +556,48 @@ export function KeepWarmCard({ compact = false }) {
     }
 
     const steer = canSteer();
-    const choose = (choice) =>
-        attempt(() => actions.updateSession(conversation.id, { keepWarm: choice }));
+    const choice = pending?.id === conversation.id ? pending.choice : state.choice;
+
+    const choose = (choice) => {
+        const change = { id: conversation.id, choice };
+
+        asked.current = change;
+        setPending(change);
+        attempt(() =>
+            queueSave(async () => {
+                try {
+                    await actions.updateSession(change.id, { keepWarm: choice });
+
+                    // The POST confirms this choice before the next view arrives. A later tap must stay selected.
+                    if (
+                        asked.current === change &&
+                        store.state.view.conversation?.id === change.id
+                    ) {
+                        store.set((current) => ({
+                            view: {
+                                ...current.view,
+                                conversation: {
+                                    ...current.view.conversation,
+                                    keepWarm: { ...current.view.conversation.keepWarm, choice },
+                                },
+                            },
+                        }));
+                    }
+                } finally {
+                    if (asked.current === change) {
+                        asked.current = null;
+                        setPending(null);
+                    }
+                }
+            }),
+        );
+    };
+
     const status = state.status;
     const time = (at) =>
         new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    // A server from before 0.28 (not released) still calls Break-even "auto".
-    const fallback = server.keepWarm.hours === "auto" ? "break-even" : server.keepWarm.hours;
-    const chosen =
-        state.choice === "default"
-            ? fallback
-            : state.choice === "auto"
-              ? "break-even"
-              : state.choice;
+    const fallback = server.keepWarm.hours;
+    const chosen = choice === "default" ? fallback : choice;
     const on = chosen !== 0;
     const warming = on && status.warm;
     // The same times as the owner's, the session's own (or the owner's default) selected. Picking the owner's default
@@ -538,8 +607,16 @@ export function KeepWarmCard({ compact = false }) {
     // default where that keeps it off (the server checks it too).
     const owner = store.state.me?.role === "owner";
     const allowed = (value) =>
-        owner || value === 0 || (value === fallback && (state.choice !== 0 || fallback === 0));
-    const pick = (value) => state.choice !== valueOf(value) && choose(valueOf(value));
+        owner || value === 0 || (value === fallback && (choice !== 0 || fallback === 0));
+
+    const pick = (value) => {
+        const current = asked.current?.id === conversation.id ? asked.current.choice : choice;
+
+        if (current !== valueOf(value)) {
+            choose(valueOf(value));
+        }
+    };
+
     // The flame turns it back on with the owner's default, or 30 minutes when the default is Off.
     const onAgain = fallback !== 0 ? fallback : 0.5;
     const hoursLabel = (hours) => (hours === 0.5 ? "30 min" : hours === 1 ? "1 h" : `${hours} h`);

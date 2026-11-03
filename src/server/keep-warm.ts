@@ -7,7 +7,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { type IdleStatus, specOf } from "./cache-keeper.ts";
 import {
     isKeepWarmTime,
-    savedKeepWarmTime,
+    KEEP_WARM_RANGES,
     type KeepWarmModel,
     type KeepWarmSettings,
     type KeepWarmTime,
@@ -25,13 +25,10 @@ const defaultTier = () => (cacheTier() === "long" ? "long" : "short");
 
 /** The settings, sessions, models, and keeper calls that keep warm uses. */
 export type KeepWarmDeps = {
-    /** Throws unless `user` may see and steer the session. */
-    requireAccess: (user: User, id: ConversationId) => void;
     settings: () => KeepWarmSettings;
     saveSettings: (next: KeepWarmSettings) => void;
     sessionMeta: (id: ConversationId) => SessionMeta | undefined;
     rootOf: (id: ConversationId) => ConversationId;
-    commitSession: (id: ConversationId, change: (meta: SessionMeta) => void) => Promise<void>;
     model: (provider: string, id: string) => Model<Api> | undefined;
     models: () => Model<Api>[];
     availableModels: () => Model<Api>[];
@@ -44,7 +41,20 @@ export type KeepWarmDeps = {
 };
 
 /** A session's choice: the owner's default, or a time of its own (0: off, "break-even", or hours). */
-export type KeepWarmChoice = "default" | KeepWarmTime;
+type KeepWarmChoice = "default" | KeepWarmTime;
+
+/** A keep-warm time for a session's activity line. */
+export function keepWarmLabel(time: KeepWarmTime): string {
+    return time === 0
+        ? "off"
+        : time === "break-even"
+          ? "Break-even"
+          : time === 0.5
+            ? "30 minutes"
+            : time === 1
+              ? "1 hour"
+              : `${time} hours`;
+}
 
 /**
  * What is known of a model for the settings window: its cache lifetime in minutes from Pi or the maker's docs (the
@@ -59,7 +69,7 @@ type ModelRow = {
     name: string;
     known: Known;
     /** How Break-even keeps it warm: undefined fields when no cache time is known, so it is not kept warm. */
-    plan: { lifetime?: number; everyMs?: number; refreshes?: number; autoStopMs?: number };
+    plan: { lifetime?: number; everyMs?: number; refreshes?: number; breakEvenStopMs?: number };
 };
 
 const ownerOnly = (user: User) => {
@@ -99,7 +109,7 @@ export class KeepWarm {
             return undefined;
         }
 
-        const hours = savedKeepWarmTime(meta.keepWarm) ?? settings.hours;
+        const hours = isKeepWarmTime(meta.keepWarm) ? meta.keepWarm : settings.hours;
 
         if (hours === 0) {
             return undefined;
@@ -190,7 +200,7 @@ export class KeepWarm {
         }
 
         return {
-            choice: savedKeepWarmTime(meta.keepWarm) ?? "default",
+            choice: isKeepWarmTime(meta.keepWarm) ? meta.keepWarm : "default",
             status: this.#deps.keeper.idleStatus(Number(id)),
         };
     }
@@ -215,8 +225,9 @@ export class KeepWarm {
             next.hours = asked.hours;
         }
 
-        const number = (key: "maxCost" | "maxRefreshes" | "share", low: number, high: number) => {
+        const number = (key: keyof typeof KEEP_WARM_RANGES) => {
             const value = asked[key];
+            const [low, high] = KEEP_WARM_RANGES[key];
 
             if (value === undefined) {
                 return;
@@ -237,9 +248,9 @@ export class KeepWarm {
             next[key] = key === "maxCost" ? value : Math.round(value);
         };
 
-        number("maxCost", 0, 1000);
-        number("maxRefreshes", 1, 10_000);
-        number("share", 10, 95);
+        number("maxCost");
+        number("maxRefreshes");
+        number("share");
 
         if (asked.subagents !== undefined) {
             if (typeof asked.subagents !== "boolean") {
@@ -295,17 +306,14 @@ export class KeepWarm {
     }
 
     /**
-     * Check that `user` may choose `choice` for a session that has `current` now, and give the choice. Anyone who can see
-     * and steer the session may turn it off. Only the owner turns it on or picks a time, as a refresh may be charged to
-     * whoever pays for the session: so another person's Default may not turn on what is off.
+     * Validate and write a session's choice in its update commit. The caller checks access before the commit. Anyone
+     * who can steer may turn it off; only the owner turns it on or picks a time, since a refresh may be charged.
+     * Another person's Default must not turn on a session that is off.
      */
-    checkChoice(
-        user: User,
-        id: ConversationId,
-        choice: unknown,
-        current?: unknown,
-    ): KeepWarmChoice {
-        this.#deps.requireAccess(user, id);
+    applyChoice(user: User, _id: ConversationId, choice: unknown, meta: SessionMeta): void {
+        if (meta.pip !== undefined) {
+            throw new HttpError(404, "Not a session");
+        }
 
         if (choice !== "default" && !isKeepWarmTime(choice)) {
             throw new HttpError(
@@ -316,29 +324,18 @@ export class KeepWarm {
 
         const turnsOn =
             choice === "default"
-                ? savedKeepWarmTime(current) === 0 && this.#deps.settings().hours !== 0
+                ? meta.keepWarm === 0 && this.#deps.settings().hours !== 0
                 : choice !== 0;
 
         if (user.role !== "owner" && turnsOn) {
             throw new HttpError(403, "Only the owner can keep a session warm");
         }
 
-        return choice;
-    }
-
-    /** Someone who can steer chooses for one session (`checkChoice`); the owner's caps bound every choice. */
-    async setSession(user: User, id: ConversationId, choice: unknown): Promise<void> {
-        await this.#deps.commitSession(id, (meta) => {
-            // Checked against the choice in the same commit, so two requests at once cannot pass it together.
-            const chosen = this.checkChoice(user, id, choice, meta.keepWarm);
-
-            if (chosen === "default") {
-                delete meta.keepWarm;
-            } else {
-                meta.keepWarm = chosen;
-            }
-        });
-        this.#deps.keeper.reconsider();
+        if (choice === "default") {
+            delete meta.keepWarm;
+        } else {
+            meta.keepWarm = choice;
+        }
     }
 
     #model(spec: string): Model<Api> | undefined {
@@ -401,7 +398,7 @@ export class KeepWarm {
                     : {
                           everyMs: plan.everyMs,
                           refreshes: plan.maxRefreshes,
-                          autoStopMs: plan.maxRefreshes * plan.everyMs,
+                          breakEvenStopMs: plan.maxRefreshes * plan.everyMs,
                       }),
             },
         };

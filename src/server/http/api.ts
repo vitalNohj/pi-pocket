@@ -496,18 +496,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
             const id = conversationId(second);
 
-            // Checked first, so that a bad request changes nothing: keeping the session's cache warm once its run ends.
-            if (body.keepWarm !== undefined) {
-                app.keepWarm.checkChoice(user, id, body.keepWarm, app.sessionMeta(id)?.keepWarm);
-            }
-
-            if (body.title !== undefined || body.archived !== undefined) {
-                await app.commands.updateSession(id, user, body);
-            }
-
-            if (body.keepWarm !== undefined) {
-                await app.keepWarm.setSession(user, id, body.keepWarm);
-            }
+            await app.commands.updateSession(id, user, body);
 
             return json(response, 200, { ok: true });
         }
