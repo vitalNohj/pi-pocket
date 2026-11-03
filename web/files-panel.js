@@ -8,7 +8,7 @@ import { useBack } from "./back.js";
 import { DiffReview, KIND_LETTERS, reloadChanges, useChanges, useWidth } from "./diff.js";
 import { loadFiles, suggestFiles } from "./files.js";
 import { FileView } from "./sheets/file.js";
-import { actions, canSteer, closePeople, EXT_PANEL_KEY, panelsBeside, store } from "./store.js";
+import { actions, canSteer, closePeople, panelsBeside, store } from "./store.js";
 import {
     html,
     Icon,
@@ -20,8 +20,6 @@ import {
     usePresence,
 } from "./ui.js";
 
-const OPEN_KEY = "pocket.files";
-const TAB_KEY = "pocket.filesTab";
 const WIDTH_KEY = "pocket.filesWidth";
 /** Tree and viewer side by side from this width of the tile; one at a time below it. */
 const SIDE_BY_SIDE = 600;
@@ -32,20 +30,9 @@ export const filesAvailable = () => canSteer() && store.state.conversationId !==
 /** Show or hide the tile. It takes the Browser and People panels' place. */
 export function setFilesOpen(open, tab) {
     if (open) {
-        sessionStorage.setItem(OPEN_KEY, "1");
-        sessionStorage.removeItem("pocket.browser");
-        sessionStorage.removeItem(EXT_PANEL_KEY);
         closePeople();
-    } else {
-        sessionStorage.removeItem(OPEN_KEY);
-
-        if (document.documentElement.dataset.focus === "files-panel") {
-            document.documentElement.dataset.focus = "pane";
-        }
-    }
-
-    if (tab) {
-        sessionStorage.setItem(TAB_KEY, tab);
+    } else if (document.documentElement.dataset.focus === "files-panel") {
+        document.documentElement.dataset.focus = "pane";
     }
 
     store.set({
@@ -76,7 +63,6 @@ export function toggleFiles(tab) {
 }
 
 function setTab(tab) {
-    sessionStorage.setItem(TAB_KEY, tab);
     store.set({ filesTab: tab });
 }
 
