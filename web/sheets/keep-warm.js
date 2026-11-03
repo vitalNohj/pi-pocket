@@ -527,7 +527,7 @@ export function KeepWarmRow() {
               : state.choice;
     // The same times as the owner's, the session's own (or the owner's default) selected. Picking the owner's default
     // follows it again ("default"), so a later change of the default reaches this session too.
-    const choices = [...TIMES.slice(1), [0, "Off"]];
+    const choices = TIMES.slice(1);
     const valueOf = (value) => (value === fallback ? "default" : value);
     // Only the owner turns a session on or picks another time; anyone who can steer may turn it off, or back to the
     // default where that keeps it off (the server checks it too).
@@ -567,9 +567,9 @@ export function KeepWarmRow() {
                 }
                 Keep this session warm
             </span>
-            ${choices.map(
+            ${[[0, "Off"], ...choices].map(
                 ([value, label]) => html`<button
-                    class=${chosen === value ? "on" : ""}
+                    class=${`${chosen === value ? "on" : ""} ${value === 0 ? "keep-warm-off" : ""}`}
                     aria-pressed=${chosen === value}
                     title=${
                         value === fallback

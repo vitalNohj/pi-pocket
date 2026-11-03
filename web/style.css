@@ -18877,10 +18877,10 @@ pre.gallery-code {
     padding: 4px 9px;
 }
 
-/* The card's title, first in the row of choices. */
+/* The card's title, first in the row of choices, with Off beside it; the times wrap below. */
 .keep-warm-session-title {
     display: inline-flex;
-    flex-basis: 100%;
+    flex: 1 0 calc(100% - 4rem);
     align-items: center;
     gap: 0.3rem;
     padding: 4px 8px 2px;
@@ -18893,6 +18893,10 @@ pre.gallery-code {
 
 .keep-warm-times {
     align-self: stretch;
+}
+
+.keep-warm-times .keep-warm-off {
+    margin-right: 0;
 }
 
 /* What the chosen time does for the example model: a quiet card under the times. */
