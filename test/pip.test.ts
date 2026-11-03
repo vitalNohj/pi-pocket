@@ -445,6 +445,56 @@ test("PiP's messages go once per call, whatever its call ids look like", async (
     assert.deepEqual(sent, ["> [via PiP] first", "> [via PiP] second"]);
 });
 
+test("Ask PiP: PiP reads which session a quote came from, and people see only the quote and the words", async () => {
+    const id = await pip();
+    const session = await newSession(app);
+
+    await retitle(session, 'Deploy "fix" <now>');
+    await app.commands.submit(id, owner(app), {
+        text: "> the build is red\n\nwhy?",
+        requestId: "about-1",
+        about: { session: Number(session) },
+    });
+    await until(async () => !app.isBusy(id), "PiP at rest");
+
+    // The model gets the hidden block, after the words, with the title made safe for an attribute.
+    assert.ok(lastRequest.pip.includes('<pocket-context session=\\"' + String(session)));
+    assert.ok(lastRequest.pip.includes('title=\\\"Deploy  fix   now\\\"'));
+    assert.ok(lastRequest.pip.includes(`comes from Pi's reply in session ${String(session)}`));
+
+    // People see the quote and the words only.
+    const entries = await app.transcripts.allEntries(id, true);
+    const mine = entries.findLast((entry) => entry.kind === "user");
+
+    assert.equal(mine?.kind === "user" ? mine.text : "", "> the build is red\n\nwhy?");
+
+    // Only to PiP, about a session its person may see, and never about PiP itself.
+    await assert.rejects(
+        app.commands.submit(session, owner(app), {
+            text: "hi",
+            requestId: "about-2",
+            about: { session: Number(session) },
+        }),
+        /Only a message to PiP/,
+    );
+    await assert.rejects(
+        app.commands.submit(id, owner(app), {
+            text: "hi",
+            requestId: "about-3",
+            about: { session: Number(id) },
+        }),
+        /no such session/,
+    );
+    await assert.rejects(
+        app.commands.submit(id, owner(app), {
+            text: "hi",
+            requestId: "about-4",
+            about: { session: "1" as unknown as number },
+        }),
+        /session's number/,
+    );
+});
+
 test("PiP's cost shows in its person's spend", async () => {
     const id = await pip();
 

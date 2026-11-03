@@ -1,17 +1,31 @@
-// PiP, "Pi in Pocket": the owner's assistant, in a small window over whatever is open. It stays out of the way until
+// PiP, "Pi in Pocket": the owner's assistant, in a small window over whatever is open, or (Appearance → PiP → Board)
+// opened as a conversation in the session's place, with its top bar, menu, and every step. It stays out of the way until
 // called: Alt+A, the rail's PiP button, the places, the launcher, or `/pip`; and a small mark in the corner shows only
 // while PiP works, or has something new. The panel watches PiP's conversation through a view of its own (`pipview`
 // events), so the session behind it stays as it was.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { followUpText } from "./artifact-bridge.js";
-import { useBack } from "./back.js";
+import { backRoute, useBack } from "./back.js";
 import { boxKey, keyBox } from "./box-keys.js";
 import { useDragToClose } from "./gestures.js";
 import { createPipDraft } from "./pip-attachments.js";
+import { personStorage } from "./person-storage.js";
+import { splitQuote, withQuote } from "./quote-text.js";
 import { usePipResize } from "./pip-window.js";
-import { api, attempt, isRow, navigate, notify, openSheet, store, uid } from "./store.js";
+import {
+    api,
+    attempt,
+    insertIntoComposer,
+    isRow,
+    navigate,
+    notify,
+    openSheet,
+    store,
+    uid,
+} from "./store.js";
 import { spendTap } from "./taps.js";
-import { memoryAvailable, useMemory } from "./sheets/memory.js";
+import { prefs } from "./theme.js";
+import { memoryAvailable, PendingMemories } from "./sheets/memory.js";
 import { itemsOf, says, summarize } from "./turns.js";
 import {
     contextLevel,
@@ -34,28 +48,37 @@ import { MicButton, useDictation } from "./voice.js";
 
 const OPEN_KEY = "pocket.pip";
 const SEEN_KEY = "pocket.pip.seen";
-const DRAFT_KEY = "pocket.pip.draft";
+const DRAFT_KEY = "pip.draft";
 // Image previews and in-flight work outlive the panel, but never their PiP/account scope.
 const composerDraft = createPipDraft({
-    loadText: () => localStorage.getItem(DRAFT_KEY) ?? "",
-    saveText: (text) => {
-        if (text === "") {
-            localStorage.removeItem(DRAFT_KEY);
-        } else {
-            localStorage.setItem(DRAFT_KEY, text);
-        }
-    },
+    loadText: () => personStorage.get(DRAFT_KEY) ?? "",
+    saveText: (text) => personStorage.set(DRAFT_KEY, text || null),
     upload: (id, file) => api(`c/${id}/upload?name=${encodeURIComponent(file.name)}`, file),
     onError: (message) => notify("error", message),
 });
-const syncDraftScope = (state) =>
-    composerDraft.scope(
-        // Before the first hello, a signed-out/unknown bootstrap is not this tab logging out.
+
+const syncDraftScope = (state) => {
+    // Before the first hello, a signed-out/unknown bootstrap is not this tab logging out.
+    const changed = composerDraft.scope(
         state.me === undefined || (state.me === null && !state.server)
             ? undefined
             : (state.me?.id ?? null),
         state.pip?.id,
     );
+
+    // The quote over PiP's box goes with its draft's files: to another person, or another PiP, it was never theirs.
+    const stale = state.pipQuote;
+
+    if (changed && stale) {
+        // Out of this `set`: a change made from inside one reaches the listeners after it out of order. Only that quote:
+        // one put there meanwhile is the new person's.
+        queueMicrotask(() => {
+            if (store.state.pipQuote === stale) {
+                store.set({ pipQuote: null });
+            }
+        });
+    }
+};
 
 syncDraftScope(store.state);
 /** How many of PiP's newest rows the panel shows: it is for the moment, and the full conversation is a tap away. */
@@ -143,10 +166,72 @@ function tellServer(on) {
     return asked;
 }
 
+/** Where PiP opens, as Appearance says: `"floating"` (the corner, or a phone's sheet), or `"board"`. */
+export const pipPlace = () => (prefs()?.pip === "board" ? "board" : "floating");
+
+/** PiP's conversation is the route: open as a page, perhaps under a board (Running now) for now. */
+const inPip = (state) =>
+    state.conversationId !== null &&
+    state.pip?.id !== undefined &&
+    state.conversationId === state.pip.id;
+
+/** PiP open as a board: its conversation shows in the session's place, with nothing over that place. */
+export const pipBoard = (state = store.state) =>
+    inPip(state) && !state.board && state.page === null;
+
+/** PiP shows, in either place: its floating panel open, or its conversation in the session's place. */
+export const pipShown = (state = store.state) => state.pipOpen || pipBoard(state);
+
+/** The place the open panel is in, so a change of the setting moves it. */
+let place = pipPlace();
+
+// A floating panel kept open across a reload, where PiP now opens as a board: its conversation's route is what is kept.
+if (store.state.pipOpen && place === "board") {
+    sessionStorage.removeItem(OPEN_KEY);
+    store.set({ pipOpen: false });
+}
+
 // A reconnect (or the first connection, with the panel kept open across a reload) gets the panel's view again; PiP
-// turned off in Extensions closes the panel.
+// turned off in Extensions closes the panel. The setting changed while PiP shows moves it to the other place.
 store.subscribe((state) => {
     syncDraftScope(state);
+
+    const board = pipBoard(state);
+
+    if (board && state.pip?.endedAt !== undefined) {
+        // Its conversation in view counts as seen, as the panel does.
+        markSeen();
+    }
+
+    const now = pipPlace();
+
+    if (now !== place) {
+        place = now;
+
+        // Moved after this change has reached every listener (a change made from inside one would reach the listeners
+        // after it out of order), and only if the setting and PiP's place are still what they were by then.
+        if (now === "board" && state.pipOpen) {
+            queueMicrotask(() => {
+                if (pipPlace() === "board" && store.state.pipOpen) {
+                    closePip();
+                    openBoard(undefined, true);
+                }
+            });
+
+            return;
+        }
+
+        if (now === "floating" && board) {
+            queueMicrotask(() => {
+                if (pipPlace() === "floating" && pipBoard()) {
+                    closePip();
+                    openPip();
+                }
+            });
+
+            return;
+        }
+    }
 
     if (!state.pipOpen) {
         return;
@@ -181,17 +266,104 @@ export function pipUnread(state = store.state) {
 
     return Boolean(
         pip &&
-        !state.pipOpen &&
+        !pipShown(state) &&
         !pip.busy &&
         pip.endedAt !== undefined &&
         pip.endedAt > Number(localStorage.getItem(SEEN_KEY) ?? 0),
     );
 }
 
-/** Open the panel; with `text`, put it in PiP's message box. */
+/** How long PiP's board waits for the tab to know who it is and to connect, as a page opens from a notification. */
+const CONNECT_MS = 15_000;
+
+/** Resolves once the tab knows its person and has a connection to the server, or after `CONNECT_MS` anyway. */
+function connected() {
+    const ready = (state) => state.me?.id !== undefined && Boolean(state.streamId);
+
+    if (ready(store.state)) {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+        const done = () => {
+            clearTimeout(timer);
+            stop();
+            resolve();
+        };
+
+        const stop = store.subscribe((state) => ready(state) && done());
+        const timer = setTimeout(done, CONNECT_MS);
+    });
+}
+
+/**
+ * PiP's conversation's id, for the person signed in now; asked of the server (which makes PiP the first time) when this
+ * tab does not know it yet. Undefined when there is none, or the person changed meanwhile.
+ */
+async function pipConversation() {
+    await connected();
+    const account = store.state.me?.id;
+    let id = store.state.pip?.id;
+
+    if (id === undefined) {
+        id = (await tellServer(true))?.id;
+
+        // Asked only for the id: no panel shows, so the server sends no view of it.
+        if (!store.state.pipOpen) {
+            tellServer(false);
+        }
+    }
+
+    return account !== undefined && account === store.state.me?.id ? id : undefined;
+}
+
+/** What is in the session's place now, to see whether the person went somewhere else while PiP's id came. */
+const placeNow = () => {
+    const { conversationId, board, page } = store.state;
+
+    return `${conversationId}:${board}:${page?.module}:${page?.id}`;
+};
+
+/**
+ * Open PiP's conversation in the session's place, as a session opens; with `text`, put it in its message box. What is
+ * over that place goes, as for Running now, but with `keepSheet` the sheet that moved it there (Appearance) stays.
+ */
+async function openBoard(text, keepSheet = false) {
+    const before = placeNow();
+    const id = await pipConversation();
+
+    // Nothing to open, or the person went elsewhere (or chose Floating) while the id came: they are not taken back.
+    if (id === undefined || !pipAvailable() || pipPlace() !== "board" || placeNow() !== before) {
+        return;
+    }
+
+    // Also when its conversation is under Running now, or an extension's page: they give the place back. A sheet kept
+    // stays over the new route. Its new entry keeps the route it was opened over, for closing it.
+    navigate(id, {
+        ...(keepSheet ? { sheet: store.state.sheet } : {}),
+        over: { id: store.state.conversationId },
+    });
+    store.set({
+        launcher: false,
+        drawer: false,
+        page: null,
+        ...(keepSheet ? {} : { sheet: null }),
+    });
+
+    // Into PiP's own box only, once its conversation shows.
+    if (text) {
+        insertIntoComposer(text, [], { conversationId: id });
+    }
+}
+
+/** Open PiP where Appearance says; with `text`, put it in PiP's message box. Resolves once it is open as a board. */
 export function openPip(text) {
     if (!pipAvailable()) {
-        return;
+        return Promise.resolve();
+    }
+
+    if (pipPlace() === "board") {
+        return openBoard(text);
     }
 
     if (text) {
@@ -201,16 +373,35 @@ export function openPip(text) {
     if (store.state.pipOpen) {
         focusComposer();
 
-        return;
+        return Promise.resolve();
     }
 
     sessionStorage.setItem(OPEN_KEY, "1");
     // The subscriber above tells the server, from inside this `set`: once, not twice.
     store.set({ pipOpen: true, launcher: false, drawer: false });
+
+    return Promise.resolve();
 }
 
+/** Close PiP in either place: its conversation in the session's place gives way to what was there before. */
 export function closePip() {
-    if (!store.state.pipOpen) {
+    const open = store.state.pipOpen;
+
+    if (pipBoard()) {
+        // The route it was opened over (`over`, kept on its history entry through back, forward, and a reload); none
+        // when reached another way (the address).
+        const { over: from, sheet } = store.state;
+
+        // Back there, past whatever is open over it. A sheet still open (Appearance, moving PiP to the corner) stays,
+        // over that route; and reached another way, it gives the place to the home screen.
+        if (from !== null && !sheet) {
+            backRoute();
+        } else {
+            navigate(from?.id ?? null, { sheet });
+        }
+    }
+
+    if (!open || !store.state.pipOpen) {
         return;
     }
 
@@ -220,13 +411,43 @@ export function closePip() {
     tellServer(false);
 }
 
-export const togglePip = () => (store.state.pipOpen ? closePip() : openPip());
+export const togglePip = () => (pipShown() ? closePip() : openPip());
 
 /** Put `text` in PiP's box, after what is there, and open the panel. */
 function draftPip(text) {
-    const draft = localStorage.getItem(DRAFT_KEY)?.trim();
+    // As a board, PiP's box is its conversation's, which keeps its own draft.
+    if (pipPlace() === "board") {
+        openPip(text);
+
+        return;
+    }
+
+    const draft = personStorage.get(DRAFT_KEY)?.trim();
 
     openPip(draft ? `${draft}\n\n${text}` : text);
+}
+
+/**
+ * Ask PiP about a passage of Pi's reply in session `session` (or none): a quote strip over PiP's box holds it, and the
+ * next message to PiP goes with it quoted first. The server tells PiP, unseen, which session it came from.
+ */
+export async function quotePip(passage, session) {
+    const about = typeof session === "number" ? session : undefined;
+
+    if (pipPlace() === "board") {
+        // As a board, PiP's box is the session composer's: its quote strip, once PiP's conversation shows.
+        await openPip();
+
+        if (pipBoard()) {
+            store.set({ replyQuote: passage, replyAbout: about ?? null });
+        }
+
+        return;
+    }
+
+    store.set({ pipQuote: { text: passage, session: about } });
+    await openPip();
+    focusComposer();
 }
 
 /** Send PiP a message from anywhere (`/pip …`), and open the panel to show what it says; true when it went. */
@@ -239,7 +460,7 @@ export async function askPip(text) {
 
     const account = store.state.me?.id;
 
-    openPip();
+    await openPip();
     const pip = store.state.pip ?? (await opening);
 
     if (account !== store.state.me?.id) {
@@ -291,7 +512,7 @@ export async function askPipFrom(source, text, send) {
 }
 
 /** Send PiP a message; false when it did not go (a notice says why). PiP made just now is waited for. */
-async function send(id, text, busy, attachments = []) {
+async function send(id, text, busy, attachments = [], about = undefined) {
     const account = store.state.me?.id;
     const target = id ?? store.state.pip?.id ?? (await opening)?.id;
 
@@ -309,6 +530,7 @@ async function send(id, text, busy, attachments = []) {
         api(`c/${target}/submit`, {
             text,
             ...(attachments.length > 0 ? { attachments } : {}),
+            ...(about === undefined ? {} : { about }),
             requestId: uid(),
             // Words for PiP while it works change what it does now, rather than wait for it.
             ...(busy ? { mode: "steer" } : {}),
@@ -494,8 +716,18 @@ function Item({ item, last, busy, conversationId }) {
             const pictures = files.filter((file) => file.mime.startsWith("image/"));
             const others = files.filter((file) => !pictures.includes(file));
 
+            // A passage asked about (Ask PiP) shows as a quote block above the words, as in a session.
+            const quote = splitQuote(text);
+
             return html`<div class="pip-you">
-                ${text && html`<div>${text}</div>`}
+                ${
+                    quote
+                        ? html`<blockquote class="reply-quote" data-part="reply-quote">
+                                  ${quote.passage}
+                              </blockquote>
+                              ${quote.rest && html`<div>${quote.rest}</div>`}`
+                        : text && html`<div>${text}</div>`
+                }
                 ${
                     others.length > 0 &&
                     html`<div class="attachments">
@@ -629,9 +861,11 @@ function Composer({ id, busy }) {
     const ref = useRef(null);
     const picker = useRef(null);
     const draft = store.state.pipDraft;
+    // A passage to ask about (Ask PiP by a selection): it goes quoted before the next message.
+    const quote = store.state.pipQuote;
     const change = composerDraft.changeText;
     const uploading = files.some((file) => file.state === "uploading");
-    const hasMessage = text.trim() !== "" || files.length > 0;
+    const hasMessage = text.trim() !== "" || files.length > 0 || Boolean(quote);
     const sendDisabled =
         !hasMessage || (uploading && !COMPACT.test(text.trim())) || Boolean(pending);
 
@@ -677,8 +911,15 @@ function Composer({ id, busy }) {
         // Read the durable-in-this-tab draft, not a render's text or an old panel's queue.
         const message = composerDraft.state.text.trim();
         const compact = COMPACT.exec(message);
+        const quoted = store.state.pipQuote;
 
-        if (message === "" && composerDraft.state.files.length === 0) {
+        if (message === "" && composerDraft.state.files.length === 0 && !quoted) {
+            return;
+        }
+
+        if (compact && quoted) {
+            notify("info", "A quote cannot go with a command. Remove the quote to run it.");
+
             return;
         }
 
@@ -704,12 +945,18 @@ function Composer({ id, busy }) {
                 ? (await compactPip(id, compact[1]?.trim())) !== undefined
                 : await send(
                       id,
-                      message,
+                      quoted ? withQuote(quoted.text, message) : message,
                       busy,
                       token.files.map((file) => file.attachment),
+                      quoted?.session === undefined ? undefined : { session: quoted.session },
                   );
         } finally {
             composerDraft.finish(token, success);
+        }
+
+        // Sent with it: the quote goes, unless another took its place meanwhile.
+        if (success && quoted && store.state.pipQuote === quoted) {
+            store.set({ pipQuote: null });
         }
     };
 
@@ -775,6 +1022,21 @@ function Composer({ id, busy }) {
                         </button>
                     </div>`,
                 )}
+            </div>`
+        }
+        ${
+            quote &&
+            html`<div class="quote-strip pip-quote-strip" data-part="quote-strip">
+                <${Icon} name="reply" size=${13} />
+                <span class="quote-strip-text">${quote.text}</span>
+                <button
+                    type="button"
+                    class="icon-button small"
+                    aria-label="Remove the quote"
+                    onClick=${() => store.set({ pipQuote: null })}
+                >
+                    <${Icon} name="close" size=${12} />
+                </button>
             </div>`
         }
         <form class="pip-composer" onSubmit=${submit}>
@@ -854,40 +1116,6 @@ function Composer({ id, busy }) {
                       </button>`
             }
         </form>
-    </div>`;
-}
-
-/** The owner's private review queue, not just the memories that apply in the conversation behind PiP. */
-function PendingMemories({ id }) {
-    const data = useMemory(id, true);
-    const count = data?.pendingAll === true ? data.lessons.length : null;
-    const hint = data?.restartRequired
-        ? "Restart required"
-        : count === null
-          ? "Loading…"
-          : `${count} pending`;
-
-    return html`<div class="pip-memory">
-        <button
-            type="button"
-            class="button small ghost"
-            aria-label="Pending memories"
-            aria-describedby="pip-memory-count"
-            onClick=${() => {
-                closePip();
-                openSheet({ type: "memory", conversationId: id, pendingOnly: true });
-            }}
-        >
-            <span>Pending memories</span>
-            <span
-                id="pip-memory-count"
-                class=${`pip-memory-count ${count > 0 ? "waiting" : ""}`}
-                aria-live="polite"
-                aria-atomic="true"
-            >
-                ${hint}
-            </span>
-        </button>
     </div>`;
 }
 
@@ -1041,18 +1269,6 @@ function PipPanel({ leaving, scrim }) {
             >
                 <${Icon} name="reload" size=${18} />
             </button>
-            <button
-                class="icon-button"
-                aria-label="Open as a conversation"
-                title="Open as a conversation, with every step"
-                disabled=${!ready}
-                onClick=${() => {
-                    closePip();
-                    navigate(id);
-                }}
-            >
-                <${Icon} name="external" size=${18} />
-            </button>
             <button class="icon-button" aria-label="Close PiP" title="Close (Esc)" onClick=${closePip}>
                 <${Icon} name="close" size=${18} />
             </button>
@@ -1141,7 +1357,7 @@ function PipPanel({ leaving, scrim }) {
             ready &&
             me?.role === "owner" &&
             memoryAvailable(id) &&
-            html`<${PendingMemories} id=${id} />`
+            html`<${PendingMemories} id=${id} before=${closePip} />`
         }
         <${Composer} id=${id} busy=${busy} />
     </section>`;
@@ -1151,8 +1367,9 @@ function PipPanel({ leaving, scrim }) {
 function PipBubble() {
     const { pip } = store.state;
     const unread = pipUnread();
+    // Its conversation in view says the same.
     const [kept, leaving] = usePresence(
-        pip && (pip.busy || unread) ? (pip.busy ? "busy" : "news") : null,
+        pip && !pipBoard() && (pip.busy || unread) ? (pip.busy ? "busy" : "news") : null,
         150,
     );
 
@@ -1173,7 +1390,9 @@ function PipBubble() {
 
 /** PiP's panel while it is open (kept a moment after, to animate out), or its mark while it is not. */
 export function PipHost() {
-    const open = store.state.pipOpen && pipAvailable();
+    // Never in both places: while PiP's conversation is in the session's place (moving from there to the corner, say),
+    // the panel waits.
+    const open = store.state.pipOpen && pipAvailable() && !pipBoard();
     const [kept, leaving] = usePresence(open || null, 180);
     // What a drag on the sheet dims as it goes: the scrim, not the app behind it.
     const scrim = useRef(null);
@@ -1181,7 +1400,8 @@ export function PipHost() {
     // Back closes it, as it closes a sheet.
     useBack(Boolean(open), closePip);
 
-    if (!pipAvailable()) {
+    // As a board, not even the floating panel on its way out.
+    if (!pipAvailable() || pipBoard()) {
         return null;
     }
 
@@ -1205,7 +1425,8 @@ export function PipRailButton() {
         return null;
     }
 
-    const { pip, pipOpen } = store.state;
+    const { pip } = store.state;
+    const pipOpen = pipShown();
     const unread = pipUnread();
 
     return html`<button

@@ -14,6 +14,7 @@ import {
 import { withQuote } from "./quote-text.js";
 import { loadFiles, mentionAt, mentionText, suggestFiles } from "./files.js";
 import { remember, searchHistory, sentHistory } from "./history.js";
+import { personStorage } from "./person-storage.js";
 import {
     actions,
     attempt,
@@ -28,7 +29,9 @@ import {
     uid,
 } from "./store.js";
 import { useDock } from "./dock.js";
+import { keepWarmOn } from "./sheets/keep-warm.js";
 import { defineItem, slotItems } from "./slots.js";
+import { memoryAvailable, PendingMemories } from "./sheets/memory.js";
 import { SubagentsBar } from "./subagents.js";
 import { TrustBar } from "./trust.js";
 import { prefs } from "./theme.js";
@@ -89,18 +92,18 @@ const REMEMBER_CHARS = 20_000;
 const MENTIONS_FILE = /(?:^|[\s([{])@(?:"[^"\n]+"|[^\s"]*[./][^\s"]*)/;
 const INLINE_KEY = "pocket.inlineFiles";
 
-const pasteKey = (id) => `pocket.pastes.${id ?? "home"}`;
+const pasteKey = (id) => `pastes.${id ?? "home"}`;
 
 /** Each conversation's pastes by number, kept with its draft so a reload keeps them. */
 function loadPastes(id) {
     try {
-        return JSON.parse(localStorage.getItem(pasteKey(id)) ?? "{}");
+        return JSON.parse(personStorage.get(pasteKey(id)) ?? "{}");
     } catch {
         return {};
     }
 }
 
-const attachedKey = (id) => `pocket.attached.${id ?? "home"}`;
+const attachedKey = (id) => `attached.${id ?? "home"}`;
 
 /**
  * Each conversation's uploaded files, kept with its draft: the browser drops a tab in the background, or reloads it after
@@ -108,7 +111,7 @@ const attachedKey = (id) => `pocket.attached.${id ?? "home"}`;
  */
 function loadAttached(id) {
     try {
-        const list = JSON.parse(localStorage.getItem(attachedKey(id)) ?? "[]");
+        const list = JSON.parse(personStorage.get(attachedKey(id)) ?? "[]");
 
         return list.map((attachment) => ({
             key: uid(),
@@ -126,25 +129,16 @@ function loadAttached(id) {
 function saveAttached(id, files) {
     const list = files.filter((file) => file.state === "done").map((file) => file.attachment);
 
-    try {
-        if (list.length === 0) {
-            localStorage.removeItem(attachedKey(id));
-        } else {
-            localStorage.setItem(attachedKey(id), JSON.stringify(list));
-        }
-    } catch {
-        // No room: the files stay attached until the page goes.
-    }
+    personStorage.set(attachedKey(id), list.length === 0 ? null : JSON.stringify(list));
 }
 
 function savePastes(id, pastes) {
-    try {
-        if (Object.keys(pastes).length === 0) {
-            localStorage.removeItem(pasteKey(id));
-        } else {
-            localStorage.setItem(pasteKey(id), JSON.stringify(pastes));
-        }
-    } catch {
+    const saved = personStorage.set(
+        pasteKey(id),
+        Object.keys(pastes).length === 0 ? null : JSON.stringify(pastes),
+    );
+
+    if (!saved) {
         notify("warning", "This browser has no room to keep the paste after a reload.");
     }
 }
@@ -539,7 +533,11 @@ export function Composer() {
     const insert = store.state.composerInsert;
 
     useEffect(() => {
-        if (!insert || insert.n <= insertedUpTo) {
+        if (
+            !insert ||
+            insert.n <= insertedUpTo ||
+            (insert.conversationId !== undefined && insert.conversationId !== conversationId)
+        ) {
             return;
         }
 
@@ -836,6 +834,9 @@ export function Composer() {
                         : sendMode
                     : "followUp",
                 inlineFiles && mentionsFiles,
+                typeof store.state.replyAbout === "number"
+                    ? { session: store.state.replyAbout }
+                    : undefined,
             ),
         );
 
@@ -848,7 +849,7 @@ export function Composer() {
             }
 
             sent(full);
-            store.set({ replyQuote: null });
+            store.set({ replyQuote: null, replyAbout: null });
             // Files pasted while it went stay for the next message.
             forget(going);
             setFiles((current) => current.filter((file) => !going.includes(file)));
@@ -1323,6 +1324,13 @@ export function Composer() {
             <${WatchBar} />
             <${SubagentsBar} />
             <${TrustBar} />
+            ${
+                // PiP's conversation as a board keeps its floating panel's strip: every project's memories to approve.
+                conversationId === store.state.pip?.id &&
+                store.state.me?.role === "owner" &&
+                memoryAvailable(conversationId) &&
+                html`<${PendingMemories} id=${conversationId} />`
+            }
         </div>
         <${ParentSessionButton} />
         ${
@@ -1546,7 +1554,7 @@ export function Composer() {
                             <button
                                 class="icon-button small"
                                 aria-label="Remove the quote"
-                                onClick=${() => store.set({ replyQuote: null })}
+                                onClick=${() => store.set({ replyQuote: null, replyAbout: null })}
                             >
                                 <${Icon} name="close" size=${12} />
                             </button>
@@ -1681,7 +1689,7 @@ defineItem("composer", {
     id: "core:model",
     label: "Model",
     order: 300,
-    render: ({ agent, level }) =>
+    render: ({ agent, level, view }) =>
         html`<button
             class=${`model-chip ${agent?.available === false ? "warn" : ""}`}
             data-part="model-chip"
@@ -1689,7 +1697,18 @@ defineItem("composer", {
             title=${`Model and thinking: ${modelLabel(agent)}${level ? `, ${level}` : ""}`}
             onClick=${() => openSheet({ type: "model" })}
         >
-            <${Icon} name="sparkle" size=${12} class="model-spark" />
+            ${
+                // While keep warm is on for this session, a flame takes the star's place; it flickers while it keeps the
+                // cache alive (the run is over and refreshes go on). Nothing else changes.
+                keepWarmOn(view.conversation)
+                    ? html`<${Icon}
+                          name="flame"
+                          size=${13}
+                          stroke=${2}
+                          class=${`model-spark warm ${view.conversation.keepWarm.status?.warm ? "warming" : ""}`}
+                      />`
+                    : html`<${Icon} name="sparkle" size=${12} class="model-spark" />`
+            }
             <span class="model-name">${shortModel(agent)}</span>
             ${level && html`<span class="model-level">${level}</span>`}
             <${Icon} name="chevron" size=${12} stroke=${2.2} class="model-caret" />
