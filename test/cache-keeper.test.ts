@@ -1,13 +1,21 @@
 // The cache keeper with fake streams and a fake clock: when it warms, when it stops, and what it never does.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import {
     type Api,
     createAssistantMessageEventStream,
     type Model,
     type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { CacheKeeper, decide, MAX_AGE_MS, refreshDelayMs } from "../src/server/cache-keeper.ts";
+import {
+    CacheKeeper,
+    decide,
+    MAX_AGE_MS,
+    payloadHash,
+    refreshDelayMs,
+} from "../src/server/cache-keeper.ts";
 import {
     breakEvenRefreshes,
     type IdlePolicy,
@@ -15,6 +23,46 @@ import {
     type ModelFacts,
 } from "../src/server/idle-plan.ts";
 import type { IdleRecord, IdleStore } from "../src/server/keep-warm-store.ts";
+
+/** The original implementation is the byte-for-byte reference for the optimized hash. */
+function referencePayloadHash(payload: unknown): string {
+    const caps = new Set(
+        [
+            ["max_tokens"],
+            ["max_completion_tokens"],
+            ["max_output_tokens"],
+            ["maxTokens"],
+            ["options", "maxTokens"],
+            ["config", "maxOutputTokens"],
+            ["inferenceConfig", "maxTokens"],
+            ["generationConfig", "maxOutputTokens"],
+        ].map((path) => JSON.stringify(path)),
+    );
+
+    const canonical = (value: unknown, path: string[] = []): unknown => {
+        if (Array.isArray(value)) {
+            return value.map((item, index) => canonical(item, [...path, String(index)]));
+        }
+
+        if (value !== null && typeof value === "object") {
+            return Object.fromEntries(
+                Object.entries(value)
+                    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+                    .flatMap(([key, item]) => {
+                        const next = [...path, key];
+
+                        return caps.has(JSON.stringify(next)) ? [] : [[key, canonical(item, next)]];
+                    }),
+            );
+        }
+
+        return value;
+    };
+
+    return createHash("sha256")
+        .update(JSON.stringify(canonical(JSON.parse(JSON.stringify(payload)))))
+        .digest("hex");
+}
 
 // Claude Sonnet prices per million tokens, with a 5 minute cache.
 const COST = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
@@ -51,7 +99,9 @@ const usage = billedUsage();
 function rig(
     disabled = false,
     idle?: {
-        policy?: IdlePolicy | (() => IdlePolicy | undefined);
+        policy?: IdlePolicy | ((id: number) => IdlePolicy | undefined);
+        warmable?: (id: number) => boolean;
+        payload?: (warm: boolean) => unknown;
         /** Provider session ids to conversations; default: a 1, b 2, s 3. */
         conversations?: Map<string, number>;
         facts?: ModelFacts | ((spec: string, tier?: "short" | "long") => ModelFacts);
@@ -65,6 +115,8 @@ function rig(
     let failNext = false;
     const ended = new Set<number>();
     const calls: { maxTokens?: number; maxRetries?: number }[] = [];
+    const hashes: unknown[] = [];
+    const changed: number[] = [];
     let stopReason = "stop";
     /** Set: the next answer waits until it is called, before its payload is sent, or after (`holdSent`). */
     let hold: Promise<void> | undefined;
@@ -100,7 +152,12 @@ function rig(
 
                 // As a provider does: a payload hook that throws, or an abort, ends the stream with an error.
                 try {
-                    await options?.onPayload?.({ model: m.id, max_tokens: options.maxTokens }, m);
+                    await options?.onPayload?.(
+                        idle?.payload === undefined
+                            ? { model: m.id, max_tokens: options.maxTokens }
+                            : idle.payload(options?.maxTokens === 1),
+                        m,
+                    );
 
                     if (sentFirst) {
                         await wait;
@@ -127,6 +184,13 @@ function rig(
     };
     const keeper = new CacheKeeper({
         now: () => now,
+        payloadHash: (payload) => {
+            hashes.push(payload);
+
+            return payloadHash(payload);
+        },
+        changed: (id) => changed.push(id),
+        ...(idle?.warmable === undefined ? {} : { warmable: idle.warmable }),
         conversationOf: async (sessionId) =>
             idle?.conversations?.get(sessionId) ?? { a: 1, b: 2, s: 3 }[sessionId],
         isRunning: (id) => !ended.has(id),
@@ -134,8 +198,8 @@ function rig(
         ...(idle?.policy === undefined
             ? {}
             : {
-                  idlePolicy: () =>
-                      typeof idle.policy === "function" ? idle.policy() : idle.policy,
+                  idlePolicy: (id: number) =>
+                      typeof idle.policy === "function" ? idle.policy(id) : idle.policy,
               }),
         ...(idle?.facts === undefined
             ? {}
@@ -207,6 +271,8 @@ function rig(
         drain,
         fireNext,
         calls,
+        hashes,
+        changed,
         timers,
         setNow: (t: number) => {
             now = t;
@@ -465,13 +531,19 @@ async function idleRun(r: ReturnType<typeof rig>, tier: "short" | "long" = "shor
 
 function memoryStore() {
     const saved = new Map<string, IdleRecord>();
+    const writes: { record: IdleRecord; withContext: boolean }[] = [];
+    const budgetWrites: Record<string, number>[] = [];
     let budgets: Record<string, number> = {};
 
     return {
         saved,
+        writes,
+        budgetWrites,
         store: {
             save: (record: IdleRecord, withContext: boolean) => {
                 const before = saved.get(record.key);
+
+                writes.push({ record, withContext });
 
                 saved.set(record.key, {
                     ...record,
@@ -483,6 +555,7 @@ function memoryStore() {
             },
             load: async () => [...saved.values()],
             saveBudgets: (spent: Record<string, number>) => {
+                budgetWrites.push({ ...spent });
                 budgets = { ...spent };
             },
             loadBudgets: async () => ({ ...budgets }),
@@ -1285,4 +1358,247 @@ test("keep warm: Break-even uses the request's cache tier for its prices", async
 
     assert.ok(status.warm);
     assert.equal(status.maxRefreshes, 19, "the request uses the 1-hour write price");
+});
+
+// ─── Unnecessary keep-warm work ──────────────────────────────────────────
+
+test("payload hash: one serialization keeps the original canonical bytes", (t) => {
+    const shared = { maxTokens: 100, z: 1, a: 2 };
+    const payloads = [
+        {
+            z: { z: 1, a: [{ z: 2, a: 3 }, [null, true, "é 日本語 🦜 \ud800"]] },
+            a: "first",
+            max_tokens: 10,
+            max_completion_tokens: 20,
+            max_output_tokens: 30,
+            maxTokens: 40,
+            options: { maxTokens: 50, z: 2, a: { maxTokens: 60 } },
+            config: { maxOutputTokens: 70, z: 1, a: 2 },
+            inferenceConfig: { maxTokens: 80, a: 1 },
+            generationConfig: { maxOutputTokens: 90, a: 1 },
+            nested: { max_tokens: 100, options: { maxTokens: 110 } },
+        },
+        [
+            { options: shared, max_tokens: 10 },
+            { z: 1, a: [undefined, NaN, Infinity, -0] },
+        ],
+        { options: shared, nested: shared, "": { options: shared } },
+        JSON.parse('{"__proto__":{"z":1,"a":2},"10":1,"2":2,"01":3}') as unknown,
+        {
+            date: new Date("2026-01-02T03:04:05.000Z"),
+            nested: { toJSON: () => ({ z: 1, a: ["e\u0301", "\\\n\t"] }) },
+            omitted: undefined,
+            fn: () => 1,
+            number: Object(12),
+            string: Object("abc"),
+            boolean: Object(false),
+        },
+        { toJSON: () => ({ options: shared, z: 1, a: 2 }) },
+        null,
+        "日本語",
+        -0,
+    ];
+    const { rawJSON } = JSON as JSON & { rawJSON: (value: string) => unknown };
+    const rawPayloads = [
+        { raw: rawJSON("1e2") },
+        { raw: rawJSON('"é 日本語 🦜"') },
+        { raw: rawJSON("false") },
+        { raw: rawJSON("null") },
+    ];
+
+    assert.deepEqual(rawPayloads.map(payloadHash), rawPayloads.map(referencePayloadHash));
+    const expected = payloads.map(referencePayloadHash);
+    const parse = t.mock.method(JSON, "parse");
+
+    assert.deepEqual(payloads.map(payloadHash), expected);
+    assert.equal(parse.mock.callCount(), 0, "canonicalization needs no parse round trip");
+});
+
+test("keep warm: requests during a run are not hashed; its last one is hashed once when the run ends", async () => {
+    const r = rig(false, { policy: () => undefined });
+
+    await r.send("s", "toolUse");
+    await r.send("s", "toolUse");
+    await r.send("s", "stop");
+    assert.equal(r.hashes.length, 0, "no request of a running run is hashed");
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(r.hashes.length, 1, "the parked request is hashed once, and holds no payload");
+    await r.keeper.close();
+    assert.equal(r.hashes.length, 1, "dropping an entry does not hash it again");
+});
+
+test("keep warm: the first replay hashes lazily and still rejects a changed payload", async () => {
+    const r = rig(false, {
+        policy: POLICY,
+        payload: (warm) => ({ messages: [warm ? "changed" : "original"] }),
+    });
+
+    await idleRun(r);
+    assert.equal(r.hashes.length, 0);
+    await r.advance();
+    assert.equal(r.hashes.length, 2, "the original and replay are compared");
+    assert.equal(r.keeper.status().warms, 0, "the changed replay was not sent");
+    assert.equal(r.timers.length, 0);
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(
+        !status.warm && status.stopped,
+        "the request changed, so it could not be repeated",
+    );
+});
+
+test("keep warm: saving computes the original hash once and keeps it for later saves and replays", async () => {
+    const memory = memoryStore();
+    const r = rig(false, { policy: POLICY, store: memory.store });
+
+    await r.send("s", "stop");
+    assert.equal(r.hashes.length, 0);
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(r.hashes.length, 1);
+    assert.equal(memory.saved.get("s")?.payloadHash, payloadHash({ model: model.id }));
+    const original = r.hashes[0];
+
+    await r.advance();
+    await r.advance();
+    assert.equal(r.hashes.length, 3, "only each replay adds a hash");
+    assert.equal(r.hashes.filter((payload) => payload === original).length, 1);
+    assert.equal(memory.saved.get("s")?.payloadHash, payloadHash(original));
+    await r.keeper.close();
+});
+
+test("keep warm: reconsidering session A leaves session B's idle or parked entry untouched", async () => {
+    for (const initiallyOn of [true, false]) {
+        let on = initiallyOn;
+        const r = rig(false, { policy: (id) => (on ? { ...POLICY, session: id } : undefined) });
+
+        for (const [key, id] of [
+            ["a", 1],
+            ["b", 2],
+        ] as const) {
+            await r.send(key, "stop");
+            r.endRun(id);
+            r.keeper.runEnded(id);
+        }
+
+        const before = r.timers[1];
+
+        assert.ok(before);
+        r.changed.length = 0;
+        on = true;
+        r.keeper.reconsider(new Set([1 as ConversationId]));
+        assert.ok(r.timers.includes(before), "B keeps the same timer");
+        assert.deepEqual(r.changed, [1], "only A's view changes");
+        await r.keeper.close();
+    }
+});
+
+test("keep warm: parking while Off pushes no view, but turning an idle session Off pushes one", async () => {
+    let policy: IdlePolicy | undefined;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    assert.deepEqual(r.changed, [], "an Off run ending changes no view");
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
+    r.changed.length = 0;
+    policy = undefined;
+    r.keeper.reconsider();
+    assert.deepEqual(r.changed, [3], "idle to Off pushes exactly once");
+    r.changed.length = 0;
+    r.keeper.runEnded(3);
+    assert.deepEqual(r.changed, [], "parking again changes no view");
+    await r.keeper.close();
+});
+
+test("keep warm: parking pushes only when its stop text changes", async () => {
+    let policy: IdlePolicy | undefined = { ...POLICY, maxRefreshes: 1 };
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    await r.advance();
+    await r.advance();
+    const stopped = r.keeper.idleStatus(3);
+
+    assert.equal(!stopped.warm && stopped.stopped, "the refresh cap was reached");
+    r.changed.length = 0;
+    r.keeper.reconsider();
+    assert.deepEqual(r.changed, [], "the same stop text changes no view");
+    policy = undefined;
+    r.keeper.reconsider();
+    assert.deepEqual(r.changed, [3], "Off clears the stop text");
+    assert.deepEqual(r.keeper.idleStatus(3), { warm: false });
+    await r.keeper.close();
+});
+
+test("keep warm: restore saves state without rewriting the context", async () => {
+    const memory = memoryStore();
+    const first = rig(false, { policy: POLICY, store: memory.store });
+
+    await idleRun(first);
+    await first.keeper.close();
+    const before = memory.writes.length;
+    const second = rig(false, { policy: POLICY, store: memory.store });
+
+    second.endRun(3);
+    await second.keeper.restore();
+    assert.equal(second.keeper.idleStatus(3).warm, true);
+    assert.deepEqual(
+        memory.writes.slice(before).map((write) => write.withContext),
+        [false],
+    );
+    await second.keeper.close();
+});
+
+test("keep warm: a run start without a budget saves no budgets", async () => {
+    const memory = memoryStore();
+    const r = rig(false, { policy: POLICY, store: memory.store });
+
+    r.keeper.runStarted(3);
+    assert.deepEqual(memory.budgetWrites, []);
+    await r.keeper.close();
+});
+
+test("keep warm: a known request lifetime skips model facts until idle planning", async () => {
+    let reads = 0;
+    const r = rig(false, {
+        policy: POLICY,
+        facts: () => {
+            reads++;
+
+            return { lifetimeMs: 3_600_000 };
+        },
+    });
+
+    await r.send("s", "stop");
+    assert.equal(reads, 0);
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(reads, 1, "idle planning still reads the owner's lifetime");
+    assert.equal((r.timers[0]?.at ?? 0) - r.now(), 2_700_000);
+    await r.keeper.close();
+});
+
+test("keep warm: PiP and non-session requests keep no entry; disallowed subagents stay parked", async () => {
+    let policy: IdlePolicy | undefined;
+    const never = rig(false, { policy: () => policy, warmable: () => false });
+
+    await idleRun(never);
+    assert.equal(never.timers.length, 0, "a non-warmable conversation has no parked entry");
+    policy = POLICY;
+    never.keeper.reconsider();
+    assert.equal(never.keeper.idleStatus(3).warm, false);
+    await never.keeper.close();
+
+    policy = undefined;
+    const subagent = rig(false, { policy: () => policy, warmable: () => true });
+
+    await idleRun(subagent);
+    assert.equal(subagent.timers.length, 1, "a subagent stays parked while subagents are Off");
+    policy = POLICY;
+    subagent.keeper.reconsider();
+    assert.equal(subagent.keeper.idleStatus(3).warm, true, "a later choice can warm it");
+    await subagent.keeper.close();
 });

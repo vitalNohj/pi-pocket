@@ -512,6 +512,7 @@ export class PocketApp {
                 };
             },
             idlePolicy: (conversationId) => this.keepWarm.policy(conversationId),
+            warmable: (conversationId) => this.keepWarm.warmable(conversationId),
             modelFacts: (spec, tier) => this.keepWarm.facts(spec, tier),
             modelOf: (provider, modelId) => this.models?.getModel(provider, modelId),
             store: idleFiles(join(options.dataDir, "keep-warm"), (line) => this.#log(line)),

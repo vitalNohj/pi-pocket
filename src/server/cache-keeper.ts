@@ -10,6 +10,8 @@
  * See docs/architecture.md, "Prompt cache keeper", for decisions, limits, storage, and lifecycle.
  */
 import { createHash } from "node:crypto";
+import { types } from "node:util";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import {
     IDLE_FAILURES,
     type IdlePlan,
@@ -39,45 +41,65 @@ const FINAL_PAYLOAD = Symbol("cache-keeper-final-payload");
 
 type ObservedOptions = SimpleStreamOptions & { [FINAL_PAYLOAD]?: (payload: unknown) => void };
 
+// Older TypeScript libraries do not yet declare Node's raw-JSON support.
+const isRawJSON = (JSON as JSON & { isRawJSON?: (value: unknown) => value is { rawJSON: string } })
+    .isRawJSON;
+const OUTPUT_CAPS = new Set([
+    "max_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+    "maxTokens",
+]);
+const NESTED_OUTPUT_CAPS = new Map([
+    ["options", "maxTokens"],
+    ["config", "maxOutputTokens"],
+    ["inferenceConfig", "maxTokens"],
+    ["generationConfig", "maxOutputTokens"],
+]);
+
 /** Hash the JSON sent to the provider. Only provider output-cap fields may differ on a warm. */
-function payloadHash(payload: unknown): string {
-    const caps = new Set(
-        [
-            ["max_tokens"],
-            ["max_completion_tokens"],
-            ["max_output_tokens"],
-            ["maxTokens"],
-            ["options", "maxTokens"],
-            ["config", "maxOutputTokens"],
-            ["inferenceConfig", "maxTokens"],
-            ["generationConfig", "maxOutputTokens"],
-        ].map((path) => JSON.stringify(path)),
-    );
+export function payloadHash(payload: unknown): string {
+    let root: object | undefined;
+    let first = true;
+    // `toJSON` runs before the replacer; stringify keeps its wire semantics without a parse round trip.
+    const json = JSON.stringify(payload, function (key, value: unknown) {
+        const top = first;
 
-    const canonical = (value: unknown, path: string[] = []): unknown => {
-        if (Array.isArray(value)) {
-            return value.map((item, index) => canonical(item, [...path, String(index)]));
+        first = false;
+
+        if (isRawJSON?.(value)) {
+            // Normalize an already-encoded primitive, not a stringify/parse round trip of the payload.
+            return JSON.parse(value.rawJSON) as unknown;
         }
 
-        if (value !== null && typeof value === "object") {
-            return Object.fromEntries(
-                Object.entries(value)
-                    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-                    .flatMap(([key, item]) => {
-                        const next = [...path, key];
-
-                        return caps.has(JSON.stringify(next)) ? [] : [[key, canonical(item, next)]];
-                    }),
-            );
+        if (
+            value === null ||
+            typeof value !== "object" ||
+            Array.isArray(value) ||
+            (types.isBoxedPrimitive(value) && !types.isSymbolObject(value))
+        ) {
+            return value;
         }
 
-        return value;
-    };
+        // Only the root and its immediate children can contain an ignored output cap. No deep path copies.
+        const cap = this === root ? NESTED_OUTPUT_CAPS.get(key) : undefined;
+        // No prototype: `__proto__` is an ordinary JSON key.
+        const sorted = Object.create(null) as Record<string, unknown>;
 
-    // Match wire JSON semantics (undefined fields, toJSON), without retaining another prompt copy.
-    return createHash("sha256")
-        .update(JSON.stringify(canonical(JSON.parse(JSON.stringify(payload)))))
-        .digest("hex");
+        for (const name of Object.keys(value).sort()) {
+            if (!(top && OUTPUT_CAPS.has(name)) && name !== cap) {
+                sorted[name] = (value as Record<string, unknown>)[name];
+            }
+        }
+
+        if (top) {
+            root = sorted;
+        }
+
+        return sorted;
+    });
+
+    return createHash("sha256").update(json).digest("hex");
 }
 
 /** Refresh at 90% of the lifetime, and never closer than 10 seconds to its end. */
@@ -179,7 +201,9 @@ type Entry = {
     options: SimpleStreamOptions;
     promptTokens: number;
     ttlMs?: number;
-    payloadHash: string;
+    payloadHash?: string;
+    /** The observed final payload, released as soon as its hash is needed. */
+    payload?: { value: unknown };
     /** The conversation this session belongs to, once known. */
     conversationId?: number;
     warms: number;
@@ -206,7 +230,7 @@ type Entry = {
 };
 
 /** A real request on its way: `seq` orders it against stops (`forget`), and the lookup fills in its conversation. */
-type PendingRequest = { seq: number; conversationId?: number };
+type PendingRequest = { seq: number; conversationId?: number; payload?: { value: unknown } };
 
 type WarmAccount = {
     /** Check the captured payer's current spend limits immediately before each warm; `idle` allows a run that ended. */
@@ -231,6 +255,8 @@ export type IdleStatus =
 
 export type KeeperDeps = {
     now?: () => number;
+    /** Hash the final payload for comparison or persistence. */
+    payloadHash?: (payload: unknown) => string;
     setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
     clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
     log?: (line: string) => void;
@@ -244,6 +270,8 @@ export type KeeperDeps = {
     disabled?: () => boolean;
     /** Whether, and how, a conversation is kept warm once its run ends; undefined: it is not. */
     idlePolicy?: (conversationId: number) => IdlePolicy | undefined;
+    /** Whether this conversation can ever use keep warm, regardless of its current settings. */
+    warmable?: (conversationId: number) => boolean;
     /** What is known of a model (`provider/modelId`): its cache lifetime and published cache prices. */
     modelFacts?: (spec: string, tier?: "short" | "long") => ModelFacts;
     /** A model by provider and id, to warm a saved entry after a restart. */
@@ -279,15 +307,25 @@ class SessionBudget {
         this.#sessions.set(session, budget);
     }
 
-    clear(session: number): void {
-        const reserved = this.#sessions.get(session)?.reserved ?? 0;
+    clear(session: number): boolean {
+        const budget = this.#sessions.get(session);
+
+        if (budget === undefined) {
+            return false;
+        }
 
         // An aborted refresh can still return usage. Keep its reservation until it settles.
-        if (reserved > 0) {
-            this.#sessions.set(session, { spent: 0, reserved });
+        if (budget.reserved > 0) {
+            if (budget.spent === 0) {
+                return false;
+            }
+
+            budget.spent = 0;
         } else {
             this.#sessions.delete(session);
         }
+
+        return true;
     }
 
     /** Keep only the sessions `keep` names, or with a refresh on its way: the others have no stretch to cap. */
@@ -318,7 +356,9 @@ class SessionBudget {
 
 export class CacheKeeper {
     readonly #deps: KeeperDeps &
-        Required<Pick<KeeperDeps, "now" | "setTimer" | "clearTimer" | "log" | "disabled">>;
+        Required<
+            Pick<KeeperDeps, "now" | "payloadHash" | "setTimer" | "clearTimer" | "log" | "disabled">
+        >;
     readonly #entries = new Map<string, Entry>();
     readonly #requests = new Map<string, PendingRequest>();
     readonly #pending = new Set<Promise<void>>();
@@ -340,6 +380,7 @@ export class CacheKeeper {
     constructor(deps: KeeperDeps = {}) {
         this.#deps = {
             now: Date.now,
+            payloadHash,
             setTimer: (fn, ms) => {
                 const timer = setTimeout(fn, ms);
 
@@ -456,9 +497,10 @@ export class CacheKeeper {
         options: SimpleStreamOptions | undefined,
     ): AssistantMessageEventStream {
         const key = options?.sessionId;
-        const facts = this.#deps.modelFacts?.(specOf(model)) ?? {};
         // The owner or the maker's docs may know a lifetime for a model whose `promptCache` says nothing.
-        const known = ttlMsOf(model, options) !== undefined || facts.lifetimeMs !== undefined;
+        const known =
+            ttlMsOf(model, options) !== undefined ||
+            this.#deps.modelFacts?.(specOf(model)).lifetimeMs !== undefined;
 
         // Uncached calls (a compaction's, a model with no known lifetime) leave an existing entry alone.
         if (key === undefined || cacheTier(options) === "none" || !known) {
@@ -466,24 +508,17 @@ export class CacheKeeper {
         }
 
         const eligible = !this.#closed && !this.#deps.disabled() && isReplayable(model, options);
-        let fingerprint: string | undefined;
+        const request: PendingRequest = { seq: ++this.#seq };
         const observed: ObservedOptions = {
             ...options,
             [FINAL_PAYLOAD]: (payload) => {
-                try {
-                    fingerprint = payloadHash(payload);
-                } catch {
-                    // A payload we cannot compare can serve the real request, but must never be warmed.
-                    fingerprint = undefined;
-                }
+                request.payload = { value: payload };
             },
         };
         const stream = underlying(model, context, eligible ? observed : options);
 
         // A real request that writes the cache replaces the entry, so stop warming the old one.
         this.#drop(key);
-        const request: PendingRequest = { seq: ++this.#seq };
-
         this.#requests.set(key, request);
         void this.#deps.conversationOf?.(key).then(
             (id) => {
@@ -500,7 +535,7 @@ export class CacheKeeper {
                 }
 
                 this.#requests.delete(key);
-                this.#onSettled(key, model, context, options, message, fingerprint, request);
+                this.#onSettled(key, model, context, options, message, request);
             },
             () => {
                 if (this.#requests.get(key) === request) {
@@ -527,7 +562,6 @@ export class CacheKeeper {
         context: TranscriptContext,
         options: SimpleStreamOptions | undefined,
         message: AssistantMessage,
-        fingerprint: string | undefined,
         request: PendingRequest,
     ): void {
         const finished =
@@ -535,7 +569,7 @@ export class CacheKeeper {
             message.stopReason === "stop" ||
             message.stopReason === "length";
 
-        if (!finished || options === undefined || fingerprint === undefined) {
+        if (!finished || options === undefined || request.payload === undefined) {
             return;
         }
 
@@ -576,7 +610,7 @@ export class CacheKeeper {
             options,
             promptTokens,
             ...(ttlMs === undefined ? {} : { ttlMs }),
-            payloadHash: fingerprint,
+            payload: request.payload,
             ...(request.conversationId === undefined
                 ? {}
                 : { conversationId: request.conversationId }),
@@ -662,8 +696,9 @@ export class CacheKeeper {
         }
 
         // A session's new run ends its idle stretch: the next one starts its cost cap from nothing.
-        this.#budgets.clear(conversationId);
-        this.#saveBudgets();
+        if (this.#budgets.clear(conversationId)) {
+            this.#saveBudgets();
+        }
     }
 
     /**
@@ -685,8 +720,16 @@ export class CacheKeeper {
      * not dropped, while its cache lives, so turning it on again picks it up; a parked one the change allows again is
      * kept warm from now. Off is then the choice, so no stop is reported for it.
      */
-    reconsider(): void {
+    reconsider(conversations?: ReadonlySet<ConversationId>): void {
         for (const [key, entry] of [...this.#entries]) {
+            if (
+                conversations !== undefined &&
+                (entry.conversationId === undefined ||
+                    !conversations.has(entry.conversationId as ConversationId))
+            ) {
+                continue;
+            }
+
             if (entry.kind === "parked") {
                 if (
                     entry.conversationId !== undefined &&
@@ -825,7 +868,17 @@ export class CacheKeeper {
      * copy goes. `reason`: why it stopped, for the session's view (Off is a choice and has none).
      */
     #park(key: string, entry: Entry, reason?: string): void {
+        // Hashed once, when the run ends, so a parked entry holds no copy of the provider payload for its cache's life.
+        if (this.#payloadHash(entry) === undefined) {
+            return this.#drop(key);
+        }
+
         const lifeMs = entry.idle?.lifeMs;
+        const wasIdle = entry.kind === "idle";
+        const stopped =
+            entry.conversationId === undefined
+                ? undefined
+                : this.#stopped.get(entry.conversationId);
 
         if (entry.timer !== undefined) {
             this.#deps.clearTimer(entry.timer);
@@ -871,7 +924,7 @@ export class CacheKeeper {
             Math.max(1, entry.lastTouch + life - this.#deps.now()),
         );
 
-        if (entry.conversationId !== undefined) {
+        if (entry.conversationId !== undefined && (wasIdle || stopped !== reason)) {
             this.#deps.changed?.(entry.conversationId);
         }
     }
@@ -906,11 +959,13 @@ export class CacheKeeper {
             return stop();
         }
 
-        // Off for this session now: kept as it is while its cache lives, in case it is turned on.
-        // Off is a choice, so a limit's old stop is not shown. A saved entry is not loaded again only to be parked.
+        // Off for this session now: kept as it is while its cache lives, in case it is turned on. Off is a choice, so a
+        // limit's old stop is not shown. A saved entry is not loaded again only to be parked, and a conversation that can
+        // never be kept warm (PiP's, or no session's) keeps nothing.
         if (plan === undefined) {
             return restored === undefined &&
                 this.#deps.idlePolicy !== undefined &&
+                this.#deps.warmable?.(conversationId) !== false &&
                 !this.#closed &&
                 !this.#deps.disabled()
                 ? this.#park(key, entry)
@@ -952,7 +1007,7 @@ export class CacheKeeper {
             entry.timer = undefined;
         }
 
-        this.#save(key, entry, true);
+        this.#save(key, entry, restored === undefined);
         this.#deps.changed?.(conversationId);
     }
 
@@ -960,10 +1015,35 @@ export class CacheKeeper {
         this.#deps.store?.saveBudgets(Object.fromEntries(this.#budgets.entries()));
     }
 
+    /** Hash once on demand, then release the observed payload even when it cannot be serialized. */
+    #payloadHash(entry: Entry): string | undefined {
+        const payload = entry.payload;
+
+        if (payload !== undefined) {
+            delete entry.payload;
+
+            try {
+                entry.payloadHash = this.#deps.payloadHash(payload.value);
+            } catch {
+                // A payload we cannot compare can serve the real request, but must never be warmed.
+            }
+        }
+
+        return entry.payloadHash;
+    }
+
     #save(key: string, entry: Entry, withContext: boolean): void {
         const store = this.#deps.store;
 
         if (store === undefined || entry.idle === undefined || entry.conversationId === undefined) {
+            return;
+        }
+
+        const fingerprint = this.#payloadHash(entry);
+
+        if (fingerprint === undefined) {
+            this.#drop(key);
+
             return;
         }
 
@@ -984,7 +1064,7 @@ export class CacheKeeper {
                 ),
                 promptTokens: entry.promptTokens,
                 ...(entry.ttlMs === undefined ? {} : { ttlMs: entry.ttlMs }),
-                payloadHash: entry.payloadHash,
+                payloadHash: fingerprint,
                 lastTouch: entry.lastTouch,
                 since: entry.idle.since,
                 warms: entry.warms,
@@ -1195,7 +1275,7 @@ export class CacheKeeper {
                     let matches = false;
 
                     try {
-                        matches = payloadHash(payload) === entry.payloadHash;
+                        matches = this.#payloadHash(entry) === this.#deps.payloadHash(payload);
                     } catch {
                         // Fail closed when the shaped payload no longer has a comparable JSON representation.
                     }

@@ -87,6 +87,14 @@ export class KeepWarm {
         this.#published = new PublishedPrices(deps.models);
     }
 
+    /** Whether a conversation can ever be kept warm: current choices and subagent settings can change. */
+    warmable(conversationId: number): boolean {
+        const root = this.#deps.rootOf(conversationId as ConversationId);
+        const meta = this.#deps.sessionMeta(root);
+
+        return meta !== undefined && meta.pip === undefined;
+    }
+
     /** How a conversation is kept warm once its run ends; undefined: it is not. Read at each refresh. */
     policy(conversationId: number): IdlePolicy | undefined {
         const id = conversationId as ConversationId;

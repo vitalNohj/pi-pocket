@@ -740,7 +740,7 @@ export class Commands {
         const title = patch.title === undefined ? undefined : oneLine(patch.title);
 
         if (warmText !== undefined) {
-            app.cacheKeeper.reconsider();
+            app.cacheKeeper.reconsider(new Set(app.conversationsOf(id)));
             await app.collab.activity(id, user, warmText);
         }
 

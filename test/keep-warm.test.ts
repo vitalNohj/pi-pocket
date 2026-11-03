@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
 import { test } from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -6,7 +7,7 @@ import { keepWarmFrom } from "../src/server/config.ts";
 import { ChatDoc, type SessionMeta } from "../src/server/docs.ts";
 import { KeepWarm, type KeepWarmDeps, keepWarmLabel } from "../src/server/keep-warm.ts";
 import { cachePrices } from "../src/server/model-cache-facts.ts";
-import { cleanUp, context, newSession, openApp, owner, scriptedModel } from "./helpers.ts";
+import { cleanUp, context, newSession, openApp, owner, scriptedModel, work } from "./helpers.ts";
 
 const model = (api: string, cost: Partial<Model<Api>["cost"]>) =>
     ({ api, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...cost } }) as Model<Api>;
@@ -234,6 +235,60 @@ test("keep warm: off is the default; the owner's saved times stay valid", () => 
 
     assert.equal(keepWarm.policy(session), undefined);
     assert.equal(keepWarm.session(session)?.choice, "default");
+});
+
+test("keep warm: a session choice reconsiders only the session and its subagents", async (t) => {
+    mkdirSync(work, { recursive: true });
+    const app = await openApp(scriptedModel());
+
+    try {
+        const id = await newSession(app);
+        const child = (Number(id) + 10_000) as ConversationId;
+        const conversations = t.mock.method(app, "conversationsOf", () => [id, child]);
+        const reconsider = t.mock.method(app.cacheKeeper, "reconsider");
+
+        await app.commands.updateSession(id, owner(app), { keepWarm: 1 });
+        assert.equal(conversations.mock.callCount(), 1);
+        assert.deepEqual(reconsider.mock.calls[0]?.arguments, [new Set([id, child])]);
+        await app.keepWarm.setSettings(owner(app), { hours: 1 });
+        assert.deepEqual(
+            reconsider.mock.calls.at(-1)?.arguments,
+            [],
+            "settings still reconsider all",
+        );
+    } finally {
+        await app.close();
+        cleanUp();
+    }
+});
+
+test("keep warm: warmable includes Off, archived, and disallowed subagents, but never PiP or a missing session", () => {
+    const session = 1 as ConversationId;
+    const child = 2 as ConversationId;
+    const pip = 3 as ConversationId;
+    const missing = 4 as ConversationId;
+    const archived = 5 as ConversationId;
+    const meta: SessionMeta = { cwd: "/tmp", createdAt: 0, updatedAt: 0 };
+    const settings = keepWarmFrom({ hours: 0, subagents: false });
+    const sessions = new Map<ConversationId, SessionMeta>([
+        [session, meta],
+        [pip, { ...meta, pip: "owner" }],
+        [archived, { ...meta, archived: true }],
+    ]);
+    const keepWarm = new KeepWarm(
+        fakeDeps({
+            settings: () => settings,
+            sessionMeta: (id) => sessions.get(id),
+            rootOf: (id) => (id === child ? session : id),
+        }),
+    );
+
+    assert.equal(keepWarm.warmable(pip), false);
+    assert.equal(keepWarm.warmable(missing), false);
+    assert.equal(keepWarm.warmable(session), true);
+    assert.equal(keepWarm.warmable(archived), true, "an archived session can return");
+    assert.equal(keepWarm.warmable(child), true, "the owner can allow subagents later");
+    assert.equal(keepWarm.policy(child), undefined);
 });
 
 test("keep warm: activity uses the same time labels for every choice", () => {
