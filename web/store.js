@@ -1,5 +1,5 @@
 // App state, the server connection, and API calls. Components read `store.state` and re-render on `store.subscribe`.
-import { onRoute, pushRoute } from "./back.js";
+import { onRoute, pushRoute, routeState } from "./back.js";
 import { hostCan, onPageVisibility, pageVisible } from "./host.js";
 import { sessionForest, unfolded } from "./session-tree.js";
 import { liveMessage } from "./live.js";
@@ -17,6 +17,8 @@ import {
     remember,
     sameLayout,
 } from "./panel-layout.js";
+import { personStorage } from "./person-storage.js";
+import { notesDrafts } from "./notes-drafts.js";
 
 /** A random id. crypto.randomUUID only exists on https and localhost pages; plain-http network addresses lack it. */
 export function uid() {
@@ -248,6 +250,8 @@ export const store = {
         /** Sessions marked unread in this browser: an id each, until opened again. */
         unread: unreadOf(),
         conversationId: routeConversation(),
+        /** The route this one was opened over, as a board is (`navigate`'s `over`): `{ id }`, null for home; else null. */
+        over: routeOver(),
         /** Sessions whose linked sessions are folded away in the list: this browser's choice (`toggleFoldedLinked`). */
         foldedLinked: readFoldedLinked(),
         view: emptyView(),
@@ -276,6 +280,10 @@ export const store = {
         /** A transcript message the next chat message discusses: `{ entryId, text }`. */
         chatQuote: null,
         replyQuote: null,
+        /** The session the reply quote came from, when PiP's box (as a board) asks about it: its number, or null. */
+        replyAbout: null,
+        /** A passage for PiP's floating box to ask about (Ask PiP): `{ text, session }`, quoted before its next message. */
+        pipQuote: null,
         /** Text to put into the message box to Pi: `{ text, n }`, picked up by the composer. */
         composerInsert: null,
         /** Pi's prompt templates for a conversation's folder: `{ conversationId, at, list }`. */
@@ -398,6 +406,18 @@ function routeConversation() {
     return match ? Number(match[1]) : null;
 }
 
+/** What the route's history entry keeps of the route it was opened over (`navigate`'s `over`), or null. */
+function routeOver() {
+    return routeState("over") ?? null;
+}
+
+/**
+ * The session the list, the rail, and the tabs mark as open: the one in the session's place, or, for a route opened over
+ * another as a board is (PiP's conversation), the one under it, as under Running now. Null for none (home).
+ */
+export const openId = (state = store.state) =>
+    state.over === null ? state.conversationId : state.over.id;
+
 // ─── People: presence, typing, and the side chat ───────────────────────────────────
 
 const CHAT_LIMIT = 500;
@@ -413,6 +433,7 @@ function peopleFor(id, reads = store.state.chatReads) {
         notes: null,
         chatQuote: null,
         replyQuote: null,
+        replyAbout: null,
         chatRead: id === null ? 0 : (reads[id] ?? 0),
     };
 }
@@ -438,14 +459,15 @@ export function sessionUnread(session, state = store.state) {
  * (`session-tree.js`). Archived sessions are left out.
  */
 export function workspaceOrder(state = store.state) {
-    const { sessions, pinned: pins, foldedLinked, conversationId } = state;
+    const { sessions, pinned: pins, foldedLinked } = state;
+    const open = openId(state);
 
     // The list, the rail, the home screen, and peek tiles all ask as they draw: the order is made once for each list.
     if (
         ordered.sessions === sessions &&
         ordered.pinned === pins &&
         ordered.folded === foldedLinked &&
-        ordered.open === conversationId
+        ordered.open === open
     ) {
         return ordered.order;
     }
@@ -453,7 +475,7 @@ export function workspaceOrder(state = store.state) {
     // Linked sessions folded away are out of the order too: the numbers and Alt+arrows follow what shows.
     const order = orderOf(state, foldsNow(state));
 
-    ordered = { sessions, pinned: pins, folded: foldedLinked, open: conversationId, order };
+    ordered = { sessions, pinned: pins, folded: foldedLinked, open, order };
 
     return order;
 }
@@ -514,7 +536,7 @@ export function foldsNow(state = store.state) {
     const seen = new Set();
 
     for (
-        let at = byId.get(state.conversationId)?.linkedFrom?.id;
+        let at = byId.get(openId(state))?.linkedFrom?.id;
         at !== undefined && !seen.has(at);
         at = byId.get(at)?.linkedFrom?.id
     ) {
@@ -538,7 +560,7 @@ export function toggleFoldedLinked(id) {
     try {
         localStorage.setItem(FOLDED_LINKED_KEY, JSON.stringify(next));
     } catch {
-        // Storage refused (a private window): the fold holds until the page reloads.
+        // Storage refused: the fold holds until the page reloads.
     }
 
     store.set({ foldedLinked: next });
@@ -701,6 +723,10 @@ class ApiError extends Error {
 
 /** Call the server's API: a GET without `body`, a POST with one, or `options.method`; `options.signal` stops it. */
 export async function api(path, body, options = {}) {
+    if (changingAccount) {
+        throw new ApiError(401, "The account changed. Reload Pi Pocket.");
+    }
+
     const init = {
         method: body === undefined && !options.method ? "GET" : (options.method ?? "POST"),
         headers: { "X-Pocket": "1" },
@@ -794,12 +820,117 @@ export async function attempt(action) {
     }
 }
 
-/** End this browser's sign-in, and go to the sign-in page. */
+const PERSON_KEY = "pocket.person";
+const SIGNED_OUT_KEY = "pocket.signedOut";
+// Also works when this browser blocks localStorage. No saved content travels on this channel.
+const accountChannel =
+    typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("pocket.account");
+let changingAccount = false;
+let signingOut = false;
+let accountGeneration = 0;
+let source;
+
+/**
+ * Drop the old document's in-memory composers and requests before loading the cookie's current account: this page
+ * again, or `to` (sign-out goes to the app's start).
+ */
+function reloadAccount(to) {
+    // A late answer must not reload the still-valid cookie while sign-out is under way.
+    if (changingAccount || signingOut) {
+        return;
+    }
+
+    changingAccount = true;
+    personStorage.identify(null);
+    notesDrafts.clear();
+    source?.close();
+    store.set({
+        me: null,
+        composerInsert: null,
+        auth: null,
+        pip: null,
+        pipOpen: false,
+        pipQuote: null,
+    });
+
+    if (to === undefined) {
+        location.reload();
+    } else {
+        location.href = to;
+    }
+}
+
+function accountChanged(person, signedOut = false) {
+    const known = store.state.me !== undefined;
+
+    // A new tab announcing the same person does not invalidate this tab's requests or stream reconnect.
+    // During startup, every signal still invalidates answers already on their way.
+    if (!signedOut && known && (store.state.me?.id ?? null) === person) {
+        return;
+    }
+
+    accountGeneration++;
+
+    if (signedOut || known) {
+        reloadAccount();
+    }
+}
+
+// The early sign-out signal only stops the device cache (below): a reload then would still find the old cookie.
+// The person key changes once the server ends the sign-in.
+addEventListener("storage", (event) => {
+    if (event.key === PERSON_KEY) {
+        accountChanged(event.newValue || null);
+    }
+});
+accountChannel?.addEventListener("message", (event) => {
+    accountChanged(event.data.person, event.data.signedOut);
+});
+
+/** Authenticate storage before any component can read a draft. A changed identity needs a fresh document. */
+function acceptPerson(user, generation) {
+    if (generation !== accountGeneration) {
+        reloadAccount();
+
+        return false;
+    }
+
+    if (changingAccount) {
+        return false;
+    }
+
+    const person = user?.id ?? null;
+
+    if (store.state.me !== undefined && (store.state.me?.id ?? null) !== person) {
+        reloadAccount();
+
+        return false;
+    }
+
+    personStorage.identify(person);
+
+    try {
+        localStorage.setItem(PERSON_KEY, person ?? "");
+    } catch {
+        // The account channel still resets other open tabs when storage is blocked.
+    }
+
+    if (store.state.me === undefined) {
+        accountChannel?.postMessage({ person });
+    }
+
+    return true;
+}
+
+/** End this browser's sign-in, erase saved local content, and tell the other open tabs. */
 export function signOut() {
     return attempt(async () => {
+        signingOut = true;
+        accountGeneration++;
         // What this browser kept of this person's sessions goes with their sign-in, and nothing saves it again: not a save
         // of this tab still to come, nor one of the other tabs, which hear of it through the storage event.
         deviceCacheStopped = true;
+        dispatchEvent(new Event("pocket:signedOut"));
 
         try {
             localStorage.setItem(SIGNED_OUT_KEY, String(Date.now()));
@@ -807,13 +938,25 @@ export function signOut() {
             // Storage refused: the other tabs find out at their next request.
         }
 
-        await disk.clear().catch(() => {});
-        await api("logout", {});
-        location.href = "/";
+        try {
+            await disk.clear().catch(() => {});
+            await api("logout", {});
+        } finally {
+            signingOut = false;
+        }
+
+        personStorage.clear();
+
+        try {
+            localStorage.setItem(PERSON_KEY, "");
+        } catch {
+            // Clearing storage and changing the cookie must not depend on a successful storage write.
+        }
+
+        accountChannel?.postMessage({ person: null, signedOut: true });
+        reloadAccount("/");
     });
 }
-
-let source;
 
 // ─── Sessions this tab keeps, to show again at once ─────────────────────────────────────────────────────────────────
 
@@ -1010,11 +1153,11 @@ const onDevice = () =>
 
 /** Set at sign-out, in this tab or another: the device keeps nothing more. */
 let deviceCacheStopped = false;
-const SIGNED_OUT_KEY = "pocket.signedOut";
 
 addEventListener("storage", (event) => {
     if (event.key === SIGNED_OUT_KEY) {
         deviceCacheStopped = true;
+        dispatchEvent(new Event("pocket:signedOut"));
     }
 });
 
@@ -1655,7 +1798,11 @@ export function onExtensionEvent(listener) {
 /** What the server sends, by event name. Both transports deliver the same events. */
 const handlers = {
     // Sent again on each connect, mostly as it was: what is the same keeps its identity (`kept`).
-    hello: (data) => {
+    hello: (data, generation) => {
+        if (!acceptPerson(data.user, generation)) {
+            return;
+        }
+
         const state = store.state;
         // Only a new connection's first hello answers this tab's asking; any later one, the server sent of itself.
         const asked = helloAsked;
@@ -1788,8 +1935,8 @@ const handlers = {
     "desktop-notify": (data) => desktopListeners.forEach((listener) => listener(data)),
     closing: () => store.set({ connection: "closed" }),
     reload: () => {
-        // A web file changed on the server. Message drafts live in localStorage and survive the reload; an unsaved notes
-        // draft, attachments not yet sent, and an open provider sign-in do not.
+        // A web file changed on the server. Message, notes, and attachment drafts survive when browser storage works;
+        // an open provider sign-in does not.
         setTimeout(() => location.reload(), 150);
     },
 };
@@ -1849,20 +1996,115 @@ function eventsQuery(kept) {
     return `tab=${encodeURIComponent(TAB)}&p=${PROTOCOL}${id === null ? "" : `&c=${id}`}${have === null ? "" : `&have=${have}`}${host}`;
 }
 
-// A page kept for Back and Forward stays alive, frozen, and so would its stream: each holds one of the few connections a
-// browser makes to a server, and after a handful nothing else loads. It closes on leaving and reconnects on return.
-addEventListener("pagehide", () => {
+let accountCover = null;
+let accountRequest = null;
+let accountRetry;
+let accountFailures = 0;
+
+/** Cover a frozen page until the server confirms whose cookie the browser has now. */
+function coverAccount() {
+    if (accountCover !== null) {
+        return;
+    }
+
+    accountCover = document.createElement("dialog");
+    accountCover.className = "account-cover";
+    accountCover.setAttribute("aria-labelledby", "account-check-status");
+    accountCover.innerHTML = `<div class="plain">
+        <p id="account-check-status" role="status">Checking who is signed in…</p>
+        <button type="button">Retry</button>
+    </div>`;
+    accountCover.addEventListener("cancel", (event) => event.preventDefault());
+    accountCover.querySelector("button").addEventListener("click", () => void restoreAccount());
+    document.body.append(accountCover);
+    accountCover.showModal();
+}
+
+async function restoreAccount() {
+    clearTimeout(accountRetry);
+    accountRequest?.abort();
+    coverAccount();
+    const request = new AbortController();
+    const generation = accountGeneration;
+    const timeout = setTimeout(() => request.abort(), 10_000);
+
+    accountRequest = request;
+
+    try {
+        const hello = await api("me", undefined, { signal: request.signal });
+
+        if (accountRequest !== request) {
+            return;
+        }
+
+        if (!hello.user || !acceptPerson(hello.user, generation)) {
+            reloadAccount();
+
+            return;
+        }
+
+        accountFailures = 0;
+        accountCover.close();
+        accountCover.remove();
+        accountCover = null;
+        connect();
+    } catch (error) {
+        if (accountRequest !== request) {
+            return;
+        }
+
+        if (generation !== accountGeneration) {
+            reloadAccount();
+
+            return;
+        }
+
+        if (error.status === 401) {
+            personStorage.clear();
+            reloadAccount();
+        } else {
+            accountFailures++;
+            accountCover.querySelector("p").textContent =
+                accountFailures >= 3
+                    ? "The server cannot be reached. Try again."
+                    : "Checking who is signed in…";
+            accountRetry = setTimeout(
+                restoreAccount,
+                Math.min(30_000, 1000 * 2 ** Math.min(accountFailures - 1, 5)),
+            );
+        }
+    } finally {
+        clearTimeout(timeout);
+
+        if (accountRequest === request) {
+            accountRequest = null;
+        }
+    }
+}
+
+// A frozen page must not hold an event stream or show its old account on return. Checking the cookie keeps a
+// same-person restore intact, including uploads still held only in memory.
+addEventListener("pagehide", (event) => {
     source?.close();
     source = null;
+    clearTimeout(accountRetry);
+    accountRequest?.abort();
+    accountRequest = null;
+
+    if (event.persisted) {
+        coverAccount();
+    }
 });
 addEventListener("pageshow", (event) => {
     if (event.persisted) {
-        connect();
+        void restoreAccount();
     }
 });
 
 /** Server-sent events: one long response the server writes to as things change. */
 function streamEvents(query) {
+    const generation = accountGeneration;
+
     helloAsked = moment();
     const events = new EventSource(`/api/events?${query}`);
     /** The session its address names: a retry by the browser asks for that one again. */
@@ -1900,7 +2142,7 @@ function streamEvents(query) {
                 settled = true;
             }
 
-            heard(name, JSON.parse(event.data), handler);
+            heard(name, JSON.parse(event.data), handler, generation);
         });
     }
 
@@ -1966,12 +2208,12 @@ let switchSeq = 0;
 let switching = null;
 
 /** Pass an event on to its handler, unless it is about the session the tab is leaving. */
-function heard(name, data, handler) {
-    if (switching !== null && SESSION_EVENTS.has(name)) {
+function heard(name, data, handler, generation) {
+    if (changingAccount || (switching !== null && SESSION_EVENTS.has(name))) {
         return;
     }
 
-    handler(data);
+    handler(data, generation);
 }
 
 /**
@@ -2033,6 +2275,7 @@ function pollEvents() {
         while (!stopped) {
             request = new AbortController();
             const asked = moment();
+            const generation = accountGeneration;
 
             try {
                 // A poll the server no longer knows (it started again, or this tab fell far behind) attaches afresh: it
@@ -2081,7 +2324,7 @@ function pollEvents() {
                     ack = item.seq;
 
                     if (handlers[item.event]) {
-                        heard(item.event, item.data, handlers[item.event]);
+                        heard(item.event, item.data, handlers[item.event], generation);
                     }
                 }
             } catch {
@@ -2175,11 +2418,18 @@ export function closeSignIn(flowId) {
     store.set((state) => (state.auth?.flowId === flowId ? { auth: null } : {}));
 }
 
-export function navigate(conversationId, { replace = false, sheet = null } = {}) {
+/**
+ * Go to a conversation (null: the home screen). With `over` (`{ id }`, the route under it), it opens over that route
+ * as a board does: the entry keeps it, and the list keeps that session marked open (`openId`) until another route.
+ */
+export function navigate(conversationId, { replace = false, sheet = null, over = null } = {}) {
     const path = conversationId === null ? "/" : `/s/${conversationId}`;
 
-    if (location.pathname !== path || store.state.conversationId !== conversationId) {
-        pushRoute(path, { replace });
+    // A new route says what it is over; the same route keeps what its entry already says.
+    const route = location.pathname !== path || store.state.conversationId !== conversationId;
+
+    if (route) {
+        pushRoute(path, { replace, state: over === null ? {} : { over } });
     }
 
     // The subagents board and extensions' pages show in the conversation's place: going to one, even the one under it,
@@ -2192,6 +2442,10 @@ export function navigate(conversationId, { replace = false, sheet = null } = {})
     opened(conversationId);
 
     if (store.state.conversationId === conversationId && source) {
+        if (route && store.state.over?.id !== over?.id) {
+            store.set({ over });
+        }
+
         if (sheet) {
             openSheet(sheet);
         }
@@ -2201,6 +2455,7 @@ export function navigate(conversationId, { replace = false, sheet = null } = {})
 
     keepView(store.state.view);
     store.set((state) => ({
+        ...(route ? { over } : {}),
         conversationId,
         ...keptView(conversationId),
         ...peopleFor(conversationId),
@@ -2246,11 +2501,18 @@ function showKept(id) {
 // Back or forward to another route. Back that only closes a layer (a sheet, a panel) is back.js's.
 onRoute(() => {
     const id = routeConversation();
+    // The entry says what its route is over: in the same change as the route, so the open mark never jumps between.
+    const over = store.state.over?.id === routeOver()?.id ? {} : { over: routeOver() };
 
-    if (id !== store.state.conversationId) {
+    if (id === store.state.conversationId) {
+        if ("over" in over) {
+            store.set(over);
+        }
+    } else {
         opened(id);
         keepView(store.state.view);
         store.set({
+            ...over,
             conversationId: id,
             ...keptView(id),
             ...peopleFor(id),
@@ -2266,12 +2528,18 @@ onRoute(() => {
 });
 
 export async function start() {
+    const generation = accountGeneration;
+
     try {
         const asked = moment();
         // The session the page opens on, from the device, read while the server answers who this is: then checked.
         const id = store.state.conversationId;
         const onDisk = id === null ? undefined : readDevice(id);
         const hello = await api("me");
+
+        if (!acceptPerson(hello.user, generation)) {
+            return;
+        }
 
         store.set({
             me: hello.user,
@@ -2283,7 +2551,15 @@ export async function start() {
         });
 
         if (onDisk !== undefined && store.state.view.conversation == null) {
-            const found = adopt(id, await onDisk);
+            const cached = await onDisk;
+
+            if (generation !== accountGeneration || changingAccount) {
+                reloadAccount();
+
+                return;
+            }
+
+            const found = adopt(id, cached);
 
             if (found !== undefined) {
                 store.set(found);
@@ -2292,6 +2568,16 @@ export async function start() {
 
         connect();
     } catch (error) {
+        if (generation !== accountGeneration || changingAccount) {
+            reloadAccount();
+
+            return;
+        }
+
+        if (error.status === 401) {
+            personStorage.clear();
+        }
+
         store.set({ me: error.status === 401 ? null : undefined });
 
         if (error.status !== 401) {
@@ -2307,13 +2593,15 @@ const current = () => store.state.conversationId;
 
 export const actions = {
     /** `inlineFiles`: the files the message mentions with @ go along with it. */
-    submit: (text, attachments, mode, inlineFiles = false) =>
+    /** `about`: the session a quoted passage came from, for PiP's own conversation only. */
+    submit: (text, attachments, mode, inlineFiles = false, about = undefined) =>
         api(`c/${current()}/submit`, {
             text,
             attachments,
             mode,
             requestId: uid(),
             ...(inlineFiles ? { inlineFiles } : {}),
+            ...(about === undefined ? {} : { about }),
         }),
     /** Run a command in the session's folder (`!`); `context: false` keeps it from Pi (`!!`). */
     shell: (command, context, requestId = uid()) =>
@@ -2637,17 +2925,24 @@ export function openSheet(sheet) {
 
 /**
  * Put text into the message box to Pi (after what is there: on a new paragraph, or with `inline`, after a space), and
- * files to attach, and close any sheet so it shows.
+ * files to attach, and close any sheet so it shows. With `conversationId`, only that conversation's box takes it, once
+ * it shows: a session shown before it does not.
  */
-export function insertIntoComposer(text, files = [], { inline = false } = {}) {
+export function insertIntoComposer(text, files = [], { inline = false, conversationId } = {}) {
     store.set((state) => ({
         sheet: null,
-        composerInsert: { text, files, inline, n: (state.composerInsert?.n ?? 0) + 1 },
+        composerInsert: {
+            text,
+            files,
+            inline,
+            conversationId,
+            n: (state.composerInsert?.n ?? 0) + 1,
+        },
     }));
 }
 
 export function quoteReply(text) {
-    store.set({ replyQuote: text });
+    store.set({ replyQuote: text, replyAbout: null });
 }
 
 /** Open the chat to discuss a transcript message: the next chat message quotes it. */
@@ -2693,14 +2988,8 @@ export function openRunning() {
     store.set({ board: "running", boardAgents: null, drawer: false, page: null, sheet: null });
 }
 
-// Per-conversation composer drafts survive reloads, including the automatic ones after a live edit.
+// Per-person, per-conversation drafts survive reloads, including the automatic ones after a live edit.
 export const drafts = {
-    get: (id) => localStorage.getItem(`pocket.draft.${id ?? "home"}`) ?? "",
-    set: (id, text) => {
-        if (text) {
-            localStorage.setItem(`pocket.draft.${id ?? "home"}`, text);
-        } else {
-            localStorage.removeItem(`pocket.draft.${id ?? "home"}`);
-        }
-    },
+    get: (id) => personStorage.get(`draft.${id ?? "home"}`) ?? "",
+    set: (id, text) => personStorage.set(`draft.${id ?? "home"}`, text || null),
 };
