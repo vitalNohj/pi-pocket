@@ -74,18 +74,28 @@ test("keep-warm examples: the cost cap limits both Break-even and fixed hours", 
     }
 });
 
-test("keep-warm examples: Sol uses the input price for writes and an exact millisecond interval", () => {
-    const sol = { input: 2, read: 0.1, writeMultiplier: 1, cacheMinutes: 30 };
+test("keep-warm examples: Sol's write is Pi's listed $2.50, with an exact millisecond interval", () => {
+    const sol = { input: 2, read: 0.1, writeMultiplier: 1.25, cacheMinutes: 30 };
     const result = estimate("break-even", uncapped, sol);
 
-    assert.equal(result.refreshes, 19);
+    assert.equal(result.refreshes, 24, "as the server's Break-even for Sol");
     assert.equal(result.uncached, 0.3);
     assert.equal(result.everyMs, 22.5 * 60_000);
-    assert.equal(result.lasts, 19 * 22.5 * 60_000);
+    assert.equal(result.lasts, 24 * 22.5 * 60_000);
     assert.equal(estimate(0.5, uncapped).refreshes, 0);
     assert.equal(estimate(1, uncapped, sol).refreshes, 2);
     assert.equal(
         estimate("break-even", { ...uncapped, share: 95 }, { ...sol, cacheMinutes: 1 }).everyMs,
         50_000,
     );
+});
+
+test("keep-warm examples: Claude's 5-minute cache stops at 24 refreshes, every 3 min 45 s", () => {
+    const fiveMinutes = { input: 4, read: 0.2, writeMultiplier: 1.25, cacheMinutes: 5 };
+    const result = estimate("break-even", uncapped, fiveMinutes);
+
+    assert.equal(result.everyMs, 225_000);
+    assert.equal(result.refreshes, 24);
+    assert.equal(result.lasts, 24 * 225_000);
+    assert.ok(Math.abs(result.cost - 0.72) < 1e-12);
 });

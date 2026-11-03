@@ -30,10 +30,15 @@ function queueSave(action) {
 const BREAK_EVEN =
     "Keeps the cache warm until the refreshes and the next cache read cost as much as writing the cache once more, then stops.";
 
-/** Fixed list prices per million tokens (2026-11-02), not fetched from a provider. Each example uses a 150k context. */
+/**
+ * Fixed list prices per million tokens (2026-11-02), not fetched from a provider. Each example uses a 150k context.
+ * The write is Pi's listed cache write: input × 1.25 (Claude's 5-minute tier, GPT-6.1 Sol), and input × 2 for
+ * Claude's 1-hour tier, as `writePrice` in src/server/model-cache-facts.ts counts it.
+ */
 const EXAMPLES = [
     { name: "Claude Opus 5.5", input: 4, read: 0.2, writeMultiplier: 2, cacheMinutes: 60 },
-    { name: "GPT-6.1 Sol", input: 2, read: 0.1, writeMultiplier: 1, cacheMinutes: 30 },
+    { name: "Claude Opus 5.5", input: 4, read: 0.2, writeMultiplier: 1.25, cacheMinutes: 5 },
+    { name: "GPT-6.1 Sol", input: 2, read: 0.1, writeMultiplier: 1.25, cacheMinutes: 30 },
 ];
 
 const money = (amount) =>
@@ -69,7 +74,6 @@ function timeLabel(hours) {
 
 /**
  * One fixed example under the current settings: refreshes, dollars, elapsed milliseconds, and one uncached prompt.
- * Anthropic's 1-hour write is input × 2; OpenAI has no write price, so its write uses the input price.
  * The interval and Break-even follow `idleEveryMs` and `breakEvenRefreshes`; the estimate also applies both caps.
  */
 export function estimate(hours, settings, example = EXAMPLES[0]) {
@@ -448,7 +452,7 @@ export function KeepWarmSheet() {
                                 example,
                             );
 
-                            return html`<tr key=${example.name}>
+                            return html`<tr key=${`${example.name} ${example.cacheMinutes}`}>
                                 <th scope="row">
                                     ${example.name}<span class="muted">${durationLabel(example.cacheMinutes * 60_000)} cache</span>
                                 </th>
