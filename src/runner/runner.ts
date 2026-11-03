@@ -15,6 +15,7 @@ import { localDaemon } from "@earendil-works/pi-env";
 import WebSocket from "ws";
 import { checkTransport, refusal, type Transport } from "./transport.ts";
 import { checkTools } from "./tools.ts";
+import { broadFolder, coveredFolder, realFolder } from "./folders.ts";
 import type { RunnerTools } from "./protocol.ts";
 import {
     CLOSE,
@@ -69,6 +70,8 @@ export type RunnerLinkFile = {
 export type RunnerSettings = {
     /** Ask before a new session starts on this computer. Default: true. */
     confirm?: boolean;
+    /** Real absolute folders allowed by the person here, including their descendants. */
+    folders?: string[];
     /** Use plain HTTP to this server even where it is not this computer or a tailnet device. Default: false. */
     allowHttp?: boolean;
     /** Open the network connections of sessions' browsers from this computer. Default: true. */
@@ -79,7 +82,9 @@ export type RunnerSettings = {
 
 /** A question the server asked this computer: a session would start here. */
 export type SessionQuestion = {
-    kind: "new" | "fork";
+    kind: "new" | "fork" | "move";
+    /** A root, home folder, or ancestor of home: allow this session only. */
+    broad: boolean;
     person: string;
     folder: string;
     server: string;
@@ -103,6 +108,8 @@ export type RunnerOptions = {
     retryMs?: readonly number[];
     /** The link's settings now: read again for each connect and each question, so changes need no restart. */
     settings?: () => RunnerSettings;
+    /** Save a local settings change, preserving other settings read from the file now. */
+    saveSettings?: (change: RunnerSettings) => void | Promise<void>;
     /**
      * Ask the person here whether a session may start. Absent: nobody can be asked, so every session is refused
      * while asking is on.
@@ -246,6 +253,7 @@ export class Runner {
     #stopping = false;
     /** Questions that the server can withdraw while the person answers. */
     readonly #questions = new Map<string, AbortController>();
+    #folderSaves = Promise.resolve();
     #attempt = 0;
     #graceMs = 2 * 60 * 1000;
     #graceTimer: NodeJS.Timeout | undefined;
@@ -742,75 +750,133 @@ export class Runner {
         return welcomed;
     }
 
-    /**
-     * The server wants to start a session here: allow it at once when asking is off, else ask the person (`ask`).
-     * Nobody to ask, no answer in `ASK_MS`, or the link dropping: the session does not start.
-     */
+    /** Ask locally unless asking is off or a saved folder covers this one. Nothing about the list leaves here. */
     async #answer(ws: WebSocket, question: Confirm): Promise<void> {
         const link = this.#options.link;
-        const what = question.kind === "fork" ? "a copy of a session" : "a session";
+        // Older runners reject an unknown kind. The server sends moves as new + move for those runners.
+        const kind = question.move === true ? "move" : question.kind;
+        const what =
+            kind === "move"
+                ? "a session move"
+                : kind === "fork"
+                  ? "a copy of a session"
+                  : "a session";
+        const stop = new AbortController();
+        const timer = setTimeout(() => stop.abort(), ASK_MS);
+        const dropped = () => stop.abort();
         let answer: SessionAnswer;
 
-        if (this.#settings().confirm === false) {
-            answer = { allow: true };
-            this.#log(`${question.person} started ${what} in ${question.folder} (asking is off).`);
-        } else if (this.#options.ask === undefined) {
+        this.#questions.set(question.id, stop);
+        ws.once("close", dropped);
+
+        try {
+            if (this.#settings().confirm === false) {
+                answer = { allow: true };
+                this.#log(
+                    `${question.person} started ${what} in ${question.folder} (asking is off).`,
+                );
+            } else {
+                const folder = await realFolder(question.folder);
+                const covered = await coveredFolder(folder, this.#settings().folders ?? []);
+
+                if (covered) {
+                    answer = { allow: true };
+                    this.#log(`Allowed: ${folder} is in the allowed folders`);
+                } else if (this.#options.ask === undefined) {
+                    answer = {
+                        allow: false,
+                        reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal. Run it in a terminal or the Pi Pocket desktop app.`,
+                    };
+                } else if (stop.signal.aborted) {
+                    answer = { allow: false, reason: `Nobody answered on ${link.name} in time.` };
+                } else {
+                    const broad = broadFolder(folder, await realFolder(homedir()));
+
+                    answer = await Promise.race([
+                        this.#options.ask({
+                            kind,
+                            broad,
+                            person: question.person,
+                            folder,
+                            server: link.server,
+                            computer: link.name,
+                            signal: stop.signal,
+                        }),
+                        new Promise<SessionAnswer>((resolve) => {
+                            const denied = () =>
+                                resolve({
+                                    allow: false,
+                                    reason: `Nobody answered on ${link.name} in time.`,
+                                });
+
+                            if (stop.signal.aborted) {
+                                denied();
+                            } else {
+                                stop.signal.addEventListener("abort", denied, { once: true });
+                            }
+                        }),
+                    ]);
+
+                    if (
+                        answer.allow &&
+                        !broad &&
+                        !stop.signal.aborted &&
+                        ws.readyState === WebSocket.OPEN
+                    ) {
+                        // Two Allow answers must not overwrite each other while realpath is pending.
+                        this.#folderSaves = this.#folderSaves
+                            .catch(() => {})
+                            .then(async () => {
+                                if (
+                                    !(await coveredFolder(
+                                        folder,
+                                        this.#settings().folders ?? [],
+                                    )) &&
+                                    !stop.signal.aborted
+                                ) {
+                                    const change = {
+                                        folders: [...(this.#settings().folders ?? []), folder],
+                                    };
+
+                                    if (this.#options.saveSettings !== undefined) {
+                                        await this.#options.saveSettings(change);
+                                    } else {
+                                        link.settings = { ...link.settings, ...change };
+                                    }
+                                }
+                            });
+                        await this.#folderSaves;
+                    }
+
+                    this.#log(
+                        `${answer.allow ? "Allowed" : "Denied"} ${what} for ${question.person} in ${folder}.`,
+                    );
+                }
+            }
+
+            if (stop.signal.aborted) {
+                answer = { allow: false, reason: `Nobody answered on ${link.name} in time.` };
+            }
+        } catch (error) {
             answer = {
                 allow: false,
-                reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal. Turn off "Ask before new sessions" in its runner settings, or run it in a terminal.`,
+                reason: `${link.name} could not ask or save its answer: ${String(error)}`,
             };
-        } else {
-            const stop = new AbortController();
-            const timer = setTimeout(() => stop.abort(), ASK_MS);
-            const dropped = () => stop.abort();
-
-            this.#questions.set(question.id, stop);
-            ws.once("close", dropped);
-
-            try {
-                answer = await Promise.race([
-                    this.#options.ask({
-                        kind: question.kind,
-                        person: question.person,
-                        folder: question.folder,
-                        server: link.server,
-                        computer: link.name,
-                        signal: stop.signal,
-                    }),
-                    new Promise<SessionAnswer>((resolve) =>
-                        stop.signal.addEventListener("abort", () =>
-                            resolve({
-                                allow: false,
-                                reason:
-                                    stop.signal.reason === "Withdrawn by the server."
-                                        ? "Withdrawn by the server."
-                                        : `Nobody answered on ${link.name} in time.`,
-                            }),
-                        ),
-                    ),
-                ]);
-            } catch (error) {
-                answer = { allow: false, reason: `${link.name} could not ask: ${String(error)}` };
-            } finally {
-                clearTimeout(timer);
-                ws.off("close", dropped);
-                this.#questions.delete(question.id);
-                stop.abort();
-            }
+        } finally {
+            clearTimeout(timer);
+            ws.off("close", dropped);
+            this.#questions.delete(question.id);
 
             if (stop.signal.reason === "Withdrawn by the server.") {
-                answer = { allow: false, reason: "Withdrawn by the server." };
                 this.#log(`${question.person} cancelled ${what} in ${question.folder}.`);
-
-                return;
             }
-
-            this.#log(
-                `${answer.allow ? "Allowed" : "Denied"} ${what} for ${question.person} in ${question.folder}.`,
-            );
         }
 
-        if (ws.readyState === WebSocket.OPEN) {
+        const withdrawn = stop.signal.reason === "Withdrawn by the server.";
+
+        stop.abort();
+
+        if (!withdrawn && ws.readyState === WebSocket.OPEN) {
             ws.send(
                 JSON.stringify({
                     type: "confirmed",

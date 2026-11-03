@@ -12,7 +12,7 @@ As the server owner, you link a computer with a one-time code:
         pi-pocket runner
         ```
 
-        `pi-pocket runner` opens a menu: use the arrow keys and Enter. Choose **Link this computer**, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. Then choose **Start**, and leave the terminal open. On Linux with systemd, **Run as a service** keeps it running after the terminal closes. Press Ctrl+C to stop the runner and its commands.
+        `pi-pocket runner` opens a menu: use the arrow keys and Enter. Choose **Link this computer**, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. Then choose **Start**, and leave the terminal open. Press Ctrl+C to stop the runner and its commands.
 
 Only the server owner can link computers. Only link a server you trust: its session commands run as your user account on the linked computer.
 
@@ -22,38 +22,39 @@ The computer connects out to the server over a WebSocket. It needs no open port,
 
 Run these commands on the linked computer:
 
-| Command                                 | What it does                                                                                                                                                             |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `pi-pocket runner`                      | In a terminal, opens a menu: link, start, settings, service, unlink, and help. Without a terminal, it starts.                                                            |
-| `pi-pocket runner start`                | Runs with the saved link, without questions. The service and the desktop app use this command.                                                                           |
-| `pi-pocket runner link <server> <code>` | Saves a link without questions. Use the server address and a one-time code from **Runners**.                                                                             |
-| `pi-pocket runner settings`             | Shows the settings. `settings confirm on\|off`, `settings http allow\|refuse`, `settings network allow\|refuse`, and `settings downloads <folder>\|default` change them. |
-| `pi-pocket runner status`               | Shows the saved link, service state, and whether git and GitHub are ready. It does not check the connection.                                                             |
-| `pi-pocket runner unlink`               | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                                                          |
-| `pi-pocket runner service`              | On Linux with systemd, starts a user service that keeps the runner running after you close the terminal.                                                                 |
-| `pi-pocket runner service remove`       | Stops and removes the service. Keeps the saved link.                                                                                                                     |
+| Command                                    | What it does                                                                                                                                                             |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pi-pocket runner`                         | In a terminal, opens a menu: link, start, settings, allowed folders, unlink, and help.                                                                                   |
+| `pi-pocket runner start`                   | Runs with the saved link in this terminal or the desktop app.                                                                                                            |
+| `pi-pocket runner link <server> <code>`    | Saves a link without questions. Use the server address and a one-time code from **Runners**.                                                                             |
+| `pi-pocket runner settings`                | Shows the settings. `settings confirm on\|off`, `settings http allow\|refuse`, `settings network allow\|refuse`, and `settings downloads <folder>\|default` change them. |
+| `pi-pocket runner folders`                 | Lists allowed folders, one per line, or "No allowed folders yet.". Add `--json` for a JSON array.                                                                        |
+| `pi-pocket runner folders remove <folder>` | Removes an allowed folder. Unknown folders are an error. Running sessions keep running.                                                                                  |
+| `pi-pocket runner status`                  | Shows the saved link, settings, and whether git and GitHub are ready. It does not check the connection.                                                                  |
+| `pi-pocket runner unlink`                  | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                                                          |
 
-For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner start` or `pi-pocket runner service`.
+The runner runs while its terminal or the desktop app is open, so that it can ask before a session starts.
+
+For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner start`.
 
 The link file is `~/.pi-pocket/runner.json`. It contains this computer's key, and only your user account can read it. Do not share it. Use `--config FILE` or `PI_POCKET_RUNNER_CONFIG` to choose another file; `--config` takes priority. `PI_POCKET_RUNNER_DAEMON` selects a pi-env daemon instead of the packaged one.
 
-The systemd user service starts with your user session. To keep it running while you are logged out, run:
-
-```sh
-loginctl enable-linger $USER
-```
-
-Run `pi-pocket runner` again to start, change, or replace a saved link. If the service is already running, the menu offers to stop it instead of starting a second runner. To delete the link as well as the service, run `pi-pocket runner service remove`, then `pi-pocket runner unlink`. Deleting the link file alone does not stop a runner that is already running.
+Run `pi-pocket runner` again to start, change, or replace a saved link. Deleting the link file alone does not stop a runner that is already running.
 
 If your server uses a build that is not on npm, set `PI_POCKET_RUNNER_PACKAGE` on the server. For example, use the URL of a fork's package tarball. This changes the install command shown in **Runners**.
 
 ## Asking before a session starts
 
-By default, the runner asks on the linked computer before a session starts there, including forks. It shows who asks, the server, and the folder. **Deny** is the default answer. If nobody answers within 2 minutes, the session does not start.
+By default, the runner asks on the linked computer before the first session in a folder, including forks and moving a session to another folder. It shows who asks, the server, and the folder. **Deny** is the default answer. If nobody answers within 2 minutes, the session does not start.
 
 - In a terminal, the runner asks with a menu and a bell.
 - In the desktop app, a dialog asks.
-- A systemd service cannot ask. With asking on, it refuses new sessions.
+
+**Allow** also saves that folder on this computer. Later sessions in it or a folder inside it start without a question. The list stays in the runner settings in its link file, not on the server, and the runner reads it again for each question. Existing folders are compared by their real paths (including symlinks); macOS and Windows comparisons ignore case. A deleted allowed folder grants nothing.
+
+For a file system root, a drive root, your home folder, or a folder that contains your home, the warning offers **Allow this session only**. It saves nothing. **Deny**, cancellation, and no answer save nothing. Sessions can still read and change files outside their starting folder: the list is permission to start, not a sandbox.
+
+Use **Allowed folders** in the terminal menu or desktop app to see the list and remove an entry. The commands `pi-pocket runner folders [--json]` and `pi-pocket runner folders remove <folder>` also take `--config FILE`. Removing an entry makes future sessions ask again unless another allowed parent covers them; sessions that already run keep running. There is no command to add a folder: answer a question on the computer.
 
 While the computer asks, the page shows a waiting dialog with the computer, folder, and time left. A quick answer skips the dialog. **Cancel** stops the request and withdraws the question on a runner that supports cancellation; no session starts. Older runners can keep their question open, but their late answer does not start the cancelled session.
 
@@ -72,7 +73,7 @@ To link a server on another plain HTTP address, choose **Allow plain HTTP** when
 
 In Menu → **Runners**, choose **New session** next to an online computer, then choose a folder on it. The session's title, top bar, and Pi's system prompt identify the computer. Forks keep the same computer, unless you choose another one in the fork sheet's **Computer** row. A copy can go from this server to a linked computer, back, or from one linked computer to another. A copy on a linked computer runs with that computer's list of extensions; a copy back on this server gets all extensions again. Pi gets a note with the new computer and folder, because paths earlier in the conversation were on the old ones.
 
-Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, schedules, codemode, memory, PR watches, and [the browser](#the-browser) also work. Subagents and linked sessions that a session on a computer starts run on the same computer, and the computer asks before a linked session starts there.
+Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, schedules, codemode, memory, PR watches, and [the browser](#the-browser) also work. Subagents and linked sessions that a session on a computer starts run on the same computer, and a linked session in the same folder starts without another question. A linked session in another folder follows the allowed-folders check. Subagents and reconnects do not ask.
 
 Lessons stay with each project on its own computer; worktrees of that project share them. In **Memory**, **From …** sections offer approved lessons from other copies of the same GitHub repository. Choose **Add** to save one in this project; they never apply here automatically. PR watches read the origin and current branch on the linked computer, but poll GitHub from the server with the server's `gh` sign-in, not the computer's.
 
@@ -124,4 +125,4 @@ This setting applies to the whole server. In the future, sharing could be chosen
 | A longer drop, such as sleep or app exit | Running commands stop, and Pi is told the computer "was disconnected too long". New tool calls fail at once with "is offline" until the runner reconnects. |
 | The server restarts                      | As with sessions on the server, running commands return as interrupted. The session continues.                                                             |
 
-Removing a computer in **Runners** stops its runner and cancels its key. A runner that the server removed exits with code 3. Its systemd service does not restart it.
+Removing a computer in **Runners** stops its runner and cancels its key. A runner that the server removed exits with code 3. The desktop app does not restart it.
