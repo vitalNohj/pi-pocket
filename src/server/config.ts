@@ -82,8 +82,11 @@ export interface StoredRunner {
     createdBy: string;
     /** When it last connected. */
     lastSeen?: number;
-    /** What it reported when it last connected: its OS, architecture, home folder, and runner version. */
-    platform?: { os: string; arch: string; home: string; version: string };
+    /**
+     * What it reported when it last connected: its OS, architecture, home folder, and runner version; and its temporary
+     * folder (absent before it was kept), where the files people attach go while it is offline (`remote-context.ts`).
+     */
+    platform?: { os: string; arch: string; home: string; version: string; tmpdir?: string };
     /** Programs ready on this computer, as its runner last reported. */
     tools?: { git: boolean; gh: boolean; github: boolean };
 }

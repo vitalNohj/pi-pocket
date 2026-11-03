@@ -65,7 +65,7 @@ import { homePath } from "./paths.ts";
 import { localRepo, remoteRepo } from "./repo.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage, modelImageOf } from "./model-images.ts";
 import { Unreachable } from "./folder-access.ts";
-import { clearUploads, copyUploads } from "./remote-context.ts";
+import { clearUploads, copyUploads, uploadedThere, uploadsFolder } from "./remote-context.ts";
 import { type FileView, mentionedPaths, viewFile } from "./files.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./models.ts";
 import { keepWarmLabel } from "./keep-warm.ts";
@@ -1028,9 +1028,21 @@ export class Commands {
         let expanded = typed;
 
         if (typed.startsWith("/skill:")) {
-            const { skills, read } = await app.skillsToRun(id);
+            const runner = app.runnerOf(id);
 
-            expanded = (await expandSkillCommand(typed, skills, read)) ?? typed;
+            // A skill on a computer that is offline cannot be read now: the message goes as typed, and Pi finds the skill
+            // there when it is back (its skills are in its prompt then).
+            if (runner !== undefined && !app.runners.link(runner).online) {
+                app.notice(
+                    "info",
+                    `${app.runners.name(runner)} is offline, so the skill goes as typed. Pi reads it there when the computer is back.`,
+                    id,
+                );
+            } else {
+                const { skills, read } = await app.skillsToRun(id);
+
+                expanded = (await expandSkillCommand(typed, skills, read)) ?? typed;
+            }
         } else if (typed.startsWith("/")) {
             expanded = expandPromptTemplate(typed, app.promptTemplates(id)) ?? typed;
         }
@@ -1063,7 +1075,7 @@ export class Commands {
         const made = await Promise.allSettled(
             images.map((file) => modelImage(file.path, file.mime)),
         );
-        const placed = await this.#placeAttachments(id, attachments);
+        const placed = this.#placeAttachments(id, attachments);
         // What differs between a file and the image the model gets goes on the file's line.
         const notes = new Map<Attachment, string>();
 
@@ -1393,9 +1405,14 @@ export class Commands {
         const parts: (TextContent | ImageContent)[] = [];
         let total = 0;
 
-        // Its folder is on another computer: the files are read there.
-        if (app.runnerOf(id) !== undefined) {
-            return this.#mentionedThere(id, user, text, images);
+        // Its folder is on another computer: the files are read there. While it is offline, the message goes without
+        // them, and Pi reads what it names there with its tools once it is back.
+        const runner = app.runnerOf(id);
+
+        if (runner !== undefined) {
+            return app.runners.link(runner).online
+                ? this.#mentionedThere(id, user, text, images)
+                : parts;
         }
 
         for (const mention of mentionedPaths(text).slice(0, MAX_MENTIONED)) {
@@ -1561,15 +1578,13 @@ export class Commands {
     }
 
     /**
-     * Where Pi finds the files a message brings: here, as uploaded. For a session on another computer, they are copied
-     * to its temporary folder (`<temp>/pi-pocket-uploads/<conversation>/`, with the same names, which
-     * `attachedFile` takes back to these), and archiving the session removes them. A file that cannot be copied (the
-     * computer offline) keeps its path here, with a warning; the message is sent.
+     * Where Pi finds the files a message brings: here, as uploaded. For a session on another computer, they go to its
+     * temporary folder (`<temp>/pi-pocket-uploads/<conversation>/`, with the same names, which `attachedFile` takes back
+     * to these), and archiving the session removes them. The message names those paths at once, also while the computer
+     * is offline: the copy runs when it is back, and the session's next turn waits for it (`app.uploadsCopied`). A file
+     * that could not be copied gets a warning.
      */
-    async #placeAttachments(
-        id: ConversationId,
-        attachments: readonly Attachment[],
-    ): Promise<string[]> {
+    #placeAttachments(id: ConversationId, attachments: readonly Attachment[]): string[] {
         const app = this.#app;
         const runner = app.runnerOf(id);
 
@@ -1577,22 +1592,37 @@ export class Commands {
             return attachments.map((file) => file.path);
         }
 
-        // Every file goes to the computer's temporary folder; images also go to the model in the message.
-        const { paths, failed } = await copyUploads(
-            app.runners.env(runner, app.cwdOf(id)),
-            id,
-            attachments,
-        );
+        const system = app.runners.system(runner);
 
-        if (failed.length > 0) {
+        // Not known before the computer first connected with a runner that tells its temporary folder: kept here.
+        if (system === undefined) {
             app.notice(
                 "warning",
-                `Could not copy ${failed.join(", ")} to ${app.runners.name(runner)}: Pi cannot open ${failed.length === 1 ? "it" : "them"} there.`,
+                `${app.runners.name(runner)} has not said where its temporary folder is yet, so Pi cannot open the attached files there. Send them again once it is online.`,
                 id,
             );
+
+            return attachments.map((file) => file.path);
         }
 
-        return paths;
+        const folder = uploadsFolder(system, id);
+
+        app.uploadsCopied(
+            id,
+            copyUploads(app.runners.env(runner, app.cwdOf(id)), folder, attachments).then(
+                (failed) => {
+                    if (failed.length > 0) {
+                        app.notice(
+                            "warning",
+                            `Could not copy ${failed.join(", ")} to ${app.runners.name(runner)}: Pi cannot open ${failed.length === 1 ? "it" : "them"} there.`,
+                            id,
+                        );
+                    }
+                },
+            ),
+        );
+
+        return attachments.map((file) => uploadedThere(folder, file.path));
     }
 
     /** A message to Pi as the model gets it: with more than one person on this server, it says who is talking. */

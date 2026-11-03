@@ -2,10 +2,10 @@
  * The runner's work: start the pi-env daemon here, keep a link to the server, and relay pi-env frames both ways.
  * `main.ts` runs it from the command line; tests run it in the same process.
  *
- * The link survives short drops (`protocol.ts`). While it is down, the daemon keeps running, the runner pings it itself,
- * and its output waits here (reading stops when too much waits, as a full pipe would). When the server answers again,
- * both sides send what the other missed. When the server does not know the session anymore (after its grace period or
- * a restart), the runner stops the daemon, which stops what it ran, and starts a new one.
+ * The link survives drops of any length (`protocol.ts`). While it is down, the daemon keeps running, the runner pings it
+ * itself, and its output waits here (reading stops when too much waits, as a full pipe would). When the server answers
+ * again, both sides send what the other missed. When the server does not know the session anymore (it restarted), the
+ * runner stops the daemon, which stops what it ran, and starts a new one.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -255,8 +255,6 @@ export class Runner {
     readonly #questions = new Map<string, AbortController>();
     #folderSaves = Promise.resolve();
     #attempt = 0;
-    #graceMs = 2 * 60 * 1000;
-    #graceTimer: NodeJS.Timeout | undefined;
     #ackTimer: NodeJS.Timeout | undefined;
     #retryTimer: NodeJS.Timeout | undefined;
     /** Why the last connect was refused before it began (`transport.ts`), so it is said once. */
@@ -307,7 +305,6 @@ export class Runner {
 
         this.#stopping = true;
         clearTimeout(this.#retryTimer);
-        clearTimeout(this.#graceTimer);
         clearTimeout(this.#ackTimer);
         this.#control({ type: "bye", reason: "The runner was stopped" });
         this.#socket?.close(1000, "Stopped");
@@ -388,7 +385,6 @@ export class Runner {
     #fail(message: string): void {
         this.#stopping = true;
         clearTimeout(this.#retryTimer);
-        clearTimeout(this.#graceTimer);
         this.#log(message);
         void this.#session.daemon.stop().then(() => this.#done(new RunnerStopped(message)));
     }
@@ -631,20 +627,8 @@ export class Runner {
 
             if (welcomed) {
                 this.#log(
-                    `Disconnected${why === "" ? "" : ` (${why})`}. Reconnecting automatically. Commands keep running during a short drop.`,
+                    `Disconnected${why === "" ? "" : ` (${why})`}. Reconnecting automatically. Commands keep running; their sessions continue when the link is back.`,
                 );
-
-                // After the grace period the server has ended this session: stop what still runs for it.
-                this.#graceTimer ??= setTimeout(() => {
-                    this.#graceTimer = undefined;
-
-                    if (this.#session.id !== null && !this.connected) {
-                        this.#restart(
-                            "The connection was down too long. Stopping the previous commands and restarting the tool process.",
-                        );
-                    }
-                }, this.#graceMs + 5000);
-                this.#graceTimer.unref();
             }
 
             const wait = this.#retry[Math.min(this.#attempt, this.#retry.length - 1)]!;
@@ -660,9 +644,6 @@ export class Runner {
 
         if (message?.type === "welcome" && !welcomed) {
             this.#attempt = 0;
-            this.#graceMs = message.graceMs;
-            clearTimeout(this.#graceTimer);
-            this.#graceTimer = undefined;
 
             if (message.resume) {
                 const resent =
@@ -848,9 +829,12 @@ export class Runner {
                         await this.#folderSaves;
                     }
 
-                    this.#log(
-                        `${answer.allow ? "Allowed" : "Denied"} ${what} for ${question.person} in ${folder}.`,
-                    );
+                    // A question the server withdrew is logged as cancelled (below), not as answered.
+                    if (stop.signal.reason !== "Withdrawn by the server.") {
+                        this.#log(
+                            `${answer.allow ? "Allowed" : "Denied"} ${what} for ${question.person} in ${folder}.`,
+                        );
+                    }
                 }
             }
 

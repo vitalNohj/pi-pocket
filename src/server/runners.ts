@@ -4,8 +4,10 @@
  * one `RunnerLink`, which talks to its daemon as pi-env's own `Connection` does to a daemon it started; a session that
  * runs there gets a `RemoteExecutionEnv` on that link (`RunnerEnv`). The agent, models, keys, and history stay here.
  *
- * The link survives short drops (`src/runner/protocol.ts`): while a runner is away, requests and their answers wait, up
- * to the grace period. After it, or when the runner had to start a new daemon, what was in flight fails as lost.
+ * Offline is offline (`docs/runners.md`): while a computer is away, its daemon session is kept for as long as this server
+ * runs, and requests and their answers wait for it, however long that is. Nothing fails because a computer is offline.
+ * Only when its runner had to start a new daemon (it quit, or this server restarted) does what was in flight fail as
+ * lost: those processes are gone.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -21,7 +23,7 @@ import {
 import { type RawData, type WebSocket, WebSocketServer } from "ws";
 import {
     type ControlMessage,
-    DEFAULT_GRACE_MS,
+    LEGACY_GRACE_MS,
     FRAME,
     FrameSplitter,
     Inbox,
@@ -109,7 +111,7 @@ export type RunnerView = {
     online: boolean;
     /** The runner asks before starting a session. */
     asks: boolean;
-    /** Away, with its work kept for the grace period. */
+    /** Offline, with its work waiting for it (its daemon session is kept until it is back). */
     away: boolean;
     lastSeen?: number;
     os?: string;
@@ -161,7 +163,8 @@ class LinkSession {
     readonly pending = new Map<number, Pending>();
     live = true;
     ready!: Promise<RemoteInfo>;
-    grace: NodeJS.Timeout | undefined;
+    /** Whether its daemon has said hello: `ready` is settled, so `info` answers without the computer. */
+    known = false;
     readonly number: number;
 
     constructor(number: number) {
@@ -192,6 +195,8 @@ export class RunnerLink {
     #network: LinkNetwork | undefined;
     /** The folder its runner keeps browser downloads in (`hello.downloads`); undefined: its temporary folder. */
     downloads: string | undefined;
+    /** Who waits for the computer to be online with a daemon that said hello (`whenOnline`). */
+    readonly #waiting = new Set<{ resolve: () => void; reject: (error: Error) => void }>();
 
     constructor(id: string, runners: Runners) {
         this.id = id;
@@ -217,21 +222,109 @@ export class RunnerLink {
         return this.#socket !== undefined;
     }
 
-    /** Away: dropped, but its daemon session is kept until the grace period ends. */
+    /** Offline with work waiting: its daemon session is kept until it is back. */
     get away(): boolean {
         return this.#socket === undefined && this.#session?.live === true;
     }
 
+    /**
+     * Wait until the computer is online and its daemon said hello. A session's turn and each of its tool calls wait here
+     * (`app.ts`), so Pi does not start on a message, or a tool, while its computer is offline. Ends when `signal` aborts,
+     * and fails only when the computer was removed.
+     */
+    async whenOnline(signal?: AbortSignal): Promise<void> {
+        for (;;) {
+            if (this.#closed || this.#runners.stored(this.id) === undefined) {
+                throw lost(`${this.name} was removed from this server`);
+            }
+
+            signal?.throwIfAborted();
+
+            const session = this.#session;
+
+            if (this.#socket !== undefined && session !== undefined && session.live) {
+                try {
+                    await session.ready;
+
+                    return;
+                } catch {
+                    // That daemon failed its hello: wait for the next connection.
+                }
+            }
+
+            await new Promise<void>((resolve, reject) => {
+                const waiter = {
+                    resolve: () => {
+                        signal?.removeEventListener("abort", aborted);
+                        resolve();
+                    },
+                    reject: (error: Error) => {
+                        signal?.removeEventListener("abort", aborted);
+                        reject(error);
+                    },
+                };
+
+                const aborted = () => {
+                    this.#waiting.delete(waiter);
+                    reject(signal!.reason);
+                };
+
+                this.#waiting.add(waiter);
+                signal?.addEventListener("abort", aborted, { once: true });
+            });
+        }
+    }
+
+    /** Tell whoever waits for the computer (`whenOnline`) to look again. */
+    #wake(error?: Error): void {
+        const waiting = [...this.#waiting];
+
+        this.#waiting.clear();
+
+        for (const waiter of waiting) {
+            if (error === undefined) {
+                waiter.resolve();
+            } else {
+                waiter.reject(error);
+            }
+        }
+    }
+
+    /**
+     * What its daemon said in `hello`. Known after it first connected (also while it is offline since): then at once;
+     * else when it is first online. pi-env asks for it before most operations.
+     */
     async info(): Promise<RemoteInfo> {
-        return (await this.#ready()).ready;
+        const session = this.#session;
+
+        if (session?.live === true && session.known) {
+            return session.ready;
+        }
+
+        await this.whenOnline();
+
+        return this.#session!.ready;
+    }
+
+    /**
+     * `info`, for what a person waits on (a panel, the folder picker): a 409 that says the computer is offline, at once,
+     * rather than waiting for it.
+     */
+    async infoNow(): Promise<RemoteInfo> {
+        if (!this.online) {
+            throw new HttpError(
+                409,
+                `${this.name} is offline. It continues when its runner is back.`,
+            );
+        }
+
+        return this.info();
     }
 
     async session(): Promise<number> {
-        const session = await this.#ready();
+        await this.info();
 
-        await session.ready;
-
-        return session.number;
+        return this.#ready().number;
     }
 
     async request(
@@ -249,11 +342,9 @@ export class RunnerLink {
             return this.#answer(op, this.#send(current, op, json, options));
         }
 
-        const session = await this.#ready();
+        await this.info();
 
-        await session.ready;
-
-        return this.#answer(op, this.#send(session, op, json, options));
+        return this.#answer(op, this.#send(this.#ready(), op, json, options));
     }
 
     /** The daemon's answer as the env gets it: a folder's page without entries it could not read. */
@@ -278,6 +369,7 @@ export class RunnerLink {
             this.#end(this.#session, lost(`${this.name} was removed from this server`));
         }
 
+        this.#wake(lost(`${this.name} was removed from this server`));
         this.#drop(CLOSE.removed, "This computer was removed from the server");
     }
 
@@ -287,20 +379,15 @@ export class RunnerLink {
      */
     shutdown(): void {
         this.#closed = true;
-        clearTimeout(this.#session?.grace);
         this.#drop(1001, "The server is restarting");
     }
 
-    /** The live session, or an error saying why there is none. */
-    async #ready(): Promise<LinkSession> {
-        if (this.#closed || this.#runners.stored(this.id) === undefined) {
-            throw lost(`${this.name} was removed from this server`);
-        }
-
+    /** The live session, after `info` waited for one; lost when its runner started over meanwhile. */
+    #ready(): LinkSession {
         const session = this.#session;
 
         if (session === undefined || !session.live) {
-            throw lost(`${this.name} is offline. Start Pi Pocket's runner there, then try again.`);
+            throw lost(`${this.name} restarted, so the command it was running stopped`);
         }
 
         return session;
@@ -397,14 +484,12 @@ export class RunnerLink {
 
         if (current !== undefined && resent !== undefined) {
             session = current;
-            clearTimeout(session.grace);
-            session.grace = undefined;
             this.#control({
                 type: "welcome",
                 session: session.id,
                 resume: true,
                 received: session.inbox.received,
-                graceMs: this.#runners.graceMs,
+                graceMs: LEGACY_GRACE_MS,
             });
 
             for (const message of resent) {
@@ -427,7 +512,7 @@ export class RunnerLink {
                 session: session.id,
                 resume: false,
                 received: 0,
-                graceMs: this.#runners.graceMs,
+                graceMs: LEGACY_GRACE_MS,
             });
             session.ready = this.#send(session, "hello", { protocol: 1 }, {}).then((reply) => {
                 if (reply.json.protocol !== 1) {
@@ -438,15 +523,23 @@ export class RunnerLink {
 
                 const info = reply.json as unknown as RemoteInfo;
 
+                session.known = true;
                 this.#runners.seen(this.id, info, hello.version);
 
                 return info;
             });
-            session.ready.catch(() => {});
+            session.ready.then(
+                () => this.#wake(),
+                () => this.#wake(),
+            );
             this.#runners.log(`${this.name} connected (pi-env session ${session.number}).`);
         }
 
         this.#runners.changed();
+
+        if (session.known) {
+            this.#wake();
+        }
 
         let silent = Date.now();
         const pinger = setInterval(() => {
@@ -505,19 +598,7 @@ export class RunnerLink {
                 return;
             }
 
-            this.#runners.log(
-                `${this.name} dropped; its work is kept for ${Math.round(this.#runners.graceMs / 1000)} s.`,
-            );
-            session.grace = setTimeout(() => {
-                this.#end(
-                    session,
-                    lost(
-                        `${this.name} was disconnected too long, so the command it was running stopped`,
-                    ),
-                );
-                this.#runners.changed();
-            }, this.#runners.graceMs);
-            session.grace.unref();
+            this.#runners.log(`${this.name} went offline; its work waits until it is back.`);
         });
     }
 
@@ -753,7 +834,6 @@ export class RunnerLink {
         }
 
         session.live = false;
-        clearTimeout(session.grace);
 
         if (this.#session === session) {
             this.#session = undefined;
@@ -804,7 +884,6 @@ export class RunnerEnv extends RemoteExecutionEnv {
 
 /** The computers whose runners may connect, and their links. */
 export class Runners {
-    readonly graceMs: number;
     readonly #config: ConfigStore;
     readonly #log: (line: string) => void;
     readonly #onChange: () => void;
@@ -821,12 +900,10 @@ export class Runners {
         config: ConfigStore;
         log: (line: string) => void;
         onChange?: () => void;
-        graceMs?: number;
     }) {
         this.#config = options.config;
         this.#log = options.log;
         this.#onChange = options.onChange ?? (() => {});
-        this.graceMs = options.graceMs ?? DEFAULT_GRACE_MS;
     }
 
     log(line: string): void {
@@ -845,10 +922,28 @@ export class Runners {
     seen(id: string, info: RemoteInfo, version: string): void {
         this.#config.updateRunner(id, {
             lastSeen: Date.now(),
-            platform: { os: info.os, arch: info.arch, home: info.home, version },
+            platform: {
+                os: info.os,
+                arch: info.arch,
+                home: info.home,
+                version,
+                tmpdir: info.tmpdir,
+            },
         });
         // Its system shows in Runners from now: the list went out when it connected, before this was known.
         this.#onChange();
+    }
+
+    /**
+     * The system of computer `id` as it last said (`hello`), also while it is offline: its OS and temporary folder.
+     * Undefined before a runner that tells its temporary folder first connected.
+     */
+    system(id: string): { os: string; tmpdir: string } | undefined {
+        const platform = this.stored(id)?.platform;
+
+        return platform?.tmpdir === undefined
+            ? undefined
+            : { os: platform.os, tmpdir: platform.tmpdir };
     }
 
     /** Each hello refreshes readiness, including a resumed daemon session. */
@@ -905,9 +1000,11 @@ export class Runners {
         this.require(id);
 
         const info = await this.link(id)
-            .info()
+            .infoNow()
             .catch((error: unknown) => {
-                throw new HttpError(409, error instanceof Error ? error.message : String(error));
+                throw error instanceof HttpError
+                    ? error
+                    : new HttpError(409, error instanceof Error ? error.message : String(error));
             });
         const env = this.env(id, info.home);
         const trimmed = path.trim() === "" ? "~" : path.trim();

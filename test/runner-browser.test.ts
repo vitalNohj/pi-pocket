@@ -12,7 +12,7 @@ import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { WebSocketServer } from "ws";
 import { Runner } from "../src/runner/runner.ts";
-import type { RunnerSettings } from "../src/runner/runner.ts";
+import type { RunnerOptions, RunnerSettings } from "../src/runner/runner.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
 import {
     type App,
@@ -49,6 +49,7 @@ let sitePort = 0;
 /** Requests that reached the test site, by path. */
 const reached: string[] = [];
 let runner: Runner;
+let runnerOptions: RunnerOptions;
 let runnerId: string;
 const settings: RunnerSettings = {};
 /** Each browser tool result, in order. */
@@ -197,7 +198,7 @@ before(async () => {
     const tmp = process.env.TMPDIR;
 
     process.env.TMPDIR = computerTmp;
-    runner = new Runner({
+    runnerOptions = {
         link: { server: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, ...linked },
         version: "test",
         cwd: there,
@@ -205,7 +206,8 @@ before(async () => {
         retryMs: [50, 100, 200],
         settings: () => settings,
         ask: () => Promise.resolve({ allow: true }),
-    });
+    };
+    runner = new Runner(runnerOptions);
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
     await app.runners.link(runnerId).info();
@@ -410,16 +412,27 @@ describe("the browser of a session on another computer", () => {
     });
 
     it(
-        "fails a download clearly when the computer goes offline before the copy",
+        "a download whose computer goes offline before the copy waits, and is copied there when it is back",
         real,
         async () => {
             const downloads = app.browsers.downloads;
             const progress = downloads.progress.bind(downloads);
+            const folder = join(computerTmp, "pi-pocket-downloads", String(id));
 
-            // The moment Chromium finishes the file, the computer goes away.
+            // The moment Chromium finishes the file, the computer goes away, and comes back a little later.
             downloads.progress = (params) => {
                 if (params.state === "completed") {
-                    void runner.stop().then(() => progress(params));
+                    void runner.stop().then(() => {
+                        progress(params);
+                        setTimeout(() => {
+                            const tmp = process.env.TMPDIR;
+
+                            process.env.TMPDIR = computerTmp;
+                            runner = new Runner(runnerOptions);
+                            runner.start();
+                            process.env.TMPDIR = tmp;
+                        }, 1_000);
+                    });
 
                     return;
                 }
@@ -433,7 +446,8 @@ describe("the browser of a session on another computer", () => {
                     url: `${page()}/report.bin`,
                 });
 
-                assert.match(result, /The download of report\.bin failed: .*Laptop/);
+                assert.match(result, /Downloaded .*report.*\.bin/);
+                assert.ok(files(folder).some((file) => file.includes("report")));
                 assert.deepEqual(incoming(), [], "no server copy stays");
             } finally {
                 downloads.progress = progress;
@@ -442,15 +456,28 @@ describe("the browser of a session on another computer", () => {
     );
 
     it(
-        "fails pages when the computer is offline, and nothing goes out from here",
+        "a page asked for while the computer is offline waits for it, and nothing goes out from here meanwhile",
         real,
         async () => {
+            await runner.stop();
             await until(() => app.runners.list()[0]?.online === false, "the runner to go offline");
             const count = reached.length;
-            const result = await browse(id, { action: "navigate", url: `${page()}/offline` });
+            const pending = browse(id, { action: "navigate", url: `${page()}/offline` });
 
-            assert.match(result, /Laptop is offline/);
-            assert.equal(reached.length, count, "nothing reached the site");
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            assert.equal(reached.length, count, "nothing reached the site while it was offline");
+
+            const tmp = process.env.TMPDIR;
+
+            process.env.TMPDIR = computerTmp;
+            runner = new Runner(runnerOptions);
+            runner.start();
+            process.env.TMPDIR = tmp;
+            await pending;
+            assert.ok(
+                reached.length > count,
+                "the page loaded through the computer once it was back",
+            );
         },
     );
 });
