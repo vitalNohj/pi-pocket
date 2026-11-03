@@ -532,14 +532,9 @@ export class CacheKeeper {
         // A tool wait is warmed when its first refresh falls inside the cap: a longer cache outlives any wait it allows.
         const tool = message.stopReason === "toolUse" && delay !== undefined && delay < MAX_AGE_MS;
 
-        // The run's last request is parked for keep warm only when its conversation has a policy now, or is not known
-        // yet; `#toIdle` asks again when the run ends.
-        if (
-            !tool &&
-            (this.#deps.idlePolicy === undefined ||
-                (request.conversationId !== undefined &&
-                    this.#deps.idlePolicy(request.conversationId) === undefined))
-        ) {
+        // The run's last request is parked for keep warm when the app has it, even for a session that is Off now: the
+        // session can be turned on after its run ended, while the cache lives. `#toIdle` asks for the policy then.
+        if (!tool && this.#deps.idlePolicy === undefined) {
             return;
         }
 
@@ -619,12 +614,19 @@ export class CacheKeeper {
         }
     }
 
-    /** A run started: its own requests take over the cache, so the idle warming stops, with nothing to report. */
+    /**
+     * A run started: its own requests take over the cache, so the idle warming stops, with nothing to report. A request
+     * of this run is parked with no timer until the run ends; one parked with a timer is the run before's, kept while Off.
+     */
     runStarted(conversationId: number): void {
         this.#stopped.delete(conversationId);
 
+        // A request kept from the run before (warm, or parked while Off) is not the one the new run continues from.
         for (const [key, entry] of [...this.#entries]) {
-            if (entry.kind === "idle" && entry.conversationId === conversationId) {
+            if (
+                (entry.kind === "idle" || (entry.kind === "parked" && entry.timer !== undefined)) &&
+                entry.conversationId === conversationId
+            ) {
                 this.#drop(key);
             }
         }
@@ -647,9 +649,24 @@ export class CacheKeeper {
         }
     }
 
-    /** The owner's settings or a session's choice changed: each idle entry follows them now. */
+    /**
+     * The owner's settings or a session's choice changed: each idle entry follows them now. One turned off is parked,
+     * not dropped, while its cache lives, so turning it on again picks it up; a parked one the change allows again is
+     * kept warm from now. Off is then the choice, so no stop is reported for it.
+     */
     reconsider(): void {
         for (const [key, entry] of [...this.#entries]) {
+            if (entry.kind === "parked") {
+                if (
+                    entry.conversationId !== undefined &&
+                    this.#deps.isRunning?.(entry.conversationId) !== true
+                ) {
+                    this.#toIdle(key, entry);
+                }
+
+                continue;
+            }
+
             if (entry.kind !== "idle" || entry.idle === undefined) {
                 continue;
             }
@@ -657,7 +674,7 @@ export class CacheKeeper {
             const plan = this.#plan(entry, entry.idle.since);
 
             if (plan === undefined) {
-                this.#drop(key, "turned off");
+                this.#park(key, entry);
                 continue;
             }
 
@@ -749,6 +766,65 @@ export class CacheKeeper {
               );
     }
 
+    /**
+     * Keep warm was turned off for an idle entry: its timers stop and its saved copy goes, but the request stays in
+     * memory as `parked` until its cache expires, so the session can be turned on again without a new message.
+     */
+    #park(key: string, entry: Entry): void {
+        const idle = entry.idle!;
+
+        for (const timer of [entry.timer, entry.deadline]) {
+            if (timer !== undefined) {
+                this.#deps.clearTimer(timer);
+            }
+        }
+
+        entry.timer = undefined;
+        entry.deadline = undefined;
+        entry.abort?.abort();
+        entry.abort = undefined;
+
+        // What it spent still counts against its session's cost cap for the rest of the stretch.
+        if (entry.spent > 0) {
+            this.#sessionStopped.set(
+                idle.session,
+                (this.#sessionStopped.get(idle.session) ?? 0) + entry.spent,
+            );
+        }
+
+        entry.kind = "parked";
+        entry.idle = undefined;
+        this.#deps.store?.delete(key);
+        this.#stopped.delete(entry.conversationId!);
+        this.#parkUntilExpiry(key, entry, idle.lifeMs);
+        this.#deps.changed?.(entry.conversationId!);
+    }
+
+    /**
+     * A run's last request with keep warm off: kept until its cache expires (its lifetime, else Pi's tool-wait cap), so
+     * turning keep warm on picks it up. Nothing is sent meanwhile.
+     */
+    #parkUntilExpiry(key: string, entry: Entry, lifeMs?: number): void {
+        const life =
+            lifeMs ??
+            this.#deps.modelFacts?.(specOf(entry.model)).lifetimeMs ??
+            entry.ttlMs ??
+            MAX_AGE_MS;
+
+        if (entry.timer !== undefined) {
+            this.#deps.clearTimer(entry.timer);
+        }
+
+        entry.timer = this.#deps.setTimer(
+            () => {
+                if (this.#entries.get(key) === entry && entry.kind === "parked") {
+                    this.#drop(key);
+                }
+            },
+            Math.max(1, entry.lastTouch + life - this.#deps.now()),
+        );
+    }
+
     /** Plan the next idle refresh, `everyMs` after a request last touched the cache. */
     #scheduleIdle(key: string, entry: Entry): void {
         this.#schedule(
@@ -773,13 +849,23 @@ export class CacheKeeper {
             }
         };
 
-        if (plan === undefined || conversationId === undefined) {
+        if (conversationId === undefined) {
             return stop();
+        }
+
+        // Off for this session now: kept as it is while its cache lives, in case it is turned on.
+        if (plan === undefined) {
+            return saved === undefined &&
+                this.#deps.idlePolicy !== undefined &&
+                !this.#closed &&
+                !this.#deps.disabled()
+                ? this.#parkUntilExpiry(key, entry)
+                : stop();
         }
 
         const idle: IdleState = { ...plan, failures: saved?.failures ?? 0 };
 
-        // The cache is gone already (a long restart): a refresh would only write it again.
+        // The cache is gone already (a long restart, or turned on again too late): a refresh would only write it again.
         if (now >= entry.lastTouch + idle.lifeMs - 10_000) {
             return stop(saved === undefined ? undefined : "the cache expired during a restart");
         }

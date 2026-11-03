@@ -572,7 +572,7 @@ test("keep warm: a refresh that errs is tried again soon; two in a row stop it",
     assert.equal(r.keeper.idleStatus(3).warm, false);
 });
 
-test("keep warm: forget (a model change, New context) and turning it off stop it", async () => {
+test("keep warm: forget (a model change, New context) stops it, and turning it off stops the refreshes", async () => {
     let policy: IdlePolicy | undefined = POLICY;
     const r = rig(false, { policy: () => policy });
 
@@ -588,9 +588,65 @@ test("keep warm: forget (a model change, New context) and turning it off stop it
     assert.equal(r.keeper.idleStatus(3).warm, true);
     policy = undefined;
     r.keeper.reconsider();
-    const two = r.keeper.idleStatus(3);
+    assert.equal(r.keeper.idleStatus(3).warm, false, "turned off: no more refreshes");
+    assert.equal(
+        r.timers.filter((t) => t.at - r.now() < 3_000_000).length,
+        1,
+        "only the expiry of the kept request",
+    );
+});
 
-    assert.equal(!two.warm && two.stopped, "turned off");
+test("keep warm: turned off and on again while idle, it picks up the same request; no stale stop is shown", async () => {
+    let policy: IdlePolicy | undefined = POLICY;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    assert.equal(r.keeper.idleStatus(3).warm, true);
+
+    policy = undefined;
+    r.keeper.reconsider();
+    const off = r.keeper.idleStatus(3);
+
+    assert.equal(off.warm, false);
+    assert.equal(!off.warm && off.stopped, undefined, "Off is a choice, not a stop");
+
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true, "turned on again without a new message");
+    await r.advance();
+    assert.equal(r.calls.length, 2, "the refresh went out");
+});
+
+test("keep warm: a session that was Off when its run ended can be turned on while its cache lives", async () => {
+    let policy: IdlePolicy | undefined;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    assert.equal(r.keeper.idleStatus(3).warm, false);
+    assert.equal(r.keeper.status().warming, 0, "nothing is warmed while Off");
+
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
+});
+
+test("keep warm: a request kept while Off goes when its cache expires, or a new run starts", async () => {
+    let policy: IdlePolicy | undefined;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    await r.advance();
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, false, "expired: nothing to pick up");
+    assert.equal(r.calls.length, 1, "nothing was sent while Off");
+
+    policy = undefined;
+    await idleRun(r);
+    r.keeper.runStarted(3);
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, false, "a new run replaced it");
 });
 
 test("keep warm: a 1 hour cache is kept warm when idle, though a tool wait never warms it", async () => {
