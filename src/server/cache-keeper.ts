@@ -827,14 +827,17 @@ export class CacheKeeper {
     #park(key: string, entry: Entry, reason?: string): void {
         const lifeMs = entry.idle?.lifeMs;
 
-        for (const timer of [entry.timer, entry.deadline]) {
-            if (timer !== undefined) {
-                this.#deps.clearTimer(timer);
-            }
+        if (entry.timer !== undefined) {
+            this.#deps.clearTimer(entry.timer);
+            entry.timer = undefined;
         }
 
-        entry.timer = undefined;
-        entry.deadline = undefined;
+        // A refresh on its way keeps its deadline: one that never settles still ends the entry, as it would unparked.
+        if (entry.abort === undefined && entry.deadline !== undefined) {
+            this.#deps.clearTimer(entry.deadline);
+            entry.deadline = undefined;
+        }
+
         entry.abort?.abort();
 
         if (entry.idle !== undefined) {
@@ -1331,6 +1334,7 @@ export class CacheKeeper {
         if (entry.kind === "idle") {
             this.#scheduleIdle(key, entry);
             this.#save(key, entry, false);
+            this.#deps.changed?.(entry.conversationId!);
         } else if (touched && entry.kind === "parked") {
             this.#park(key, entry, this.#stopped.get(entry.conversationId!));
         }

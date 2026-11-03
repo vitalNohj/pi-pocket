@@ -751,7 +751,12 @@ test("keep warm: off and on while a refresh is on its way sends no second one be
     policy = { ...POLICY, hours: 1000, maxRefreshes: 2 };
     r.keeper.reconsider();
     assert.equal(r.keeper.idleStatus(3).warm, true, "turned on again");
-    await r.drain(3);
+    assert.equal(r.timers.length, 1, "no refresh planned, only the deadline of the one on its way");
+    assert.ok(
+        (r.timers[0]?.at ?? 0) - r.now() >= 60_000,
+        "the timer left is the refresh's deadline, not a refresh beside it",
+    );
+    await new Promise((x) => setTimeout(x, 5));
     assert.equal(r.calls.length, 3, "nothing beside the refresh on its way");
 
     release();
@@ -761,6 +766,25 @@ test("keep warm: off and on while a refresh is on its way sends no second one be
     const capped = r.keeper.idleStatus(3);
 
     assert.equal(!capped.warm && capped.stopped, "the refresh cap was reached");
+});
+
+test("keep warm: a refresh that never settles still ends the entry after off and on", async () => {
+    let policy: IdlePolicy | undefined = POLICY;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    r.holdNext(true);
+    r.fireNext();
+    await new Promise((x) => setImmediate(x));
+    policy = undefined;
+    r.keeper.reconsider();
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.timers.length, 1, "only the deadline of the refresh on its way");
+    await r.advance();
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(!status.warm && status.stopped, "a refresh did not finish");
 });
 
 test("keep warm: a parked request stays through more reconsiders while Off; Off clears a limit's stop", async () => {
