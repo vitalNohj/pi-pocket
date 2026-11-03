@@ -491,8 +491,15 @@ export function CwdSheet({
         }
     };
 
-    /** Start the new session on another computer, or this server (`null`): its folders show instead. */
+    /**
+     * Start the new session on another computer, or this server (`null`): its folders show instead. The one already
+     * chosen changes nothing: its listing stays, since no new read would come to replace it.
+     */
     const pick = (id) => {
+        if (id === runner) {
+            return;
+        }
+
         setSelected(null);
         setListing(null);
         setPicked(id);
