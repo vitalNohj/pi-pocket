@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { cachePrices } from "../src/server/keep-warm.ts";
+import type { ConversationId } from "@earendil-works/pi-durable";
+import { keepWarmFrom } from "../src/server/config.ts";
+import type { SessionMeta } from "../src/server/docs.ts";
+import { KeepWarm, type KeepWarmDeps } from "../src/server/keep-warm.ts";
+import { cachePrices } from "../src/server/model-cache-facts.ts";
 import { cleanUp, newSession, openApp, owner, scriptedModel } from "./helpers.ts";
 
 const model = (api: string, cost: Partial<Model<Api>["cost"]>) =>
@@ -31,6 +35,79 @@ test("cache prices: the owner's read for a model with none published, with the w
         read: 0.5,
         write: 2,
     });
+});
+
+const fakeDeps = (overrides: Partial<KeepWarmDeps> = {}): KeepWarmDeps => ({
+    settings: () => keepWarmFrom({}),
+    saveSettings: () => {},
+    sessionMeta: () => undefined,
+    rootOf: (id) => id,
+    commitSession: async () => {},
+    model: () => undefined,
+    models: () => [],
+    availableModels: () => [],
+    keeper: {
+        idleSummary: () => ({ warm: 0, refreshes: 0, spent: 0 }),
+        idleStatus: () => ({ warm: false }),
+        reconsider: () => {},
+    },
+    settingsChanged: async () => {},
+    ...overrides,
+});
+
+test("keep warm: policy uses the owner's hours and excludes PiP, archived sessions, and disallowed subagents", () => {
+    const settings = keepWarmFrom({ hours: 4 });
+    const meta: SessionMeta = { cwd: "/tmp", createdAt: 0, updatedAt: 0 };
+    const pip = 1 as ConversationId;
+    const archived = 2 as ConversationId;
+    const session = 3 as ConversationId;
+    const subagent = 4 as ConversationId;
+    const sessions = new Map<ConversationId, SessionMeta>([
+        [pip, { ...meta, pip: "owner" }],
+        [archived, { ...meta, archived: true }],
+        [session, { ...meta }],
+    ]);
+    const keepWarm = new KeepWarm(
+        fakeDeps({
+            settings: () => settings,
+            sessionMeta: (id) => sessions.get(id),
+            rootOf: (id) => (id === subagent ? session : id),
+        }),
+    );
+
+    assert.equal(keepWarm.policy(pip), undefined);
+    assert.equal(keepWarm.policy(archived), undefined);
+    assert.equal(keepWarm.policy(subagent), undefined);
+    assert.equal(keepWarm.policy(session)?.hours, settings.hours);
+});
+
+test("keep warm: overview gives each model's refresh interval and Auto cap", () => {
+    const cached: Model<Api> = {
+        ...model("anthropic-messages", { input: 4, cacheRead: 0.2, cacheWrite: 5 }),
+        provider: "anthropic",
+        id: "cached-model",
+        name: "Cached model",
+        promptCache: { short: 3600 },
+    };
+    const keepWarm = new KeepWarm(
+        fakeDeps({
+            model: (provider, id) =>
+                provider === cached.provider && id === cached.id ? cached : undefined,
+            models: () => [cached],
+            availableModels: () => [cached],
+        }),
+    );
+    const overview = keepWarm.overview({
+        id: "owner",
+        name: "Owner",
+        role: "owner",
+        tokenHash: "",
+        createdAt: 0,
+    });
+
+    assert.equal(overview.models.length, 1);
+    assert.equal(overview.models[0]!.plan.everyMinutes, 45);
+    assert.equal(overview.models[0]!.plan.refreshes, 30);
 });
 
 test("keep warm: a guest may turn a session's keep warm off, and only the owner turns it on", async () => {

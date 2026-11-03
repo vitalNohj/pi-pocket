@@ -61,25 +61,6 @@ export function keepWarmAvailable() {
     return store.state.server?.keepWarm !== undefined;
 }
 
-/**
- * One model as keep warm sees it: how long its cache lasts (the owner's, else what is known), how often it is
- * refreshed (undefined: not kept warm), and where Auto stops (Pi's published prices, else the owner's refresh cap).
- * Mirrors `#plan` in `src/server/cache-keeper.ts`.
- */
-function modelPlan(model, settings) {
-    const own = settings.models[model.spec]?.lifetime;
-    const lifetime = own ?? model.known.lifetime;
-    const every =
-        lifetime === undefined
-            ? undefined
-            : Math.floor(
-                  Math.min(lifetime * settings.share * 600, lifetime * 60_000 - 10_000) / 60_000,
-              ) || undefined;
-    const refreshes = Math.min(model.known.breakEven ?? Infinity, settings.maxRefreshes);
-
-    return { own, lifetime, every, refreshes, autoStop: every && refreshes * every };
-}
-
 /** A number field that saves when it loses focus or Enter is pressed, and shows what the server kept. */
 function NumberField({
     value,
@@ -145,8 +126,9 @@ const AUTO_TABLE = [
 ];
 
 /** One model in the settings window: its cache cost, when its cache expires, and what keep warm does with it. */
-function ModelCard({ model, plan, settings, onSet }) {
-    const { own, every, refreshes, autoStop } = plan;
+function ModelCard({ model, settings, onSet }) {
+    const { everyMinutes, refreshes, autoStopMinutes } = model.plan;
+    const own = settings.models[model.spec]?.lifetime;
     const read = model.known.read;
 
     return html`<div class="keep-warm-model">
@@ -190,11 +172,11 @@ function ModelCard({ model, plan, settings, onSet }) {
                 <span class="muted small">min idle</span>
             </span>
         </label>
-        <div class="small ${every === undefined ? "warn" : "muted"}">
+        <div class="small ${everyMinutes === undefined ? "warn" : "muted"}">
             ${
-                every === undefined
+                everyMinutes === undefined
                     ? "Not kept warm: its maker publishes no cache time. Type it to turn it on."
-                    : `Refreshed every ${durationLabel(every * 60_000)} · Auto stops after ${durationLabel(autoStop * 60_000)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
+                    : `Refreshed every ${durationLabel(everyMinutes * 60_000)} · Auto stops after ${durationLabel(autoStopMinutes * 60_000)} (${refreshes} ${refreshes === 1 ? "refresh" : "refreshes"})`
             }
         </div>
     </div>`;
@@ -247,16 +229,15 @@ export function KeepWarmSheet() {
             </button>`,
         )}
     </div>`;
-    const plans = new Map(models.map((model) => [model.spec, modelPlan(model, settings)]));
-    const warmable = models.filter((model) => plans.get(model.spec).every !== undefined);
+    const warmable = models.filter((model) => model.plan.everyMinutes !== undefined);
     const setModel = (spec, field, value) => save({ models: { [spec]: { [field]: value } } });
 
     return html`<${Sheet} title="Keep warm" onClose=${closeSheet} className="keep-warm-sheet">
         <div class="keep-warm-layout">
             <div class="keep-warm-settings">
                 <p class="muted small">
-                    After Pi finishes, Pocket resends the last request just before its cache expires, so your next
-                    message reads the cache instead of writing it again.
+                    Pocket sends the smallest possible request to keep the cache alive. This is cheaper than no
+                    cache, until you have paid what you would have paid anyway (Auto).
                 </p>
                 ${
                     now.warm > 0 &&
@@ -389,7 +370,6 @@ export function KeepWarmSheet() {
                                     (model) => html`<${ModelCard}
                                         key=${model.spec}
                                         model=${model}
-                                        plan=${plans.get(model.spec)}
                                         settings=${settings}
                                         onSet=${(field, value) => setModel(model.spec, field, value)}
                                     />`,

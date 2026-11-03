@@ -2,9 +2,7 @@
  * Keep warm: the owner's settings for keeping a session's prompt cache warm once its run ends, each session's own choice,
  * and what browsers see of both. The refreshes themselves are `cache-keeper.ts`'s.
  */
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import type { PocketApp } from "./app.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
     breakEvenRefreshes,
@@ -22,8 +20,28 @@ import {
     keepWarmModelFrom,
     type User,
 } from "./config.ts";
-import { SessionsDoc } from "./docs.ts";
+import type { SessionMeta } from "./docs.ts";
 import { HttpError } from "./errors.ts";
+import { idleEveryMs } from "./idle-plan.ts";
+import { cachePrices, publishedLifetime, PublishedPrices, tier } from "./model-cache-facts.ts";
+
+/** The settings, sessions, models, and keeper calls that keep warm uses. */
+export type KeepWarmDeps = {
+    settings: () => KeepWarmSettings;
+    saveSettings: (next: KeepWarmSettings) => void;
+    sessionMeta: (id: ConversationId) => SessionMeta | undefined;
+    rootOf: (id: ConversationId) => ConversationId;
+    commitSession: (id: ConversationId, change: (meta: SessionMeta) => void) => Promise<void>;
+    model: (provider: string, id: string) => Model<Api> | undefined;
+    models: () => Model<Api>[];
+    availableModels: () => Model<Api>[];
+    keeper: {
+        idleSummary(): { warm: number; refreshes: number; spent: number };
+        idleStatus(id: number): IdleStatus;
+        reconsider(): void;
+    };
+    settingsChanged: () => Promise<void>;
+};
 
 /** A session's choice: the owner's default, or a time of its own (0: off, "auto", or hours). */
 export type KeepWarmChoice = "default" | KeepWarmTime;
@@ -36,16 +54,17 @@ export type KeepWarmChoice = "default" | KeepWarmTime;
 type Known = { lifetime?: number; read?: number; breakEven?: number };
 
 /** What the settings window lists for one model. */
-type ModelRow = { spec: string; name: string; known: Known };
-
-/**
- * Cache lifetimes in minutes that makers publish and Pi's list leaves out, by bare model id, as written in their docs
- * (2026-11-02): OpenAI's default tier keeps a prompt at least 30 minutes. xAI publishes none for Grok.
- */
-const PUBLISHED_LIFETIMES: readonly [RegExp, number][] = [[/^gpt-/, 30]];
-
-/** The cache tier requests use: Pi's `PI_CACHE_RETENTION`. */
-const tier = (): "short" | "long" => (process.env.PI_CACHE_RETENTION === "long" ? "long" : "short");
+type ModelRow = {
+    spec: string;
+    name: string;
+    known: Known;
+    plan: {
+        lifetime?: number;
+        everyMinutes?: number;
+        refreshes: number;
+        autoStopMinutes?: number;
+    };
+};
 
 const ownerOnly = (user: User) => {
     if (user.role !== "owner") {
@@ -59,54 +78,21 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 /** The fields of a model the owner may set; null takes one off. */
 const MODEL_FIELDS = ["lifetime", "read"] as const;
 
-/** Providers that make the models they list: their published prices win over a reseller's or a cloud's. */
-const MAKERS = new Set(["anthropic", "openai", "xai", "google", "mistral", "deepseek"]);
-
-/** The last part of a model id, which a reseller's id (`cc/claude-opus-5-5`) shares with the maker's. */
-const bareId = (id: string) => id.slice(id.lastIndexOf("/") + 1).toLowerCase();
-
-/** A cache lifetime in minutes a maker publishes for this model, when Pi's list has none. */
-function publishedLifetime(id: string): number | undefined {
-    const bare = bareId(id);
-
-    return PUBLISHED_LIFETIMES.find(([pattern]) => pattern.test(bare))?.[1];
-}
-
-/**
- * A model's published cache prices per million tokens, for Auto's stop only: the read, and what a miss costs (the
- * write). Anthropic's 1-hour write is twice the input price, where Pi's price is the 5-minute write; a maker with no
- * write price (OpenAI, xAI) charges the plain input price. Undefined: not published.
- */
-export function cachePrices(
-    model: Model<Api>,
-    seconds: number | undefined,
-    read = model.cost.cacheRead,
-): { read: number; write: number } | undefined {
-    const { input, cacheWrite } = model.cost;
-
-    if (read <= 0 || input <= 0) {
-        return undefined;
-    }
-
-    const hourWrite = model.api === "anthropic-messages" && (seconds ?? 0) >= 3600;
-
-    return { read, write: hourWrite ? input * 2 : cacheWrite > 0 ? cacheWrite : input };
-}
-
 export class KeepWarm {
-    readonly #app: PocketApp;
+    readonly #deps: KeepWarmDeps;
+    readonly #published: PublishedPrices;
 
-    constructor(app: PocketApp) {
-        this.#app = app;
+    constructor(deps: KeepWarmDeps) {
+        this.#deps = deps;
+        this.#published = new PublishedPrices(deps.models);
     }
 
     /** How a conversation is kept warm once its run ends; undefined: it is not. Read at each refresh. */
     policy(conversationId: number): IdlePolicy | undefined {
-        const app = this.#app;
         const id = conversationId as ConversationId;
-        const root = app.rootOf(id);
-        const meta = app.sessionMeta(root);
-        const settings = app.config.keepWarm;
+        const root = this.#deps.rootOf(id);
+        const meta = this.#deps.sessionMeta(root);
+        const settings = this.#deps.settings();
 
         // Sessions and their subagents only: PiP and conversations no person opened are left alone.
         if (meta === undefined || meta.pip !== undefined || meta.archived === true) {
@@ -137,10 +123,10 @@ export class KeepWarm {
      * where Auto stops (a model at $0, such as a subscription, takes the maker's for the same id).
      */
     facts(spec: string): ModelFacts {
-        const own = this.#app.config.keepWarm.models[spec] ?? {};
+        const own = this.#deps.settings().models[spec] ?? {};
         const model = this.#model(spec);
         const seconds = model?.promptCache?.[tier()];
-        const listed = model === undefined ? undefined : this.#published(model.id);
+        const listed = model === undefined ? undefined : this.#published.lookup(model.id);
         const prices =
             (model === undefined ? undefined : cachePrices(model, seconds)) ??
             (listed === undefined ? undefined : cachePrices(listed, seconds)) ??
@@ -181,56 +167,26 @@ export class KeepWarm {
         );
     }
 
-    /** Pi's models with published cache prices, by bare id; built again a minute later, as model lists change rarely. */
-    #publishedIndex: { at: number; byId: Map<string, Model<Api>> } | undefined;
-
-    /** The model Pi lists with published cache prices under the same bare id as `id`: the maker's, first. */
-    #published(id: string): Model<Api> | undefined {
-        const now = Date.now();
-
-        if (this.#publishedIndex === undefined || now - this.#publishedIndex.at > 60_000) {
-            const byId = new Map<string, Model<Api>>();
-
-            for (const model of this.#app.models.getModels()) {
-                const key = bareId(model.id);
-                const known = byId.get(key);
-
-                // The maker's own listing wins over a cloud's (Bedrock, Vertex), whose ids and prices differ.
-                if (
-                    cachePrices(model, undefined) !== undefined &&
-                    (known === undefined ||
-                        (MAKERS.has(model.provider) && known.provider !== model.provider))
-                ) {
-                    byId.set(key, model);
-                }
-            }
-
-            this.#publishedIndex = { at: now, byId };
-        }
-
-        return this.#publishedIndex.byId.get(bareId(id));
-    }
-
     /** For a tab's hello: the owner's time, which the session row names as its default. */
     hello() {
-        return { hours: this.#app.config.keepWarm.hours };
+        return { hours: this.#deps.settings().hours };
     }
 
     /** The settings window's: every setting, Pi's facts about each model, and what is warm now. */
     overview(user: User) {
         ownerOnly(user);
-        const settings = this.#app.config.keepWarm;
+        const settings = this.#deps.settings();
 
         return {
             settings,
             models: this.#rows(settings),
-            now: this.#app.cacheKeeper.idleSummary(),
+            now: this.#deps.keeper.idleSummary(),
         };
     }
 
     /** A session's choice and what its cache keeper does now, for its view. */
     session(id: ConversationId): { choice: KeepWarmChoice; status: IdleStatus } | undefined {
-        const meta = this.#app.sessionMeta(id);
+        const meta = this.#deps.sessionMeta(id);
 
         if (meta === undefined || meta.pip !== undefined) {
             return undefined;
@@ -238,7 +194,7 @@ export class KeepWarm {
 
         return {
             choice: isKeepWarmTime(meta.keepWarm) ? meta.keepWarm : "default",
-            status: this.#app.cacheKeeper.idleStatus(Number(id)),
+            status: this.#deps.keeper.idleStatus(Number(id)),
         };
     }
 
@@ -251,7 +207,7 @@ export class KeepWarm {
         }
 
         const asked = patch as Partial<Record<keyof KeepWarmSettings, unknown>>;
-        const current = this.#app.config.keepWarm;
+        const current = this.#deps.settings();
         const next: KeepWarmSettings = { ...current, models: { ...current.models } };
 
         if ("hours" in asked) {
@@ -336,9 +292,9 @@ export class KeepWarm {
             }
         }
 
-        this.#app.config.keepWarm = keepWarmFrom(next);
-        this.#app.cacheKeeper.reconsider();
-        await this.#app.keepWarmSettingsChanged();
+        this.#deps.saveSettings(keepWarmFrom(next));
+        this.#deps.keeper.reconsider();
+        await this.#deps.settingsChanged();
     }
 
     /**
@@ -359,27 +315,21 @@ export class KeepWarm {
     async setSession(user: User, id: ConversationId, choice: unknown): Promise<void> {
         this.checkChoice(user, choice);
 
-        await this.#app.harness.commit(async (tx) => {
-            const meta = (await tx.doc(SessionsDoc)).items[String(id)];
-
-            if (meta === undefined || meta.pip !== undefined) {
-                throw new HttpError(404, "Not a session");
-            }
-
+        await this.#deps.commitSession(id, (meta) => {
             if (choice === "default") {
                 delete meta.keepWarm;
             } else {
                 meta.keepWarm = choice as KeepWarmTime;
             }
-        }, BACKGROUND_CONTEXT);
-        this.#app.cacheKeeper.reconsider();
+        });
+        this.#deps.keeper.reconsider();
     }
 
     #model(spec: string): Model<Api> | undefined {
         const slash = spec.indexOf("/");
 
         return slash > 0
-            ? this.#app.models.getModel(spec.slice(0, slash), spec.slice(slash + 1))
+            ? this.#deps.model(spec.slice(0, slash), spec.slice(slash + 1))
             : undefined;
     }
 
@@ -394,7 +344,7 @@ export class KeepWarm {
             seconds === undefined ? publishedLifetime(model.id) : Math.round(seconds / 60);
         const prices = this.facts(specOf(model)).prices;
         const breakEven = prices === undefined ? 0 : breakEvenRefreshes(prices);
-        const listed = this.#published(model.id);
+        const listed = this.#published.lookup(model.id);
         const published = (model.cost.cacheRead > 0 ? model : listed)?.cost.cacheRead;
 
         return {
@@ -404,29 +354,44 @@ export class KeepWarm {
         };
     }
 
+    /** One model's cache facts and plan for the settings window. */
+    #row(spec: string, model: Model<Api> | undefined, settings: KeepWarmSettings): ModelRow {
+        const known = this.#known(model);
+        const lifetime = settings.models[spec]?.lifetime ?? known.lifetime;
+        const everyMs = idleEveryMs(
+            lifetime === undefined ? undefined : lifetime * 60_000,
+            settings.share,
+        );
+        const everyMinutes =
+            everyMs === undefined ? undefined : Math.floor(everyMs / 60_000) || undefined;
+        const refreshes = Math.min(known.breakEven ?? Infinity, settings.maxRefreshes);
+
+        return {
+            spec,
+            name: model?.name ?? spec.slice(spec.indexOf("/") + 1),
+            known,
+            plan: {
+                lifetime,
+                everyMinutes,
+                refreshes,
+                autoStopMinutes: everyMinutes === undefined ? undefined : refreshes * everyMinutes,
+            },
+        };
+    }
+
     /** Every model people can pick, and every model the owner set values for, with what is known of each. */
     #rows(settings: KeepWarmSettings): ModelRow[] {
         const rows = new Map<string, ModelRow>();
 
-        for (const model of this.#app.models.getAvailableSnapshot()) {
+        for (const model of this.#deps.availableModels()) {
             const spec = specOf(model);
 
-            rows.set(spec, {
-                spec,
-                name: model.name,
-                known: this.#known(model),
-            });
+            rows.set(spec, this.#row(spec, model, settings));
         }
 
         for (const spec of Object.keys(settings.models)) {
             if (!rows.has(spec)) {
-                const model = this.#model(spec);
-
-                rows.set(spec, {
-                    spec,
-                    name: model?.name ?? spec.slice(spec.indexOf("/") + 1),
-                    known: this.#known(model),
-                });
+                rows.set(spec, this.#row(spec, this.#model(spec), settings));
             }
         }
 

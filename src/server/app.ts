@@ -106,7 +106,8 @@ import { loadPromptTemplates, type PromptTemplate, type SkillCommand } from "./p
 import { BASE_THEME, Themes } from "./themes.ts";
 import { THEME_ID } from "./themes/format.ts";
 import { LimitGate, type LimitTuning } from "./limit-gate.ts";
-import { CacheKeeper, idleFiles } from "./cache-keeper.ts";
+import { CacheKeeper } from "./cache-keeper.ts";
+import { idleFiles } from "./keep-warm-store.ts";
 import { measureModelStreams } from "./timing.ts";
 import { Providers } from "./providers.ts";
 import { PushStore } from "./push.ts";
@@ -346,7 +347,34 @@ export class PocketApp {
     readonly shell = new Shell(this);
     readonly spend = new Spend(this);
     /** The owner's keep-warm settings and each session's choice (`keep-warm.ts`). */
-    readonly keepWarm = new KeepWarm(this);
+    readonly keepWarm = new KeepWarm({
+        settings: () => this.config.keepWarm,
+        saveSettings: (next) => {
+            this.config.keepWarm = next;
+        },
+        sessionMeta: (id) => this.sessionMeta(id),
+        rootOf: (id) => this.rootOf(id),
+        commitSession: async (id, change) => {
+            await this.harness.commit(async (tx) => {
+                const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+
+                if (meta === undefined || meta.pip !== undefined) {
+                    throw new HttpError(404, "Not a session");
+                }
+
+                change(meta);
+            }, BACKGROUND_CONTEXT);
+        },
+        model: (provider, id) => this.models.getModel(provider, id),
+        models: () => [...this.models.getModels()],
+        availableModels: () => [...this.models.getAvailableSnapshot()],
+        keeper: {
+            idleSummary: () => this.cacheKeeper.idleSummary(),
+            idleStatus: (id) => this.cacheKeeper.idleStatus(id),
+            reconsider: () => this.cacheKeeper.reconsider(),
+        },
+        settingsChanged: () => this.keepWarmSettingsChanged(),
+    });
     /** Who Pi works for in each conversation, and who wrote and queued each message. */
     readonly attribution = new Attribution(this);
     /** The conversation's folder: files, the viewer, changes, and uploads. */
