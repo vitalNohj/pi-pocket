@@ -106,7 +106,7 @@ import { loadPromptTemplates, type PromptTemplate, type SkillCommand } from "./p
 import { BASE_THEME, Themes } from "./themes.ts";
 import { THEME_ID } from "./themes/format.ts";
 import { LimitGate, type LimitTuning } from "./limit-gate.ts";
-import { CacheKeeper } from "./cache-keeper.ts";
+import { CacheKeeper, idleFiles } from "./cache-keeper.ts";
 import { measureModelStreams } from "./timing.ts";
 import { Providers } from "./providers.ts";
 import { PushStore } from "./push.ts";
@@ -132,6 +132,7 @@ import {
     type SkillSources,
     type TrustChoice,
 } from "./skills.ts";
+import { KeepWarm } from "./keep-warm.ts";
 import { Spend } from "./spend.ts";
 import { Transcripts } from "./transcripts.ts";
 import { Watches } from "./watches.ts";
@@ -344,6 +345,8 @@ export class PocketApp {
     readonly goals = new Goals(this);
     readonly shell = new Shell(this);
     readonly spend = new Spend(this);
+    /** The owner's keep-warm settings and each session's choice (`keep-warm.ts`). */
+    readonly keepWarm = new KeepWarm(this);
     /** Who Pi works for in each conversation, and who wrote and queued each message. */
     readonly attribution = new Attribution(this);
     /** The conversation's folder: files, the viewer, changes, and uploads. */
@@ -473,10 +476,11 @@ export class PocketApp {
                 const payer = this.spend.payer(id);
 
                 return {
-                    check: () => {
+                    // A tool wait warms only while its run goes on; keep warm, only once it has ended.
+                    check: (idle) => {
                         const person = this.config.userById(payer);
 
-                        if (person === undefined || !this.#busy.has(id)) {
+                        if (person === undefined || idle === this.#busy.has(id)) {
                             return false;
                         }
 
@@ -491,6 +495,11 @@ export class PocketApp {
                     recordUsage: (message) => this.spend.recordModelUsage(id, payer, message),
                 };
             },
+            idlePolicy: (conversationId) => this.keepWarm.policy(conversationId),
+            modelFacts: (spec) => this.keepWarm.facts(spec),
+            modelOf: (provider, modelId) => this.models?.getModel(provider, modelId),
+            store: idleFiles(join(options.dataDir, "keep-warm"), (line) => this.#log(line)),
+            changed: (conversationId) => this.#keepWarmChanged(conversationId as ConversationId),
         });
         this.limits = new LimitGate({
             hours: () => this.config.limitWaitHours,
@@ -917,6 +926,10 @@ export class PocketApp {
         const conversations = await this.#recover(storage);
 
         await this.spend.load(conversations);
+        // Sessions kept warm before a restart go on, while their caches live.
+        void this.cacheKeeper
+            .restore()
+            .catch((error: unknown) => this.#log(`Keep warm not restored: ${describe(error)}`));
 
         this.#unsubscribeCommits = this.harness.subscribeCommits((publication) =>
             this.#committed(publication),
@@ -1153,6 +1166,11 @@ export class PocketApp {
 
             // A compaction asks the model too (an idle session's manual one has no run): it may wait for a limit.
             if (((change.value as LiveState | null)?.compactions?.length ?? 0) > 0) {
+                // A compaction rewrites the context: the cache kept warm is not read again.
+                if (!this.#compacting.has(id)) {
+                    this.cacheKeeper.forget(Number(id), "the context was compacted");
+                }
+
                 this.#compacting.add(id);
             } else {
                 this.#compacting.delete(id);
@@ -1171,6 +1189,7 @@ export class PocketApp {
 
                 if (busy) {
                     this.#busy.add(id);
+                    this.cacheKeeper.runStarted(Number(id));
                     // A new run starts over: whether it fails is its own to say.
                     this.#failed.delete(id);
 
@@ -1210,6 +1229,17 @@ export class PocketApp {
             }
         } else if (kind === "pi.agent" && id !== undefined) {
             if (change.value !== null) {
+                const was = this.#agents.get(id)?.model;
+                const now = (change.value as AgentState).model;
+
+                // Another model: the next request does not read this cache.
+                if (
+                    was !== undefined &&
+                    (was.provider !== now?.provider || was.modelId !== now?.modelId)
+                ) {
+                    this.cacheKeeper.forget(Number(id), "the model changed");
+                }
+
                 this.#agents.set(id, change.value as AgentState);
             }
 
@@ -1366,6 +1396,10 @@ export class PocketApp {
             }
 
             if ((meta.archived === true) !== (was.archived === true)) {
+                if (meta.archived === true) {
+                    this.cacheKeeper.forget(conversationId, "the session was archived");
+                }
+
                 this.events.emit("session.archived", {
                     conversationId,
                     archived: meta.archived === true,
@@ -1451,6 +1485,14 @@ export class PocketApp {
 
     /** Conversations that were in a wait for a limit, or are now: their views and the session list show the change. */
     #limitWaiting = new Set<number>();
+
+    /** A conversation's keep warm started, refreshed, or stopped: its session's view shows it. */
+    #keepWarmChanged(id: ConversationId): void {
+        void this.#rooms.get(this.rootOf(id))?.then(
+            (open) => open.schedule(),
+            () => {},
+        );
+    }
 
     #limitsChanged(): void {
         const now = new Set(this.limits.waits().map((wait) => wait.conversationId));
@@ -2276,6 +2318,8 @@ export class PocketApp {
                 pipCompactAt: this.pipCompaction.compactAt,
                 // The most hours a run waits for a provider's limit to clear; 0: it does not wait (`limit-gate.ts`).
                 limitWaitHours: this.config.limitWaitHours,
+                // Keeping prompt caches warm once a run ends (`keep-warm.ts`): the owner's time limit.
+                keepWarm: this.keepWarm.hello(),
             },
             // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
             folderFavorites: await this.folderFavorites.list(user),
@@ -2541,6 +2585,8 @@ export class PocketApp {
             ...(meta?.worktree === undefined
                 ? {}
                 : { worktree: { branch: meta.worktree.branch, source: meta.worktree.source } }),
+            // Keep warm: the session's choice and what its cache keeper does now.
+            ...(meta === undefined ? {} : { keepWarm: this.keepWarm.session(room.id) }),
             // Whether a fork could get a worktree of its own.
             ...(meta === undefined
                 ? {}
@@ -3183,6 +3229,18 @@ export class PocketApp {
                 ? `${user.name} made approvals need someone other than who asked.`
                 : `${user.name} let anyone who can steer allow risky calls.`,
         );
+    }
+
+    /** The owner changed keep warm's settings: tabs hear the new time limit, and open views show each session's state. */
+    async keepWarmSettingsChanged(): Promise<void> {
+        for (const pending of this.#rooms.values()) {
+            void pending.then(
+                (room) => room.schedule(),
+                () => {},
+            );
+        }
+
+        await this.#refreshClients();
     }
 
     /**
