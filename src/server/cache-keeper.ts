@@ -1196,8 +1196,9 @@ export class CacheKeeper {
     ): void {
         const now = this.#deps.now();
         const usage = message.usage;
-        // It read nothing and wrote the prompt: the cache had expired, so this interval is too long for the model.
-        const rewrote = !failed && usage.cacheRead === 0 && usage.cacheWrite > 0;
+        // It read nothing of a prompt it was billed for: the cache had expired, so this interval is too long for the
+        // model. Anthropic reports the write; OpenAI and xAI bill the miss as plain input. No usage at all says nothing.
+        const rewrote = !failed && usage.cacheRead === 0 && usage.cacheWrite + usage.input > 0;
 
         if (!failed && !rewrote) {
             idle.failures = 0;

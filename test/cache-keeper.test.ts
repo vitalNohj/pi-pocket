@@ -160,6 +160,10 @@ function rig(
         rewriteOnWarm: () => {
             warmUsage = { ...usage, cacheRead: 0, cacheWrite: 50_000 };
         },
+        /** OpenAI and xAI: a miss is billed as plain input, with no cache write. */
+        missOnWarm: () => {
+            warmUsage = { ...usage, input: 50_000, cacheRead: 0, cacheWrite: 0 };
+        },
         endRun: (id: number) => {
             ended.add(id);
         },
@@ -723,4 +727,17 @@ test("keep warm: a run that ends while a tool-wait refresh is on its way leaves 
     assert.equal(status.refreshes, 1, "the refresh on its way counts as its first");
     assert.equal(r.timers.length, 1, "exactly one timer: the next idle refresh");
     assert.equal((r.timers[0]?.at ?? 0) - r.now(), 225_000, "75% of the 5 minute cache");
+});
+
+test("keep warm: a miss billed as plain input (OpenAI, xAI) counts as the cache being gone", async () => {
+    const r = rig(false, { policy: { ...POLICY, hours: 1000 } });
+
+    await idleRun(r);
+    r.missOnWarm();
+    await r.advance();
+    await r.advance();
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(status.warm, false);
+    assert.match(!status.warm ? (status.stopped ?? "") : "", /already gone 2 times/);
 });

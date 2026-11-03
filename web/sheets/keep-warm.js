@@ -309,6 +309,7 @@ export function KeepWarmSheet() {
                                 value=${settings.maxCost}
                                 min=${0}
                                 max=${1000}
+                                step="any"
                                 label="Most a session may spend on keeping warm, in dollars"
                                 onSave=${(value) => value !== null && save({ maxCost: value })}
                             />

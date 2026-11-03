@@ -371,7 +371,6 @@ export class KeepWarm {
             : undefined;
     }
 
-    /** Every model people can pick, and every model the owner set values for, with Pi's facts. */
     /** What the settings window shows of a model before the owner's value: lifetime, read price, and Auto's stop. */
     #known(model: Model<Api> | undefined): Known {
         if (model === undefined) {
@@ -393,6 +392,7 @@ export class KeepWarm {
         };
     }
 
+    /** Every model people can pick, and every model the owner set values for, with what is known of each. */
     #rows(settings: KeepWarmSettings): ModelRow[] {
         const rows = new Map<string, ModelRow>();
 
