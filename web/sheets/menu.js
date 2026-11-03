@@ -31,7 +31,7 @@ import { defineItem, slotItems } from "../slots.js";
 import { isPinned, lookLabel, togglePin } from "../theme.js";
 import { currentTrust, trustAvailable } from "../trust.js";
 import { branchAvailable } from "./branch.js";
-import { KeepWarmRow, keepWarmAvailable, keepWarmHint } from "./keep-warm.js";
+import { KeepWarmCard, keepWarmAvailable, keepWarmHint } from "./keep-warm.js";
 import { memoryAvailable, memoryHint, useMemory } from "./memory.js";
 import { defaultLabel, defaultsKept } from "./model.js";
 import { copyText, html, Icon, item, PlaceTile, Sheet, shortPath } from "../ui.js";
@@ -524,7 +524,7 @@ export function MenuSheet({ places = true }) {
                     setArchived([conversation.id], !conversation.archived);
                 })
             }
-            ${session && html`<${KeepWarmRow} />`}
+            ${session && html`<${KeepWarmCard} compact />`}
         </div>
         ${
             view.subagents.length > 0 &&

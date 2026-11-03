@@ -22,7 +22,7 @@ import {
     Switch,
     writtenText,
 } from "../ui.js";
-import { KeepWarmRow } from "./keep-warm.js";
+import { KeepWarmCard } from "./keep-warm.js";
 import { memoryAvailable } from "./memory.js";
 
 /** The message to Pi a reply answers: the newest one before it. */
@@ -216,7 +216,7 @@ export function MessageSheet({ entryId }) {
                 )
             }
             ${!filesAlone && item("Copy text", copy)}
-            ${!toPi && html`<${KeepWarmRow} />`}
+            ${!toPi && html`<${KeepWarmCard} />`}
         </div>
     <//>`;
 }

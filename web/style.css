@@ -803,7 +803,8 @@ kbd {
     :root:not([data-motion="full"], [data-motion="fluid"]) .agents-dot.working,
     :root:not([data-motion="full"], [data-motion="fluid"]) .session-working,
     :root:not([data-motion="full"], [data-motion="fluid"]) .session-placeholder span,
-    :root:not([data-motion="full"], [data-motion="fluid"]) .icon.warming {
+    :root:not([data-motion="full"], [data-motion="fluid"]) .icon.warming,
+    :root:not([data-motion="full"], [data-motion="fluid"]) .keep-warm-flame.warming .icon {
         animation: none !important;
     }
 }
@@ -18866,37 +18867,155 @@ pre.gallery-code {
     border-bottom: 1px solid var(--hair);
 }
 
-.keep-warm-session {
+/* A session's keep warm: the reply menu's card, and the session menu's compact one (whose flame is its switch). */
+.keep-warm-card {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    padding: 10px 12px;
+    gap: 10px;
+    padding: 14px 16px;
 }
 
-.keep-warm-times button {
-    padding: 4px 9px;
+.keep-warm-card.compact {
+    gap: 8px;
+    margin: 6px 12px 10px;
+    padding: 10px;
+    border-radius: var(--r-card);
+    background: var(--card-2);
 }
 
-/* The card's title, first in the row of choices, with Off beside it; the times wrap below. */
-.keep-warm-session-title {
-    display: inline-flex;
-    flex: 1 0 calc(100% - 4rem);
+.keep-warm-card-head {
+    display: flex;
     align-items: center;
-    gap: 0.3rem;
-    padding: 4px 8px 2px;
+    gap: 12px;
+}
+
+.keep-warm-card.compact .keep-warm-card-head {
+    gap: 10px;
+}
+
+.keep-warm-flame {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-control);
+    background: color-mix(in srgb, var(--o-orange) 15%, transparent);
+    color: var(--o-orange);
+    transition:
+        background var(--t-hover) var(--ease-out),
+        color var(--t-hover) var(--ease-out);
+}
+
+.keep-warm-card.compact .keep-warm-flame {
+    width: 32px;
+    height: 32px;
+}
+
+.keep-warm-flame.off {
+    background: var(--raised);
+    color: var(--muted);
+}
+
+.keep-warm-flame.warming .icon {
+    transform-origin: 50% 90%;
+    animation: flicker 1.6s ease-in-out infinite;
+}
+
+.keep-warm-card-title {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
     color: var(--text);
 }
 
-.keep-warm-session-title .warm {
+.keep-warm-card:not(.compact) .keep-warm-card-title > span:first-child {
+    font-weight: 500;
+}
+
+.keep-warm-pill {
+    flex: none;
+    padding: 2px 9px;
+    border-radius: var(--r-pill);
+    background: color-mix(in srgb, var(--o-orange) 15%, transparent);
     color: var(--o-orange);
+    font-size: 12px;
+    white-space: nowrap;
 }
 
-.keep-warm-times {
+.keep-warm-pill.off {
+    background: var(--raised);
+    color: var(--muted);
+}
+
+/* The times, as one bar: a raised button is the choice. */
+.segmented.keep-warm-bar {
+    display: grid;
     align-self: stretch;
+    grid-auto-flow: column;
+    grid-auto-columns: auto;
+    gap: 2px;
+    padding: 3px;
+    border: 0;
+    border-radius: var(--r-control);
+    background: var(--card-2);
 }
 
-.keep-warm-times .keep-warm-off {
-    margin-right: 0;
+.keep-warm-card.compact .segmented.keep-warm-bar {
+    background: var(--card);
+}
+
+.segmented.keep-warm-bar button {
+    min-width: 0;
+    height: 34px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: var(--r-seg);
+    background: none;
+    color: var(--muted);
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.keep-warm-card.compact .segmented.keep-warm-bar button {
+    height: 32px;
+    font-size: 12.5px;
+}
+
+.segmented.keep-warm-bar button.on {
+    background: var(--raised);
+    color: var(--text);
+    box-shadow: 0 1px 2px color-mix(in srgb, black 35%, transparent);
+}
+
+.segmented.keep-warm-bar.dim {
+    opacity: 0.5;
+}
+
+@media (hover: hover) {
+    .segmented.keep-warm-bar button:not(.on, :disabled):hover {
+        color: var(--text);
+    }
+}
+
+.keep-warm-card-details {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12.5px;
+    text-overflow: ellipsis;
+}
+
+.keep-warm-card.compact .keep-warm-card-details {
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.keep-warm-card-details b {
+    color: var(--text);
+    font-weight: 500;
 }
 
 /* What the chosen time does for the example model: a quiet card under the times. */

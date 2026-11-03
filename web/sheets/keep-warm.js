@@ -502,7 +502,11 @@ export function KeepWarmSheet() {
  * A session's own time, in its menu and a reply's menu: the owner's default, Break-even, a fixed time, or off. Shows when the
  * next refresh goes out and when it stops, or why it last stopped.
  */
-export function KeepWarmRow() {
+/**
+ * A session's keep warm, as a card: `compact` for the session menu (the flame turns it on and off, and the bar holds the
+ * times), else the reply menu's fuller card (Off is the bar's first choice, and a line says what the time does).
+ */
+export function KeepWarmCard({ compact = false }) {
     const { view, server } = store.state;
     const conversation = view.conversation;
     const state = conversation?.keepWarm;
@@ -525,66 +529,80 @@ export function KeepWarmRow() {
             : state.choice === "auto"
               ? "break-even"
               : state.choice;
+    const on = chosen !== 0;
+    const warming = on && status.warm;
     // The same times as the owner's, the session's own (or the owner's default) selected. Picking the owner's default
     // follows it again ("default"), so a later change of the default reaches this session too.
-    const choices = TIMES.slice(1);
     const valueOf = (value) => (value === fallback ? "default" : value);
     // Only the owner turns a session on or picks another time; anyone who can steer may turn it off, or back to the
     // default where that keeps it off (the server checks it too).
     const owner = store.state.me?.role === "owner";
     const allowed = (value) =>
         owner || value === 0 || (value === fallback && (state.choice !== 0 || fallback === 0));
-    const hoursLabel = (hours) =>
-        hours === 0.5 ? "30 minutes" : hours === 1 ? "1 hour" : `${hours} hours`;
-    const line = status.warm
-        ? [
-              `Keeping cache alive · next ${time(status.nextAt)}`,
-              `${status.refreshes} of ${status.maxRefreshes} refreshes`,
-              money(status.spent),
-              status.until === undefined ? "" : `until ${time(status.until)}`,
-          ]
-              .filter(Boolean)
-              .join(" · ")
-        : status.stopped
+    const pick = (value) => state.choice !== valueOf(value) && choose(valueOf(value));
+    // The flame turns it back on with the owner's default, or 30 minutes when the default is Off.
+    const onAgain = fallback !== 0 ? fallback : 0.5;
+    const hoursLabel = (hours) => (hours === 0.5 ? "30 min" : hours === 1 ? "1 h" : `${hours} h`);
+    const what = !on
+        ? "The cache expires on its own"
+        : chosen === "break-even"
+          ? "Until break-even"
+          : `${hoursLabel(chosen)} after Pi finishes`;
+    const details = warming
+        ? html`Next <b>${time(status.nextAt)}</b> · <b>${status.refreshes}</b> of ${status.maxRefreshes} refreshes
+              · <b>${money(status.spent)}</b>${status.until === undefined ? "" : html` · until <b>${time(status.until)}</b>`}`
+        : status.stopped && on
           ? `Stopped: ${status.stopped}`
-          : chosen === 0
-            ? "Not keeping cache warm"
-            : chosen === "break-even"
-              ? "Until it costs as much as one uncached message, keep cache alive"
-              : `${hoursLabel(chosen)} after Pi finishes, keep cache alive`;
+          : undefined;
+    const flame = html`<${Icon} name="flame" size=${compact ? 17 : 18} stroke=${2} />`;
+    const tile = `keep-warm-flame ${on ? "" : "off"} ${warming ? "warming" : ""}`;
+    const times = compact ? TIMES.slice(1) : TIMES;
 
-    return html`<div class="keep-warm-session">
-        <div class="segmented keep-warm-times" role="group" aria-label="Keep this session warm">
-            <span class="keep-warm-session-title">
-                ${
-                    chosen !== 0 &&
-                    html`<${Icon}
-                        name="flame"
-                        size=${13}
-                        stroke=${2}
-                        class=${`warm ${status.warm ? "warming" : ""}`}
-                    />`
-                }
-                Keep this session warm
+    return html`<div class=${`keep-warm-card ${compact ? "compact" : ""}`}>
+        <div class="keep-warm-card-head">
+            ${
+                compact
+                    ? html`<button
+                          type="button"
+                          class=${tile}
+                          aria-pressed=${on}
+                          aria-label=${on ? "Turn keep warm off" : "Turn keep warm on"}
+                          title=${on ? "Turn keep warm off" : "Turn keep warm on"}
+                          disabled=${!steer || !allowed(on ? 0 : onAgain)}
+                          onClick=${() => pick(on ? 0 : onAgain)}
+                      >
+                          ${flame}
+                      </button>`
+                    : html`<span class=${tile} aria-hidden="true">${flame}</span>`
+            }
+            <span class="keep-warm-card-title">
+                <span>Keep this session warm</span>
+                ${!compact && html`<span class="muted small">${what}</span>`}
             </span>
-            ${[[0, "Off"], ...choices].map(
+            <span class=${`keep-warm-pill ${on ? "" : "off"}`}>${!on ? "Off" : warming ? "Warming" : "On"}</span>
+        </div>
+        <div
+            class=${`segmented keep-warm-bar ${compact && !on ? "dim" : ""}`}
+            role="group"
+            aria-label="How long to keep this session warm"
+        >
+            ${times.map(
                 ([value, label]) => html`<button
-                    class=${`${chosen === value ? "on" : ""} ${value === 0 ? "keep-warm-off" : ""}`}
+                    type="button"
+                    class=${chosen === value && (on || value === 0) ? "on" : ""}
                     aria-pressed=${chosen === value}
-                    title=${
-                        value === fallback
-                            ? "The owner's default"
-                            : value === "break-even"
-                              ? BREAK_EVEN
-                              : ""
-                    }
+                    title=${value === fallback ? "The owner's default" : value === "break-even" ? BREAK_EVEN : ""}
                     disabled=${!steer || !allowed(value)}
-                    onClick=${() => state.choice !== valueOf(value) && choose(valueOf(value))}
+                    onClick=${() => pick(value)}
                 >
                     ${label}
                 </button>`,
             )}
         </div>
-        <div class="muted small">${line}</div>
+        ${
+            compact
+                ? html`<div class="keep-warm-card-details">${details ?? what}</div>`
+                : details && html`<div class="keep-warm-card-details">${details}</div>`
+        }
     </div>`;
 }
