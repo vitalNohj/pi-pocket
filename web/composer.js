@@ -1628,9 +1628,15 @@ defineItem("composer", {
             onClick=${() => openSheet({ type: "model" })}
         >
             ${
-                // While keep warm is on for this session, a flame takes the star's place; nothing else changes.
+                // While keep warm is on for this session, a flame takes the star's place; it flickers while it keeps the
+                // cache alive (the run is over and refreshes go on). Nothing else changes.
                 keepWarmOn(view.conversation)
-                    ? html`<${Icon} name="flame" size=${13} stroke=${2} class="model-spark warm" />`
+                    ? html`<${Icon}
+                          name="flame"
+                          size=${13}
+                          stroke=${2}
+                          class=${`model-spark warm ${view.conversation.keepWarm.status?.warm ? "warming" : ""}`}
+                      />`
                     : html`<${Icon} name="sparkle" size=${12} class="model-spark" />`
             }
             <span class="model-name">${shortModel(agent)}</span>

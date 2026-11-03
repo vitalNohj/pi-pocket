@@ -802,7 +802,8 @@ kbd {
     :root:not([data-motion="full"], [data-motion="fluid"]) .background-now .dot,
     :root:not([data-motion="full"], [data-motion="fluid"]) .agents-dot.working,
     :root:not([data-motion="full"], [data-motion="fluid"]) .session-working,
-    :root:not([data-motion="full"], [data-motion="fluid"]) .session-placeholder span {
+    :root:not([data-motion="full"], [data-motion="fluid"]) .session-placeholder span,
+    :root:not([data-motion="full"], [data-motion="fluid"]) .icon.warming {
         animation: none !important;
     }
 }
@@ -3570,9 +3571,34 @@ pre.diff .del {
     color: var(--accent);
 }
 
-/* Keep warm holds the session's cache alive. */
+/* Keep warm is on for the session; while it keeps the cache alive, the flame flickers. */
 .model-chip .model-spark.warm {
     color: var(--o-orange);
+}
+
+.icon.warming {
+    transform-origin: 50% 90%;
+    animation: flicker 1.6s ease-in-out infinite;
+}
+
+@keyframes flicker {
+    0%,
+    100% {
+        transform: scale(1, 1) rotate(0deg);
+        opacity: 1;
+    }
+    25% {
+        transform: scale(0.94, 1.08) rotate(-4deg);
+        opacity: 0.85;
+    }
+    50% {
+        transform: scale(1.04, 0.95) rotate(2deg);
+        opacity: 1;
+    }
+    75% {
+        transform: scale(0.97, 1.05) rotate(4deg);
+        opacity: 0.9;
+    }
 }
 
 .model-chip .model-name {

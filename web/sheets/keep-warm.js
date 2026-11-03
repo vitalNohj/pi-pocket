@@ -551,7 +551,16 @@ export function KeepWarmRow() {
     return html`<div class="keep-warm-session">
         <div class="segmented keep-warm-times" role="group" aria-label="Keep this session warm">
             <span class="keep-warm-session-title">
-                ${chosen !== 0 && html`<${Icon} name="flame" size=${13} stroke=${2} class="warm" />`} Keep warm
+                ${
+                    chosen !== 0 &&
+                    html`<${Icon}
+                        name="flame"
+                        size=${13}
+                        stroke=${2}
+                        class=${`warm ${status.warm ? "warming" : ""}`}
+                    />`
+                }
+                Keep warm
             </span>
             ${choices.map(
                 ([value, label]) => html`<button
