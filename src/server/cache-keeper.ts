@@ -241,7 +241,7 @@ export type IdlePolicy = {
 
 type IdleState = {
     everyMs: number;
-    /** How long the cache lives after a request touches it: known, or assumed from `everyMs`. */
+    /** How long the cache lives after a request touches it. */
     lifeMs: number;
     /** When the run ended: the time limit counts from here. */
     since: number;
@@ -777,6 +777,8 @@ export class CacheKeeper {
                 continue;
             }
 
+            // Auto and Off have no deadline: one left from a time limit must not stay.
+            delete entry.idle.until;
             Object.assign(entry.idle, plan);
 
             // A refresh on its way plans the next itself.
@@ -883,11 +885,6 @@ export class CacheKeeper {
 
     /** Plan the next idle refresh, `everyMs` after a request last touched the cache. */
     #scheduleIdle(key: string, entry: Entry): void {
-        if (entry.timer !== undefined) {
-            this.#deps.clearTimer(entry.timer);
-            entry.timer = undefined;
-        }
-
         this.#schedule(
             key,
             entry,
@@ -930,7 +927,12 @@ export class CacheKeeper {
         entry.idle = idle;
         entry.account ??= this.#deps.accountFor?.(conversationId);
         this.#stopped.delete(conversationId);
-        this.#scheduleIdle(key, entry);
+
+        // A tool-wait refresh on its way plans the next itself, as an idle one, when it settles.
+        if (entry.abort === undefined) {
+            this.#scheduleIdle(key, entry);
+        }
+
         this.#save(key, entry, true);
         this.#deps.changed?.(conversationId);
     }
@@ -977,6 +979,11 @@ export class CacheKeeper {
                     ? wait
                     : Math.max(0, entry.idle.until - now)
                 : Math.max(0, entry.endedAt + MAX_AGE_MS - now);
+
+        // One timer per entry: a new plan replaces the one before.
+        if (entry.timer !== undefined) {
+            this.#deps.clearTimer(entry.timer);
+        }
 
         entry.dueAt = now + wait;
         entry.timer = this.#deps.setTimer(
@@ -1049,18 +1056,20 @@ export class CacheKeeper {
 
         const now = this.#deps.now();
         const idle = entry.kind === "idle" ? entry.idle : undefined;
+        // An idle entry's stop is reported; a tool wait's is not. A run can end while this refresh is on its way.
+        const why = (reason: string) => (entry.kind === "idle" ? reason : undefined);
 
         if (this.#deps.disabled()) {
-            return this.#drop(key, idle === undefined ? undefined : "turned off");
+            return this.#drop(key, why("turned off"));
         }
 
         let delay = 0;
 
         if (idle !== undefined) {
-            const why = this.#idleStop(entry, now);
+            const stop = this.#idleStop(entry, now);
 
-            if (why !== undefined) {
-                return this.#drop(key, why);
+            if (stop !== undefined) {
+                return this.#drop(key, stop);
             }
         } else {
             delay = refreshDelayMs(entry.ttlMs!) as number;
@@ -1086,7 +1095,7 @@ export class CacheKeeper {
         entry.deadline = this.#deps.setTimer(
             () => {
                 if (this.#entries.get(key) === entry) {
-                    this.#drop(key, idle === undefined ? undefined : "a refresh did not finish");
+                    this.#drop(key, why("a refresh did not finish"));
                 }
             },
             idle === undefined ? entry.endedAt + MAX_AGE_MS - now : IDLE_DEADLINE_MS,
@@ -1112,12 +1121,7 @@ export class CacheKeeper {
 
                 if (!matches) {
                     if (this.#entries.get(key) === entry) {
-                        this.#drop(
-                            key,
-                            idle === undefined
-                                ? undefined
-                                : "the request changed, so it could not be repeated",
-                        );
+                        this.#drop(key, why("the request changed, so it could not be repeated"));
                     }
 
                     // This callback runs after all shapers, outside their error handlers, before transmission.
@@ -1139,7 +1143,7 @@ export class CacheKeeper {
 
             if (rejected) {
                 if (this.#entries.get(key) === entry) {
-                    this.#drop(key, idle === undefined ? undefined : "a refresh could not be sent");
+                    this.#drop(key, why("a refresh could not be sent"));
                 }
 
                 return;
@@ -1158,19 +1162,21 @@ export class CacheKeeper {
 
             const failed = message.stopReason === "error" || message.stopReason === "aborted";
 
-            if (idle === undefined) {
-                return failed ? this.#drop(key) : this.#schedule(key, entry, delay);
+            entry.abort = undefined;
+
+            // The run ended while a tool-wait refresh was on its way: it counts as the entry's first idle refresh.
+            if (entry.kind === "idle") {
+                return this.#idleAfter(key, entry, entry.idle!, message, failed);
             }
 
-            entry.abort = undefined;
-            this.#idleAfter(key, entry, idle, message, failed);
+            return failed ? this.#drop(key) : this.#schedule(key, entry, delay);
         } catch (error) {
             this.#deps.log(
                 `Cache keeper stopped for a session: ${error instanceof Error ? error.message : String(error)}`,
             );
 
             if (this.#entries.get(key) === entry) {
-                this.#drop(key, idle === undefined ? undefined : "a refresh failed");
+                this.#drop(key, why("a refresh failed"));
             }
         } finally {
             if (entry.deadline !== undefined) {

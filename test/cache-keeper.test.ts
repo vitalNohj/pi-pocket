@@ -682,3 +682,45 @@ test("keep warm: the owner's lifetime for a model wins over Pi's", async () => {
     await idleRun(r);
     assert.equal((r.timers[0]?.at ?? 0) - r.now(), 2_700_000, "75% of the owner's hour");
 });
+
+test("keep warm: changing a time limit to Auto drops the old deadline", async () => {
+    let policy: IdlePolicy = { ...POLICY, hours: 1 };
+    const r = rig(false, { policy: () => policy, facts: { prices: CLAUDE } });
+
+    await idleRun(r);
+    const before = r.keeper.idleStatus(3);
+
+    assert.ok(before.warm && before.until !== undefined, "a 1 h limit has a deadline");
+
+    policy = { ...POLICY, hours: "auto" };
+    r.keeper.reconsider();
+    const after = r.keeper.idleStatus(3);
+
+    assert.ok(after.warm && after.until === undefined, "Auto has none");
+    assert.equal(r.timers.length, 1, "one timer after the change");
+});
+
+test("keep warm: a run that ends while a tool-wait refresh is on its way leaves one timer", async () => {
+    const r = rig(false, { policy: POLICY });
+
+    await r.send("s", "toolUse");
+    assert.equal(r.timers.length, 1);
+
+    // The tool-wait refresh starts; the run ends before its answer comes back.
+    const next = r.timers.sort((a, b) => a.at - b.at)[0]!;
+
+    r.timers.splice(r.timers.indexOf(next), 1);
+    r.setNow(next.at);
+    next.fn();
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(r.timers.length, 1, "only the refresh's own deadline: no idle timer yet");
+
+    await new Promise((x) => setTimeout(x, 5));
+    const status = r.keeper.idleStatus(3);
+
+    assert.ok(status.warm, "the entry is kept warm");
+    assert.equal(status.refreshes, 1, "the refresh on its way counts as its first");
+    assert.equal(r.timers.length, 1, "exactly one timer: the next idle refresh");
+    assert.equal((r.timers[0]?.at ?? 0) - r.now(), 225_000, "75% of the 5 minute cache");
+});
