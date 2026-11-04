@@ -143,10 +143,7 @@ function uploadedCopy(path: string, uploads: string): string | undefined {
 
 // A name can hold " (", so the path is the part that ends with "-name". Exported for tests.
 export function attachedFile(line: string, uploads: string): Attachment[] {
-    const tail = /, ([^,]+), (\d+) bytes\)$/.exec(line);
-function attachedFile(line: string, uploads: string): Attachment[] {
     const tail = /, ([^,]+), (\d+) bytes\)(?: \[Image: .*)?$/.exec(line);
->>>>>>> upstream/release/0.28.0
 
     if (!line.startsWith("- ") || tail === null) {
         return [];
