@@ -149,6 +149,7 @@ import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { Runners } from "./runners.ts";
 import {
+    changedThere,
     type FolderScan,
     knownScan,
     latestScan,
@@ -880,7 +881,15 @@ export class PocketApp {
                 // Values extensions hide (`host.hide`) leave every tool's result before it is stored.
                 hooks: [
                     hook(ToolTask, {
-                        afterTool: (_call, result, api) => {
+                        afterTool: (call, result, api) => {
+                            // A context file or skill Pi wrote on another computer counts from the next request.
+                            if (
+                                (call.name === "write" || call.name === "edit") &&
+                                typeof call.arguments?.path === "string"
+                            ) {
+                                this.#projectFileChanged(api.conversationId, call.arguments.path);
+                            }
+
                             const cleaned = this.hidden.result(result, api.conversationId);
 
                             return cleaned === result ? undefined : cleaned;
@@ -3667,6 +3676,13 @@ export class PocketApp {
     /** The environment there of a session on another computer, unwrapped: what `remote-context.ts` reads through. */
     #remoteEnv(id: ConversationId) {
         return this.runners.env(this.runnerOf(id)!, this.cwdOf(id));
+    }
+
+    /** Pi wrote or edited `path`: on another computer, a context file or skill there is read again (`changedThere`). */
+    #projectFileChanged(id: ConversationId, path: string): void {
+        if (this.runnerOf(id) !== undefined) {
+            changedThere(this.#remoteEnv(id), path);
+        }
     }
 
     /**

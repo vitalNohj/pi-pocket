@@ -391,10 +391,14 @@ export default function createBrowser(host: PocketHost) {
                         );
 
                         if (!ended) {
+                            const last = host.browsers.downloads.lastEnded(conversation);
+
                             lines.push(
                                 host.browsers.downloads.pending(conversation)
                                     ? "A download is still going: wait again."
-                                    : "No download is going: every one that began is reported above or before.",
+                                    : last === undefined
+                                      ? "No download began in this session."
+                                      : `No download is going. The last one, already reported by the call that started it: ${last}.`,
                             );
                         }
 

@@ -425,6 +425,21 @@ export class Downloads {
         return found();
     }
 
+    /** The conversation's latest download that ended and was reported, as its line said. */
+    lastEnded(conversationId: number): string | undefined {
+        const download = (this.#lists.get(conversationId) ?? [])
+            .filter((each) => each.reported === "ended")
+            .at(-1);
+
+        if (download === undefined) {
+            return undefined;
+        }
+
+        return download.state === "done"
+            ? `${download.path} (${formatSize(download.bytes)})`
+            : `${download.name}, which ${download.state === "canceled" ? "was canceled" : "failed"}`;
+    }
+
     /** Whether a download of the conversation has not ended yet. */
     pending(conversationId: number): boolean {
         return (this.#lists.get(conversationId) ?? []).some(
