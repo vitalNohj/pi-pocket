@@ -11,6 +11,10 @@ import { html, Icon, Spinner } from "./ui.js";
 
 /** How often the board asks again while it shows. */
 const EVERY_MS = 2000;
+/** How long an ask may go unanswered before the board asks again anyway. */
+const STALE_MS = 15_000;
+/** How many times of a repeat the server lists at most (`UPCOMING` in `src/server/running.ts`). */
+const LISTED = 24;
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -30,6 +34,11 @@ const REACH = 24;
 const PAST = 0.14;
 
 const PHONE = matchMedia("(max-width: 699px)");
+/** Below this width the schedule picked shows under the matrix, not beside it (`style.css`). */
+const SIDE_BELOW = matchMedia("(max-width: 1439px)");
+
+/** A schedule's id is unique only in its own session: the board, which lists every session's, names one by both. */
+const scheduleKey = (schedule) => `${schedule.session}:${schedule.id}`;
 
 /** Close the board: back to the conversation, or the home screen, it took the place of. */
 export const closeRunning = () => store.set({ board: false, boardAgents: null });
@@ -171,6 +180,19 @@ function useMatches(query) {
  */
 let lastBoard = null;
 let ahead = null;
+/**
+ * Every ask for the board is numbered, and `lastBoard` keeps the answer to the newest one: a late answer to an older
+ * one, from a board closed since or from the ask ahead, is dropped.
+ */
+let asks = 0;
+let kept = 0;
+
+function keep(ask, data) {
+    if (ask > kept) {
+        kept = ask;
+        lastBoard = data;
+    }
+}
 
 /** The timeline's width when it last showed: 0 until it has been measured once. */
 let lastWidth = 0;
@@ -178,8 +200,14 @@ let lastWidth = 0;
 /** Ask for the board now, ahead of opening it (a pointer down on its button); the board takes this answer. */
 export function prefetchRunning() {
     if (ahead === null) {
+        const ask = ++asks;
+
         ahead = api("running/board")
-            .then((data) => (lastBoard = data))
+            .then((data) => {
+                keep(ask, data);
+
+                return data;
+            })
             .finally(() => setTimeout(() => (ahead = null), 1000));
     }
 
@@ -210,28 +238,53 @@ function useBoard() {
     const [board, setBoard] = useState(lastBoard);
     const [error, setError] = useState(null);
     const asked = useRef(0);
+    // When the answer on its way was asked for: one that never comes stops holding the next after `STALE_MS`.
+    const busy = useRef(0);
+    const waiting = () => Date.now() - busy.current < STALE_MS;
 
     const load = (first = false) => {
         const n = ++asked.current;
+        // The answer ahead keeps itself; an ask of its own is numbered here.
+        const ask = first && ahead !== null ? undefined : ++asks;
 
-        return (first && ahead !== null ? ahead : api("running/board")).then(
-            (data) => {
-                lastBoard = data;
+        busy.current = Date.now();
 
-                if (n === asked.current) {
-                    setBoard(data);
-                    setError(null);
-                }
-            },
-            (failure) => n === asked.current && setError(failure.message),
-        );
+        return (ask === undefined ? ahead : api("running/board"))
+            .finally(() => {
+                busy.current = 0;
+            })
+            .then(
+                (data) => {
+                    if (ask !== undefined) {
+                        keep(ask, data);
+                    }
+
+                    // A late answer to an ask that a newer one of this board passed is not shown.
+                    if (n === asked.current) {
+                        setBoard(data);
+                        setError(null);
+                    }
+                },
+                (failure) => n === asked.current && setError(failure.message),
+            );
     };
 
     useEffect(() => {
         load(true);
-        const timer = setInterval(load, EVERY_MS);
+        // Not while the tab is hidden, and not over an answer still on its way.
+        const timer = setInterval(() => {
+            if (!document.hidden && !waiting()) {
+                load();
+            }
+        }, EVERY_MS);
+        const shown = () => !document.hidden && !waiting() && load();
 
-        return () => clearInterval(timer);
+        document.addEventListener("visibilitychange", shown);
+
+        return () => {
+            clearInterval(timer);
+            document.removeEventListener("visibilitychange", shown);
+        };
     }, []);
 
     return { board, error, reload: load };
@@ -293,8 +346,10 @@ export function RunningBoard() {
 
     // The server's clock, moved on by how long ago it answered: what the timeline and countdowns count from.
     const offset = useRef(0);
+    const measured = useRef(null);
 
-    if (board) {
+    if (board && measured.current !== board) {
+        measured.current = board;
         offset.current = board.now - Date.now();
     }
 
@@ -354,7 +409,7 @@ export function RunningBoard() {
             .includes(needle);
     const shown = rows.filter(FILTERS.find((each) => each.key === filter).keep).filter(matches);
     const schedules = board?.schedules ?? [];
-    const chosen = schedules.find((each) => each.id === selected) ?? null;
+    const chosen = schedules.find((each) => scheduleKey(each) === selected) ?? null;
     const colorOf = (id) =>
         folderColor(
             board?.sessions.find((s) => s.id === id)?.cwd ??
@@ -368,17 +423,23 @@ export function RunningBoard() {
         navigate(id);
     };
 
-    const pick = (id) => {
-        const next = selected === id ? null : id;
-        const schedule = schedules.find((each) => each.id === next);
+    const pick = (schedule) => {
+        const next = selected === scheduleKey(schedule) ? null : scheduleKey(schedule);
 
         setSelected(next);
-        setRow(schedule?.session ?? null);
+        setRow(next === null ? null : schedule.session);
 
-        if (schedule && !phone) {
-            box.current
-                ?.querySelector(`[data-row="${schedule.session}"]`)
-                ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        if (next !== null && !phone) {
+            // Beside the matrix, the panel is in view and its row comes to it; under it, the panel comes into view.
+            requestAnimationFrame(() =>
+                box.current
+                    ?.querySelector(
+                        SIDE_BELOW.matches
+                            ? '[data-part="running-schedule"]'
+                            : `[data-row="${schedule.session}"]`,
+                    )
+                    ?.scrollIntoView({ block: "nearest", behavior: "smooth" }),
+            );
         }
     };
 
@@ -430,8 +491,8 @@ export function RunningBoard() {
         ...schedules
             .filter((each) => each.held)
             .map((each) => ({
-                key: `h${each.id}`,
-                schedule: each.id,
+                key: `h${scheduleKey(each)}`,
+                schedule: each,
                 session: each.session,
                 title: each.sessionTitle,
                 what: `Held: ${each.held}`,
@@ -450,7 +511,15 @@ export function RunningBoard() {
                 <div class="board-sub">
                     ${
                         board
-                            ? html`<b>${board.sessions.length}</b> at work · <b>${active}</b> running · <b>${schedules.length}</b> scheduled${next && html` · next <b>${span(next.next - now)}</b>`}`
+                            ? html`
+                                  <b>${rows.filter((row) => row.run !== undefined).length}</b>
+                                  ${" at work · "}
+                                  <b>${active}</b>
+                                  ${" running · "}
+                                  <b>${schedules.length}</b>
+                                  ${" scheduled"}
+                                  ${next && html`${" · next "}<b>${span(next.next - now)}</b>`}
+                              `
                             : "Looking"
                     }
                 </div>
@@ -475,7 +544,11 @@ export function RunningBoard() {
             ${
                 board === null
                     ? html`<div class="board-empty">
-                          ${error ? html`<span class="err">${error}</span>` : html`<${Spinner} /> Looking…`}
+                          ${
+                              error
+                                  ? html`<span class="err">${error}</span>`
+                                  : html`<${Spinner} /> Looking…`
+                          }
                       </div>`
                     : html`
                       <${Timeline}
@@ -501,9 +574,14 @@ export function RunningBoard() {
                                   aria-pressed=${filter === each.key}
                                   onClick=${() => setFilter(filter === each.key ? "all" : each.key)}
                               >
-                                  ${each.key !== "all" && html`<span class=${`rb-mark rb-mark-${each.key}`}></span>`}
+                                  ${
+                                      each.key !== "all" &&
+                                      html`<span class=${`rb-mark rb-mark-${each.key}`}></span>`
+                                  }
                                   ${each.label}
-                                  <span class="board-filter-count">${rows.filter(each.keep).length}</span>
+                                  <span class="board-filter-count">
+                                      ${rows.filter(each.keep).length}
+                                  </span>
                               </button>`,
                           )}
                       </div>
@@ -558,15 +636,30 @@ export function RunningBoard() {
                                           />
                                       </div>`
                                   }
-                                  <${Needs} needs=${needs} colorOf=${colorOf} onOpen=${open} onPick=${pick} />
-                                  <${NextUp} schedules=${schedules} now=${now} colorOf=${colorOf} onPick=${pick} />
+                                  <${Needs}
+                                      needs=${needs}
+                                      colorOf=${colorOf}
+                                      onOpen=${open}
+                                      onPick=${pick}
+                                  />
+                                  <${NextUp}
+                                      schedules=${schedules}
+                                      now=${now}
+                                      colorOf=${colorOf}
+                                      onPick=${pick}
+                                  />
                               </aside>`
                           }
                       </div>
                       ${
                           phone &&
                           html`<div class="rb-phone-side">
-                              <${Needs} needs=${needs} colorOf=${colorOf} onOpen=${open} onPick=${pick} />
+                              <${Needs}
+                                  needs=${needs}
+                                  colorOf=${colorOf}
+                                  onOpen=${open}
+                                  onPick=${pick}
+                              />
                           </div>`
                       }
                   `
@@ -743,6 +836,18 @@ function Timeline({
         let labelled = phone;
 
         for (const schedule of each.schedules) {
+            // The server lists a repeat's next `LISTED` times at most: past the last one, a dashed line says it goes on.
+            const last = schedule.upcoming[schedule.upcoming.length - 1];
+
+            if (schedule.every && schedule.upcoming.length >= LISTED && last < t1) {
+                marks.push(html`<span
+                    key=${`${schedule.id}-tail`}
+                    class=${`rb-pin-tail ${schedule.held ? "held" : ""}`}
+                    style=${`left:${x(last)}px;width:${Math.max(0, full - x(last))}px`}
+                    title=${`Goes on ${schedule.repeat ?? ""}`}
+                ></span>`);
+            }
+
             schedule.upcoming
                 .filter((t) => t <= t1)
                 .forEach((t, i) => {
@@ -751,10 +856,11 @@ function Timeline({
 
                     marks.push(html`<button
                         key=${`${schedule.id}-${t}`}
-                        class=${`rb-pin ${schedule.every ? "repeat" : ""} ${i > 0 ? "later" : ""} ${schedule.held ? "held" : ""} ${selected === schedule.id ? "on" : ""}`}
+                        class=${`rb-pin ${schedule.every ? "repeat" : ""} ${i > 0 ? "later" : ""} ${schedule.held ? "held" : ""} ${selected === scheduleKey(schedule) ? "on" : ""}`}
                         style=${`left:${left}px`}
                         aria-label=${`${schedule.text}, ${label}`}
-                        onClick=${() => onPick(schedule.id)}
+                        tabIndex=${i > 0 ? -1 : 0}
+                        onClick=${() => onPick(schedule)}
                         onPointerEnter=${(event) => {
                             const box = event.currentTarget.getBoundingClientRect();
 
@@ -774,7 +880,11 @@ function Timeline({
                         Math.abs(left - x(now)) > 24 &&
                         room(left)
                     ) {
-                        marks.push(html`<span key=${`${schedule.id}-label`} class="rb-pin-label" style=${`left:${left}px`}>
+                        marks.push(html`<span
+                            key=${`${schedule.id}-label`}
+                            class="rb-pin-label"
+                            style=${`left:${left}px`}
+                        >
                             ${clock(t, schedule.zone, now)}
                         </span>`);
                         labelled = true;
@@ -785,7 +895,11 @@ function Timeline({
         return { id: each.id, title: each.title, marks };
     });
 
-    return html`<section class="rb-timeline" data-part="running-timeline" aria-label="Schedule timeline">
+    return html`<section
+        class="rb-timeline"
+        data-part="running-timeline"
+        aria-label="Schedule timeline"
+    >
         <div class="rb-tl-head">
             <h3>Coming up</h3>
             <span class="rb-tl-next" title=${next ? `Next: ${next.text}` : ""}>
@@ -849,17 +963,23 @@ function Timeline({
                     )}
                     <div class="rb-past" style=${`width:${x(now)}px`}></div>
                     ${lanes.map(
-                        (
-                            lane,
-                        ) => html`<div key=${lane.id} class=${`rb-lane ${row === lane.id ? "on" : ""}`}>
+                        (lane) => html`<div
+                            key=${lane.id}
+                            class=${`rb-lane ${row === lane.id ? "on" : ""}`}
+                        >
                             ${phone && html`<span class="rb-lane-name">${lane.title}</span>`}
                             ${lane.marks}
                         </div>`,
                     )}
                     <div class="rb-now" style=${`left:${x(now)}px`}>
-                        <span>${formatter("en-GB", { hour: "2-digit", minute: "2-digit" }).format(now)}</span>
+                        <span>
+                            ${formatter("en-GB", { hour: "2-digit", minute: "2-digit" }).format(now)}
+                        </span>
                     </div>
-                    ${lanes.length === 0 && html`<div class="rb-tl-empty">Nothing to show here.</div>`}
+                    ${
+                        lanes.length === 0 &&
+                        html`<div class="rb-tl-empty">Nothing to show here.</div>`
+                    }
                 </div>
             </div>
         </div>
@@ -957,14 +1077,19 @@ function Row({
                                       : html`<span class="rb-dot" aria-hidden="true">·</span>`
                               }
                               <span class="rb-task-label">
-                                  ${task.subagent && html`<span class="rb-agent">${task.subagent}</span> `}${task.label}
+                                  ${
+                                      task.subagent &&
+                                      html`<span class="rb-agent">${task.subagent}</span> `
+                                  }${task.label}
                               </span>
                               <span
                                   class=${`rb-status ${task.status === "running" ? "ok" : waiting ? "warn" : ""} ${task.status}`}
                               >
                                   ${task.status}
                               </span>
-                              <span class="rb-elapsed">${task.since ? elapsed(now - task.since) : ""}</span>
+                              <span class="rb-elapsed">
+                                  ${task.since ? elapsed(now - task.since) : ""}
+                              </span>
                               ${
                                   stoppable
                                       ? html`<button
@@ -1002,8 +1127,8 @@ function Row({
                     ? row.schedules.map(
                           (schedule) => html`<button
                               key=${schedule.id}
-                              class=${`rb-sched ${schedule.held ? "held" : ""} ${selected === schedule.id ? "on" : ""}`}
-                              onClick=${() => onPick(schedule.id)}
+                              class=${`rb-sched ${schedule.held ? "held" : ""} ${selected === scheduleKey(schedule) ? "on" : ""}`}
+                              onClick=${() => onPick(schedule)}
                           >
                               <span class="rb-sched-text">${schedule.text}</span>
                               <span class="rb-sched-time" title=${schedule.zone}>
@@ -1017,7 +1142,8 @@ function Row({
                                   ${schedule.repeat ? `↻ ${schedule.repeat}` : "once"}
                               </span>
                               <span class="rb-sched-rel">
-                                  ${relative(schedule.next, now)}${schedule.every ? ` · ${schedule.runs}×` : ""}
+                                  ${relative(schedule.next, now)}
+                                  ${schedule.every ? ` · ${schedule.runs}×` : ""}
                               </span>
                           </button>`,
                       )
@@ -1040,20 +1166,34 @@ function Detail({ schedule, now, steer, color, onClose, onOpen, onCancel }) {
                 <${Icon} name="close" size=${16} />
             </button>
         </div>
-        ${schedule.held && html`<div class="rb-held">Held: ${schedule.held}. It goes out when that changes.</div>`}
+        ${
+            schedule.held &&
+            html`<div class="rb-held">
+                Held: ${schedule.held}. At its time it is cancelled, unless that changes first.
+            </div>`
+        }
         <pre class="rb-message">${schedule.text}</pre>
         <dl class="rb-facts">
             <dt>Repeats</dt>
             <dd>${schedule.repeat ?? "no, once"}</dd>
             <dt>Next</dt>
-            <dd>${clock(schedule.next, schedule.zone, now, { day: "always" })}${zone && ` ${zone}`} · ${relative(schedule.next, now)}</dd>
+            <dd>
+                ${clock(schedule.next, schedule.zone, now, { day: "always" })}
+                ${zone && ` ${zone}`}
+                ${" · "}
+                ${relative(schedule.next, now)}
+            </dd>
             <dt>Zone</dt>
             <dd>${schedule.zone}</dd>
             <dt>Set by</dt>
             <dd>${setBy(schedule)}</dd>
             <dt>Set up</dt>
             <dd>${relative(schedule.createdAt, now)}</dd>
-            ${schedule.every && html`<dt>Went out</dt><dd>${schedule.runs} ${schedule.runs === 1 ? "time" : "times"}</dd>`}
+            ${
+                schedule.every &&
+                html`<dt>Went out</dt>
+                    <dd>${schedule.runs} ${schedule.runs === 1 ? "time" : "times"}</dd>`
+            }
             <dt>Id</dt>
             <dd class="mono">${schedule.id}</dd>
         </dl>
@@ -1061,17 +1201,23 @@ function Detail({ schedule, now, steer, color, onClose, onOpen, onCancel }) {
             schedule.upcoming.length > 1 &&
             html`<div class="rb-sub">Coming up</div>
                 <div class="rb-upcoming">
-                    ${schedule.upcoming
-                        .slice(0, 5)
-                        .map(
-                            (t) =>
-                                html`<span key=${t}>${clock(t, schedule.zone, now, { day: "always" })}${zone && ` ${zone}`}</span>`,
-                        )}
+                    ${schedule.upcoming.slice(0, 5).map(
+                        (t) =>
+                            html`<span key=${t}>
+                                    ${clock(t, schedule.zone, now, { day: "always" })}
+                                    ${zone && ` ${zone}`}
+                                </span>`,
+                    )}
                 </div>`
         }
         <div class="rb-actions">
             <button class="button" onClick=${() => onOpen(schedule.session)}>Open session</button>
-            ${steer && html`<button class="button danger" onClick=${() => onCancel(schedule)}>Cancel</button>`}
+            ${
+                steer &&
+                html`<button class="button danger" onClick=${() => onCancel(schedule)}>
+                    Cancel
+                </button>`
+            }
         </div>
     </div>`;
 }
@@ -1113,10 +1259,11 @@ function NextUp({ schedules, now, colorOf, onPick }) {
     return html`<div class="rb-panel" data-part="running-next">
         <div class="label">Next up</div>
         ${times.map(
-            ({
-                at,
-                schedule,
-            }) => html`<button key=${`${schedule.id}-${at}`} class="rb-next" onClick=${() => onPick(schedule.id)}>
+            ({ at, schedule }) => html`<button
+                key=${`${scheduleKey(schedule)}-${at}`}
+                class="rb-next"
+                onClick=${() => onPick(schedule)}
+            >
                 <span class="rb-next-time">${clock(at, schedule.zone, now)}</span>
                 <span class="folder-mark" style=${`--folder:${colorOf(schedule.session)}`}></span>
                 <span class="rb-ellipsis grow">${schedule.text}</span>

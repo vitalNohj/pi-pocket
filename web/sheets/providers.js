@@ -2,13 +2,10 @@
 // sign-in uses to ask for a code or a key.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api, attempt, closeSheet, closeSignIn, signInAnswered, store } from "../store.js";
-import { html, Icon, Loader, Sheet } from "../ui.js";
+import { html, Icon, Loader, MODEL_SEARCH_AT, Sheet } from "../ui.js";
 import { RefreshModelsButton, RefreshModelsStatus } from "../model-refresh.js";
 import { favoriteModels, setModelFavorite } from "../model-favorites.js";
 import { EndpointForm, removeCustomProvider, useCustomProviders } from "./custom-providers.js";
-
-/** Models past this many get a box to find them by. */
-const MODEL_SEARCH_AT = 8;
 
 /** This tab's changes to the models for subagents, one after another: their answers come back in the order sent. */
 let saving = Promise.resolve();
@@ -95,17 +92,15 @@ function SubagentModels({ names }) {
     return html`<div class="subagent-models">
         <div class="subagent-models-heading">
             <div class="label">Subagent models</div>
-            <span class="subagent-models-tools">
-                <span class="small subagent-models-chosen" title=${summary} aria-live="polite">
-                    ${chosen.length} allowed
-                </span>
-                <${RefreshModelsButton} />
+            <${RefreshModelsButton} />
+            <span class="small subagent-models-chosen" title=${summary} aria-live="polite">
+                ${chosen.length} for subagents
             </span>
         </div>
         <${RefreshModelsStatus} />
         <p class="muted small">
-            Check the models subagents and linked sessions may use. With none checked, they use the session's model. A
-            star only pins a model in your model picker.
+            <strong>Checkbox:</strong> models subagents and linked sessions may use. With none checked, they use the
+            session's model. <strong>Star:</strong> only a shortcut in your model picker; it changes no permission.
         </p>
         <div class="segmented model-filters" role="group" aria-label="Filter models">
             ${[
@@ -135,7 +130,7 @@ function SubagentModels({ names }) {
             </label>`
         }
         <div class="subagent-models-legend" aria-hidden="true">
-            <span><${Icon} name="check" size=${13} />${" "}Allowed</span>
+            <span><${Icon} name="check" size=${13} />${" "}Allowed for subagents</span>
             <span>Favorite${" "}<${Icon} name="star" size=${13} /></span>
         </div>
         <div class="subagent-models-list" role="group" aria-label="Subagent models">
@@ -240,6 +235,39 @@ function LimitWait() {
     </div>`;
 }
 
+/** Where a sign-in's key comes from, in words. */
+const SOURCES = { models_json_key: "key in models.json", models_json_command: "key command" };
+/** Where an endpoint's key is, in words. */
+const ENDPOINT_KEYS = {
+    stored: "key stored",
+    file: "key in models.json",
+    none: "no key",
+    missing: "no key set",
+};
+
+const modelCount = (n) => `${n} ${n === 1 ? "model" : "models"}`;
+
+/** A provider row's line under its name: its sign-in and its models, or what the row adds. */
+function aboutOf(provider, endpoint) {
+    if (provider.about) {
+        return provider.about;
+    }
+
+    if (endpoint !== undefined && !provider.needsSignIn) {
+        return `${endpoint.baseUrl} · ${ENDPOINT_KEYS[endpoint.key]} · ${modelCount(provider.models)}`;
+    }
+
+    const account = provider.label || SOURCES[provider.source] || provider.source;
+    const signIn = provider.needsSignIn
+        ? "the sign-in expired and could not be renewed: sign in again. Until then, sessions " +
+          "on its models fail, and PiP and subagents on other models do not use them"
+        : provider.configured
+          ? `signed in${account ? ` · ${account}` : ""}`
+          : "not configured";
+
+    return `${signIn} · ${modelCount(provider.models)}`;
+}
+
 /** How long a panel under a row takes to close: `.provider-panel.closing` in style.css. */
 const PANEL_CLOSE_MS = 180;
 
@@ -283,6 +311,9 @@ function RowPanel({ open, children }) {
     </div>`;
 }
 
+/** The endpoint form's value while it adds one: no endpoint id has a colon. */
+const ADDING = ":add";
+
 export function ProvidersSheet() {
     const { me, auth } = store.state;
     const [providers, setProviders] = useState(null);
@@ -301,7 +332,7 @@ export function ProvidersSheet() {
     }, [auth]);
     const owner = me?.role === "owner";
     const custom = useCustomProviders(owner);
-    // The endpoint form: "new", an endpoint's id, or null when closed.
+    // The endpoint form: ADDING, an endpoint's id, or null when closed.
     const [endpointForm, setEndpointForm] = useState(null);
     const customIds = new Set((custom.list ?? []).map((endpoint) => endpoint.id));
 
@@ -338,6 +369,9 @@ export function ProvidersSheet() {
                   adds: true,
                   models: 0,
                   words: "custom endpoint local self-hosted ollama lm studio vllm llama.cpp proxy",
+                  about:
+                      "Any server with the OpenAI API (Ollama, LM Studio, vLLM, a proxy): " +
+                      "a URL, a key, and its models",
               },
           ]
         : [];
@@ -370,8 +404,9 @@ export function ProvidersSheet() {
     const noteGroup = (groups.find(([title]) => title === "Signed in") ??
         groups.find(([title]) => title === "Not configured") ??
         groups[0])?.[0];
+    const noteMore = owner ? "" : " · only the owner can change them";
     const note = html`<p class="providers-note">
-        Shared with Pi · <span class="mono">~/.pi/agent/auth.json</span>${owner ? "" : " · only the owner can change them"}
+        Shared with Pi · <span class="mono">~/.pi/agent/auth.json</span>${noteMore}
     </p>`;
 
     // A sign-in opens under its provider's row; one whose row is not shown (a search hides it) opens above the list.
@@ -379,7 +414,7 @@ export function ProvidersSheet() {
     const formFor = (provider) =>
         endpointForm !== null &&
         (endpointForm === provider.id ||
-            (endpointForm === "new" && provider.id === "openai-compatible"));
+            (endpointForm === ADDING && provider.id === "openai-compatible"));
     const isOpen = (provider) => auth?.providerId === provider.id || formFor(provider);
 
     // A row, and under it, inside the list, what its buttons opened: its sign-in, or the endpoint form.
@@ -411,15 +446,12 @@ export function ProvidersSheet() {
                         : provider.configured && html` <span class="ok">✓</span>`
                 }
             </div>
-            ${
-                provider.adds
-                    ? html`<div class="muted small">
-                          Any server with the OpenAI API (Ollama, LM Studio, vLLM, a proxy): a URL, a key, and its models
-                      </div>`
-                    : html`<div class="muted small">
-                ${provider.needsSignIn ? "the sign-in expired and could not be renewed: sign in again. Until then, sessions on its models fail, and PiP and subagents on other models do not use them" : provider.configured ? `signed in${provider.label ? ` · ${provider.label}` : provider.source ? ` · ${provider.source}` : ""}` : "not configured"} · ${provider.models} models
-                    </div>`
-            }
+            <div class="muted small">
+                ${aboutOf(
+                    provider,
+                    custom.list?.find((endpoint) => endpoint.id === provider.id),
+                )}
+            </div>
             ${
                 provider.needsSignIn &&
                 html`<div class="muted small mono provider-why">${provider.needsSignIn}</div>`
@@ -432,8 +464,8 @@ export function ProvidersSheet() {
                     provider.adds &&
                     html`<button
                         class="button small"
-                        aria-expanded=${endpointForm === "new"}
-                        onClick=${() => openEndpointForm("new")}
+                        aria-expanded=${endpointForm === ADDING}
+                        onClick=${() => openEndpointForm(ADDING)}
                     >
                         Add
                     </button>`

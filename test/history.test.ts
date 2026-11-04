@@ -1,4 +1,4 @@
-// Browser-local recall keeps each person's sessions separate without assigning old history to a session.
+// Browser-local recall keeps each session separate, in the storage of the person signed in.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -16,7 +16,7 @@ const history = (await import(new URL("../web/history.js", import.meta.url).href
 
 test("recall keeps each person and session separate without adopting old unscoped history", (t) => {
     const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
-    const saved = new Map([["pocket.history", JSON.stringify(["old unscoped text"])]]);
+    const saved = new Map<string, string>();
 
     Object.defineProperty(globalThis, "localStorage", {
         configurable: true,

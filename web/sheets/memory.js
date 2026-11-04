@@ -122,7 +122,7 @@ export function memoryHint(data) {
 }
 
 /**
- * The owner's private review queue across every project, not just the lessons that apply here: PiP's strip, in its
+ * The owner's review queue across every project, not just the lessons that apply here: PiP's strip, in its
  * floating panel and above its box as a board. It shows only while something waits for approval (or the server must
  * restart to list them): with none, nothing. `before` runs ahead of the sheet opening (the panel closes first).
  */

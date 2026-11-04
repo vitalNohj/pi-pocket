@@ -8,12 +8,22 @@
  * (which Pi reads) or one that Pi refuses is left alone, with a message, so a hand-made file never loses anything.
  * Fields it does not manage (headers, compat, a model's metadata) are kept as they are.
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { PocketApp } from "./app.ts";
 import { describe, HttpError } from "./errors.ts";
+import { MODELS_JSON_REFUSED } from "./model-refresh.ts";
 
 /** The API every endpoint here speaks. */
 const API = "openai-completions";
@@ -53,7 +63,7 @@ export interface CustomProviderInput {
 type Json = Record<string, unknown>;
 
 /** Pi's `models.json`, as `ModelRuntime.create()` finds it. */
-export function modelsPath(): string {
+function modelsPath(): string {
     return join(getAgentDir(), "models.json");
 }
 
@@ -70,7 +80,7 @@ function text(value: unknown, name: string, max: number): string {
 }
 
 /** An http(s) URL without a trailing slash: Pi adds `/chat/completions` to it. */
-export function baseUrlOf(value: unknown): string {
+function baseUrlOf(value: unknown): string {
     const raw = text(value, "a base URL", MAX_URL);
     let url: URL;
 
@@ -92,7 +102,7 @@ export function baseUrlOf(value: unknown): string {
 }
 
 /** The models asked for: ids, each once, with a context window when the endpoint said one. */
-export function modelsOf(value: unknown): CustomModel[] {
+function modelsOf(value: unknown): CustomModel[] {
     if (!Array.isArray(value)) {
         throw new HttpError(400, "models must be a list.");
     }
@@ -127,6 +137,15 @@ export function modelsOf(value: unknown): CustomModel[] {
     return [...seen.values()];
 }
 
+/** The text of models.json as it is now; undefined when there is none. */
+function rawModels(): string | undefined {
+    try {
+        return readFileSync(modelsPath(), "utf8");
+    } catch {
+        return undefined;
+    }
+}
+
 /** A provider id from its name: lowercase words joined by `-`, not one Pi already has. */
 export function idFor(name: string, taken: (id: string) => boolean): string {
     const base =
@@ -135,7 +154,7 @@ export function idFor(name: string, taken: (id: string) => boolean): string {
             .normalize("NFKD")
             .replace(/[^a-z0-9]+/g, "-")
             .replace(/^-+|-+$/g, "")
-            .slice(0, 40) || "openai-compatible";
+            .slice(0, 40) || "endpoint";
     let id = base;
 
     for (let n = 2; taken(id); n++) {
@@ -145,58 +164,56 @@ export function idFor(name: string, taken: (id: string) => boolean): string {
     return id;
 }
 
-/** The ids of an endpoint's models, from an OpenAI `/models` answer (or the shapes close to it). */
+/** The ids of an endpoint's models, from an OpenAI `/models` answer, with vLLM's context windows. */
 export function parseModelList(body: unknown): CustomModel[] {
-    const list = Array.isArray(body)
-        ? body
-        : Array.isArray((body as Json | null)?.data)
-          ? ((body as Json).data as unknown[])
-          : Array.isArray((body as Json | null)?.models)
-            ? ((body as Json).models as unknown[])
-            : undefined;
+    const list = (body as Json | null)?.data;
 
-    if (list === undefined) {
+    if (!Array.isArray(list)) {
         throw new Error("The answer has no list of models.");
     }
 
-    const models: CustomModel[] = [];
+    const models = new Map<string, CustomModel>();
 
-    for (const each of list) {
-        const entry = (typeof each === "string" ? { id: each } : each) as Json | null;
-        const id = entry?.id ?? entry?.model ?? entry?.name;
+    for (const entry of list as (Json | null)[]) {
+        const id = entry?.id;
+        const window = entry?.max_model_len;
 
-        if (typeof id !== "string" || id === "" || id.length > MAX_ID) {
-            continue;
+        if (typeof id === "string" && id !== "" && id.length <= MAX_ID) {
+            models.set(id, {
+                id,
+                ...(typeof window === "number" && window >= 1
+                    ? { contextWindow: Math.floor(window) }
+                    : {}),
+            });
         }
-
-        const window = [entry?.context_length, entry?.max_model_len, entry?.context_window].find(
-            (value) => typeof value === "number" && Number.isFinite(value) && value > 0,
-        ) as number | undefined;
-
-        models.push({ id, ...(window === undefined ? {} : { contextWindow: Math.floor(window) }) });
     }
 
-    return [...new Map(models.map((model) => [model.id, model])).values()]
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .slice(0, MAX_MODELS);
+    return [...models.values()].sort((a, b) => a.id.localeCompare(b.id)).slice(0, MAX_MODELS);
 }
 
 export class CustomProviders {
     readonly #app: PocketApp;
-    readonly #path: () => string;
-    readonly #fetch: typeof fetch;
     /** Changes, one after another: each reads the file the one before wrote. */
     #queue: Promise<unknown> = Promise.resolve();
+    /** The file's text when the change in progress read it. */
+    #seen: string | undefined;
 
-    constructor(app: PocketApp, options: { path?: () => string; fetch?: typeof fetch } = {}) {
+    constructor(app: PocketApp) {
         this.#app = app;
-        this.#path = options.path ?? modelsPath;
-        this.#fetch = options.fetch ?? ((url, init) => fetch(url, init));
     }
 
     /** The endpoints in `models.json` that this sheet manages: OpenAI-compatible, with a base URL, not built in. */
     list(): CustomProvider[] {
-        const providers = (this.#read()?.providers ?? {}) as Record<string, Json>;
+        let config: Json | undefined;
+
+        // A file Pi Pocket does not rewrite (comments, trailing commas) has no endpoints to edit here.
+        try {
+            config = this.#read();
+        } catch {
+            return [];
+        }
+
+        const providers = (config?.providers ?? {}) as Record<string, Json>;
 
         return Object.entries(providers)
             .filter(([id, entry]) => this.#manages(id, entry))
@@ -221,10 +238,16 @@ export class CustomProviders {
             const key = this.#keyInput(input, true);
             const config = await this.#editable();
             const providers = config.providers as Record<string, Json>;
+            // An id that auth.json still has a key for (an endpoint removed by hand) is taken: that key
+            // is not this one's.
+            const keyed = new Set(
+                (await this.#app.models.listCredentials()).map((each) => each.providerId),
+            );
             const id = idFor(
                 name,
                 (each) =>
                     each in providers ||
+                    keyed.has(each) ||
                     this.#app.models.getProvider(each) !== undefined ||
                     getBuiltinProviders().includes(each as never),
             );
@@ -236,11 +259,11 @@ export class CustomProviders {
                 ...(key === NO_KEY ? { apiKey: NO_KEY } : {}),
                 models: models.map(entryOf),
             };
-            this.#write(config);
+            await this.#write(config);
             await this.#applied(id);
 
             if (key !== undefined && key !== NO_KEY) {
-                await this.#storeKey(id, key);
+                await this.#app.providers.storeApiKey(id, key);
             }
 
             return this.#one(id);
@@ -262,8 +285,27 @@ export class CustomProviders {
                 entry.name = text(input.name, "a name", MAX_NAME);
             }
 
+            const key = this.#keyInput(input, false);
+            let moved = false;
+
             if (input.baseUrl !== undefined) {
-                entry.baseUrl = baseUrlOf(input.baseUrl);
+                const baseUrl = baseUrlOf(input.baseUrl);
+
+                moved = new URL(String(entry.baseUrl)).origin !== new URL(baseUrl).origin;
+
+                // The saved key goes only where it was saved for, as in `discover`: also one Pi stored.
+                if (
+                    key === undefined &&
+                    moved &&
+                    (entry.apiKey !== NO_KEY || (await this.#stored(id)))
+                ) {
+                    throw new HttpError(
+                        400,
+                        "The URL changed. Enter the API key again, or choose No key.",
+                    );
+                }
+
+                entry.baseUrl = baseUrl;
             }
 
             if (input.models !== undefined) {
@@ -279,22 +321,37 @@ export class CustomProviders {
                 );
             }
 
-            const key = this.#keyInput(input, false);
-
             if (key === NO_KEY) {
                 entry.apiKey = NO_KEY;
-            } else if (key !== undefined && entry.apiKey === NO_KEY) {
-                // A real key replaces the placeholder: the stored sign-in carries it from now on.
+            } else if (key !== undefined && (entry.apiKey === NO_KEY || moved)) {
+                // A real key replaces the placeholder, and on a move a key in the file too: it was for
+                // the old address.
                 delete entry.apiKey;
             }
 
-            this.#write(config);
-            await this.#applied(id);
+            // The old key goes before the new address is in the file, so no request takes it there. A save that is
+            // refused puts it back, unless a sign-in or sign-out came meanwhile.
+            const taken =
+                key === NO_KEY || (key !== undefined && moved)
+                    ? await this.#takeKey(id)
+                    : undefined;
 
-            if (key === NO_KEY) {
-                await this.#forgetKey(id);
-            } else if (key !== undefined) {
-                await this.#storeKey(id, key);
+            try {
+                await this.#write(config);
+            } catch (error) {
+                if (taken !== undefined) {
+                    await this.#app.providers.restoreApiKey(id, taken.key, taken.epoch);
+                }
+
+                throw error;
+            }
+
+            try {
+                await this.#applied(id);
+            } finally {
+                if (key !== undefined && key !== NO_KEY) {
+                    await this.#app.providers.storeApiKey(id, key);
+                }
             }
 
             return this.#one(id);
@@ -313,7 +370,7 @@ export class CustomProviders {
             }
 
             delete providers[id];
-            this.#write(config);
+            await this.#write(config);
             await this.#forgetKey(id);
             await this.#applied(id);
         });
@@ -323,37 +380,54 @@ export class CustomProviders {
      * Ask an endpoint for its models (`GET <baseUrl>/models`), with the key given, or else the saved endpoint's own.
      * The owner's to ask, so a local or private address is allowed: that is where such servers often are.
      */
-    async discover(input: {
+    discover(input: { baseUrl?: unknown; apiKey?: unknown; id?: unknown }): Promise<CustomModel[]> {
+        // After any save in progress: a saved key is read with the address it belongs to.
+        return this.#serial(() => this.#discover(input));
+    }
+
+    async #discover(input: {
         baseUrl?: unknown;
         apiKey?: unknown;
         id?: unknown;
     }): Promise<CustomModel[]> {
         const baseUrl = baseUrlOf(input.baseUrl);
-        const headers: Record<string, string> = { accept: "application/json" };
+        const headers = new Headers({ accept: "application/json" });
         let key =
             typeof input.apiKey === "string" && input.apiKey.trim() !== ""
                 ? input.apiKey.trim()
                 : undefined;
 
-        if (
-            key === undefined &&
-            typeof input.id === "string" &&
-            this.list().some((each) => each.id === input.id)
-        ) {
-            const auth = await this.#app.models.getAuth(input.id).catch(() => undefined);
+        const saved =
+            key === undefined && typeof input.id === "string"
+                ? this.list().find((each) => each.id === input.id)
+                : undefined;
+
+        if (saved !== undefined && saved.key !== "none") {
+            // The saved key goes only where it was saved for: a new address needs the key typed again.
+            if (new URL(saved.baseUrl).origin !== new URL(baseUrl).origin) {
+                throw new HttpError(400, "The URL changed. Enter the API key again to ask it.");
+            }
+
+            const auth = await this.#app.models.getAuth(saved.id).catch(() => undefined);
 
             key = auth?.auth.apiKey;
-            Object.assign(headers, auth?.auth.headers ?? {});
+
+            for (const [name, value] of Object.entries(auth?.auth.headers ?? {})) {
+                if (value !== null) {
+                    headers.set(name, value);
+                }
+            }
         }
 
         if (key !== undefined && key !== NO_KEY) {
-            headers.authorization = `Bearer ${key}`;
+            // One Authorization header, also where Pi's own (`authHeader`) carries the same key.
+            headers.set("authorization", `Bearer ${key}`);
         }
 
         let response: Response;
 
         try {
-            response = await this.#fetch(`${baseUrl}/models`, {
+            response = await fetch(`${baseUrl}/models`, {
                 headers,
                 signal: AbortSignal.timeout(DISCOVER_MS),
             });
@@ -374,7 +448,8 @@ export class CustomProviders {
                 502,
                 response.status === 401 || response.status === 403
                     ? `The endpoint refused the key (${String(response.status)}).`
-                    : `The endpoint answered ${String(response.status)} for ${baseUrl}/models. Add model IDs by hand.`,
+                    : `The endpoint answered ${String(response.status)} for ${baseUrl}/models. ` +
+                          "Add model IDs by hand.",
             );
         }
 
@@ -439,7 +514,12 @@ export class CustomProviders {
 
     /** `models.json` as Pi Pocket may rewrite it: plain JSON that Pi accepts, or a new one. */
     async #editable(): Promise<Json> {
-        const config = this.#read() ?? { providers: {} };
+        this.#seen = rawModels();
+        const config = this.#read();
+
+        if (config === undefined) {
+            return { providers: {} };
+        }
 
         if (
             typeof config.providers !== "object" ||
@@ -449,22 +529,8 @@ export class CustomProviders {
             throw new HttpError(409, "models.json has no providers object. Fix it by hand first.");
         }
 
-        if (existsSync(this.#path())) {
-            const checked = await ModelRuntime.create({
-                modelsPath: this.#path(),
-                refreshOnCreate: false,
-            });
-
-            if (
-                /Failed to (?:load|parse) models.json|Invalid models.json schema/.test(
-                    checked.getError() ?? "",
-                )
-            ) {
-                throw new HttpError(
-                    409,
-                    "Pi cannot read models.json as it is. Fix it by hand first.",
-                );
-            }
+        if ((await refusal(modelsPath())) !== undefined) {
+            throw new HttpError(409, "Pi cannot read models.json as it is. Fix it by hand first.");
         }
 
         return config;
@@ -475,7 +541,7 @@ export class CustomProviders {
         let raw: string;
 
         try {
-            raw = readFileSync(this.#path(), "utf8").replace(/^\uFEFF/, "");
+            raw = readFileSync(modelsPath(), "utf8").replace(/^\uFEFF/, "");
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code === "ENOENT") {
                 return undefined;
@@ -499,27 +565,48 @@ export class CustomProviders {
         } catch {
             throw new HttpError(
                 409,
-                "models.json is not plain JSON (it may have comments or trailing commas), so Pi Pocket leaves it alone. Edit it by hand.",
+                "models.json is not plain JSON (it may have comments or trailing commas), " +
+                    "so Pi Pocket leaves it alone. Edit it by hand.",
             );
         }
     }
 
-    /** Write the whole file at once (a temporary file, then a rename), private, with its folder made when missing. */
-    #write(config: Json): void {
-        const path = this.#path();
+    /**
+     * Write the whole file at once (a temporary file, then a rename), private, with its folder made when missing.
+     * A file Pi would refuse is not written: Pi then loads none of its providers.
+     */
+    async #write(config: Json): Promise<void> {
+        const link = modelsPath();
+        // A models.json that links elsewhere (a dotfiles folder) stays a link: the file it names changes.
+        const path = existsSync(link) ? realpathSync(link) : link;
         const temp = `${path}.${String(process.pid)}.tmp`;
 
         mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
         writeFileSync(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
         chmodSync(temp, 0o600);
+
+        const refused = await refusal(temp);
+
+        if (refused !== undefined) {
+            rmSync(temp, { force: true });
+
+            throw new HttpError(400, `Pi did not accept the endpoint: ${refused}`);
+        }
+
+        // Another server or Pi changed the file since it was read: writing now would undo that change.
+        if (rawModels() !== this.#seen) {
+            rmSync(temp, { force: true });
+
+            throw new HttpError(409, "models.json changed meanwhile. Try again.");
+        }
+
         renameSync(temp, path);
     }
 
     /** Pi's runtime reads the provider again: its models come, change, or go, and every tab gets them. */
     async #applied(id: string): Promise<void> {
         const models = this.#app.models;
-
-        await models.refresh({ allowNetwork: false, providers: [id] });
+        const { errors } = await models.refresh({ allowNetwork: false, providers: [id] });
         const problem = (models.getError() ?? "")
             .split("\n")
             .find((line) => line.startsWith(`Provider "${id}":`));
@@ -529,22 +616,40 @@ export class CustomProviders {
         if (problem !== undefined) {
             throw new HttpError(400, `Pi did not accept the endpoint: ${problem}`);
         }
+
+        // Not the error itself, which can come from the sign-in store.
+        if (errors.has(id)) {
+            throw new HttpError(500, "Pi could not load the endpoint. Try Refresh models.");
+        }
     }
 
-    /** The key, as a stored API-key sign-in: the same as the Providers sheet's API key button stores. */
-    async #storeKey(id: string, key: string): Promise<void> {
-        await this.#app.models.login(id, "api_key", {
-            prompt: () => Promise.resolve(key),
-            notify: () => {},
-        });
-        await this.#app.models.getAvailable().catch(() => []);
-        this.#app.providers.modelsChanged();
+    /** Remove the endpoint's stored key; give it back, with the sign-in count after, for a save to put back. */
+    async #takeKey(id: string): Promise<{ key: string; epoch: number } | undefined> {
+        if (!(await this.#stored(id))) {
+            return undefined;
+        }
+
+        const providers = this.#app.providers;
+        const epoch = providers.signInEpoch(id);
+        const key = (await this.#app.models.getAuth(id).catch(() => undefined))?.auth.apiKey;
+
+        await providers.logout(id);
+
+        // Another sign-in or sign-out ended meanwhile: the key read may not be the one that went.
+        return key === undefined || providers.signInEpoch(id) !== epoch + 1
+            ? undefined
+            : { key, epoch: epoch + 1 };
     }
 
     async #forgetKey(id: string): Promise<void> {
-        if (this.#app.models.getProviderAuthStatus(id).source === "stored") {
+        if (await this.#stored(id)) {
             await this.#app.providers.logout(id);
         }
+    }
+
+    /** Whether auth.json has a key for the endpoint now: also one that Pi in a terminal stored. */
+    async #stored(id: string): Promise<boolean> {
+        return (await this.#app.models.listCredentials()).some((each) => each.providerId === id);
     }
 
     #one(id: string): CustomProvider {
@@ -556,6 +661,24 @@ export class CustomProviders {
 
         return found;
     }
+}
+
+/** What Pi says when it refuses a `models.json` file, by the field it refuses; undefined when Pi reads the file. */
+async function refusal(path: string): Promise<string | undefined> {
+    const runtime = await ModelRuntime.create({ modelsPath: path, refreshOnCreate: false });
+    const error = runtime.getError() ?? "";
+
+    if (!MODELS_JSON_REFUSED.test(error)) {
+        return undefined;
+    }
+
+    // Not the parser's own words: they can quote the file, and a hand-made key with it.
+    return (
+        error
+            .split("\n")
+            .find((line) => line.startsWith("  - "))
+            ?.slice(4) ?? "the file is not valid"
+    );
 }
 
 function entryOf(model: CustomModel): Json {

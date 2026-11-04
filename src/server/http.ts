@@ -15,14 +15,22 @@ import { appleTouchIcon, iconAddress, iconRoute, manifestFor } from "./http/icon
 import { extensionFile } from "./http/extension-routes.ts";
 import { hookRoute } from "./http/hook-routes.ts";
 import { linkRoute } from "./http/link-routes.ts";
-import { serveApp, serveFile, VENDOR, WEB } from "./http/assets.ts";
+import {
+    KATEX_CSS,
+    KATEX_FONT,
+    katexFont,
+    serveApp,
+    serveFile,
+    VENDOR,
+    WEB,
+} from "./http/assets.ts";
 import { type HttpOptions, json, readJson } from "./http/io.ts";
 import { LINK_CODE_PATH } from "../runner/protocol.ts";
 import { join as joinPage, login, sharePage } from "./http/sign-in.ts";
 import { themeFile } from "./http/theme-routes.ts";
 
-/** The version of the desktop host bridge the web app speaks (`web/host.js`). */
-const DESKTOP_BRIDGE = 1;
+/** The version of the app bridge the web app speaks (`web/host.js`). */
+const BRIDGE_VERSION = 1;
 
 export function createHandler(options: HttpOptions) {
     const { app } = options;
@@ -45,10 +53,11 @@ export function createHandler(options: HttpOptions) {
 
             response.setHeader("x-content-type-options", "nosniff");
 
-            // What a desktop app around Pi Pocket asks before it signs in: that this is Pi Pocket, and which version of
-            // the host bridge its page speaks (`web/host.js`, docs/desktop.md). No version of Pi Pocket, ever.
+            // What an embedder (an app that shows Pi Pocket) asks before it signs in: that this is
+            // Pi Pocket, and which version of the app bridge its page speaks (`web/host.js`,
+            // docs/embedders.md). No version of Pi Pocket, ever.
             if (path === "/api/pocket/info" && request.method === "GET") {
-                return json(response, 200, { name: "pi-pocket", bridge: DESKTOP_BRIDGE });
+                return json(response, 200, { name: "pi-pocket", bridge: BRIDGE_VERSION });
             }
 
             if (parts[0] === "api") {
@@ -160,6 +169,20 @@ export function createHandler(options: HttpOptions) {
 
                     return void response.end(body);
                 }
+            }
+
+            if (parts[0] === "vendor" && parts[1] === "katex.css" && parts.length === 2) {
+                return await serveFile(request, response, KATEX_CSS, "text/css; charset=utf-8");
+            }
+
+            // Only the names the stylesheet asks for: nothing else under the package is reachable.
+            if (
+                parts[0] === "vendor" &&
+                parts[1] === "fonts" &&
+                parts.length === 3 &&
+                KATEX_FONT.test(parts[2]!)
+            ) {
+                return await serveFile(request, response, katexFont(parts[2]!), "font/woff2");
             }
 
             if (parts[0] === "login" && (request.method === "GET" || request.method === "POST")) {

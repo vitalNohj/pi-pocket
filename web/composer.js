@@ -104,12 +104,21 @@ function loadPastes(id) {
 }
 
 const attachedKey = (id) => `attached.${id ?? "home"}`;
+let attachmentsStopped = false;
+
+addEventListener("pocket:signedOut", () => {
+    attachmentsStopped = true;
+});
 
 /**
  * Each conversation's uploaded files, kept with its draft: the browser drops a tab in the background, or reloads it after
  * an update, and the files must still be there. A file still uploading is not kept: its upload ends with the page.
  */
 function loadAttached(id) {
+    if (attachmentsStopped || !store.state.me?.id) {
+        return [];
+    }
+
     try {
         const list = JSON.parse(personStorage.get(attachedKey(id)) ?? "[]");
 
@@ -118,7 +127,9 @@ function loadAttached(id) {
             name: attachment.name,
             size: attachment.size,
             state: "done",
-            preview: attachment.mime?.startsWith("image/") ? fileUrl(attachment.path) : null,
+            preview: /^image\/(?!heic|heif)/.test(attachment.mime ?? "")
+                ? fileUrl(attachment.path)
+                : null,
             attachment,
         }));
     } catch {
@@ -127,6 +138,10 @@ function loadAttached(id) {
 }
 
 function saveAttached(id, files) {
+    if (attachmentsStopped || !store.state.me?.id) {
+        return;
+    }
+
     const list = files.filter((file) => file.state === "done").map((file) => file.attachment);
 
     personStorage.set(attachedKey(id), list.length === 0 ? null : JSON.stringify(list));
@@ -500,6 +515,13 @@ export function Composer() {
         return () => clearTimeout(timer);
     }, [interrupting]);
     useEffect(() => saveAttached(conversationId, files), [files]);
+    useEffect(() => {
+        const clear = () => setFiles([]);
+
+        addEventListener("pocket:signedOut", clear);
+
+        return () => removeEventListener("pocket:signedOut", clear);
+    }, []);
     useEffect(() => {
         const draft = drafts.get(conversationId);
 
@@ -878,7 +900,9 @@ export function Composer() {
                 name: attachment.name,
                 size: attachment.size,
                 state: "done",
-                preview: attachment.mime.startsWith("image/") ? fileUrl(attachment.path) : null,
+                preview: /^image\/(?!heic|heif)/.test(attachment.mime)
+                    ? fileUrl(attachment.path)
+                    : null,
                 attachment,
             })),
             ...list,
@@ -1178,7 +1202,9 @@ export function Composer() {
               : sendMode === "interrupt"
                 ? "Stop the run and send this now…"
                 : "Queue a message for after this run…"
-          : "Ask Pi anything…";
+          : conversationId === store.state.pip?.id
+            ? "Ask PiP anything…"
+            : "Ask Pi anything…";
     const inbox = view.inbox ?? [];
     const { me, users } = store.state;
     const queuedBy = (item) =>
@@ -1525,7 +1551,23 @@ export function Composer() {
                                 ) => html`<span class=${`chip ${file.preview ? "with-thumb" : ""}`}>
                                     ${
                                         file.preview &&
-                                        html`<img class="chip-thumb" src=${file.preview} alt="" />`
+                                        html`<img
+                                            class="chip-thumb"
+                                            src=${file.preview}
+                                            alt=""
+                                            onError=${() => {
+                                                // A browser that cannot decode the photo (HEIC in Chromium)
+                                                // shows the file's chip instead of a broken image.
+                                                URL.revokeObjectURL(file.preview);
+                                                setFiles((current) =>
+                                                    current.map((each) =>
+                                                        each.key === file.key
+                                                            ? { ...each, preview: null }
+                                                            : each,
+                                                    ),
+                                                );
+                                            }}
+                                        />`
                                     }
                                     ${file.state === "uploading" ? html`<${Spinner} />` : file.preview ? "" : html`<${Icon} name="clip" size=${13} />`}
                                     <span class="chip-name" title=${file.name}>${file.name}</span>
@@ -2114,7 +2156,7 @@ defineItem("status", {
             class=${`guard ${guard.enabled && !failed ? "" : "off"}`}
             aria-label=${`Lancet Guard ${state}`}
             title=${guard.detail}
-            onClick=${() => openSheet({ type: "extensions", tab: "installed", show: "built-in" })}
+            onClick=${() => openSheet({ type: "extensions", tab: "installed" })}
         >
             <${Icon} name="shield" size=${11} />
             <span><span class="word">guard${" "}</span>${state}</span>

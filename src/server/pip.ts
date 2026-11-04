@@ -72,10 +72,10 @@ export const PIP_EXTENSIONS = [
     "pocket-memory",
 ];
 /**
- * The tools PiP goes without: Pi Durable's coding tools (it reads files, and changes nothing itself), and the artifact
- * card, which its small panel does not draw (`artifact` still opens in the viewer).
+ * The tools PiP goes without: Pi Durable's coding tools (it reads files, and changes nothing itself). Its `artifact`
+ * has no `inline` (`withoutInline`): its small panel does not draw cards, and the viewer still opens the artifact.
  */
-export const PIP_WITHOUT = ["bash", "write", "edit", "artifact_inline"];
+export const PIP_WITHOUT = ["bash", "write", "edit"];
 /** How reports from followed sessions start, so PiP knows what they are. */
 export const REPORT_HEAD = "[report] ";
 /** Sessions PiP may start in an hour, so a confused loop cannot fill the list. */
@@ -1147,7 +1147,11 @@ export class Pip {
         folders.add(app.defaultCwd);
 
         for (const folder of [clone, ...[...folders].slice(0, 200)]) {
-            if (existsSync(folder) && sameRepo(await this.#origin(folder), info.repo)) {
+            if (
+                app.workspaceScheme(folder) === undefined &&
+                existsSync(folder) &&
+                sameRepo(await this.#origin(folder), info.repo)
+            ) {
                 return (
                     await git(folder, ["rev-parse", "--show-toplevel"]).catch(() => folder)
                 ).trim();
@@ -1684,7 +1688,11 @@ export class Pip {
                 };
 
                 await strand(watch.value);
-                watch.start(strand);
+                watch.start(async (call) => {
+                    if (call.kind === "value") {
+                        await strand(call.value);
+                    }
+                });
             }
 
             settled = await submission.wait(context);

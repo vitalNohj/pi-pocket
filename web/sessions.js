@@ -334,7 +334,43 @@ function needsYouCount(sessions = store.state.sessions, state = store.state) {
     );
 }
 
-function slotOf(session, { state, collabs, answered }) {
+/** Whether Pi works in a session itself: a run, a request waiting for a limit, its subagents, or background tasks. */
+function atWork(session) {
+    const counts = session.subagents ?? {};
+
+    return (
+        session.busy ||
+        session.limited !== undefined ||
+        (counts.working ?? 0) + (counts.waiting ?? 0) > 0 ||
+        session.background > 0
+    );
+}
+
+/**
+ * The sessions whose linked sessions, at any depth, are at work: one that started them waits for their reports, so it
+ * is at work too, though nothing runs in it until they answer.
+ */
+function linkedAtWork(sessions) {
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    const team = new Set();
+
+    for (const session of sessions) {
+        if (session.archived || !atWork(session)) {
+            continue;
+        }
+
+        let parent = session.linkedFrom?.id;
+
+        while (parent !== undefined && !team.has(parent)) {
+            team.add(parent);
+            parent = byId.get(parent)?.linkedFrom?.id;
+        }
+    }
+
+    return team;
+}
+
+function slotOf(session, { state, collabs, answered, team }) {
     const need = needOf(session, state);
     const ask = session.approval;
     // A call answered from here is no longer yours while the list has not heard yet, unless more wait behind it.
@@ -353,14 +389,7 @@ function slotOf(session, { state, collabs, answered }) {
         return "ready";
     }
 
-    const counts = session.subagents ?? {};
-
-    return session.busy ||
-        session.limited !== undefined ||
-        (counts.working ?? 0) + (counts.waiting ?? 0) > 0 ||
-        session.background > 0
-        ? "working"
-        : "quiet";
+    return atWork(session) || team?.has(session.id) ? "working" : "quiet";
 }
 
 const NEED_RANK = { ask: 0, failed: 1, agents: 2 };
@@ -571,7 +600,7 @@ export function deselectInList() {
  * holds wins: a call waiting for you, a request waiting for its provider's limit to clear, Pi or its subagents at work, a failed run (solid while new, drawn once seen),
  * finished since this browser last looked or marked unread (solid), and read or never run (hollow).
  */
-function stateMark(session, working, marked, unseen = finishedUnseen(session)) {
+function stateMark(session, working, marked, unseen = finishedUnseen(session), team = false) {
     const fresh = marked || unseen;
 
     if (session.waiting) {
@@ -585,6 +614,10 @@ function stateMark(session, working, marked, unseen = finishedUnseen(session)) {
 
     if (session.busy || working) {
         return { shape: "working", label: "Working" };
+    }
+
+    if (team) {
+        return { shape: "working", label: "Its linked sessions are working" };
     }
 
     if (session.failed) {
@@ -620,7 +653,20 @@ export function sessionMark(session) {
         session,
         (counts.working ?? 0) + (counts.waiting ?? 0) > 0,
         isUnread(session.id),
+        undefined,
+        teamOf(store.state.sessions).has(session.id),
     );
+}
+
+/** `linkedAtWork` of the list, worked out again only when the list changes. */
+let teamFor = { sessions: null, team: new Set() };
+
+function teamOf(sessions) {
+    if (teamFor.sessions !== sessions) {
+        teamFor = { sessions, team: linkedAtWork(sessions) };
+    }
+
+    return teamFor.team;
 }
 
 /**
@@ -659,6 +705,7 @@ function SessionRow({
     steers,
     hovers,
     slot,
+    team,
     need,
     expanded,
     answering,
@@ -711,7 +758,7 @@ function SessionRow({
     // Subagents at work, or failed ones nobody dealt with, but not over a call waiting for you: that says more.
     const fork = !session.waiting && (live > 0 || failed > 0);
     const person = collabs ? (session.people ?? []).find((each) => each.id !== meId) : undefined;
-    const mark = stateMark(session, live > 0, marked, unseen);
+    const mark = stateMark(session, live > 0, marked, unseen, team);
     const ask = need === "ask" ? session.approval : undefined;
     const names = (session.failedAgents ?? []).map((agent) => agent.name);
     const why =
@@ -1183,6 +1230,7 @@ const listKept = { query: "", scroll: 0 };
 
 function AllSessions({ compact = false }) {
     const { sessions, sessionsLoaded, server, pinned } = store.state;
+    const team = teamOf(sessions);
     const canStart = canSteer() && !scoped();
     const [query, setQueryState] = useState(() => (compact ? "" : listKept.query));
     const [tab, setTabState] = useState(() => tabOf(prefs().group));
@@ -1332,7 +1380,7 @@ function AllSessions({ compact = false }) {
 
             const { groups, slots } = priorityGroups(
                 shown,
-                { state: store.state, collabs: collab(), answered },
+                { state: store.state, collabs: collab(), answered, team },
                 opened.current,
             );
 
@@ -1974,6 +2022,7 @@ function AllSessions({ compact = false }) {
             minute=${minute}
             extensionsRev=${extensionsRev}
             slot=${group.slot}
+            team=${team.has(session.id)}
             need=${group.slot === "needs" ? needOf(session) : null}
             expanded=${asking === session.id && group.slot === "needs"}
             answering=${session.approval !== undefined && answered.has(session.approval.id)}
@@ -2492,7 +2541,7 @@ function Rail({ foldable = false, folded = false }) {
             title="Running now"
             aria-label=${busy > 0 ? `Running now, ${busy}` : "Running now"}
             aria-pressed=${board === "running"}
-            onPointerDown=${() => board !== "running" && prefetchRunning()}
+            onPointerDown=${() => board !== "running" && prefetchRunning().catch(() => undefined)}
             onClick=${toggleRunning}
         >
             <${Icon} name="pulse" size=${19} />
@@ -2520,6 +2569,16 @@ function Rail({ foldable = false, folded = false }) {
                 (failed > 0 || agents.waiting > 0) &&
                 html`<span class="rail-trouble" aria-hidden="true"></span>`
             }
+        </button>
+        <button
+            class="rail-button"
+            data-part="rail-button"
+            data-state=${railState(false, false)}
+            title="Artifacts in every session"
+            aria-label="All artifacts"
+            onClick=${() => openSheet({ type: "all-artifacts" })}
+        >
+            <${Icon} name="artifact" size=${19} />
         </button>
         <${ExtensionRailButtons} />
         ${

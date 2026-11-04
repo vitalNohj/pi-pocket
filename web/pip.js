@@ -28,9 +28,9 @@ import { prefs } from "./theme.js";
 import { memoryAvailable, PendingMemories } from "./sheets/memory.js";
 import { itemsOf, says, summarize } from "./turns.js";
 import {
+    attachedPictureSrc,
     contextLevel,
     entryImageUrl,
-    fileUrl,
     formatBytes,
     formatTokens,
     html,
@@ -184,6 +184,8 @@ export const pipShown = (state = store.state) => state.pipOpen || pipBoard(state
 
 /** The place the open panel is in, so a change of the setting moves it. */
 let place = pipPlace();
+/** PiP was turned off in Extensions, as the server last said: the change closes the board, once. */
+let turnedOff = false;
 
 // A floating panel kept open across a reload, where PiP now opens as a board: its conversation's route is what is kept.
 if (store.state.pipOpen && place === "board") {
@@ -192,11 +194,23 @@ if (store.state.pipOpen && place === "board") {
 }
 
 // A reconnect (or the first connection, with the panel kept open across a reload) gets the panel's view again; PiP
-// turned off in Extensions closes the panel. The setting changed while PiP shows moves it to the other place.
+// turned off in Extensions closes the panel, and the board. The setting changed while PiP shows moves it to the other
+// place.
 store.subscribe((state) => {
     syncDraftScope(state);
 
     const board = pipBoard(state);
+    const off = Boolean(state.server) && !pipAvailable();
+
+    if (off !== turnedOff) {
+        turnedOff = off;
+
+        if (off && board) {
+            closePip();
+
+            return;
+        }
+    }
 
     if (board && state.pip?.endedAt !== undefined) {
         // Its conversation in view counts as seen, as the panel does.
@@ -383,6 +397,29 @@ export function openPip(text) {
     return Promise.resolve();
 }
 
+/**
+ * Ask PiP about a passage of Pi's reply in session `session` (or none): a quote strip over PiP's box holds it, and the
+ * next message to PiP goes with it quoted first. The server tells PiP, unseen, which session it came from.
+ */
+export async function quotePip(passage, session) {
+    const about = typeof session === "number" ? session : undefined;
+
+    if (pipPlace() === "board") {
+        // As a board, PiP's box is the session composer's: its quote strip, once PiP's conversation shows.
+        await openPip();
+
+        if (pipBoard()) {
+            store.set({ replyQuote: passage, replyAbout: about ?? null });
+        }
+
+        return;
+    }
+
+    store.set({ pipQuote: { text: passage, session: about } });
+    await openPip();
+    focusComposer();
+}
+
 /** Close PiP in either place: its conversation in the session's place gives way to what was there before. */
 export function closePip() {
     const open = store.state.pipOpen;
@@ -425,29 +462,6 @@ function draftPip(text) {
     const draft = personStorage.get(DRAFT_KEY)?.trim();
 
     openPip(draft ? `${draft}\n\n${text}` : text);
-}
-
-/**
- * Ask PiP about a passage of Pi's reply in session `session` (or none): a quote strip over PiP's box holds it, and the
- * next message to PiP goes with it quoted first. The server tells PiP, unseen, which session it came from.
- */
-export async function quotePip(passage, session) {
-    const about = typeof session === "number" ? session : undefined;
-
-    if (pipPlace() === "board") {
-        // As a board, PiP's box is the session composer's: its quote strip, once PiP's conversation shows.
-        await openPip();
-
-        if (pipBoard()) {
-            store.set({ replyQuote: passage, replyAbout: about ?? null });
-        }
-
-        return;
-    }
-
-    store.set({ pipQuote: { text: passage, session: about } });
-    await openPip();
-    focusComposer();
 }
 
 /** Send PiP a message from anywhere (`/pip …`), and open the panel to show what it says; true when it went. */
@@ -654,7 +668,7 @@ function attachedFiles(block) {
     }
 
     return block.split("\n").flatMap((line) => {
-        const suffix = /^- (.*), ([^,]*), (\d+) bytes\)$/.exec(line);
+        const suffix = /^- (.*), ([^,]*), (\d+) bytes\)( \[Image: .*)?$/.exec(line);
 
         if (!suffix) {
             return [];
@@ -664,6 +678,8 @@ function attachedFiles(block) {
             path: suffix[1].slice(0, separator.index),
             name: suffix[1].slice(separator.index + 2),
             mime: suffix[2],
+            size: Number(suffix[3]),
+            noted: suffix[4] !== undefined,
         }));
         const file = candidates.find((candidate) => candidate.path.endsWith(candidate.name));
 
@@ -713,8 +729,15 @@ function Item({ item, last, busy, conversationId }) {
             const [text, block] = splitAttachments(body);
             // Uploaded pictures also remain readable when the chosen model cannot take inline images.
             const files = attachedFiles(block);
-            const pictures = files.filter((file) => file.mime.startsWith("image/"));
-            const others = files.filter((file) => !pictures.includes(file));
+            // A browser cannot show a HEIC photo: it shows the JPEG the model got, or goes as a file.
+            const pictures = files.flatMap((file) => {
+                const src = attachedPictureSrc(file, files, entry, conversationId);
+
+                return src === null ? [] : [{ file, src }];
+            });
+            const others = files.filter(
+                (file) => !pictures.some((picture) => picture.file === file),
+            );
 
             // A passage asked about (Ask PiP) shows as a quote block above the words, as in a session.
             const quote = splitQuote(text);
@@ -740,9 +763,9 @@ function Item({ item, last, busy, conversationId }) {
                         ${
                             pictures.length > 0
                                 ? pictures.map(
-                                      (picture) => html`<${Thumb}
-                                          src=${fileUrl(picture.path, conversationId)}
-                                          alt=${picture.name}
+                                      ({ file, src }) => html`<${Thumb}
+                                          src=${src}
+                                          alt=${file.name}
                                       />`,
                                   )
                                 : Array.from(
@@ -770,7 +793,7 @@ function Item({ item, last, busy, conversationId }) {
         return line && html`<div class="pip-event"><span>${line}</span></div>`;
     }
 
-    // A page it showed in a reply (`artifact_inline`): in this panel, a line like its other work.
+    // A page it showed in a reply (an old `artifact_inline` call): in this panel, a line like its other work.
     if (item.type === "inline") {
         return html`<div class="pip-steps">
             <span class="pip-tick"><${Icon} name="check" size=${10} /></span>

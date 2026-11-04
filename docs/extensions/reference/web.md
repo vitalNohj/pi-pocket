@@ -251,6 +251,7 @@ Answers the requests of a route. The value that it returns goes back as JSON, an
 
 ```ts
 interface WebRequest {
+    createSession(request: { cwd: string; title?: string }): Promise<{ id: number }>;
     readonly method: WebMethod;
     readonly params: Readonly<Record<string, string>>;
     readonly query: URLSearchParams;
@@ -278,6 +279,7 @@ What a handler gets.
 - Document operations recheck the current person. Retaining a request, its context, or a callback does not extend its lifetime: commits after disconnect or handler return are refused, and an unfinished callback rolls back. Await all writes before returning. These APIs are for module documents, not core's internal documents or a way to start model work.
 - An unbound catalog save has no source plan, turn, or spend checks. A bound commit also requires the source's current steering and turn rights.
 - Since 0.20.0 (experimental), `sessions()` gives the sessions that the person who asked can see now, as their session list shows them, archived ones too. See [`WebSession`](#websession). Use it to check the ids that a browser sends, and to keep data about sessions from people who cannot see them. Each call reads the list again.
+- Since 0.28.0 (experimental), `createSession` starts an ordinary session on owner-only routes. It refuses anyone but the owner. See [Execution environments for workspaces](../workspaces.md).
 
 ### `WebSession`
 
@@ -307,12 +309,89 @@ interface ConversationWebRequest extends WebRequest {
         readonly thinkingLevel: ModelThinkingLevel;
     };
     readonly linkedSessions: HumanLinkedSessions;
+    conversationUsage(conversationId?: ConversationId): Promise<ConversationUsage>;
 }
 ```
 
 Since 0.16.0 · Stable
 
 Authoritative source metadata, plus request-lifetime human linked-session capabilities. An omitted `model` means the source has none. Metadata is a snapshot, not a promise that settings cannot change. A start rejects a source model, thinking level, or folder changed while it waits.
+
+### `ConversationWebRequest.conversationUsage`
+
+```ts
+conversationUsage(conversationId?: ConversationId): Promise<ConversationUsage>;
+```
+
+Since 0.28.0 · Experimental
+
+A server-side member of `ConversationWebRequest`, available only inside a `web.conversationRoute` handler. Without an id, it reads the bound source. An id can select another visible conversation, including a subagent. It returns committed usage only, with no entries, text, session ids, or write capability.
+
+Use a GET conversation route with `access: "view"` for a status item:
+
+```typescript
+web.conversationRoute(
+    "GET",
+    "usage/:source",
+    async (request) => {
+        if (typeof request.conversationUsage !== "function") {
+            throw web.error(503, "Usage needs Pi Pocket 0.28.0 and a server restart.");
+        }
+
+        return request.conversationUsage();
+    },
+    { conversation: "source", access: "view" },
+);
+```
+
+The route checks its source and the signed-in person before the handler runs. The member checks them again when called and before returning. A target id requires visibility too. Missing conversations and PiP conversations are refused. Descendant sums and counts include only conversations the person can still see. A retained callback fails after the handler returns or the browser disconnects. There is no actor override. Do not broadcast the result to other people or keep it in a shared document: their visibility can differ.
+
+This addition does not change route access: people invited to one session still cannot use extension web routes. Viewers with access to all sessions can read through a GET route; no steering, turn, or spend check applies to this read. A gallery entry that needs this member sets `minPocket` to `0.28.0`.
+
+Each call reads usage documents and scans stored entries. It also reads the in-memory conversation tree. Cost grows with the stored history, including tool output, of the selected conversation and its descendants, not just their active context. Poll sparingly, not on each streamed token. The result is not an atomic snapshot: work can commit between the ledger and history reads or between conversations.
+
+### `UsageTotals`
+
+```ts
+interface UsageTotals {
+    readonly requests: number;
+    readonly input: number;
+    readonly cacheRead: number;
+    readonly cacheWrite: number;
+    readonly output: number;
+    readonly reasoning?: number;
+    readonly cost: number;
+    readonly lastPrompt: number;
+}
+```
+
+Since 0.28.0 · Experimental
+
+- `requests`: the number of stored assistant responses owned by this conversation, including error or aborted responses. Pi's own retry after an error stores a response of its own, so it counts. Requests with no assistant entry, such as compaction attempts and cache-keeper warm requests, are not counted.
+- `input`: reported uncached input tokens, summed across requests.
+- `cacheRead`: reported input tokens read from a prompt cache.
+- `cacheWrite`: reported input tokens written to a prompt cache, including any 1-hour subset. That subset is not added twice.
+- `output`: reported output tokens, including any separately reported reasoning tokens.
+- `reasoning`: the sum of separately reported reasoning tokens. It is absent when none were reported, and can be 0 when a provider reports 0. Do not add it to `output`.
+- `cost`: estimated US dollars from core's usage ledger, not a provider invoice. It includes model and tool usage, as core's spend does.
+- `lastPrompt`: `input + cacheRead + cacheWrite` of the newest stored assistant response that reports any of them, by entry id: a failed request with no usage leaves the one before. It is 0 without such a response. It measures the last request, not the next request's context after a reset or compaction.
+
+Token and cost totals come from core's `pi.usage` ledger. They include compaction and auxiliary requests recorded there, even when those requests have no response entry. Tool-reported usage counts too. A fork starts its own ledger; inherited responses do not count toward `requests` or `lastPrompt`. Old responses still count after a compaction or reset. A number that a provider does not report contributes 0; reasoning stays absent until one provider reports it. A conversation with no usage returns zeros and no reasoning field. Results are independent copies; changing a result changes no stored data. A call reads only the entries that came since the last call for the same conversation, so a module can ask often.
+
+### `ConversationUsage`
+
+```ts
+interface ConversationUsage {
+    readonly own: UsageTotals;
+    readonly children: UsageTotals & { readonly count: number };
+}
+```
+
+Since 0.28.0 · Experimental
+
+`own` covers only the selected conversation. `children` sums every visible conversation it started, at any depth: subagents, linked sessions, and their descendants. It excludes the selected conversation, its ancestors, siblings, and forks. Archived descendants still count. Each conversation counts once, including one with no usage. `children.count` is their count, and `children.lastPrompt` is the sum of each descendant's `lastPrompt`, not the newest prompt across the family. No descendants gives zeros and count 0.
+
+Requested by @Haichiu in #195.
 
 ### `HumanLinkedSessions`
 
@@ -566,7 +645,7 @@ Who can use a route, or whose tabs load a browser module.
 - `"steer"`: the owner, and guests who can steer all sessions.
 - `"view"`: the owner, guests, and viewers who can see all sessions.
 
-A person invited to one session never can, because these parts belong to the whole app. Each route has its own `access`, so a browser module for everyone can call a route for the owner alone.
+A person invited to one session never can, because these parts belong to the whole app. The one exception is the built-in Diagrams browser module, which draws Mermaid and math in their replies. They get its browser module and no routes. Each route has its own `access`, so a browser module for everyone can call a route for the owner alone.
 
 `access` is the same for all methods. A POST route with `"view"` lets viewers change something through it, though they cannot steer a session. Give `"owner"` or `"steer"` to a route that changes things.
 

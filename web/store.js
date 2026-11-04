@@ -4,8 +4,10 @@ import { hostCan, onPageVisibility, pageVisible } from "./host.js";
 import { sessionForest, unfolded } from "./session-tree.js";
 import { liveMessage } from "./live.js";
 import { fitClock, moment } from "./clock.js";
-import { fingerprint } from "./fingerprint.js";
+import { fingerprint } from "./text-hash.js";
 import * as disk from "./session-cache.js";
+import { personStorage } from "./person-storage.js";
+import { notesDrafts } from "./notes-drafts.js";
 import {
     keptLayout,
     layoutOf,
@@ -17,8 +19,6 @@ import {
     remember,
     sameLayout,
 } from "./panel-layout.js";
-import { personStorage } from "./person-storage.js";
-import { notesDrafts } from "./notes-drafts.js";
 
 /** A random id. crypto.randomUUID only exists on https and localhost pages; plain-http network addresses lack it. */
 export function uid() {
@@ -94,6 +94,7 @@ const emptyView = () => ({
     artifacts: [],
     subagents: [],
     authors: {},
+    linkedPeers: {},
     reactions: {},
     pins: [],
     turns: { on: false, asks: [] },
@@ -109,95 +110,128 @@ const emptyView = () => ({
 // ─── Each session's panel ──────────────────────────────────────────────────────────
 
 /**
- * Where the panel each session shows is kept (`panel-layout.js`): the tab's, for this tab, and the device's, for a tab
- * that never showed the session. Both as `[id, layout]` pairs, the session shown longest ago first.
+ * Where the panel each session shows is kept (`panel-layout.js`), as `[id, layout]` pairs, the one shown longest ago
+ * first: the tab's in `sessionStorage`, with whose they are, and the device's in `personStorage`, for a tab that never
+ * showed the session. Another account in this browser sees neither. They are small: ids and panel names.
  */
 const TAB_LAYOUTS = "pocket.layouts";
-const DEVICE_LAYOUTS = "pocket.layouts";
-// One key, in two storages: `sessionStorage` (the tab's) and `localStorage` (the device's, shared by its tabs). Both are
-// read as the session opens, before it draws, so its panel shows with it. They are small: ids and panel names.
+const DEVICE_LAYOUTS = "layouts";
 
-function readPairs(storage, key) {
+const layoutPerson = () => store.state.me?.id ?? null;
+
+function tabLayouts() {
     try {
-        return layoutPairs(JSON.parse(storage.getItem(key)));
+        const kept = JSON.parse(sessionStorage.getItem(TAB_LAYOUTS));
+
+        return kept?.person === layoutPerson() ? layoutPairs(kept.pairs) : [];
     } catch {
         return [];
     }
 }
 
-function writePairs(storage, key, pairs) {
+function deviceLayouts() {
     try {
-        if (pairs.length === 0) {
-            storage.removeItem(key);
-        } else {
-            storage.setItem(key, JSON.stringify(pairs));
-        }
+        return layoutPairs(JSON.parse(personStorage.get(DEVICE_LAYOUTS)));
     } catch {
-        // Storage full or refused: the session shows no panel next time.
+        return [];
     }
 }
 
 /** Set at sign-out, in this tab or another: the device keeps no more layouts (`pocket:signedOut`). */
 let layoutsStopped = false;
 
-/** The panel `id` showed when it was left: in this tab, else on this device, else none. */
+/** Whether `id` keeps a layout: a session does; home and PiP's conversation, open as a board, do not. */
+const keepsLayout = (id, state = store.state) => id !== null && id !== state.pip?.id;
+
+/**
+ * The panel `id` showed when it was left: in this tab, else on this device, else none. An extension's panel shows only
+ * while the server lists its module: one turned off since is kept for when it comes back.
+ */
 function layoutFor(id) {
-    if (id === null) {
+    if (!keepsLayout(id) || layoutPerson() === null) {
         return NO_LAYOUT;
     }
 
-    return (
-        keptLayout(readPairs(sessionStorage, TAB_LAYOUTS), id) ??
-        (layoutsStopped ? null : keptLayout(readPairs(localStorage, DEVICE_LAYOUTS), id)) ??
-        NO_LAYOUT
-    );
+    const kept =
+        keptLayout(tabLayouts(), id) ?? (layoutsStopped ? null : keptLayout(deviceLayouts(), id));
+    const listed = store.state.server?.ui;
+
+    if (
+        kept === null ||
+        (kept.panel === "ext" &&
+            Array.isArray(listed) &&
+            !listed.some((each) => each.module === kept.ext.module))
+    ) {
+        return NO_LAYOUT;
+    }
+
+    return kept;
 }
 
 /** Keep the panel `id` shows now, for this tab and the device: the device keeps only a panel, not "none". */
 function keepLayout(id, layout) {
-    writePairs(
-        sessionStorage,
-        TAB_LAYOUTS,
-        remember(readPairs(sessionStorage, TAB_LAYOUTS), id, layout),
-    );
+    const person = layoutPerson();
+
+    if (person === null) {
+        return;
+    }
+
+    const pairs = remember(tabLayouts(), id, layout);
+
+    try {
+        sessionStorage.setItem(TAB_LAYOUTS, JSON.stringify({ person, pairs }));
+    } catch {
+        // Storage full or refused: the session shows no panel next time.
+    }
 
     if (!layoutsStopped) {
-        writePairs(
-            localStorage,
-            DEVICE_LAYOUTS,
-            remember(readPairs(localStorage, DEVICE_LAYOUTS), id, layout, { keepNone: false }),
-        );
+        const device = remember(deviceLayouts(), id, layout, { keepNone: false });
+
+        personStorage.set(DEVICE_LAYOUTS, device.length === 0 ? null : JSON.stringify(device));
     }
 }
 
 /**
- * The panel the page opens with. A tab that kept one panel for every session (before layouts were a session's) gives it
- * to the session it shows, once.
+ * The panel the page shows once it knows who is signed in. A tab that kept one panel for every session (before layouts
+ * were a session's) gives it to the session it shows, once.
  */
 function firstLayout() {
-    const id = routeConversation();
+    const id = store.state.conversationId;
     const legacy = legacyLayout((key) => sessionStorage.getItem(key));
 
     for (const key of LEGACY_KEYS) {
         sessionStorage.removeItem(key);
     }
 
-    if (
-        legacy !== null &&
-        id !== null &&
-        keptLayout(readPairs(sessionStorage, TAB_LAYOUTS), id) === null
-    ) {
+    if (legacy !== null && id !== null && keptLayout(tabLayouts(), id) === null) {
         keepLayout(id, legacy);
     }
 
     return layoutFor(id);
 }
 
+/**
+ * PiP's id comes with the connection, after the first layout: a panel kept for its conversation before then (the old
+ * global panel handed over on a PiP board) is dropped, and does not show on it.
+ */
+function pipLayout(pip) {
+    const id = pip?.id;
+
+    if (id === undefined || id === store.state.pip?.id || layoutPerson() === null) {
+        return {};
+    }
+
+    keepLayout(id, NO_LAYOUT);
+
+    return id === store.state.conversationId ? layoutPatch(NO_LAYOUT) : {};
+}
+
 /** The session and layout last kept: a change to either keeps the layout again. */
 let layoutShown = { id: null, layout: NO_LAYOUT };
 
 // A panel opened or closed is kept for the session at once, so a reload or a visit later shows it again. Going to another
-// session shows the layout kept for it; one opened on the way there (a chat docked as People) is kept too.
+// session shows the layout kept for it; one opened on the way there (a chat docked as People) is kept too. PiP's
+// conversation keeps none: opened again (as a board), it shows PiP, not a panel left over it.
 function followLayout(state) {
     const id = state.conversationId;
     const layout = layoutOf(state);
@@ -210,7 +244,7 @@ function followLayout(state) {
 
     layoutShown = { id, layout };
 
-    if (id !== null && !state.missing && !(moved && sameLayout(layout, layoutFor(id)))) {
+    if (keepsLayout(id, state) && !state.missing && !(moved && sameLayout(layout, layoutFor(id)))) {
         keepLayout(id, layout);
     }
 }
@@ -218,11 +252,12 @@ function followLayout(state) {
 addEventListener("pocket:signedOut", () => {
     layoutsStopped = true;
 
+    personStorage.set(DEVICE_LAYOUTS, null);
+
     try {
         sessionStorage.removeItem(TAB_LAYOUTS);
-        localStorage.removeItem(DEVICE_LAYOUTS);
     } catch {
-        // Refused: nothing was kept.
+        // Refused: it is another person's to read no more.
     }
 });
 
@@ -284,7 +319,7 @@ export const store = {
         replyQuote: null,
         /** The session the reply quote came from, when PiP's box (as a board) asks about it: its number, or null. */
         replyAbout: null,
-        /** A passage for PiP's floating box to ask about (Ask PiP): `{ text, session }`, quoted before its next message. */
+        /** A passage for PiP's box to ask about (Ask PiP): `{ text, session }`, quoted before its next message. */
         pipQuote: null,
         /** Text to put into the message box to Pi: `{ text, n }`, picked up by the composer. */
         composerInsert: null,
@@ -846,14 +881,7 @@ function reloadAccount(to) {
     personStorage.identify(null);
     notesDrafts.clear();
     source?.close();
-    store.set({
-        me: null,
-        composerInsert: null,
-        auth: null,
-        pip: null,
-        pipOpen: false,
-        pipQuote: null,
-    });
+    store.set({ me: null, composerInsert: null, auth: null, pip: null, pipOpen: false });
 
     if (to === undefined) {
         location.reload();
@@ -914,11 +942,11 @@ function acceptPerson(user, generation) {
     try {
         localStorage.setItem(PERSON_KEY, person ?? "");
     } catch {
-        // The account channel still resets other open tabs when storage is blocked.
-    }
-
-    if (store.state.me === undefined) {
-        accountChannel?.postMessage({ person });
+        // Blocked storage sends no storage event, so the channel resets the other open tabs. A storage event comes only
+        // for a new person: a tab of the same person must not make the others that are still starting reload.
+        if (store.state.me === undefined) {
+            accountChannel?.postMessage({ person });
+        }
     }
 
     return true;
@@ -1641,6 +1669,7 @@ function mergeView(current, data) {
         artifacts: data.artifacts ?? base.artifacts,
         subagents: data.subagents ?? base.subagents,
         authors: data.authors ?? base.authors,
+        linkedPeers: data.linkedPeers ?? base.linkedPeers,
         reactions: data.reactions ?? base.reactions,
         pins: data.pins ?? base.pins,
         turns: data.turns ?? base.turns,
@@ -1780,14 +1809,14 @@ function setChanged(change) {
 /** Who hears extensions' events: `extension-ui.js`, which imports this module and so cannot be imported here. */
 const extensionListeners = new Set();
 
-/** Who hears the notifications for a desktop app: `desktop.js`, which imports this module. */
-const desktopListeners = new Set();
+/** Who hears the notifications for an embedder: `embedder.js`, which imports this module. */
+const embedderListeners = new Set();
 
-/** Hear the notifications the server sends this page's desktop app (`desktop-notify`). */
-export function onDesktopNotify(listener) {
-    desktopListeners.add(listener);
+/** Hear the notifications the server sends this page's embedder (`embedder-notify`). */
+export function onEmbedderNotify(listener) {
+    embedderListeners.add(listener);
 
-    return () => desktopListeners.delete(listener);
+    return () => embedderListeners.delete(listener);
 }
 
 /** Hear the events extension modules send their browser modules: `{ module, event, data }`. */
@@ -1881,7 +1910,7 @@ const handlers = {
     },
     // This person's PiP: its conversation, whether it works, and when it last answered (`pip.js`); null for none.
     // Sent again on each connect, mostly as it was.
-    pip: (pip) => setChanged({ pip: kept(store.state.pip, pip) }),
+    pip: (pip) => setChanged({ ...pipLayout(pip), pip: kept(store.state.pip, pip) }),
     // PiP's conversation, while this tab's PiP panel is open.
     pipview: applyPipView,
     chat: applyChat,
@@ -1937,8 +1966,8 @@ const handlers = {
         }
     },
     auth: (data) => handleAuth(data),
-    // A notification for the desktop app this page runs in, which shows it itself (`web/desktop.js`).
-    "desktop-notify": (data) => desktopListeners.forEach((listener) => listener(data)),
+    // A notification for the embedder this page runs in, which shows it itself (`web/embedder.js`).
+    "embedder-notify": (data) => embedderListeners.forEach((listener) => listener(data)),
     closing: () => store.set({ connection: "closed" }),
     reload: () => {
         // A web file changed on the server. Message, notes, and attachment drafts survive when browser storage works;
@@ -1995,11 +2024,12 @@ export function connect() {
 function eventsQuery(kept) {
     const id = store.state.conversationId;
     const have = kept && id !== null ? haveOf(store.state.view) : null;
+    // An embedder that shows notifications itself gets them over this connection (`web/host.js`).
+    const embedder = hostCan("notify") ? "&embedder=notify" : "";
+    const session = id === null ? "" : `&c=${id}`;
+    const resume = have === null ? "" : `&have=${have}`;
 
-    // A desktop app that shows notifications itself gets them over this connection (`web/host.js`).
-    const host = hostCan("notify") ? "&host=notify" : "";
-
-    return `tab=${encodeURIComponent(TAB)}&p=${PROTOCOL}${id === null ? "" : `&c=${id}`}${have === null ? "" : `&have=${have}`}${host}`;
+    return `tab=${encodeURIComponent(TAB)}&p=${PROTOCOL}${session}${resume}${embedder}`;
 }
 
 let accountCover = null;
@@ -2027,6 +2057,14 @@ function coverAccount() {
 }
 
 async function restoreAccount() {
+    // Kept as it left to change accounts (a sign-out goes to "/"), and back: its requests stay refused,
+    // and a refusal is no sign-out of the person, so it loads again.
+    if (changingAccount) {
+        location.reload();
+
+        return;
+    }
+
     clearTimeout(accountRetry);
     accountRequest?.abort();
     coverAccount();
@@ -2281,6 +2319,8 @@ function pollEvents() {
         while (!stopped) {
             request = new AbortController();
             const asked = moment();
+            const named = store.state.conversationId;
+            let fresh = false;
             const generation = accountGeneration;
 
             try {
@@ -2317,6 +2357,7 @@ function pollEvents() {
                     // It named the session shown when it was asked: a switch still on its way went to the old one.
                     switching = null;
                     switchSeq++;
+                    fresh = true;
                 }
 
                 failures = 0;
@@ -2332,6 +2373,11 @@ function pollEvents() {
                     if (handlers[item.event]) {
                         heard(item.event, item.data, handlers[item.event], generation);
                     }
+                }
+
+                // The tab switched while it was asked: the new session shows the old one, so switch it too.
+                if (fresh && named !== store.state.conversationId) {
+                    show();
                 }
             } catch {
                 if (stopped) {
@@ -2555,6 +2601,7 @@ export async function start() {
             server: keptServer(store.state.server, hello.server, asked),
             themeList: Array.isArray(hello.themes) ? hello.themes : [],
         });
+        store.set(layoutPatch(firstLayout()));
 
         if (onDisk !== undefined && store.state.view.conversation == null) {
             const cached = await onDisk;
@@ -2985,7 +3032,7 @@ export function discuss(entryId, text) {
 }
 
 // Tell the server when this tab is hidden or shown: others see "away", and push notifications only reach hidden tabs. A
-// desktop app's window hidden in its tray, or minimized, counts as hidden (`pageVisible`).
+// embedder's window hidden in its tray, or minimized, counts as hidden (`pageVisible`).
 let lastVisible = null;
 
 function reportVisibility() {

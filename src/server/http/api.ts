@@ -377,6 +377,12 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        if (first === "hooks" && second !== undefined && third === undefined && method === "POST") {
+            const body = await readJson<{ instructions?: unknown }>(request);
+
+            return json(response, 200, await app.hooks.update(user, second, body.instructions));
+        }
+
         // A new secret, for a hook whose address or secret got out.
         if (first === "hooks" && second !== undefined && third === "rotate" && method === "POST") {
             return json(response, 200, await app.hooks.rotate(user, second));
@@ -553,6 +559,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, app.sessions(user));
         }
 
+        if (first === "artifacts" && second === undefined && method === "GET") {
+            return json(response, 200, await app.artifactOverview(user));
+        }
+
         // Pi's sessions from the terminal, which the owner can continue here.
         if (first === "pi-sessions" && second === undefined && method === "GET") {
             return json(
@@ -716,8 +726,21 @@ export function createApi(options: HttpOptions, auth: Auth) {
             const path = app.workspace.checkDirectory(requested);
             const showHidden = url.searchParams.get("hidden") === "1";
             const dirs: { name: string; path: string }[] = [];
+            let entries;
 
-            for (const entry of readdirSync(path, { withFileTypes: true })) {
+            try {
+                entries = readdirSync(path, { withFileTypes: true });
+            } catch (error) {
+                const code = (error as NodeJS.ErrnoException).code;
+
+                if (code === "EACCES" || code === "EPERM") {
+                    throw new HttpError(403, `Pi Pocket cannot read ${path}.`);
+                }
+
+                throw error;
+            }
+
+            for (const entry of entries) {
                 if (!showHidden && entry.name.startsWith(".")) {
                     continue;
                 }
@@ -738,8 +761,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             dirs.sort((a, b) => a.name.localeCompare(b.name));
-            // The folders of this person's newest sessions here: another computer's folders are not on this one.
-            const recent = app.recentFolders(user, undefined);
+            // The folders of this person's newest sessions here: another computer's folders are not on this one,
+            // and a workspace URI is not a folder the picker can open.
+            const recent = app
+                .recentFolders(user, undefined)
+                .filter((cwd) => app.workspaceScheme(cwd) === undefined);
 
             return json(response, 200, {
                 path,

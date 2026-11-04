@@ -64,7 +64,11 @@ function newClient(request: IncomingMessage, url: URL, user: User, send: Client[
         conversationId: raw === null || raw === "" ? undefined : conversationId(raw),
         // What the tab's code understands of updates: none named is older code.
         protocol: Number(url.searchParams.get("p")) || 1,
-        ...(url.searchParams.get("host") === "notify" ? { desktop: true } : {}),
+        ...(url.searchParams.get("embedder") === "notify"
+            ? { embedder: "embedder-notify" as const }
+            : url.searchParams.get("host") === "notify"
+              ? { embedder: "desktop-notify" as const }
+              : {}),
         ...(isLocalRequest(request) ? { local: true } : {}),
         sentEntries: new Set(),
         orderKey: "",

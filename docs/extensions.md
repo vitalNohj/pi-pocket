@@ -24,6 +24,7 @@ This page is the map. Read all of it, then only the pages that your task needs.
 | Check or change Pi's tool calls and answers                     | [Hooks](extensions/hooks.md)                                                                                    |
 | Use the app's services, and work with older servers             | [Using the host](extensions/host.md)                                                                            |
 | Start sessions, and send messages between them                  | [Starting and messaging sessions](extensions/linked-sessions.md)                                                |
+| Start an ordinary session, like New session                     | [Starting an ordinary session](extensions/sessions.md)                                                          |
 | Add to the app: routes, a browser module, commands              | [Adding to the app](extensions/app.md)                                                                          |
 | Name how an input this module sends shows in the transcript     | [Adding to the app](extensions/app.md), [`web.presentEntry`](extensions/reference/web.md#presententry)          |
 | Answer requests on the server, and say who may use them         | [Routes](extensions/routes.md)                                                                                  |
@@ -68,13 +69,13 @@ A module is one `.ts` file with a default export: a function. Pi Pocket calls it
  * A clock tool: the date and time now, in any time zone. The first sentence of this comment is the module's
  * description in the Extensions sheet.
  */
-import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
+import { obj, opt, str } from "@earendil-works/pi-schema";
 
 const clock = defineTool({
     name: "clock",
     description: "The date and time now, in a time zone such as Europe/Berlin.",
-    parameters: Type.Object({ zone: Type.Optional(Type.String()) }),
+    parameters: obj({ zone: opt(str()) }),
     replay: "safe",
     execute: async (args) => ({
         output: [
@@ -109,6 +110,9 @@ These examples work. `npm test` runs them (`test/docs-examples.test.ts`):
 ## Files that come with Pi's sessions
 
 Modules can carry a file that a Pi extension keeps beside each Pi session file into a session continued here. See [Files that come with Pi's sessions](extensions/pi-session-companions.md) and the experimental [`host.registerPiSessionCompanion`](extensions/reference/host.md#registerpisessioncompanion) API.
+## Execution environments for workspaces
+
+Modules can register an execution provider for a workspace URI scheme such as `ssh`. See [Execution environments for workspaces](extensions/workspaces.md) and the experimental [`host.registerWorkspaceProvider`](extensions/reference/host.md#registerworkspaceprovider) API.
 
 ## Rules that are easy to break
 

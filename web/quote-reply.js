@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { pipAvailable, quotePip } from "./pip.js";
+import { rangeText } from "./quote-text.js";
 import { quoteReply, store } from "./store.js";
 import { prefs } from "./theme.js";
 import { html, Icon } from "./ui.js";
@@ -18,9 +19,10 @@ const buttons = () => ({
 });
 
 const coarse = matchMedia("(pointer: coarse)").matches;
-const REPLY_WIDTH = 92;
-const PIP_WIDTH = 44;
-const HEIGHT = 36;
+const REPLY_WIDTH = 84;
+// The orb, and the line between it and Reply.
+const PIP_WIDTH = 41;
+const HEIGHT = 32;
 
 function selected() {
     const selection = getSelection();
@@ -38,11 +40,16 @@ function selected() {
             : range.endContainer;
     const from = within(range.startContainer);
     const to = within(end) ?? (within(range.commonAncestorContainer) ? from : null);
-    const text = selection.toString().trim();
 
     const shown = buttons();
 
-    if (!from || from !== to || text === "" || (!shown.reply && !shown.pip)) {
+    if (!from || from !== to || (!shown.reply && !shown.pip)) {
+        return null;
+    }
+
+    const text = rangeText(range).trim();
+
+    if (text === "") {
         return null;
     }
 
@@ -54,15 +61,29 @@ function selected() {
 
     const first = rects[0];
     const last = rects[rects.length - 1];
-    const below = coarse || first.top < HEIGHT + 12;
-    const top = below ? last.bottom + 10 : first.top - HEIGHT - 8;
+    // The button must stay inside the scrolling area, not over the top bar or the message box.
+    const view = from.closest(".scroller")?.getBoundingClientRect() ?? {
+        top: 0,
+        bottom: visualViewport?.height ?? innerHeight,
+    };
+    const above = first.top - HEIGHT - 8;
+    // On a touch screen the system's selection handle hangs under the last line: sit below it.
+    const under = last.bottom + (coarse ? 26 : 8);
+    let below = coarse || above < view.top;
+    let top = below ? under : above;
+
+    if (below && top + HEIGHT > view.bottom) {
+        below = false;
+        top = above;
+    }
+
+    if (top < view.top || top + HEIGHT > view.bottom) {
+        return null;
+    }
+
     const anchor = below ? last.right : first.left;
     const width = (shown.reply ? REPLY_WIDTH : 0) + (shown.pip ? PIP_WIDTH : 0);
     const left = Math.max(8, Math.min(anchor - (below ? width : 0), innerWidth - width - 8));
-
-    if (top < 0 || top > (visualViewport?.height ?? innerHeight) - HEIGHT) {
-        return null;
-    }
 
     return { text, top, left, shown };
 }

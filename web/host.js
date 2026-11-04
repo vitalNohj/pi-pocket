@@ -1,7 +1,4 @@
-// A desktop app around Pi Pocket (such as Pi Pocket GUI, an Electron wrapper) gives the page `window.pocketHost`: a
-// generic, versioned bridge to what a browser tab cannot do (native notifications, the tray, the window's state). In a
-// browser there is none, and every caller does as before. docs/desktop.md describes the bridge.
-//
+// `window.pocketHost`: the app bridge an embedder (an app that shows Pi Pocket) gives the page (docs/embedders.md).
 // This module imports nothing, so that `store.js` and the modules that import it can all use it.
 
 /** The bridge version this code speaks. A host of a newer version still offers version 1's calls. */
@@ -79,7 +76,7 @@ export function onHost(type, listener) {
 }
 
 /**
- * Whether the person can see this page: the tab shows, and so does the host's window. A desktop app keeps its page
+ * Whether the person can see this page: the tab shows, and so does the host's window. An embedder can keep its page
  * running at full speed while its window hides in the tray, so the page itself always reads as visible there.
  */
 export function pageVisible() {

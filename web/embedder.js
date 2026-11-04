@@ -1,25 +1,13 @@
-// What Pi Pocket gives a desktop app it runs in (`web/host.js`): the server's notifications, which the app shows as
-// native ones; the count of sessions that need you, for its icon; the pinned sessions and their states, for its tray;
-// sessions it asks the page to open; and New session, when the app is asked for one. In a browser this module does nothing. docs/desktop.md describes it.
+// What Pi Pocket does with the app bridge an embedder gives it (`web/host.js`): notifications, badge, pinned sessions,
+// links, and the embedder's menu group. docs/embedders.md describes it.
 import { callHost, host, hostCan, onHost } from "./host.js";
 import { openPip } from "./pip.js";
 import { sessionMark } from "./sessions.js";
-import {
-    actions,
-    attempt,
-    canSteer,
-    navigate,
-    notify,
-    onDesktopNotify,
-    openSheet,
-    scoped,
-    store,
-} from "./store.js";
+import { actions, attempt, navigate, notify, onEmbedderNotify, store } from "./store.js";
 
-/** The longest list of pinned sessions the host gets: a tray menu shows a few. */
+/** The longest list of pinned sessions the embedder gets: a tray menu shows a few. */
 const MAX_PINNED = 20;
 
-/** Open what a notification or the host points at: a session (`/s/12`), PiP (`/?pip=1`), or the list. */
 export function openAddress(address) {
     let url;
 
@@ -44,37 +32,9 @@ export function openAddress(address) {
     navigate(match ? Number(match[1]) : null);
 }
 
-/**
- * New session, as Alt+N starts one: the folder sheet, for someone signed in who may start sessions. The app asks for
- * it from its menu, dock, tray, or a `pi-pocket://new` link, and shows its window first.
- */
-export function openNewSession() {
-    // A page the app just opened may not know yet who is signed in: wait for that.
-    if (store.state.me === undefined) {
-        const stop = store.subscribe((state) => {
-            if (state.me !== undefined) {
-                stop();
-                openNewSession();
-            }
-        });
-
-        return;
-    }
-
-    if (!store.state.me || !canSteer() || scoped()) {
-        return;
-    }
-
-    openSheet({ type: "cwd", mode: "new" });
-}
-
 if (host !== null) {
-    if (hostCan("newSession")) {
-        onHost("newSession", () => openNewSession());
-    }
-
     if (hostCan("notify")) {
-        onDesktopNotify((message) => callHost("notify", message));
+        onEmbedderNotify((message) => callHost("notify", message));
         onHost("open", (event) => openAddress(event.url));
         onHost("approve", (event) =>
             attempt(async () => {
@@ -86,7 +46,6 @@ if (host !== null) {
     }
 
     if (hostCan("pinned")) {
-        // What a pin's square depends on: the list, the pins, marked unread, and what this browser has seen.
         let from = null;
         let pinnedSent = "";
 
@@ -119,7 +78,7 @@ if (host !== null) {
                     return {
                         id: session.id,
                         title: session.title,
-                        // The square's shape, as the session list's `data-state` names it.
+                        // The square's shape (`fresh`/`seen`), not the row's theme state (`done`/`idle`).
                         state: mark.shape.split(" ")[0],
                         label: mark.label,
                         url: `/s/${session.id}`,
@@ -135,26 +94,37 @@ if (host !== null) {
     }
 }
 
-/** The host's items for the app menu: a "Desktop" group, such as "Server settings…". */
-export function hostMenuItems() {
+/** The longest title the embedder's menu group shows. */
+const MAX_MENU_TITLE = 40;
+
+/**
+ * The embedder's group for the app menu: its title (`menuTitle()`, such as the app's name), or none, and its items
+ * (`menuItems()`), such as its own settings.
+ */
+export function hostMenu() {
     if (!hostCan("menu")) {
-        return [];
+        return { title: "", items: [] };
     }
 
+    const title = callHost("menuTitle");
     const items = callHost("menuItems");
 
-    return (Array.isArray(items) ? items : [])
-        .filter((each) => typeof each?.id === "string" && typeof each?.label === "string")
-        .map((each) => ({
-            key: `host:${each.id}`,
-            label: each.label,
-            hint: typeof each.hint === "string" ? each.hint : "",
-            run: () => {
-                const done = callHost("invoke", each.id);
+    return {
+        // Cut by characters, not UTF-16 units: an emoji stays whole.
+        title: typeof title === "string" ? [...title.trim()].slice(0, MAX_MENU_TITLE).join("") : "",
+        items: (Array.isArray(items) ? items : [])
+            .filter((each) => typeof each?.id === "string" && typeof each?.label === "string")
+            .map((each) => ({
+                key: `host:${each.id}`,
+                label: each.label,
+                hint: typeof each.hint === "string" ? each.hint : "",
+                run: () => {
+                    const done = callHost("invoke", each.id);
 
-                if (done === false) {
-                    notify("error", "The desktop app could not do that.");
-                }
-            },
-        }));
+                    if (done === false) {
+                        notify("error", "The host around Pi Pocket could not do that.");
+                    }
+                },
+            })),
+    };
 }

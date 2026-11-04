@@ -5,6 +5,7 @@ import { ExtensionSheet, onExtensionsGone } from "./extension-ui.js";
 import { NotificationsSheet } from "./notify.js";
 import { ShareSheet } from "./share.js";
 import { AppearanceSheet } from "./sheets/appearance.js";
+import { AllArtifactsSheet } from "./sheets/all-artifacts.js";
 import { BackgroundSheet } from "./sheets/background.js";
 import { BranchPicker } from "./sheets/branch.js";
 import { ExtensionsContent, ExtensionsSheet } from "./sheets/extensions.js";
@@ -212,6 +213,9 @@ function sheetBody(sheet) {
         case "artifacts":
             body = html`<${ArtifactsSheet} />`;
             break;
+        case "all-artifacts":
+            body = html`<${AllArtifactsSheet} />`;
+            break;
         case "viewer":
             body = view.conversation
                 ? html`<${ArtifactViewer} id=${sheet.id} version=${sheet.version} />`
@@ -236,7 +240,6 @@ function sheetBody(sheet) {
                       selected=${sheet.type === "gallery-entry" ? sheet.id : null}
                       tab=${sheet.tab ?? "discover"}
                       origin=${sheet.origin ?? (sheet.type === "gallery" ? "gallery" : "extensions")}
-                      show=${sheet.show ?? null}
                       Management=${ExtensionsContent}
                   />`
                 : sheet.type === "extensions"

@@ -16,7 +16,16 @@ import {
     work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    realpathSync,
+    unlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { after, before, mock, test } from "node:test";
@@ -439,8 +448,46 @@ test("a big pasted image goes to the model at most 2000 pixels a side", async ()
     const user = entries.items.find((entry) => entry.kind === "pi.user")!;
     const image = (await app.transcripts.entryImage(id, user.id as unknown as number, 0))!;
 
-    assert.equal(image.mimeType, "image/png");
-    assert.equal(image.data.readUInt32BE(20), 2000, "its height, from the PNG header");
+    // Pi 1.5 sends the smaller of PNG and JPEG.
+    assert.ok(["image/png", "image/jpeg"].includes(image.mimeType));
+    assert.equal(heightOf(image.data), 2000, "its height, from the image's header");
+});
+
+/** An image's height in pixels: from a PNG's header, or a JPEG's first frame header. */
+function heightOf(bytes: Buffer): number {
+    if (bytes.readUInt32BE(0) === 0x89504e47) {
+        return bytes.readUInt32BE(20);
+    }
+
+    for (let at = 2; at + 9 < bytes.length; at += 2 + bytes.readUInt16BE(at + 2)) {
+        const marker = bytes[at + 1]!;
+
+        if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+            return bytes.readUInt16BE(at + 5);
+        }
+    }
+
+    throw new Error("no image header");
+}
+
+test("a HEIC attachment reaches the model as a JPEG, and its line says so", async () => {
+    const id = await newSession();
+
+    await app.commands.configure(id, owner(), {
+        model: { provider: "faux", modelId: "faux-vision" },
+    });
+    const heic = readFileSync(new URL("./fixtures/photo.heic", import.meta.url));
+    const path = join(app.workspace.uploadDirectory(id), "photo.heic");
+
+    writeFileSync(path, heic);
+    await say(id, "look", [{ path, name: "photo.heic", mime: "image/heic", size: heic.length }]);
+    const history = await app.transcripts.history(id, Number.MAX_SAFE_INTEGER);
+    const user = history.findLast((entry) => entry.kind === "user")!;
+    const image = (await app.transcripts.entryImage(id, user.id, 0))!;
+
+    assert.match(user.text, /bytes\) \[Image: shown to you as JPEG\.\]$/);
+    assert.equal(image.mimeType, "image/jpeg");
+    assert.deepEqual(readFileSync(path), heic, "the original stays in uploads");
 });
 
 test("long polling delivers the stream's events, resends until acknowledged, and waits for new ones", async () => {
@@ -1125,7 +1172,7 @@ test("a tab of protocol 5 gets a session's newest entries light first, and whole
 
 test("a tab of protocol 6 that kept a session gets only what came after, and the end of the order", async () => {
     const { fingerprint } = (await import(
-        new URL("../web/fingerprint.js", import.meta.url).href
+        new URL("../web/text-hash.js", import.meta.url).href
     )) as {
         fingerprint: (text: string) => string;
     };
@@ -1285,7 +1332,7 @@ test("hello names the server's build, the same for the same code, and whether br
 
 test("a tab switches session on the connection it has: the new one comes, and nothing else again", async () => {
     const { fingerprint } = (await import(
-        new URL("../web/fingerprint.js", import.meta.url).href
+        new URL("../web/text-hash.js", import.meta.url).href
     )) as {
         fingerprint: (text: string) => string;
     };
@@ -2075,6 +2122,24 @@ test("invites carry a role and a session over HTTP, and viewers get 403 on steer
         assert.equal((await call(token, `c/${id}/abort`, {})).status, 403);
         assert.equal((await call(token, "invite", {})).status, 403);
         assert.equal((await call(token, "fs?path=/")).status, 403);
+        // A folder the server cannot read is a 403 for the owner too, not a 500 (#265). Mode 0 does not stop
+        // reads on Windows or for root: there the folder lists.
+        const locked = join(root, "locked-folder");
+
+        mkdirSync(locked, { mode: 0o000 });
+        const readable = (() => {
+            try {
+                return readdirSync(locked) !== undefined;
+            } catch {
+                return false;
+            }
+        })();
+
+        assert.equal(
+            (await call(app.config.ownerToken, `fs?path=${encodeURIComponent(locked)}`)).status,
+            readable ? 200 : 403,
+        );
+        chmodSync(locked, 0o700);
         assert.equal(
             (await call(token, "fs", { path: join(root, "made-by-watcher") })).status,
             403,
