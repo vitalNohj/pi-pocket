@@ -377,6 +377,9 @@ export class Downloads {
         download.state = "copying";
         this.#wake();
 
+        let path: string | undefined;
+        let error: string | undefined;
+
         try {
             const size = (await stat(file)).size;
 
@@ -386,18 +389,26 @@ export class Downloads {
                 throw new Error(`it is larger than ${formatSize(MAX_DOWNLOAD)}`);
             }
 
-            download.path = await this.#place(tracked.conversationId, file, download.name);
-            download.state = "done";
-        } catch (error) {
-            download.state = "failed";
-            download.error = failure(error);
-            this.#log(`Browser: the download of ${download.name} failed: ${download.error}`);
-        } finally {
-            // Whatever happened, no copy stays here (moved files are gone already).
-            await rm(file, { force: true }).catch(() => {});
-            this.#byGuid.delete(download.guid);
-            this.#wake();
+            path = await this.#place(tracked.conversationId, file, download.name);
+        } catch (caught) {
+            error = failure(caught);
+            this.#log(`Browser: the download of ${download.name} failed: ${error}`);
         }
+
+        // Whatever happened, no copy stays here (moved files are gone already), and it goes before the download
+        // counts as ended: what waits for the end finds no copy left.
+        await rm(file, { force: true }).catch(() => {});
+
+        if (path === undefined) {
+            download.state = "failed";
+            download.error = error;
+        } else {
+            download.path = path;
+            download.state = "done";
+        }
+
+        this.#byGuid.delete(download.guid);
+        this.#wake();
     }
 
     #end(tracked: Tracked, state: "failed" | "canceled", error?: string): void {
