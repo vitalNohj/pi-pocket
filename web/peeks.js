@@ -46,7 +46,8 @@ PEEK_WIDE.addEventListener("change", () => store.set({}));
 
 const hidden = () => !pageVisible();
 
-store.set({ peeks: {} });
+// After this module returns: `store.js` imports this file while `store` is still being created.
+queueMicrotask(() => store.set({ peeks: {} }));
 
 // ─── Which sessions are tiles, in a steady order ─────────────────────────────────────
 
@@ -54,7 +55,7 @@ store.set({ peeks: {} });
 let slots = [];
 /** The session open before this one: it stays a tile, in the place of the one that was opened. */
 let lastLeft = null;
-let previous = openId();
+let previous = null;
 
 // The session left stays a tile, in the place of the one opened; one with a board opened over it (PiP's) is not left.
 // `seen.js` marks both seen.

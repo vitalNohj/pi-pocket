@@ -150,6 +150,11 @@ export interface Client {
      * event. A page from before 0.28.0-beta.7, still open after an update, hears `desktop-notify`.
      */
     readonly embedder?: "embedder-notify" | "desktop-notify";
+    /**
+     * The tab runs in a desktop app that shows notifications itself (`web/host.js`). The same fact as
+     * `embedder === "desktop-notify"`; kept so a connection opened before that rename still counts.
+     */
+    readonly desktop?: boolean;
     /** The tab's browser runs on the server's machine (`local-browser.ts`): its file manager is one the person sees. */
     readonly local?: boolean;
     /** Entries this client has, so updates carry only new ones. */

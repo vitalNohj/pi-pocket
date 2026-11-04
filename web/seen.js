@@ -46,7 +46,8 @@ for (const [id, at] of Object.entries(readSeen())) {
 /** Runs that ended before this browser first had these marks are old news. The server's time; null until it said. */
 let since = Number(localStorage.getItem(SINCE_KEY)) || null;
 
-store.set({ peekSeen: readSeen() });
+// After this module returns: `store.js` imports this file while `store` is still being created.
+queueMicrotask(() => store.set({ peekSeen: readSeen() }));
 
 // Another tab of this browser marked a session seen (or cleared the storage).
 addEventListener("storage", (event) => {
@@ -129,7 +130,7 @@ export function finishedUnseen(session, state = store.state) {
 /** What `finishedUnseen` depends on besides the state: a memo of it keys on this too. */
 export const seenSince = () => since;
 
-let previous = store.state.conversationId;
+let previous = null;
 /** When the open session's last run ended, as this tab last marked it seen. */
 let openEnded;
 let lastServer;

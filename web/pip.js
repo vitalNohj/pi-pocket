@@ -80,7 +80,8 @@ const syncDraftScope = (state) => {
     }
 };
 
-syncDraftScope(store.state);
+// After this module returns: `store.js` imports this file while `store` is still being created.
+queueMicrotask(() => syncDraftScope(store.state));
 /** How many of PiP's newest rows the panel shows: it is for the moment, and the full conversation is a tap away. */
 const ROWS = 80;
 /** Below this width the panel is a sheet from the bottom edge; above it, a window in the corner. */
@@ -188,7 +189,7 @@ let place = pipPlace();
 let turnedOff = false;
 
 // A floating panel kept open across a reload, where PiP now opens as a board: its conversation's route is what is kept.
-if (store.state.pipOpen && place === "board") {
+if (place === "board" && sessionStorage.getItem("pocket.pip") === "1") {
     sessionStorage.removeItem(OPEN_KEY);
     store.set({ pipOpen: false });
 }

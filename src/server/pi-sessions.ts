@@ -577,13 +577,6 @@ function titleOf(info: SessionInfo): string {
     return info.name ?? (first || "Pi session");
 }
 
-/** A session's title as `pi -r` shows it: its name, or the first line of what it was first asked. */
-function titleOf(info: SessionInfo): string {
-    const first = info.firstMessage.split("\n")[0]!.slice(0, TITLE_LENGTH).trim();
-
-    return info.name ?? (first || "Pi session");
-}
-
 /** A Pi session as the list shows it. */
 export type PiSessionSummary = {
     path: string;

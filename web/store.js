@@ -117,7 +117,21 @@ const emptyView = () => ({
 const TAB_LAYOUTS = "pocket.layouts";
 const DEVICE_LAYOUTS = "layouts";
 
-const layoutPerson = () => store.state.me?.id ?? null;
+// `firstLayout` runs while `store` is still being created. Until then, who is signed in is the person the
+// page already wrote (`acceptPerson`), and PiP is not open.
+let storeReady = false;
+
+const layoutPerson = () => {
+    if (!storeReady) {
+        try {
+            return localStorage.getItem("pocket.person") || null;
+        } catch {
+            return null;
+        }
+    }
+
+    return store.state.me?.id ?? null;
+};
 
 function tabLayouts() {
     try {
@@ -141,7 +155,11 @@ function deviceLayouts() {
 let layoutsStopped = false;
 
 /** Whether `id` keeps a layout: a session does; home and PiP's conversation, open as a board, do not. */
-const keepsLayout = (id, state = store.state) => id !== null && id !== state.pip?.id;
+const keepsLayout = (id, state) => {
+    const pip = (state ?? (storeReady ? store.state : undefined))?.pip?.id;
+
+    return id !== null && id !== pip;
+};
 
 /**
  * The panel `id` showed when it was left: in this tab, else on this device, else none. An extension's panel shows only
@@ -154,7 +172,8 @@ function layoutFor(id) {
 
     const kept =
         keptLayout(tabLayouts(), id) ?? (layoutsStopped ? null : keptLayout(deviceLayouts(), id));
-    const listed = store.state.server?.ui;
+    // The first layout runs while `store` is still being created. The server's module list is not known then.
+    const listed = storeReady ? store.state.server?.ui : undefined;
 
     if (
         kept === null ||
@@ -196,7 +215,8 @@ function keepLayout(id, layout) {
  * were a session's) gives it to the session it shows, once.
  */
 function firstLayout() {
-    const id = store.state.conversationId;
+    // The route, not `store.state`: this runs while `store` is still being created, and the page opens on the route.
+    const id = routeConversation();
     const legacy = legacyLayout((key) => sessionStorage.getItem(key));
 
     for (const key of LEGACY_KEYS) {
@@ -404,6 +424,8 @@ export const store = {
         return () => this.listeners.delete(listener);
     },
 };
+
+storeReady = true;
 
 // ─── Marked-unread sessions (this browser) ──────────────────────────────────────
 

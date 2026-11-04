@@ -156,6 +156,9 @@ export interface PiSessionContinued {
      * @experimental
      */
     entries: readonly { from?: string; id: EntryId; message: Message }[];
+}
+
+/**
  * An execution provider for one workspace URI scheme.
  * @since 0.28.0
  * @experimental
@@ -245,6 +248,7 @@ export interface Host {
      * @experimental
      */
     registerPiSessionCompanion(companion: PiSessionCompanion): () => void;
+    /**
      * Registers an execution provider for a workspace URI scheme.
      * @since 0.28.0
      * @experimental

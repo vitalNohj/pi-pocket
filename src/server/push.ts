@@ -59,6 +59,8 @@ export type EmbedderMessage = PushMessage & {
     urgency: Urgency;
     approval?: { id: string; allow: boolean; may: boolean; call: string };
 };
+/** The same message as a desktop app gets it (`desktop-notify`); the event name differs, the shape does not. */
+export type DesktopMessage = EmbedderMessage;
 
 const DEFAULT_SUBJECT = "mailto:pi-pocket@example.com";
 const DEFAULT_RECORD_SIZE = 4096;

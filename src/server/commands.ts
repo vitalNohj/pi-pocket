@@ -1056,9 +1056,12 @@ export class Commands {
         app.spend.check(user, id);
 
         const placed = this.#placeAttachments(id, attachments);
-        const lines = attachments.map(
-            (file, index) =>
-                `- ${placed[index]} (${file.name}, ${file.mime || "unknown type"}, ${file.size} bytes)`,
+        // Most were made ready as they were uploaded (`model-images.ts`); the rest are made side by side, in their order.
+        const images = model.input.includes("image")
+            ? attachments.filter((file) => forModel(file.mime, file.size))
+            : [];
+        const made = await Promise.allSettled(
+            images.map((file) => modelImage(file.path, file.mime)),
         );
         // What differs between a file and the image the model gets goes on the file's line.
         const notes = new Map<Attachment, string>();
@@ -1069,9 +1072,9 @@ export class Commands {
             }
         });
 
-        const lines = attachments.map((file) => {
+        const lines = attachments.map((file, index) => {
             const note = notes.get(file);
-            const line = `- ${file.path} (${file.name}, ${file.mime || "unknown type"}, ${file.size} bytes)`;
+            const line = `- ${placed[index]} (${file.name}, ${file.mime || "unknown type"}, ${file.size} bytes)`;
 
             return note === undefined ? line : `${line} ${note}`;
         });
@@ -1100,14 +1103,6 @@ export class Commands {
             ),
             ...(about === undefined ? [] : [{ type: "text" as const, text: about }]),
         ];
-
-        // Most were made ready as they were uploaded (`model-images.ts`); the rest are made side by side, in their order.
-        const images = model.input.includes("image")
-            ? attachments.filter((file) => forModel(file.mime, file.size))
-            : [];
-        const made = await Promise.allSettled(
-            images.map((file) => modelImage(file.path, file.mime)),
-        );
 
         made.forEach((result, index) => {
             if (result.status === "fulfilled") {
@@ -1186,11 +1181,6 @@ export class Commands {
         await this.#touched(id, titled, text === titled ? undefined : text);
 
         step("touched");
-
-        // A person's own words: linked sessions may message each other again (`linked-sessions.ts`).
-        if (via === undefined) {
-            await app.linkedSessions.personWrote(id);
-        }
 
         this.#reportUnanswered(id, submission.wait(context));
 
@@ -1411,46 +1401,6 @@ export class Commands {
      * given on its command line, and images as images when the model takes them. Only files this person may load
      * through the session; anything else stays a mention, which Pi can read itself.
      */
-    /**
-     * For a message to PiP that asks about a passage: which session it came from, for PiP alone (`CONTEXT_BLOCK`). Only
-     * a session its person may see, and never another PiP; nothing for a message to anyone else.
-     */
-    #aboutSession(
-        id: ConversationId,
-        user: User,
-        about: SubmitRequest["about"],
-    ): string | undefined {
-        const app = this.#app;
-
-        if (about === undefined) {
-            return undefined;
-        }
-
-        const session = typeof about === "object" && about !== null ? about.session : undefined;
-
-        if (app.pip.ownerOf(id) === undefined) {
-            throw new HttpError(400, "Only a message to PiP says which session it is about");
-        }
-
-        if (typeof session !== "number" || !Number.isSafeInteger(session) || session <= 0) {
-            throw new HttpError(400, "about.session must be a session's number");
-        }
-
-        const target = session as unknown as ConversationId;
-        const meta = app.sessionMeta(target);
-
-        if (meta === undefined || meta.pip !== undefined) {
-            throw new HttpError(404, "There is no such session.");
-        }
-
-        app.requireSee(user, target);
-
-        const title = attribute(app.hidden.replace(meta.title ?? "untitled", target)).slice(0, 120);
-        const folder = attribute(meta.cwd);
-
-        return `${CONTEXT_BLOCK} session="${session}" title="${title}" folder="${folder}">\nThe quoted passage at the start of this message comes from Pi's reply in session ${session}. Read that session with session_read for more context when the question needs it.\n</pocket-context>`;
-    }
-
     async #mentionedFiles(
         id: ConversationId,
         user: User,

@@ -290,10 +290,10 @@ describe("a copy with a place", () => {
         );
         assert.deepEqual((await app.agentState(copy.id))?.extensions, [...REMOTE_EXTENSIONS]);
 
-        const tools = (await (await app.conversation(copy.id)).agent(context)).tools.map(
-            (tool) => tool.name,
-        );
+        const agent = await (await app.conversation(copy.id)).agent(context);
+        const tools = [...agent.tools, ...agent.deferred].map((tool) => tool.name);
 
+        // `subagent` waits for a search (`tool-search.ts`); it is still there for a session on another computer.
         assert.ok(tools.includes("subagent"), "subagents work on another computer");
         assert.ok(tools.includes("codemode"), "codemode works on another computer");
 
@@ -332,9 +332,8 @@ describe("a copy with a place", () => {
         assert.equal(app.cwdOf(back.id), work, "no folder named: the default workspace");
         assert.equal((await app.agentState(back.id))?.extensions, undefined);
 
-        const tools = (await (await app.conversation(back.id)).agent(context)).tools.map(
-            (tool) => tool.name,
-        );
+        const agent = await (await app.conversation(back.id)).agent(context);
+        const tools = [...agent.tools, ...agent.deferred].map((tool) => tool.name);
 
         assert.ok(tools.includes("subagent"), "the server's tools are back");
         assert.deepEqual(

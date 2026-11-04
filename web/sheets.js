@@ -64,7 +64,7 @@ const sheetKey = (sheet) =>
  */
 const trail = [];
 /** The conversation the trail's sheets were opened in: another one (a notice's link, with its sheet) starts afresh. */
-let trailIn = store.state.conversationId;
+let trailIn = null;
 
 store.subscribe(({ sheet, conversationId }) => {
     if (!sheet || conversationId !== trailIn) {

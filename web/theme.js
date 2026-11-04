@@ -191,13 +191,16 @@ function inForce() {
     };
 }
 
-store.set({
-    appearance: inForce(),
-    desktopTheme: readJson(DESKTOP_CACHE, null),
-    pinned: readJson(PINNED, []),
-});
+// After this module returns: `store.js` imports this file while `store` is still being created.
+queueMicrotask(() =>
+    store.set({
+        appearance: inForce(),
+        desktopTheme: readJson(DESKTOP_CACHE, null),
+        pinned: readJson(PINNED, []),
+    }),
+);
 
-export const prefs = () => store.state.appearance;
+export const prefs = () => store.state.appearance ?? inForce();
 
 /** The settings that move the windows: with Fluid motion, changing one morphs the layout (`morph`). */
 const MORPHS = new Set(["sidebar", "width", "tiling"]);

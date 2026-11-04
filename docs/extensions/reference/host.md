@@ -176,10 +176,6 @@ The thinking levels, lowest first. They have the names that models and sessions 
 
 ```ts
 registerPiSessionCompanion(companion: PiSessionCompanion): () => void;
-### `registerWorkspaceProvider`
-
-```ts
-registerWorkspaceProvider(scheme: string, provider: WorkspaceProvider): () => void;
 ```
 
 Since 0.28.0 · Experimental
@@ -189,6 +185,15 @@ Registers a file that an extension keeps beside Pi's session files, to carry it 
 `PiSessionCompanion` has `suffix` (a dot, then up to 64 letters, digits, dots, dashes, or underscores), `label`, and `continued(input: PiSessionContinued): Promise<string | void> | string | void`. `continued` has one minute. A string it returns is shown to the person. An error it throws, or a time out, is shown as `<label>: <message>`, and the session continues without it.
 
 `PiSessionContinued` has `conversationId`, `piFile` (Pi's session file), `companion` (the file beside it), and `entries`: the new session's context, in order, as its first request sends it. Each item is `{ from?: string; id: EntryId; message: Message }`. `id` is the entry here, and `from` is the id of the entry of Pi's that it copies. A message made here, such as the result for a tool call that never finished, has no `from`. Messages that a Pi compaction summarized are not in `entries`.
+
+### `registerWorkspaceProvider`
+
+```ts
+registerWorkspaceProvider(scheme: string, provider: WorkspaceProvider): () => void;
+```
+
+Since 0.28.0 · Experimental
+
 Registers the execution environment for a URI scheme such as `ssh`. `resolveCwd` returns the canonical address. It must keep the same scheme. Pi Pocket stores that address and refuses to use the local machine when no provider is active. The returned disposer removes only its own registration. See [Execution environments for workspaces](../workspaces.md).
 
 `WorkspaceProvider` has `env(cwd: string): ExecutionEnv` and `resolveCwd(cwd: string, signal?: AbortSignal): Promise<string>`. `env` returns promptly. It receives the canonical workspace address. `resolveCwd` can check and canonicalize the address. `signal` is optional: in 0.28, session creation and settings do not pass one yet.
