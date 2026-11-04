@@ -426,34 +426,18 @@ export class PocketApp {
     readonly spend = new Spend(this);
     /** The owner's keep-warm settings and each session's choice (`keep-warm.ts`). */
     readonly keepWarm = new KeepWarm({
-        requireAccess: (user, id) => {
-            this.requireSee(user, id);
-            this.requireSteer(user);
-        },
         settings: () => this.config.keepWarm,
         saveSettings: (next) => {
             this.config.keepWarm = next;
         },
         sessionMeta: (id) => this.sessionMeta(id),
         rootOf: (id) => this.rootOf(id),
-        commitSession: async (id, change) => {
-            await this.harness.commit(async (tx) => {
-                const meta = (await tx.doc(SessionsDoc)).items[String(id)];
-
-                if (meta === undefined || meta.pip !== undefined) {
-                    throw new HttpError(404, "Not a session");
-                }
-
-                change(meta);
-            }, BACKGROUND_CONTEXT);
-        },
         model: (provider, id) => this.models.getModel(provider, id),
         models: () => [...this.models.getModels()],
         availableModels: () => [...this.models.getAvailableSnapshot()],
         keeper: {
             idleSummary: () => this.cacheKeeper.idleSummary(),
             idleStatus: (id) => this.cacheKeeper.idleStatus(id),
-            reconsider: () => this.cacheKeeper.reconsider(),
         },
         settingsChanged: () => this.keepWarmSettingsChanged(),
     });
@@ -618,6 +602,7 @@ export class PocketApp {
                 };
             },
             idlePolicy: (conversationId) => this.keepWarm.policy(conversationId),
+            warmable: (conversationId) => this.keepWarm.warmable(conversationId),
             modelFacts: (spec, tier) => this.keepWarm.facts(spec, tier),
             modelOf: (provider, modelId) => this.models?.getModel(provider, modelId),
             store: idleFiles(join(options.dataDir, "keep-warm"), (line) => this.#log(line)),
@@ -4179,13 +4164,8 @@ export class PocketApp {
 
     /** The owner changed keep warm's settings: tabs hear the new time limit, and open views show each session's state. */
     async keepWarmSettingsChanged(): Promise<void> {
-        for (const pending of this.#rooms.values()) {
-            void pending.then(
-                (room) => room.schedule(),
-                () => {},
-            );
-        }
-
+        this.cacheKeeper.reconsider();
+        this.refreshViews();
         await this.#refreshClients();
     }
 

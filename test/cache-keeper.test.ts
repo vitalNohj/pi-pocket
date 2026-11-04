@@ -1,13 +1,21 @@
 // The cache keeper with fake streams and a fake clock: when it warms, when it stops, and what it never does.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import {
     type Api,
     createAssistantMessageEventStream,
     type Model,
     type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { CacheKeeper, decide, MAX_AGE_MS, refreshDelayMs } from "../src/server/cache-keeper.ts";
+import {
+    CacheKeeper,
+    decide,
+    MAX_AGE_MS,
+    payloadHash,
+    refreshDelayMs,
+} from "../src/server/cache-keeper.ts";
 import {
     breakEvenRefreshes,
     type IdlePolicy,
@@ -15,6 +23,46 @@ import {
     type ModelFacts,
 } from "../src/server/idle-plan.ts";
 import type { IdleRecord, IdleStore } from "../src/server/keep-warm-store.ts";
+
+/** The original implementation is the byte-for-byte reference for the optimized hash. */
+function referencePayloadHash(payload: unknown): string {
+    const caps = new Set(
+        [
+            ["max_tokens"],
+            ["max_completion_tokens"],
+            ["max_output_tokens"],
+            ["maxTokens"],
+            ["options", "maxTokens"],
+            ["config", "maxOutputTokens"],
+            ["inferenceConfig", "maxTokens"],
+            ["generationConfig", "maxOutputTokens"],
+        ].map((path) => JSON.stringify(path)),
+    );
+
+    const canonical = (value: unknown, path: string[] = []): unknown => {
+        if (Array.isArray(value)) {
+            return value.map((item, index) => canonical(item, [...path, String(index)]));
+        }
+
+        if (value !== null && typeof value === "object") {
+            return Object.fromEntries(
+                Object.entries(value)
+                    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+                    .flatMap(([key, item]) => {
+                        const next = [...path, key];
+
+                        return caps.has(JSON.stringify(next)) ? [] : [[key, canonical(item, next)]];
+                    }),
+            );
+        }
+
+        return value;
+    };
+
+    return createHash("sha256")
+        .update(JSON.stringify(canonical(JSON.parse(JSON.stringify(payload)))))
+        .digest("hex");
+}
 
 // Claude Sonnet prices per million tokens, with a 5 minute cache.
 const COST = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
@@ -51,7 +99,9 @@ const usage = billedUsage();
 function rig(
     disabled = false,
     idle?: {
-        policy?: IdlePolicy | (() => IdlePolicy | undefined);
+        policy?: IdlePolicy | ((id: number) => IdlePolicy | undefined);
+        warmable?: (id: number) => boolean;
+        payload?: (warm: boolean) => unknown;
         /** Provider session ids to conversations; default: a 1, b 2, s 3. */
         conversations?: Map<string, number>;
         facts?: ModelFacts | ((spec: string, tier?: "short" | "long") => ModelFacts);
@@ -65,6 +115,8 @@ function rig(
     let failNext = false;
     const ended = new Set<number>();
     const calls: { maxTokens?: number; maxRetries?: number }[] = [];
+    const hashes: unknown[] = [];
+    const changed: number[] = [];
     let stopReason = "stop";
     /** Set: the next answer waits until it is called, before its payload is sent, or after (`holdSent`). */
     let hold: Promise<void> | undefined;
@@ -100,7 +152,12 @@ function rig(
 
                 // As a provider does: a payload hook that throws, or an abort, ends the stream with an error.
                 try {
-                    await options?.onPayload?.({ model: m.id, max_tokens: options.maxTokens }, m);
+                    await options?.onPayload?.(
+                        idle?.payload === undefined
+                            ? { model: m.id, max_tokens: options.maxTokens }
+                            : idle.payload(options?.maxTokens === 1),
+                        m,
+                    );
 
                     if (sentFirst) {
                         await wait;
@@ -127,6 +184,13 @@ function rig(
     };
     const keeper = new CacheKeeper({
         now: () => now,
+        payloadHash: (payload) => {
+            hashes.push(payload);
+
+            return payloadHash(payload);
+        },
+        changed: (id) => changed.push(id),
+        ...(idle?.warmable === undefined ? {} : { warmable: idle.warmable }),
         conversationOf: async (sessionId) =>
             idle?.conversations?.get(sessionId) ?? { a: 1, b: 2, s: 3 }[sessionId],
         isRunning: (id) => !ended.has(id),
@@ -134,8 +198,8 @@ function rig(
         ...(idle?.policy === undefined
             ? {}
             : {
-                  idlePolicy: () =>
-                      typeof idle.policy === "function" ? idle.policy() : idle.policy,
+                  idlePolicy: (id: number) =>
+                      typeof idle.policy === "function" ? idle.policy(id) : idle.policy,
               }),
         ...(idle?.facts === undefined
             ? {}
@@ -180,21 +244,35 @@ function rig(
         await new Promise((r) => setImmediate(r));
     };
 
-    const advance = async () => {
+    const fireNext = () => {
         const next = timers.sort((a, b) => a.at - b.at)[0];
 
         assert.ok(next, "a timer is pending");
         timers.splice(timers.indexOf(next), 1);
         now = next.at;
         next.fn();
+    };
+
+    const advance = async () => {
+        fireNext();
         await new Promise((r) => setTimeout(r, 5));
+    };
+
+    const drain = async (count: number) => {
+        for (let i = 0; i < count && timers.length > 0; i++) {
+            await advance();
+        }
     };
 
     return {
         keeper,
         send,
         advance,
+        drain,
+        fireNext,
         calls,
+        hashes,
+        changed,
         timers,
         setNow: (t: number) => {
             now = t;
@@ -342,9 +420,7 @@ test("the age cap ends warming from the real request, not from the last warm", a
     await r.send("s", "toolUse");
     const start = r.now();
 
-    for (let i = 0; i < 40 && r.timers.length > 0; i++) {
-        await r.advance();
-    }
+    await r.drain(40);
 
     assert.ok(r.now() - start < MAX_AGE_MS + 300_000, "it stopped near the cap");
     assert.equal(r.timers.length, 0);
@@ -421,9 +497,7 @@ test("a tool that waits for a person is bounded by the cap: about six warms, not
 
     await r.send("s", "toolUse");
 
-    for (let i = 0; i < 40 && r.timers.length > 0; i++) {
-        await r.advance();
-    }
+    await r.drain(40);
 
     assert.ok(
         r.keeper.status().warms >= 5 && r.keeper.status().warms <= 7,
@@ -448,8 +522,8 @@ const CLAUDE = { read: 0.5, write: 10 };
 const HOUR_MODEL = { short: 3600 };
 
 /** The run of session "s" (conversation 3) ends after a finished answer. */
-async function idleRun(r: ReturnType<typeof rig>) {
-    await r.send("s", "stop");
+async function idleRun(r: ReturnType<typeof rig>, tier: "short" | "long" = "short") {
+    await r.send("s", "stop", tier);
     await new Promise((x) => setImmediate(x));
     r.endRun(3);
     r.keeper.runEnded(3);
@@ -457,13 +531,19 @@ async function idleRun(r: ReturnType<typeof rig>) {
 
 function memoryStore() {
     const saved = new Map<string, IdleRecord>();
+    const writes: { record: IdleRecord; withContext: boolean }[] = [];
+    const budgetWrites: Record<string, number>[] = [];
     let budgets: Record<string, number> = {};
 
     return {
         saved,
+        writes,
+        budgetWrites,
         store: {
             save: (record: IdleRecord, withContext: boolean) => {
                 const before = saved.get(record.key);
+
+                writes.push({ record, withContext });
 
                 saved.set(record.key, {
                     ...record,
@@ -475,6 +555,7 @@ function memoryStore() {
             },
             load: async () => [...saved.values()],
             saveBudgets: (spent: Record<string, number>) => {
+                budgetWrites.push({ ...spent });
                 budgets = { ...spent };
             },
             loadBudgets: async () => ({ ...budgets }),
@@ -506,7 +587,8 @@ test("keep warm: after the run ends it refreshes until the time limit", async ()
     assert.equal(r.timers.length, 1);
     assert.equal(r.timers[0]?.at, start + 270_000 * (75 / 90), "75% of a 5 minute cache");
 
-    for (let i = 0; i < 100 && r.timers.length > 0; i++) {
+    // Until it stops: the request then stays parked until its cache expires, in case the limit grows.
+    for (let i = 0; i < 100 && r.keeper.idleStatus(3).warm; i++) {
         await r.advance();
     }
 
@@ -523,9 +605,7 @@ test("keep warm: the refresh cap and the cost cap stop it", async () => {
 
     await idleRun(capped);
 
-    for (let i = 0; i < 10 && capped.timers.length > 0; i++) {
-        await capped.advance();
-    }
+    await capped.drain(10);
 
     assert.equal(capped.keeper.status().warms, 3);
     const one = capped.keeper.idleStatus(3);
@@ -538,9 +618,7 @@ test("keep warm: the refresh cap and the cost cap stop it", async () => {
 
     await idleRun(cost);
 
-    for (let i = 0; i < 10 && cost.timers.length > 0; i++) {
-        await cost.advance();
-    }
+    await cost.drain(10);
 
     assert.equal(
         cost.keeper.status().warms,
@@ -566,18 +644,20 @@ test("keep warm: a new message stops it; the next run's end starts it again", as
     assert.equal(r.keeper.idleStatus(3).warm, true);
 });
 
-test("keep warm: two refreshes in a row that wrote the cache stop it, with the reason", async () => {
-    const r = rig(false, { policy: { ...POLICY, hours: 1000 } });
+test("keep warm: two cache misses in a row, billed as writes or plain input (OpenAI, xAI), stop it with the reason", async () => {
+    for (const miss of ["rewriteOnWarm", "missOnWarm"] as const) {
+        const r = rig(false, { policy: { ...POLICY, hours: 1000 } });
 
-    await idleRun(r);
-    r.rewriteOnWarm();
-    await r.advance();
-    assert.equal(r.keeper.idleStatus(3).warm, true, "one miss is allowed");
-    await r.advance();
-    const status = r.keeper.idleStatus(3);
+        await idleRun(r);
+        r[miss]();
+        await r.advance();
+        assert.equal(r.keeper.idleStatus(3).warm, true, "one miss is allowed");
+        await r.advance();
+        const status = r.keeper.idleStatus(3);
 
-    assert.equal(status.warm, false);
-    assert.match(!status.warm ? (status.stopped ?? "") : "", /already gone 2 times/);
+        assert.equal(status.warm, false);
+        assert.match(!status.warm ? (status.stopped ?? "") : "", /already gone 2 times/);
+    }
 });
 
 test("keep warm: a refresh that errs is tried again soon; two in a row stop it", async () => {
@@ -595,9 +675,8 @@ test("keep warm: a refresh that errs is tried again soon; two in a row stop it",
     assert.equal(r.keeper.idleStatus(3).warm, false);
 });
 
-test("keep warm: forget (a model change, New context) stops it, and turning it off stops the refreshes", async () => {
-    let policy: IdlePolicy | undefined = POLICY;
-    const r = rig(false, { policy: () => policy });
+test("keep warm: forget (a model change, New context) stops it", async () => {
+    const r = rig(false, { policy: POLICY });
 
     await idleRun(r);
     r.keeper.forget(3, "the model changed");
@@ -605,18 +684,6 @@ test("keep warm: forget (a model change, New context) stops it, and turning it o
 
     assert.equal(!one.warm && one.stopped, "the model changed");
     assert.equal(r.timers.length, 0);
-
-    await r.send("s", "stop");
-    r.keeper.runEnded(3);
-    assert.equal(r.keeper.idleStatus(3).warm, true);
-    policy = undefined;
-    r.keeper.reconsider();
-    assert.equal(r.keeper.idleStatus(3).warm, false, "turned off: no more refreshes");
-    assert.equal(
-        r.timers.filter((t) => t.at - r.now() < 3_000_000).length,
-        1,
-        "only the expiry of the kept request",
-    );
 });
 
 test("keep warm: turned off and on again while idle, it picks up the same request; no stale stop is shown", async () => {
@@ -632,6 +699,11 @@ test("keep warm: turned off and on again while idle, it picks up the same reques
 
     assert.equal(off.warm, false);
     assert.equal(!off.warm && off.stopped, undefined, "Off is a choice, not a stop");
+    assert.equal(
+        r.timers.filter((t) => t.at - r.now() < 3_000_000).length,
+        1,
+        "only the expiry of the kept request",
+    );
 
     policy = POLICY;
     r.keeper.reconsider();
@@ -670,6 +742,189 @@ test("keep warm: a request kept while Off goes when its cache expires, or a new 
     policy = POLICY;
     r.keeper.reconsider();
     assert.equal(r.keeper.idleStatus(3).warm, false, "a new run replaced it");
+});
+
+test("keep warm: off and on again keeps the stretch's counts, time limit, and failures", async () => {
+    let policy: IdlePolicy | undefined = { ...POLICY, hours: 1000, maxRefreshes: 3 };
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    await r.advance();
+    await r.advance();
+    assert.equal(r.keeper.status().warms, 2);
+    const since = r.keeper.idleStatus(3);
+
+    policy = undefined;
+    r.keeper.reconsider();
+    policy = { ...POLICY, hours: 1000, maxRefreshes: 3 };
+    r.keeper.reconsider();
+    const again = r.keeper.idleStatus(3);
+
+    assert.equal(again.warm && again.refreshes, 2, "the 2 refreshes still count");
+    assert.equal(again.warm && again.spent, since.warm && since.spent);
+    await r.advance();
+    assert.equal(r.keeper.status().warms, 3);
+    await r.advance();
+    assert.equal(r.keeper.status().warms, 3, "no 4th refresh");
+    const capped = r.keeper.idleStatus(3);
+
+    assert.equal(
+        !capped.warm && capped.stopped,
+        "the refresh cap was reached",
+        "the cap of 3 holds",
+    );
+});
+
+test("keep warm: a run that ends during a tool wait while Off can be turned on", async () => {
+    let policy: IdlePolicy | undefined;
+    const r = rig(false, { policy: () => policy });
+
+    await r.send("s", "toolUse");
+    await new Promise((x) => setImmediate(x));
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(r.keeper.status().warming, 0, "nothing warms while Off");
+
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
+});
+
+test("keep warm: turned off while a refresh is on its way, it can still be turned on", async () => {
+    let policy: IdlePolicy | undefined = POLICY;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    const release = r.holdNext(true);
+
+    r.fireNext();
+    await new Promise((x) => setImmediate(x));
+    policy = undefined;
+    r.keeper.reconsider();
+    release();
+    await new Promise((x) => setTimeout(x, 5));
+
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
+});
+
+test("keep warm: off and on while a refresh is on its way sends no second one beside it, and the cap holds", async () => {
+    let policy: IdlePolicy | undefined = { ...POLICY, hours: 1000, maxRefreshes: 2 };
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    await r.advance();
+    const release = r.holdNext(true);
+
+    r.fireNext();
+    await new Promise((x) => setImmediate(x));
+    policy = undefined;
+    r.keeper.reconsider();
+    policy = { ...POLICY, hours: 1000, maxRefreshes: 2 };
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true, "turned on again");
+    assert.equal(r.timers.length, 1, "no refresh planned, only the deadline of the one on its way");
+    assert.ok(
+        (r.timers[0]?.at ?? 0) - r.now() >= 60_000,
+        "the timer left is the refresh's deadline, not a refresh beside it",
+    );
+    await new Promise((x) => setTimeout(x, 5));
+    assert.equal(r.calls.length, 3, "nothing beside the refresh on its way");
+
+    release();
+    await new Promise((x) => setTimeout(x, 5));
+    await r.drain(5);
+    assert.equal(r.calls.length, 3, "the run's request and 2 refreshes: the cap of 2 holds");
+    const capped = r.keeper.idleStatus(3);
+
+    assert.equal(!capped.warm && capped.stopped, "the refresh cap was reached");
+});
+
+test("keep warm: a refresh that never settles still ends the entry after off and on", async () => {
+    let policy: IdlePolicy | undefined = POLICY;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    r.holdNext(true);
+    r.fireNext();
+    await new Promise((x) => setImmediate(x));
+    policy = undefined;
+    r.keeper.reconsider();
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.timers.length, 1, "only the deadline of the refresh on its way");
+    await r.advance();
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(!status.warm && status.stopped, "a refresh did not finish");
+});
+
+test("keep warm: a parked request stays through more reconsiders while Off; Off clears a limit's stop", async () => {
+    let policy: IdlePolicy | undefined = POLICY;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    await r.advance();
+    policy = undefined;
+    r.keeper.reconsider();
+    r.keeper.reconsider();
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true, "another session's change did not drop it");
+
+    policy = { ...POLICY, hours: 1000, maxRefreshes: 2 };
+    r.keeper.reconsider();
+    await r.drain(2);
+    const capped = r.keeper.idleStatus(3);
+
+    assert.equal(!capped.warm && capped.stopped, "the refresh cap was reached");
+    policy = undefined;
+    r.keeper.reconsider();
+    const off = r.keeper.idleStatus(3);
+
+    assert.equal(!off.warm && off.stopped, undefined, "Off shows no old stop");
+    policy = { ...POLICY, hours: 1000, maxRefreshes: 5 };
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true, "still there to pick up");
+});
+
+test("keep warm: a time limit that stopped it gives way to a longer time while the cache lives", async () => {
+    let policy: IdlePolicy = { ...POLICY, hours: 1000, maxRefreshes: 1 };
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    await r.advance();
+    await r.advance();
+    const stopped = r.keeper.idleStatus(3);
+
+    assert.equal(!stopped.warm && stopped.stopped, "the refresh cap was reached");
+
+    policy = { ...POLICY, hours: 1000, maxRefreshes: 5 };
+    r.keeper.reconsider();
+    const again = r.keeper.idleStatus(3);
+
+    assert.equal(again.warm, true, "a higher cap picks it up");
+    assert.equal(!again.warm || again.refreshes, 1);
+});
+
+test("keep warm: a refresh that finds the session Off parks it, and shows no stop", async () => {
+    let policy: IdlePolicy | undefined = POLICY;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    // Turned off without a reconsider (the commit is still on its way): the refresh's own check finds it.
+    policy = undefined;
+    await r.advance();
+    const off = r.keeper.idleStatus(3);
+
+    assert.equal(off.warm, false);
+    assert.equal(!off.warm && off.stopped, undefined);
+    assert.equal(r.calls.length, 1, "nothing was sent");
+
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
 });
 
 test("keep warm: a 1 hour cache is kept warm when idle, though a tool wait never warms it", async () => {
@@ -760,9 +1015,7 @@ test("keep warm: Break-even stops at break-even, with its own reason", async () 
 
     await idleRun(r);
 
-    for (let i = 0; i < 20 && r.timers.length > 0; i++) {
-        await r.advance();
-    }
+    await r.drain(20);
 
     assert.equal(
         r.keeper.status().warms,
@@ -782,9 +1035,7 @@ test("keep warm: Break-even with no published prices stops at the refresh cap; t
 
     await idleRun(none);
 
-    for (let i = 0; i < 20 && none.timers.length > 0; i++) {
-        await none.advance();
-    }
+    await none.drain(20);
 
     const unpriced = none.keeper.idleStatus(3);
 
@@ -798,9 +1049,7 @@ test("keep warm: Break-even with no published prices stops at the refresh cap; t
 
     await idleRun(capped);
 
-    for (let i = 0; i < 20 && capped.timers.length > 0; i++) {
-        await capped.advance();
-    }
+    await capped.drain(20);
 
     const status = capped.keeper.idleStatus(3);
 
@@ -842,11 +1091,7 @@ test("keep warm: a run that ends while a tool-wait refresh is on its way leaves 
     assert.equal(r.timers.length, 1);
 
     // The tool-wait refresh starts; the run ends before its answer comes back.
-    const next = r.timers.sort((a, b) => a.at - b.at)[0]!;
-
-    r.timers.splice(r.timers.indexOf(next), 1);
-    r.setNow(next.at);
-    next.fn();
+    r.fireNext();
     r.endRun(3);
     r.keeper.runEnded(3);
     assert.equal(r.timers.length, 1, "only the refresh's own deadline: no idle timer yet");
@@ -858,19 +1103,6 @@ test("keep warm: a run that ends while a tool-wait refresh is on its way leaves 
     assert.equal(status.refreshes, 1, "the refresh on its way counts as its first");
     assert.equal(r.timers.length, 1, "exactly one timer: the next idle refresh");
     assert.equal((r.timers[0]?.at ?? 0) - r.now(), 225_000, "75% of the 5 minute cache");
-});
-
-test("keep warm: a miss billed as plain input (OpenAI, xAI) counts as the cache being gone", async () => {
-    const r = rig(false, { policy: { ...POLICY, hours: 1000 } });
-
-    await idleRun(r);
-    r.missOnWarm();
-    await r.advance();
-    await r.advance();
-    const status = r.keeper.idleStatus(3);
-
-    assert.equal(status.warm, false);
-    assert.match(!status.warm ? (status.stopped ?? "") : "", /already gone 2 times/);
 });
 
 test("keep warm: a request on its way when the model changes is not kept warm", async () => {
@@ -929,11 +1161,8 @@ test("keep warm: a refresh on its way at shutdown counts after the restart", asy
     await idleRun(first);
     // Sent to the provider already: the abort at shutdown still comes back with usage to pay.
     const release = first.holdNext(true);
-    const next = first.timers.sort((a, b) => a.at - b.at)[0]!;
 
-    first.timers.splice(first.timers.indexOf(next), 1);
-    first.setNow(next.at);
-    next.fn();
+    first.fireNext();
     await new Promise((x) => setImmediate(x));
     const closing = first.keeper.close();
 
@@ -959,11 +1188,8 @@ test("keep warm: a refresh is not sent once its session is turned off", async ()
 
     await idleRun(r);
     const release = r.holdNext();
-    const next = r.timers.sort((a, b) => a.at - b.at)[0]!;
 
-    r.timers.splice(r.timers.indexOf(next), 1);
-    r.setNow(next.at);
-    next.fn();
+    r.fireNext();
     // Archived (or turned off) while the refresh is being prepared: it must not be sent.
     policy = undefined;
     release();
@@ -971,7 +1197,12 @@ test("keep warm: a refresh is not sent once its session is turned off", async ()
     assert.equal(r.keeper.status().warms, 0);
     const status = r.keeper.idleStatus(3);
 
-    assert.equal(!status.warm && status.stopped, "turned off");
+    // Off is a choice: no stop is shown, and turning it on again picks the request up.
+    assert.equal(status.warm, false);
+    assert.equal(!status.warm && status.stopped, undefined);
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
 });
 
 test("keep warm: a tool-wait refresh renews the cache's age for keep warm", async () => {
@@ -993,9 +1224,7 @@ test("keep warm: the cost cap counts the next refresh at its worst, so a rewrite
     // The cache is gone at every refresh: each one writes it again, which a read's price would not foresee.
     r.rewriteOnWarm();
 
-    for (let i = 0; i < 10 && r.timers.length > 0; i++) {
-        await r.advance();
-    }
+    await r.drain(10);
 
     assert.equal(
         r.keeper.status().spent,
@@ -1023,9 +1252,7 @@ test("keep warm: the cost cap is the session's, its subagents' refreshes and sto
     r.keeper.runEnded(3);
     r.keeper.runEnded(1);
 
-    for (let i = 0; i < 20 && r.timers.length > 0; i++) {
-        await r.advance();
-    }
+    await r.drain(20);
 
     // Each could have refreshed twice on its own ($0.015 + $0.1875 at worst fits $0.21); together they stop after two.
     assert.equal(r.keeper.status().warms, 2);
@@ -1111,12 +1338,28 @@ test("keep warm: restore retains the session spend of entries that already stopp
 test("keep warm: a 1-hour Anthropic miss reserves twice the input price", async () => {
     const r = rig(false, { policy: { ...POLICY, maxCost: 0.25 } });
 
-    await r.send("s", "stop", "long");
-    r.endRun(3);
-    r.keeper.runEnded(3);
+    await idleRun(r, "long");
     await r.advance();
     assert.equal(r.calls.length, 1, "a $0.30 rewrite cannot fit a $0.25 cap");
     assert.equal(r.keeper.status().spent, 0);
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(!status.warm && status.stopped, "the cost cap was reached");
+});
+
+test("keep warm: an owner's shorter lifetime does not lower a 1-hour request's reserved miss", async () => {
+    const r = rig(false, {
+        policy: { ...POLICY, maxCost: 0.25 },
+        facts: { lifetimeMs: 300_000 },
+    });
+
+    await idleRun(r, "long");
+    await r.advance();
+    assert.equal(
+        r.calls.length,
+        1,
+        "the replay keeps the 1-hour tier: a $0.30 rewrite cannot fit a $0.25 cap",
+    );
     const status = r.keeper.idleStatus(3);
 
     assert.equal(!status.warm && status.stopped, "the cost cap was reached");
@@ -1128,11 +1371,252 @@ test("keep warm: Break-even uses the request's cache tier for its prices", async
         facts: (_spec, tier) => ({ prices: { read: 0.3, write: tier === "long" ? 6 : 3.75 } }),
     });
 
-    await r.send("s", "stop", "long");
-    r.endRun(3);
-    r.keeper.runEnded(3);
+    await idleRun(r, "long");
     const status = r.keeper.idleStatus(3);
 
     assert.ok(status.warm);
     assert.equal(status.maxRefreshes, 19, "the request uses the 1-hour write price");
+});
+
+// ─── Unnecessary keep-warm work ──────────────────────────────────────────
+
+test("payload hash: one serialization keeps the original canonical bytes", (t) => {
+    const shared = { maxTokens: 100, z: 1, a: 2 };
+    const payloads = [
+        {
+            z: { z: 1, a: [{ z: 2, a: 3 }, [null, true, "é 日本語 🦜 \ud800"]] },
+            a: "first",
+            max_tokens: 10,
+            max_completion_tokens: 20,
+            max_output_tokens: 30,
+            maxTokens: 40,
+            options: { maxTokens: 50, z: 2, a: { maxTokens: 60 } },
+            config: { maxOutputTokens: 70, z: 1, a: 2 },
+            inferenceConfig: { maxTokens: 80, a: 1 },
+            generationConfig: { maxOutputTokens: 90, a: 1 },
+            nested: { max_tokens: 100, options: { maxTokens: 110 } },
+        },
+        [
+            { options: shared, max_tokens: 10 },
+            { z: 1, a: [undefined, NaN, Infinity, -0] },
+        ],
+        { options: shared, nested: shared, "": { options: shared } },
+        JSON.parse('{"__proto__":{"z":1,"a":2},"10":1,"2":2,"01":3}') as unknown,
+        {
+            date: new Date("2026-01-02T03:04:05.000Z"),
+            nested: { toJSON: () => ({ z: 1, a: ["e\u0301", "\\\n\t"] }) },
+            omitted: undefined,
+            fn: () => 1,
+            number: Object(12),
+            string: Object("abc"),
+            boolean: Object(false),
+        },
+        { toJSON: () => ({ options: shared, z: 1, a: 2 }) },
+        null,
+        "日本語",
+        -0,
+    ];
+    const { rawJSON } = JSON as JSON & { rawJSON: (value: string) => unknown };
+    const rawPayloads = [
+        { raw: rawJSON("1e2") },
+        { raw: rawJSON('"é 日本語 🦜"') },
+        { raw: rawJSON("false") },
+        { raw: rawJSON("null") },
+    ];
+
+    assert.deepEqual(rawPayloads.map(payloadHash), rawPayloads.map(referencePayloadHash));
+    const expected = payloads.map(referencePayloadHash);
+    const parse = t.mock.method(JSON, "parse");
+
+    assert.deepEqual(payloads.map(payloadHash), expected);
+    assert.equal(parse.mock.callCount(), 0, "canonicalization needs no parse round trip");
+});
+
+test("keep warm: requests during a run are not hashed; its last one is hashed once when the run ends", async () => {
+    const r = rig(false, { policy: () => undefined });
+
+    await r.send("s", "toolUse");
+    await r.send("s", "toolUse");
+    await r.send("s", "stop");
+    assert.equal(r.hashes.length, 0, "no request of a running run is hashed");
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(r.hashes.length, 1, "the parked request is hashed once, and holds no payload");
+    await r.keeper.close();
+    assert.equal(r.hashes.length, 1, "dropping an entry does not hash it again");
+});
+
+test("keep warm: the first replay hashes lazily and still rejects a changed payload", async () => {
+    const r = rig(false, {
+        policy: POLICY,
+        payload: (warm) => ({ messages: [warm ? "changed" : "original"] }),
+    });
+
+    await idleRun(r);
+    assert.equal(r.hashes.length, 0);
+    await r.advance();
+    assert.equal(r.hashes.length, 2, "the original and replay are compared");
+    assert.equal(r.keeper.status().warms, 0, "the changed replay was not sent");
+    assert.equal(r.timers.length, 0);
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(
+        !status.warm && status.stopped,
+        "the request changed, so it could not be repeated",
+    );
+});
+
+test("keep warm: saving computes the original hash once and keeps it for later saves and replays", async () => {
+    const memory = memoryStore();
+    const r = rig(false, { policy: POLICY, store: memory.store });
+
+    await r.send("s", "stop");
+    assert.equal(r.hashes.length, 0);
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(r.hashes.length, 1);
+    assert.equal(memory.saved.get("s")?.payloadHash, payloadHash({ model: model.id }));
+    const original = r.hashes[0];
+
+    await r.advance();
+    await r.advance();
+    assert.equal(r.hashes.length, 3, "only each replay adds a hash");
+    assert.equal(r.hashes.filter((payload) => payload === original).length, 1);
+    assert.equal(memory.saved.get("s")?.payloadHash, payloadHash(original));
+    await r.keeper.close();
+});
+
+test("keep warm: reconsidering session A leaves session B's idle or parked entry untouched", async () => {
+    for (const initiallyOn of [true, false]) {
+        let on = initiallyOn;
+        const r = rig(false, { policy: (id) => (on ? { ...POLICY, session: id } : undefined) });
+
+        for (const [key, id] of [
+            ["a", 1],
+            ["b", 2],
+        ] as const) {
+            await r.send(key, "stop");
+            r.endRun(id);
+            r.keeper.runEnded(id);
+        }
+
+        const before = r.timers[1];
+
+        assert.ok(before);
+        r.changed.length = 0;
+        on = true;
+        r.keeper.reconsider(new Set([1 as ConversationId]));
+        assert.ok(r.timers.includes(before), "B keeps the same timer");
+        assert.deepEqual(r.changed, [1], "only A's view changes");
+        await r.keeper.close();
+    }
+});
+
+test("keep warm: parking while Off pushes no view, but turning an idle session Off pushes one", async () => {
+    let policy: IdlePolicy | undefined;
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    assert.deepEqual(r.changed, [], "an Off run ending changes no view");
+    policy = POLICY;
+    r.keeper.reconsider();
+    assert.equal(r.keeper.idleStatus(3).warm, true);
+    r.changed.length = 0;
+    policy = undefined;
+    r.keeper.reconsider();
+    assert.deepEqual(r.changed, [3], "idle to Off pushes exactly once");
+    r.changed.length = 0;
+    r.keeper.runEnded(3);
+    assert.deepEqual(r.changed, [], "parking again changes no view");
+    await r.keeper.close();
+});
+
+test("keep warm: parking pushes only when its stop text changes", async () => {
+    let policy: IdlePolicy | undefined = { ...POLICY, maxRefreshes: 1 };
+    const r = rig(false, { policy: () => policy });
+
+    await idleRun(r);
+    await r.advance();
+    await r.advance();
+    const stopped = r.keeper.idleStatus(3);
+
+    assert.equal(!stopped.warm && stopped.stopped, "the refresh cap was reached");
+    r.changed.length = 0;
+    r.keeper.reconsider();
+    assert.deepEqual(r.changed, [], "the same stop text changes no view");
+    policy = undefined;
+    r.keeper.reconsider();
+    assert.deepEqual(r.changed, [3], "Off clears the stop text");
+    assert.deepEqual(r.keeper.idleStatus(3), { warm: false });
+    await r.keeper.close();
+});
+
+test("keep warm: restore saves state without rewriting the context", async () => {
+    const memory = memoryStore();
+    const first = rig(false, { policy: POLICY, store: memory.store });
+
+    await idleRun(first);
+    await first.keeper.close();
+    const before = memory.writes.length;
+    const second = rig(false, { policy: POLICY, store: memory.store });
+
+    second.endRun(3);
+    await second.keeper.restore();
+    assert.equal(second.keeper.idleStatus(3).warm, true);
+    assert.deepEqual(
+        memory.writes.slice(before).map((write) => write.withContext),
+        [false],
+    );
+    await second.keeper.close();
+});
+
+test("keep warm: a run start without a budget saves no budgets", async () => {
+    const memory = memoryStore();
+    const r = rig(false, { policy: POLICY, store: memory.store });
+
+    r.keeper.runStarted(3);
+    assert.deepEqual(memory.budgetWrites, []);
+    await r.keeper.close();
+});
+
+test("keep warm: a known request lifetime skips model facts until idle planning", async () => {
+    let reads = 0;
+    const r = rig(false, {
+        policy: POLICY,
+        facts: () => {
+            reads++;
+
+            return { lifetimeMs: 3_600_000 };
+        },
+    });
+
+    await r.send("s", "stop");
+    assert.equal(reads, 0);
+    r.endRun(3);
+    r.keeper.runEnded(3);
+    assert.equal(reads, 1, "idle planning still reads the owner's lifetime");
+    assert.equal((r.timers[0]?.at ?? 0) - r.now(), 2_700_000);
+    await r.keeper.close();
+});
+
+test("keep warm: PiP and non-session requests keep no entry; disallowed subagents stay parked", async () => {
+    let policy: IdlePolicy | undefined;
+    const never = rig(false, { policy: () => policy, warmable: () => false });
+
+    await idleRun(never);
+    assert.equal(never.timers.length, 0, "a non-warmable conversation has no parked entry");
+    policy = POLICY;
+    never.keeper.reconsider();
+    assert.equal(never.keeper.idleStatus(3).warm, false);
+    await never.keeper.close();
+
+    policy = undefined;
+    const subagent = rig(false, { policy: () => policy, warmable: () => true });
+
+    await idleRun(subagent);
+    assert.equal(subagent.timers.length, 1, "a subagent stays parked while subagents are Off");
+    policy = POLICY;
+    subagent.keeper.reconsider();
+    assert.equal(subagent.keeper.idleStatus(3).warm, true, "a later choice can warm it");
+    await subagent.keeper.close();
 });

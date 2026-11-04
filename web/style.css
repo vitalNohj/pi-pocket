@@ -812,8 +812,7 @@ kbd {
     :root:not([data-motion="full"], [data-motion="fluid"]) .agents-dot.working,
     :root:not([data-motion="full"], [data-motion="fluid"]) .session-working,
     :root:not([data-motion="full"], [data-motion="fluid"]) .session-placeholder span,
-    :root:not([data-motion="full"], [data-motion="fluid"]) .icon.warming,
-    :root:not([data-motion="full"], [data-motion="fluid"]) .keep-warm-flame.warming .icon {
+    :root:not([data-motion="full"], [data-motion="fluid"]) .icon.warming {
         animation: none !important;
     }
 }
@@ -1098,7 +1097,7 @@ kbd {
     app-region: drag;
 }
 
-/* The title's button lies over its text, and an embedder reads drag regions in page order: the whole title is no-drag. */
+/* The title's button lies over its text, and a desktop app reads drag regions in page order: the whole title is no-drag. */
 :root:is([data-window-controls="left"], [data-window-controls="right"]) .topbar > .title {
     flex: 0 1 auto;
     margin-right: auto;
@@ -1512,20 +1511,6 @@ kbd {
     max-width: 55%;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-/* A session whose computer is offline: its work waits for it (`docs/runners.md`). */
-.title-sub > .title-offline {
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: var(--warn);
-}
-
-/* Its mark in the session list: dimmed while its computer is offline. */
-.state-mark.offline {
-    opacity: 0.45;
 }
 
 /* A subagent's line names its parent session instead, which may take the whole line. */
@@ -4827,7 +4812,8 @@ pre.diff .del {
     background: var(--bg);
 }
 
-.notifications-sheet .extension {
+.notifications-sheet .extension,
+.message-worktree {
     align-items: center;
 }
 
@@ -5966,125 +5952,6 @@ pre.diff .del {
     mask: none;
 }
 
-/*
- * A linked computer's session: the same states as the square, in an upward triangle. A 9px base keeps the hollow
- * states legible at 8px high. Masks cut transparent holes, so outlines keep the row's normal, selected, or hovered
- * background. Three small corner triangles, with one lit, replace the working square's four quadrants.
- */
-.state-mark.remote,
-.agent-tile .state-mark.remote {
-    --triangle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'%3E%3Cpath fill='white' d='M1 0 2 2H0Z'/%3E%3C/svg%3E");
-    /* Inset the sloping sides by --line-w, perpendicular to each edge of the 9 × 8 triangle. */
-    --inner-top: calc(var(--line-w) * 2.04);
-    --inner-width: calc(9px - var(--line-w) * 3.42);
-    width: 9px;
-    height: 8px;
-    border-radius: 0;
-    clip-path: polygon(50% 0, 100% 100%, 0 100%);
-    box-shadow: none;
-}
-
-.state-mark.remote.seen:not(.failed) {
-    background: none;
-}
-
-/* A solid triangle minus an inset triangle: a true transparent outline, not a background-colored fill. */
-.state-mark.remote.seen::after,
-.state-mark.remote.limited::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: currentColor;
-    -webkit-mask:
-        linear-gradient(#000, #000),
-        var(--triangle) 50% var(--inner-top) / var(--inner-width)
-            calc(100% - var(--line-w) - var(--inner-top)) no-repeat;
-    -webkit-mask-composite: xor;
-    mask:
-        linear-gradient(#000, #000),
-        var(--triangle) 50% var(--inner-top) / var(--inner-width)
-            calc(100% - var(--line-w) - var(--inner-top)) no-repeat;
-    mask-composite: exclude;
-}
-
-.state-mark.remote.working {
-    background: var(--dim);
-    -webkit-mask:
-        var(--triangle) 50% 0 / 4px 3.5px no-repeat,
-        var(--triangle) 100% 100% / 4px 3.5px no-repeat,
-        var(--triangle) 0 100% / 4px 3.5px no-repeat;
-    mask:
-        var(--triangle) 50% 0 / 4px 3.5px no-repeat,
-        var(--triangle) 100% 100% / 4px 3.5px no-repeat,
-        var(--triangle) 0 100% / 4px 3.5px no-repeat;
-}
-
-/* Still (reduced motion), the top corner stays lit. Each corner lasts as long as one square quadrant. */
-.state-mark.remote.working::before {
-    left: 2.5px;
-    width: 4px;
-    height: 3.5px;
-    animation: state-corner 1.2s steps(1, end) infinite;
-}
-
-@keyframes state-corner {
-    0% {
-        transform: translate(0, 0);
-    }
-    33.333333% {
-        transform: translate(2.5px, 4.5px);
-    }
-    66.666667% {
-        transform: translate(-2.5px, 4.5px);
-    }
-}
-
-/* Working triangles: their corners are smaller than the square's quadrants, so the unlit ones are a little brighter. */
-.state-mark.remote.working {
-    --dim: color-mix(in oklab, currentColor 42%, transparent);
-}
-
-/*
- * Failed: a cross cut out of the solid triangle. Once read, the same triangle dimmed, as read marks are: an outline
- * with a cross inside is too small to read at 8px.
- */
-.state-mark.remote.failed {
-    --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 8' preserveAspectRatio='none'%3E%3Cpath d='M2.9 3.4 6.1 6.6M6.1 3.4 2.9 6.6' stroke='white' stroke-width='1.4'/%3E%3C/svg%3E");
-    background: currentColor;
-    box-shadow: none;
-    -webkit-mask:
-        linear-gradient(#000, #000),
-        var(--cross) 0 0 / 100% 100% no-repeat;
-    -webkit-mask-composite: xor;
-    mask:
-        linear-gradient(#000, #000),
-        var(--cross) 0 0 / 100% 100% no-repeat;
-    mask-composite: exclude;
-}
-
-.state-mark.remote.failed.seen::after {
-    content: none;
-}
-
-:root[data-motion="reduced"] .state-mark.remote.working::before {
-    animation: none;
-}
-
-.state-mark.remote.waiting {
-    background: linear-gradient(
-        90deg,
-        currentColor 0 2px,
-        transparent 0 3.5px,
-        currentColor 0 5.5px,
-        transparent 0 7px,
-        currentColor 0
-    );
-}
-
-.state-mark.remote.limited {
-    background: radial-gradient(circle at 50% 62%, currentColor 0 0.65px, transparent 0.9px);
-}
-
 .folder-mark {
     flex: none;
     width: 7px;
@@ -6964,20 +6831,11 @@ div.group-head {
     flex-direction: column;
     gap: 28px;
     padding: 40px;
-    position: relative;
 }
 
 .splash > * {
     width: min(640px, 100%);
     flex: none;
-}
-
-/* The menu (App items only, with no session open), where a session's top bar keeps it. */
-.splash > .splash-menu {
-    position: absolute;
-    top: calc(env(safe-area-inset-top) + 3px + 6px * var(--space-y));
-    right: calc(10px + var(--inset-r));
-    width: 40px;
 }
 
 .fetch {
@@ -7188,50 +7046,6 @@ div.group-head {
     align-items: flex-end;
     justify-content: center;
     animation: fade var(--t-fade) var(--ease-almost);
-}
-
-/* Waiting for a linked computer, above the still-open folder or copy sheet on phones and desktops. */
-.overlay.runner-wait-overlay {
-    z-index: 70;
-    align-items: center;
-    padding: max(16px, var(--inset-t)) max(16px, var(--inset-r))
-        max(16px, env(safe-area-inset-bottom)) max(16px, var(--inset-l));
-}
-
-.runner-wait {
-    width: 100%;
-    max-width: 420px;
-    max-height: 90dvh;
-    overflow-y: auto;
-    padding: 24px;
-    border-radius: var(--r-sheet);
-    background: var(--panel);
-    box-shadow: var(--pop);
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    overflow-wrap: anywhere;
-}
-
-.runner-wait h2 {
-    margin: 0;
-    font-size: 18px;
-}
-
-.runner-wait p {
-    margin: 0;
-}
-
-.runner-wait-folder {
-    font: 12px / 1.6 var(--mono);
-}
-
-.runner-wait-countdown {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    color: var(--muted);
-    font-size: 12px;
 }
 
 /* Phones: a sheet from the bottom edge, rounded on top. Wide screens: a rounded popup near the top that floats. */
@@ -8715,34 +8529,6 @@ div.group-head {
     flex-shrink: 0;
 }
 
-/* A group's title, with a quiet aside about where sign-ins live at its right end. */
-.provider-group-top {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 2px 12px;
-    margin: 0 2px;
-}
-
-.provider-group-top .provider-group-head {
-    margin: 0;
-}
-
-.providers-note {
-    margin: 0 0 0 auto;
-    min-width: 0;
-    font-size: 12px;
-    font-style: italic;
-    color: var(--faint);
-    overflow-wrap: anywhere;
-}
-
-.providers-note .mono {
-    font-style: normal;
-    font-size: 11px;
-}
-
 .provider-group {
     display: flex;
     flex-direction: column;
@@ -8842,137 +8628,19 @@ div.group-head {
     justify-content: flex-end;
 }
 
-/*
- * What a provider's buttons open, under its row and inside the list: its sign-in, or the endpoint form. The row and the
- * panel share one tint, so they read as one item; the panel grows open and shrinks closed.
- */
-.provider-item {
-    display: flex;
-    flex-direction: column;
-    /* Opened, it scrolls to the top of the list, clear of the sticky search box. */
-    scroll-margin-top: 64px;
-}
-
-.provider {
-    transition: background-color 180ms ease;
-}
-
-.provider.open,
-.provider-panel {
-    background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--bg);
-}
-
-.provider-panel {
-    display: grid;
-    grid-template-rows: 1fr;
-    animation: provider-panel-open 220ms cubic-bezier(0.2, 0.7, 0.2, 1);
-}
-
-.provider-panel.closing {
-    grid-template-rows: 0fr;
-    opacity: 0;
-    animation: provider-panel-close 180ms ease-in;
-}
-
-@keyframes provider-panel-open {
-    from {
-        grid-template-rows: 0fr;
-        opacity: 0;
-    }
-}
-
-@keyframes provider-panel-close {
-    from {
-        grid-template-rows: 1fr;
-        opacity: 1;
-    }
-}
-
-.provider-panel-clip {
-    min-height: 0;
-    overflow: hidden;
-}
-
-.provider-panel-body {
-    margin: 0 16px;
-    padding: 14px 0 16px;
-    border-top: 1px solid var(--accent-line);
-}
-
-/* Inside a row's panel, a sign-in or a form has no card of its own: the panel is its card. */
-.provider-panel .auth-inline {
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: none;
-}
-
-.provider-panel .auth-inline-head {
-    margin-bottom: 10px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .provider,
-    .provider-panel,
-    .provider-panel.closing {
-        transition: none;
-        animation: none;
-    }
-}
-
-.custom-endpoint-models-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-}
-
-.custom-endpoint-models {
-    display: flex;
-    flex-direction: column;
-    max-height: 280px;
-    overflow-y: auto;
-    border: 1px solid var(--hair);
-    border-radius: var(--r-control);
-    background: var(--bg);
-}
-
-.custom-endpoint-model.check {
-    min-height: 40px;
-    margin: 0;
-    padding: 0 12px;
-    color: var(--text);
-    overflow-wrap: anywhere;
-}
-
-.custom-endpoint-model + .custom-endpoint-model {
-    border-top: 1px solid var(--hair);
-}
-
-.custom-endpoint-buttons {
-    justify-content: flex-end;
-}
-
 /* What a provider said when it would not renew a sign-in. */
 .provider-why {
     overflow-wrap: anywhere;
 }
 
-/* Refresh sits in the Models heading; its feedback stays under the heading and wraps provider messages as plain text. */
-.model-refresh-button[aria-busy="true"] svg {
-    animation: model-refresh-turn 0.9s linear infinite;
+/* Shared refresh feedback stays visible after a request and wraps provider messages as plain text. */
+.model-refresh {
+    margin-block: 0.5rem;
+    min-width: 0;
 }
 
-@keyframes model-refresh-turn {
-    to {
-        transform: rotate(360deg);
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .model-refresh-button[aria-busy="true"] svg {
-        animation: none;
-    }
+.model-refresh .button.model-refresh-button {
+    min-height: 40px;
 }
 
 .model-refresh-status {
@@ -8980,10 +8648,6 @@ div.group-head {
     overflow-y: auto;
     overflow-wrap: anywhere;
     overscroll-behavior: contain;
-}
-
-.model-refresh-status:empty {
-    display: none;
 }
 
 .model-refresh-status p {
@@ -9021,16 +8685,9 @@ div.group-head {
 .subagent-models-heading {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     flex-wrap: wrap;
     gap: 8px;
-    margin-block: -8px;
-}
-
-.subagent-models-tools {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
 }
 
 .subagent-models-heading .label {
@@ -9044,9 +8701,8 @@ div.group-head {
     margin: 0;
 }
 
-/* The count stays compact even with many models allowed, at the end of the heading row. */
+/* The count stays compact even with many models allowed. */
 .subagent-models-chosen {
-    margin-left: auto;
     padding: 3px 8px;
     border: 1px solid var(--hair);
     border-radius: var(--r-card);
@@ -9361,226 +9017,34 @@ div.group-head {
     text-overflow: ellipsis;
 }
 
-/* The copy sheet (`sheets/copy.js`, `sheets/message.js`): what is copied, rows of choices, one main button, small
- * actions. Each row: its label on the left, its value on the right, a chevron where a tap opens a picker. */
-.copy-what {
-    overflow-wrap: anywhere;
-    border-radius: var(--r-card);
-    background: var(--card);
-    padding: calc(10px * var(--space-y)) calc(14px * var(--space-x));
-    color: var(--body);
-    font-size: 13.5px;
-    font-weight: 500;
-}
-
-/* Two lines of a reply, clipped by a clear border: the clamp cuts at the padding's edge. */
-.copy-preview {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    padding: 0;
-    border: solid transparent;
-    border-width: calc(10px * var(--space-y)) calc(14px * var(--space-x));
-    font-weight: 400;
-}
-
-textarea.copy-text {
-    min-height: 6.5em;
-    max-height: 40vh;
-    resize: vertical;
-    font-size: 13.5px;
-    line-height: 1.5;
-    border-radius: var(--r-card);
-}
-
-.choice-rows {
-    overflow: hidden;
-    border: 1px solid var(--hair);
-    border-radius: var(--r-card);
-    background: var(--bg);
-}
-
-.choice-rows > :not(:first-child) {
-    border-top: 1px solid var(--hair);
-}
-
-.choice-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
-    min-height: calc(32px + 12px * var(--space-y));
-    padding: calc(10px * var(--space-y)) calc(14px * var(--space-x));
-    text-align: left;
-    font-size: 13.5px;
-    color: var(--text);
-    background: var(--bg);
-    transition: background-color var(--t-hover) var(--ease-out);
-}
-
-button.choice-row:focus-visible {
-    outline-offset: -2px;
-}
-
-@media (hover: hover) {
-    button.choice-row:hover {
-        background: var(--card);
-    }
-}
-
-button.choice-row:active {
-    background: var(--pressed);
-}
-
-.choice-row.off .choice-label {
-    color: var(--faint);
-}
-
-.choice-label {
-    flex: none;
-    min-width: 7.5rem;
-    color: var(--muted);
-    white-space: nowrap;
-}
-
-.choice-value {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    align-items: flex-end;
-    min-width: 0;
-    text-align: right;
-}
-
-.choice-main {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* A long folder keeps its end in view: the ellipsis goes at its start. */
-.choice-main:has(> bdi) {
-    direction: rtl;
-}
-
-.choice-main > bdi {
-    font-family: var(--mono);
-    font-size: 12.5px;
-}
-
-.choice-sub {
-    color: var(--faint);
-    font-size: 12px;
-}
-
-.choice-computer {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-}
-
-.choice-chev {
-    flex: none;
-    color: var(--faint);
-}
-
-.choice-options {
-    display: flex;
-    flex-direction: column;
-    padding: 4px;
+.message-actions > .group-title {
+    margin: 0;
+    padding: 8px 14px;
     background: var(--card);
 }
 
-.choice-rows > .choice-options {
-    border-top: 1px solid var(--hair);
-}
-
-.choice-option {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-height: calc(30px + 8px * var(--space-y));
-    padding: 6px 10px;
-    border-radius: var(--r-row);
-    font-size: 13.5px;
-    color: var(--text);
-    text-align: left;
-}
-
-@media (hover: hover) {
-    .choice-option:hover:not(:disabled) {
-        background: var(--hover);
-    }
-}
-
-.choice-option.on {
-    color: var(--accent);
-}
-
-.choice-option:disabled {
-    opacity: 0.55;
-    cursor: default;
-}
-
-.copy-asks {
-    margin: calc(-6px * var(--space-y)) 2px 0 !important;
-}
-
-.copy-go {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.copy-go > .button {
-    min-height: 42px;
-}
-
-.copy-go > p {
-    padding: 0 2px;
-    text-align: center;
-}
-
-.copy-minors {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 4px 18px;
-}
-
-.copy-minors:empty {
+/* A viewer has nothing to do with a message of files alone: no empty box. */
+.message-actions:empty {
     display: none;
 }
 
-.copy-minor {
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 6px 8px;
-    border-radius: var(--r-row);
-    color: var(--accent);
-    font-size: 13px;
-    font-weight: 500;
+.message-model-search {
+    padding: 8px 14px;
 }
 
-.copy-minor-hint {
-    color: var(--faint);
-    font-size: 11.5px;
-    font-weight: 400;
-}
-
-@media (hover: hover) {
-    .copy-minor:hover {
-        background: var(--hover);
-    }
-}
-
-@media (max-width: 480px) {
-    .choice-label {
-        min-width: 4.5rem;
-    }
+.message-preview {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    /* Room as a clear border, not padding: the clamp clips at the padding's edge, so a fourth line would show in it. */
+    border: solid transparent;
+    border-width: 12px 14px;
+    border-radius: var(--r-card);
+    background: var(--card);
+    color: var(--body);
+    font-size: 13.5px;
 }
 
 @media (max-width: 480px) {
@@ -9919,22 +9383,6 @@ button.choice-row:active {
 .notice.leaving {
     pointer-events: none;
     animation: toast-out var(--t-out) linear forwards;
-}
-
-.account-cover[open] {
-    position: fixed;
-    inset: 0;
-    margin: 0;
-    padding: 0;
-    border: 0;
-    width: 100%;
-    height: 100%;
-    max-width: none;
-    max-height: none;
-    display: grid;
-    place-items: center;
-    background: var(--bg);
-    color: var(--text);
 }
 
 .signin,
@@ -10712,13 +10160,6 @@ textarea.notes {
 }
 
 /* Memory: a lesson Pi keeps, who saved it and where, and what can be done with it. */
-.lesson-copies > summary {
-    min-height: 40px;
-    padding-block: 10px;
-    cursor: pointer;
-    overflow-wrap: anywhere;
-}
-
 .lesson {
     display: flex;
     flex-direction: column;
@@ -13690,12 +13131,7 @@ textarea.notes {
 }
 
 .agent-tile-state {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 50%;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
+    flex: none;
     color: var(--faint);
     font-size: 10.5px;
     letter-spacing: 0.02em;
@@ -17378,21 +16814,6 @@ textarea.notes {
     font-variant-numeric: tabular-nums;
 }
 
-/* The model a subagent runs on: "↗" before it says it is not its session's model; no color of its own. */
-.agent-model {
-    min-width: 0;
-    max-width: 100%;
-    padding: 0 0.45rem;
-    border: 1px solid var(--hair);
-    border-radius: var(--r-pill);
-    color: var(--muted);
-    font-family: var(--mono);
-    font-size: 0.72rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 .agent-chip {
     color: var(--accent);
     background: var(--accent-soft);
@@ -18097,11 +17518,6 @@ textarea.notes {
     font-variant-numeric: tabular-nums;
 }
 
-.board-model {
-    font-family: var(--mono);
-    overflow-wrap: anywhere;
-}
-
 .board-asked {
     color: var(--body);
     text-wrap: pretty;
@@ -18745,6 +18161,444 @@ textarea.notes {
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
+}
+
+/* Keep warm: settings in one column, with Advanced models grouped by provider. */
+.keep-warm-sheet p {
+    margin: 0;
+}
+
+.keep-warm-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}
+
+.keep-warm-now {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.keep-warm-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+}
+
+/* The caps and the refresh share: two to a row. */
+.keep-warm-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 14px;
+}
+
+.keep-warm-field {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    min-width: 0;
+}
+
+.keep-warm-input {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex: none;
+    white-space: nowrap;
+}
+
+.keep-warm-number-field {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    white-space: normal;
+}
+
+.keep-warm-number-field .warn {
+    max-width: 12rem;
+}
+
+.keep-warm-number {
+    min-height: 36px;
+    padding: 0 8px;
+    text-align: right;
+    appearance: textfield;
+}
+
+@media (pointer: coarse) {
+    .keep-warm-number {
+        min-height: 44px;
+    }
+}
+
+.keep-warm-number::-webkit-inner-spin-button,
+.keep-warm-number::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+}
+
+.keep-warm-models {
+    gap: 8px;
+    min-width: 0;
+}
+
+.keep-warm-models-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.keep-warm-models-head .label {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.keep-warm-models .search {
+    margin: 0;
+}
+
+.keep-warm-model-list {
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--bg);
+}
+
+.keep-warm-model-list > p {
+    padding: 0.6rem;
+}
+
+.keep-warm-provider + .keep-warm-provider {
+    border-top: 1px solid var(--hair);
+}
+
+/* Models in as many columns as fit, each a name and its minutes. */
+.keep-warm-model-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr));
+}
+
+/* A model: its name, its cache cost, when its cache expires, and what keep warm does with it. */
+.keep-warm-model {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--hair);
+}
+
+.keep-warm-model-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+/* Label on the left; the value or box on the right, its unit a fixed width so the boxes line up. */
+.keep-warm-model-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 40px;
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.keep-warm-model-value {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.keep-warm-model-value b {
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.keep-warm-model-value .keep-warm-unit {
+    width: 7.5rem;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.keep-warm-model-note {
+    font-size: 12px;
+    color: var(--muted);
+}
+
+/* No known cache time: said quietly, with a small dot rather than warning text. */
+.keep-warm-model-note.off::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--warn);
+    opacity: 0.7;
+    vertical-align: 1px;
+}
+
+@media (min-width: 1000px) {
+    .sheet.keep-warm-sheet {
+        max-width: 760px;
+    }
+}
+
+/* Advanced: a quiet row that opens in place, its chevron turned down when open. */
+.keep-warm-disclosure {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    border-top: 1px solid var(--line);
+    background: none;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.keep-warm-disclosure > .muted {
+    flex: 1;
+    min-width: 0;
+}
+
+.keep-warm-disclosure svg {
+    transition: transform 0.15s;
+}
+
+.keep-warm-disclosure[aria-expanded="true"] svg {
+    transform: rotate(90deg);
+}
+
+.keep-warm-advanced {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* A provider's models stay folded until opened (or a search finds them). */
+.keep-warm-provider > summary {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-height: 40px;
+    padding: 8px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.keep-warm-provider > summary::-webkit-details-marker {
+    display: none;
+}
+
+.keep-warm-provider[open] > summary {
+    border-bottom: 1px solid var(--hair);
+}
+
+/* A session's keep warm: the reply menu's card, and the session menu's compact one (whose flame is its switch). */
+.keep-warm-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px;
+}
+
+.keep-warm-card.compact {
+    gap: 8px;
+    margin: 6px 12px 10px;
+    padding: 10px;
+    border-radius: var(--r-card);
+    background: var(--card-2);
+}
+
+.keep-warm-card-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.keep-warm-card.compact .keep-warm-card-head {
+    gap: 10px;
+}
+
+.keep-warm-flame {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-control);
+    transition:
+        background var(--t-hover) var(--ease-out),
+        color var(--t-hover) var(--ease-out);
+}
+
+.keep-warm-card.compact .keep-warm-flame {
+    width: 32px;
+    height: 32px;
+}
+
+.keep-warm-pill,
+.keep-warm-flame {
+    background: color-mix(in srgb, var(--o-orange) 15%, transparent);
+    color: var(--o-orange);
+}
+
+.keep-warm-pill.off,
+.keep-warm-flame.off {
+    background: var(--raised);
+    color: var(--muted);
+}
+
+.keep-warm-card-title {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    color: var(--text);
+}
+
+.keep-warm-card:not(.compact) .keep-warm-card-title > span:first-child {
+    font-weight: 500;
+}
+
+.keep-warm-pill {
+    flex: none;
+    padding: 2px 9px;
+    border-radius: var(--r-pill);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+/* The times, as one bar: a raised button is the choice. */
+.segmented.keep-warm-bar {
+    display: grid;
+    align-self: stretch;
+    grid-auto-flow: column;
+    grid-auto-columns: auto;
+    gap: 2px;
+    padding: 3px;
+    border: 0;
+    border-radius: var(--r-control);
+    background: var(--card-2);
+}
+
+.keep-warm-card.compact .segmented.keep-warm-bar {
+    background: var(--card);
+}
+
+.segmented.keep-warm-bar button {
+    min-width: 0;
+    height: 34px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: var(--r-seg);
+    background: none;
+    color: var(--muted);
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.keep-warm-card.compact .segmented.keep-warm-bar button {
+    height: 32px;
+    font-size: 12.5px;
+}
+
+.segmented.keep-warm-bar button.on {
+    background: var(--raised);
+    color: var(--text);
+    box-shadow: 0 1px 2px color-mix(in srgb, black 35%, transparent);
+}
+
+.segmented.keep-warm-bar.dim {
+    opacity: 0.5;
+}
+
+@media (hover: hover) {
+    .segmented.keep-warm-bar button:not(.on, :disabled):hover {
+        color: var(--text);
+    }
+}
+
+.keep-warm-card-details {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12.5px;
+    text-overflow: ellipsis;
+}
+
+.keep-warm-card.compact .keep-warm-card-details {
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.keep-warm-card-details b {
+    color: var(--text);
+    font-weight: 500;
+}
+
+/* What the chosen time does for the example model: a quiet card under the times. */
+.keep-warm-estimate {
+    display: grid;
+    gap: 4px;
+    margin: 8px 0 0;
+    padding: 6px 10px;
+    border-left: 3px solid var(--accent);
+    border-radius: 0 var(--r-control) var(--r-control) 0;
+    background: var(--card);
+}
+
+.keep-warm-stops {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+}
+
+/* A cell's second line: the model's cache time, or the refreshes. */
+.keep-warm-stops :is(th, td) > span {
+    display: block;
+    font-size: 0.92em;
+}
+
+.keep-warm-stops th,
+.keep-warm-stops td {
+    padding: 4px 0;
+    vertical-align: top;
+    text-align: right;
+    font-weight: normal;
+    white-space: nowrap;
+}
+
+.keep-warm-stops thead th {
+    color: var(--muted);
+}
+
+.keep-warm-stops th:first-child {
+    text-align: left;
+}
+
+.keep-warm-stops :is(th, td) + :is(th, td) {
+    padding-left: 10px;
 }
 
 .pip-welcome {
@@ -21104,133 +20958,27 @@ pre.gallery-code {
     }
 }
 
-/* Over a selection in Pi's answer: a small popover, like the reaction picker. */
 .quote-reply-button {
     position: fixed;
     z-index: 70;
-    display: inline-flex;
-    align-items: stretch;
-    height: 32px;
-    border-radius: var(--r-card);
-    background: var(--panel);
-    color: var(--text);
-    font-size: 13px;
-    font-weight: 500;
-    box-shadow: var(--pop);
-    -webkit-user-select: none;
-    user-select: none;
-    animation: pop 0.2s var(--ease-out);
-}
-
-/* Reply, and PiP's orb beside it while PiP is on. */
-.quote-reply-action {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    min-width: 84px;
-    padding: 0 12px 0 10px;
-    border: 0;
-    background: none;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-}
-
-.quote-reply-action:first-child {
-    border-start-start-radius: inherit;
-    border-end-start-radius: inherit;
-}
-
-.quote-reply-action:last-child {
-    border-start-end-radius: inherit;
-    border-end-end-radius: inherit;
-}
-
-.quote-reply-action + .quote-reply-action {
-    border-left: 1px solid var(--hair);
-}
-
-.quote-reply-action.quote-reply-pip {
-    min-width: 40px;
-    padding: 0 12px;
-}
-
-.quote-reply-action .icon {
-    color: var(--muted);
-}
-
-/* --hover is see-through: it lies over the pill's panel, or the reply's words show through it. */
-.quote-reply-action:active {
-    background: var(--hover);
-}
-
-.quote-reply-action:active .icon {
-    color: var(--accent);
-}
-
-@media (hover: hover) {
-    .quote-reply-action:hover {
-        background: var(--hover);
-    }
-
-    .quote-reply-action:hover .icon {
-        color: var(--accent);
-    }
-}
-
-/* A finger needs more than 32 px: each button grows its touch area, not its look. */
-@media (pointer: coarse) {
-    .quote-reply-action::before {
-        content: "";
-        position: absolute;
-        inset: -6px 0;
-    }
-
-    .quote-reply-action:first-child::before {
-        left: -6px;
-    }
-
-    .quote-reply-action:last-child::before {
-        right: -6px;
-    }
-}
-
-.pip-quote-strip {
-    margin: 0 12px 6px;
-}
-
-.quote-reply-action {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
     min-width: 92px;
-    height: 100%;
+    height: 36px;
     padding: 0 12px;
-    border: 0;
-    background: none;
-    color: inherit;
+    border: 1px solid var(--hair-2);
+    border-radius: 999px;
+    background: var(--card);
+    color: var(--text);
     font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: 0 4px 16px rgb(0 0 0 / 0.25);
     cursor: pointer;
-}
-
-.quote-reply-action:hover {
-    background: var(--hover);
-}
-
-.quote-reply-action + .quote-reply-action {
-    border-left: 1px solid var(--hair-2);
-}
-
-.quote-reply-action.quote-reply-pip {
-    min-width: 44px;
-    padding: 0 12px;
-}
-
-.pip-quote-strip {
-    margin: 0 12px 6px;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 .quote-strip {
@@ -21275,501 +21023,6 @@ pre.gallery-code {
     gap: 0.5rem;
     padding: 0 0 1rem;
 }
-/* Computers (`sheets/computers.js`): other computers that run sessions' tools. Rows are People's (`.person-row`). */
-.runner-dot {
-    width: 0.6rem;
-    height: 0.6rem;
-    margin: 0 0.15rem;
-    border-radius: 50%;
-    background: var(--faint);
-    flex: none;
-}
-
-.runner-dot.on {
-    background: var(--ok);
-}
-
-.runner-dot.away {
-    background: var(--warn);
-}
-
-.runner-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.runner-none {
-    margin: 0;
-}
-
-/* Linking: the name, then (for another computer) the steps with what to copy. */
-.runner-link {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 0.9rem 1rem 1rem;
-    border: 1px solid var(--hair);
-    border-radius: var(--r-card);
-    background: var(--bg);
-}
-
-.runner-link > .group-title {
-    margin: 0;
-}
-
-.runner-link p {
-    margin: 0;
-}
-
-.runner-steps {
-    display: flex;
-    flex-direction: column;
-    gap: 0.9rem;
-    margin: 0;
-    padding-left: 1.25rem;
-    font-size: 13.5px;
-}
-
-.runner-steps li > div:first-child {
-    margin-bottom: 0.4rem;
-}
-
-.runner-copy {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.35rem;
-    padding: 0.25rem 0.25rem 0.25rem 0.75rem;
-    border-radius: var(--r-card);
-    background: var(--code-bg);
-}
-
-.runner-copy-label {
-    flex: none;
-    min-width: 4.2rem;
-    color: var(--muted);
-    font-size: 12px;
-}
-
-.runner-copy-text {
-    flex: 1;
-    min-width: 0;
-    padding: 0.3rem 0;
-    background: none;
-    font-size: 13px;
-    overflow-wrap: anywhere;
-    user-select: all;
-}
-
-.row.wrap {
-    flex-wrap: wrap;
-}
-
-/*
- * Keep warm: the owner's settings. A phone stacks the settings over the models; a wide screen puts them side by side,
- * and the models fill the height in as many columns as fit.
- */
-.keep-warm-sheet p {
-    margin: 0;
-}
-
-.keep-warm-layout {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-}
-
-.keep-warm-settings {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    min-width: 0;
-}
-
-.keep-warm-now {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-}
-
-.keep-warm-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    padding-top: 10px;
-    border-top: 1px solid var(--line);
-}
-
-/* The caps and the refresh share: two to a row. */
-.keep-warm-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px 14px;
-}
-
-.keep-warm-field {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    min-width: 0;
-}
-
-.keep-warm-input {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    flex: none;
-    white-space: nowrap;
-}
-
-.keep-warm-number {
-    min-height: 36px;
-    padding: 0 8px;
-    text-align: right;
-    appearance: textfield;
-}
-
-.keep-warm-number::-webkit-inner-spin-button,
-.keep-warm-number::-webkit-outer-spin-button {
-    appearance: none;
-    margin: 0;
-}
-
-.keep-warm-models {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 0;
-    min-height: 0;
-    padding-top: 10px;
-    border-top: 1px solid var(--line);
-}
-
-.keep-warm-models-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.5rem;
-}
-
-.keep-warm-models-head .label {
-    margin: 0;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text);
-}
-
-.keep-warm-models .search {
-    margin: 0;
-}
-
-.keep-warm-model-list {
-    border: 1px solid var(--hair);
-    border-radius: var(--r-card);
-    background: var(--bg);
-}
-
-.keep-warm-model-list > p {
-    padding: 0.6rem;
-}
-
-.keep-warm-provider + .keep-warm-provider {
-    border-top: 1px solid var(--hair);
-}
-
-/* Models in as many columns as fit, each a name and its minutes. */
-.keep-warm-model-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr));
-}
-
-/* A model: its name, its cache cost, when its cache expires, and what keep warm does with it. */
-.keep-warm-model {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 10px 12px;
-    border-top: 1px solid var(--hair);
-}
-
-.keep-warm-model-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-weight: 500;
-}
-
-.keep-warm-model-row {
-    display: grid;
-    grid-template-columns: 8.5rem minmax(0, 1fr);
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-}
-
-.keep-warm-model-row .keep-warm-input {
-    flex-wrap: wrap;
-    white-space: normal;
-}
-
-@media (min-width: 1000px) {
-    .sheet.keep-warm-sheet {
-        max-width: 760px;
-    }
-}
-
-/* Advanced: a quiet row that opens in place, its chevron turned down when open. */
-.keep-warm-disclosure {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    width: 100%;
-    min-height: 44px;
-    padding: 0;
-    border: 0;
-    border-top: 1px solid var(--line);
-    background: none;
-    color: var(--text);
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-}
-
-.keep-warm-disclosure > .muted {
-    flex: 1;
-    min-width: 0;
-}
-
-.keep-warm-disclosure svg {
-    transition: transform 0.15s;
-}
-
-.keep-warm-disclosure[aria-expanded="true"] svg {
-    transform: rotate(90deg);
-}
-
-.keep-warm-advanced {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-/* A provider's models stay folded until opened (or a search finds them). */
-.keep-warm-provider > summary {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.5rem;
-    min-height: 40px;
-    padding: 8px 12px;
-    font-size: 13px;
-    cursor: pointer;
-    list-style: none;
-}
-
-.keep-warm-provider > summary::-webkit-details-marker {
-    display: none;
-}
-
-.keep-warm-provider[open] > summary {
-    border-bottom: 1px solid var(--hair);
-}
-
-/* A session's keep warm: the reply menu's card, and the session menu's compact one (whose flame is its switch). */
-.keep-warm-card {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 14px 16px;
-}
-
-.keep-warm-card.compact {
-    gap: 8px;
-    margin: 6px 12px 10px;
-    padding: 10px;
-    border-radius: var(--r-card);
-    background: var(--card-2);
-}
-
-.keep-warm-card-head {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.keep-warm-card.compact .keep-warm-card-head {
-    gap: 10px;
-}
-
-.keep-warm-flame {
-    display: grid;
-    flex: none;
-    place-items: center;
-    width: 34px;
-    height: 34px;
-    padding: 0;
-    border: 0;
-    border-radius: var(--r-control);
-    background: color-mix(in srgb, var(--o-orange) 15%, transparent);
-    color: var(--o-orange);
-    transition:
-        background var(--t-hover) var(--ease-out),
-        color var(--t-hover) var(--ease-out);
-}
-
-.keep-warm-card.compact .keep-warm-flame {
-    width: 32px;
-    height: 32px;
-}
-
-.keep-warm-flame.off {
-    background: var(--raised);
-    color: var(--muted);
-}
-
-.keep-warm-flame.warming .icon {
-    transform-origin: 50% 90%;
-    animation: flicker 1.6s ease-in-out infinite;
-}
-
-.keep-warm-card-title {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    min-width: 0;
-    color: var(--text);
-}
-
-.keep-warm-card:not(.compact) .keep-warm-card-title > span:first-child {
-    font-weight: 500;
-}
-
-.keep-warm-pill {
-    flex: none;
-    padding: 2px 9px;
-    border-radius: var(--r-pill);
-    background: color-mix(in srgb, var(--o-orange) 15%, transparent);
-    color: var(--o-orange);
-    font-size: 12px;
-    white-space: nowrap;
-}
-
-.keep-warm-pill.off {
-    background: var(--raised);
-    color: var(--muted);
-}
-
-/* The times, as one bar: a raised button is the choice. */
-.segmented.keep-warm-bar {
-    display: grid;
-    align-self: stretch;
-    grid-auto-flow: column;
-    grid-auto-columns: auto;
-    gap: 2px;
-    padding: 3px;
-    border: 0;
-    border-radius: var(--r-control);
-    background: var(--card-2);
-}
-
-.keep-warm-card.compact .segmented.keep-warm-bar {
-    background: var(--card);
-}
-
-.segmented.keep-warm-bar button {
-    min-width: 0;
-    height: 34px;
-    padding: 0 4px;
-    border: 0;
-    border-radius: var(--r-seg);
-    background: none;
-    color: var(--muted);
-    font-size: 13px;
-    white-space: nowrap;
-}
-
-.keep-warm-card.compact .segmented.keep-warm-bar button {
-    height: 32px;
-    font-size: 12.5px;
-}
-
-.segmented.keep-warm-bar button.on {
-    background: var(--raised);
-    color: var(--text);
-    box-shadow: 0 1px 2px color-mix(in srgb, black 35%, transparent);
-}
-
-.segmented.keep-warm-bar.dim {
-    opacity: 0.5;
-}
-
-@media (hover: hover) {
-    .segmented.keep-warm-bar button:not(.on, :disabled):hover {
-        color: var(--text);
-    }
-}
-
-.keep-warm-card-details {
-    overflow: hidden;
-    color: var(--muted);
-    font-size: 12.5px;
-    text-overflow: ellipsis;
-}
-
-.keep-warm-card.compact .keep-warm-card-details {
-    font-size: 12px;
-    white-space: nowrap;
-}
-
-.keep-warm-card-details b {
-    color: var(--text);
-    font-weight: 500;
-}
-
-/* What the chosen time does for the example model: a quiet card under the times. */
-.keep-warm-estimate {
-    display: grid;
-    gap: 4px;
-    margin: 8px 0 0;
-    padding: 6px 10px;
-    border-left: 3px solid var(--accent);
-    border-radius: 0 var(--r-control) var(--r-control) 0;
-    background: var(--card);
-}
-
-.keep-warm-stops {
-    width: 100%;
-    border-collapse: collapse;
-    font-variant-numeric: tabular-nums;
-}
-
-/* A cell's second line: the model's cache time, or the refreshes. */
-.keep-warm-stops :is(th, td) > span {
-    display: block;
-    font-size: 0.92em;
-}
-
-.keep-warm-stops th,
-.keep-warm-stops td {
-    padding: 4px 0;
-    vertical-align: top;
-    text-align: right;
-    font-weight: normal;
-    white-space: nowrap;
-}
-
-.keep-warm-stops thead th {
-    color: var(--muted);
-}
-
-.keep-warm-stops th:first-child {
-    text-align: left;
-}
-
-.keep-warm-stops :is(th, td) + :is(th, td) {
-    padding-left: 10px;
 
 /* All artifacts: a row for each, in the session's own group (it shares `.running`'s frame), with its current version. */
 .overview-group {

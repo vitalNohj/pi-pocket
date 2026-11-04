@@ -200,8 +200,8 @@ function ReplySheet({ entry, canBranch }) {
                 />`
             }
             ${!empty && html`<${Minor} label="Copy text" hint="As Markdown" run=${() => copyAndClose(text)} />`}
+            ${!toPi && html`<${KeepWarmCard} />`}
         </div>
-        <${KeepWarmCard} />
     <//>`;
 }
 
@@ -210,6 +210,7 @@ function ReplySheet({ entry, canBranch }) {
  * a module stored as its own kind is shown and copied, never sent again.
  */
 function OwnMessageSheet({ entry, canBranch, text, waiting }) {
+
     const { view } = store.state;
     const sessionId = view.conversation.id;
     const again = canBranch && resendable(entry) && !waiting;
@@ -281,6 +282,7 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
         }
         <div class="copy-minors">
             ${!filesAlone && !waiting && html`<${Minor} label="Copy text" hint="As written" run=${() => copyAndClose(text)} />`}
+            ${!toPi && html`<${KeepWarmCard} />`}
         </div>
     <//>`;
 }

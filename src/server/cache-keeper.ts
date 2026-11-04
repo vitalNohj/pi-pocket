@@ -1,32 +1,17 @@
 /**
- * The cache keeper: it re-sends the last model request with a one-token output cap just before its prompt cache entry
- * expires, so the next real request reads the cache instead of writing it again. Pi's own cache warmer
- * (`cache-warmer.ts` in pi-coding-agent) does this for Pi's CLI; Pi Durable has none. It has two modes.
- *
- * **During a run** (a tool wait), on by default: a request that ended in a tool call will be followed by another when
- * the tool ends, so the chance of a real request is high. At each refresh point: warm when
- * `hazard * missCost > warmCost`.
- *   - `warmCost`  a cache read of the whole prompt plus one output token.
- *   - `missCost`  what the next real request pays more if the entry is gone: a cache write instead of a read.
- *   - `hazard`    the chance that the run's next request comes in the next interval (`TOOL_HAZARD`).
- * A new real request, the run ending or being stopped (`runEnded`), an error, shutdown, or the age cap (`MAX_AGE_MS`,
- * 30 minutes) stops it. An entry whose first refresh would fall after the cap (the 1h tier) is never started.
- * The cap is the best of 10 to 60 minutes on the owner's own tool-call gaps, and it bounds the loss when a tool waits
- * on a person (an approval).
- *
- * **Keep warm** (idle), off until the owner turns it on (`idlePolicy`): after a run ends, it refreshes the cache of the
- * run's last request every `everyMs` (a share of the model's cache lifetime), for
- * as long as the owner's time limit, or with Break-even until the refreshes have cost as much as one more cache write
- * (`breakEvenRefreshes`), within a cost and a refresh cap for each session. A new run (`runStarted`), a model change,
- * a compaction, New context, archiving (`forget`), the setting turned off (`reconsider`), or two failed refreshes in a
- * row stop it. A refresh fails when it errs, or when it wrote the cache instead of reading it: the cache
- * was gone, so the interval is too long for that model. Idle warming has no price check: the owner chose to pay, and
- * the caps bound it. Its entries are saved (`IdleStore`), so warming goes on after a restart while the cache lives.
- *
- * `install` wraps `models.streamSimple` in place, as `timing.ts` and `limit-gate.ts` do. The warm request goes to the
- * wrapped function, so it is not recorded as a real request. `PI_POCKET_CACHE_KEEPER=off` turns both modes off.
+ * The cache keeper replays the last model request with one output token before its prompt cache expires.
+ * Tool waits warm by default when the expected savings exceed the cost, within a 30-minute age cap.
+ * Keep warm is off by default: the owner's idle policy chooses its interval, time, and caps.
+ * Idle entries and completed session spend are saved, so warming can continue after a restart.
+ * A real request replaces its entry; run and session changes stop or reconsider it.
+ * `install` wraps `models.streamSimple`; warm requests bypass observation as real requests.
+ * The final payload observer allows only output-cap fields to differ on a replay.
+ * `PI_POCKET_CACHE_KEEPER=off` turns both modes off.
+ * See docs/architecture.md, "Prompt cache keeper", for decisions, limits, storage, and lifecycle.
  */
 import { createHash } from "node:crypto";
+import { types } from "node:util";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import {
     IDLE_FAILURES,
     type IdlePlan,
@@ -35,7 +20,7 @@ import {
     type ModelFacts,
 } from "./idle-plan.ts";
 import { type IdleRecord, type IdleStore, savedOptions } from "./keep-warm-store.ts";
-import { cacheTier, missPrice } from "./model-cache-facts.ts";
+import { cacheTier, factsTier, missPrice } from "./model-cache-facts.ts";
 import { noWait } from "./limit-gate.ts";
 import type {
     Api,
@@ -56,45 +41,65 @@ const FINAL_PAYLOAD = Symbol("cache-keeper-final-payload");
 
 type ObservedOptions = SimpleStreamOptions & { [FINAL_PAYLOAD]?: (payload: unknown) => void };
 
+// Older TypeScript libraries do not yet declare Node's raw-JSON support.
+const isRawJSON = (JSON as JSON & { isRawJSON?: (value: unknown) => value is { rawJSON: string } })
+    .isRawJSON;
+const OUTPUT_CAPS = new Set([
+    "max_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+    "maxTokens",
+]);
+const NESTED_OUTPUT_CAPS = new Map([
+    ["options", "maxTokens"],
+    ["config", "maxOutputTokens"],
+    ["inferenceConfig", "maxTokens"],
+    ["generationConfig", "maxOutputTokens"],
+]);
+
 /** Hash the JSON sent to the provider. Only provider output-cap fields may differ on a warm. */
-function payloadHash(payload: unknown): string {
-    const caps = new Set(
-        [
-            ["max_tokens"],
-            ["max_completion_tokens"],
-            ["max_output_tokens"],
-            ["maxTokens"],
-            ["options", "maxTokens"],
-            ["config", "maxOutputTokens"],
-            ["inferenceConfig", "maxTokens"],
-            ["generationConfig", "maxOutputTokens"],
-        ].map((path) => JSON.stringify(path)),
-    );
+export function payloadHash(payload: unknown): string {
+    let root: object | undefined;
+    let first = true;
+    // `toJSON` runs before the replacer; stringify keeps its wire semantics without a parse round trip.
+    const json = JSON.stringify(payload, function (key, value: unknown) {
+        const top = first;
 
-    const canonical = (value: unknown, path: string[] = []): unknown => {
-        if (Array.isArray(value)) {
-            return value.map((item, index) => canonical(item, [...path, String(index)]));
+        first = false;
+
+        if (isRawJSON?.(value)) {
+            // Normalize an already-encoded primitive, not a stringify/parse round trip of the payload.
+            return JSON.parse(value.rawJSON) as unknown;
         }
 
-        if (value !== null && typeof value === "object") {
-            return Object.fromEntries(
-                Object.entries(value)
-                    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-                    .flatMap(([key, item]) => {
-                        const next = [...path, key];
-
-                        return caps.has(JSON.stringify(next)) ? [] : [[key, canonical(item, next)]];
-                    }),
-            );
+        if (
+            value === null ||
+            typeof value !== "object" ||
+            Array.isArray(value) ||
+            (types.isBoxedPrimitive(value) && !types.isSymbolObject(value))
+        ) {
+            return value;
         }
 
-        return value;
-    };
+        // Only the root and its immediate children can contain an ignored output cap. No deep path copies.
+        const cap = this === root ? NESTED_OUTPUT_CAPS.get(key) : undefined;
+        // No prototype: `__proto__` is an ordinary JSON key.
+        const sorted = Object.create(null) as Record<string, unknown>;
 
-    // Match wire JSON semantics (undefined fields, toJSON), without retaining another prompt copy.
-    return createHash("sha256")
-        .update(JSON.stringify(canonical(JSON.parse(JSON.stringify(payload)))))
-        .digest("hex");
+        for (const name of Object.keys(value).sort()) {
+            if (!(top && OUTPUT_CAPS.has(name)) && name !== cap) {
+                sorted[name] = (value as Record<string, unknown>)[name];
+            }
+        }
+
+        if (top) {
+            root = sorted;
+        }
+
+        return sorted;
+    });
+
+    return createHash("sha256").update(json).digest("hex");
 }
 
 /** Refresh at 90% of the lifetime, and never closer than 10 seconds to its end. */
@@ -196,7 +201,9 @@ type Entry = {
     options: SimpleStreamOptions;
     promptTokens: number;
     ttlMs?: number;
-    payloadHash: string;
+    payloadHash?: string;
+    /** The observed final payload, released as soon as its hash is needed. */
+    payload?: { value: unknown };
     /** The conversation this session belongs to, once known. */
     conversationId?: number;
     warms: number;
@@ -208,16 +215,22 @@ type Entry = {
     /** When the next refresh should go out; a refresh later than the slack after it would pay a full rewrite. */
     dueAt: number;
     timer?: ReturnType<typeof setTimeout>;
+    /** The refresh on its way: only that refresh clears it, so no second one goes out beside it, even once parked. */
     abort?: AbortController;
     deadline?: ReturnType<typeof setTimeout>;
     account?: WarmAccount;
     idle?: IdleState;
+    /**
+     * The idle stretch a parked entry was warmed in (since, failures; `warms` and `spent` stay on the entry): turned
+     * on again, or given a longer limit, it goes on from here, so its limits do not start over.
+     */
+    stretch?: { since: number; failures: number };
     /** Dropped at shutdown but kept on disk: a refresh on its way still saves what it counted. */
     keptSaved?: boolean;
 };
 
 /** A real request on its way: `seq` orders it against stops (`forget`), and the lookup fills in its conversation. */
-type PendingRequest = { seq: number; conversationId?: number };
+type PendingRequest = { seq: number; conversationId?: number; payload?: { value: unknown } };
 
 type WarmAccount = {
     /** Check the captured payer's current spend limits immediately before each warm; `idle` allows a run that ended. */
@@ -232,19 +245,18 @@ export type IdleStatus =
     | {
           warm: true;
           nextAt: number;
-          everyMs: number;
-          lifeMs: number;
           until?: number;
           refreshes: number;
           /** The refreshes this stretch may have: Break-even's break-even, or the owner's cap. */
           maxRefreshes: number;
           spent: number;
-          model: string;
       }
-    | { warm: false; stopped?: string; at?: number };
+    | { warm: false; stopped?: string };
 
 export type KeeperDeps = {
     now?: () => number;
+    /** Hash the final payload for comparison or persistence. */
+    payloadHash?: (payload: unknown) => string;
     setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
     clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
     log?: (line: string) => void;
@@ -258,6 +270,8 @@ export type KeeperDeps = {
     disabled?: () => boolean;
     /** Whether, and how, a conversation is kept warm once its run ends; undefined: it is not. */
     idlePolicy?: (conversationId: number) => IdlePolicy | undefined;
+    /** Whether this conversation can ever use keep warm, regardless of its current settings. */
+    warmable?: (conversationId: number) => boolean;
     /** What is known of a model (`provider/modelId`): its cache lifetime and published cache prices. */
     modelFacts?: (spec: string, tier?: "short" | "long") => ModelFacts;
     /** A model by provider and id, to warm a saved entry after a restart. */
@@ -268,16 +282,6 @@ export type KeeperDeps = {
     changed?: (conversationId: number) => void;
 };
 
-type OptionalDeps =
-    | "conversationOf"
-    | "isRunning"
-    | "accountFor"
-    | "idlePolicy"
-    | "modelFacts"
-    | "modelOf"
-    | "store"
-    | "changed";
-
 /** Completed spend and in-flight reservations for each session's idle stretch. */
 class SessionBudget {
     readonly #sessions = new Map<number, { spent: number; reserved: number }>();
@@ -286,10 +290,6 @@ class SessionBudget {
         const budget = this.#sessions.get(session);
 
         return budget === undefined ? 0 : budget.spent + budget.reserved;
-    }
-
-    available(session: number, maxCost: number): number {
-        return maxCost === 0 ? Infinity : maxCost - this.used(session);
     }
 
     reserve(session: number, amount: number): void {
@@ -307,15 +307,25 @@ class SessionBudget {
         this.#sessions.set(session, budget);
     }
 
-    clear(session: number): void {
-        const reserved = this.#sessions.get(session)?.reserved ?? 0;
+    clear(session: number): boolean {
+        const budget = this.#sessions.get(session);
+
+        if (budget === undefined) {
+            return false;
+        }
 
         // An aborted refresh can still return usage. Keep its reservation until it settles.
-        if (reserved > 0) {
-            this.#sessions.set(session, { spent: 0, reserved });
+        if (budget.reserved > 0) {
+            if (budget.spent === 0) {
+                return false;
+            }
+
+            budget.spent = 0;
         } else {
             this.#sessions.delete(session);
         }
+
+        return true;
     }
 
     /** Keep only the sessions `keep` names, or with a refresh on its way: the others have no stretch to cap. */
@@ -345,12 +355,15 @@ class SessionBudget {
 }
 
 export class CacheKeeper {
-    readonly #deps: Required<Omit<KeeperDeps, OptionalDeps>> & Pick<KeeperDeps, OptionalDeps>;
+    readonly #deps: KeeperDeps &
+        Required<
+            Pick<KeeperDeps, "now" | "payloadHash" | "setTimer" | "clearTimer" | "log" | "disabled">
+        >;
     readonly #entries = new Map<string, Entry>();
     readonly #requests = new Map<string, PendingRequest>();
     readonly #pending = new Set<Promise<void>>();
     /** Why idle warming last stopped, by conversation, while nothing warms it. */
-    readonly #stopped = new Map<number, { reason: string; at: number }>();
+    readonly #stopped = new Map<number, string>();
     readonly #budgets = new SessionBudget();
     /** Counts requests and stops, so that each can tell which came first. */
     #seq = 0;
@@ -367,6 +380,7 @@ export class CacheKeeper {
     constructor(deps: KeeperDeps = {}) {
         this.#deps = {
             now: Date.now,
+            payloadHash,
             setTimer: (fn, ms) => {
                 const timer = setTimeout(fn, ms);
 
@@ -417,22 +431,17 @@ export class CacheKeeper {
                 return {
                     warm: true,
                     nextAt: entry.dueAt,
-                    everyMs: entry.idle.everyMs,
-                    lifeMs: entry.idle.lifeMs,
                     ...(entry.idle.until === undefined ? {} : { until: entry.idle.until }),
                     refreshes: entry.warms,
                     maxRefreshes: entry.idle.maxRefreshes,
                     spent: entry.spent,
-                    model: specOf(entry.model),
                 };
             }
         }
 
         const stopped = this.#stopped.get(conversationId);
 
-        return stopped === undefined
-            ? { warm: false }
-            : { warm: false, stopped: stopped.reason, at: stopped.at };
+        return stopped === undefined ? { warm: false } : { warm: false, stopped };
     }
 
     /** Shutdown: no warm goes out after this. Idle entries stay saved, so the next start goes on warming them. */
@@ -488,9 +497,10 @@ export class CacheKeeper {
         options: SimpleStreamOptions | undefined,
     ): AssistantMessageEventStream {
         const key = options?.sessionId;
-        const facts = this.#deps.modelFacts?.(specOf(model)) ?? {};
         // The owner or the maker's docs may know a lifetime for a model whose `promptCache` says nothing.
-        const known = ttlMsOf(model, options) !== undefined || facts.lifetimeMs !== undefined;
+        const known =
+            ttlMsOf(model, options) !== undefined ||
+            this.#deps.modelFacts?.(specOf(model)).lifetimeMs !== undefined;
 
         // Uncached calls (a compaction's, a model with no known lifetime) leave an existing entry alone.
         if (key === undefined || cacheTier(options) === "none" || !known) {
@@ -498,24 +508,17 @@ export class CacheKeeper {
         }
 
         const eligible = !this.#closed && !this.#deps.disabled() && isReplayable(model, options);
-        let fingerprint: string | undefined;
+        const request: PendingRequest = { seq: ++this.#seq };
         const observed: ObservedOptions = {
             ...options,
             [FINAL_PAYLOAD]: (payload) => {
-                try {
-                    fingerprint = payloadHash(payload);
-                } catch {
-                    // A payload we cannot compare can serve the real request, but must never be warmed.
-                    fingerprint = undefined;
-                }
+                request.payload = { value: payload };
             },
         };
         const stream = underlying(model, context, eligible ? observed : options);
 
         // A real request that writes the cache replaces the entry, so stop warming the old one.
         this.#drop(key);
-        const request: PendingRequest = { seq: ++this.#seq };
-
         this.#requests.set(key, request);
         void this.#deps.conversationOf?.(key).then(
             (id) => {
@@ -532,7 +535,7 @@ export class CacheKeeper {
                 }
 
                 this.#requests.delete(key);
-                this.#onSettled(key, model, context, options, message, fingerprint, request);
+                this.#onSettled(key, model, context, options, message, request);
             },
             () => {
                 if (this.#requests.get(key) === request) {
@@ -559,7 +562,6 @@ export class CacheKeeper {
         context: TranscriptContext,
         options: SimpleStreamOptions | undefined,
         message: AssistantMessage,
-        fingerprint: string | undefined,
         request: PendingRequest,
     ): void {
         const finished =
@@ -567,7 +569,7 @@ export class CacheKeeper {
             message.stopReason === "stop" ||
             message.stopReason === "length";
 
-        if (!finished || options === undefined || fingerprint === undefined) {
+        if (!finished || options === undefined || request.payload === undefined) {
             return;
         }
 
@@ -608,7 +610,7 @@ export class CacheKeeper {
             options,
             promptTokens,
             ...(ttlMs === undefined ? {} : { ttlMs }),
-            payloadHash: fingerprint,
+            payload: request.payload,
             ...(request.conversationId === undefined
                 ? {}
                 : { conversationId: request.conversationId }),
@@ -694,8 +696,9 @@ export class CacheKeeper {
         }
 
         // A session's new run ends its idle stretch: the next one starts its cost cap from nothing.
-        this.#budgets.clear(conversationId);
-        this.#saveBudgets();
+        if (this.#budgets.clear(conversationId)) {
+            this.#saveBudgets();
+        }
     }
 
     /**
@@ -717,8 +720,16 @@ export class CacheKeeper {
      * not dropped, while its cache lives, so turning it on again picks it up; a parked one the change allows again is
      * kept warm from now. Off is then the choice, so no stop is reported for it.
      */
-    reconsider(): void {
+    reconsider(conversations?: ReadonlySet<ConversationId>): void {
         for (const [key, entry] of [...this.#entries]) {
+            if (
+                conversations !== undefined &&
+                (entry.conversationId === undefined ||
+                    !conversations.has(entry.conversationId as ConversationId))
+            ) {
+                continue;
+            }
+
             if (entry.kind === "parked") {
                 if (
                     entry.conversationId !== undefined &&
@@ -763,7 +774,7 @@ export class CacheKeeper {
         }
 
         const began = ++this.#seq;
-        const [budgets = {}, records] = await Promise.all([store.loadBudgets?.(), store.load()]);
+        const [budgets, records] = await Promise.all([store.loadBudgets(), store.load()]);
 
         this.#budgets.load(budgets);
 
@@ -819,12 +830,6 @@ export class CacheKeeper {
         }
 
         // A session with nothing left to warm has no stretch to cap: a new run would clear it anyway.
-        this.#budgets.retain(this.#idleSessions());
-        this.#saveBudgets();
-    }
-
-    /** The sessions with an idle entry now. */
-    #idleSessions(): Set<number> {
         const sessions = new Set<number>();
 
         for (const entry of this.#entries.values()) {
@@ -833,7 +838,8 @@ export class CacheKeeper {
             }
         }
 
-        return sessions;
+        this.#budgets.retain(sessions);
+        this.#saveBudgets();
     }
 
     /**
@@ -846,59 +852,68 @@ export class CacheKeeper {
                 ? undefined
                 : this.#deps.idlePolicy?.(entry.conversationId);
 
-        const tier = cacheTier(entry.options);
-
         return policy === undefined
             ? undefined
             : idlePlan(
                   policy,
-                  this.#deps.modelFacts?.(specOf(entry.model), tier === "none" ? "short" : tier) ??
-                      {},
+                  this.#deps.modelFacts?.(specOf(entry.model), factsTier(entry.options)) ?? {},
                   entry.ttlMs,
                   since,
               );
     }
 
     /**
-     * Keep warm was turned off for an idle entry: its timers stop and its saved copy goes, but the request stays in
-     * memory as `parked` until its cache expires, so the session can be turned on again without a new message.
+     * Stop refreshing an entry but keep its request while its cache lives: keep warm was turned off, a limit stopped it,
+     * or its run ended while Off. Turning it on, or a longer limit, picks it up again with the stretch it had. Its saved
+     * copy goes. `reason`: why it stopped, for the session's view (Off is a choice and has none).
      */
-    #park(key: string, entry: Entry): void {
-        const idle = entry.idle!;
-
-        for (const timer of [entry.timer, entry.deadline]) {
-            if (timer !== undefined) {
-                this.#deps.clearTimer(timer);
-            }
+    #park(key: string, entry: Entry, reason?: string): void {
+        // Hashed once, when the run ends, so a parked entry holds no copy of the provider payload for its cache's life.
+        if (this.#payloadHash(entry) === undefined) {
+            return this.#drop(key);
         }
 
-        entry.timer = undefined;
-        entry.deadline = undefined;
-        entry.abort?.abort();
-        entry.abort = undefined;
-
-        entry.kind = "parked";
-        entry.idle = undefined;
-        this.#deps.store?.delete(key);
-        this.#stopped.delete(entry.conversationId!);
-        this.#parkUntilExpiry(key, entry, idle.lifeMs);
-        this.#deps.changed?.(entry.conversationId!);
-    }
-
-    /**
-     * A run's last request with keep warm off: kept until its cache expires (its lifetime, else Pi's tool-wait cap), so
-     * turning keep warm on picks it up. Nothing is sent meanwhile.
-     */
-    #parkUntilExpiry(key: string, entry: Entry, lifeMs?: number): void {
-        const life =
-            lifeMs ??
-            this.#deps.modelFacts?.(specOf(entry.model)).lifetimeMs ??
-            entry.ttlMs ??
-            MAX_AGE_MS;
+        const lifeMs = entry.idle?.lifeMs;
+        const wasIdle = entry.kind === "idle";
+        const stopped =
+            entry.conversationId === undefined
+                ? undefined
+                : this.#stopped.get(entry.conversationId);
 
         if (entry.timer !== undefined) {
             this.#deps.clearTimer(entry.timer);
+            entry.timer = undefined;
         }
+
+        // A refresh on its way keeps its deadline: one that never settles still ends the entry, as it would unparked.
+        if (entry.abort === undefined && entry.deadline !== undefined) {
+            this.#deps.clearTimer(entry.deadline);
+            entry.deadline = undefined;
+        }
+
+        entry.abort?.abort();
+
+        if (entry.idle !== undefined) {
+            entry.stretch = { since: entry.idle.since, failures: entry.idle.failures };
+            this.#deps.store?.delete(key);
+        }
+
+        entry.kind = "parked";
+        entry.idle = undefined;
+
+        if (entry.conversationId !== undefined) {
+            if (reason === undefined) {
+                this.#stopped.delete(entry.conversationId);
+            } else {
+                this.#stopped.set(entry.conversationId, reason);
+            }
+        }
+
+        const life =
+            lifeMs ??
+            this.#deps.modelFacts?.(specOf(entry.model), factsTier(entry.options)).lifetimeMs ??
+            entry.ttlMs ??
+            MAX_AGE_MS;
 
         entry.timer = this.#deps.setTimer(
             () => {
@@ -908,6 +923,10 @@ export class CacheKeeper {
             },
             Math.max(1, entry.lastTouch + life - this.#deps.now()),
         );
+
+        if (entry.conversationId !== undefined && (wasIdle || stopped !== reason)) {
+            this.#deps.changed?.(entry.conversationId);
+        }
     }
 
     /** Plan the next idle refresh, `everyMs` after a request last touched the cache. */
@@ -920,16 +939,18 @@ export class CacheKeeper {
     }
 
     /** The run is over: keep its last request warm when the owner wants that, else stop. */
-    #toIdle(key: string, entry: Entry, saved?: { since: number; failures: number }): void {
+    #toIdle(key: string, entry: Entry, restored?: { since: number; failures: number }): void {
         const conversationId = entry.conversationId;
         const now = this.#deps.now();
+        // A parked entry picked up again goes on with its stretch, as a restored one does.
+        const saved = restored ?? entry.stretch;
         const plan = this.#plan(entry, saved?.since ?? now);
 
         // A saved entry that is not warmed again is deleted, so the next start does not find it.
         const stop = (reason?: string) => {
             this.#drop(key, reason);
 
-            if (saved !== undefined) {
+            if (restored !== undefined) {
                 this.#deps.store?.delete(key);
             }
         };
@@ -938,13 +959,16 @@ export class CacheKeeper {
             return stop();
         }
 
-        // Off for this session now: kept as it is while its cache lives, in case it is turned on.
+        // Off for this session now: kept as it is while its cache lives, in case it is turned on. Off is a choice, so a
+        // limit's old stop is not shown. A saved entry is not loaded again only to be parked, and a conversation that can
+        // never be kept warm (PiP's, or no session's) keeps nothing.
         if (plan === undefined) {
-            return saved === undefined &&
+            return restored === undefined &&
                 this.#deps.idlePolicy !== undefined &&
+                this.#deps.warmable?.(conversationId) !== false &&
                 !this.#closed &&
                 !this.#deps.disabled()
-                ? this.#parkUntilExpiry(key, entry)
+                ? this.#park(key, entry)
                 : stop();
         }
 
@@ -952,7 +976,7 @@ export class CacheKeeper {
 
         // The cache is gone already (a long restart, or turned on again too late): a refresh would only write it again.
         if (now >= entry.lastTouch + idle.lifeMs - 10_000) {
-            return stop(saved === undefined ? undefined : "the cache expired during a restart");
+            return stop(restored === undefined ? undefined : "the cache expired during a restart");
         }
 
         if (saved === undefined) {
@@ -960,28 +984,66 @@ export class CacheKeeper {
             entry.spent = 0;
         }
 
+        // Limits that would stop it at once (the old limit came back) leave it parked with its reason.
+        const stopNow =
+            entry.stretch === undefined ? undefined : this.#limitStop({ ...entry, idle }, now);
+
+        if (stopNow !== undefined) {
+            return this.#park(key, entry, stopNow);
+        }
+
         entry.kind = "idle";
         entry.idle = idle;
+        entry.stretch = undefined;
         entry.account ??= this.#deps.accountFor?.(conversationId);
         this.#stopped.delete(conversationId);
 
-        // A tool-wait refresh on its way plans the next itself, as an idle one, when it settles.
+        // A refresh on its way (a tool wait's, or one parked on its way) plans the next itself when it settles; the
+        // parked entry's expiry goes.
         if (entry.abort === undefined) {
             this.#scheduleIdle(key, entry);
+        } else if (entry.timer !== undefined) {
+            this.#deps.clearTimer(entry.timer);
+            entry.timer = undefined;
         }
 
-        this.#save(key, entry, true);
+        this.#save(key, entry, restored === undefined);
         this.#deps.changed?.(conversationId);
     }
 
     #saveBudgets(): void {
-        this.#deps.store?.saveBudgets?.(Object.fromEntries(this.#budgets.entries()));
+        this.#deps.store?.saveBudgets(Object.fromEntries(this.#budgets.entries()));
+    }
+
+    /** Hash once on demand, then release the observed payload even when it cannot be serialized. */
+    #payloadHash(entry: Entry): string | undefined {
+        const payload = entry.payload;
+
+        if (payload !== undefined) {
+            delete entry.payload;
+
+            try {
+                entry.payloadHash = this.#deps.payloadHash(payload.value);
+            } catch {
+                // A payload we cannot compare can serve the real request, but must never be warmed.
+            }
+        }
+
+        return entry.payloadHash;
     }
 
     #save(key: string, entry: Entry, withContext: boolean): void {
         const store = this.#deps.store;
 
         if (store === undefined || entry.idle === undefined || entry.conversationId === undefined) {
+            return;
+        }
+
+        const fingerprint = this.#payloadHash(entry);
+
+        if (fingerprint === undefined) {
+            this.#drop(key);
+
             return;
         }
 
@@ -1002,7 +1064,7 @@ export class CacheKeeper {
                 ),
                 promptTokens: entry.promptTokens,
                 ...(entry.ttlMs === undefined ? {} : { ttlMs: entry.ttlMs }),
-                payloadHash: entry.payloadHash,
+                payloadHash: fingerprint,
                 lastTouch: entry.lastTouch,
                 since: entry.idle.since,
                 warms: entry.warms,
@@ -1052,30 +1114,50 @@ export class CacheKeeper {
         });
     }
 
-    /** Completed spend and reservations in a session's idle stretch, including entries that stopped. */
-    #sessionSpent(session: number): number {
-        return this.#budgets.used(session);
-    }
-
     /** A cache miss for the full prompt and one output token, in dollars, at the lifetime the entry is warmed for. */
     #idleWorst(entry: Entry): number {
         const seconds = entry.idle === undefined ? undefined : entry.idle.lifeMs / 1000;
-
-        return (
-            (entry.promptTokens * missPrice(entry.model, entry.options, seconds) +
-                entry.model.cost.output) /
-            1_000_000
+        // The replay keeps the request's own cache tier, so an owner's shorter lifetime never lowers its miss price.
+        const price = Math.max(
+            missPrice(entry.model, entry.options),
+            missPrice(entry.model, entry.options, seconds),
         );
+
+        return (entry.promptTokens * price + entry.model.cost.output) / 1_000_000;
     }
 
     /** Why an idle entry may not refresh now; undefined: it may. */
-    #idleStop(entry: Entry, now: number): string | undefined {
+    #idleStop(entry: Entry, now: number): { reason?: string; park: boolean } | undefined {
         const idle = entry.idle!;
         const slack = Math.max((idle.lifeMs - idle.everyMs) / 2, 60_000);
 
+        // Its cache may be gone already: nothing is left to pick up again.
         if (now > entry.dueAt + slack || now >= entry.lastTouch + idle.lifeMs) {
-            return "the refresh came too late (the server was busy or asleep)";
+            return {
+                reason: "the refresh came too late (the server was busy or asleep)",
+                park: false,
+            };
         }
+
+        // Off is a choice: kept for turning on again, with no stop to show.
+        if (
+            entry.conversationId === undefined ||
+            this.#deps.idlePolicy?.(entry.conversationId) === undefined
+        ) {
+            return { park: true };
+        }
+
+        const limit = this.#limitStop(entry, now);
+
+        return limit === undefined ? undefined : { reason: limit, park: true };
+    }
+
+    /**
+     * Which of the owner's limits stops an idle entry now; undefined: none. Each may change (a longer time, a higher
+     * cap, a raised spend limit), so the entry is parked and picked up when one does.
+     */
+    #limitStop(entry: Entry, now: number): string | undefined {
+        const idle = entry.idle!;
 
         if (idle.until !== undefined && now >= idle.until) {
             return "the time limit was reached";
@@ -1089,17 +1171,11 @@ export class CacheKeeper {
 
         // The session's whole idle stretch counts (its subagents' too, stopped entries, and refreshes in flight), and the
         // next refresh at its worst: a cache that is gone is written again in full. So the cap is never passed.
-        const worst = this.#idleWorst(entry);
-
-        if (idle.maxCost > 0 && this.#sessionSpent(idle.session) + worst > idle.maxCost) {
-            return "the cost cap was reached";
-        }
-
         if (
-            entry.conversationId === undefined ||
-            this.#deps.idlePolicy?.(entry.conversationId) === undefined
+            idle.maxCost > 0 &&
+            this.#budgets.used(idle.session) + this.#idleWorst(entry) > idle.maxCost
         ) {
-            return "turned off";
+            return "the cost cap was reached";
         }
 
         if (
@@ -1133,7 +1209,9 @@ export class CacheKeeper {
             const stop = this.#idleStop(entry, now);
 
             if (stop !== undefined) {
-                return this.#drop(key, stop);
+                return stop.park
+                    ? this.#park(key, entry, stop.reason)
+                    : this.#drop(key, stop.reason);
             }
 
             reserved = this.#idleWorst(entry);
@@ -1157,10 +1235,11 @@ export class CacheKeeper {
         }
 
         let actual = 0;
+        const abort = new AbortController();
+        // Parked while it was on its way (and maybe turned on again): its abort is no failure of the refresh.
+        const interrupted = () => abort.signal.aborted && this.#entries.get(key) === entry;
 
         try {
-            const abort = new AbortController();
-
             entry.abort = abort;
             entry.deadline = this.#deps.setTimer(
                 () => {
@@ -1188,7 +1267,7 @@ export class CacheKeeper {
                             this.#deps.idlePolicy?.(entry.conversationId) === undefined)
                     ) {
                         if (this.#entries.get(key) === entry) {
-                            this.#drop(key, "turned off");
+                            this.#park(key, entry);
                         }
 
                         throw new Error("Keep warm was turned off for this session.");
@@ -1197,7 +1276,7 @@ export class CacheKeeper {
                     let matches = false;
 
                     try {
-                        matches = payloadHash(payload) === entry.payloadHash;
+                        matches = this.#payloadHash(entry) === this.#deps.payloadHash(payload);
                     } catch {
                         // Fail closed when the shaped payload no longer has a comparable JSON representation.
                     }
@@ -1226,8 +1305,13 @@ export class CacheKeeper {
             );
             const message = await stream.result();
 
+            // Parked while it was on its way (turned off, or the payload hook found it Off): it stays parked.
             if (rejected) {
-                if (this.#entries.get(key) === entry) {
+                if (interrupted()) {
+                    return this.#resumeAfter(key, entry, abort);
+                }
+
+                if (this.#entries.get(key) === entry && entry.kind !== "parked") {
                     this.#drop(key, why("a refresh could not be sent"));
                 }
 
@@ -1253,6 +1337,18 @@ export class CacheKeeper {
 
             const failed = message.stopReason === "error" || message.stopReason === "aborted";
 
+            // Parked while it was on its way, and maybe turned on again: a refresh that read the cache keeps it alive
+            // from now.
+            if (interrupted()) {
+                return this.#resumeAfter(
+                    key,
+                    entry,
+                    abort,
+                    !failed && message.usage.cacheRead > 0,
+                    now,
+                );
+            }
+
             entry.abort = undefined;
 
             // The run ended while a tool-wait refresh was on its way: it counts as the entry's first idle refresh.
@@ -1273,10 +1369,16 @@ export class CacheKeeper {
                 `Cache keeper stopped for a session: ${error instanceof Error ? error.message : String(error)}`,
             );
 
-            if (this.#entries.get(key) === entry) {
+            if (interrupted()) {
+                this.#resumeAfter(key, entry, abort);
+            } else if (this.#entries.get(key) === entry && entry.kind !== "parked") {
                 this.#drop(key, why("a refresh failed"));
             }
         } finally {
+            if (entry.abort === abort) {
+                entry.abort = undefined;
+            }
+
             const session = idle?.session ?? entry.idle?.session;
 
             if (session !== undefined) {
@@ -1288,6 +1390,34 @@ export class CacheKeeper {
                 this.#deps.clearTimer(entry.deadline);
                 entry.deadline = undefined;
             }
+        }
+    }
+
+    /**
+     * A refresh that was parked on its way has settled (`touched`: it read the cache at `now`). An entry turned on again
+     * meanwhile plans its next refresh; one still parked expires from the new touch.
+     */
+    #resumeAfter(
+        key: string,
+        entry: Entry,
+        abort: AbortController,
+        touched = false,
+        now = 0,
+    ): void {
+        if (entry.abort === abort) {
+            entry.abort = undefined;
+        }
+
+        if (touched) {
+            entry.lastTouch = now;
+        }
+
+        if (entry.kind === "idle") {
+            this.#scheduleIdle(key, entry);
+            this.#save(key, entry, false);
+            this.#deps.changed?.(entry.conversationId!);
+        } else if (touched && entry.kind === "parked") {
+            this.#park(key, entry, this.#stopped.get(entry.conversationId!));
         }
     }
 
@@ -1375,7 +1505,7 @@ export class CacheKeeper {
 
             if (entry.conversationId !== undefined) {
                 if (reason !== undefined) {
-                    this.#stopped.set(entry.conversationId, { reason, at: this.#deps.now() });
+                    this.#stopped.set(entry.conversationId, reason);
                 }
 
                 this.#deps.changed?.(entry.conversationId);
