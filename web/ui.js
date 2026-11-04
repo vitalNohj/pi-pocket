@@ -1055,9 +1055,14 @@ export const ATTACHMENTS_HEADING = "\n\nAttached files (saved on the server):\n"
  * before 0.14.0, has the heading without the blank line before it.
  */
 export function splitAttachments(text) {
-    return (text.startsWith(ATTACHMENTS_HEADING.trimStart()) ? `\n\n${text}` : text).split(
-        ATTACHMENTS_HEADING,
-    );
+    // Files copied to the computer a session runs on have their own heading (`entry-format.ts`).
+    const heading = /\n\nAttached files \((?:saved on the server|copied to [^()\n]*)\):\n/;
+    const whole = /^Attached files \(/.test(text) ? `\n\n${text}` : text;
+    const match = heading.exec(whole);
+
+    return match === null
+        ? [whole]
+        : [whole.slice(0, match.index), whole.slice(match.index + match[0].length)];
 }
 
 /** What a person wrote in a message to Pi, without the list of attached files. */
