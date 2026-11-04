@@ -1347,6 +1347,24 @@ test("keep warm: a 1-hour Anthropic miss reserves twice the input price", async 
     assert.equal(!status.warm && status.stopped, "the cost cap was reached");
 });
 
+test("keep warm: an owner's shorter lifetime does not lower a 1-hour request's reserved miss", async () => {
+    const r = rig(false, {
+        policy: { ...POLICY, maxCost: 0.25 },
+        facts: { lifetimeMs: 300_000 },
+    });
+
+    await idleRun(r, "long");
+    await r.advance();
+    assert.equal(
+        r.calls.length,
+        1,
+        "the replay keeps the 1-hour tier: a $0.30 rewrite cannot fit a $0.25 cap",
+    );
+    const status = r.keeper.idleStatus(3);
+
+    assert.equal(!status.warm && status.stopped, "the cost cap was reached");
+});
+
 test("keep warm: Break-even uses the request's cache tier for its prices", async () => {
     const r = rig(false, {
         policy: { ...POLICY, hours: "break-even" },

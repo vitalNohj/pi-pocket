@@ -608,10 +608,10 @@ export function KeepWarmCard({ compact = false }) {
     // follows it again ("default"), so a later change of the default reaches this session too.
     const valueOf = (value) => (value === fallback ? "default" : value);
     // Only the owner turns a session on or picks another time; anyone who can steer may turn it off, or back to the
-    // default where that keeps it off (the server checks it too).
+    // default when the default is Off or is the session's time already (the server checks it too).
     const owner = store.state.me?.role === "owner";
     const allowed = (value) =>
-        owner || value === 0 || (value === fallback && (choice !== 0 || fallback === 0));
+        owner || value === 0 || (value === fallback && (fallback === 0 || chosen === fallback));
 
     const pick = (value) => {
         const current = asked.current?.id === conversation.id ? asked.current.choice : choice;

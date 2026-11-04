@@ -323,12 +323,14 @@ export class KeepWarm {
             );
         }
 
-        const turnsOn =
-            choice === "default"
-                ? meta.keepWarm === 0 && this.#deps.settings().hours !== 0
-                : choice !== 0;
+        // A person who is not the owner may only turn it off: "default" too, when the default is Off or is the
+        // session's time already.
+        const fallback = this.#deps.settings().hours;
+        const current = meta.keepWarm ?? fallback;
+        const allowed =
+            choice === 0 || (choice === "default" && (fallback === 0 || fallback === current));
 
-        if (user.role !== "owner" && turnsOn) {
+        if (user.role !== "owner" && !allowed) {
             throw new HttpError(403, "Only the owner can keep a session warm");
         }
 

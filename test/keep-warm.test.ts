@@ -178,8 +178,16 @@ test("keep warm: session changes validate together, check permissions, and recor
         assert.equal(
             app.sessionMeta(id)?.keepWarm,
             undefined,
-            "from a time back to Default is allowed",
+            "back to a Default that is the session's time already is allowed",
         );
+
+        // A shorter time the owner chose: a guest's Default would lengthen it.
+        await app.commands.updateSession(id, owner(app), { keepWarm: 0.5 });
+        await assert.rejects(
+            app.commands.updateSession(id, guest, { keepWarm: "default" }),
+            /Only the owner/,
+        );
+        assert.equal(app.sessionMeta(id)?.keepWarm, 0.5);
 
         // A viewer cannot steer, and a guest with access to another session cannot change this one.
         const viewer = app.config.addUser("Bea", "viewer").user;

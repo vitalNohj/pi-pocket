@@ -1117,12 +1117,13 @@ export class CacheKeeper {
     /** A cache miss for the full prompt and one output token, in dollars, at the lifetime the entry is warmed for. */
     #idleWorst(entry: Entry): number {
         const seconds = entry.idle === undefined ? undefined : entry.idle.lifeMs / 1000;
-
-        return (
-            (entry.promptTokens * missPrice(entry.model, entry.options, seconds) +
-                entry.model.cost.output) /
-            1_000_000
+        // The replay keeps the request's own cache tier, so an owner's shorter lifetime never lowers its miss price.
+        const price = Math.max(
+            missPrice(entry.model, entry.options),
+            missPrice(entry.model, entry.options, seconds),
         );
+
+        return (entry.promptTokens * price + entry.model.cost.output) / 1_000_000;
     }
 
     /** Why an idle entry may not refresh now; undefined: it may. */
