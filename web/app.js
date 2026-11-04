@@ -215,10 +215,14 @@ function Topbar() {
     const { view, server } = store.state;
     const conversation = view.conversation;
     const cwd = view.agent?.cwd ?? conversation?.cwd;
+    // A session on another computer (`runners.ts`) can have a Windows folder.
     const folder = String(cwd ?? "")
-        .replace(/\/+$/, "")
-        .split("/")
+        .replace(/[\\/]+$/, "")
+        .split(/[\\/]/)
         .pop();
+    const computer = conversation?.runnerName;
+    // Offline is offline (`docs/runners.md`): its work waits for the computer, and the top bar says so.
+    const offline = Boolean(computer) && conversation?.runnerOnline === false;
     const branch = headLabel(view.branch) || conversation?.worktree?.branch;
     const { sessions, conversationId } = store.state;
     // The top bar draws with each update of the conversation, as an answer streams: the session list is looked
@@ -250,7 +254,7 @@ function Topbar() {
         <div class="title">
             <button
                 class="title-open"
-                aria-label=${`${title}${folder ? `, in ${folder}` : ""}: session menu`}
+                aria-label=${`${title}${folder ? `, in ${folder}` : ""}${computer ? ` on ${computer}` : ""}: session menu`}
                 title=${cwd ? `${shortPath(cwd, server?.home)}\nSession menu` : "Session menu"}
                 disabled=${!conversation || store.state.me == null}
                 onClick=${() => openSheet({ type: "menu" })}
@@ -261,7 +265,7 @@ function Topbar() {
                     folder &&
                     html`<span
                         class="folder-mark"
-                        style=${`--folder:${folderColor(cwd)}`}
+                        style=${`--folder:${folderColor(cwd, view.conversation?.runner)}`}
                         aria-hidden="true"
                     ></span>`
                 }
@@ -281,6 +285,18 @@ function Topbar() {
                         : html`${
                               folder &&
                               html`<span class="title-folder" aria-hidden="true">${folder}</span>`
+                          }
+                          ${
+                              computer &&
+                              html`<span class="title-folder title-computer" aria-hidden="true">
+                                  on ${computer}
+                              </span>`
+                          }
+                          ${
+                              offline &&
+                              html`<span class="title-offline" role="status">
+                                  ${computer} offline, reconnecting…
+                              </span>`
                           }
                           ${
                               branch &&

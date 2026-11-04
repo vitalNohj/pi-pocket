@@ -1,7 +1,8 @@
 /**
  * A throwaway Pi Pocket for checking a change by hand: the code in this folder, a data folder of its own (a temporary
- * one, deleted on exit), and a scripted model that answers "echo: …" and costs nothing. It prints sign-in links for
- * an owner and a guest. Web files and extension modules reload as they do in the real server; other server changes
+ * one, deleted on exit), and a scripted model that answers "echo: …" and costs nothing; a message "run: COMMAND" makes it
+ * call bash with COMMAND, and it says what bash said. It prints sign-in links for an owner and a guest, and takes
+ * runners (`pi-pocket runner`) as the real server does. Web files and extension modules reload as they do in the real server; other server changes
  * need this process restarted.
  *
  *   node test/serve.ts [port] [host]     (defaults: 8899 and 127.0.0.2)
@@ -10,7 +11,8 @@
  * does not sign a browser out of a Pi Pocket on 127.0.0.1 or localhost.
  */
 // helpers.ts first: it points Pi's folder at a temporary one before anything from src/ loads.
-import { cleanUp, newSession, openApp, root, say, scriptedModel } from "./helpers.ts";
+import { cleanUp, lastText, newSession, openApp, root, say, scriptedModel } from "./helpers.ts";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { APP_ROOT } from "../src/server/config.ts";
@@ -19,8 +21,28 @@ import { watchTree } from "../src/server/reload.ts";
 
 const port = Number(process.argv[2] ?? 8899);
 const host = process.argv[3] ?? "127.0.0.2";
-const app = await openApp(scriptedModel());
+const app = await openApp(
+    scriptedModel((context) => {
+        const { role, text } = lastText(context as never);
+        const command = /(?:^|] )run: ([\s\S]+)/.exec(text)?.[1];
+
+        if (role === "toolResult") {
+            return fauxAssistantMessage([fauxText(`bash said:\n${text}`)]);
+        }
+
+        return role === "user" && command !== undefined
+            ? fauxAssistantMessage([fauxToolCall("bash", { command })], { stopReason: "toolUse" })
+            : fauxAssistantMessage([fauxText(`echo: ${text}`)]);
+    }),
+);
 const server = createServer(createHandler({ app, listen: { host, port }, restart: () => {} }));
+
+// Runners (`pi-pocket runner`), as `src/server/main.ts` takes them.
+server.on("upgrade", (request, socket, head) => {
+    if (!app.runners.upgrade(request, socket, head)) {
+        socket.destroy();
+    }
+});
 const stopWatching = watchTree(join(APP_ROOT, "web"), (file) => app.reloadClients(file));
 
 // Extension modules reload when saved, as in the real server (`app.close()` stops this).

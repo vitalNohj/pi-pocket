@@ -6,6 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, extname, join, sep } from "node:path";
 import { type Context, copyJson } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -49,8 +50,10 @@ import {
     type SubagentRecord,
     SubagentsDoc,
 } from "./docs.ts";
+import { REMOTE_EXTENSIONS } from "./runners.ts";
 import {
     ATTACHMENTS_HEADING,
+    attachmentsHeading,
     FILE_BLOCK,
     FROM_PREFIX,
     NOTE_ENTRY,
@@ -58,8 +61,11 @@ import {
 } from "./entry-format.ts";
 import { describe, HttpError, optionalText } from "./errors.ts";
 import { homePath } from "./paths.ts";
-import { forModel, MAX_INLINE_IMAGE, modelImage } from "./model-images.ts";
-import { mentionedPaths, viewFile } from "./files.ts";
+import { localRepo, remoteRepo } from "./repo.ts";
+import { forModel, MAX_INLINE_IMAGE, modelImage, modelImageOf } from "./model-images.ts";
+import { Unreachable } from "./folder-access.ts";
+import { clearUploads, copyUploads, uploadedThere, uploadsFolder } from "./remote-context.ts";
+import { type FileView, mentionedPaths, viewFile } from "./files.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./models.ts";
 import { writePiSession } from "./pi-sessions.ts";
 import { snippet } from "./projection.ts";
@@ -90,10 +96,51 @@ import {
 
 const context = BACKGROUND_CONTEXT;
 
+/** A mentioned file's text as it goes with a message, cut to `room` and `MAX_MENTIONED_FILE`; none without room. */
+function fileBlock(
+    file: string,
+    view: { text: string; truncated: boolean },
+    room: number,
+): { part: TextContent; length: number } | undefined {
+    if (room <= 0) {
+        return undefined;
+    }
+
+    const most = Math.min(MAX_MENTIONED_FILE, room);
+    const content = view.text.slice(0, most);
+    const cut =
+        view.truncated || view.text.length > most ? "\n… (the rest of the file is left out)" : "";
+
+    return {
+        part: { type: "text", text: `${FILE_BLOCK}${file}">\n${content}${cut}\n</file>` },
+        length: content.length,
+    };
+}
+
 export type Attachment = { path: string; name: string; mime: string; size: number };
 
-// A name can hold " (", so the path is the part that ends with "-name".
-function attachedFile(line: string, uploads: string): Attachment[] {
+/**
+ * The copy here of a file a session on another computer got as `<temp>/pi-pocket-uploads/<conversation>/<name>` there
+ * (`copyUploads`): the same name in the conversation's uploads, when it is still there.
+ */
+function uploadedCopy(path: string, uploads: string): string | undefined {
+    const stored = /[/\\]pi-pocket-uploads[/\\]\d+[/\\]([^/\\]+)$/.exec(path)?.[1];
+
+    if (stored === undefined || stored === "." || stored === "..") {
+        return undefined;
+    }
+
+    const copy = join(uploads, stored);
+
+    try {
+        return statSync(copy).isFile() ? copy : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+// A name can hold " (", so the path is the part that ends with "-name". Exported for tests.
+export function attachedFile(line: string, uploads: string): Attachment[] {
     const tail = /, ([^,]+), (\d+) bytes\)(?: \[Image: .*)?$/.exec(line);
 
     if (!line.startsWith("- ") || tail === null) {
@@ -106,10 +153,16 @@ function attachedFile(line: string, uploads: string): Attachment[] {
         const path = head.slice(0, at);
         const name = head.slice(at + 2);
 
-        if (path.startsWith(uploads + sep) && path.endsWith(`-${name}`)) {
+        if (!path.endsWith(`-${name}`)) {
+            continue;
+        }
+
+        const here = path.startsWith(uploads + sep) ? path : uploadedCopy(path, uploads);
+
+        if (here !== undefined) {
             const mime = tail[1] === "unknown type" ? "" : tail[1]!;
 
-            return [{ path, name, mime, size: Number(tail[2]) }];
+            return [{ path: here, name, mime, size: Number(tail[2]) }];
         }
     }
 
@@ -203,6 +256,62 @@ function checkModel(asked: { provider?: unknown; modelId?: unknown } | undefined
     ) {
         throw new HttpError(400, "model must name a provider and a model id");
     }
+}
+
+/**
+ * Where a copy of a session runs, as a person picked it in the copy sheet (`POST /api/c/:id/fork` and `/resend`'s
+ * `place`): the computer (`null`, this server; absent, the session's own), the folder there, the model and thinking
+ * level, and a git worktree of its own (this server only). Absent fields keep the session's.
+ */
+export type CopyPlaceRequest = {
+    runner?: string | null;
+    cwd?: string;
+    model?: { provider: string; modelId: string };
+    thinkingLevel?: string;
+    worktree?: boolean;
+};
+
+/** A copy's place, checked: the computer (undefined: this server), the folder, whether it moved, and the worktree. */
+type Destination = {
+    runner: string | undefined;
+    cwd: string;
+    worktree: boolean;
+    /** The source session's computer and folder, when the copy runs elsewhere: Pi is told. */
+    from?: { runner: string | undefined; cwd: string };
+};
+
+/** Check the shape of a request's `place`: every field optional, each of its type. */
+function checkPlace(place: unknown): CopyPlaceRequest | undefined {
+    if (place === undefined || place === null) {
+        return undefined;
+    }
+
+    if (typeof place !== "object" || Array.isArray(place)) {
+        throw new HttpError(400, "place must be an object");
+    }
+
+    const given = place as Record<string, unknown>;
+    const runner = given.runner;
+
+    if (runner !== undefined && runner !== null && (typeof runner !== "string" || runner === "")) {
+        throw new HttpError(400, "place.runner must be a computer's id, or null for this server");
+    }
+
+    optionalText(given.cwd, "place.cwd");
+    checkModel(given.model as { provider?: unknown; modelId?: unknown } | undefined);
+
+    if (given.thinkingLevel !== undefined && !isThinkingLevel(given.thinkingLevel)) {
+        throw new HttpError(
+            400,
+            `place.thinkingLevel must be one of ${THINKING_LEVELS.join(", ")}`,
+        );
+    }
+
+    if (given.worktree !== undefined && typeof given.worktree !== "boolean") {
+        throw new HttpError(400, "place.worktree must be true or false");
+    }
+
+    return given as CopyPlaceRequest;
 }
 
 /** A person's message to a failed subagent (`subagent`, its conversation), followed to its end; `failure`, its own then. */
@@ -387,15 +496,86 @@ export class Commands {
         });
     }
 
+    /**
+     * Start a session whose tools run on computer `runner` (`runners.ts`), in a folder there; home without one. Only
+     * the owner: everything it runs runs as the person whose computer that is. It runs with `REMOTE_EXTENSIONS` only,
+     * so nothing in it works on this server's disk.
+     */
+    async #createRemote(
+        user: User,
+        runner: string,
+        request: { cwd?: string; worktree?: unknown },
+        title: string | undefined,
+        signal?: AbortSignal,
+    ): Promise<{ id: ConversationId }> {
+        const app = this.#app;
+
+        // Only the person who linked the computer runs things on it: everything there runs as them.
+        if (app.runners.require(runner).createdBy !== user.id) {
+            throw new HttpError(
+                403,
+                "Only the person who linked this computer can start sessions on it.",
+            );
+        }
+
+        if (request.worktree === true) {
+            throw new HttpError(
+                400,
+                "Worktrees are not available for sessions on another computer yet.",
+            );
+        }
+
+        const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
+
+        // The computer's person allows it there (its runner asks, unless they turned asking off).
+        await app.runners
+            .link(runner)
+            .confirm({ kind: "new", person: user.name, folder: cwd }, signal);
+
+        const initial = this.#defaultModel();
+        const now = Date.now();
+        const conversation = await app.harness.createConversation(
+            {
+                ownership: { kind: "ownerless" },
+                agent: {
+                    cwd,
+                    ...(initial.model === undefined ? {} : { model: initial.model }),
+                    ...(initial.thinkingLevel === undefined
+                        ? {}
+                        : { thinkingLevel: initial.thinkingLevel }),
+                },
+                init: async (tx, id) => {
+                    const sessions = await tx.doc(SessionsDoc);
+
+                    (await tx.doc(AgentDoc, id)).extensions = [...REMOTE_EXTENSIONS];
+                    sessions.items[String(id)] = {
+                        cwd,
+                        createdAt: now,
+                        updatedAt: now,
+                        createdBy: user.id,
+                        runner,
+                        title: title ?? `${basename(cwd) || cwd} on ${app.runners.name(runner)}`,
+                    };
+                },
+            },
+            context,
+        );
+
+        void this.recordRepo(conversation.id, cwd);
+
+        return { id: conversation.id };
+    }
+
     /** Start a session in a folder; with `worktree`, in a git worktree of its own made from that folder. */
     async createSession(
         user: User,
-        request: { cwd?: string; title?: string; worktree?: unknown },
+        request: { cwd?: string; title?: string; worktree?: unknown; runner?: unknown },
         {
             projectDefaults = true,
             model,
             thinkingLevel,
             init,
+            signal,
         }: {
             projectDefaults?: boolean;
             /** A model the caller already checked: it replaces the default, in the commit that makes the session. */
@@ -403,6 +583,8 @@ export class Commands {
             thinkingLevel?: ModelThinkingLevel;
             /** Runs in the commit that makes the session, after its entry is written. */
             init?: (tx: Tx, id: ConversationId) => Promise<void>;
+            /** Ends the wait for the computer's answer, when the session goes to another computer. */
+            signal?: AbortSignal;
         } = {},
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
@@ -415,6 +597,12 @@ export class Commands {
 
         const given = optionalText(request.title, "title");
         const title = (given === undefined ? undefined : oneLine(given)) || undefined;
+        const runner = optionalText(request.runner, "runner");
+
+        if (runner !== undefined) {
+            return this.#createRemote(user, runner, request, title, signal);
+        }
+
         const requested = optionalText(request.cwd, "cwd") ?? app.defaultCwd;
 
         app.requireWorkspaceOwner(user, requested);
@@ -470,6 +658,8 @@ export class Commands {
                     context,
                 );
 
+                void this.recordRepo(conversation.id, cwd);
+
                 return { id: conversation.id };
             },
         );
@@ -524,6 +714,8 @@ export class Commands {
             },
             context,
         );
+
+        void this.recordRepo(conversation.id, cwd);
 
         return { id: conversation.id };
     }
@@ -755,6 +947,13 @@ export class Commands {
             );
         }
 
+        // Archived on another computer: its attached files are removed from that computer's temporary folder.
+        const runner = patch.archived === true ? app.runnerOf(id) : undefined;
+
+        if (runner !== undefined) {
+            void clearUploads(app.runners.env(runner, app.cwdOf(id)), id);
+        }
+
         // Archiving leaves its repeating schedules running: the person is told how many.
         const repeating =
             patch.archived === true
@@ -792,11 +991,28 @@ export class Commands {
         const conversation = await app.conversation(id);
         const typed = request.text.trim();
         // `/skill:name request` sends the skill with the request; `/name arguments`, Pi's prompt template of that name.
-        const expanded = typed.startsWith("/skill:")
-            ? (expandSkillCommand(typed, app.skillCommands(id)) ?? typed)
-            : typed.startsWith("/")
-              ? (expandPromptTemplate(typed, app.promptTemplates(id)) ?? typed)
-              : typed;
+        let expanded = typed;
+
+        if (typed.startsWith("/skill:")) {
+            const runner = app.runnerOf(id);
+
+            // A skill on a computer that is offline cannot be read now: the message goes as typed, and Pi finds the skill
+            // there when it is back (its skills are in its prompt then).
+            if (runner !== undefined && !app.runners.link(runner).online) {
+                app.notice(
+                    "info",
+                    `${app.runners.name(runner)} is offline, so the skill goes as typed. Pi reads it there when the computer is back.`,
+                    id,
+                );
+            } else {
+                const { skills, read } = await app.skillsToRun(id);
+
+                expanded = (await expandSkillCommand(typed, skills, read)) ?? typed;
+            }
+        } else if (typed.startsWith("/")) {
+            expanded = expandPromptTemplate(typed, app.promptTemplates(id)) ?? typed;
+        }
+
         // A value an extension hides (`host.hide`), pasted into the message, is never stored nor sent to the model.
         const text = app.hidden.replace(expanded, id);
         const attachments = request.attachments ?? [];
@@ -825,6 +1041,7 @@ export class Commands {
         const made = await Promise.allSettled(
             images.map((file) => modelImage(file.path, file.mime)),
         );
+        const placed = this.#placeAttachments(id, attachments);
         // What differs between a file and the image the model gets goes on the file's line.
         const notes = new Map<Attachment, string>();
 
@@ -834,15 +1051,20 @@ export class Commands {
             }
         });
 
-        const lines = attachments.map((file) => {
+        const lines = attachments.map((file, index) => {
             const note = notes.get(file);
-            const line = `- ${file.path} (${file.name}, ${file.mime || "unknown type"}, ${file.size} bytes)`;
+            const line = `- ${placed[index]} (${file.name}, ${file.mime || "unknown type"}, ${file.size} bytes)`;
 
             return note === undefined ? line : `${line} ${note}`;
         });
         // The heading whole, with files alone too: what reads the message splits it there.
-        const written =
-            lines.length === 0 ? text : `${text}${ATTACHMENTS_HEADING}${lines.join("\n")}`;
+        const runner = app.runnerOf(id);
+        const heading = attachmentsHeading(
+            runner === undefined || app.runners.system(runner) === undefined
+                ? undefined
+                : app.runners.name(runner),
+        );
+        const written = lines.length === 0 ? text : `${text}${heading}${lines.join("\n")}`;
         const body = this.messageText(
             user,
             via === undefined ? written : `[via ${via}] ${written}`,
@@ -1110,6 +1332,16 @@ export class Commands {
         const parts: (TextContent | ImageContent)[] = [];
         let total = 0;
 
+        // Its folder is on another computer: the files are read there. While it is offline, the message goes without
+        // them, and Pi reads what it names there with its tools once it is back.
+        const runner = app.runnerOf(id);
+
+        if (runner !== undefined) {
+            return app.runners.link(runner).online
+                ? this.#mentionedThere(id, user, text, images)
+                : parts;
+        }
+
         for (const mention of mentionedPaths(text).slice(0, MAX_MENTIONED)) {
             let file: string | undefined;
 
@@ -1142,30 +1374,182 @@ export class Commands {
                 }
 
                 const view = await viewFile(file);
+                const part =
+                    view.kind === "text"
+                        ? fileBlock(file, view, MAX_MENTIONED_TOTAL - total)
+                        : undefined;
 
-                if (view.kind !== "text" || total >= MAX_MENTIONED_TOTAL) {
-                    continue;
+                if (part !== undefined) {
+                    total += part.length;
+                    parts.push(part.part);
                 }
-
-                const room = Math.min(MAX_MENTIONED_FILE, MAX_MENTIONED_TOTAL - total);
-                const content = view.text.slice(0, room);
-
-                total += content.length;
-                const cut =
-                    view.truncated || view.text.length > room
-                        ? "\n… (the rest of the file is left out)"
-                        : "";
-
-                parts.push({
-                    type: "text",
-                    text: `${FILE_BLOCK}${file}">\n${content}${cut}\n</file>`,
-                });
             } catch (error) {
                 app.notice("warning", `Could not send ${mention.written}: ${describe(error)}`, id);
             }
         }
 
         return parts;
+    }
+
+    /**
+     * `#mentionedFiles` for a session on another computer: each file read there, as the person may read it there
+     * (`Workspace.remoteFile`), with the same limits. Every mention is looked up side by side, as each is a round trip.
+     * The computer offline: one warning, and the message goes without them.
+     */
+    async #mentionedThere(
+        id: ConversationId,
+        user: User,
+        text: string,
+        images: boolean,
+    ): Promise<(TextContent | ImageContent)[]> {
+        const app = this.#app;
+        let unreachable: unknown;
+
+        type Found =
+            | { mention: { written: string }; image: { bytes: Uint8Array; mime: string } }
+            | { mention: { written: string }; file: string; view: FileView };
+        const found = await Promise.all(
+            mentionedPaths(text)
+                .slice(0, MAX_MENTIONED)
+                .map(async (mention): Promise<Found | undefined> => {
+                    const mime = IMAGE_MIME[extname(mention.candidates[0]!).toLowerCase()];
+
+                    // Not sent to a model without images: not read either.
+                    if (mime !== undefined && !images) {
+                        return undefined;
+                    }
+
+                    for (const candidate of mention.candidates) {
+                        try {
+                            const { access, file } = await app.workspace.remoteFile(
+                                user,
+                                id,
+                                candidate,
+                            );
+
+                            if (mime !== undefined) {
+                                const peek = await access.peek(file, MAX_INLINE_IMAGE);
+
+                                if (peek.kind !== "file") {
+                                    continue;
+                                }
+
+                                return peek.size <= MAX_INLINE_IMAGE
+                                    ? { mention, image: { bytes: peek.bytes, mime } }
+                                    : undefined;
+                            }
+
+                            const view = await viewFile(file, access);
+
+                            if (view.kind !== "folder" && view.kind !== "other") {
+                                return { mention, file, view };
+                            }
+                        } catch (error) {
+                            // Not there, or not this person's to load; or the computer cannot be reached.
+                            if (
+                                error instanceof Unreachable ||
+                                (error instanceof HttpError && error.status === 409)
+                            ) {
+                                unreachable = error;
+
+                                return undefined;
+                            }
+                        }
+                    }
+
+                    return undefined;
+                }),
+        );
+
+        if (unreachable !== undefined) {
+            app.notice(
+                "warning",
+                `Could not send the files the message names: ${describe(unreachable)}`,
+                id,
+            );
+        }
+
+        const parts: (TextContent | ImageContent)[] = [];
+        let total = 0;
+
+        for (const each of found) {
+            if (each === undefined) {
+                continue;
+            }
+
+            try {
+                if ("image" in each) {
+                    parts.push((await modelImageOf(each.image.bytes, each.image.mime)).image);
+                    continue;
+                }
+
+                const part =
+                    each.view.kind === "text"
+                        ? fileBlock(each.file, each.view, MAX_MENTIONED_TOTAL - total)
+                        : undefined;
+
+                if (part !== undefined) {
+                    total += part.length;
+                    parts.push(part.part);
+                }
+            } catch (error) {
+                app.notice(
+                    "warning",
+                    `Could not send ${each.mention.written}: ${describe(error)}`,
+                    id,
+                );
+            }
+        }
+
+        return parts;
+    }
+
+    /**
+     * Where Pi finds the files a message brings: here, as uploaded. For a session on another computer, they go to its
+     * temporary folder (`<temp>/pi-pocket-uploads/<conversation>/`, with the same names, which `attachedFile` takes back
+     * to these), and archiving the session removes them. The message names those paths at once, also while the computer
+     * is offline: the copy runs when it is back, and the session's next turn waits for it (`app.uploadsCopied`). A file
+     * that could not be copied gets a warning.
+     */
+    #placeAttachments(id: ConversationId, attachments: readonly Attachment[]): string[] {
+        const app = this.#app;
+        const runner = app.runnerOf(id);
+
+        if (runner === undefined || attachments.length === 0) {
+            return attachments.map((file) => file.path);
+        }
+
+        const system = app.runners.system(runner);
+
+        // Not known before the computer first connected with a runner that tells its temporary folder: kept here.
+        if (system === undefined) {
+            app.notice(
+                "warning",
+                `${app.runners.name(runner)} has not said where its temporary folder is yet, so Pi cannot open the attached files there. Send them again once it is online.`,
+                id,
+            );
+
+            return attachments.map((file) => file.path);
+        }
+
+        const folder = uploadsFolder(system, id);
+
+        app.uploadsCopied(
+            id,
+            copyUploads(app.runners.env(runner, app.cwdOf(id)), folder, attachments).then(
+                (failed) => {
+                    if (failed.length > 0) {
+                        app.notice(
+                            "warning",
+                            `Could not copy ${failed.join(", ")} to ${app.runners.name(runner)}: Pi cannot open ${failed.length === 1 ? "it" : "them"} there.`,
+                            id,
+                        );
+                    }
+                },
+            ),
+        );
+
+        return attachments.map((file) => uploadedThere(folder, file.path));
     }
 
     /** A message to Pi as the model gets it: with more than one person on this server, it says who is talking. */
@@ -1629,7 +2013,19 @@ export class Commands {
             current?.thinkingLevel ??
             "off") as ModelThinkingLevel;
         const thinkingLevel = model === undefined ? wanted : clampThinkingLevel(model, wanted);
-        const cwd = request.cwd === undefined ? undefined : await app.resolveCwd(request.cwd);
+        const runner = app.runnerOf(id);
+        const cwd =
+            request.cwd === undefined
+                ? undefined
+                : runner === undefined
+                  ? await app.resolveCwd(request.cwd)
+                  : await app.runners.checkFolder(runner, request.cwd);
+
+        if (runner !== undefined && cwd !== undefined && cwd !== (current?.cwd ?? app.cwdOf(id))) {
+            await app.runners
+                .link(runner)
+                .confirm({ kind: "move", person: user.name, folder: cwd });
+        }
 
         const change = {
             ...(request.model === undefined
@@ -1662,6 +2058,7 @@ export class Commands {
                     meta.cwd = cwd;
                 }
             }, context);
+            void this.recordRepo(id, cwd);
         }
 
         if (ref !== undefined && request.pipPanel !== true) {
@@ -2056,20 +2453,35 @@ export class Commands {
         }
     }
 
+    /**
+     * Copy a session up to one of Pi's replies (`entryId`), or up to its latest. `place` says where the copy runs and
+     * with which model (`CopyPlaceRequest`); without it, as the session does.
+     */
     async fork(
         id: ConversationId,
         user: User,
-        request: { entryId?: unknown; worktree?: unknown },
+        request: { entryId?: unknown; worktree?: unknown; place?: unknown },
+        signal?: AbortSignal,
     ): Promise<{ id: ConversationId }> {
         this.#requireForkable(id, user);
+        const place = checkPlace(request.place);
+        const worktree = place?.worktree ?? request.worktree === true;
+        const agent = await this.#copyAgent(id, place);
 
         if (request.entryId === undefined) {
             return {
-                id: await this.#branch(id, user, {
-                    at: await this.#latestReply(id),
-                    label: "fork",
-                    worktree: request.worktree === true,
-                }),
+                id: await this.#branch(
+                    id,
+                    user,
+                    {
+                        at: await this.#latestReply(id),
+                        label: "fork",
+                        worktree,
+                        place,
+                        ...(agent === undefined ? {} : { agent }),
+                    },
+                    signal,
+                ),
             };
         }
 
@@ -2091,11 +2503,51 @@ export class Commands {
         }
 
         return {
-            id: await this.#branch(id, user, {
-                at: entryId,
-                label: "fork",
-                worktree: request.worktree === true,
-            }),
+            id: await this.#branch(
+                id,
+                user,
+                {
+                    at: entryId,
+                    label: "fork",
+                    worktree,
+                    place,
+                    ...(agent === undefined ? {} : { agent }),
+                },
+                signal,
+            ),
+        };
+    }
+
+    /** The model and thinking level a copy gets when its place names them; undefined: the session's. */
+    async #copyAgent(
+        id: ConversationId,
+        place: CopyPlaceRequest | undefined,
+    ): Promise<AgentChange | undefined> {
+        if (place?.model === undefined && place?.thinkingLevel === undefined) {
+            return undefined;
+        }
+
+        const source = await this.#app.agentState(id);
+        const ref = place.model ?? source?.model;
+        const model =
+            ref === undefined ? undefined : this.#app.models.getModel(ref.provider, ref.modelId);
+
+        if (place.model !== undefined && model === undefined) {
+            throw new HttpError(
+                400,
+                `Unknown model ${place.model.provider}/${place.model.modelId}`,
+            );
+        }
+
+        const wanted = (place.thinkingLevel ??
+            source?.thinkingLevel ??
+            "off") as ModelThinkingLevel;
+
+        return {
+            ...(place.model === undefined
+                ? {}
+                : { model: { provider: place.model.provider, modelId: place.model.modelId } }),
+            thinkingLevel: model === undefined ? wanted : clampThinkingLevel(model, wanted),
         };
     }
 
@@ -2106,16 +2558,32 @@ export class Commands {
     async resend(
         id: ConversationId,
         user: User,
-        request: { entryId?: unknown; text?: unknown; model?: unknown; worktree?: unknown },
+        request: {
+            entryId?: unknown;
+            text?: unknown;
+            model?: unknown;
+            worktree?: unknown;
+            place?: unknown;
+        },
+        signal?: AbortSignal,
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
 
         this.#requireForkable(id, user);
         const entryId = entryIdOf(request.entryId);
         const edited = optionalText(request.text, "text")?.trim();
-        const asked = request.model as { provider?: unknown; modelId?: unknown } | undefined;
+        const place = checkPlace(request.place);
 
-        checkModel(asked);
+        checkModel(request.model as { provider?: unknown; modelId?: unknown } | undefined);
+        const given = (place?.model ?? request.model) as
+            { provider: string; modelId: string } | undefined;
+        const current = (await app.agentState(id))?.model;
+        // The session's own model, named again, is no other model.
+        const asked =
+            given !== undefined &&
+            (given.provider !== current?.provider || given.modelId !== current?.modelId)
+                ? given
+                : undefined;
 
         const entry = await app.transcripts.visibleEntry(id, entryId);
 
@@ -2143,7 +2611,7 @@ export class Commands {
 
         const original = userContent(entry.model?.[0]);
         // Who sent it comes first, then the heading, whole or (from before 0.14.0) without its blank line.
-        const [written, files] = splitAttachments(original.text.replace(FROM_PREFIX, ""));
+        const [written, files, heading] = splitAttachments(original.text.replace(FROM_PREFIX, ""));
         // An edit that changes nothing is the same as sending the message again.
         const edit =
             edited !== undefined && edited !== written.trim()
@@ -2159,7 +2627,7 @@ export class Commands {
         const body = edit ?? written.trim();
         const text = this.messageText(
             user,
-            files === undefined ? body : `${body}${ATTACHMENTS_HEADING}${files}`,
+            files === undefined ? body : `${body}${heading ?? ATTACHMENTS_HEADING}${files}`,
         );
         const author =
             (await app.harness.snapshot(AuthorsDoc, id, context))?.entries[String(entryId)] ??
@@ -2180,17 +2648,23 @@ export class Commands {
             model: ref,
             thinkingLevel: clampThinkingLevel(
                 model,
-                (source?.thinkingLevel ?? "off") as ModelThinkingLevel,
+                (place?.thinkingLevel ?? source?.thinkingLevel ?? "off") as ModelThinkingLevel,
             ),
         };
         const label = edit !== undefined ? "edit" : asked !== undefined ? model.name : "retry";
-        const forked = await this.#branch(id, user, {
-            at: previous?.id as unknown as number | undefined,
-            label,
-            agent,
-            worktree: request.worktree === true,
-            resend,
-        });
+        const forked = await this.#branch(
+            id,
+            user,
+            {
+                at: previous?.id as unknown as number | undefined,
+                label,
+                agent,
+                worktree: place?.worktree ?? request.worktree === true,
+                place,
+                resend,
+            },
+            signal,
+        );
         const submission = await (
             await app.conversation(forked)
         ).submit(
@@ -2243,6 +2717,125 @@ export class Commands {
         return undefined;
     }
 
+    /** A computer and a folder on it, as people read them: "Macbook in ~/work/app", "This server in ~/pi-pocket". */
+    #where(runner: string | undefined, cwd: string): string {
+        if (runner === undefined) {
+            return `This server in ${homePath(cwd)}`;
+        }
+
+        const home = this.#app.runners.stored(runner)?.platform?.home;
+        const short =
+            home !== undefined &&
+            (cwd === home || cwd.startsWith(`${home}/`) || cwd.startsWith(`${home}\\`))
+                ? `~${cwd.slice(home.length)}`
+                : cwd;
+
+        return `${this.#app.runners.name(runner)} in ${short}`;
+    }
+
+    /**
+     * The repository folder `cwd` is a checkout of, on computer `runner` (undefined: this server), for `SessionMeta.repo`.
+     * Undefined when there is none, or the lookup failed or took too long (`repo.ts`): it never fails a session.
+     */
+    async repoOf(runner: string | undefined, cwd: string): Promise<string | undefined> {
+        try {
+            return runner === undefined
+                ? await localRepo(cwd)
+                : await remoteRepo(this.#app.runners.env(runner, cwd), cwd, context);
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
+     * Note session `id`'s repository (`SessionMeta.repo`) for its folder `cwd`, after it was made or moved: in the
+     * background, so nothing waits for git. A folder that changed again meanwhile keeps the newer answer.
+     */
+    recordRepo(id: ConversationId, cwd: string): Promise<void> {
+        const app = this.#app;
+        const runner = app.sessionMeta(id)?.runner;
+
+        return this.repoOf(runner, cwd)
+            .then((repo) =>
+                app.harness.commit(async (tx) => {
+                    const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+
+                    if (meta === undefined || meta.cwd !== cwd || meta.repo === repo) {
+                        return;
+                    }
+
+                    if (repo === undefined) {
+                        delete meta.repo;
+                    } else {
+                        meta.repo = repo;
+                    }
+                }, context),
+            )
+            .catch((error: unknown) => app.log(`repository of ${cwd}: ${describe(error)}`));
+    }
+
+    /**
+     * The folder the copy sheet suggests for a copy of session `id` on computer `runner` (null: this server): on the
+     * session's own computer, its folder; on another, the folder of the newest session there in the same repository,
+     * else of the newest one there in a folder of the same name, else home. Read from the session catalogue only.
+     */
+    copySuggestion(
+        id: ConversationId,
+        user: User,
+        runner: string | null,
+    ): { cwd: string; reason: "current" | "repository" | "name" | "home" } {
+        const app = this.#app;
+
+        this.#requireForkable(id, user);
+        const meta = app.sessionMeta(id)!;
+        const target = runner ?? undefined;
+
+        if (target !== undefined && app.runners.require(target).createdBy !== user.id) {
+            throw new HttpError(
+                403,
+                "Only the person who linked this computer can start sessions on it.",
+            );
+        }
+
+        if (target === meta.runner) {
+            return { cwd: app.cwdOf(id), reason: "current" };
+        }
+
+        const last = (path: string) => path.split(/[\\/]/).findLast((part) => part !== "") ?? "";
+        const name = last(app.cwdOf(id)).toLowerCase();
+        const there = Object.entries(app.sessionCatalogue())
+            .filter(
+                ([each, other]) =>
+                    other.runner === target &&
+                    other.pip === undefined &&
+                    each !== String(id) &&
+                    app.canSee(user, Number(each) as unknown as ConversationId),
+            )
+            .map(([, other]) => other)
+            .sort((a, b) => b.updatedAt - a.updatedAt);
+        const same =
+            meta.repo === undefined ? undefined : there.find((other) => other.repo === meta.repo);
+
+        if (same !== undefined) {
+            return { cwd: same.cwd, reason: "repository" };
+        }
+
+        const named =
+            name === "" ? undefined : there.find((other) => last(other.cwd).toLowerCase() === name);
+
+        if (named !== undefined) {
+            return { cwd: named.cwd, reason: "name" };
+        }
+
+        return {
+            cwd:
+                target === undefined
+                    ? homedir()
+                    : (app.runners.stored(target)?.platform?.home ?? "~"),
+            reason: "home",
+        };
+    }
+
     /** Forks are new sessions: who may start one may fork, from a session they can see. */
     #requireForkable(id: ConversationId, user: User): void {
         const app = this.#app;
@@ -2268,6 +2861,55 @@ export class Commands {
     }
 
     /**
+     * Where a copy of session `id` runs: on the computer and in the folder `place` names, else where the session runs.
+     * A copy is a new session there: on another computer, only the person who linked it may start one (also when the
+     * owner shares these sessions, `sharedRunnerSessions`), the folder must be there, and there is no worktree. A
+     * computer that is gone or offline fails with its name; the copy is never made here instead.
+     */
+    async #destination(
+        id: ConversationId,
+        user: User,
+        place: CopyPlaceRequest | undefined,
+        worktree: boolean,
+    ): Promise<Destination> {
+        const app = this.#app;
+        const meta = app.sessionMeta(id)!;
+        const own = { runner: meta.runner, cwd: (await app.agentState(id))?.cwd ?? meta.cwd };
+        const runner = place?.runner === undefined ? own.runner : (place.runner ?? undefined);
+
+        if (runner !== undefined) {
+            if (app.runners.stored(runner)?.createdBy !== user.id) {
+                throw new HttpError(
+                    403,
+                    app.runners.stored(runner) === undefined
+                        ? "That computer is not linked to this server."
+                        : "Only the person who linked this computer can start sessions on it, including forks.",
+                );
+            }
+
+            if (worktree) {
+                throw new HttpError(
+                    400,
+                    "Worktrees are not available for sessions on another computer yet.",
+                );
+            }
+        }
+
+        const asked = place?.cwd?.trim() || undefined;
+        const cwd =
+            runner === undefined
+                ? app.workspace.checkDirectory(
+                      asked ?? (own.runner === undefined ? own.cwd : app.defaultCwd),
+                  )
+                : asked === undefined && runner === own.runner
+                  ? own.cwd
+                  : await app.runners.checkFolder(runner, asked ?? "~");
+        const moved = runner !== own.runner || cwd !== own.cwd;
+
+        return { runner, cwd, worktree, ...(moved ? { from: own } : {}) };
+    }
+
+    /**
      * Start a session from this one's history through entry `at`, or from none of it, named after this one with
      * `label`; in a git worktree of its own when asked.
      */
@@ -2279,17 +2921,18 @@ export class Commands {
             label: string;
             agent?: AgentChange;
             worktree: boolean;
+            place?: CopyPlaceRequest | undefined;
             resend?: Resend;
         },
+        signal?: AbortSignal,
     ): Promise<ConversationId> {
-        const app = this.#app;
-        const meta = app.sessionMeta(id)!;
-        const source = await app.agentState(id);
+        const meta = this.#app.sessionMeta(id)!;
         const sourceTitle = meta.title ?? "New session";
         const title = `${sourceTitle} · ${branch.label}`.slice(0, MAX_TITLE);
+        const destination = await this.#destination(id, user, branch.place, branch.worktree);
 
-        return this.#inPlace(source?.cwd ?? meta.cwd, branch.worktree, title, (place) =>
-            this.#fork(id, user, { ...branch, title, sourceTitle, place }),
+        return this.#inPlace(destination.cwd, branch.worktree, title, (place) =>
+            this.#fork(id, user, { ...branch, title, sourceTitle, place, destination }, signal),
         );
     }
 
@@ -2306,17 +2949,36 @@ export class Commands {
             sourceTitle: string;
             agent?: AgentChange;
             place: Place;
+            destination: Destination;
             resend?: Resend;
         },
+        signal?: AbortSignal,
     ): Promise<ConversationId> {
         const app = this.#app;
         const source = await app.agentState(id);
-        const { at, title, place } = fork;
-        const agent: AgentChange = {
-            ...fork.agent,
-            ...(place.worktree === undefined ? {} : { cwd: place.cwd }),
-        };
+        const { at, title, place, destination } = fork;
+        // A copy runs on the computer it was sent to: one on another computer with the extensions that work there, one
+        // here with all of them, also when its session ran elsewhere (the inherited list goes). A fresh one copies no
+        // agent state.
+        const runner = destination.runner;
+        const fromRunner = app.sessionMeta(id)?.runner !== undefined;
+        // Always the folder it runs in now: a fork's agent state is the one at its entry (`AgentDoc` forks `asOf`), whose
+        // folder can be from before the session moved or was copied to another computer, and is no folder there.
+        const agent: AgentChange = { ...fork.agent, cwd: place.cwd };
+
+        // A fork is a new session there too: the computer's person allows it, as for a new one.
+        if (runner !== undefined) {
+            await app.runners
+                .link(runner)
+                .confirm({ kind: "fork", person: user.name, folder: place.cwd }, signal);
+        }
+
         const now = Date.now();
+        const from = destination.from;
+        const moved =
+            from === undefined
+                ? undefined
+                : `made this copy to run on ${this.#where(runner, place.cwd)}. Paths earlier in this conversation were on ${this.#where(from.runner, from.cwd)}`;
         // A new session rather than a fork gets plan mode and the notes by hand.
         const plan =
             at === undefined ? await app.harness.snapshot(PlanDoc, id, context) : undefined;
@@ -2333,8 +2995,33 @@ export class Commands {
                 updatedAt: now,
                 createdBy: user.id,
                 forkedFrom: { id: Number(id), ...(at === undefined ? {} : { entryId: at }) },
+                ...(runner === undefined ? {} : { runner }),
                 ...(place.worktree === undefined ? {} : { worktree: place.worktree }),
             };
+            const forkedAgent = await tx.doc(AgentDoc, forked);
+
+            if (runner !== undefined) {
+                forkedAgent.extensions = [...REMOTE_EXTENSIONS];
+            } else if (fromRunner) {
+                // Copied from a session on another computer: here it runs with everything again.
+                delete forkedAgent.extensions;
+            }
+
+            // Paths in the history it inherited are on the other computer, or in the other folder: Pi reads this with
+            // its next message, before the one a resend sends.
+            if (moved !== undefined && at !== undefined) {
+                await tx.appendEntry(forked, {
+                    kind: NOTE_ENTRY,
+                    data: { text: moved, by: user.id, name: user.name },
+                    model: [
+                        {
+                            role: "user",
+                            content: [{ type: "text", text: `[note] ${user.name} ${moved}` }],
+                            timestamp: now,
+                        },
+                    ],
+                });
+            }
 
             if (fork.resend !== undefined) {
                 await tx.createTask(ResendTask, fork.resend, {
@@ -2406,9 +3093,11 @@ export class Commands {
                       await app.conversation(id)
                   ).fork(at as unknown as EntryId, { ownership, agent, init }, context);
         const where =
-            place.worktree === undefined
-                ? ""
-                : ` into a worktree on ${place.worktree.branch}${place.skipped.length === 0 ? "" : ` (${place.skipped.length} big new files were not copied)`}`;
+            place.worktree !== undefined
+                ? ` into a worktree on ${place.worktree.branch}${place.skipped.length === 0 ? "" : ` (${place.skipped.length} big new files were not copied)`}`
+                : from !== undefined
+                  ? ` to run on ${this.#where(runner, place.cwd)}`
+                  : "";
 
         await app.collab.activity(
             forked.id,
@@ -2417,6 +3106,7 @@ export class Commands {
             false,
         );
         await app.collab.activity(id, user, `forked “${title}” from this session${where}`, false);
+        void this.recordRepo(forked.id, place.cwd);
 
         return forked.id;
     }

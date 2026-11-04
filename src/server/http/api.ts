@@ -5,7 +5,7 @@
 import { readdirSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import QRCode from "qrcode";
 import { MAX_PEEKS } from "../app.ts";
 import {
@@ -22,6 +22,8 @@ import {
 import type { User } from "../config.ts";
 import { MAX_AVATAR, readAvatar } from "../avatars.ts";
 import { HttpError } from "../errors.ts";
+import { isLocalRequest, withReveal } from "../local-browser.ts";
+import { machineRoots, parentFolder } from "../paths.ts";
 import { desktopTheme, wallpaperFile } from "../omarchy.ts";
 import { runningBoard, runningNow } from "../running.ts";
 import { serveImage } from "./assets.ts";
@@ -158,7 +160,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "me" && method === "GET") {
-            return json(response, 200, await app.hello(user));
+            return json(
+                response,
+                200,
+                withReveal(await app.hello(user), user, isLocalRequest(request)),
+            );
         }
 
         if (first === "me" && second === undefined && method === "POST") {
@@ -584,12 +590,75 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, await app.commands.continuePiSession(user, body.path));
         }
 
-        if (first === "sessions" && second === undefined && method === "POST") {
-            const body = await readJson<{ cwd?: string; title?: string; worktree?: unknown }>(
-                request,
-            );
+        // Other computers that run sessions' tools (`runners.ts`): the owner's alone.
+        if (first === "runners" && second === undefined && method === "GET") {
+            requireOwner(user);
 
-            return json(response, 200, await app.commands.createSession(user, body));
+            return json(response, 200, app.runners.list());
+        }
+
+        if (first === "runners" && second === "code" && method === "POST") {
+            requireOwner(user);
+
+            const body = await readJson<{ name?: unknown }>(request);
+
+            return json(
+                response,
+                200,
+                app.runners.makeCode(typeof body.name === "string" ? body.name : "", user.id),
+            );
+        }
+
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === undefined &&
+            method === "DELETE"
+        ) {
+            requireOwner(user);
+            app.runners.remove(second);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // The folders on another computer, for the folder picker of a new session there.
+        if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
+            requireOwner(user);
+
+            return json(response, 200, {
+                ...(await app.runners.folders(
+                    second,
+                    url.searchParams.get("path") ?? "~",
+                    url.searchParams.get("hidden") === "1",
+                )),
+                // The folders of this person's newest sessions on that computer.
+                recent: app.recentFolders(user, second),
+            });
+        }
+
+        if (first === "sessions" && second === undefined && method === "POST") {
+            const controller = new AbortController();
+
+            response.on("close", () => {
+                if (!response.writableEnded) {
+                    controller.abort();
+                }
+            });
+
+            const body = await readJson<{
+                cwd?: string;
+                title?: string;
+                worktree?: unknown;
+                runner?: unknown;
+            }>(request);
+
+            return json(
+                response,
+                200,
+                await app.commands.createSession(user, body, {
+                    signal: controller.signal,
+                }),
+            );
         }
 
         if (first === "sessions" && second !== undefined && method === "POST") {
@@ -668,17 +737,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             dirs.sort((a, b) => a.name.localeCompare(b.name));
-            // A workspace URI is not a folder the picker can open: its provider's module starts sessions there.
-            const local = app
-                .sessions(user)
-                .map((session) => session.cwd)
-                .filter((cwd) => app.workspaceScheme(cwd) === undefined);
-            const recent = [...new Set(local)].slice(0, 8);
+            // The folders of this person's newest sessions here: another computer's folders are not on this one.
+            const recent = app.recentFolders(user, undefined);
 
             return json(response, 200, {
                 path,
-                parent: dirname(path) === path ? null : dirname(path),
+                parent: parentFolder(path),
                 home: homedir(),
+                // This machine's top folders: `/`, or each Windows drive, as places to start from.
+                roots: await machineRoots(),
                 dirs: dirs.slice(0, 1000),
                 recent,
             });
@@ -698,6 +765,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         if (first === "settings" && method === "POST") {
             const body = await readJson<{
                 approvalRule?: unknown;
+                sharedRunnerSessions?: unknown;
                 defaultModel?: unknown;
                 pipCompactAt?: unknown;
                 subagentModels?: unknown;
@@ -708,6 +776,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             if (
                 [
                     body.approvalRule,
+                    body.sharedRunnerSessions,
                     body.defaultModel,
                     body.pipCompactAt,
                     body.subagentModels,
@@ -733,6 +802,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             if (body.approvalRule !== undefined) {
                 await app.setApprovalRule(user, body.approvalRule);
+            }
+
+            // Sessions on linked computers shared like any other, or their creators' alone: the owner's.
+            if (body.sharedRunnerSessions !== undefined) {
+                await app.setSharedRunnerSessions(user, body.sharedRunnerSessions);
             }
 
             // Null clears it: new sessions start with the last model picked again.
