@@ -54,6 +54,7 @@ import { REMOTE_EXTENSIONS } from "./runners.ts";
 import {
     ATTACHMENTS_HEADING,
     CONTEXT_BLOCK,
+    attachmentsHeading,
     FILE_BLOCK,
     FROM_PREFIX,
     NOTE_ENTRY,
@@ -1092,8 +1093,13 @@ export class Commands {
             return note === undefined ? line : `${line} ${note}`;
         });
         // The heading whole, with files alone too: what reads the message splits it there.
-        const written =
-            lines.length === 0 ? text : `${text}${ATTACHMENTS_HEADING}${lines.join("\n")}`;
+        const runner = app.runnerOf(id);
+        const heading = attachmentsHeading(
+            runner === undefined || app.runners.system(runner) === undefined
+                ? undefined
+                : app.runners.name(runner),
+        );
+        const written = lines.length === 0 ? text : `${text}${heading}${lines.join("\n")}`;
         const body = this.messageText(
             user,
             via === undefined ? written : `[via ${via}] ${written}`,
@@ -2686,7 +2692,7 @@ export class Commands {
 
         const original = userContent(entry.model?.[0]);
         // Who sent it comes first, then the heading, whole or (from before 0.14.0) without its blank line.
-        const [written, files] = splitAttachments(original.text.replace(FROM_PREFIX, ""));
+        const [written, files, heading] = splitAttachments(original.text.replace(FROM_PREFIX, ""));
         // An edit that changes nothing is the same as sending the message again.
         const edit =
             edited !== undefined && edited !== written.trim()
@@ -2702,7 +2708,7 @@ export class Commands {
         const body = edit ?? written.trim();
         const text = this.messageText(
             user,
-            files === undefined ? body : `${body}${ATTACHMENTS_HEADING}${files}`,
+            files === undefined ? body : `${body}${heading ?? ATTACHMENTS_HEADING}${files}`,
         );
         const author =
             (await app.harness.snapshot(AuthorsDoc, id, context))?.entries[String(entryId)] ??

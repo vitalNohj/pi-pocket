@@ -83,7 +83,11 @@ export function pathsFor(os: string | undefined): PathKit {
 /** For tests: whether a scan may use one shell command, or only folder listings. */
 export const scanSettings = { shell: true };
 
-const scans = new Map<string, { value?: FolderScan; running?: Promise<FolderScan> }>();
+/** Each folder's last scan, the one being read, and how often it was forgotten (a scan that began before is stale). */
+const scans = new Map<
+    string,
+    { value?: FolderScan; running?: Promise<FolderScan>; forgotten?: number }
+>();
 
 const keyOf = (env: RemoteEnv, cwd: string) => `${env.id}\0${cwd}`;
 
@@ -113,6 +117,29 @@ export function knownScan(env: RemoteEnv, cwd: string): FolderScan | undefined {
 }
 
 /**
+ * Forget what was read of the folders on the computer of `env` that a file at `path` there is context or a skill for:
+ * the next turn reads them again. A context file or `SKILL.md` that Pi writes counts from its next request, not 30
+ * seconds later (a subagent started at once must see it).
+ */
+export function changedThere(env: RemoteEnv, path: string): void {
+    const name = path.split(/[\\/]/).pop() ?? "";
+
+    if (!CANDIDATES.includes(name) && name !== "SKILL.md") {
+        return;
+    }
+
+    const prefix = `${env.id}\0`;
+
+    for (const [key, entry] of scans) {
+        if (key.startsWith(prefix)) {
+            entry.value = undefined;
+            entry.running = undefined;
+            entry.forgotten = (entry.forgotten ?? 0) + 1;
+        }
+    }
+}
+
+/**
  * The folder read again. A computer that is offline is waited for (`runners.ts`): what calls this runs in a turn, which
  * starts only when the computer is back. Undefined when the reading fails.
  */
@@ -132,15 +159,21 @@ function refresh(env: RemoteEnv, cwd: string): Promise<FolderScan> {
         return entry.running;
     }
 
+    const forgotten = entry.forgotten;
     const running = readFolder(env, cwd).finally(() => {
-        entry.running = undefined;
+        if (entry.running === running) {
+            entry.running = undefined;
+        }
     });
 
     entry.running = running;
     scans.set(key, entry);
     running.then(
         (value) => {
-            entry.value = value;
+            // Read before a file there changed (`changedThere`): it may miss it, so it is not kept.
+            if (entry.forgotten === forgotten) {
+                entry.value = value;
+            }
         },
         () => {},
     );

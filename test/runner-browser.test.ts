@@ -289,6 +289,16 @@ describe("the browser of a session on another computer", () => {
         const again = await download(id, { action: "navigate", url: `${page()}/report.bin` });
 
         assert.ok(again.includes(`Downloaded ${join(folder, "report (2).bin")} (68 KB).`), again);
+
+        // Waiting after the call that reported it names that download, not "none".
+        const late = await browse(id, { action: "wait", download: true, timeoutMs: 300 });
+
+        assert.ok(
+            late.includes(
+                `The last one, already reported by the call that started it: ${join(folder, "report (2).bin")} (68 KB).`,
+            ),
+            late,
+        );
     });
 
     it("downloads to the folder the computer's runner settings name", real, async () => {
