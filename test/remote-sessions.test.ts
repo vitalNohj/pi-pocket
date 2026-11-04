@@ -172,6 +172,8 @@ describe("a session on another computer", () => {
         });
 
         id = created.id;
+        // `subagent` waits for tool search. The scripted model calls it directly, so load it as a person would.
+        await loadTools(app, created.id, "subagent");
         assert.equal(app.runnerOf(created.id), runnerId);
         assert.equal(app.sessionMeta(created.id)?.runner, runnerId);
         assert.match(app.sessionMeta(created.id)?.title ?? "", /on Laptop$/);
@@ -212,9 +214,9 @@ describe("a session on another computer", () => {
     });
 
     it("offers only the tools that work there", async () => {
-        const tools = (await (await app.conversation(id as never)).agent(context)).tools.map(
-            (tool) => tool.name,
-        );
+        const agent = await (await app.conversation(id as never)).agent(context);
+        // `subagent` waits for tool search, so it is offered only after it is loaded.
+        const tools = [...agent.tools, ...agent.deferred].map((tool) => tool.name);
 
         for (const name of [
             "read",
@@ -771,13 +773,26 @@ describe("a session on another computer", () => {
             });
 
             await (await app.harness.submission(submissionId, context))!.wait(context);
+            // A linked session's report comes back by itself and is the owner's. Wait for it, so the co-owner's
+            // message is what Pi works on when the next start is refused.
+            await until(() => !app.isBusy(id as never), "the co-owner's message to finish");
             const before = app.sessions(owner(app)).length;
+            const coowner = new ExtensionRequest(app, other.id, "owner", id as never);
 
+            coowner.bindSource((await app.agentState(id as never))!);
             asked.length = 0;
-            await assert.rejects(
-                app.linkedSessions.start(id as never, { message: "hello" }, crypto.randomUUID()),
-                /Only the person who linked this computer can start sessions on it/,
-            );
+
+            try {
+                await assert.rejects(
+                    app.linkedSessions
+                        .forRequest(id as never, coowner)
+                        .start({ message: "hello" }, crypto.randomUUID()),
+                    /Only the person who linked this computer can start sessions on it/,
+                );
+            } finally {
+                coowner.close();
+            }
+
             assert.equal(asked.length, 0, "a non-linker cannot ask the computer");
             assert.equal(app.sessions(owner(app)).length, before);
         } finally {

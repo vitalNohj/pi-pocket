@@ -285,7 +285,7 @@ test(
         return JSON.stringify({ text: chosen.textContent, title: chosen.title });
     `);
 
-        assert.equal(chosen.text.trim(), "0 allowed");
+        assert.equal(chosen.text.trim(), "0 for subagents");
         assert.match(chosen.title, /None allowed/);
 
         await page.type({ selector: 'input[placeholder="Find a model"]' }, "Fixture model 17");

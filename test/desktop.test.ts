@@ -37,7 +37,7 @@ after(async () => {
 /** A desktop app's tab: a tab whose connection said `host=notify`. */
 function desktopTab(id: ConversationId | undefined) {
     const tab = fakeTab(id, owner(app));
-    const client: Client = { ...tab.client, desktop: true, embedder: "desktop-notify" };
+    const client: Client = { ...tab.client, embedder: "desktop-notify" };
     const sent = () =>
         tab.events
             .filter((each) => each.event === "desktop-notify")
