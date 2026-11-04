@@ -21001,6 +21001,8 @@ pre.gallery-code {
     background: var(--accent-soft, var(--card));
     color: var(--accent);
     font: 12px var(--mono);
+}
+
 /* Computers (`sheets/computers.js`): other computers that run sessions' tools. Rows are People's (`.person-row`). */
 .runner-dot {
     width: 0.6rem;
