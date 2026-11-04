@@ -4,7 +4,7 @@
  * pi-env daemon on this machine, with its own home folder, so nothing comes from the server's.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,10 +14,12 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
     fauxAssistantMessage,
     fauxText,
+    fauxToolCall,
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
 import { Runner, type RunnerOptions } from "../src/runner/runner.ts";
 import { attachedFile } from "../src/server/commands.ts";
+import { attachmentsHeading, splitAttachments } from "../src/server/entry-format.ts";
 import { readFolder, savedTrust, scanSettings, TRUST_FILE } from "../src/server/remote-context.ts";
 import {
     type App,
@@ -52,6 +54,26 @@ const route: FauxResponseStep = (context) => {
             .filter((message) => message.role === "system")
             .map((message) => message.sections ?? {}),
     ) as Record<string, string>;
+
+    // "write PATH: TEXT" writes it with Pi's write tool, on the computer the session runs on.
+    const last = context.messages.at(-1) as { role: string; content: unknown };
+    const asked =
+        last.role === "user"
+            ? /write (\S+): (.+)$/.exec(
+                  typeof last.content === "string"
+                      ? last.content
+                      : (last.content as { type: string; text?: string }[])
+                            .map((part) => part.text ?? "")
+                            .join(""),
+              )
+            : null;
+
+    if (asked !== null) {
+        return fauxAssistantMessage(
+            [fauxToolCall("write", { path: asked[1]!, content: `${asked[2]}\n` })],
+            { stopReason: "toolUse" },
+        );
+    }
 
     return fauxAssistantMessage([fauxText("ok")]);
 };
@@ -232,6 +254,28 @@ describe("a session on another computer", () => {
         }
     });
 
+    it("reads a context file Pi writes there at the next request, not 30 seconds later", async () => {
+        await say(app, id as never, "hello");
+        assert.doesNotMatch(sections.project_context ?? "", /Written by Pi just now/);
+
+        // A turn that writes AGENTS.md: the next request has it, though the last reading is not 30 s old.
+        const sub = join(folder, "AGENTS.md");
+        const before = existsSync(sub) ? readFileSync(sub, "utf8") : undefined;
+
+        try {
+            await say(app, id as never, `write ${sub}: Written by Pi just now.`);
+            await say(app, id as never, "hello again");
+
+            assert.match(sections.project_context ?? "", /Written by Pi just now/);
+        } finally {
+            if (before === undefined) {
+                rmSync(sub, { force: true });
+            } else {
+                writeFileSync(sub, before);
+            }
+        }
+    });
+
     it("copies attached files there and lists their paths there", async () => {
         const uploads = app.workspace.uploadDirectory(id as never);
         const stored = join(uploads, "abc-12345678-plan.txt");
@@ -246,6 +290,14 @@ describe("a session on another computer", () => {
 
         assert.equal(readFileSync(copy, "utf8"), "the plan\n");
         assert.ok(sent.includes(`- ${copy} (plan.txt, text/plain, 9 bytes)`), sent);
+        // The files are on that computer, and the message says so.
+        assert.ok(sent.includes("Attached files (copied to Laptop):"), sent);
+        assert.doesNotMatch(sent, /saved on the server/);
+        assert.deepEqual(splitAttachments(`read the plan${attachmentsHeading("Laptop")}- x`), [
+            "read the plan",
+            "- x",
+            attachmentsHeading("Laptop"),
+        ]);
         assert.doesNotMatch(sent, new RegExp(uploads.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
         // Taking the message back finds the copy here again.
