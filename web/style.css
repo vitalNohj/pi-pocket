@@ -18655,45 +18655,263 @@ pre.gallery-code {
     overflow: hidden;
 }
 
-/* Keep warm: settings in one column, with Advanced models grouped by provider. */
+/* Keep warm: three tabs (When, Limits, Models) over one panel each; the sheet keeps one height as tabs change. */
 .keep-warm-sheet p {
     margin: 0;
+}
+
+.sheet.keep-warm-sheet {
+    height: min(86dvh, 820px);
+}
+
+/* The tabs stay at the top of the sheet's body as it scrolls. */
+.keep-warm-tabs-bar {
+    position: sticky;
+    /* Sticky insets count from inside the body's padding: pull it up to the body's top edge. */
+    top: calc(-16px * var(--space-y));
+    z-index: 1;
+    margin: calc(-16px * var(--space-y)) calc(-20px * var(--space-x)) calc(-4px * var(--space-y));
+    padding: calc(10px * var(--space-y)) calc(16px * var(--space-x)) calc(4px * var(--space-y));
+    background: var(--panel);
+}
+
+.keep-warm-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px;
+    padding: 3px;
+    border-radius: var(--r-control);
+    background: var(--card);
+}
+
+/* A tab: its name, and the value it holds under it (beside it on wide screens). */
+.keep-warm-tabs button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 44px;
+    padding: 3px 4px;
+    border-radius: var(--r-seg);
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.25;
+    transition:
+        background-color var(--t-hover) var(--ease-out),
+        color var(--t-hover) var(--ease-out);
+}
+
+.keep-warm-tab-value {
+    max-width: 100%;
+    overflow: hidden;
+    color: var(--faint);
+    font-size: 11.5px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.keep-warm-tabs button.on {
+    background: var(--raised);
+    color: var(--text);
+    box-shadow: 0 1px 2px color-mix(in srgb, black 35%, transparent);
+}
+
+.keep-warm-tabs button.on .keep-warm-tab-value {
+    color: var(--muted);
+}
+
+@media (hover: hover) {
+    .keep-warm-tabs button:not(.on):hover {
+        background: var(--hover);
+        color: var(--text);
+    }
+}
+
+@media (min-width: 700px) {
+    .keep-warm-tabs button {
+        flex-direction: row;
+        gap: 8px;
+        min-height: 36px;
+    }
 }
 
 .keep-warm-settings {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 14px;
     min-width: 0;
+}
+
+.keep-warm-settings[hidden] {
+    display: none;
 }
 
 .keep-warm-now {
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    color: var(--muted);
+}
+
+.keep-warm-when,
+.keep-warm-limits,
+.keep-warm-models-tab {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+}
+
+.keep-warm-about {
+    color: var(--body);
+    line-height: 1.5;
+}
+
+.keep-warm-times {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.keep-warm-times > .group-title,
+.keep-warm-limits .group-title,
+.keep-warm-examples > .group-title {
+    margin-top: 0;
+}
+
+/* A time: a radio dot, its name, and what it would cost for the example model. */
+.keep-warm-time {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0 10px;
+    width: 100%;
+    min-height: 46px;
+    padding: 6px 12px;
+    border-radius: 0;
+    background: none;
+    color: var(--text);
+    font-size: 13.5px;
+    text-align: left;
+    transition: background-color var(--t-hover) var(--ease-out);
+}
+
+.keep-warm-dot {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border: 1.5px solid var(--hair-2);
+    border-radius: var(--r-pill);
+}
+
+.keep-warm-time.on .keep-warm-dot {
+    border-color: var(--accent);
+}
+
+.keep-warm-time.on .keep-warm-dot::after {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: var(--r-pill);
+    background: var(--accent);
+}
+
+.keep-warm-time-estimate {
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.keep-warm-time.on,
+.keep-warm-chosen {
+    background: var(--accent-soft);
+}
+
+.keep-warm-time.on .keep-warm-time-estimate {
+    color: var(--text);
+}
+
+@media (hover: hover) {
+    .keep-warm-time:not(.on):hover {
+        background: var(--hover);
+    }
+}
+
+/* The chosen time's full estimate, under its row (no rule between them). */
+.sheet-list > .keep-warm-chosen {
+    border-top: 0;
+}
+
+.keep-warm-chosen {
+    padding: 0 12px 10px 40px;
+}
+
+.keep-warm-chosen .keep-warm-estimate {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    font-size: 12.5px;
+    line-height: 1.5;
+}
+
+/* A setting: its name and note on the left, its control on the right. */
+.keep-warm-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 52px;
+    padding: 8px 12px 8px 14px;
+}
+
+.keep-warm-row-label {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    color: var(--text);
+    font-size: 13.5px;
+}
+
+.keep-warm-row-label .small {
+    line-height: 1.4;
+}
+
+.keep-warm-row > .segmented {
+    flex: none;
+    align-self: center;
+}
+
+/* Wide screens: each session's limits beside the timing. */
+@media (min-width: 700px) {
+    .keep-warm-limits {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        align-items: start;
+        gap: 20px;
+    }
 }
 
 .keep-warm-group {
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-    padding-top: 10px;
+    padding-top: 14px;
     border-top: 1px solid var(--line);
 }
 
-/* The caps and the refresh share: two to a row. */
-.keep-warm-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px 14px;
-}
-
-.keep-warm-field {
+.keep-warm-examples {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    min-width: 0;
+    gap: 6px;
 }
 
 .keep-warm-input {
@@ -18701,6 +18919,7 @@ pre.gallery-code {
     align-items: center;
     gap: 0.35rem;
     flex: none;
+    color: var(--text);
     white-space: nowrap;
 }
 
@@ -18756,6 +18975,12 @@ pre.gallery-code {
 
 .keep-warm-models .search {
     margin: 0;
+}
+
+@media (pointer: coarse) {
+    .keep-warm-models .search {
+        min-height: 44px;
+    }
 }
 
 .keep-warm-model-list {
@@ -18846,42 +19071,6 @@ pre.gallery-code {
     .sheet.keep-warm-sheet {
         max-width: 760px;
     }
-}
-
-/* Advanced: a quiet row that opens in place, its chevron turned down when open. */
-.keep-warm-disclosure {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    width: 100%;
-    min-height: 44px;
-    padding: 0;
-    border: 0;
-    border-top: 1px solid var(--line);
-    background: none;
-    color: var(--text);
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-}
-
-.keep-warm-disclosure > .muted {
-    flex: 1;
-    min-width: 0;
-}
-
-.keep-warm-disclosure svg {
-    transition: transform 0.15s;
-}
-
-.keep-warm-disclosure[aria-expanded="true"] svg {
-    transform: rotate(90deg);
-}
-
-.keep-warm-advanced {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
 }
 
 /* A provider's models stay folded until opened (or a search finds them). */
