@@ -102,8 +102,8 @@ export type IdleStore = {
     delete: (key: string) => void;
     load: () => Promise<IdleRecord[]>;
     /** Completed spend of each session's idle stretch. Reservations are not saved. */
-    saveBudgets?: (budgets: Record<string, number>) => void;
-    loadBudgets?: () => Promise<Record<string, number>>;
+    saveBudgets: (budgets: Record<string, number>) => void;
+    loadBudgets: () => Promise<Record<string, number>>;
     /** Wait for the writes on their way. */
     flush: () => Promise<void>;
 };
@@ -115,10 +115,10 @@ export function idleFiles(
     now: () => number = Date.now,
 ): IdleStore {
     let line = Promise.resolve();
-    const name = idleFileName;
     const budgetsFile = join(folder, "budgets.json");
 
     const write = async (file: string, text: string) => {
+        await mkdir(folder, { recursive: true, mode: 0o700 });
         await writeFile(`${file}.tmp`, text, { mode: 0o600 });
         await rename(`${file}.tmp`, file);
     };
@@ -132,11 +132,9 @@ export function idleFiles(
     return {
         save: (record, withContext) => {
             const { messages, ...state } = record;
-            const base = join(folder, name(record.key));
+            const base = join(folder, idleFileName(record.key));
 
             queue(async () => {
-                await mkdir(folder, { recursive: true, mode: 0o700 });
-
                 if (withContext) {
                     await write(`${base}.context.json`, JSON.stringify(messages));
                 }
@@ -145,7 +143,7 @@ export function idleFiles(
             });
         },
         delete: (key) => {
-            const base = join(folder, name(key));
+            const base = join(folder, idleFileName(key));
 
             queue(async () => {
                 await rm(`${base}.json`, { force: true });
@@ -208,7 +206,6 @@ export function idleFiles(
             const text = JSON.stringify(budgets);
 
             queue(async () => {
-                await mkdir(folder, { recursive: true, mode: 0o700 });
                 await write(budgetsFile, text);
             });
         },

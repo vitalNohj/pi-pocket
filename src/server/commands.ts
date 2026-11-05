@@ -68,6 +68,7 @@ import { Unreachable } from "./folder-access.ts";
 import { clearUploads, copyUploads, uploadedThere, uploadsFolder } from "./remote-context.ts";
 import { type FileView, mentionedPaths, viewFile } from "./files.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./models.ts";
+import { keepWarmLabel } from "./keep-warm.ts";
 import { writePiSession } from "./pi-sessions.ts";
 import { snippet } from "./projection.ts";
 import { globalModelSettings, projectModelDefault } from "./project-model.ts";
@@ -878,7 +879,7 @@ export class Commands {
     async updateSession(
         id: ConversationId,
         user: User,
-        patch: { title?: string; archived?: boolean },
+        patch: { title?: string; archived?: boolean; keepWarm?: unknown },
     ): Promise<{ repeating: number }> {
         const app = this.#app;
 
@@ -891,6 +892,7 @@ export class Commands {
         }
 
         const before = app.sessionMeta(id);
+        let warmText: string | undefined;
 
         await app.harness.commit(async (tx) => {
             const sessions = await tx.doc(SessionsDoc);
@@ -898,6 +900,21 @@ export class Commands {
 
             if (meta === undefined) {
                 throw new HttpError(404, "Not a session");
+            }
+
+            // Check against this commit's choice, before writing any other field. A rejected choice changes nothing.
+            if (patch.keepWarm !== undefined) {
+                const current = meta.keepWarm;
+
+                app.keepWarm.applyChoice(user, id, patch.keepWarm, meta);
+                warmText =
+                    meta.keepWarm === current
+                        ? undefined
+                        : `set keep warm to ${
+                              patch.keepWarm === "default"
+                                  ? `the default (${keepWarmLabel(app.config.keepWarm.hours)})`
+                                  : keepWarmLabel(meta.keepWarm!)
+                          }`;
             }
 
             // A rename moves the session up the list. Archiving does not: brought back, or undone, it returns to where it was.
@@ -911,6 +928,11 @@ export class Commands {
             }
         }, context);
         const title = patch.title === undefined ? undefined : oneLine(patch.title);
+
+        if (warmText !== undefined) {
+            app.cacheKeeper.reconsider(new Set(app.conversationsOf(id)));
+            await app.collab.activity(id, user, warmText);
+        }
 
         if (title !== undefined && title !== "" && title !== before?.title) {
             await app.collab.activity(id, user, `renamed the session to “${title}”`);
