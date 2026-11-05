@@ -365,6 +365,21 @@ describe("session permission on the runner", () => {
             const theirs = await second.readTextFile(made.value, context);
 
             assert.equal(theirs.ok, false);
+
+            // Pi's context file in a folder above, and a skill in the home folder: read, never written.
+            const above = join(work, "..", "AGENTS.md");
+            const skill = join(homedir(), ".agents", "skills", "pi-pocket-test-none", "SKILL.md");
+
+            writeFileSync(above, "Context above");
+            assert.equal((await env.readTextFile(above, context)).ok, true);
+            assert.equal((await env.writeFile(above, "changed", context)).ok, false);
+            assert.doesNotMatch(
+                ((await env.readTextFile(skill, context)) as { error?: Error }).error?.message ??
+                    "",
+                /outside the session's approved folder/,
+            );
+            assert.equal((await env.writeFile(skill, "changed", context)).ok, false);
+            assert.equal(readFileSync(above, "utf8"), "Context above");
         } finally {
             await computer.runner.stop();
             await close(setup);

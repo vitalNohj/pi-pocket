@@ -231,7 +231,8 @@ describe("a session on another computer", () => {
     });
 
     it("finds the same with folder listings as with one shell command", async () => {
-        const env = app.runners.env(runnerId, folder);
+        // The session's own environment: its runner refuses a read that names no approved session.
+        const env = app.runners.env(runnerId, folder, app.runnerScope(id as never));
         const shell = await readFolder(env, folder);
 
         scanSettings.shell = false;
