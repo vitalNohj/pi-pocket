@@ -217,24 +217,17 @@ describe("a session on another computer", () => {
             (tool) => tool.name,
         );
 
-        for (const name of [
-            "read",
-            "write",
-            "edit",
-            "bash",
-            "subagent",
-            "team",
-            "codemode",
-            "memory",
-        ]) {
+        for (const name of ["read", "write", "edit", "bash", "team", "codemode", "memory"]) {
             assert.ok(tools.includes(name), `${name} is offered`);
         }
 
-        // The browser too, loaded when Pi asks for it: its pages load through that computer (`browser/proxy.ts`).
+        // Subagents and the browser too, loaded when Pi asks for them (tool search): the browser's pages load through
+        // that computer (`browser/proxy.ts`).
         const deferred = (await (await app.conversation(id as never)).agent(context)).deferred.map(
             (tool) => tool.name,
         );
 
+        assert.ok(deferred.includes("subagent"), "subagent waits to be loaded");
         assert.ok(deferred.includes("browser"), "browser waits to be loaded");
 
         for (const name of ["background", "artifact", "design_preview"]) {
@@ -450,6 +443,8 @@ describe("a session on another computer", () => {
     });
 
     it("spawns a subagent with only remote extensions and runs its tools on the computer", async () => {
+        // It waits for tool search: the scripted Pi calls it at once, as if it had loaded it.
+        await loadTools(app, id as never, "subagent");
         await say(app, id as never, "spawn runner subagent");
         const spawned = (await app.harness.snapshot(SubagentsDoc, id as never, context))?.agents[
             "remote-probe"
@@ -651,25 +646,32 @@ describe("a session on another computer", () => {
 
         await app.setSharedRunnerSessions(owner(app), true);
 
+        // A session of its own, where the co-owner writes last: the linked session above answers its own session by
+        // itself (since 0.29.0), which would make the owner its last writer again.
+        const shared = await app.commands.createSession(owner(app), {
+            cwd: there,
+            runner: runnerId,
+        });
+
         try {
-            const { submissionId } = await app.commands.submit(id as never, other, {
+            const { submissionId } = await app.commands.submit(shared.id, other, {
                 text: "hello from a co-owner",
                 requestId: crypto.randomUUID(),
             });
 
             await (await app.harness.submission(submissionId, context))!.wait(context);
+            assert.equal(app.attribution.requesterOf(shared.id), other.id);
             const before = app.sessions(owner(app)).length;
 
             asked.length = 0;
             await assert.rejects(
-                app.linkedSessions.start(id as never, { message: "hello" }, crypto.randomUUID()),
+                app.linkedSessions.start(shared.id, { message: "hello" }, crypto.randomUUID()),
                 /Only the person who linked this computer can start sessions on it/,
             );
             assert.equal(asked.length, 0, "a non-linker cannot ask the computer");
             assert.equal(app.sessions(owner(app)).length, before);
         } finally {
             await app.setSharedRunnerSessions(owner(app), false);
-            await say(app, id as never, "hello from the linker");
         }
     });
 
