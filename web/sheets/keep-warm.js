@@ -527,10 +527,13 @@ export function KeepWarmSheet() {
             cache, until you have paid what you would have paid anyway (Break-even).
         </p>
         <p>As a rule, keeping a session warm for 30 minutes to 3 hours saves money when you step away.</p>
+        <p>
+            Recommended: keep it on globally for 30 minutes for all sessions, or off globally and turn it on for one
+            session at a time in the session menu.
+        </p>
     </div>`;
 
-    // Made anew for each place it shows (When on wide screens, and Models).
-    const examples = () => html`<section class="keep-warm-examples">
+    const examples = html`<section class="keep-warm-examples">
         <table class="keep-warm-stops">
             <thead>
                 <tr>
@@ -566,16 +569,16 @@ export function KeepWarmSheet() {
         </p>
     </section>`;
 
-    const like = () => html`<p class="keep-warm-like faint small">
+    const like = html`<p class="faint small">
         Keep warm works like the pi-keepwarm extension for Pi: it sends the last request again, with the
         smallest reply, before the cache expires.
     </p>`;
 
-    // Phones: what keep warm does, then the times. Wide sheets: the times on the left; on the right what it does,
-    // the examples, and where it comes from.
+    // Phones: what keep warm does, the times, the examples, and where it comes from. Wide sheets: the times on the
+    // left; on the right what it does, the examples, and where it comes from.
     const when = html`<div class="keep-warm-when">
         ${times}
-        <div class="keep-warm-when-side">${about}${examples()}${like()}</div>
+        <div class="keep-warm-when-side">${about}${examples}${like}</div>
     </div>`;
 
     // Phones: one column. Wide sheets: the session's caps on the left, the timing on the right.
@@ -642,14 +645,11 @@ export function KeepWarmSheet() {
         </div>
     </div>`;
 
-    // Phones: the examples, the models, then where it comes from. Wide sheets: the models, then the examples.
-    const modelsTab = html`<div class="keep-warm-models-tab">
-        ${examples()}
-        <${KeepWarmModels} models=${models} settings=${settings} onSet=${setModel} />
-        ${like()}
-    </div>`;
-
-    const panels = { when, limits, models: modelsTab };
+    const panels = {
+        when,
+        limits,
+        models: html`<${KeepWarmModels} models=${models} settings=${settings} onSet=${setModel} />`,
+    };
 
     return html`<${Sheet} title="Keep warm" onClose=${closeSheet} className="keep-warm-sheet">
         ${tabs}

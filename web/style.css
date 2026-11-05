@@ -18657,16 +18657,17 @@ pre.gallery-code {
 
 /*
  * Keep warm: three tabs (When, Limits, Models) above one scrolling panel each. The sheet is a container: at 700px and
- * wider (the 760px sheet of wide screens) When and Limits take two columns, and Models puts the models first.
+ * wider (the 760px sheet of wide screens) When and Limits take two columns.
  */
 .sheet.keep-warm-sheet {
     container: keep-warm / inline-size;
-    height: 86dvh;
+    height: 88dvh;
 }
 
 @media (min-width: 1000px) {
     .sheet.keep-warm-sheet {
         max-width: 760px;
+        height: 86dvh;
     }
 }
 
@@ -18781,10 +18782,9 @@ pre.gallery-code {
     display: none;
 }
 
-/* When: on a phone, what keep warm does and then the times; the examples wait in Models. */
+/* When: on a phone, what keep warm does, the times, the examples, and where it comes from. */
 .keep-warm-when,
-.keep-warm-limits,
-.keep-warm-models-tab {
+.keep-warm-limits {
     display: flex;
     flex-direction: column;
     gap: 14px;
@@ -18808,11 +18808,6 @@ pre.gallery-code {
     font-size: 12.5px;
 }
 
-.keep-warm-when-side > .keep-warm-examples,
-.keep-warm-when-side > .keep-warm-like {
-    display: none;
-}
-
 /* Wide: the times on the left; on the right what keep warm does, the examples, and where it comes from. */
 @container keep-warm (min-width: 700px) {
     .keep-warm-when,
@@ -18830,23 +18825,6 @@ pre.gallery-code {
     .keep-warm-about {
         order: 0;
     }
-    .keep-warm-when-side > .keep-warm-examples,
-    .keep-warm-when-side > .keep-warm-like {
-        display: flex;
-    }
-    .keep-warm-when-side > .keep-warm-like {
-        display: block;
-    }
-    /* Models: the models first, then the examples; where it comes from shows under When. */
-    .keep-warm-models-tab {
-        gap: 20px;
-    }
-    .keep-warm-models-tab > .keep-warm-models {
-        order: -1;
-    }
-    .keep-warm-models-tab > .keep-warm-like {
-        display: none;
-    }
 }
 
 .keep-warm-times,
@@ -18854,6 +18832,11 @@ pre.gallery-code {
     display: flex;
     flex-direction: column;
     gap: 6px;
+}
+
+/* On a narrow phone the headers wrap; anything still too wide scrolls sideways in the table alone. */
+.keep-warm-examples {
+    overflow-x: auto;
 }
 
 .keep-warm-times > .group-title {
@@ -19070,11 +19053,13 @@ pre.gallery-code {
     }
 }
 
+/* On a narrow phone, the value goes under the name rather than squeezing it out. */
 .keep-warm-model-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 0 8px;
     min-height: 44px;
     color: var(--muted);
     font-size: 13px;
@@ -19092,6 +19077,7 @@ pre.gallery-code {
 .keep-warm-model-value {
     display: inline-flex;
     flex: none;
+    margin-left: auto;
     align-items: center;
     gap: 0.35rem;
     color: var(--text);
@@ -19279,6 +19265,7 @@ pre.gallery-code {
 
 .keep-warm-stops thead th {
     color: var(--muted);
+    white-space: normal;
 }
 
 .keep-warm-stops th:first-child {
