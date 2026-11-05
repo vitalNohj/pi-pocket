@@ -22,6 +22,7 @@ import {
     resendable,
 } from "../entry-presentation.js";
 import { PlaceRows, placeOf, startCopy, useMainKey, usePlace } from "./copy.js";
+import { KeepWarmCard } from "./keep-warm.js";
 import { memoryAvailable } from "./memory.js";
 
 /** What each mode is called where a person chooses it. */
@@ -199,6 +200,7 @@ function ReplySheet({ entry, canBranch }) {
                 />`
             }
             ${!empty && html`<${Minor} label="Copy text" hint="As Markdown" run=${() => copyAndClose(text)} />`}
+            <${KeepWarmCard} />
         </div>
     <//>`;
 }

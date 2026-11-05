@@ -852,6 +852,25 @@ export function AppearanceSheet() {
                 />
             <//>
             <${SettingRow}
+                title="Instant open"
+                detail="Off opens sessions as before: wait for the sign-in check, and catch up only right after opening. Applies after a reload"
+            >
+                <div class="segmented">
+                    ${[
+                        [true, "On"],
+                        [false, "Off"],
+                    ].map(
+                        ([value, label]) => html`<button
+                                class=${(p.instantOpen !== false) === value ? "on" : ""}
+                                aria-pressed=${(p.instantOpen !== false) === value}
+                                onClick=${() => setPrefs({ instantOpen: value })}
+                            >
+                                ${label}
+                            </button>`,
+                    )}
+                </div>
+            <//>
+            <${SettingRow}
                 title="Wait for updates"
                 detail="Going back to a session that changed while you were away: show it once its updates have come, instead of your last copy at once with the updates sliding in"
             >
