@@ -626,14 +626,25 @@ export class PocketApp {
                 runnerOf: (id) => this.runnerOf(id as unknown as ConversationId),
                 name: (runner) => this.runners.name(runner),
                 connect: (runner, host, port, socket, open) =>
-                    this.runners.link(runner).openNetwork(host, port, socket, open),
-                computer: async (runner) => {
+                    this.runners.link(runner).openNetwork(host, port, socket, {
+                        ...open,
+                        ...(open.conversationId === undefined
+                            ? {}
+                            : {
+                                  session: this.runnerScope(
+                                      open.conversationId as unknown as ConversationId,
+                                  ),
+                              }),
+                    }),
+                computer: async (runner, conversationId) => {
                     const link = this.runners.link(runner);
                     const info = await link.info();
+                    const id = conversationId as unknown as ConversationId;
+                    const scoped = conversationId === undefined ? undefined : this.runnerScope(id);
 
                     return {
                         name: this.runners.name(runner),
-                        env: this.runners.env(runner, info.home),
+                        env: this.runners.env(runner, scoped?.folder ?? info.home, scoped),
                         tmpdir: info.tmpdir,
                         separator: info.separator,
                         ...(link.downloads === undefined ? {} : { folder: link.downloads }),
@@ -1724,6 +1735,18 @@ export class PocketApp {
         return this.#sessions[String(this.rootOf(id))]?.runner;
     }
 
+    /** All subagents use their root session permission. Old sessions ask once on their next request. */
+    runnerScope(id: ConversationId) {
+        const root = this.rootOf(id);
+        const meta = this.#sessions[String(root)];
+
+        return {
+            id: meta?.runnerPermission ?? String(root),
+            folder: this.cwdOf(root),
+            person: this.config.userById(meta?.createdBy ?? "")?.name ?? "The owner",
+        };
+    }
+
     /** Refuse what works on this machine's disk for a conversation whose tools run on another computer. */
     requireLocal(id: ConversationId, what: string): void {
         const runner = this.runnerOf(id);
@@ -1758,7 +1781,10 @@ export class PocketApp {
 
     #wrapped(id: ConversationId, cwd: string): ExecutionEnv {
         const runner = this.runnerOf(id);
-        const base = runner === undefined ? this.#env(cwd) : this.runners.env(runner, cwd);
+        const base =
+            runner === undefined
+                ? this.#env(cwd)
+                : this.runners.env(runner, cwd, this.runnerScope(id));
 
         return wrapEnv(base, Number(id), cwd, this.commandEnvs, this.hidden);
     }
@@ -3295,6 +3321,7 @@ export class PocketApp {
                 : {
                       runner: this.runnerOf(room.id)!,
                       runnerName: this.runners.name(this.runnerOf(room.id)!),
+                      runnerPermission: this.runnerScope(room.id).id,
                       // Offline is offline: the view says so, and what is sent waits for it.
                       runnerOnline: this.runners.link(this.runnerOf(room.id)!).online,
                   }),
@@ -3802,7 +3829,7 @@ export class PocketApp {
 
     /** The environment there of a session on another computer, unwrapped: what `remote-context.ts` reads through. */
     #remoteEnv(id: ConversationId) {
-        return this.runners.env(this.runnerOf(id)!, this.cwdOf(id));
+        return this.runners.env(this.runnerOf(id)!, this.cwdOf(id), this.runnerScope(id));
     }
 
     /** Pi wrote or edited `path`: on another computer, a context file or skill there is read again (`changedThere`). */

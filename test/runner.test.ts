@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer, type Server } from "node:http";
 import { type AddressInfo, createServer as createNetServer } from "node:net";
@@ -86,6 +87,8 @@ function startRunner(
         cwd: root,
         log: (line) => lines.push(line),
         retryMs: [50, 100, 200],
+        // The person at the computer allows each session (`sessionEnv`).
+        ask: async () => ({ allow: true }),
         ...more,
     };
     const runner = new Runner(options);
@@ -94,6 +97,16 @@ function startRunner(
     runner.start();
 
     return { runner, id: linked.id };
+}
+
+/**
+ * The environment of a session in `cwd` on computer `id`, approved there first as a new session is: each request names
+ * the session, and its runner refuses one without a valid session permission.
+ */
+async function sessionEnv(setup: Setup, id: string, cwd: string, session = randomUUID()) {
+    await setup.runners.link(id).confirm({ kind: "new", person: "Owner", folder: cwd, session });
+
+    return setup.runners.env(id, cwd, { id: session, folder: cwd, person: "Owner" });
 }
 
 /** The options each test runner started with, to start it again (`startRunnerFor`). */
@@ -204,7 +217,7 @@ describe("runner conformance", () => {
             const cwd = mkdtempSync(join(root, "env-"));
 
             try {
-                await use(setup.runners.env(id, cwd));
+                await use(await sessionEnv(setup, id, cwd));
             } finally {
                 rmSync(cwd, { recursive: true, force: true });
             }
@@ -300,7 +313,7 @@ describe("runner link", () => {
             await until(() => runner.connected, "the runner to connect");
 
             const cwd = mkdtempSync(join(root, "drop-"));
-            const env = setup.runners.env(id, cwd);
+            const env = await sessionEnv(setup, id, cwd);
             const pending = exec(env, "echo before; sleep 1; echo during; sleep 1; echo after");
 
             await new Promise((resolve) => setTimeout(resolve, 300));
@@ -331,7 +344,7 @@ describe("runner link", () => {
         try {
             await until(() => runner.connected, "the runner to connect");
 
-            const env = setup.runners.env(id, root);
+            const env = await sessionEnv(setup, id, root);
             const pending = exec(env, "echo start; sleep 2; echo end");
 
             await new Promise((resolve) => setTimeout(resolve, 300));
@@ -371,7 +384,7 @@ describe("runner link", () => {
         try {
             await until(() => runner.connected, "the runner to connect");
 
-            const env = setup.runners.env(id, root);
+            const env = await sessionEnv(setup, id, root);
             const pending = env.exec("sleep 30", {}, context);
 
             await new Promise((resolve) => setTimeout(resolve, 300));
@@ -421,7 +434,7 @@ describe("runner link", () => {
                 ["alpha", "beta"],
             );
 
-            const env = setup.runners.env(id, folder);
+            const env = await sessionEnv(setup, id, folder);
             const all = await env.listDir(folder, context);
 
             assert.ok(all.ok, all.ok ? "" : all.error.message);
@@ -488,6 +501,9 @@ describe("runner link", () => {
             const { runner: gone, id } = startRunner(setup, "Away");
 
             await until(() => gone.connected, "the runner to connect");
+            // Approved while online: the permission is the computer's, and outlasts its runner.
+            const env = await sessionEnv(setup, id, root);
+
             await gone.stop();
             await until(() => !setup.runners.list()[0]!.online, "the computer to be offline");
 
@@ -503,7 +519,7 @@ describe("runner link", () => {
             // Its system is still known, from when it was online.
             assert.ok(setup.runners.system(id)?.tmpdir);
 
-            const ran = exec(setup.runners.env(id, root), "echo back");
+            const ran = exec(env, "echo back");
             const { runner: again } = startRunnerFor(gone);
 
             try {
@@ -535,9 +551,12 @@ describe("runner link", () => {
             const link = setup.runners.link(id);
             const [near, far] = socketPair();
             const opened = runner.opened;
+            const session = { id: randomUUID(), folder: root, person: "Owner" };
 
+            await link.confirm({ kind: "new", person: "Owner", folder: root, session: session.id });
             await link.openNetwork("localhost", (echo.address() as AddressInfo).port, far, {
                 first: [Buffer.from("first ")],
+                session,
             });
             assert.equal(runner.opened, opened + 1);
 
@@ -553,9 +572,19 @@ describe("runner link", () => {
 
             // Nothing listens: the computer's error comes back.
             await assert.rejects(
-                link.openNetwork("127.0.0.1", closedPort, socketPair()[1]),
+                link.openNetwork("127.0.0.1", closedPort, socketPair()[1], { session }),
                 (error: Error) => /refused/i.test(error.message),
             );
+            // A stream that names no approved session is refused before it connects.
+            await assert.rejects(
+                link.openNetwork(
+                    "localhost",
+                    (echo.address() as AddressInfo).port,
+                    socketPair()[1],
+                ),
+                /not approved on Net/,
+            );
+            assert.equal(runner.opened, opened + 1);
 
             const closed = new Promise((resolve) => near.once("close", resolve));
 
@@ -717,23 +746,23 @@ describe("allowed folders", () => {
         assert.equal(await sameFolder(missing, missing), true);
     });
 
-    it("allows descendants without asking, asks for siblings, and reads changed settings for each question", async () => {
+    it("asks for folder permission in a new folder, session permission in a saved one, and none with stop asking", async () => {
         const setup = await serve();
         const parent = mkdtempSync(join(root, "allowed-"));
         const child = join(parent, "child");
         const sibling = `${parent}-sibling`;
         const settings: RunnerSettings = { folders: [parent] };
         const asked: SessionQuestion[] = [];
-        const lines: string[] = [];
-
-        mkdirSync(child);
-        mkdirSync(sibling);
-        const { runner, id } = startRunner(setup, "Folders", lines, {
+        let allow = false;
+        const { runner, id } = startRunner(setup, "Folders", [], {
             settings: () => settings,
+            saveSettings: (change) => {
+                Object.assign(settings, change);
+            },
             ask: async (question) => {
                 asked.push(question);
 
-                return { allow: false, reason: "Not this folder." };
+                return allow ? { allow: true } : { allow: false, reason: "Not this folder." };
             },
         });
 
@@ -741,26 +770,48 @@ describe("allowed folders", () => {
             await until(() => runner.connected, "the runner to connect");
             const link = setup.runners.link(id);
 
-            await link.confirm({ kind: "new", person: "Owner", folder: child });
-            assert.equal(asked.length, 0);
-            assert.ok(
-                lines.some((line) => line.includes(`Allowed: ${child} is in the allowed folders`)),
-            );
+            // A saved folder (or one below it) asks for session permission, and saves nothing new.
+            allow = true;
+            await link.confirm({ kind: "new", person: "Owner", folder: child, session: "one" });
+            assert.equal(asked.length, 1);
+            assert.equal(asked[0]!.permission, "session");
+            assert.equal(asked[0]!.session, "one");
+            assert.deepEqual(settings.folders, [parent]);
+            assert.equal(settings.sessions?.[0]?.approvedBy, "computer");
+
+            // A folder without permission asks for it; Deny saves nothing.
+            allow = false;
             await assert.rejects(
-                link.confirm({ kind: "new", person: "Owner", folder: sibling }),
+                link.confirm({ kind: "new", person: "Owner", folder: sibling, session: "two" }),
                 /Not this folder/,
             );
-            assert.equal(asked.length, 1);
-            assert.equal(asked[0]!.broad, false);
+            assert.equal(asked[1]!.permission, "folder");
+            assert.equal(asked[1]!.broad, false);
+            assert.deepEqual(settings.folders, [parent]);
+
+            // Removing the folder applies to the next question, without reconnecting.
             settings.folders = [];
             await assert.rejects(
-                link.confirm({ kind: "new", person: "Owner", folder: child }),
+                link.confirm({ kind: "new", person: "Owner", folder: child, session: "three" }),
                 /Not this folder/,
             );
-            assert.equal(asked.length, 2, "the removal takes effect without reconnecting");
+            assert.equal(asked[2]!.permission, "folder");
+
+            // Stop asking: a saved folder approves without a question; a folder without permission still asks.
             settings.confirm = false;
-            await link.confirm({ kind: "new", person: "Owner", folder: sibling });
-            assert.equal(asked.length, 2);
+            settings.folders = [parent];
+            await link.confirm({ kind: "new", person: "Owner", folder: child, session: "four" });
+            assert.equal(asked.length, 3);
+            assert.equal(
+                settings.sessions?.find((each) => each.id === "four")?.approvedBy,
+                "automatic",
+            );
+            await assert.rejects(
+                link.confirm({ kind: "new", person: "Owner", folder: sibling, session: "five" }),
+                /Not this folder/,
+            );
+            assert.equal(asked.length, 4);
+            assert.equal(asked[3]!.permission, "folder");
         } finally {
             await runner.stop();
             await close(setup);
@@ -802,7 +853,9 @@ describe("allowed folders", () => {
             );
             assert.deepEqual([...(settings.folders ?? [])].sort(), [first, second].sort());
             await link.confirm({ kind: "fork", person: "Owner", folder: first });
-            assert.equal(asked.length, 2, "a covered folder does not ask or duplicate the entry");
+            assert.equal(asked.length, 3, "a saved folder asks for session permission");
+            assert.equal(asked[2]!.permission, "session");
+            assert.equal(settings.folders!.length, 2, "and does not duplicate the entry");
 
             for (const folder of [homedir(), parse(homedir()).root]) {
                 await link.confirm({ kind: "new", person: "Owner", folder });
@@ -810,6 +863,16 @@ describe("allowed folders", () => {
             }
 
             assert.equal(settings.folders!.length, 2, "broad Allow saves nothing");
+
+            // A broad folder found in the list is ignored: it asks for folder permission again.
+            settings.folders = [...settings.folders!, homedir()];
+            await link.confirm({
+                kind: "new",
+                person: "Owner",
+                folder: join(homedir(), "x-missing"),
+            });
+            assert.equal(asked.at(-1)!.permission, "folder");
+            settings.folders = settings.folders.filter((folder) => folder !== homedir());
             settings.folders = [];
             paused = true;
             const controller = new AbortController();
@@ -915,6 +978,7 @@ describe("allowed folders", () => {
             broad: boolean;
             folder: string;
             person: string;
+            permission: SessionQuestion["permission"];
         }[] = [];
         const savedAtEnd: string[][] = [];
         let errors = "";
@@ -951,8 +1015,17 @@ describe("allowed folders", () => {
             await move;
             await until(() => savedAtEnd.length === 1, "the question end after saving");
             assert.deepEqual(savedAtEnd[0], [await realFolder(folder)]);
-            await link.confirm({ kind: "new", person: "Owner", folder: childFolder });
-            assert.equal(questions.length, 1, "a descendant starts without a stdio question");
+            const session = link.confirm({ kind: "new", person: "Owner", folder: childFolder });
+
+            await until(() => questions.length === 2, "the session question for a saved folder");
+            assert.partialDeepStrictEqual(questions[1], {
+                permission: "session",
+                expired: false,
+                totp: false,
+                expiresInMs: 120_000,
+            });
+            answer(true);
+            await session;
             await promisify(execFile)(process.execPath, [
                 launcher,
                 "runner",
@@ -967,7 +1040,8 @@ describe("allowed folders", () => {
                 /denied/,
             );
 
-            await until(() => questions.length === 2, "the new question after removal");
+            await until(() => questions.length === 3, "the new question after removal");
+            assert.equal(questions[2]!.permission, "folder");
             answer(false);
             await denied;
             const broad = link.confirm({
@@ -976,8 +1050,8 @@ describe("allowed folders", () => {
                 folder: parse(homedir()).root,
             });
 
-            await until(() => questions.length === 3, "the broad question");
-            assert.equal(questions[2]!.broad, true);
+            await until(() => questions.length === 4, "the broad question");
+            assert.equal(questions[3]!.broad, true);
             answer(true);
             await broad;
             assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).settings.folders, []);
@@ -1016,7 +1090,7 @@ describe("allowed folders", () => {
         assert.equal((await run(["folders"])).stdout, `${allowed}\n`);
         await run(["folders", "remove", allowed]);
         assert.deepEqual(JSON.parse((await run(["folders", "--json"])).stdout), []);
-        assert.equal((await run(["folders"])).stdout.trim(), "No allowed folders yet.");
+        assert.equal((await run(["folders"])).stdout.trim(), "No saved folders yet.");
         assert.equal(JSON.parse(readFileSync(file, "utf8")).settings.confirm, true);
         await assert.rejects(
             run(["folders", "remove", allowed]),

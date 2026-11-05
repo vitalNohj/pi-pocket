@@ -621,6 +621,84 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === "approval" &&
+            method === "POST"
+        ) {
+            requireOwner(user);
+            const body = await readJson<{ id?: unknown; code?: unknown; withdraw?: unknown }>(
+                request,
+            );
+
+            if (app.runners.require(second).createdBy !== user.id) {
+                throw new HttpError(
+                    403,
+                    "Only the person who linked this computer can approve sessions on it.",
+                );
+            }
+
+            if (typeof body.id !== "string") {
+                throw new HttpError(400, "id is required");
+            }
+
+            if (body.withdraw === true) {
+                app.runners.link(second).withdraw(body.id);
+            } else if (typeof body.code === "string" && /^\d{6}$/.test(body.code)) {
+                await app.runners.link(second).approveCode(body.id, body.code);
+            } else {
+                throw new HttpError(400, "Enter the 6-digit code from your authenticator.");
+            }
+
+            return json(response, 200, { ok: true });
+        }
+
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === "permissions" &&
+            method === "POST"
+        ) {
+            requireOwner(user);
+            const body = await readJson<{ request?: unknown }>(request);
+            const action = body.request as Record<string, unknown> | undefined;
+
+            if (
+                action?.action === "settings" &&
+                app.runners.require(second).createdBy !== user.id
+            ) {
+                throw new HttpError(
+                    403,
+                    "Only the person who linked this computer can change its settings.",
+                );
+            }
+
+            if (
+                !(action?.action === "revoke" && typeof action.session === "string") &&
+                !(action?.action === "remove-folder" && typeof action.folder === "string") &&
+                !(
+                    action?.action === "settings" &&
+                    typeof action.code === "string" &&
+                    /^\d{6}$/.test(action.code) &&
+                    typeof action.change === "object" &&
+                    action.change !== null &&
+                    !Array.isArray(action.change)
+                )
+            ) {
+                throw new HttpError(400, "Invalid runner request.");
+            }
+
+            app.runners.require(second);
+            await app.runners.link(second).action(action as never);
+
+            return json(
+                response,
+                200,
+                app.runners.list().find((runner) => runner.id === second),
+            );
+        }
+
         // The folders on another computer, for the folder picker of a new session there.
         if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
             requireOwner(user);

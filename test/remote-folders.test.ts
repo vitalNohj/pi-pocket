@@ -274,10 +274,11 @@ describe("a session's folder on another computer", () => {
                 );
             }
 
-            // The owner reads what Pi can there.
-            const owners = await app.workspace.viewFile(id, owner(app), outside);
-
-            assert.equal(owners.kind === "text" && owners.text, "secret\n");
+            // The owner reads what Pi can there: the session's folder. Its runner refuses a path outside it.
+            assert.match(
+                (await failure(app.workspace.viewFile(id, owner(app), outside))).message,
+                /outside the session's approved folder|is not there/,
+            );
 
             assert.equal(
                 (await get(`/api/c/${id}/file?path=${encodeURIComponent(outside)}`, token)).status,

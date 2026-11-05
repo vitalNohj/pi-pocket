@@ -58,6 +58,8 @@ export type SessionMeta = {
      * field, would run the session here: such a session never goes back to one.
      */
     runner?: string;
+    /** Stable runner permission key, chosen before approval so a refused start creates no conversation. */
+    runnerPermission?: string;
     /**
      * The repository its folder is a checkout of: the `origin` remote, normalized (`repo.ts` `normalizeRemote`: lower-case
      * host, no `.git`, no user name or token). Noted after the session is made or moved, when git answers in time; absent:

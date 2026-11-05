@@ -63,6 +63,34 @@ export const MAX_FRAME = 16 * 1024 * 1024;
 /** Programs ready on the runner, checked at each connection; older runners do not send this. */
 export type RunnerTools = { git: boolean; gh: boolean; github: boolean };
 
+import type { ApprovalState, RunnerAction, SessionScope } from "./approvals.ts";
+export type { ApprovalState, RunnerAction, SessionScope } from "./approvals.ts";
+
+/** Removed by the runner before a request reaches pi-env. Negotiated with hello/welcome.approvals. */
+export const SESSION_FIELD = "_pocketSession";
+export type ApprovalNeeded = {
+    type: "approval-needed";
+    id: string;
+    session: string;
+    folder: string;
+    permission: "folder" | "session";
+    expired: boolean;
+    broad: boolean;
+    totp: boolean;
+};
+export type ApprovalEnded = { type: "approval-ended"; id: string };
+export type ApprovalCode = { type: "approval-code"; id: string; code: string };
+export type CodeResult = { type: "code-result"; id: string; allow: boolean; reason?: string };
+export type StateMessage = { type: "runner-state"; state: ApprovalState };
+export type ActionMessage = { type: "runner-action"; id: string; request: RunnerAction };
+export type ActionResult = {
+    type: "runner-result";
+    id: string;
+    ok: boolean;
+    reason?: string;
+    state?: ApprovalState;
+};
+
 /** Runner to server, first: who it is and where its stream from the server stopped. */
 export type Hello = {
     type: "hello";
@@ -78,6 +106,8 @@ export type Hello = {
      * older than this): the server does not ask, and sessions start as before.
      */
     asks?: boolean;
+    /** Enforces and reports per-session grants, TOTP, and settings. */
+    approvals?: boolean;
     /** The runner understands `Withdraw`: a session question can be cancelled by the server. */
     withdraws?: boolean;
     tools?: RunnerTools;
@@ -102,6 +132,8 @@ export type Confirm = {
     person: string;
     /** The folder on this computer. */
     folder: string;
+    /** Root session permission, absent on older servers. */
+    session?: string;
 };
 
 /** Runner to server: the answer to `Confirm`; `reason` says why not, in words for the person who asked. */
@@ -120,6 +152,8 @@ export type Welcome = {
     received: number;
     /** Unused since the server keeps the session while it runs (`LEGACY_GRACE_MS`); older runners read it. */
     graceMs: number;
+    /** Requests carry SESSION_FIELD, and net-open carries its session scope. */
+    approvals?: boolean;
 };
 
 /** Either side: bytes of the other side's stream received so far, so the other side can drop them. */
@@ -129,7 +163,13 @@ export type Ack = { type: "ack"; received: number };
 export type Bye = { type: "bye"; reason: string };
 
 /** Server to runner: open a TCP connection to `host`:`port` on the computer, as stream `id`. */
-export type NetOpen = { type: "net-open"; id: number; host: string; port: number };
+export type NetOpen = {
+    type: "net-open";
+    id: number;
+    host: string;
+    port: number;
+    session?: SessionScope;
+};
 
 /** Runner to server: stream `id` is connected. */
 export type NetOpened = { type: "net-opened"; id: number };
@@ -155,7 +195,21 @@ export type NetCredit = { type: "net-credit"; id: number; bytes: number };
 export type NetMessage = NetOpen | NetOpened | NetFailed | NetEnd | NetReset | NetCredit;
 
 export type ControlMessage =
-    Hello | Welcome | Ack | Bye | Confirm | Confirmed | Withdraw | NetMessage;
+    | Hello
+    | Welcome
+    | Ack
+    | Bye
+    | Confirm
+    | Confirmed
+    | Withdraw
+    | NetMessage
+    | ApprovalNeeded
+    | ApprovalEnded
+    | ApprovalCode
+    | CodeResult
+    | StateMessage
+    | ActionMessage
+    | ActionResult;
 
 /** The first byte of a network stream's binary message. */
 export const STREAM_DATA = 1;
@@ -182,6 +236,52 @@ export function parseControl(text: string): ControlMessage | undefined {
     const stream = count("id") && (message.id as number) <= 0xffffffff;
 
     switch (message.type) {
+        case "approval-needed":
+            return typeof message.id === "string" &&
+                typeof message.session === "string" &&
+                typeof message.folder === "string" &&
+                ["folder", "session"].includes(message.permission as string) &&
+                typeof message.expired === "boolean" &&
+                typeof message.broad === "boolean" &&
+                typeof message.totp === "boolean"
+                ? (message as ApprovalNeeded)
+                : undefined;
+        case "approval-ended":
+            return typeof message.id === "string" ? (message as ApprovalEnded) : undefined;
+        case "approval-code":
+            return typeof message.id === "string" && typeof message.code === "string"
+                ? (message as ApprovalCode)
+                : undefined;
+        case "code-result":
+            return typeof message.id === "string" && typeof message.allow === "boolean"
+                ? (message as CodeResult)
+                : undefined;
+        case "runner-state":
+            return typeof message.state === "object" && message.state !== null
+                ? (message as StateMessage)
+                : undefined;
+
+        case "runner-action": {
+            const request = message.request as Record<string, unknown> | undefined;
+
+            return typeof message.id === "string" &&
+                request !== null &&
+                typeof request === "object" &&
+                ((request.action === "revoke" && typeof request.session === "string") ||
+                    (request.action === "remove-folder" && typeof request.folder === "string") ||
+                    (request.action === "settings" &&
+                        typeof request.code === "string" &&
+                        typeof request.change === "object" &&
+                        request.change !== null &&
+                        !Array.isArray(request.change)))
+                ? (message as ActionMessage)
+                : undefined;
+        }
+
+        case "runner-result":
+            return typeof message.id === "string" && typeof message.ok === "boolean"
+                ? (message as ActionResult)
+                : undefined;
         case "net-open":
             return stream &&
                 typeof message.host === "string" &&

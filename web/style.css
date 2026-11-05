@@ -7258,6 +7258,67 @@ div.group-head {
     font: 12px / 1.6 var(--mono);
 }
 
+.runner-session-approval {
+    padding: 8px 12px;
+}
+
+.runner-session-approval .runner-wait {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 16px;
+    box-shadow: 0 0 0 1px var(--hair-2);
+}
+
+.runner-code,
+.runner-code-modal form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.runner-code input,
+.runner-code-modal input {
+    font: 20px / 1.4 var(--mono);
+    letter-spacing: 0.2em;
+}
+
+.runner-code-error {
+    color: var(--danger, #c33);
+}
+
+.runner-permissions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.runner-permissions .setting.disabled {
+    opacity: 0.55;
+}
+
+/* The row grows with the computer's settings: its status dot stays beside the computer's name. */
+.person-row.runner-row {
+    align-items: flex-start;
+}
+
+.runner-row > .runner-dot {
+    margin-top: 0.45rem;
+}
+
+.runner-permission-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+
+.runner-permission-row code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
 .runner-wait-countdown {
     display: flex;
     align-items: center;

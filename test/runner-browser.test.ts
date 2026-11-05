@@ -329,7 +329,12 @@ describe("the browser of a session on another computer", () => {
     });
 
     it("keeps the computer's commands fast while a large download runs", real, async (t) => {
-        const env = app.runners.env(runnerId, there);
+        // The session's own environment: its runner refuses a command that names no approved session.
+        const env = app.runners.env(
+            runnerId,
+            there,
+            app.runnerScope(id as unknown as Parameters<typeof app.runnerScope>[0]),
+        );
         const navigated = await browse(id, { action: "navigate", url: `${page()}/big.bin` });
 
         assert.match(navigated, /is a download|Downloading big\.bin/);

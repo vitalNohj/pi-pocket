@@ -6,20 +6,25 @@
  * The link survives drops of any length (`protocol.ts`): the daemon keeps running, its answers wait here, and both
  * sides send again what the other missed.
  *
- * In a terminal, plain `pi-pocket runner` opens a menu: start, link, settings, allowed folders, unlink, help. Each of
- * those is also a command for scripts, which never asks:
+ * In a terminal, plain `pi-pocket runner` opens a menu: start, link, settings, saved folders, approved sessions,
+ * unlink, help. Each of those is also a command for scripts, which never asks:
  *
- *   pi-pocket runner start                  run with the saved link (also used by the desktop app)
+ *   pi-pocket runner start                  run with the saved link (also used by a program that runs the runner)
  *   pi-pocket runner link <server> <code>   link this computer, with a code from Menu > Runners
- *   pi-pocket runner settings [name value]  show or change a setting: confirm on|off, http allow|refuse,
- *                                           network allow|refuse, downloads <folder>|default
+ *   pi-pocket runner settings [name value]  show or change a setting: stop-asking on|off, totp-days 1|7|14|30|never,
+ *                                           http allow|refuse, network allow|refuse, downloads <folder>|default
  *   pi-pocket runner status                 show the link and its settings
- *   pi-pocket runner folders [--json]       list allowed folders; `folders remove <folder>` removes one
- *   pi-pocket runner unlink                 forget the link
+ *   pi-pocket runner folders [--json]       list saved folders; `folders remove <folder>` removes one
+ *   pi-pocket runner sessions [--json]      list approved sessions; `sessions revoke <id>|all` revokes
+ *   pi-pocket runner totp setup|off|status  the authenticator; turning it off needs a code from it
+ *   pi-pocket runner unlink                 delete the link file: the link and all runner settings, the
+ *                                           authenticator, saved folders, and approved sessions
  *
- * Before a session starts here, the runner asks its person (setting `confirm`, on by default): on its terminal, or
- * through the desktop app (`--confirm-via stdio`). Plain HTTP to the server is refused unless it is this computer or a
- * device of this computer's tailnet, or the person allowed it (`transport.ts`).
+ * Each session needs a permission on this computer (`approvals.ts`), which the runner checks on each request
+ * (`request-gate.ts`). The runner asks its person: on its terminal, or through a program that runs it
+ * (`--confirm-via stdio`); or a code from an authenticator (`totp.ts`) approves from Pi Pocket. Plain HTTP to the
+ * server is refused unless it is this computer or a device of this computer's tailnet, or the person allowed it
+ * (`transport.ts`).
  *
  * It exits with `STOPPED_BY_SERVER` when the server ends the link for good (the computer was removed, its key is
  * wrong): the desktop app does not start it again then.
@@ -47,9 +52,11 @@ import {
     green,
     interactive,
     onKeys,
+    qrLines,
     restoreTerminal,
     yellow,
 } from "../launcher/term.ts";
+import { authenticatorLink, checkCode, newSecret, type TotpState } from "./totp.ts";
 import { LINK_CODE_PATH } from "./protocol.ts";
 import {
     Runner,
@@ -59,7 +66,7 @@ import {
     type SessionAnswer,
     type SessionQuestion,
 } from "./runner.ts";
-import { sameFolder } from "./folders.ts";
+import { broadFolder, realFolder, sameFolder } from "./folders.ts";
 import { checkTransport, refusal, unsafe } from "./transport.ts";
 import { checkTools, toolsStatus } from "./tools.ts";
 
@@ -76,9 +83,15 @@ In a terminal, run pi-pocket runner for a menu. For scripts:
   pi-pocket runner link <server> <code> [--allow-http]
     Link this computer. Get a code in Pi Pocket: Menu > Runners > Link a computer.
     --allow-http also allows plain HTTP to that server (only on a network you trust).
-  pi-pocket runner settings
+  pi-pocket runner settings [--json]
     Show the settings. Change one with: pi-pocket runner settings <name> <value>
-      confirm on|off       Ask here before a new session starts (default: on)
+      stop-asking on|off   Approve new sessions in saved folders without a
+                           question (default: off). A folder without
+                           permission always asks.
+      totp-days 1|7|14|30|never
+                           How long a session approved with an authenticator
+                           code lasts after its last use (default: 7)
+      confirm on|off       Older name: confirm off is stop-asking on
       http allow|refuse    Plain HTTP to a server that is not this computer or
                            on your tailnet (default: refuse)
       network allow|refuse Sessions' browsers use this computer's network
@@ -89,15 +102,30 @@ In a terminal, run pi-pocket runner for a menu. For scripts:
   pi-pocket runner status
     Show the link and its settings.
   pi-pocket runner folders [--json]
-    Show allowed folders, one per line, or a JSON array for the desktop app.
+    Show saved folders, one per line, or a JSON array for a program that runs
+    the runner, such as the desktop app.
   pi-pocket runner folders remove <folder>
-    Ask again for future sessions there. Running sessions keep running.
+    Ask again for future sessions there. Approved sessions keep their approval.
+  pi-pocket runner sessions [--json]
+    Show approved sessions: id, folder, who, how approved, and when each expires.
+  pi-pocket runner sessions revoke <id>|all [--json]
+    Remove a session's approval. Its next request asks again.
+  pi-pocket runner totp setup|status [--json]
+  pi-pocket runner totp off <code> [--json]
+    An authenticator app (TOTP) lets you approve sessions and folders, and
+    change these settings, from Pi Pocket with a 6-digit code. Set it up here.
+    Turning it off needs a code. Lost your authenticator? Unlink this computer
+    (pi-pocket runner unlink, or Unlink in a program that runs the runner, such
+    as the desktop app), then link it again.
   pi-pocket runner unlink
-    Delete the saved link. Also remove this computer in Menu > Runners.
+    Delete the saved link and all runner settings, including the authenticator,
+    saved folders, and approved sessions. No code is needed. Linking again needs
+    a new link code from Menu > Runners. Also remove this computer there.
 
 Options:
   --config FILE       Link file (default: ~/.pi-pocket/runner.json)
-  --confirm-via stdio For the desktop app: ask through stdin and stdout
+  --confirm-via stdio For a program that runs the runner, such as the desktop
+                      app: ask through stdin and stdout
   -h, --help          Show this help
 
 Environment:
@@ -114,6 +142,9 @@ export const STOPPED_BY_SERVER = 3;
 /** What the desktop app reads on stdout: a question (`CONFIRM`), and that it no longer stands (`CONFIRM-END`). */
 const CONFIRM_LINE = "PI-POCKET-CONFIRM";
 const CONFIRM_END_LINE = "PI-POCKET-CONFIRM-END";
+
+const UNLINKED =
+    "Deleted the saved link and all runner settings from this computer, including the authenticator, saved folders, and approved sessions.\nTo link again, get a new link code in Pi Pocket: Menu > Runners > Link a computer.\nIn Pi Pocket, also remove this computer from Menu > Runners to stop its runner and cancel its key.";
 
 /** A problem the person can fix and try again: the menu says it and goes on, the commands stop. */
 class Problem extends Error {}
@@ -192,8 +223,18 @@ function writeLink(file: string, link: Link): void {
     }
 }
 
-/** The settings with their defaults filled in; `downloads` undefined is the temporary folder. */
-type FullSettings = Required<Omit<RunnerSettings, "downloads">> & { downloads: string | undefined };
+/**
+ * The settings with their defaults filled in; `downloads` undefined is the temporary folder. The authenticator and
+ * approved sessions are not settings a new link keeps.
+ */
+type FullSettings = {
+    confirm: boolean;
+    allowHttp: boolean;
+    network: boolean;
+    downloads: string | undefined;
+    folders: string[];
+    totpDays: number | null;
+};
 
 function settingsOf(link: Link | undefined): FullSettings {
     return {
@@ -202,7 +243,25 @@ function settingsOf(link: Link | undefined): FullSettings {
         network: link?.settings?.network !== false,
         downloads: link?.settings?.downloads,
         folders: link?.settings?.folders ?? [],
+        totpDays: link?.settings?.totpDays === undefined ? 7 : link.settings.totpDays,
     };
+}
+
+const WRONG_CODE = "That code is wrong or used. Try the next one.";
+
+/** `--json` commands print their errors on stdout as JSON, for programs that run the runner. */
+function failWith(json: boolean, message: string): never {
+    if (json) {
+        restoreTerminal();
+        console.log(JSON.stringify({ ok: false, error: message }));
+        process.exit(1);
+    }
+
+    fail(message);
+}
+
+function daysLine(days: number | null): string {
+    return days === null ? "never" : String(days);
 }
 
 /** A downloads folder as the person typed it: `~` is the home folder, a relative one is from here. */
@@ -372,36 +431,83 @@ async function link(file: string, args: string[]): Promise<void> {
 // ─── Settings ───────────────────────────────────────────────────────────
 
 /** The settings, one per line, as `settings` prints them and the desktop app reads them. */
-function settingsLines(settings: FullSettings): string[] {
+function settingsLines(settings: FullSettings, totp: boolean): string[] {
     return [
         `confirm ${settings.confirm ? "on" : "off"}`,
         `http ${settings.allowHttp ? "allow" : "refuse"}`,
         `network ${settings.network ? "allow" : "refuse"}`,
         `downloads ${settings.downloads ?? "default"}`,
+        `stop-asking ${settings.confirm ? "off" : "on"}`,
+        `totp-days ${daysLine(settings.totpDays)}`,
+        `totp ${totp ? "on" : "off"}`,
     ];
+}
+
+/** The settings for programs: the same names as the server's Runners uses. */
+function settingsJson(link: Link): Record<string, unknown> {
+    const settings = settingsOf(link);
+
+    return {
+        stopAsking: !settings.confirm,
+        totpDays: settings.totpDays,
+        allowHttp: settings.allowHttp,
+        network: settings.network,
+        downloads: settings.downloads ?? null,
+        totp: link.settings?.totp !== undefined,
+    };
 }
 
 /** `pi-pocket runner settings [name value]`: show the settings, or change one. */
 function settingsCommand(file: string, args: string[]): void {
-    const [name, value] = args;
+    const json = args.includes("--json");
+    const [name, value] = args.filter((arg) => arg !== "--json");
+
+    const done = (text: string) => {
+        console.log(
+            json ? JSON.stringify({ ok: true, settings: settingsJson(readLink(file)!) }) : text,
+        );
+    };
 
     try {
         if (name === undefined) {
-            if (readLink(file) === undefined) {
+            const saved = readLink(file);
+
+            if (saved === undefined) {
                 throw new Problem("This computer is not linked yet. Link it first.");
             }
 
-            console.log(settingsLines(settingsOf(readLink(file))).join("\n"));
+            console.log(
+                json
+                    ? JSON.stringify(settingsJson(saved))
+                    : settingsLines(settingsOf(saved), saved.settings?.totp !== undefined).join(
+                          "\n",
+                      ),
+            );
 
             return;
         }
 
-        if (name === "confirm" && (value === "on" || value === "off")) {
-            changeSettings(file, { confirm: value === "on" });
-            console.log(
-                value === "on"
-                    ? "This computer asks before a new session starts here."
-                    : "Sessions start here without asking. Anyone allowed to start sessions on this computer can run commands as you.",
+        if ((name === "confirm" || name === "stop-asking") && (value === "on" || value === "off")) {
+            const confirm = name === "confirm" ? value === "on" : value === "off";
+
+            changeSettings(file, { confirm });
+            done(
+                confirm
+                    ? "This computer asks before each new session starts here."
+                    : "New sessions in saved folders are approved without a question. A folder without permission still asks.",
+            );
+
+            return;
+        }
+
+        if (name === "totp-days" && ["1", "7", "14", "30", "never"].includes(value ?? "")) {
+            const days = value === "never" ? null : Number(value);
+
+            changeSettings(file, { totpDays: days });
+            done(
+                days === null
+                    ? "Sessions approved with an authenticator code do not expire."
+                    : `Sessions approved with an authenticator code expire ${days} ${days === 1 ? "day" : "days"} after their last use.`,
             );
 
             return;
@@ -409,7 +515,7 @@ function settingsCommand(file: string, args: string[]): void {
 
         if (name === "http" && (value === "allow" || value === "refuse")) {
             changeSettings(file, { allowHttp: value === "allow" });
-            console.log(
+            done(
                 value === "allow"
                     ? "Plain HTTP to this server is allowed. Anyone on the network can read this computer's key and its commands."
                     : "Plain HTTP is used only to this computer or a device on your tailnet.",
@@ -420,7 +526,7 @@ function settingsCommand(file: string, args: string[]): void {
 
         if (name === "network" && (value === "allow" || value === "refuse")) {
             changeSettings(file, { network: value === "allow" });
-            console.log(
+            done(
                 value === "allow"
                     ? "Sessions' browsers open their connections from this computer: they reach what it reaches, including its localhost and local network."
                     : "Sessions' browsers cannot open pages through this computer.",
@@ -433,7 +539,7 @@ function settingsCommand(file: string, args: string[]): void {
             const folder = value === "default" ? undefined : downloadsFolder(value);
 
             changeSettings(file, { downloads: folder });
-            console.log(
+            done(
                 folder === undefined
                     ? "Sessions' browser downloads go to this computer's temporary folder, in pi-pocket-downloads/<session>/."
                     : `Sessions' browser downloads go to ${join(folder, "<session>")}. A running runner uses it once it reconnects.`,
@@ -443,10 +549,275 @@ function settingsCommand(file: string, args: string[]): void {
         }
 
         throw new Problem(
-            "Use: pi-pocket runner settings confirm on|off, http allow|refuse, network allow|refuse, or downloads <folder>|default",
+            "Use: pi-pocket runner settings stop-asking on|off, totp-days 1|7|14|30|never, http allow|refuse, network allow|refuse, or downloads <folder>|default",
         );
     } catch (error) {
-        fail((error as Error).message);
+        failWith(json, (error as Error).message);
+    }
+}
+
+// ─── Authenticator (TOTP) ───────────────────────────────────────────────
+
+const TOTP_USE =
+    "Use: pi-pocket runner totp setup, pi-pocket runner totp status, or pi-pocket runner totp off <code> [--json]";
+
+/** One line of stdin at a time, for `--json` setup from a program that runs the runner. */
+function stdinLines(): { next: () => Promise<string | undefined>; close: () => void } {
+    const lines = createInterface({ input: process.stdin });
+    const iterator = lines[Symbol.asyncIterator]();
+
+    return {
+        next: async () => {
+            const got = await iterator.next();
+
+            return got.done === true ? undefined : String(got.value);
+        },
+        close: () => lines.close(),
+    };
+}
+
+/**
+ * Make a secret, show it, and save it only after one correct code: this proves the authenticator works and that the
+ * person is at this computer. With `--json`: a `{ secret, link }` line, then one code per stdin line, each answered
+ * with `{ ok }`.
+ */
+async function totpSetup(file: string, saved: Link, json: boolean): Promise<void> {
+    if (saved.settings?.totp !== undefined) {
+        throw new Problem(
+            "An authenticator is already set up. To replace it, turn it off first: pi-pocket runner totp off <code>",
+        );
+    }
+
+    if (!json && !interactive) {
+        throw new Problem(
+            "Set up the authenticator in a terminal, or add --json in a program that runs the runner.",
+        );
+    }
+
+    const secret = newSecret();
+    const link = authenticatorLink(secret, saved.name);
+    const state: TotpState = { secret };
+    const input = json ? stdinLines() : undefined;
+
+    if (json) {
+        console.log(JSON.stringify({ secret, link }));
+    } else {
+        console.log("");
+        console.log(
+            "  Scan this code with your authenticator app, or open the link on this device:",
+        );
+        console.log("");
+
+        for (const line of await qrLines(link)) {
+            console.log(`  ${line}`);
+        }
+
+        console.log("");
+        console.log(`  ${link}`);
+        console.log(dim(`  Or enter this key by hand: ${secret}`));
+        console.log("");
+    }
+
+    try {
+        for (let tries = 0; tries < 5; tries++) {
+            const code = json
+                ? await input!.next()
+                : await ask("Code from your authenticator (empty to cancel)");
+
+            if (code === undefined || code.trim() === "") {
+                throw new Problem("Cancelled. No authenticator was saved.");
+            }
+
+            if (checkCode(state, code.trim())) {
+                changeSettings(file, { totp: { secret, lastStep: state.lastStep! } });
+                console.log(
+                    json
+                        ? JSON.stringify({ ok: true, totp: true })
+                        : green(
+                              "  Authenticator set up. Pi Pocket can now approve sessions and folders, and change settings, with a code.",
+                          ),
+                );
+
+                return;
+            }
+
+            console.log(
+                json ? JSON.stringify({ ok: false, error: WRONG_CODE }) : `  ${WRONG_CODE}`,
+            );
+        }
+
+        throw new Problem("Too many wrong codes. No authenticator was saved. Run the setup again.");
+    } finally {
+        input?.close();
+    }
+}
+
+/** `pi-pocket runner totp setup|status|off <code>`: set up and turned off only here. */
+async function totpCommand(file: string, args: string[]): Promise<void> {
+    const json = args.includes("--json");
+    const [action, code, extra] = args.filter((arg) => arg !== "--json");
+
+    try {
+        const saved = readLink(file);
+
+        if (saved === undefined) {
+            throw new Problem("This computer is not linked yet. Link it first.");
+        }
+
+        const totp = saved.settings?.totp;
+
+        if (action === "status" && code === undefined) {
+            const locked = (totp?.lockedUntil ?? 0) > Date.now();
+
+            console.log(
+                json
+                    ? JSON.stringify({
+                          totp: totp !== undefined,
+                          locked,
+                          ...(locked ? { lockedUntil: totp!.lockedUntil } : {}),
+                      })
+                    : totp === undefined
+                      ? "No authenticator set up. Set it up with: pi-pocket runner totp setup"
+                      : `Authenticator set up.${locked ? ` Codes are refused until ${new Date(totp.lockedUntil!).toLocaleTimeString()} after too many wrong ones.` : ""}`,
+            );
+
+            return;
+        }
+
+        if (action === "setup" && code === undefined) {
+            await totpSetup(file, saved, json);
+
+            return;
+        }
+
+        if (action === "off" && extra === undefined) {
+            if (totp === undefined) {
+                console.log(
+                    json
+                        ? JSON.stringify({ ok: true, totp: false })
+                        : "No authenticator is set up.",
+                );
+
+                return;
+            }
+
+            const given =
+                code ?? (interactive && !json ? await ask("Code from your authenticator") : "");
+
+            if (given.trim() === "") {
+                throw new Problem(
+                    "Turning the authenticator off needs a code: pi-pocket runner totp off <code>. Lost your authenticator? Unlink this computer (pi-pocket runner unlink), then link it again.",
+                );
+            }
+
+            const state = structuredClone(totp);
+
+            if (!checkCode(state, given.trim())) {
+                // The failure counts toward the lockout.
+                changeSettings(file, { totp: state });
+
+                throw new Problem(WRONG_CODE);
+            }
+
+            changeSettings(file, { totp: undefined });
+            console.log(
+                json
+                    ? JSON.stringify({ ok: true, totp: false })
+                    : "Authenticator turned off. Sessions and settings are approved only on this computer now.",
+            );
+
+            return;
+        }
+
+        throw new Problem(TOTP_USE);
+    } catch (error) {
+        failWith(json, (error as Error).message);
+    }
+}
+
+// ─── Approved sessions ──────────────────────────────────────────────────
+
+function sessionRows(link: Link) {
+    const now = Date.now();
+
+    return (link.settings?.sessions ?? []).map((session) => {
+        const expiresAt = session.ttlMs === null ? null : session.idleAt + session.ttlMs;
+
+        return {
+            id: session.id,
+            folder: session.folder,
+            person: session.person,
+            approvedBy: session.approvedBy,
+            approvedAt: session.approvedAt,
+            expiresAt,
+            expired: expiresAt !== null && expiresAt <= now,
+        };
+    });
+}
+
+const HOW = { computer: "at this computer", automatic: "without a question", totp: "with a code" };
+
+function sessionLine(row: ReturnType<typeof sessionRows>[number]): string {
+    const until =
+        row.expiresAt === null
+            ? "no expiry"
+            : `${row.expired ? "expired" : "expires"} ${new Date(row.expiresAt).toLocaleString()}`;
+
+    return `${row.id}  ${row.folder}  ${row.person}, approved ${HOW[row.approvedBy]}, ${until}`;
+}
+
+/** `pi-pocket runner sessions [--json]` and `sessions revoke <id>|all`: no code needed to remove access. */
+function sessionsCommand(file: string, args: string[]): void {
+    const json = args.includes("--json");
+    const rest = args.filter((arg) => arg !== "--json");
+
+    try {
+        const saved = readLink(file);
+
+        if (saved === undefined) {
+            throw new Problem("This computer is not linked yet. Link it first.");
+        }
+
+        const rows = sessionRows(saved);
+
+        if (rest.length === 0) {
+            console.log(
+                json
+                    ? JSON.stringify(rows)
+                    : rows.map(sessionLine).join("\n") ||
+                          "No approved sessions. A session asks for approval on its first request.",
+            );
+
+            return;
+        }
+
+        if (rest.length === 2 && rest[0] === "revoke") {
+            const id = rest[1]!;
+
+            if (id !== "all" && !rows.some((row) => row.id === id)) {
+                throw new Problem(
+                    `No approved session "${id}". Run pi-pocket runner sessions to see the list.`,
+                );
+            }
+
+            const kept =
+                id === "all" ? [] : (saved.settings?.sessions ?? []).filter((s) => s.id !== id);
+
+            changeSettings(file, { sessions: kept });
+            console.log(
+                json
+                    ? JSON.stringify({ ok: true, revoked: rows.length - kept.length })
+                    : `Revoked ${rows.length - kept.length} ${rows.length - kept.length === 1 ? "session" : "sessions"}. The next request of each asks again.`,
+            );
+
+            return;
+        }
+
+        throw new Problem(
+            "Use: pi-pocket runner sessions [--json], or pi-pocket runner sessions revoke <id>|all [--json]",
+        );
+    } catch (error) {
+        failWith(json, (error as Error).message);
     }
 }
 
@@ -470,11 +841,19 @@ async function foldersCommand(file: string, args: string[]): Promise<void> {
     try {
         if (args.length === 0 || (args.length === 1 && args[0] === "--json")) {
             const folders = readLink(file)?.settings?.folders ?? [];
+            const home = await realFolder(homedir());
+            const lines = await Promise.all(
+                folders.map(async (folder) =>
+                    broadFolder(await realFolder(folder), home)
+                        ? `${folder} (ignored: a root, the home folder, or a folder that contains it is never saved)`
+                        : folder,
+                ),
+            );
 
             console.log(
                 args[0] === "--json"
                     ? JSON.stringify(folders)
-                    : folders.join("\n") || "No allowed folders yet.",
+                    : lines.join("\n") || "No saved folders yet.",
             );
 
             return;
@@ -493,7 +872,7 @@ async function foldersCommand(file: string, args: string[]): Promise<void> {
             "Use: pi-pocket runner folders [--json], or pi-pocket runner folders remove <folder> [--config FILE]",
         );
     } catch (error) {
-        fail((error as Error).message);
+        failWith(args.includes("--json"), (error as Error).message);
     }
 }
 
@@ -502,7 +881,7 @@ async function foldersMenu(file: string): Promise<void> {
         const folders = readLink(file)?.settings?.folders ?? [];
 
         if (folders.length === 0) {
-            console.log("  No allowed folders yet.");
+            console.log("  No saved folders yet.");
 
             return;
         }
@@ -529,16 +908,58 @@ async function foldersMenu(file: string): Promise<void> {
     }
 }
 
+async function sessionsMenu(file: string): Promise<void> {
+    for (;;) {
+        const saved = readLink(file);
+        const rows = saved === undefined ? [] : sessionRows(saved);
+
+        if (rows.length === 0) {
+            console.log("  No approved sessions.");
+
+            return;
+        }
+
+        const picked = await choose(
+            "Approved sessions",
+            [
+                ...rows.map((row) => ({
+                    label: `${row.person}: ${row.folder}`,
+                    detail: `revoke; ${row.expiresAt === null ? "no expiry" : `${row.expired ? "expired" : "expires"} ${new Date(row.expiresAt).toLocaleString()}`}`,
+                })),
+                { label: "Revoke all", detail: "each session asks again on its next request" },
+                { label: "Back", detail: "" },
+            ],
+            rows.length + 1,
+            { clear: true },
+        );
+
+        if (picked === undefined || picked === rows.length + 1) {
+            return;
+        }
+
+        const kept =
+            picked === rows.length
+                ? []
+                : (saved!.settings?.sessions ?? []).filter((s) => s.id !== rows[picked]!.id);
+
+        changeSettings(file, { sessions: kept });
+        console.log("  Revoked. The next request asks again.");
+    }
+}
+
 // ─── Asking before sessions ─────────────────────────────────────────────
 
 /** In words: what would start, by whom, where. */
 function describe(question: SessionQuestion): string {
-    const action =
-        question.kind === "move"
-            ? `move a session to ${question.folder}`
-            : `start ${question.kind === "fork" ? "a copy of a session" : "a new session"} on this computer`;
+    const action = question.expired
+        ? `continue a session whose approval expired`
+        : question.kind === "move"
+          ? `move a session to ${question.folder}`
+          : `start ${question.kind === "fork" ? "a copy of a session" : "a new session"} on this computer`;
+    const permission =
+        question.permission === "folder" ? "\n  This folder has no permission yet." : "";
 
-    return `${question.person} wants to ${action}.\n  Server: ${question.server}\n  Folder: ${question.folder}\n  The session can read and change files and run commands as you, also outside this folder.`;
+    return `${question.person} wants to ${action}.${permission}\n  Server: ${question.server}\n  Folder: ${question.folder}\n  The session can read and change files and run commands as you, also outside this folder.`;
 }
 
 /** Ask on this terminal, with the arrow keys; one question at a time. */
@@ -573,7 +994,9 @@ function terminalAsker(): (question: SessionQuestion) => Promise<SessionAnswer> 
                         label: question.broad ? "Allow this session only" : "Allow",
                         detail: question.broad
                             ? "this folder holds everything in it; nothing is saved"
-                            : "also allow later sessions in this folder and its folders",
+                            : question.permission === "folder"
+                              ? "save this folder and approve this session"
+                              : "approve this session",
                     },
                 ],
                 0,
@@ -653,6 +1076,12 @@ function stdioAsker(): (question: SessionQuestion) => Promise<SessionAnswer> {
                     folder: question.folder,
                     kind: question.kind,
                     broad: question.broad,
+                    // Added with session permissions: older programs ignore them.
+                    permission: question.permission,
+                    expired: question.expired,
+                    session: question.session,
+                    totp: question.totp,
+                    expiresInMs: question.expiresInMs,
                 })}`,
             );
         });
@@ -722,11 +1151,11 @@ async function serve(file: string, via: "terminal" | "stdio" | "none"): Promise<
 
     log(`pi-pocket runner ${pocketVersion()}: "${saved.name}", for ${saved.server}`);
     log(
-        current.confirm
-            ? via === "none"
-                ? "Asking before new sessions is on, but nobody can answer here, so sessions are refused. To start them without asking, run: pi-pocket runner settings confirm off"
-                : "Asks before a new session starts here."
-            : "Starts new sessions without asking.",
+        via === "none"
+            ? "Nobody can answer questions here. Sessions are approved only with an authenticator code from Pi Pocket, or without a question in saved folders when stop-asking is on."
+            : current.confirm
+              ? "Asks before a new session starts here."
+              : "Approves new sessions in saved folders without a question.",
     );
 
     if (via === "terminal") {
@@ -764,7 +1193,10 @@ async function status(file: string): Promise<string> {
         `Server: ${saved.server}`,
         `Link file: ${file}`,
         tools,
-        `Ask before new sessions: ${settings.confirm ? "on" : "off"}`,
+        `Stop asking on new sessions: ${settings.confirm ? "off" : "on"}`,
+        `Session expiry with a code: ${settings.totpDays === null ? "no expiry" : `${settings.totpDays} days`}`,
+        `Authenticator: ${saved.settings?.totp === undefined ? "not set up" : "set up"}`,
+        `Approved sessions: ${saved.settings?.sessions?.length ?? 0}`,
         `Plain HTTP: ${settings.allowHttp ? "allowed to this server" : "only to this computer or your tailnet"}`,
         `Share the network with browsers: ${settings.network ? "on" : "off"}`,
         `Browser downloads: ${downloadsLine(settings)}`,
@@ -895,10 +1327,18 @@ async function settingsMenu(file: string): Promise<void> {
             "Runner settings",
             [
                 {
-                    label: `Ask before new sessions: ${settings.confirm ? "on" : "off"}`,
+                    label: `Stop asking on new sessions: ${settings.confirm ? "off" : "on"}`,
                     detail: settings.confirm
-                        ? "this terminal or the desktop app asks first"
-                        : "sessions start without asking",
+                        ? "each new session asks first"
+                        : "sessions in saved folders are approved without a question",
+                },
+                {
+                    label: `Session expiry with a code: ${settings.totpDays === null ? "no expiry" : `${settings.totpDays} days`}`,
+                    detail: "1, 7, 14, 30 days, or no expiry",
+                },
+                {
+                    label: `Authenticator: ${readLink(file)?.settings?.totp === undefined ? "set up" : "turn off"}`,
+                    detail: "approve sessions from Pi Pocket with a code",
                 },
                 {
                     label: `Allow plain HTTP: ${settings.allowHttp ? "on" : "off"}`,
@@ -922,7 +1362,7 @@ async function settingsMenu(file: string): Promise<void> {
             { clear: true },
         );
 
-        if (picked === undefined || picked === 4) {
+        if (picked === undefined || picked === 6) {
             return;
         }
 
@@ -931,8 +1371,53 @@ async function settingsMenu(file: string): Promise<void> {
         if (picked === 0) {
             changeSettings(file, { confirm: !settings.confirm });
         } else if (picked === 1) {
-            changeSettings(file, { allowHttp: !settings.allowHttp });
+            const days = [1, 7, 14, 30, null];
+            const chosen = await choose(
+                "Session expiry with a code",
+                days.map((value) => ({
+                    label:
+                        value === null ? "No expiry" : `${value} ${value === 1 ? "day" : "days"}`,
+                    detail: "after the session's last use",
+                })),
+                Math.max(0, days.indexOf(settings.totpDays)),
+                { clear: true },
+            );
+
+            if (chosen !== undefined) {
+                changeSettings(file, { totpDays: days[chosen]! });
+            }
         } else if (picked === 2) {
+            const saved = readLink(file)!;
+
+            try {
+                if (saved.settings?.totp === undefined) {
+                    await totpSetup(file, saved, false);
+                } else {
+                    const code = await ask("Code from your authenticator");
+                    const state = structuredClone(saved.settings.totp);
+
+                    if (code === "") {
+                        continue;
+                    }
+
+                    if (checkCode(state, code)) {
+                        changeSettings(file, { totp: undefined });
+                        console.log("  Authenticator turned off.");
+                    } else {
+                        changeSettings(file, { totp: state });
+                        console.log(`  ${WRONG_CODE}`);
+                    }
+                }
+            } catch (error) {
+                if (!(error instanceof Problem)) {
+                    throw error;
+                }
+
+                console.log(`  ${error.message}`);
+            }
+        } else if (picked === 3) {
+            changeSettings(file, { allowHttp: !settings.allowHttp });
+        } else if (picked === 4) {
             changeSettings(file, { network: !settings.network });
         } else {
             const typed = await ask("Downloads folder (default for the temporary folder)");
@@ -1012,10 +1497,19 @@ async function menu(file: string): Promise<void> {
                           },
                       },
                       {
-                          label: "Allowed folders",
-                          detail: "folders where new sessions start without asking",
+                          label: "Saved folders",
+                          detail: "folders with permission",
                           run: async () => {
                               await foldersMenu(file);
+
+                              return false;
+                          },
+                      },
+                      {
+                          label: "Approved sessions",
+                          detail: "revoke one or all",
+                          run: async () => {
+                              await sessionsMenu(file);
 
                               return false;
                           },
@@ -1039,7 +1533,7 @@ async function menu(file: string): Promise<void> {
                                       { label: "Cancel", detail: "" },
                                       {
                                           label: "Unlink",
-                                          detail: "also remove it in Menu > Runners on the server",
+                                          detail: "delete the link and all runner settings, including the authenticator",
                                       },
                                   ],
                                   0,
@@ -1048,9 +1542,7 @@ async function menu(file: string): Promise<void> {
 
                               if (sure === 1) {
                                   rmSync(file, { force: true });
-                                  console.log(
-                                      "  Deleted the link. In Pi Pocket, also remove this computer in Menu > Runners.",
-                                  );
+                                  console.log(`  ${UNLINKED.replace(/\n/g, "\n  ")}`);
                               }
 
                               return false;
@@ -1136,10 +1628,15 @@ export async function main(argv: string[]): Promise<void> {
             return;
         case "folders":
             return foldersCommand(file, rest);
+        case "sessions":
+            return sessionsCommand(file, rest);
+        case "totp":
+            return totpCommand(file, rest);
         case "unlink":
+            // No code: unlinking only removes access. The settings, authenticator included, are in the link file.
             rmSync(file, { force: true });
             console.log(
-                "Deleted the saved link from this computer.\nIn Pi Pocket, also remove this computer from Menu > Runners to stop its runner and cancel its key.",
+                rest.includes("--json") ? JSON.stringify({ ok: true, unlinked: true }) : UNLINKED,
             );
 
             return;

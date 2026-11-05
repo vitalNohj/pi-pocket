@@ -252,7 +252,8 @@ async function shellScan(env: RemoteEnv, cwd: string, home: string): Promise<Fou
     const result = await env.exec(
         ["sh", "-c", SCRIPT, "sh", marker, cwd, home, String(MAX_FILE)],
         {
-            cwd: home,
+            // In the session's folder: its runner refuses a command elsewhere (`docs/runners.md`).
+            cwd,
             timeout: SCAN_TIMEOUT_S,
             onOutput: (text, _context, { stream }) => {
                 if (stream !== "stdout" || tooMuch) {

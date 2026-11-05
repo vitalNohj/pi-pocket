@@ -69,7 +69,7 @@ async function checkoutOf(
         return { repo, branch };
     }
 
-    const env = app.runners.env(runner, cwd);
+    const env = app.runners.env(runner, cwd, app.runnerScope(asking));
     const [url, branch] = await Promise.all([
         remoteGit(env, cwd, ["remote", "get-url", "origin"], context),
         remoteGit(env, cwd, ["rev-parse", "--abbrev-ref", "HEAD"], context),

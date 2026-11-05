@@ -1,5 +1,6 @@
 /** Allowed working folders belong to this computer, never to the server. */
 import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 
 function comparable(folder: string, platform: NodeJS.Platform): string {
@@ -50,9 +51,13 @@ export async function realFolder(folder: string): Promise<string> {
 
 /** Missing saved folders do not grant access, including paths through a replaced symlink. */
 export async function coveredFolder(folder: string, folders: readonly string[]): Promise<boolean> {
+    const home = await realFolder(homedir());
+
     for (const saved of folders) {
         try {
-            if (folderContains(await realpath(saved), folder)) {
+            const real = await realpath(saved);
+
+            if (!broadFolder(real, home) && folderContains(real, folder)) {
                 return true;
             }
         } catch {

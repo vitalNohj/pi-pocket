@@ -7,6 +7,7 @@ import { BrowserButton, BrowserPanel } from "./browser-panel.js";
 import { browserAvailable, setBrowserOpen, toggleBrowser } from "./browser.js";
 import { PeopleButton, PeoplePanel } from "./chat.js";
 import { Composer, openingByAlt, shortModel, StatusLine } from "./composer.js";
+import { SessionApproval } from "./runner-wait.js";
 import { useChanges } from "./diff.js";
 import {
     FilesButton,
@@ -603,7 +604,7 @@ function App() {
                         // PiP's conversation as a board has PiP's own box, the one its panel has.
                         (pipBoard()
                             ? html`<${PipBoardBox}><${StatusLine} /><//>`
-                            : html`<${Composer} key=${state.conversationId} />`)
+                            : html`<${SessionApproval} /><${Composer} key=${state.conversationId} />`)
                     }`
                           : html`<div class="home-list" data-part="home-list">
                           <${RailNav} />

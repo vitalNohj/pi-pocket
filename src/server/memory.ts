@@ -155,11 +155,11 @@ export class Memory {
         // Pi's turns and tools reach this only with the computer online (they wait for it, `app.ts`). The Memory sheet
         // does not wait: while the computer is offline it shows the project as last found, or the folder until then.
         if (runner !== undefined && !app.runners.link(runner).online) {
-            return cached?.project ?? this.#resolveProject(folder, runner);
+            return cached?.project ?? this.#resolveProject(folder, runner, conversationId);
         }
 
         if (cached === undefined || now - cached.at > PROJECT_FOR_MS) {
-            cached = { at: now, project: this.#resolveProject(folder, runner) };
+            cached = { at: now, project: this.#resolveProject(folder, runner, conversationId) };
             this.#projects.set(cacheKey, cached);
         }
 
@@ -167,7 +167,11 @@ export class Memory {
     }
 
     /** Resolve only on the computer that owns the folder; a failed repository lookup never stops memory. */
-    async #resolveProject(folder: string, runner: string | undefined): Promise<Project> {
+    async #resolveProject(
+        folder: string,
+        runner: string | undefined,
+        conversationId: ConversationId,
+    ): Promise<Project> {
         const app = this.#app;
         let project: Project;
 
@@ -176,7 +180,7 @@ export class Memory {
 
             project = { ...local, ...(repo === undefined ? {} : { repo }) };
         } else {
-            const env = app.runners.env(runner, folder);
+            const env = app.runners.env(runner, folder, app.runnerScope(conversationId));
             const [common, repo] = await Promise.all([
                 remoteGit(
                     env,
