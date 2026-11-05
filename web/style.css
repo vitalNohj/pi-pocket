@@ -22220,6 +22220,7 @@ pre.gallery-code {
 
 .keep-warm-stops :is(th, td) + :is(th, td) {
     padding-left: 10px;
+}
 
 /* All artifacts: a row for each, in the session's own group (it shares `.running`'s frame), with its current version. */
 .overview-group {
