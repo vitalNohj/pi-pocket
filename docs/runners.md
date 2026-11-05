@@ -166,7 +166,19 @@ These also work, on that computer:
 - Files mentioned with `@`, read on that computer.
 - Attachments: each is copied to `pi-pocket-uploads/<session>/` in that computer's temporary folder when the message is sent, and the message gives that path.
 
-These are not available yet in sessions on another computer, because they use the server's disk: background tasks, artifacts, design, git worktrees, and drop-in extensions. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
+These are not available yet in sessions on another computer, because they use the server's disk: background tasks, artifacts, design, and git worktrees. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
+
+### Extensions
+
+A session on another computer runs with the built-in extensions that work there, and with the drop-ins that say they do. A drop-in says so with one line in its module:
+
+```ts
+export const remoteSessions = true;
+```
+
+Other drop-ins load only in sessions on the server. A drop-in that the owner turns on or off, or that changes the line, is added to or taken out of every session on another computer, existing ones too.
+
+The line is a promise by the module's author: its tools reach the session's files and commands only through the session (`api.env`), which is that computer's. What the module itself does with Node (`node:fs`, `node:child_process`) runs on the server, in the server's folders. A module that only works on the conversation (its history, compaction, prompts, models) needs nothing more.
 
 ## The browser
 

@@ -29,7 +29,6 @@ import { ChooseModelError, describe, HttpError } from "./errors.ts";
 import { defang, INVISIBLE_CLASS } from "./fence.ts";
 import { isThinkingLevel, levelFor, resolveModel, THINKING_LEVELS } from "./models.ts";
 import { requestFor } from "./requests.ts";
-import { REMOTE_EXTENSIONS } from "./runners.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -874,7 +873,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             });
 
             if (runner !== undefined) {
-                childAgent.extensions = [...REMOTE_EXTENSIONS];
+                childAgent.extensions = app.remoteExtensions();
             }
 
             sessions.items[String(child.id)] = {

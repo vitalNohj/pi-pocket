@@ -856,4 +856,9 @@ export type ExtensionModule = {
     ) => Extension | readonly Extension[] | void | Promise<Extension | readonly Extension[] | void>;
     /** The version of the extension API the module needs, when it says: a newer one than the app's is not loaded. */
     pocketApi?: unknown;
+    /**
+     * True: its extensions also load in sessions on another computer (`docs/runners.md`). The module reaches the
+     * session's files and commands only through the session (`api.env`), so they are that computer's.
+     */
+    remoteSessions?: unknown;
 };
