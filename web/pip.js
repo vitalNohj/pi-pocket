@@ -5,7 +5,7 @@
 // events), so the session behind it stays as it was.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { followUpText } from "./artifact-bridge.js";
-import { backRoute, useBack } from "./back.js";
+import { useBack } from "./back.js";
 import { boxKey, keyBox } from "./box-keys.js";
 import { useDragToClose } from "./gestures.js";
 import { createPipDraft } from "./pip-attachments.js";
@@ -15,12 +15,16 @@ import { usePipResize } from "./pip-window.js";
 import {
     api,
     attempt,
-    insertIntoComposer,
+    giveBackQuote,
     isRow,
     navigate,
     notify,
     openSheet,
+    dropQuote,
+    onItsWay,
+    showsPip,
     store,
+    takeInsert,
     uid,
 } from "./store.js";
 import { spendTap } from "./taps.js";
@@ -132,6 +136,8 @@ let seq = 0;
 let toldConnection = null;
 /** The server's answer to the last "open": PiP's state, with its conversation's id. */
 let opening = null;
+/** PiP's box is to take the focus as it shows, also on a phone (`focusComposer`). */
+let focusWanted = false;
 
 /** Tell the server whether this tab's panel shows: while it does, the server sends PiP's conversation. */
 function tellServer(on) {
@@ -170,15 +176,12 @@ function tellServer(on) {
 /** Where PiP opens, as Appearance says: `"floating"` (the corner, or a phone's sheet), or `"board"`. */
 export const pipPlace = () => (prefs()?.pip === "board" ? "board" : "floating");
 
-/** PiP's conversation is the route: open as a page, perhaps under a board (Running now) for now. */
-const inPip = (state) =>
-    state.conversationId !== null &&
-    state.pip?.id !== undefined &&
-    state.conversationId === state.pip.id;
-
-/** PiP open as a board: its conversation shows in the session's place, with nothing over that place. */
+/**
+ * PiP open as a board: its conversation is the route (`showsPip`), in the session's place, with nothing (Running now, an
+ * extension's page) over that place.
+ */
 export const pipBoard = (state = store.state) =>
-    inPip(state) && !state.board && state.page === null;
+    showsPip(state) && !state.board && state.page === null;
 
 /** PiP shows, in either place: its floating panel open, or its conversation in the session's place. */
 export const pipShown = (state = store.state) => state.pipOpen || pipBoard(state);
@@ -224,12 +227,13 @@ store.subscribe((state) => {
         place = now;
 
         // Moved after this change has reached every listener (a change made from inside one would reach the listeners
-        // after it out of order), and only if the setting and PiP's place are still what they were by then.
+        // after it out of order), and only if the setting and PiP's place are still what they were by then. PiP's quote
+        // is PiP's wherever it shows, so it stays as it is.
         if (now === "board" && state.pipOpen) {
             queueMicrotask(() => {
                 if (pipPlace() === "board" && store.state.pipOpen) {
                     closePip();
-                    openBoard(undefined, true);
+                    openBoard(true);
                 }
             });
 
@@ -340,10 +344,10 @@ const placeNow = () => {
 };
 
 /**
- * Open PiP's conversation in the session's place, as a session opens; with `text`, put it in its message box. What is
- * over that place goes, as for Running now, but with `keepSheet` the sheet that moved it there (Appearance) stays.
+ * Open PiP's conversation in the session's place, as a session opens. What is over that place goes, as for Running now,
+ * but with `keepSheet` the sheet that moved it there (Appearance) stays.
  */
-async function openBoard(text, keepSheet = false) {
+async function openBoard(keepSheet = false) {
     const before = placeNow();
     const id = await pipConversation();
 
@@ -364,25 +368,24 @@ async function openBoard(text, keepSheet = false) {
         page: null,
         ...(keepSheet ? {} : { sheet: null }),
     });
-
-    // Into PiP's own box only, once its conversation shows.
-    if (text) {
-        insertIntoComposer(text, [], { conversationId: id });
-    }
 }
 
 /** Open PiP where Appearance says; with `text`, put it in PiP's message box. Resolves once it is open as a board. */
 export function openPip(text) {
+    // A focus asked for before, by an open that did not show PiP, is not this one's.
+    focusWanted = false;
+
     if (!pipAvailable()) {
         return Promise.resolve();
     }
 
-    if (pipPlace() === "board") {
-        return openBoard(text);
-    }
-
+    // PiP's box takes it as it shows, in either place.
     if (text) {
         store.set({ pipDraft: { text, n: (store.state.pipDraft?.n ?? 0) + 1 } });
+    }
+
+    if (pipPlace() === "board") {
+        return openBoard();
     }
 
     if (store.state.pipOpen) {
@@ -403,20 +406,9 @@ export function openPip(text) {
  * next message to PiP goes with it quoted first. The server tells PiP, unseen, which session it came from.
  */
 export async function quotePip(passage, session) {
-    const about = typeof session === "number" ? session : undefined;
-
-    if (pipPlace() === "board") {
-        // As a board, PiP's box is the session composer's: its quote strip, once PiP's conversation shows.
-        await openPip();
-
-        if (pipBoard()) {
-            store.set({ replyQuote: passage, replyAbout: about ?? null });
-        }
-
-        return;
-    }
-
-    store.set({ pipQuote: { text: passage, session: about } });
+    store.set({
+        pipQuote: { text: passage, ...(typeof session === "number" ? { session } : {}) },
+    });
     await openPip();
     focusComposer();
 }
@@ -426,17 +418,12 @@ export function closePip() {
     const open = store.state.pipOpen;
 
     if (pipBoard()) {
-        // The route it was opened over (`over`, kept on its history entry through back, forward, and a reload); none
-        // when reached another way (the address).
+        // Back to the route it was opened over (`over`, kept on its history entry through back, forward, and a reload),
+        // so no entry of PiP's stays to come back to; a sheet still open (Appearance, moving PiP to the corner) stays
+        // over it. Reached another way (the address), it gives the place to the home screen.
         const { over: from, sheet } = store.state;
 
-        // Back there, past whatever is open over it. A sheet still open (Appearance, moving PiP to the corner) stays,
-        // over that route; and reached another way, it gives the place to the home screen.
-        if (from !== null && !sheet) {
-            backRoute();
-        } else {
-            navigate(from?.id ?? null, { sheet });
-        }
+        navigate(from?.id ?? null, { sheet, back: from !== null });
     }
 
     if (!open || !store.state.pipOpen) {
@@ -451,15 +438,8 @@ export function closePip() {
 
 export const togglePip = () => (pipShown() ? closePip() : openPip());
 
-/** Put `text` in PiP's box, after what is there, and open the panel. */
+/** Put `text` in PiP's box, after what is there, and open PiP. */
 function draftPip(text) {
-    // As a board, PiP's box is its conversation's, which keeps its own draft.
-    if (pipPlace() === "board") {
-        openPip(text);
-
-        return;
-    }
-
     const draft = personStorage.get(DRAFT_KEY)?.trim();
 
     openPip(draft ? `${draft}\n\n${text}` : text);
@@ -598,8 +578,17 @@ function PipContext({ stats, window }) {
     </span>`;
 }
 
+/** Focus PiP's box: now, or as it shows, when its conversation comes after the route (the board's first open). */
 function focusComposer() {
-    requestAnimationFrame(() => document.querySelector(".pip-composer textarea")?.focus());
+    focusWanted = true;
+    requestAnimationFrame(() => {
+        const box = document.querySelector(".pip-composer textarea");
+
+        if (box) {
+            focusWanted = false;
+            box.focus();
+        }
+    });
 }
 
 /** A message in PiP's conversation without the "[from: Name]" a server with several people puts first. */
@@ -875,7 +864,11 @@ function Welcome({ id, name, hasModel }) {
     </div>`;
 }
 
-function Composer({ id, busy }) {
+/**
+ * PiP's one message box, with its one draft (`composerDraft`): in its panel, or with `board` in the session's place,
+ * where it takes what is put into that place's box (`insertIntoComposer`) and has the session box's theme parts.
+ */
+function Composer({ id, busy, board = false }) {
     const [saved, setSaved] = useState(() => {
         composerDraft.syncText();
 
@@ -914,10 +907,12 @@ function Composer({ id, busy }) {
     const dictation = useDictation(ref, change, { top: true });
 
     useLayoutEffect(fit, [text]);
-    // A phone's keyboard would cover the panel as it opens: there, the box waits for a tap. Elsewhere it takes the focus
-    // as it mounts, in the same task as the key that opened it, so the next keys land here.
+    // A phone's keyboard would cover the panel as it opens: there, the box waits for a tap, unless one asked for the
+    // focus (Ask PiP). Elsewhere it takes the focus as it mounts, in the same task as the key that opened it, so the
+    // next keys land here.
     useLayoutEffect(() => {
-        if (!NARROW.matches) {
+        if (!NARROW.matches || focusWanted) {
+            focusWanted = false;
             ref.current?.focus({ preventScroll: true });
         }
     }, []);
@@ -929,6 +924,21 @@ function Composer({ id, busy }) {
             store.set({ pipDraft: null });
         }
     }, [draft?.n]);
+
+    const insert = board ? store.state.composerInsert : null;
+
+    useEffect(() => {
+        const taken = insert && takeInsert(composerDraft.state.text, store.state.conversationId);
+
+        if (taken?.files.length > 0) {
+            composerDraft.addFiles(taken.files);
+        }
+
+        if (taken?.text) {
+            change(taken.text);
+            ref.current?.focus();
+        }
+    }, [insert?.n]);
 
     const submit = async (event) => {
         event?.preventDefault();
@@ -959,8 +969,10 @@ function Composer({ id, busy }) {
             return;
         }
 
-        // What shows is what goes: words still coming would land in the emptied box.
+        // What shows is what goes: words still coming would land in the emptied box. The quote goes with the words, out
+        // of PiP's box at once, so neither of PiP's places offers it again while it goes.
         dictation.stop(true);
+        dropQuote(quoted);
         let success = false;
 
         try {
@@ -978,9 +990,8 @@ function Composer({ id, busy }) {
             composerDraft.finish(token, success);
         }
 
-        // Sent with it: the quote goes, unless another took its place meanwhile.
-        if (success && quoted && store.state.pipQuote === quoted) {
-            store.set({ pipQuote: null });
+        if (!success) {
+            giveBackQuote(quoted, true);
         }
     };
 
@@ -1025,6 +1036,12 @@ function Composer({ id, busy }) {
         }}
     >
         ${
+            id !== undefined &&
+            store.state.me?.role === "owner" &&
+            memoryAvailable(id) &&
+            html`<${PendingMemories} id=${id} before=${board ? undefined : closePip} />`
+        }
+        ${
             files.length > 0 &&
             html`<div class="pip-attachments" aria-label="Files attached to PiP">
                 ${files.map(
@@ -1040,6 +1057,7 @@ function Composer({ id, busy }) {
                             type="button"
                             class="icon-button pip-attachment-remove"
                             aria-label=${`Remove ${file.name}`}
+                            disabled=${onItsWay(pending?.files, file)}
                             onClick=${() => composerDraft.removeFile(file.key)}
                         >
                             <${Icon} name="close" size=${14} />
@@ -1057,13 +1075,17 @@ function Composer({ id, busy }) {
                     type="button"
                     class="icon-button small"
                     aria-label="Remove the quote"
-                    onClick=${() => store.set({ pipQuote: null })}
+                    onClick=${() => dropQuote(quote)}
                 >
                     <${Icon} name="close" size=${12} />
                 </button>
             </div>`
         }
-        <form class="pip-composer" onSubmit=${submit}>
+        <form
+            class="pip-composer"
+            data-part=${board ? "message-box" : undefined}
+            onSubmit=${submit}
+        >
             <input
                 class="pip-file-picker"
                 ref=${picker}
@@ -1133,6 +1155,7 @@ function Composer({ id, busy }) {
                     : html`<button
                           type="submit"
                           class="icon-button pip-send"
+                          data-part=${board ? "send-button" : undefined}
                           aria-label="Send to PiP"
                           disabled=${sendDisabled}
                       >
@@ -1154,6 +1177,51 @@ const pendingWhen = (item, busy) =>
 /** Who sent a message, as the server writes it at the start when several people use Pi (`FROM_PREFIX`). */
 const FROM = /^\[from: [^\]\n]{1,60}\] /;
 
+/** Your messages in `view` (PiP's) that wait while PiP works: shown at once, as waiting, until PiP takes them. */
+function Waiting({ id, view, busy }) {
+    const me = store.state.me;
+
+    return (view.inbox ?? [])
+        .filter((item) => item.by === me?.id && (item.mode === "steer" || item.mode === "followUp"))
+        .map(
+            (item) => html`<div class="pip-you pending" key=${`pending-${item.id}`}>
+                <div>
+                    ${
+                        typeof item.label === "string" && item.label !== ""
+                            ? `▸ ${item.label}${item.summary ? `: ${item.summary}` : ""}`
+                            : (item.text ?? "").replace(FROM, "")
+                    }
+                </div>
+                <div class="pip-pending-line">
+                    <span>${pendingWhen(item, busy)}</span>
+                    <button
+                        type="button"
+                        class="pip-pending-withdraw"
+                        onClick=${() =>
+                            attempt(() => api(`c/${id}/withdraw`, { submissionId: item.id }))}
+                    >
+                        Withdraw
+                    </button>
+                </div>
+            </div>`,
+        );
+}
+
+/**
+ * PiP's conversation as a board: in the session composer's place, PiP's own box (the panel's, with the same draft),
+ * the messages that wait over it, and `children` (the status line) under it.
+ */
+export function PipBoardBox({ children }) {
+    const { view, pip } = store.state;
+    const busy = view.live.busy === true;
+
+    return html`<footer class="composer-wrap pip-board-box" data-part="composer">
+        <div class="pip-waiting"><${Waiting} id=${pip?.id} view=${view} busy=${busy} /></div>
+        <${Composer} id=${pip?.id} busy=${busy} board=${true} />
+        ${children}
+    </footer>`;
+}
+
 function PipPanel({ leaving, scrim }) {
     const { pip, pipView: view, me } = store.state;
     const ref = useRef(null);
@@ -1167,12 +1235,6 @@ function PipPanel({ leaving, scrim }) {
               .map((entryId) => view.entries.get(entryId))
               .filter((entry) => entry && isRow(entry))
               .slice(-ROWS)
-        : [];
-    // Your messages that wait while PiP works: shown at once, as waiting, until PiP takes them.
-    const pending = ready
-        ? (view.inbox ?? []).filter(
-              (item) => item.by === me?.id && (item.mode === "steer" || item.mode === "followUp"),
-          )
         : [];
     const blocks = live.generation?.message?.blocks ?? [];
     const items = itemsOf(rows, blocks.length > 0 ? { kind: "assistant", blocks } : null);
@@ -1337,28 +1399,7 @@ function PipPanel({ leaving, scrim }) {
                     <span>Thinking</span>
                 </div>`
             }
-            ${pending.map(
-                (item) => html`<div class="pip-you pending" key=${`pending-${item.id}`}>
-                    <div>
-                        ${
-                            typeof item.label === "string" && item.label !== ""
-                                ? `▸ ${item.label}${item.summary ? `: ${item.summary}` : ""}`
-                                : (item.text ?? "").replace(FROM, "")
-                        }
-                    </div>
-                    <div class="pip-pending-line">
-                        <span>${pendingWhen(item, busy)}</span>
-                        <button
-                            type="button"
-                            class="pip-pending-withdraw"
-                            onClick=${() =>
-                                attempt(() => api(`c/${id}/withdraw`, { submissionId: item.id }))}
-                        >
-                            Withdraw
-                        </button>
-                    </div>
-                </div>`,
-            )}
+            ${ready && html`<${Waiting} id=${id} view=${view} busy=${busy} />`}
         </div>
         ${
             waiting.length > 0 &&
@@ -1376,12 +1417,6 @@ function PipPanel({ leaving, scrim }) {
                     Review
                 </button>
             </div>`
-        }
-        ${
-            ready &&
-            me?.role === "owner" &&
-            memoryAvailable(id) &&
-            html`<${PendingMemories} id=${id} before=${closePip} />`
         }
         <${Composer} id=${id} busy=${busy} />
     </section>`;

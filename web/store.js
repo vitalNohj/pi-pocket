@@ -1,5 +1,5 @@
 // App state, the server connection, and API calls. Components read `store.state` and re-render on `store.subscribe`.
-import { onRoute, pushRoute, routeState } from "./back.js";
+import { onRoute, popRoute, pushRoute, routeState } from "./back.js";
 import { hostCan, onPageVisibility, pageVisible } from "./host.js";
 import { sessionForest, unfolded } from "./session-tree.js";
 import { liveMessage } from "./live.js";
@@ -338,10 +338,12 @@ export const store = {
         auth: null,
         /** A transcript message the next chat message discusses: `{ entryId, text }`. */
         chatQuote: null,
+        /** A passage the session's next message quotes (Reply): `{ text }`. Leaving the session drops it. */
         replyQuote: null,
-        /** The session the reply quote came from, when PiP's box (as a board) asks about it: its number, or null. */
-        replyAbout: null,
-        /** A passage for PiP's box to ask about (Ask PiP): `{ text, session }`, quoted before its next message. */
+        /**
+         * A passage PiP's next message quotes (Ask PiP, or Reply on PiP's own board): `{ text, session? }`, with the
+         * session it came from. One for PiP wherever it shows, so moving PiP between its places keeps it as it is.
+         */
         pipQuote: null,
         /** Text to put into the message box to Pi: `{ text, n }`, picked up by the composer. */
         composerInsert: null,
@@ -479,6 +481,13 @@ function routeOver() {
 export const openId = (state = store.state) =>
     state.over === null ? state.conversationId : state.over.id;
 
+/**
+ * The session's Reply quote stays while that session stays open (`openId`): under a route opened over it (PiP's board,
+ * whose box has PiP's quote) and back from there. Going to another session drops it.
+ */
+const keptReply = (state, id, over) =>
+    (over === null ? id : over.id) === openId(state) ? { replyQuote: state.replyQuote } : {};
+
 // ─── People: presence, typing, and the side chat ───────────────────────────────────
 
 const CHAT_LIMIT = 500;
@@ -494,7 +503,6 @@ function peopleFor(id, reads = store.state.chatReads) {
         notes: null,
         chatQuote: null,
         replyQuote: null,
-        replyAbout: null,
         chatRead: id === null ? 0 : (reads[id] ?? 0),
     };
 }
@@ -904,6 +912,7 @@ function reloadAccount(to) {
     changingAccount = true;
     personStorage.identify(null);
     notesDrafts.clear();
+    waitingInserts = [];
     source?.close();
     store.set({ me: null, composerInsert: null, auth: null, pip: null, pipOpen: false });
 
@@ -2539,14 +2548,20 @@ export function closeSignIn(flowId) {
 /**
  * Go to a conversation (null: the home screen). With `over` (`{ id }`, the route under it), it opens over that route
  * as a board does: the entry keeps it, and the list keeps that session marked open (`openId`) until another route.
+ * With `back`, it goes back to the route that one was opened over, keeping what stays open over both (a sheet).
  */
-export function navigate(conversationId, { replace = false, sheet = null, over = null } = {}) {
+export function navigate(
+    conversationId,
+    { replace = false, sheet = null, over = null, back = false } = {},
+) {
     const path = conversationId === null ? "/" : `/s/${conversationId}`;
 
     // A new route says what it is over; the same route keeps what its entry already says.
     const route = location.pathname !== path || store.state.conversationId !== conversationId;
 
-    if (route) {
+    if (route && back) {
+        popRoute(path);
+    } else if (route) {
         pushRoute(path, { replace, state: over === null ? {} : { over } });
     }
 
@@ -2577,6 +2592,7 @@ export function navigate(conversationId, { replace = false, sheet = null, over =
         conversationId,
         ...keptView(conversationId),
         ...peopleFor(conversationId),
+        ...keptReply(state, conversationId, route ? over : state.over),
         ...layoutPatch(layoutFor(conversationId)),
         browser: null,
         history: null,
@@ -2635,6 +2651,7 @@ onRoute(() => {
             conversationId: id,
             ...keptView(id),
             ...peopleFor(id),
+            ...keptReply(store.state, id, routeOver()),
             ...layoutPatch(layoutFor(id)),
             browser: null,
             history: null,
@@ -2749,25 +2766,37 @@ export async function start() {
 
 const current = () => store.state.conversationId;
 
+/**
+ * A send's answer, which names what the send made (`key`). One that does not was not the server's, or was cut short:
+ * an error with no status, as for no answer, since what came of the send is not known.
+ */
+const answered = (key) => (answer) => {
+    if (answer?.[key] === undefined) {
+        throw new ApiError(undefined, "The answer could not be read. Send it again: it goes once.");
+    }
+
+    return answer;
+};
+
 export const actions = {
     /** `inlineFiles`: the files the message mentions with @ go along with it. */
-    /** `about`: the session a quoted passage came from, for PiP's own conversation only. */
-    submit: (text, attachments, mode, inlineFiles = false, about = undefined) =>
+    submit: (text, attachments, mode, inlineFiles = false, requestId = uid()) =>
         api(`c/${current()}/submit`, {
             text,
             attachments,
             mode,
-            requestId: uid(),
+            requestId,
             ...(inlineFiles ? { inlineFiles } : {}),
-            ...(about === undefined ? {} : { about }),
-        }),
+        }).then(answered("submissionId")),
     /** Run a command in the session's folder (`!`); `context: false` keeps it from Pi (`!!`). */
     shell: (command, context, requestId = uid()) =>
-        api(`c/${current()}/shell`, { command, context, requestId }),
+        api(`c/${current()}/shell`, { command, context, requestId }).then(answered("taskId")),
     stopShell: (taskId) => api(`c/${current()}/shell/${taskId}/stop`, {}),
     /** Run an extension's command; sending the same request id again finds the first run. */
     extensionCommand: (commandId, args, requestId = uid()) =>
-        api(`c/${current()}/extension-commands`, { commandId, args, requestId }),
+        api(`c/${current()}/extension-commands`, { commandId, args, requestId }).then(
+            answered("taskId"),
+        ),
     /** A file or folder for the viewer. */
     view: (path) => api(`c/${current()}/view?path=${encodeURIComponent(path)}`),
     /** What changed in the session's folder: git's uncommitted changes, and Pi's edits. */
@@ -2793,7 +2822,7 @@ export const actions = {
     withdraw: (submissionId) => api(`c/${current()}/withdraw`, { submissionId }),
     /** Move one's own queued message to "steer" or "followUp", or send it now with "interrupt". */
     move: (submissionId, mode) => api(`c/${current()}/move`, { submissionId, mode }),
-    editQueued: (submissionId) => api(`c/${current()}/edit-queued`, { submissionId }),
+    editQueued: (submissionId, id = current()) => api(`c/${id}/edit-queued`, { submissionId }),
     configure: (change) => api(`c/${current()}/configure`, change),
     /** The owner's model and thinking level for new sessions, `{ provider, modelId, thinkingLevel }`; null clears it. */
     setDefaultModel: (choice) => api("settings", { defaultModel: choice }),
@@ -3106,26 +3135,106 @@ export function openSheet(sheet) {
 }
 
 /**
- * Put text into the message box to Pi (after what is there: on a new paragraph, or with `inline`, after a space), and
- * files to attach, and close any sheet so it shows. With `conversationId`, only that conversation's box takes it, once
- * it shows: a session shown before it does not.
+ * Put text into the message box in the session's place (after what is there: on a new paragraph, or with `inline`,
+ * after a space), and files to attach, and close any sheet so it shows. The box of the conversation in that place
+ * then takes it (`takeInsert`), also when it waits for a send.
  */
-export function insertIntoComposer(text, files = [], { inline = false, conversationId } = {}) {
+export function insertIntoComposer(text, files = [], { inline = false } = {}) {
+    waitingInserts.push({ text, files, inline, for: store.state.conversationId });
     store.set((state) => ({
         sheet: null,
-        composerInsert: {
-            text,
-            files,
-            inline,
-            conversationId,
-            n: (state.composerInsert?.n ?? 0) + 1,
-        },
+        composerInsert: { n: (state.composerInsert?.n ?? 0) + 1 },
     }));
 }
 
-export function quoteReply(text) {
-    store.set({ replyQuote: text, replyAbout: null });
+/**
+ * What `insertIntoComposer` put that no box took yet, in order, each for the conversation it was put in (null: put with
+ * none open, for the next box that shows).
+ */
+let waitingInserts = [];
+
+/**
+ * Take, once, what `insertIntoComposer` put for `conversationId` that no box took yet: its files, and its text after
+ * `current` (the box's words), or null for none. Null when nothing waits for it.
+ */
+export function takeInsert(current, conversationId) {
+    const forThis = (insert) => insert.for === conversationId || insert.for === null;
+    const mine = waitingInserts.filter(forThis);
+
+    if (mine.length === 0) {
+        return null;
+    }
+
+    waitingInserts = waitingInserts.filter((insert) => !forThis(insert));
+    let text = current;
+
+    for (const insert of mine) {
+        if (insert.text !== "") {
+            const gap = insert.inline ? " " : "\n\n";
+
+            text =
+                text.trim() === ""
+                    ? insert.text
+                    : `${text.replace(/\s+$/, "")}${gap}${insert.text}`;
+        }
+    }
+
+    return {
+        files: mine.flatMap((insert) => insert.files ?? []),
+        text: mine.some((insert) => insert.text !== "") ? text : null,
+    };
 }
+
+/**
+ * Whether the conversation in the session's place is PiP's (as a board): as its view says, which comes before PiP's id
+ * may, after a reload, or as PiP's id says.
+ */
+export const showsPip = (state = store.state) =>
+    state.conversationId !== null &&
+    (state.conversationId === state.pip?.id || state.view.conversation?.pip === true);
+
+/** Reply to a passage of the conversation shown: on PiP's board, it is PiP's quote. */
+export function quoteReply(text) {
+    store.set(showsPip() ? { pipQuote: { text } } : { replyQuote: { text } });
+}
+
+/**
+ * Take away `quote` from the box that holds it, never another one put there meanwhile: dismissed, or as a send takes it.
+ * A send holds its quote while it goes, so no box shown again meanwhile offers it twice.
+ */
+export function dropQuote(quote) {
+    if (!quote) {
+        return;
+    }
+
+    if (quote === store.state.replyQuote) {
+        store.set({ replyQuote: null });
+    } else if (quote === store.state.pipQuote) {
+        store.set({ pipQuote: null });
+    }
+}
+
+/**
+ * A send that did not go gives its quote back, unless another took its place meanwhile: to PiP's box (`pip`), or to the
+ * box of session `id` while it is still open.
+ */
+export function giveBackQuote(quote, pip, id) {
+    const free = pip
+        ? store.state.pipQuote === null
+        : store.state.replyQuote === null && openId() === id;
+
+    if (quote && free) {
+        store.set(pip ? { pipQuote: quote } : { replyQuote: quote });
+    }
+}
+
+/**
+ * Whether `part` of a message box (a file, the quote) is in `going`, what a send on its way holds. The rule, the same
+ * in the session's box and PiP's: a send on its way locks what it sends (its words, files, and quote), which shows as
+ * on its way and cannot be changed or removed, by a key, dictation, or a ×. The rest stays free: a file added
+ * meanwhile, and in PiP's box, which empties as it sends, the next words.
+ */
+export const onItsWay = (going, part) => Boolean(part) && going?.includes(part) === true;
 
 /** Open the chat to discuss a transcript message: the next chat message quotes it. */
 export function discuss(entryId, text) {
