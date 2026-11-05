@@ -24,6 +24,7 @@ import {
     type ApprovalMethod,
 } from "./approvals.ts";
 import type { TotpState } from "./totp.ts";
+import { Activity, type ActivityOptions, type ActivityState } from "./activity.ts";
 import { RequestGate, sessionScope } from "./request-gate.ts";
 import type { RunnerTools } from "./protocol.ts";
 import {
@@ -138,6 +139,10 @@ export type RunnerOptions = {
     ask?: (question: SessionQuestion) => Promise<SessionAnswer>;
     /** Check the server's transport before each connect; tests and HTTPS skip it. Default: `checkTransport`. */
     transport?: (server: string, allowHttp: boolean) => Promise<Transport>;
+    /** Told when sessions start or stop working on this computer, and where (`activity.ts`). */
+    activity?: (state: ActivityState) => void;
+    /** Smoothing of `activity`; tests shorten it. */
+    activityTiming?: Omit<ActivityOptions, "now">;
 };
 
 /** How long the runner waits for its person; the server waits 10 s longer (`CONFIRM_MS` in `runners.ts`). */
@@ -297,6 +302,8 @@ export class Runner {
             hold: (signal: AbortSignal | undefined) => void;
         }
     >();
+    /** Whether sessions work on this computer now, and where (`activity.ts`). */
+    readonly #activity: Activity;
     /** Approvals and folders of a runner without `saveSettings` (tests, and programs that keep no file). */
     #unsaved: RunnerSettings = {};
     #stateTimer: NodeJS.Timeout | undefined;
@@ -330,13 +337,23 @@ export class Runner {
             },
             options.approvalMs,
         );
+        this.#activity = new Activity((state) => options.activity?.(state), options.activityTiming);
         this.#log = options.log ?? (() => {});
         this.#retry = options.retryMs ?? RETRY_MS;
         this.#url = new URL(options.link.server);
         this.#url.protocol = this.#url.protocol === "https:" ? "wss:" : "ws:";
         this.#url.pathname = `${this.#url.pathname.replace(/\/+$/, "")}${LINK_PATH}`;
         this.finished = new Promise<void>((resolve, reject) => {
-            this.#done = (error) => (error === undefined ? resolve() : reject(error));
+            this.#done = (error) => {
+                // Stopped: nothing works here any more, said at once.
+                this.#activity.stop();
+
+                if (error === undefined) {
+                    resolve();
+                } else {
+                    reject(error);
+                }
+            };
         });
         this.finished.catch(() => {});
     }
@@ -450,6 +467,7 @@ export class Runner {
             shared: async () => this.#shared(await temporary),
             tmpdir: () => temporary,
             name: () => this.#options.link.name,
+            working: (folder) => this.#activity.begin(folder),
         });
         void made.daemon.exited.then((code) => {
             made.gate.stop();

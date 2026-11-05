@@ -66,6 +66,7 @@ import {
     type SessionAnswer,
     type SessionQuestion,
 } from "./runner.ts";
+import { activityLine } from "./activity.ts";
 import { broadFolder, realFolder, sameFolder } from "./folders.ts";
 import { checkTransport, refusal, unsafe } from "./transport.ts";
 import { checkTools, toolsStatus } from "./tools.ts";
@@ -125,7 +126,8 @@ In a terminal, run pi-pocket runner for a menu. For scripts:
 Options:
   --config FILE       Link file (default: ~/.pi-pocket/runner.json)
   --confirm-via stdio For a program that runs the runner, such as the desktop
-                      app: ask through stdin and stdout
+                      app: ask through stdin and stdout, and say on stdout
+                      when sessions work here (PI-POCKET-ACTIVITY)
   -h, --help          Show this help
 
 Environment:
@@ -1124,6 +1126,8 @@ async function serve(file: string, via: "terminal" | "stdio" | "none"): Promise<
             changeSettings(file, change);
         },
         ...(ask === undefined ? {} : { ask }),
+        // For the program that runs it: whether sessions work here, and in which folders (`activity.ts`).
+        ...(via === "stdio" ? { activity: (state) => console.log(activityLine(state)) } : {}),
     });
     let stopping = false;
 

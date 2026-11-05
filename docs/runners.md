@@ -121,6 +121,15 @@ A program that runs the runner, such as the desktop app, starts it with `pi-pock
 
 The program answers with a JSON line on stdin: `{ "id": <id>, "allow": true }`. A `PI-POCKET-CONFIRM-END {"id":<id>}` line says the question no longer stands: it was answered (here or with a code in Pi Pocket), withdrawn, or timed out. The runner saves the folder and the session before that line.
 
+The runner also says when sessions work on the computer, for a tray icon, keeping the computer awake, or a warning on quit. It writes a line `PI-POCKET-ACTIVITY` and a JSON object, `{ "working": true, "folders": ["/Users/me/project"] }`, each time the state changes. The first line comes when work starts, so a program that saw none can take the runner as idle.
+
+- `working`: sessions use this computer now.
+- `folders`: the real folders of those sessions, sorted. Empty when `working` is false.
+
+A file or command request of an approved session counts from when the runner sends it to the computer's tool process until its result, so a long command counts all the time it runs. Folder listings for the folder picker, file watches, and the browser's network connections do not count. The line says nothing about the commands, tools, or sessions themselves.
+
+The state is smoothed, so short requests do not make it flicker. A folder shows after its work lasted 0.5 s, and stays 5 s after its last request ended, so the requests of one turn show as one stretch of work. When the runner stops, it writes a last line with `working` false if it was working. Runners from before Pi Pocket 0.28.0 write no `PI-POCKET-ACTIVITY` lines.
+
 `settings`, `folders`, `sessions`, `totp`, and `unlink` take `--json`, for programs. A command that fails with `--json` prints `{ "ok": false, "error": "..." }` and exits with code 1.
 
 ## Runner settings in Pi Pocket
