@@ -118,7 +118,7 @@ test("keep warm: overview gives each model's refresh interval and Break-even cap
     });
 
     assert.equal(overview.models.length, 1);
-    assert.equal(overview.models[0]!.plan.everyMs, 2_700_000);
+    assert.equal(overview.models[0]!.plan.everyMs, 3_240_000, "90% of a 1-hour cache by default");
     assert.equal(overview.models[0]!.plan.refreshes, 30);
 });
 
@@ -178,8 +178,16 @@ test("keep warm: session changes validate together, check permissions, and recor
         assert.equal(
             app.sessionMeta(id)?.keepWarm,
             undefined,
-            "from a time back to Default is allowed",
+            "back to a Default that is the session's time already is allowed",
         );
+
+        // A shorter time the owner chose: a guest's Default would lengthen it.
+        await app.commands.updateSession(id, owner(app), { keepWarm: 0.5 });
+        await assert.rejects(
+            app.commands.updateSession(id, guest, { keepWarm: "default" }),
+            /Only the owner/,
+        );
+        assert.equal(app.sessionMeta(id)?.keepWarm, 0.5);
 
         // A viewer cannot steer, and a guest with access to another session cannot change this one.
         const viewer = app.config.addUser("Bea", "viewer").user;
