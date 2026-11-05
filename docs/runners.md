@@ -22,18 +22,22 @@ The computer connects out to the server over a WebSocket. It needs no open port,
 
 Run these commands on the linked computer:
 
-| Command                                    | What it does                                                                                                                                                             |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `pi-pocket runner`                         | In a terminal, opens a menu: link, start, settings, allowed folders, unlink, and help.                                                                                   |
-| `pi-pocket runner start`                   | Runs with the saved link in this terminal or the desktop app.                                                                                                            |
-| `pi-pocket runner link <server> <code>`    | Saves a link without questions. Use the server address and a one-time code from **Runners**.                                                                             |
-| `pi-pocket runner settings`                | Shows the settings. `settings confirm on\|off`, `settings http allow\|refuse`, `settings network allow\|refuse`, and `settings downloads <folder>\|default` change them. |
-| `pi-pocket runner folders`                 | Lists allowed folders, one per line, or "No allowed folders yet.". Add `--json` for a JSON array.                                                                        |
-| `pi-pocket runner folders remove <folder>` | Removes an allowed folder. Unknown folders are an error. Running sessions keep running.                                                                                  |
-| `pi-pocket runner status`                  | Shows the saved link, settings, and whether git and GitHub are ready. It does not check the connection.                                                                  |
-| `pi-pocket runner unlink`                  | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                                                          |
+| Command                                        | What it does                                                                                                                                                                                                           |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pi-pocket runner`                             | In a terminal, opens a menu: link, start, settings, saved folders, approved sessions, unlink, and help.                                                                                                                |
+| `pi-pocket runner start`                       | Runs with the saved link in this terminal or a program that runs the runner, such as the desktop app.                                                                                                                  |
+| `pi-pocket runner link <server> <code>`        | Saves a link without questions. Use the server address and a one-time code from **Runners**.                                                                                                                           |
+| `pi-pocket runner settings [--json]`           | Shows the settings. `settings stop-asking on\|off`, `settings totp-days 1\|7\|14\|30\|never`, `settings http allow\|refuse`, `settings network allow\|refuse`, and `settings downloads <folder>\|default` change them. |
+| `pi-pocket runner folders [--json]`            | Lists saved folders, one per line, or "No saved folders yet.". A broad folder in the list is marked as ignored.                                                                                                        |
+| `pi-pocket runner folders remove <folder>`     | Removes a saved folder. Unknown folders are an error. Approved sessions keep their approval.                                                                                                                           |
+| `pi-pocket runner sessions [--json]`           | Lists approved sessions: id, folder, who, how they were approved, and when each expires.                                                                                                                               |
+| `pi-pocket runner sessions revoke <id>\|all`   | Removes the approval of one session or all. Their next request asks again.                                                                                                                                             |
+| `pi-pocket runner totp setup\|status [--json]` | Sets up an authenticator app, or shows whether one is set up.                                                                                                                                                          |
+| `pi-pocket runner totp off <code> [--json]`    | Turns the authenticator off. It needs a code from it.                                                                                                                                                                  |
+| `pi-pocket runner status`                      | Shows the saved link, settings, and whether git and GitHub are ready. It does not check the connection.                                                                                                                |
+| `pi-pocket runner unlink [--json]`             | Deletes the saved link and all runner settings on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                                                                                |
 
-The runner runs while its terminal or the desktop app is open, so that it can ask before a session starts.
+The runner runs while its terminal or a program that runs the runner, such as the desktop app, is open, so that it can ask before a session starts.
 
 For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner start`.
 
@@ -43,22 +47,89 @@ Run `pi-pocket runner` again to start, change, or replace a saved link. Deleting
 
 If your server uses a build that is not on npm, set `PI_POCKET_RUNNER_PACKAGE` on the server. For example, use the URL of a fork's package tarball. This changes the install command shown in **Runners**.
 
-## Asking before a session starts
+## Approving sessions
 
-By default, the runner asks on the linked computer before the first session in a folder, including forks and moving a session to another folder. It shows who asks, the server, and the folder. **Deny** is the default answer. If nobody answers within 2 minutes, the session does not start.
+The runner on the computer decides which sessions may use it. The server cannot decide for it.
+
+### Folder permission
+
+The first session in a folder asks for **folder permission**. It shows who asks, the server, and the folder. **Allow** saves the folder on this computer and approves this session. **Deny** is the default answer.
 
 - In a terminal, the runner asks with a menu and a bell.
-- In the desktop app, a dialog asks.
+- In a program that runs the runner, such as the desktop app, a dialog asks.
 
-**Allow** also saves that folder on this computer. Later sessions in it or a folder inside it start without a question. The list stays in the runner settings in its link file, not on the server, and the runner reads it again for each question. Existing folders are compared by their real paths (including symlinks); macOS and Windows comparisons ignore case. A deleted allowed folder grants nothing.
+A saved folder is permanent. Its subfolders count too. The list stays in the runner settings in its link file, not on the server, and the runner reads it again for each question. Existing folders are compared by their real paths (including symlinks); macOS and Windows comparisons ignore case. A deleted saved folder grants nothing.
 
-For a file system root, a drive root, your home folder, or a folder that contains your home, the warning offers **Allow this session only**. It saves nothing. **Deny**, cancellation, and no answer save nothing. Sessions can still read and change files outside their starting folder: the list is permission to start, not a sandbox.
+A broad folder is never saved: a file system root, a drive root, your home folder, or a folder that contains your home. For one, the question offers **Allow this session only**. A broad folder found in the list is ignored, and `pi-pocket runner folders` says so. **Deny**, cancellation, and no answer save nothing.
 
-Use **Allowed folders** in the terminal menu or desktop app to see the list and remove an entry. The commands `pi-pocket runner folders [--json]` and `pi-pocket runner folders remove <folder>` also take `--config FILE`. Removing an entry makes future sessions ask again unless another allowed parent covers them; sessions that already run keep running. There is no command to add a folder: answer a question on the computer.
+Use **Saved folders** in the terminal menu, a program that runs the runner, or Pi Pocket's **Runners** to see the list and remove an entry. Removing needs no code. It makes future sessions there ask for folder permission again; sessions that are already approved keep their approval. There is no command to add a folder: answer a question on the computer, or enter a code from your authenticator in Pi Pocket.
 
-While the computer asks, the page shows a waiting dialog with the computer, folder, and time left. A quick answer skips the dialog. **Cancel** stops the request and withdraws the question on a runner that supports cancellation; no session starts. Older runners can keep their question open, but their late answer does not start the cancelled session.
+### Session permission
 
-To turn asking off, choose **Settings** in the `pi-pocket runner` menu, run `pi-pocket runner settings confirm off`, or turn off **Ask before new sessions** in the desktop app. Sessions that already run are not asked again.
+A new session in a saved folder asks for **session permission**. **Allow** approves this session. A session's permission also covers its subagents and the linked sessions it starts in the same folder.
+
+The setting **Stop asking on new sessions** (off by default) approves new sessions in saved folders without a question. A folder without permission still asks. The older setting `confirm off` means the same.
+
+A session's permission expires when the session is idle for a time:
+
+- Approved at the computer, or without a question: 30 hours.
+- Approved with a code from your authenticator: 7 days by default. The setting **Session expiry with a code** (`totp-days`) can be 1, 7, 14, or 30 days, or no expiry.
+
+The clock starts when the session's last request on the computer finishes. A command that still runs keeps the session in use; a watch on files does not. The runner measures this itself.
+
+When a session's permission expired, its next request waits, and the computer asks again. Pi Pocket shows the question in the session. **Deny** fails the request; **Cancel** in Pi Pocket withdraws the question. Sessions from before this update ask once, at their next request.
+
+Use **Approved sessions** in the terminal menu, `pi-pocket runner sessions`, or Pi Pocket's **Runners** to see the approved sessions and when each expires. **Revoke** and **Revoke all** need no code. A revoked session's next request asks again.
+
+### What a session can reach
+
+Each request from the server names its session. The runner refuses a request before it reaches pi-env unless the session it names has a valid permission. Each path in the request must be in that permission's folder or below it, or in the runner's own folders for attached files, browser downloads, and the temporary folders the session made. Commands run in the session's folder. Without a session permission, only the folder picker works: it lists folders.
+
+This is not a sandbox. A command still runs as you, and it can read and change files outside its folder. A server that was broken into can name a session that has a valid permission; expiry limits how long that works.
+
+### Waiting for an answer
+
+If nobody answers within 2 minutes (5 minutes with an authenticator), the session does not start, or the waiting request fails. While the computer asks, the page shows a waiting dialog with the computer, folder, and time left. A quick answer skips the dialog. **Cancel** stops the request and withdraws the question on a runner that supports cancellation; no session starts. Older runners can keep their question open, but their late answer does not start the cancelled session.
+
+## Authenticator codes
+
+With an authenticator app (TOTP), you can approve sessions and folders, and change runner settings, from Pi Pocket without going to the computer. It is off by default. Each computer has its own.
+
+Set it up on the computer: run `pi-pocket runner totp setup`, or choose **Authenticator** in the runner's **Settings** menu. The runner shows a QR code and an `otpauth://` link. Scan it with your authenticator app, then enter the code it shows. The runner saves the secret only when that code is right. Programs that run the runner can use `pi-pocket runner totp setup --json`: it prints `{ "secret", "link" }`, then reads one code per line on stdin and answers each with `{ "ok" }`.
+
+With an authenticator set up:
+
+- The waiting dialog in Pi Pocket has a field for the code from your authenticator. A right code approves the session, and saves the folder when the question was for folder permission. A wrong or used code shows "That code is wrong or used. Try the next one.", and the question stays.
+- In **Runners**, each change to a setting asks for a code. One code makes one change.
+- Only the person who linked the computer can use a code.
+
+A code works once. Codes are 6 digits and change every 30 seconds; the code before and after the current one also work. After 5 wrong codes in 10 minutes, codes are refused for 10 minutes. Only the runner checks codes. The secret stays in the link file on the computer; the server never stores a code.
+
+Turning the authenticator off needs a code too: `pi-pocket runner totp off <code>`, or the runner's **Settings** menu.
+
+**Lost your authenticator?** Unlink this computer (`pi-pocket runner unlink`, or Unlink in a program that runs the runner, such as the desktop app), then link it again. Unlinking needs no code, because it only removes access. It deletes the link file, and with it all runner settings: the authenticator's secret, saved folders, approved sessions, and the other settings. To link again, get a new link code in Pi Pocket's **Runners**.
+
+## Programs that run the runner
+
+A program that runs the runner, such as the desktop app, starts it with `pi-pocket runner start --confirm-via stdio`. Each question is a line on stdout: `PI-POCKET-CONFIRM` and a JSON object with `id`, `server`, `computer`, `person`, `folder`, `kind` (`new`, `fork`, or `move`), and `broad`, and also:
+
+- `permission`: `folder` (Allow saves the folder) or `session` (Allow approves this session).
+- `expired`: true when an approved session's permission expired and it wants to continue.
+- `session`: the id of the session's permission, as `pi-pocket runner sessions` lists it.
+- `totp`: true when an authenticator is set up, so the question can also be answered in Pi Pocket.
+- `expiresInMs`: how long the question waits for an answer.
+
+The program answers with a JSON line on stdin: `{ "id": <id>, "allow": true }`. A `PI-POCKET-CONFIRM-END {"id":<id>}` line says the question no longer stands: it was answered (here or with a code in Pi Pocket), withdrawn, or timed out. The runner saves the folder and the session before that line.
+
+`settings`, `folders`, `sessions`, `totp`, and `unlink` take `--json`, for programs. A command that fails with `--json` prints `{ "ok": false, "error": "..." }` and exits with code 1.
+
+## Runner settings in Pi Pocket
+
+**Runners** shows each computer's settings, saved folders, and approved sessions, with when each expires. Only owners see them.
+
+- Without an authenticator, the row says "No authenticator set up. Set it up on this computer: `pi-pocket runner totp setup`", and the settings are greyed out: "Set up an authenticator for this runner to change its settings." Change them on the computer.
+- With an authenticator, the row says "Authenticator set up". Each change opens a small dialog: "Enter the code from your authenticator for <computer>". **Cancel** puts the setting back.
+- Removing a saved folder, and revoking one session or all, need no code.
 
 ## Plain HTTP
 
@@ -73,7 +144,7 @@ To link a server on another plain HTTP address, choose **Allow plain HTTP** when
 
 In Menu → **Runners**, choose **New session** next to an online computer, then choose a folder on it. The session's title, top bar, and Pi's system prompt identify the computer. Forks keep the same computer, unless you choose another one in the fork sheet's **Computer** row. A copy can go from this server to a linked computer, back, or from one linked computer to another. A copy on a linked computer runs with that computer's list of extensions; a copy back on this server gets all extensions again. Pi gets a note with the new computer and folder, because paths earlier in the conversation were on the old ones.
 
-Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, schedules, codemode, memory, PR watches, and [the browser](#the-browser) also work. Subagents and linked sessions that a session on a computer starts run on the same computer, and a linked session in the same folder starts without another question. A linked session in another folder follows the allowed-folders check. Subagents and reconnects do not ask.
+Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Earendil's [pi-env](https://www.npmjs.com/package/@earendil-works/pi-env). They work as they do on the server. Goals, plans, questions, schedules, codemode, memory, PR watches, and [the browser](#the-browser) also work. Subagents and linked sessions that a session on a computer starts run on the same computer, and a linked session in the same folder starts without another question. A linked session in another folder asks as a new session does. Subagents and reconnects do not ask.
 
 Lessons stay with each project on its own computer; worktrees of that project share them. In **Memory**, **From …** sections offer approved lessons from other copies of the same GitHub repository. Choose **Add** to save one in this project; they never apply here automatically. PR watches read the origin and current branch on the linked computer, but poll GitHub from the server with the server's `gh` sign-in, not the computer's.
 
