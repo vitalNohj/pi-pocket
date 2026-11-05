@@ -7,6 +7,22 @@ import { fitClock, moment } from "./clock.js";
 import { fingerprint } from "./text-hash.js";
 import * as disk from "./session-cache.js";
 
+/**
+ * Instant open as this page loaded it (`instantOpen` in theme.js). Read here, not from theme.js, which imports this
+ * module. Flipping it in Appearance saves at once and applies on the next load.
+ */
+function instantOpenAtLoad() {
+    try {
+        const saved = JSON.parse(localStorage.getItem("pocket.appearance") ?? "null");
+
+        return saved?.instantOpen !== false;
+    } catch {
+        return true;
+    }
+}
+
+export const instantOpen = instantOpenAtLoad();
+
 /** A random id. crypto.randomUUID only exists on https and localhost pages; plain-http network addresses lack it. */
 export function uid() {
     if (typeof crypto.randomUUID === "function") {
@@ -721,7 +737,8 @@ let source;
  * about 1.6 times that (measured on real sessions), so about 50 MB. However many sessions that is: 26 real ones took
  * 7.5 MB. The device keeps more (`DEVICE_CHARS`): a session that went from memory loads from there in a moment.
  */
-const KEPT_CHARS = 32_000_000;
+/** What the sessions this tab keeps may take: twice as much with instant open, the old budget without it. */
+const KEPT_CHARS = instantOpen ? 32_000_000 : 16_000_000;
 /**
  * What the sessions this browser keeps on the device (`session-cache.js`, IndexedDB) may take in all, as the length of
  * their JSON: about 100 MB. Shared by every tab of the browser; the sessions used longest ago go first.
@@ -930,7 +947,10 @@ function knownFromPage() {
 const onDevice = () =>
     !deviceCacheStopped &&
     (store.state.server?.deviceCache === true ||
-        (store.state.me === undefined && store.state.server == null && knownFromPage() !== null)) &&
+        (instantOpen &&
+            store.state.me === undefined &&
+            store.state.server == null &&
+            knownFromPage() !== null)) &&
     typeof indexedDB !== "undefined";
 
 /** Set at sign-out, in this tab or another: the device keeps nothing more. */
@@ -1039,6 +1059,11 @@ function readDevice(id) {
  * `/api/me` answers, the page's own word of who and which build (`knownFromPage`) stands in for the store's.
  */
 function usable(found, id, { me, server } = store.state) {
+    // Without instant open, only `/api/me` says who and which build: the page's facts do not stand in.
+    if (!instantOpen && (me !== store.state.me || server !== store.state.server)) {
+        return false;
+    }
+
     return (
         found !== undefined &&
         onDevice() &&
@@ -1244,12 +1269,13 @@ function keptView(id) {
     if (kept === undefined) {
         // Not in memory: the device may have it (`showKept` reads it). Until that read, or the server's view, the
         // transcript shows the session's header and a quiet loader, not the full-page boot screen (`pending`).
+        // Without instant open, that wait is the boot screen, as before.
         return {
             view: emptyView(),
             transcriptFrom: null,
             transcriptPlace: null,
             holding: null,
-            pending: id,
+            pending: instantOpen ? id : null,
         };
     }
 
@@ -2237,7 +2263,7 @@ export async function start() {
         // The request may fail before IndexedDB answers; it is handled by the await below.
         void answer.catch(() => {});
         const cached = await onDisk;
-        const known = knownFromPage();
+        const known = instantOpen ? knownFromPage() : null;
         const early =
             known === null ? undefined : adopt(id, cached, { me: known.user, server: known });
 
