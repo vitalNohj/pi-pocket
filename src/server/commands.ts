@@ -487,7 +487,10 @@ export class Commands {
      * Continue one of Pi's sessions from the terminal here: a new session with its history, in its folder, with its model
      * when that one is signed in here (`pi-sessions.ts`). The owner's, as Pi's own files are.
      */
-    async continuePiSession(user: User, path: string): Promise<{ id: ConversationId }> {
+    async continuePiSession(
+        user: User,
+        path: string,
+    ): Promise<{ id: ConversationId; notes?: string[] }> {
         const app = this.#app;
         const session = await app.piSessions.read(user, path);
         let cwd: string;
@@ -504,6 +507,7 @@ export class Commands {
         const start = this.#defaultModel(session);
         const title = session.title.slice(0, MAX_TITLE);
         const now = Date.now();
+        let copies = new Map<EntryId, string>();
         const conversation = await app.harness.createConversation(
             {
                 ownership: { kind: "ownerless" },
@@ -523,7 +527,7 @@ export class Commands {
                         createdBy: user.id,
                         fromPi: { session: session.id, count: session.count },
                     };
-                    await writePiSession(tx, id, session, {
+                    copies = await writePiSession(tx, id, session, {
                         session: session.id,
                         title: session.title,
                         file: path,
@@ -532,8 +536,10 @@ export class Commands {
             },
             context,
         );
+        // What extensions keep beside Pi's file comes along, before the person opens the session.
+        const notes = await app.piSessions.carryCompanions(path, conversation.id, copies, context);
 
-        return { id: conversation.id };
+        return { id: conversation.id, ...(notes.length === 0 ? {} : { notes }) };
     }
 
     /**
