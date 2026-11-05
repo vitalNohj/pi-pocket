@@ -431,7 +431,10 @@ export function KeepWarmSheet() {
                 <${Estimate} hours=${settings.hours} settings=${settings} />
             </section>
             <section class="keep-warm-group">
-                <div class="label">Fixed examples</div>
+                <p class="muted small">
+                    Keep warm: what its refreshes cost until Break-even stops. No cache: one message after the cache
+                    expired. List prices on 2026-11-02, a 150k context, and your current Refresh at and caps.
+                </p>
                 <table class="keep-warm-stops small">
                     <thead>
                         <tr>
@@ -461,10 +464,9 @@ export function KeepWarmSheet() {
                     </tbody>
                 </table>
                 <p class="muted small">
-                    List prices on 2026-11-02, a 150k context, and your current Refresh at and caps. Estimates only: prices and cache times can change.
-                </p>
-                <p class="muted small">
-                    As a rule, keeping a session warm for 30 minutes to 3 hours saves money when you step away.
+                    These are estimates only: they can be wrong. As a rule, keeping a session warm for 30 minutes to 3
+                    hours saves money when you step away. Keep warm works like the pi-keepwarm extension for Pi: it
+                    sends the last request again, with the smallest reply, before the cache expires.
                 </p>
             </section>
             <section class="keep-warm-group keep-warm-grid">
@@ -493,6 +495,7 @@ export function KeepWarmSheet() {
                         settings.subagents,
                         "subagents",
                     )}
+                    <span class="muted small">Subagents inherit their parent session's keep warm.</span>
                 </div>
             </section>
             <button

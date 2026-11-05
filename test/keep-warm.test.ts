@@ -118,7 +118,7 @@ test("keep warm: overview gives each model's refresh interval and Break-even cap
     });
 
     assert.equal(overview.models.length, 1);
-    assert.equal(overview.models[0]!.plan.everyMs, 2_700_000);
+    assert.equal(overview.models[0]!.plan.everyMs, 3_240_000, "90% of a 1-hour cache by default");
     assert.equal(overview.models[0]!.plan.refreshes, 30);
 });
 

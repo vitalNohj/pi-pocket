@@ -203,7 +203,7 @@ export const DEFAULT_KEEP_WARM: Readonly<KeepWarmSettings> = Object.freeze({
     hours: 0,
     maxCost: 2,
     maxRefreshes: 30,
-    share: 75,
+    share: 90,
     subagents: false,
     models: {},
 });
