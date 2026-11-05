@@ -7,7 +7,7 @@ import { test } from "node:test";
 const STUBS: Record<string, string> = {
     "preact/hooks": `export const useState = () => {}; export const useRef = () => {}; export const useEffect = () => {};`,
     "../store.js": `export const actions = {}; export const api = () => {}; export const attempt = () => {}; export const canSteer = () => {}; export const closeSheet = () => {}; export const store = {};`,
-    "../ui.js": `export const html = () => {}; export const Icon = () => {}; export const Loader = () => {}; export const Sheet = () => {};`,
+    "../ui.js": `export const html = () => {}; export const Icon = () => {}; export const Loader = () => {}; export const Sheet = () => {}; export const Switch = () => {};`,
 };
 const hooks = registerHooks({
     resolve(specifier, context, next) {
