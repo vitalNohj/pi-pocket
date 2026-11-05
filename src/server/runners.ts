@@ -39,6 +39,11 @@ import {
     type Confirm,
     type Confirmed,
     type Hello,
+    type ApprovalState,
+    type ApprovalNeeded,
+    type SessionScope,
+    type RunnerAction,
+    SESSION_FIELD,
     readStreamData,
     STREAM_DATA,
 } from "../runner/protocol.ts";
@@ -119,6 +124,9 @@ export type RunnerView = {
     home?: string;
     version?: string;
     tools?: Hello["tools"];
+    createdBy: string;
+    approvals?: ApprovalState;
+    questions?: ApprovalNeeded[];
 };
 
 function lost(message: string): RemoteError {
@@ -189,6 +197,10 @@ export class RunnerLink {
     #asks = false;
     /** Whether the runner understands `withdraw`. */
     #withdraws = false;
+    #scoped = false;
+    state: ApprovalState | undefined;
+    readonly questions = new Map<string, ApprovalNeeded>();
+    readonly #results = new Map<string, (message: ControlMessage) => void>();
     /** Questions sent to its runner, waiting for `confirmed`. */
     readonly #questions = new Map<string, (answer: Confirmed) => void>();
     /** The network streams of the current connection, when its runner opens them (`hello.network`). */
@@ -331,7 +343,12 @@ export class RunnerLink {
         op: string,
         json: Record<string, unknown>,
         options: RequestOptions = {},
+        scope?: SessionScope,
     ): Promise<Reply> {
+        if (this.#scoped && scope !== undefined) {
+            json = { ...json, [SESSION_FIELD]: scope };
+        }
+
         if (options.session !== undefined) {
             const current = this.#session;
 
@@ -464,6 +481,7 @@ export class RunnerLink {
         this.#socket = socket;
         this.#asks = hello.asks === true;
         this.#withdraws = hello.withdraws === true;
+        this.#scoped = hello.approvals === true;
         this.#runners.toolsSeen(this.id, hello.tools);
 
         this.#network?.drop();
@@ -490,6 +508,7 @@ export class RunnerLink {
                 resume: true,
                 received: session.inbox.received,
                 graceMs: LEGACY_GRACE_MS,
+                ...(this.#scoped ? { approvals: true } : {}),
             });
 
             for (const message of resent) {
@@ -513,6 +532,7 @@ export class RunnerLink {
                 resume: false,
                 received: 0,
                 graceMs: LEGACY_GRACE_MS,
+                ...(this.#scoped ? { approvals: true } : {}),
             });
             session.ready = this.#send(session, "hello", { protocol: 1 }, {}).then((reply) => {
                 if (reply.json.protocol !== 1) {
@@ -592,6 +612,7 @@ export class RunnerLink {
 
             this.#socket = undefined;
             this.#network = undefined;
+            this.questions.clear();
             this.#runners.changed();
 
             if (!session.live || this.#session !== session) {
@@ -608,7 +629,26 @@ export class RunnerLink {
                 this.#drop(1002, "Acknowledged bytes it was never sent");
             }
         } else if (message?.type === "confirmed") {
+            this.questions.delete(message.id);
             this.#questions.get(message.id)?.(message);
+            this.#runners.changed();
+        } else if (message?.type === "approval-needed") {
+            this.questions.set(message.id, message);
+            this.#runners.changed();
+        } else if (message?.type === "approval-ended") {
+            this.questions.delete(message.id);
+            this.#runners.changed();
+        } else if (message?.type === "runner-state") {
+            this.state = message.state;
+            this.downloads = message.state.settings.downloads ?? undefined;
+            this.#runners.changed();
+        } else if (message?.type === "code-result" || message?.type === "runner-result") {
+            if (message.type === "runner-result" && message.state !== undefined) {
+                this.state = message.state;
+            }
+
+            this.#results.get(message.id)?.(message);
+            this.#runners.changed();
         } else if (message?.type === "bye") {
             this.#runners.log(`${this.name} left: ${message.reason}`);
             this.#end(session, lost(`${this.name}: ${message.reason}`));
@@ -734,7 +774,10 @@ export class RunnerLink {
         let timer: NodeJS.Timeout | undefined;
         let cancelled: (() => void) | undefined;
         const answer = await new Promise<Confirmed | undefined>((resolve, reject) => {
-            timer = setTimeout(() => resolve(undefined), CONFIRM_MS);
+            timer = setTimeout(
+                () => resolve(undefined),
+                (this.state?.totp ? 300_000 : CONFIRM_MS) + 10_000,
+            );
 
             cancelled = () => {
                 this.#questions.delete(id);
@@ -758,6 +801,8 @@ export class RunnerLink {
         }).finally(() => {
             clearTimeout(timer);
             this.#questions.delete(id);
+            this.questions.delete(id);
+            this.#runners.changed();
 
             if (cancelled !== undefined) {
                 signal?.removeEventListener("abort", cancelled);
@@ -771,13 +816,64 @@ export class RunnerLink {
         if (answer === undefined) {
             throw new HttpError(
                 409,
-                `Nobody answered on ${this.name} in ${Math.round(CONFIRM_MS / 1000)} seconds. Allow the session there, or turn off "Ask before new sessions" in its runner settings.`,
+                `Nobody answered on ${this.name}. Approve the session there, or enter a code from your authenticator.`,
             );
         }
 
         if (!answer.allow) {
             throw new HttpError(403, answer.reason ?? `${this.name} did not allow the session.`);
         }
+    }
+
+    /** Codes are relayed only. Never keep them in config, session documents, or logs. */
+    async approveCode(id: string, code: string): Promise<void> {
+        const result = await this.#result(id, { type: "approval-code", id, code });
+
+        if (result.type !== "code-result" || !result.allow) {
+            throw new HttpError(400, "That code is wrong or used. Try the next one.");
+        }
+    }
+
+    async action(request: RunnerAction): Promise<void> {
+        const id = randomUUID();
+        const result = await this.#result(id, { type: "runner-action", id, request });
+
+        if (result.type !== "runner-result" || !result.ok) {
+            throw new HttpError(
+                400,
+                result.type === "runner-result"
+                    ? (result.reason ?? "The runner refused it.")
+                    : "The runner refused it.",
+            );
+        }
+    }
+
+    async #result(id: string, message: ControlMessage): Promise<ControlMessage> {
+        if (!this.online || !this.#scoped) {
+            throw new HttpError(409, "Connect an updated runner on this computer first.");
+        }
+
+        if (this.#results.has(id)) {
+            throw new HttpError(409, "A code is already being checked.");
+        }
+
+        let timer: NodeJS.Timeout | undefined;
+
+        return new Promise<ControlMessage>((resolve, reject) => {
+            timer = setTimeout(
+                () => reject(new HttpError(409, "The computer did not answer.")),
+                15_000,
+            );
+            this.#results.set(id, resolve);
+            this.#control(message);
+        }).finally(() => {
+            clearTimeout(timer);
+            this.#results.delete(id);
+        });
+    }
+
+    withdraw(id: string): void {
+        this.#control({ type: "withdraw", id });
     }
 
     /**
@@ -870,8 +966,21 @@ export class RunnerEnv extends RemoteExecutionEnv {
     readonly runner: string;
     readonly #link: RunnerLink;
 
-    constructor(link: RunnerLink, cwd: string) {
-        super({ connection: link as unknown as Connection, id: `runner:${link.id}`, cwd });
+    constructor(link: RunnerLink, cwd: string, scope?: SessionScope) {
+        const connection = {
+            info: () => link.info(),
+            session: () => link.session(),
+            request: (op: string, json: Record<string, unknown>, options?: RequestOptions) =>
+                link.request(op, json, options, scope),
+            kill: (id: number, session: number) => link.kill(id, session),
+            close: () => {},
+        };
+
+        super({
+            connection: connection as unknown as Connection,
+            id: `runner:${link.id}${scope === undefined ? "" : `:${scope.id}`}`,
+            cwd,
+        });
         this.runner = link.id;
         this.#link = link;
     }
@@ -964,12 +1073,12 @@ export class Runners {
     }
 
     /** The environment of a session that runs in `cwd` on computer `id`. */
-    env(id: string, cwd: string): RunnerEnv {
-        const key = `${id}\0${cwd}`;
+    env(id: string, cwd: string, scope?: SessionScope): RunnerEnv {
+        const key = `${id}\0${cwd}\0${scope?.id ?? ""}`;
         let env = this.#envs.get(key);
 
         if (env === undefined) {
-            env = new RunnerEnv(this.link(id), cwd);
+            env = new RunnerEnv(this.link(id), cwd, scope);
             this.#envs.set(key, env);
         }
 
@@ -1113,6 +1222,9 @@ export class Runners {
             return {
                 id: runner.id,
                 name: runner.name,
+                createdBy: runner.createdBy,
+                ...(link?.state === undefined ? {} : { approvals: link.state }),
+                ...(link === undefined ? {} : { questions: [...link.questions.values()] }),
                 online: link?.online === true,
                 asks: link?.asks === true,
                 away: link?.away === true,

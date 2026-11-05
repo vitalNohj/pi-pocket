@@ -146,7 +146,10 @@ export class Workspace {
                 throw error instanceof HttpError ? error : new HttpError(409, describe(error));
             });
 
-        return remoteAccess(this.#app.runners.env(runner, this.#app.cwdOf(id)), info);
+        return remoteAccess(
+            this.#app.runners.env(runner, this.#app.cwdOf(id), this.#app.runnerScope(id)),
+            info,
+        );
     }
 
     /** Whether a folder is in a git repository. */
@@ -433,7 +436,7 @@ export class Workspace {
 
                 throw new HttpError(404, `${file} is not there`);
             });
-        const env = this.#app.runners.env(runner, this.#app.cwdOf(id));
+        const env = this.#app.runners.env(runner, this.#app.cwdOf(id), this.#app.runnerScope(id));
 
         await revealOn(
             this.#app.runners.name(runner),

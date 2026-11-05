@@ -53,7 +53,7 @@ export type RemoteBrowsing = {
     /** Open a connection from the computer (`RunnerLink.openNetwork`). */
     connect: Connect;
     /** The computer's environment and temporary folder, to copy downloads to. */
-    computer(runner: string): Promise<Computer>;
+    computer(runner: string, conversationId?: number): Promise<Computer>;
 };
 
 type Kind = "local" | "remote";
@@ -172,7 +172,7 @@ export class Browsers {
             return moveToFolder(file, join(await privateFolder(), String(conversationId)), name);
         }
 
-        const computer = await this.#options.remote!.computer(runner);
+        const computer = await this.#options.remote!.computer(runner, conversationId);
 
         return copyToComputer(computer, conversationId, file, name);
     }
@@ -479,7 +479,8 @@ export class Browsers {
         const kind: Kind = runner === undefined ? "local" : "remote";
         const chromium = await this.#browser(kind);
         const connection = chromium.connection;
-        const credentials = runner === undefined ? undefined : this.#proxy!.add(runner);
+        const credentials =
+            runner === undefined ? undefined : this.#proxy!.add(runner, conversationId);
         const created = await connection
             .send("Target.createBrowserContext", {
                 disposeOnDetach: false,

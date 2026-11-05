@@ -118,7 +118,10 @@ export async function browserRoutes(
                 servers:
                     info === undefined
                         ? []
-                        : await computerServers(app.runners.env(runner, info.home), info.os),
+                        : await computerServers(
+                              app.runners.env(runner, app.cwdOf(id), app.runnerScope(id)),
+                              info.os,
+                          ),
             });
         }
 

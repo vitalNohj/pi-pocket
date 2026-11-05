@@ -23,6 +23,7 @@ export class NetError extends Error {
 export type OpenOptions = {
     /** Bytes for the computer, ahead of what the socket gives. */
     first?: Buffer[];
+    session?: import("../runner/protocol.ts").SessionScope;
     /** Called as the computer connected, before anything from it reaches the socket: write a reply, say. */
     opened?: () => void;
 };
@@ -77,16 +78,19 @@ export class LinkNetwork {
         const id = this.#id();
 
         return new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.#opening.delete(id);
-                this.#control({ type: "net-reset", id });
-                reject(
-                    new NetError(
-                        "timeout",
-                        `${this.#name()} did not connect to ${host}:${port} in ${CONNECT_MS / 1000} s`,
-                    ),
-                );
-            }, CONNECT_MS + 2000);
+            const timer = setTimeout(
+                () => {
+                    this.#opening.delete(id);
+                    this.#control({ type: "net-reset", id });
+                    reject(
+                        new NetError(
+                            "timeout",
+                            `${this.#name()} did not connect to ${host}:${port} in ${CONNECT_MS / 1000} s`,
+                        ),
+                    );
+                },
+                options.session === undefined ? CONNECT_MS + 2000 : 312_000,
+            );
 
             timer.unref();
             // What the browser sends while the computer connects waits in the socket.
@@ -101,7 +105,13 @@ export class LinkNetwork {
                     reject(new NetError("unreachable", "The browser closed the connection"));
                 }
             });
-            this.#control({ type: "net-open", id, host, port });
+            this.#control({
+                type: "net-open",
+                id,
+                host,
+                port,
+                ...(options.session === undefined ? {} : { session: options.session }),
+            });
         });
     }
 

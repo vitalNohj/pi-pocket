@@ -527,10 +527,14 @@ export class Commands {
 
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
 
-        // The computer's person allows it there (its runner asks, unless they turned asking off).
+        const runnerPermission = randomUUID();
+
         await app.runners
             .link(runner)
-            .confirm({ kind: "new", person: user.name, folder: cwd }, signal);
+            .confirm(
+                { kind: "new", person: user.name, folder: cwd, session: runnerPermission },
+                signal,
+            );
 
         const initial = this.#defaultModel();
         const now = Date.now();
@@ -554,6 +558,7 @@ export class Commands {
                         updatedAt: now,
                         createdBy: user.id,
                         runner,
+                        runnerPermission,
                         title: title ?? `${basename(cwd) || cwd} on ${app.runners.name(runner)}`,
                     };
                 },
@@ -951,7 +956,7 @@ export class Commands {
         const runner = patch.archived === true ? app.runnerOf(id) : undefined;
 
         if (runner !== undefined) {
-            void clearUploads(app.runners.env(runner, app.cwdOf(id)), id);
+            void clearUploads(app.runners.env(runner, app.cwdOf(id), app.runnerScope(id)), id);
         }
 
         // Archiving leaves its repeating schedules running: the person is told how many.
@@ -1536,17 +1541,19 @@ export class Commands {
 
         app.uploadsCopied(
             id,
-            copyUploads(app.runners.env(runner, app.cwdOf(id)), folder, attachments).then(
-                (failed) => {
-                    if (failed.length > 0) {
-                        app.notice(
-                            "warning",
-                            `Could not copy ${failed.join(", ")} to ${app.runners.name(runner)}: Pi cannot open ${failed.length === 1 ? "it" : "them"} there.`,
-                            id,
-                        );
-                    }
-                },
-            ),
+            copyUploads(
+                app.runners.env(runner, app.cwdOf(id), app.runnerScope(id)),
+                folder,
+                attachments,
+            ).then((failed) => {
+                if (failed.length > 0) {
+                    app.notice(
+                        "warning",
+                        `Could not copy ${failed.join(", ")} to ${app.runners.name(runner)}: Pi cannot open ${failed.length === 1 ? "it" : "them"} there.`,
+                        id,
+                    );
+                }
+            }),
         );
 
         return attachments.map((file) => uploadedThere(folder, file.path));
@@ -2022,9 +2029,12 @@ export class Commands {
                   : await app.runners.checkFolder(runner, request.cwd);
 
         if (runner !== undefined && cwd !== undefined && cwd !== (current?.cwd ?? app.cwdOf(id))) {
-            await app.runners
-                .link(runner)
-                .confirm({ kind: "move", person: user.name, folder: cwd });
+            await app.runners.link(runner).confirm({
+                kind: "move",
+                person: user.name,
+                folder: cwd,
+                session: app.runnerScope(id).id,
+            });
         }
 
         const change = {
@@ -2737,11 +2747,23 @@ export class Commands {
      * The repository folder `cwd` is a checkout of, on computer `runner` (undefined: this server), for `SessionMeta.repo`.
      * Undefined when there is none, or the lookup failed or took too long (`repo.ts`): it never fails a session.
      */
-    async repoOf(runner: string | undefined, cwd: string): Promise<string | undefined> {
+    async repoOf(
+        runner: string | undefined,
+        cwd: string,
+        id?: ConversationId,
+    ): Promise<string | undefined> {
         try {
             return runner === undefined
                 ? await localRepo(cwd)
-                : await remoteRepo(this.#app.runners.env(runner, cwd), cwd, context);
+                : await remoteRepo(
+                      this.#app.runners.env(
+                          runner,
+                          cwd,
+                          id === undefined ? undefined : this.#app.runnerScope(id),
+                      ),
+                      cwd,
+                      context,
+                  );
         } catch {
             return undefined;
         }
@@ -2755,7 +2777,7 @@ export class Commands {
         const app = this.#app;
         const runner = app.sessionMeta(id)?.runner;
 
-        return this.repoOf(runner, cwd)
+        return this.repoOf(runner, cwd, id)
             .then((repo) =>
                 app.harness.commit(async (tx) => {
                     const meta = (await tx.doc(SessionsDoc)).items[String(id)];
@@ -2966,11 +2988,19 @@ export class Commands {
         // folder can be from before the session moved or was copied to another computer, and is no folder there.
         const agent: AgentChange = { ...fork.agent, cwd: place.cwd };
 
+        const runnerPermission = runner === undefined ? undefined : randomUUID();
+
         // A fork is a new session there too: the computer's person allows it, as for a new one.
         if (runner !== undefined) {
-            await app.runners
-                .link(runner)
-                .confirm({ kind: "fork", person: user.name, folder: place.cwd }, signal);
+            await app.runners.link(runner).confirm(
+                {
+                    kind: "fork",
+                    person: user.name,
+                    folder: place.cwd,
+                    session: runnerPermission,
+                },
+                signal,
+            );
         }
 
         const now = Date.now();
@@ -2995,7 +3025,7 @@ export class Commands {
                 updatedAt: now,
                 createdBy: user.id,
                 forkedFrom: { id: Number(id), ...(at === undefined ? {} : { entryId: at }) },
-                ...(runner === undefined ? {} : { runner }),
+                ...(runner === undefined ? {} : { runner, runnerPermission }),
                 ...(place.worktree === undefined ? {} : { worktree: place.worktree }),
             };
             const forkedAgent = await tx.doc(AgentDoc, forked);

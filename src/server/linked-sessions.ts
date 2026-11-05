@@ -728,8 +728,22 @@ export class LinkedSessions implements LinkedSessionsApi {
 
         const cwd = approved?.cwd ?? (await this.#directory(source, user, agent, request.cwd));
 
-        if (runner !== undefined && cwd !== (agent.cwd ?? app.cwdOf(source))) {
-            await app.runners.link(runner).confirm({ kind: "new", person: user.name, folder: cwd });
+        const sameFolder = cwd === (agent.cwd ?? app.cwdOf(source));
+        // A linked session in the same folder shares its source's permission, as before it started without a question.
+        const runnerPermission =
+            runner === undefined
+                ? undefined
+                : sameFolder
+                  ? app.runnerScope(source).id
+                  : randomUUID();
+
+        if (runner !== undefined && !sameFolder) {
+            await app.runners.link(runner).confirm({
+                kind: "new",
+                person: user.name,
+                folder: cwd,
+                session: runnerPermission,
+            });
         }
 
         const now = Date.now();
@@ -791,7 +805,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             sessions.items[String(child.id)] = {
                 cwd,
                 title,
-                ...(runner === undefined ? {} : { runner }),
+                ...(runner === undefined ? {} : { runner, runnerPermission }),
                 createdAt: now,
                 updatedAt: now,
                 createdBy: user.id,

@@ -10,12 +10,21 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { connect as connectTcp, type Socket } from "node:net";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { localDaemon } from "@earendil-works/pi-env";
 import WebSocket from "ws";
 import { checkTransport, refusal, type Transport } from "./transport.ts";
 import { checkTools } from "./tools.ts";
 import { broadFolder, coveredFolder, realFolder } from "./folders.ts";
+import {
+    Approvals,
+    type SessionPermission,
+    type SessionScope,
+    type ApprovalMethod,
+} from "./approvals.ts";
+import type { TotpState } from "./totp.ts";
+import { RequestGate, sessionScope } from "./request-gate.ts";
 import type { RunnerTools } from "./protocol.ts";
 import {
     CLOSE,
@@ -72,6 +81,11 @@ export type RunnerSettings = {
     confirm?: boolean;
     /** Real absolute folders allowed by the person here, including their descendants. */
     folders?: string[];
+    /** Authenticator grants last this many days; null means no expiry. Default: 7. */
+    totpDays?: number | null;
+    /** Local only: never sent to the server. */
+    totp?: TotpState;
+    sessions?: SessionPermission[];
     /** Use plain HTTP to this server even where it is not this computer or a tailnet device. Default: false. */
     allowHttp?: boolean;
     /** Open the network connections of sessions' browsers from this computer. Default: true. */
@@ -85,6 +99,11 @@ export type SessionQuestion = {
     kind: "new" | "fork" | "move";
     /** A root, home folder, or ancestor of home: allow this session only. */
     broad: boolean;
+    permission: "folder" | "session";
+    expired: boolean;
+    session: string;
+    totp: boolean;
+    expiresInMs: number;
     person: string;
     folder: string;
     server: string;
@@ -106,6 +125,8 @@ export type RunnerOptions = {
     log?: (line: string) => void;
     /** Reconnect waits; tests make them short. */
     retryMs?: readonly number[];
+    /** Tests shorten the fixed, 30-hour computer approval lifetime. */
+    approvalMs?: number;
     /** The link's settings now: read again for each connect and each question, so changes need no restart. */
     settings?: () => RunnerSettings;
     /** Save a local settings change, preserving other settings read from the file now. */
@@ -120,7 +141,15 @@ export type RunnerOptions = {
 };
 
 /** How long the runner waits for its person; the server waits 10 s longer (`CONFIRM_MS` in `runners.ts`). */
-const ASK_MS = 110_000;
+const ASK_MS = 120_000;
+
+/** With an authenticator: time to open it and type a code in Pi Pocket. */
+const ASK_TOTP_MS = 300_000;
+
+const WITHDRAWN = "Withdrawn by the server.";
+
+/** What a question here came to; `method` says how an allowed one was approved. */
+type Approval = { allow: boolean; reason?: string; method?: ApprovalMethod; withdrawn?: boolean };
 
 /** Why a runner stopped for good: the server removed it, another one took its place, or the protocols differ. */
 export class RunnerStopped extends Error {}
@@ -230,6 +259,8 @@ class Session {
     readonly inbox = new Inbox();
     readonly splitter = new FrameSplitter();
     readonly daemon: Daemon;
+    readonly outputFrames = new FrameSplitter();
+    gate!: RequestGate;
     /** The server's id for it, once welcomed. */
     id: string | null = null;
     paused = false;
@@ -253,7 +284,23 @@ export class Runner {
     #stopping = false;
     /** Questions that the server can withdraw while the person answers. */
     readonly #questions = new Map<string, AbortController>();
-    #folderSaves = Promise.resolve();
+    readonly #approvals: Approvals;
+    /** Questions that wait here, by id: a code from Pi Pocket can answer them. */
+    readonly #pending = new Map<
+        string,
+        {
+            scope: SessionScope;
+            stop: AbortController;
+            resolve: (answer: Approval) => void;
+            promise: Promise<Approval>;
+            /** Another request of the same session waits on this question too. */
+            hold: (signal: AbortSignal | undefined) => void;
+        }
+    >();
+    /** Approvals and folders of a runner without `saveSettings` (tests, and programs that keep no file). */
+    #unsaved: RunnerSettings = {};
+    #stateTimer: NodeJS.Timeout | undefined;
+    #lastState = "";
     #attempt = 0;
     #ackTimer: NodeJS.Timeout | undefined;
     #retryTimer: NodeJS.Timeout | undefined;
@@ -271,6 +318,18 @@ export class Runner {
 
     constructor(options: RunnerOptions) {
         this.#options = options;
+        this.#approvals = new Approvals(
+            () => this.#settings(),
+            async (change) => {
+                if (options.saveSettings !== undefined) {
+                    await options.saveSettings(change);
+                } else {
+                    // Nowhere to save: kept for this runner's life, over what `settings` reads.
+                    this.#unsaved = { ...this.#unsaved, ...change };
+                }
+            },
+            options.approvalMs,
+        );
         this.#log = options.log ?? (() => {});
         this.#retry = options.retryMs ?? RETRY_MS;
         this.#url = new URL(options.link.server);
@@ -294,6 +353,8 @@ export class Runner {
 
     start(): void {
         this.#session = this.#fresh();
+        this.#stateTimer = setInterval(() => void this.#state(), 2000);
+        this.#stateTimer.unref();
         this.#connect();
     }
 
@@ -306,6 +367,13 @@ export class Runner {
         this.#stopping = true;
         clearTimeout(this.#retryTimer);
         clearTimeout(this.#ackTimer);
+        clearInterval(this.#stateTimer);
+        this.#session.gate.stop();
+
+        for (const pending of this.#pending.values()) {
+            pending.stop.abort();
+        }
+
         this.#control({ type: "bye", reason: "The runner was stopped" });
         this.#socket?.close(1000, "Stopped");
         await this.#session.daemon.stop();
@@ -340,6 +408,18 @@ export class Runner {
             return;
         }
 
+        for (const whole of from.outputFrames.push(bytes)) {
+            from.gate.output(whole);
+        }
+
+        this.#relay(from, bytes);
+    }
+
+    #relay(from: Session, bytes: Buffer): void {
+        if (from !== this.#session) {
+            return;
+        }
+
         const message = from.outbox.write(bytes);
 
         if (this.#socket?.readyState === WebSocket.OPEN && from.id !== null) {
@@ -354,12 +434,26 @@ export class Runner {
 
     #fresh(): Session {
         const program = this.#options.daemon ?? localDaemon();
+        // The daemon's temporary folder: it takes it from the environment as it starts, as this does.
+        const temporary = realFolder(tmpdir());
         const made = new Session(
             (onOutput) => new Daemon(program, this.#options.cwd ?? homedir(), this.#log, onOutput),
             (session, bytes) => this.#onOutput(session, bytes),
         );
 
+        made.gate = new RequestGate({
+            approvals: this.#approvals,
+            ask: async (scope, signal) =>
+                (await this.#approve(`resume-${scope.id}`, scope, "new", true, signal)).allow,
+            send: (bytes) => made.daemon.write(bytes),
+            reply: (bytes) => this.#relay(made, bytes),
+            shared: async () => this.#shared(await temporary),
+            tmpdir: () => temporary,
+            name: () => this.#options.link.name,
+        });
         void made.daemon.exited.then((code) => {
+            made.gate.stop();
+
             if (this.#session !== made || this.#stopping) {
                 return;
             }
@@ -377,6 +471,7 @@ export class Runner {
 
     #restart(why: string): void {
         this.#log(why);
+        this.#session.gate.stop();
         void this.#session.daemon.stop();
         this.#session = this.#fresh();
     }
@@ -385,13 +480,37 @@ export class Runner {
     #fail(message: string): void {
         this.#stopping = true;
         clearTimeout(this.#retryTimer);
+        clearInterval(this.#stateTimer);
+        this.#session.gate.stop();
+
+        for (const pending of this.#pending.values()) {
+            pending.stop.abort();
+        }
+
         this.#log(message);
         void this.#session.daemon.stop().then(() => this.#done(new RunnerStopped(message)));
     }
 
+    /**
+     * The runner's own folders that each approved session may use besides its folder: attached files
+     * (`<temp>/pi-pocket-uploads`) and browser downloads (`<temp>/pi-pocket-downloads`, or the downloads folder).
+     */
+    async #shared(temporary: string): Promise<string[]> {
+        const downloads = this.#settings().downloads;
+
+        return [
+            join(temporary, "pi-pocket-uploads"),
+            join(temporary, "pi-pocket-downloads"),
+            ...(downloads === undefined ? [] : [await realFolder(downloads)]),
+        ];
+    }
+
     /** The link's settings now. */
     #settings(): RunnerSettings {
-        return this.#options.settings?.() ?? this.#options.link.settings ?? {};
+        return {
+            ...(this.#options.settings?.() ?? this.#options.link.settings ?? {}),
+            ...this.#unsaved,
+        };
     }
 
     /** Check that the server may be reached this way (`transport.ts`), then connect; refused, it stops for good. */
@@ -525,6 +644,7 @@ export class Runner {
                     version: this.#options.version,
                     // This runner answers `confirm`: the server asks it before a session starts here.
                     asks: true,
+                    approvals: true,
                     withdraws: true,
                     tools,
                     // And opens network streams (`net-open`), or refuses them as its settings say.
@@ -644,6 +764,10 @@ export class Runner {
 
         if (message?.type === "welcome" && !welcomed) {
             this.#attempt = 0;
+            session.gate.scoped = message.approvals === true;
+            // Runners shows this computer's settings, folders, and sessions as soon as it is welcomed.
+            this.#lastState = "";
+            queueMicrotask(() => void this.#state());
 
             if (message.resume) {
                 const resent =
@@ -686,6 +810,7 @@ export class Runner {
                 current = this.#session;
             }
 
+            current.gate.scoped = message.approvals === true;
             current.id = message.session;
 
             // Output the daemon gave before this session was welcomed (none, normally).
@@ -708,15 +833,36 @@ export class Runner {
         } else if (message?.type === "confirm") {
             void this.#answer(ws, message);
         } else if (message?.type === "withdraw") {
-            this.#questions.get(message.id)?.abort("Withdrawn by the server.");
+            this.#questions.get(message.id)?.abort(WITHDRAWN);
+        } else if (message?.type === "approval-code") {
+            void this.#code(message.id, message.code);
+        } else if (message?.type === "runner-action") {
+            void this.#approvals.action(message.request).then(
+                async () => {
+                    this.#control({
+                        type: "runner-result",
+                        id: message.id,
+                        ok: true,
+                        state: await this.#approvals.state(),
+                    });
+                },
+                (error: unknown) =>
+                    this.#control({
+                        type: "runner-result",
+                        id: message.id,
+                        ok: false,
+                        reason: (error as Error).message,
+                    }),
+            );
         } else if (message?.type === "net-open") {
-            this.#openStream(ws, message);
+            void this.#authorizedStream(ws, message);
         } else if (
             message?.type === "net-end" ||
             message?.type === "net-reset" ||
             message?.type === "net-credit"
         ) {
             if (message.type === "net-reset") {
+                this.#questions.get(`net-${message.id}`)?.abort();
                 this.#connecting.get(message.id)?.destroy();
                 this.#connecting.delete(message.id);
             }
@@ -731,136 +877,66 @@ export class Runner {
         return welcomed;
     }
 
-    /** Ask locally unless asking is off or a saved folder covers this one. Nothing about the list leaves here. */
-    async #answer(ws: WebSocket, question: Confirm): Promise<void> {
-        const link = this.#options.link;
-        // Older runners reject an unknown kind. The server sends moves as new + move for those runners.
-        const kind = question.move === true ? "move" : question.kind;
-        const what =
-            kind === "move"
-                ? "a session move"
-                : kind === "fork"
-                  ? "a copy of a session"
-                  : "a session";
-        const stop = new AbortController();
-        const timer = setTimeout(() => stop.abort(), ASK_MS);
-        const dropped = () => stop.abort();
-        let answer: SessionAnswer;
-
-        this.#questions.set(question.id, stop);
-        ws.once("close", dropped);
-
-        try {
-            if (this.#settings().confirm === false) {
-                answer = { allow: true };
-                this.#log(
-                    `${question.person} started ${what} in ${question.folder} (asking is off).`,
-                );
-            } else {
-                const folder = await realFolder(question.folder);
-                const covered = await coveredFolder(folder, this.#settings().folders ?? []);
-
-                if (covered) {
-                    answer = { allow: true };
-                    this.#log(`Allowed: ${folder} is in the allowed folders`);
-                } else if (this.#options.ask === undefined) {
-                    answer = {
-                        allow: false,
-                        reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal. Run it in a terminal or the Pi Pocket desktop app.`,
-                    };
-                } else if (stop.signal.aborted) {
-                    answer = { allow: false, reason: `Nobody answered on ${link.name} in time.` };
-                } else {
-                    const broad = broadFolder(folder, await realFolder(homedir()));
-
-                    answer = await Promise.race([
-                        this.#options.ask({
-                            kind,
-                            broad,
-                            person: question.person,
-                            folder,
-                            server: link.server,
-                            computer: link.name,
-                            signal: stop.signal,
-                        }),
-                        new Promise<SessionAnswer>((resolve) => {
-                            const denied = () =>
-                                resolve({
-                                    allow: false,
-                                    reason: `Nobody answered on ${link.name} in time.`,
-                                });
-
-                            if (stop.signal.aborted) {
-                                denied();
-                            } else {
-                                stop.signal.addEventListener("abort", denied, { once: true });
-                            }
-                        }),
-                    ]);
-
-                    if (
-                        answer.allow &&
-                        !broad &&
-                        !stop.signal.aborted &&
-                        ws.readyState === WebSocket.OPEN
-                    ) {
-                        // Two Allow answers must not overwrite each other while realpath is pending.
-                        this.#folderSaves = this.#folderSaves
-                            .catch(() => {})
-                            .then(async () => {
-                                if (
-                                    !(await coveredFolder(
-                                        folder,
-                                        this.#settings().folders ?? [],
-                                    )) &&
-                                    !stop.signal.aborted
-                                ) {
-                                    const change = {
-                                        folders: [...(this.#settings().folders ?? []), folder],
-                                    };
-
-                                    if (this.#options.saveSettings !== undefined) {
-                                        await this.#options.saveSettings(change);
-                                    } else {
-                                        link.settings = { ...link.settings, ...change };
-                                    }
-                                }
-                            });
-                        await this.#folderSaves;
-                    }
-
-                    // A question the server withdrew is logged as cancelled (below), not as answered.
-                    if (stop.signal.reason !== "Withdrawn by the server.") {
-                        this.#log(
-                            `${answer.allow ? "Allowed" : "Denied"} ${what} for ${question.person} in ${folder}.`,
-                        );
-                    }
-                }
-            }
-
-            if (stop.signal.aborted) {
-                answer = { allow: false, reason: `Nobody answered on ${link.name} in time.` };
-            }
-        } catch (error) {
-            answer = {
-                allow: false,
-                reason: `${link.name} could not ask or save its answer: ${String(error)}`,
-            };
-        } finally {
-            clearTimeout(timer);
-            ws.off("close", dropped);
-            this.#questions.delete(question.id);
-
-            if (stop.signal.reason === "Withdrawn by the server.") {
-                this.#log(`${question.person} cancelled ${what} in ${question.folder}.`);
-            }
+    /** Public state never contains the authenticator secret, failures, or accepted counter. */
+    async #state(): Promise<void> {
+        if (!this.connected || !this.#session.gate.scoped) {
+            return;
         }
 
-        const withdrawn = stop.signal.reason === "Withdrawn by the server.";
+        try {
+            const state = await this.#approvals.state();
+            const json = JSON.stringify(state);
 
-        stop.abort();
+            if (json !== this.#lastState) {
+                this.#lastState = json;
+                this.#control({ type: "runner-state", state });
+            }
+        } catch (error) {
+            this.#log("Could not read runner permissions: " + String(error));
+        }
+    }
 
-        if (!withdrawn && ws.readyState === WebSocket.OPEN) {
+    /** A code from Pi Pocket for a question that waits here. Only this runner checks it. */
+    async #code(id: string, code: string): Promise<void> {
+        const pending = this.#pending.get(id);
+        const allow =
+            pending !== undefined &&
+            !pending.stop.signal.aborted &&
+            (await this.#approvals.code(code));
+
+        this.#control({
+            type: "code-result",
+            id,
+            allow,
+            ...(allow ? {} : { reason: "That code is wrong or used. Try the next one." }),
+        });
+
+        if (allow && !pending!.stop.signal.aborted) {
+            pending!.resolve({ allow: true, method: "totp" });
+        }
+    }
+
+    /** The server's question before a session starts, moves, or is copied here. */
+    async #answer(ws: WebSocket, question: Confirm): Promise<void> {
+        const scope: SessionScope = {
+            // An older server names no session: its sessions are approved one question at a time.
+            id: question.session ?? `server-${question.id}`,
+            folder: question.folder,
+            person: question.person,
+        };
+        // Older runners reject an unknown kind. The server sends moves as new + move for those runners.
+        const kind = question.move === true ? "move" : question.kind;
+        const answer = await this.#approve(question.id, scope, kind, false);
+
+        if (answer.withdrawn) {
+            return;
+        }
+
+        if (answer.allow && question.session === undefined) {
+            this.#session.gate.legacy.push({ ...scope, folder: await realFolder(scope.folder) });
+        }
+
+        if (ws.readyState === WebSocket.OPEN) {
             ws.send(
                 JSON.stringify({
                     type: "confirmed",
@@ -868,9 +944,270 @@ export class Runner {
                     allow: answer.allow,
                     ...(answer.allow
                         ? {}
-                        : { reason: answer.reason ?? `${link.name} did not allow the session.` }),
+                        : {
+                              reason:
+                                  answer.reason ??
+                                  `${this.#options.link.name} did not allow the session.`,
+                          }),
                 } satisfies ControlMessage),
             );
+        }
+    }
+
+    /**
+     * Approve session `scope` here: at once when its permission is valid, without a question when its folder is saved
+     * and asking is off, else by the person here or a code from Pi Pocket. Questions for one session are shared. A
+     * withdrawn or timed-out question saves nothing, even when a late answer comes.
+     */
+    async #approve(
+        id: string,
+        scope: SessionScope,
+        kind: SessionQuestion["kind"],
+        expired: boolean,
+        signal?: AbortSignal,
+    ): Promise<Approval> {
+        const existing = [...this.#pending.values()].find((each) => each.scope.id === scope.id);
+
+        if (existing !== undefined) {
+            existing.hold(signal);
+
+            return existing.promise;
+        }
+
+        const link = this.#options.link;
+        const what = expired
+            ? "a session to continue"
+            : kind === "move"
+              ? "a session move"
+              : kind === "fork"
+                ? "a copy of a session"
+                : "a session";
+        const stop = new AbortController();
+        const abort = () => stop.abort();
+        const ws = this.#socket;
+        const totp = this.#settings().totp !== undefined;
+        const timer = setTimeout(abort, totp ? ASK_TOTP_MS : ASK_MS);
+
+        let resolveAnswer: (answer: Approval) => void = () => {};
+
+        // The requests of one session share its question: it ends when the last of them is cancelled. A caller
+        // without a signal (the server's own question) keeps it until it is answered, withdrawn, or times out.
+        let holders = 0;
+        let kept = false;
+        const released: (() => void)[] = [];
+
+        const hold = (more: AbortSignal | undefined) => {
+            if (more === undefined) {
+                kept = true;
+
+                return;
+            }
+
+            if (more.aborted) {
+                if (!kept && holders === 0) {
+                    abort();
+                }
+
+                return;
+            }
+
+            const release = () => {
+                holders--;
+
+                if (!kept && holders === 0) {
+                    abort();
+                }
+            };
+
+            holders++;
+            more.addEventListener("abort", release, { once: true });
+            released.push(() => more.removeEventListener("abort", release));
+        };
+
+        hold(signal);
+        ws?.once("close", abort);
+
+        const promise = (async (): Promise<Approval> => {
+            try {
+                if ((await this.#approvals.valid(scope)) !== undefined) {
+                    return { allow: true };
+                }
+
+                // A permission keeps the real folder: a symlink changed later cannot widen it.
+                const folder = await realFolder(scope.folder);
+                const real = { ...scope, folder };
+                const broad = broadFolder(folder, await realFolder(homedir()));
+                const saved = await coveredFolder(folder, this.#settings().folders ?? []);
+                let answer: Approval;
+
+                if (saved && this.#settings().confirm === false) {
+                    answer = { allow: true, method: "automatic" };
+                    this.#log(`${scope.person} started ${what} in ${folder} (asking is off).`);
+                } else if (this.#options.ask === undefined && !totp) {
+                    answer = {
+                        allow: false,
+                        reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal. Run it in a terminal or a program that runs the runner, such as the desktop app, or set up an authenticator there.`,
+                    };
+                } else {
+                    const question: SessionQuestion = {
+                        kind,
+                        broad,
+                        permission: saved ? "session" : "folder",
+                        expired,
+                        session: scope.id,
+                        totp,
+                        expiresInMs: totp ? ASK_TOTP_MS : ASK_MS,
+                        person: scope.person,
+                        folder,
+                        server: link.server,
+                        computer: link.name,
+                        signal: stop.signal,
+                    };
+
+                    if (this.#session.gate.scoped) {
+                        this.#control({
+                            type: "approval-needed",
+                            id,
+                            session: scope.id,
+                            folder,
+                            permission: question.permission,
+                            expired,
+                            broad,
+                            totp,
+                        });
+                    }
+
+                    answer = await new Promise<Approval>((resolve) => {
+                        resolveAnswer = resolve;
+
+                        const ended = () =>
+                            resolve({
+                                allow: false,
+                                reason: `Nobody answered on ${link.name} in time.`,
+                            });
+
+                        if (stop.signal.aborted) {
+                            ended();
+
+                            return;
+                        }
+
+                        stop.signal.addEventListener("abort", ended, { once: true });
+                        void this.#options.ask?.(question).then(
+                            (got) =>
+                                resolve(
+                                    got.allow
+                                        ? { allow: true, method: "computer" }
+                                        : {
+                                              allow: false,
+                                              ...(got.reason === undefined
+                                                  ? {}
+                                                  : { reason: got.reason }),
+                                          },
+                                ),
+                            () => resolve({ allow: false }),
+                        );
+                    });
+                }
+
+                if (stop.signal.reason === WITHDRAWN) {
+                    this.#log(`${scope.person} cancelled ${what} in ${scope.folder}.`);
+
+                    return { allow: false, withdrawn: true };
+                }
+
+                if (!answer.allow || answer.method === undefined || stop.signal.aborted) {
+                    if (answer.method !== "automatic") {
+                        this.#log(`Denied ${what} for ${scope.person} in ${folder}.`);
+                    }
+
+                    return answer.allow
+                        ? { allow: false, reason: `Nobody answered on ${link.name} in time.` }
+                        : answer;
+                }
+
+                if (!saved) {
+                    await this.#approvals.saveFolder(folder);
+                }
+
+                await this.#approvals.approve(real, answer.method);
+
+                if (answer.method !== "automatic") {
+                    this.#log(
+                        `Allowed ${what} for ${scope.person} in ${folder}${answer.method === "totp" ? " (with a code from the authenticator)" : ""}.`,
+                    );
+                }
+
+                return { allow: true };
+            } catch (error) {
+                return {
+                    allow: false,
+                    reason: `${link.name} could not ask or save its answer: ${String(error)}`,
+                };
+            } finally {
+                clearTimeout(timer);
+
+                for (const release of released) {
+                    release();
+                }
+
+                ws?.off("close", abort);
+                this.#pending.delete(id);
+                this.#questions.delete(id);
+
+                if (this.#session.gate.scoped && this.connected) {
+                    this.#control({ type: "approval-ended", id });
+                }
+
+                // Ends the question here (and a program's `PI-POCKET-CONFIRM-END`) after the answer is saved.
+                stop.abort();
+                void this.#state();
+            }
+        })();
+
+        this.#questions.set(id, stop);
+        this.#pending.set(id, {
+            scope,
+            stop,
+            resolve: (answer) => resolveAnswer(answer),
+            promise,
+            hold,
+        });
+
+        return promise;
+    }
+
+    /** A network stream for a session's browser: only for a session with a valid permission. */
+    async #authorizedStream(ws: WebSocket, open: NetOpen): Promise<void> {
+        const scope = this.#session.gate.scoped
+            ? sessionScope(open.session)
+            : this.#session.gate.legacy.at(-1);
+        const stop = new AbortController();
+
+        this.#questions.set(`net-${open.id}`, stop);
+
+        try {
+            const allowed =
+                scope !== undefined &&
+                ((await this.#approvals.valid(scope)) !== undefined ||
+                    (this.#session.gate.scoped &&
+                        (await this.#approve(`resume-${scope.id}`, scope, "new", true, stop.signal))
+                            .allow));
+
+            if (allowed && ws.readyState === WebSocket.OPEN && !stop.signal.aborted) {
+                this.#openStream(ws, open, this.#approvals.begin(scope.id));
+            } else if (ws.readyState === WebSocket.OPEN && !stop.signal.aborted) {
+                ws.send(
+                    JSON.stringify({
+                        type: "net-failed",
+                        id: open.id,
+                        code: "refused",
+                        message: `Session not approved on ${this.#options.link.name}`,
+                    } satisfies ControlMessage),
+                );
+            }
+        } finally {
+            this.#questions.delete(`net-${open.id}`);
         }
     }
 
@@ -878,10 +1215,12 @@ export class Runner {
      * The server asks for a TCP connection from this computer, for a session's browser: open it here, with this
      * computer's names and routes, unless its settings say not to share the network.
      */
-    #openStream(ws: WebSocket, open: NetOpen): void {
+    #openStream(ws: WebSocket, open: NetOpen, finish: () => void): void {
         const streams = this.#streams;
 
         const fail = (code: "refused" | "unreachable" | "timeout" | "limit", message: string) => {
+            finish();
+
             // Errors only, not every connection: a page opens many.
             if (code !== "refused") {
                 this.#log(`Browser connection failed: ${message}`);
@@ -900,6 +1239,7 @@ export class Runner {
         };
 
         if (streams === undefined || streams.has(open.id) || this.#connecting.has(open.id)) {
+            finish();
             ws.close(1002, "A stream id in use");
 
             return;
@@ -930,6 +1270,7 @@ export class Runner {
         timer.unref();
         this.#connecting.set(open.id, socket);
         socket.once("close", () => {
+            finish();
             clearTimeout(timer);
 
             if (this.#connecting.get(open.id) === socket) {
@@ -984,7 +1325,11 @@ export class Runner {
         }
 
         for (const whole of frames) {
-            session.daemon.write(whole);
+            try {
+                session.gate.input(whole);
+            } catch {
+                ws.close(1002, "Invalid request frame");
+            }
         }
 
         if (session.inbox.unacknowledged >= ACK_BYTES) {

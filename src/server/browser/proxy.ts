@@ -22,7 +22,7 @@ export type Connect = (
     host: string,
     port: number,
     socket: Duplex,
-    options: { first?: Buffer[]; opened?: () => void },
+    options: { first?: Buffer[]; opened?: () => void; conversationId?: number },
 ) => Promise<void>;
 
 /** The address a context loads once with its credentials, so that Chromium keeps them (`browser.ts`). */
@@ -45,7 +45,12 @@ const HOP_HEADERS = new Set([
     "upgrade",
 ]);
 
-type Context = { runner: string; primed: boolean; problem?: { message: string; at: number } };
+type Context = {
+    runner: string;
+    conversationId?: number;
+    primed: boolean;
+    problem?: { message: string; at: number };
+};
 
 type Head = { method: string; target: string; version: string; headers: [string, string][] };
 
@@ -154,12 +159,19 @@ export class BrowserProxy {
     }
 
     /** New credentials for a browser context whose connections go to computer `runner`. */
-    add(runner: string): { username: string; password: string; key: string } {
+    add(
+        runner: string,
+        conversationId?: number,
+    ): { username: string; password: string; key: string } {
         const username = `pocket-${randomBytes(6).toString("hex")}`;
         const password = randomBytes(24).toString("base64url");
         const key = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 
-        this.#contexts.set(key, { runner, primed: false });
+        this.#contexts.set(key, {
+            runner,
+            primed: false,
+            ...(conversationId === undefined ? {} : { conversationId }),
+        });
 
         return { username, password, key };
     }
@@ -324,7 +336,12 @@ export class BrowserProxy {
         options: { first: Buffer[]; opened?: () => void },
         page = false,
     ): void {
-        this.#connect(context.runner, host, port, socket, options).catch((error: unknown) => {
+        this.#connect(context.runner, host, port, socket, {
+            ...options,
+            ...(context.conversationId === undefined
+                ? {}
+                : { conversationId: context.conversationId }),
+        }).catch((error: unknown) => {
             const message = error instanceof Error ? error.message : String(error);
 
             context.problem = { message, at: Date.now() };
