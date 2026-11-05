@@ -5,12 +5,14 @@
  * is removed here. Without a valid session permission, only `hello` and folder listing (`lstat`, `realpath`,
  * `opendir`, and `readdir` and `close` on a listed folder) pass. Every other request needs a valid permission for the
  * session it names, and each path it carries must be in that permission's folder or below it, or in the runner's own
- * folders for attached files and browser downloads. An expired permission makes the request wait while the computer
+ * folders for attached files and browser downloads. Pi's context files above the folder and its skills there and in
+ * the home folder can also be read (`piReads`). An expired permission makes the request wait while the computer
  * asks again. An older server names no session: its requests use the permissions it got with `confirm`.
  */
 import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { folderContains } from "./folders.ts";
+import { folderContains, realFolder } from "./folders.ts";
 import type { Approvals, SessionPermission, SessionScope } from "./approvals.ts";
 import { FRAME, frame, readFrame, SESSION_FIELD } from "./protocol.ts";
 
@@ -24,10 +26,50 @@ type Request = {
     finish?: () => void;
 };
 
-type Handle = { scope?: SessionScope; path: string; directory: boolean };
+type Handle = { scope?: SessionScope; path: string; directory: boolean; readOnly: boolean };
 
 /** What works without a session permission: the folder picker's listing. */
 const LISTING = new Set(["hello", "lstat", "realpath", "opendir"]);
+
+/** What only reads a file opened with `open`. */
+const READING = new Set(["pread", "fstat", "scanLines", "close"]);
+
+/** Pi's context files, as `remote-context.ts` on the server looks for them. */
+const CONTEXT_FILES = new Set([
+    "AGENTS.override.md",
+    "AGENTS.md",
+    "AGENTS.MD",
+    "CLAUDE.md",
+    "CLAUDE.MD",
+]);
+
+/**
+ * What Pi reads for a session besides its folder: the context files in the folders above it, the `.agents/skills/`
+ * folders there, and the skills in the home folder. A session may read these, never change them. Its commands could
+ * read them anyway.
+ */
+function piReads(folder: string, home: string, path: string): boolean {
+    const skills = [join(home, ".pi", "agent", "skills"), join(home, ".agents", "skills")];
+    const parent = dirname(path);
+
+    for (let current = folder; ; current = dirname(current)) {
+        if (
+            CONTEXT_FILES.has(basename(path)) &&
+            folderContains(current, parent) &&
+            folderContains(parent, current)
+        ) {
+            return true;
+        }
+
+        skills.push(join(current, ".agents", "skills"));
+
+        if (dirname(current) === current) {
+            break;
+        }
+    }
+
+    return skills.some((root) => folderContains(root, path));
+}
 
 /** Resolve existing ancestors too: a missing child behind an outside symlink must not pass the path check. */
 export async function canonical(path: string): Promise<string> {
@@ -312,7 +354,16 @@ export class RequestGate {
             paths.length === 1 &&
             dirname(paths[0]!) === (await this.#options.tmpdir());
 
-        if (!temporary && !(await this.#inside(scope.id, permission.folder, paths))) {
+        // Pi's context files and skills: read only, in a file opened to read.
+        const reading =
+            request.op === "open" || (handle?.readOnly === true && READING.has(request.op));
+        const home = reading ? await realFolder(homedir()) : "";
+
+        if (
+            !temporary &&
+            !(await this.#inside(scope.id, permission.folder, paths)) &&
+            !(reading && paths.every((path) => piReads(permission.folder, home, path)))
+        ) {
             throw new Error(
                 `The path is outside the session's approved folder on ${this.#options.name()}`,
             );
@@ -377,6 +428,7 @@ export class RequestGate {
                 ...(request.scope === undefined ? {} : { scope: request.scope }),
                 path: request.path,
                 directory: request.directory,
+                readOnly: request.op === "open",
             });
         }
 

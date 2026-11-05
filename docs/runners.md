@@ -83,7 +83,7 @@ Use **Approved sessions** in the terminal menu, `pi-pocket runner sessions`, or 
 
 ### What a session can reach
 
-Each request from the server names its session. The runner refuses a request before it reaches pi-env unless the session it names has a valid permission. Each path in the request must be in that permission's folder or below it, or in the runner's own folders for attached files, browser downloads, and the temporary folders the session made. Commands run in the session's folder. Without a session permission, only the folder picker works: it lists folders.
+Each request from the server names its session. The runner refuses a request before it reaches pi-env unless the session it names has a valid permission. Each path in the request must be in that permission's folder or below it, or in the runner's own folders for attached files, browser downloads, and the temporary folders the session made. Pi can also read, not change, its context files (`AGENTS.md`, `CLAUDE.md`) in the folders above, and the skills in `.agents/skills/` there and in your home folder. Commands run in the session's folder. Without a session permission, only the folder picker works: it lists folders.
 
 This is not a sandbox. A command still runs as you, and it can read and change files outside its folder. A server that was broken into can name a session that has a valid permission; expiry limits how long that works.
 
