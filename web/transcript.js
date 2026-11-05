@@ -35,6 +35,7 @@ import {
     navigate,
     notify,
     openSheet,
+    instantOpen,
     store,
     TRANSCRIPT_ROWS,
 } from "./store.js";
@@ -3289,8 +3290,9 @@ function windowStart(rows, from) {
 }
 
 /**
- * How long new rows carry the catch-up entrance. Each update after rows are on screen opens this window (`keptAt`),
- * so a slow answer or reconnect still glides at the bottom, or keeps the reader's row when scrolled up.
+ * How long new rows carry the catch-up entrance. With instant open, each update after rows are on screen opens this
+ * window (`keptAt`), so a slow answer or reconnect still glides. Without it, the window opens once, when a kept
+ * session shows again, and a session opened from the server never opens one.
  */
 const CATCH_UP_MS = 3000;
 /** How long a session held for its changes (Appearance's Wait for updates) waits for them before it shows anyway. */
@@ -3431,9 +3433,16 @@ export function Transcript() {
         entrance.current = routeSliding() ? "" : "rising";
     }
 
-    // The last update after this session had rows on screen. Every such update opens its own catch-up window: no
-    // deadline measured from opening the session can make a later answer jump. The initial view still shows whole.
-    const keptAt = useRef(0);
+    // With instant open: the last update after this session had rows on screen. Every such update opens its own
+    // catch-up window, so no deadline measured from opening can make a later answer jump. The initial view shows whole.
+    // Without it: when a kept session showed again. What comes until `CATCH_UP_MS` after is its catch-up; 0 for a
+    // session that opened from the server's view (one held for its changes too).
+    const keptAt = useRef(instantOpen ? 0 : null);
+
+    if (!instantOpen) {
+        keptAt.current ??= view.conversation && !held ? performance.now() : 0;
+    }
+
     const catching = () => keptAt.current > 0 && performance.now() - keptAt.current < CATCH_UP_MS;
     /** The row the reader looks at, as this draw began, while the session catches up (`anchorOf`). */
     const anchor = useRef(null);
@@ -3499,13 +3508,13 @@ export function Transcript() {
     // Rows of the catch-up about to be drawn: where the reader looks, before Preact changes the page (it does after this
     // function returns), to keep it there after.
     const drawnRows = useRef(rows);
-    // A draw has put rows on screen: the next rows are a catch-up, and glide.
+    // A draw has put rows on screen: with instant open, the next rows are a catch-up, and glide.
     const shown = useRef(false);
 
     if (rows !== drawnRows.current) {
         // Rows are already on screen (`shown`): this update glides however late it is, even after an earlier update's
         // window has passed. The rows the session opens with do not glide themselves.
-        if (shown.current && view.conversation && !held) {
+        if (instantOpen && shown.current && view.conversation && !held) {
             keptAt.current = performance.now();
         }
 
@@ -3552,7 +3561,10 @@ export function Transcript() {
         catchUp(element);
         place(element);
         counted.current = rows.length;
-        shown.current = rows.length > 0;
+
+        if (instantOpen) {
+            shown.current = rows.length > 0;
+        }
 
         if (rows.length === 0) {
             return;
@@ -3669,9 +3681,10 @@ export function Transcript() {
             return;
         }
 
-        // Rows already on screen: what mounts after them is new. The catch-up window (`keptAt`) opens on the next
-        // draw, so this cannot wait for it.
-        if (shown.current) {
+        // With instant open, rows already on screen mean what mounts after them is new. The catch-up window
+        // (`keptAt`) opens on the next draw, so this cannot wait for it. Without it, a kept session's window is
+        // already open (`keptAt`).
+        if (instantOpen ? shown.current : keptAt.current > 0) {
             settledFor = conversationId;
 
             return;
@@ -3867,8 +3880,8 @@ export function Transcript() {
         const title = sessions.find((session) => session.id === conversationId)?.title;
 
         // Nothing kept anywhere: the session's own pane, its title, and a quiet loader, not the full-page boot screen.
-        // A session held for its changes keeps that screen, as before.
-        if (pending === conversationId && !held) {
+        // A session held for its changes keeps that screen, as before. Without instant open, so does a cold switch.
+        if (instantOpen && pending === conversationId && !held) {
             return html`<main class="scroller">
                 <div class="transcript" data-part="transcript">
                     <div class="loader" role="status">
