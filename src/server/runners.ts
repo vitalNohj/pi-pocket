@@ -48,7 +48,8 @@ import type { ConfigStore, StoredRunner } from "./config.ts";
 import { HttpError } from "./errors.ts";
 
 /**
- * The extensions a session on another computer runs with: exactly these, in order, and none other (no drop-ins). Each
+ * The built-in extensions a session on another computer runs with: exactly these, in order. Drop-ins that say they work
+ * there (`export const remoteSessions = true`) follow them (`App.remoteExtensions`); other drop-ins never load. Each
  * works through the session's environment, which is that computer's, or on app state only. Subagents and linked
  * sessions keep the computer, and codemode calls its tools without saving output on this server. The others read or
  * run things on this server's disk (background tasks, the browser, artifacts, design): they come back as they learn to.
@@ -73,6 +74,13 @@ export const REMOTE_EXTENSIONS = [
     // Its pages load through the computer (`runner-network.ts`), and it opens no files of this server.
     "pocket-browser",
 ] as const;
+
+/** What a subagent of a session on another computer runs without: it starts no agents of its own, and asks nobody. */
+export const REMOTE_SUBAGENT_WITHOUT: readonly string[] = [
+    "pocket-subagents",
+    "pocket-agent-teams",
+    "pocket-ask",
+];
 
 /** How long a one-time link code works. */
 export const CODE_MINUTES = 10;

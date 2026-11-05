@@ -50,7 +50,6 @@ import {
     type SubagentRecord,
     SubagentsDoc,
 } from "./docs.ts";
-import { REMOTE_EXTENSIONS } from "./runners.ts";
 import {
     ATTACHMENTS_HEADING,
     attachmentsHeading,
@@ -498,7 +497,7 @@ export class Commands {
 
     /**
      * Start a session whose tools run on computer `runner` (`runners.ts`), in a folder there; home without one. Only
-     * the owner: everything it runs runs as the person whose computer that is. It runs with `REMOTE_EXTENSIONS` only,
+     * the owner: everything it runs runs as the person whose computer that is. It runs with `App.remoteExtensions` only,
      * so nothing in it works on this server's disk.
      */
     async #createRemote(
@@ -547,7 +546,7 @@ export class Commands {
                 init: async (tx, id) => {
                     const sessions = await tx.doc(SessionsDoc);
 
-                    (await tx.doc(AgentDoc, id)).extensions = [...REMOTE_EXTENSIONS];
+                    (await tx.doc(AgentDoc, id)).extensions = app.remoteExtensions();
                     sessions.items[String(id)] = {
                         cwd,
                         createdAt: now,
@@ -3001,7 +3000,7 @@ export class Commands {
             const forkedAgent = await tx.doc(AgentDoc, forked);
 
             if (runner !== undefined) {
-                forkedAgent.extensions = [...REMOTE_EXTENSIONS];
+                forkedAgent.extensions = app.remoteExtensions();
             } else if (fromRunner) {
                 // Copied from a session on another computer: here it runs with everything again.
                 delete forkedAgent.extensions;
