@@ -3,7 +3,7 @@
 // computer" is this one, in a folder of its own that the server's sessions never use.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -676,6 +676,86 @@ describe("a session on another computer", () => {
             assert.ok(
                 !childAgent.callable.some((tool) => tool.name === name),
                 `${name} is removed`,
+            );
+        }
+    });
+
+    it("loads drop-ins that say remoteSessions, existing sessions too, and no others", async () => {
+        // The list each one is saved with: built-ins that are off in tests (the guard) are on it too.
+        const names = async (conversation: number) =>
+            ((await app.harness.snapshot(AgentDoc, conversation as never, context))?.extensions ??
+                []) as string[];
+        const dropIns = join(app.dataDir, "extensions");
+        const module = (name: string, remote: boolean) =>
+            `export const pocketApi = 2;\n${remote ? "export const remoteSessions = true;\n" : ""}export default () => ({ name: "${name}" });\n`;
+
+        try {
+            writeFileSync(join(dropIns, "remote-ok.ts"), module("remote-ok", true));
+            writeFileSync(join(dropIns, "server-only.ts"), module("server-only", false));
+            await app.setExtensionEnabled(owner(app), "remote-ok.ts", true);
+            await app.setExtensionEnabled(owner(app), "server-only.ts", true);
+
+            // The session made before the drop-in came gets it, next to the built-in list; its subagent too.
+            await until(
+                async () => (await names(id)).includes("remote-ok"),
+                "the existing session to get it",
+            );
+            assert.deepEqual(await names(id), [...REMOTE_EXTENSIONS, "remote-ok"]);
+            assert.ok(!(await names(id)).includes("server-only"));
+
+            const child = (await app.harness.snapshot(SubagentsDoc, id as never, context))!.agents[
+                "remote-probe"
+            ]!.conversationId;
+
+            await until(
+                async () => (await names(Number(child))).includes("remote-ok"),
+                "its subagent to get it",
+            );
+            assert.ok(!(await names(Number(child))).includes("pocket-subagents"));
+
+            // A new one has it from the start; a server session has both.
+            const fresh = await app.commands.createSession(owner(app), {
+                cwd: there,
+                runner: runnerId,
+            });
+
+            assert.deepEqual(await names(fresh.id), [...REMOTE_EXTENSIONS, "remote-ok"]);
+
+            // A session on the server saves no list: it runs with every extension that is on, both drop-ins too.
+            const local = await newSession(app);
+            const loaded = (await (await app.conversation(local)).agent(context)).extensions.map(
+                (extension) => extension.name,
+            );
+
+            assert.ok(loaded.includes("remote-ok") && loaded.includes("server-only"));
+
+            // Turned off, or no longer saying it: gone from sessions on the computer.
+            writeFileSync(join(dropIns, "remote-ok.ts"), module("remote-ok", false));
+            await app.loader.reload("remote-ok.ts");
+            await until(
+                async () => !(await names(id)).includes("remote-ok"),
+                "the line taken out to count",
+            );
+            assert.deepEqual(await names(id), [...REMOTE_EXTENSIONS]);
+
+            writeFileSync(join(dropIns, "remote-ok.ts"), module("remote-ok", true));
+            await app.loader.reload("remote-ok.ts");
+            await until(async () => (await names(id)).includes("remote-ok"), "the line back");
+            await app.setExtensionEnabled(owner(app), "remote-ok.ts", false);
+            await until(
+                async () => !(await names(id)).includes("remote-ok"),
+                "turned off to count",
+            );
+        } finally {
+            // The tests after this one see only the built-in list again.
+            for (const file of ["remote-ok.ts", "server-only.ts"]) {
+                await app.setExtensionEnabled(owner(app), file, false).catch(() => {});
+                rmSync(join(dropIns, file), { force: true });
+            }
+
+            await until(
+                async () => JSON.stringify(await names(id)) === JSON.stringify(REMOTE_EXTENSIONS),
+                "the drop-ins to be gone",
             );
         }
     });

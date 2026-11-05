@@ -150,7 +150,7 @@ import { Spend } from "./spend.ts";
 import { Transcripts } from "./transcripts.ts";
 import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
-import { Runners } from "./runners.ts";
+import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.ts";
 import {
     changedThere,
     type FolderScan,
@@ -477,6 +477,8 @@ export class PocketApp {
     #releaseLock: (() => void) | undefined;
     #openingStorage: Storage | undefined;
     #closing: Promise<void> | undefined;
+    /** A pending `#tuneRemote` after extensions changed (`#tuneRemoteSoon`). */
+    #tuneTimer: NodeJS.Timeout | undefined;
     readonly #log: (line: string) => void;
     readonly #configureModels: ((models: ModelRuntime) => void) | undefined;
     /** Request shapers from the extension modules the owner turned on (`host.shapeModelRequests`). */
@@ -977,7 +979,12 @@ export class PocketApp {
             { builtIn: join(APP_ROOT, "src", "server", "extensions"), dropIn },
             (file) => this.config.extensionChoice(file),
             // What a module's load says can name the server's folders, or quote a provider: the owner's to read.
-            { webs: this.webs, notify: (level, message) => this.ownerNotice(level, message) },
+            {
+                webs: this.webs,
+                notify: (level, message) => this.ownerNotice(level, message),
+                // A drop-in that says `remoteSessions` came or went: sessions on other computers get it, or lose it.
+                onChange: () => this.#tuneRemoteSoon(),
+            },
         );
         await this.themes.load().catch((error: unknown) => {
             this.#log(`Themes could not be read: ${describe(error)}`);
@@ -1073,6 +1080,7 @@ export class PocketApp {
         }
 
         await this.pip.tuneAll((line) => this.#log(line));
+        await this.#tuneRemote();
         // Work a previous process left unfinished continues now.
         this.harness.resume();
     }
@@ -1532,6 +1540,73 @@ export class PocketApp {
      */
     runnerOf(id: ConversationId): string | undefined {
         return this.#sessions[String(this.rootOf(id))]?.runner;
+    }
+
+    /**
+     * The extensions a session on another computer runs with: the built-in list (`REMOTE_EXTENSIONS`), then the drop-ins
+     * that say they work there (`export const remoteSessions = true`, `reload.ts`).
+     */
+    remoteExtensions(): string[] {
+        return [...new Set([...REMOTE_EXTENSIONS, ...this.loader.remoteNames()])];
+    }
+
+    /** What conversation `id` on another computer runs with: a subagent has its session's list, less its own. */
+    #remoteListOf(id: ConversationId): string[] {
+        const all = this.remoteExtensions();
+
+        return this.#parents.has(id)
+            ? all.filter((name) => !REMOTE_SUBAGENT_WITHOUT.includes(name))
+            : all;
+    }
+
+    /** `#tuneRemote` once a burst of extension changes settled (a reload of several drop-ins). */
+    #tuneRemoteSoon(): void {
+        // While the server starts, `open` tunes them once everything loaded.
+        if (this.harness === undefined || this.#closing !== undefined) {
+            return;
+        }
+
+        clearTimeout(this.#tuneTimer);
+        this.#tuneTimer = setTimeout(() => {
+            this.#tuneTimer = undefined;
+
+            if (this.#closing !== undefined) {
+                return;
+            }
+
+            void this.#tuneRemote().catch((error: unknown) => {
+                this.#log(
+                    `Sessions on other computers could not get their extensions: ${describe(error)}`,
+                );
+            });
+        }, 200);
+        this.#tuneTimer.unref();
+    }
+
+    /**
+     * Give every conversation on another computer the list it runs with now (`remoteExtensions`): drop-ins that came or
+     * went, and built-ins added to the list since it was made. One commit, only for those whose list differs.
+     */
+    async #tuneRemote(): Promise<void> {
+        const stale = [...this.#agents]
+            .filter(([id, agent]) => {
+                if (this.runnerOf(id) === undefined || !Array.isArray(agent.extensions)) {
+                    return false;
+                }
+
+                return JSON.stringify(agent.extensions) !== JSON.stringify(this.#remoteListOf(id));
+            })
+            .map(([id]) => id);
+
+        if (stale.length === 0) {
+            return;
+        }
+
+        await this.harness.commit(async (tx) => {
+            for (const id of stale) {
+                (await tx.doc(AgentDoc, id)).extensions = this.#remoteListOf(id);
+            }
+        }, context);
     }
 
     /** Refuse what works on this machine's disk for a conversation whose tools run on another computer. */
