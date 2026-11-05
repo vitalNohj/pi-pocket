@@ -146,6 +146,8 @@ export type GateOptions = {
     tmpdir: () => Promise<string>;
     /** The computer's name, for refusals. */
     name: () => string;
+    /** A request of a session in `folder` reaches the daemon; the result is called when it ended (`activity.ts`). */
+    working?: (folder: string) => () => void;
 };
 
 export class RequestGate {
@@ -370,7 +372,13 @@ export class RequestGate {
         }
 
         if (request.op !== "watch") {
-            request.finish = this.#options.approvals.begin(scope.id);
+            const used = this.#options.approvals.begin(scope.id);
+            const working = this.#options.working?.(permission.folder);
+
+            request.finish = () => {
+                used();
+                working?.();
+            };
         }
     }
 
