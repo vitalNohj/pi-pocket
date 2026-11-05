@@ -59,6 +59,7 @@ import {
     panelsBeside,
     peopleDocked,
     scoped,
+    instantOpen,
     start,
     store,
     workspaceOrder,
@@ -519,8 +520,9 @@ function App() {
             : "Pi Pocket";
     }, [state.view.conversation?.title]);
 
-    // A checked device view can draw before `/api/me`; with no copy, keep the usual boot screen.
-    if (state.me === undefined && state.view.conversation == null) {
+    // A checked device view can draw before `/api/me`; with no copy, keep the usual boot screen. Without instant
+    // open, that check has not happened yet, so the boot screen stays until `/api/me` answers.
+    if (state.me === undefined && (!instantOpen || state.view.conversation == null)) {
         return html`<${Boot}
             caption=${state.notices.some((notice) => notice.level === "error") ? "waiting for the server" : "starting"}
         />

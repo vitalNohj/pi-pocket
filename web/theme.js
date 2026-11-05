@@ -95,6 +95,13 @@ const DEFAULTS = {
      * come, then show it whole. Off, the tab's copy of it shows at once and the updates slide in (`holdsFor` in store.js).
      */
     waitForUpdates: false,
+    /**
+     * Show a session at once: the page's saved copy before `/api/me` answers, an in-pane loader on a cold switch, a
+     * glide for every update after rows are on screen, and a larger tab memory. Off opens as before that (wait for the
+     * sign-in check, catch-up only right after opening). Read once as the page loads; a change applies after a reload.
+     * A temporary switch for comparing the two.
+     */
+    instantOpen: true,
     /** This browser's own layout of each slot (`slots.js`): `{ [slot]: { order: [ids], hidden: { [id]: boolean } } }`. */
     layout: {},
 };
