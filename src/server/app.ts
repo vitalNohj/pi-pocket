@@ -987,6 +987,7 @@ export class PocketApp {
             fetchPublic: createPublicFetch(),
             requesterOf: (conversationId) => this.attribution.requesterOf(conversationId),
             runnerOf: (conversationId) => this.runnerOf(conversationId),
+            envFor: (conversationId) => this.envFor(conversationId),
             roleOf: (personId) => this.config.userById(personId)?.role,
             on: (event, listener) => this.events.on(event, listener),
             ask: (request, askContext) => ask(this.approvals, request, askContext),

@@ -179,7 +179,7 @@ These also work, on that computer:
 - Files mentioned with `@`, read on that computer.
 - Attachments: each is copied to `pi-pocket-uploads/<session>/` in that computer's temporary folder when the message is sent, and the message gives that path. `<session>` is the session's permission id on that computer, so a session reaches only its own attached files. The system can clear its temporary folder when the computer restarts: move a file you want to keep out of it.
 
-These are not available yet in sessions on another computer, because they use the server's disk: background tasks, artifacts, design, and git worktrees. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
+These are not available yet in sessions on another computer, because they use the server's disk: background tasks, artifacts, and git worktrees. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
 
 ### Extensions
 

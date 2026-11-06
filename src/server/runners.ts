@@ -79,6 +79,8 @@ export const REMOTE_EXTENSIONS = [
     "pocket-triggers",
     // Its pages load through the computer (`runner-network.ts`), and it opens no files of this server.
     "pocket-browser",
+    // Design renders here, with a bounded copy of the session folder (`design/mirror.ts`).
+    "pocket-design",
 ] as const;
 
 /** What a subagent of a session on another computer runs without: it starts no agents of its own, and asks nobody. */
