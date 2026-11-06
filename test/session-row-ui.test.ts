@@ -634,6 +634,7 @@ test("runner marks keep each state and the computer's folder color", real, async
             remoteColor: string;
             localColor: string;
             dimensions: string[];
+            box: number[];
             clip: string;
             shadow: string;
         }>(`
@@ -648,6 +649,11 @@ test("runner marks keep each state and the computer's folder color", real, async
                 remoteColor: mark.style.getPropertyValue("--folder"),
                 localColor: local.style.getPropertyValue("--folder"),
                 dimensions: [style.width, style.height],
+                // What it takes in the row: the square's 8px, so names line up.
+                box: [
+                    parseFloat(style.width) + parseFloat(style.marginLeft) + parseFloat(style.marginRight),
+                    parseFloat(style.height) + parseFloat(style.marginTop) + parseFloat(style.marginBottom),
+                ],
                 clip: style.clipPath,
                 shadow: style.boxShadow,
             });
@@ -655,7 +661,9 @@ test("runner marks keep each state and the computer's folder color", real, async
 
         assert.equal(shown.state, each.state, "data-state does not depend on the computer");
         assert.equal(shown.local, `state-mark ${each.shape}`, "the server keeps its square");
-        assert.deepEqual(shown.dimensions, ["9px", "8px"]);
+        // Larger than the square, which it would look smaller than, in the square's room.
+        assert.deepEqual(shown.dimensions, ["11px", "10px"]);
+        assert.deepEqual(shown.box, [8, 8]);
         assert.equal(shown.clip, "polygon(50% 0px, 100% 100%, 0px 100%)");
         assert.equal(shown.shadow, "none", "an inset shadow cannot follow the triangle");
         assert.notEqual(shown.remoteColor, shown.localColor);
@@ -732,12 +740,13 @@ test("runner marks keep each state and the computer's folder color", real, async
     `);
 
     assert.equal(tile.shape, "state-mark remote working");
-    assert.deepEqual(tile.dimensions, ["9px", "8px"]);
+    assert.deepEqual(tile.dimensions, ["12px", "11px"]);
     assert.deepEqual(tile.animation, ["state-corner", "1.2s", "steps(1)"]);
+    // The lit corner moves from the top to the bottom right and bottom left corners of the 12 × 11 triangle.
     assert.deepEqual(tile.corners, [
         "matrix(1, 0, 0, 1, 0, 0)",
-        "matrix(1, 0, 0, 1, 2.5, 4.5)",
-        "matrix(1, 0, 0, 1, -2.5, 4.5)",
+        "matrix(1, 0, 0, 1, 3.3, 6.16)",
+        "matrix(1, 0, 0, 1, -3.3, 6.16)",
     ]);
     assert.equal(tile.reduced, "none", "reduced motion holds the top corner lit");
     await fresh();
