@@ -96,7 +96,7 @@ Use **Approved sessions** in the terminal menu, `pi-pocket runner sessions`, or 
 
 ### What a session can reach
 
-Each request from the server names its session. The runner refuses a request before it reaches pi-env unless the session it names has a valid permission. Each path in the request must be in that permission's folder or below it, or in the session's own folders for its attached files and browser downloads (named by its permission id), or in the temporary folders the session made. Pi can also read, not change, its context files (`AGENTS.md`, `CLAUDE.md`) in the folders above, and the skills in `.agents/skills/` there and in your home folder. Commands run in the session's folder. Without a session permission, only the folder picker works: it lists folders.
+Each request from the server names its session. The runner refuses a request before it reaches pi-env unless the session it names has a valid permission. Each path in the request must be in that permission's folder or below it, or in the session's own folders for its attached files, background task logs, and browser downloads (named by its permission id), or in the temporary folders the session made. Pi can also read, not change, its context files (`AGENTS.md`, `CLAUDE.md`) in the folders above, and the skills in `.agents/skills/` there and in your home folder. Commands run in the session's folder. Without a session permission, only the folder picker works: it lists folders.
 
 This is not a sandbox. A command still runs as you, and it can read and change files outside its folder. A server that was broken into can name a session that has a valid permission; expiry limits how long that works.
 
@@ -179,7 +179,9 @@ These also work, on that computer:
 - Files mentioned with `@`, read on that computer.
 - Attachments: each is copied to `pi-pocket-uploads/<session>/` in that computer's temporary folder when the message is sent, and the message gives that path. `<session>` is the session's permission id on that computer, so a session reaches only its own attached files. The system can clear its temporary folder when the computer restarts: move a file you want to keep out of it.
 
-These are not available yet in sessions on another computer, because they use the server's disk: background tasks, artifacts, design, and git worktrees. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
+Background tasks run on the computer in the session's folder, on macOS or Linux (not Windows yet). Their logs and exit codes stay in `<temp>/pi-pocket-tasks/<permission id>/` on that computer, reachable only by their session. Running now and the log view read them there, with the same output limits as local tasks. A task runs independently of the server, runner, and pi-env daemon: restarting them does not stop it. While the computer is offline, its watch waits, then checks again when it reconnects. Stop sends a polite signal to its process group and any processes with its marker, then forces what remains to stop. Temporary files can disappear when the computer restarts.
+
+These are not available yet in sessions on another computer, because they use the server's disk: artifacts, design, and git worktrees. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
 
 ### Extensions
 

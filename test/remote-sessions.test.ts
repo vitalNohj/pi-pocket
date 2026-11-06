@@ -953,5 +953,5 @@ describe("a session on another computer", () => {
 
 it("runs with exactly the remote extensions", () => {
     assert.ok(REMOTE_EXTENSIONS.includes("coding-tools"));
-    assert.ok(!(REMOTE_EXTENSIONS as readonly string[]).includes("pocket-background"));
+    assert.ok(REMOTE_EXTENSIONS.includes("pocket-background"));
 });
