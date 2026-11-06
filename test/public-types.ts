@@ -73,6 +73,7 @@ type Internal =
     | "repoWatches"
     | "approvals"
     | "runnerOf"
+    | "envFor"
     | "guard"
     | "schedules"
     | "background"

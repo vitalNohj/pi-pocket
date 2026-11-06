@@ -181,7 +181,7 @@ These also work, on that computer:
 
 Artifacts read their `path` and asset files on the session's computer, then keep the published bundle on the server. Automatic design-system attachments are not available there: give their files in `assets`. Images opened from that computer, or written with `write` or `edit`, are kept in the session's uploads for offline viewing (25 MiB per image, 500 MiB per session; the oldest copies are removed above that).
 
-These are not available yet in sessions on another computer, because they use the server's disk: background tasks, design, and git worktrees. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
+These are not available yet in sessions on another computer, because they use the server's disk: background tasks and git worktrees. A project's own `.pi/settings.json` and prompt templates on that computer are not read.
 
 ### Extensions
 

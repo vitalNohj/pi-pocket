@@ -464,6 +464,8 @@ export interface PocketHost {
     requesterOf(conversationId: ConversationId): string | undefined;
     /** The computer this conversation and its subagents run on; undefined for this server. Built-in modules only. */
     runnerOf(conversationId: ConversationId): string | undefined;
+    /** The session-bound environment, with its existing runner permission. Built-in modules only. */
+    envFor(conversationId: ConversationId): ExecutionEnv;
     /**
      * The role of a person by id, as core decides it; undefined for an id that is not a person here.
      *
