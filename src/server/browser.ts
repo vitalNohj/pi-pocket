@@ -174,7 +174,7 @@ export class Browsers {
 
         const computer = await this.#options.remote!.computer(runner, conversationId);
 
-        return copyToComputer(computer, conversationId, file, name);
+        return copyToComputer(computer, file, name);
     }
 
     /** The browser this machine has, if any. Looked up once. */

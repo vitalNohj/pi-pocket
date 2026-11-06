@@ -140,8 +140,8 @@ export type GateOptions = {
     send: (bytes: Buffer) => void;
     /** Whole frames back to the server, as if the daemon sent them. */
     reply: (bytes: Buffer) => void;
-    /** The runner's own folders that every approved session may use: attached files and browser downloads. */
-    shared: () => Promise<string[]>;
+    /** The runner's own folders for session `id` (its permission): its attached files and browser downloads. */
+    shared: (id: string) => Promise<string[]>;
     /** The real temporary folder, where `mkdtemp` may make a folder for a session. */
     tmpdir: () => Promise<string>;
     /** The computer's name, for refusals. */
@@ -410,7 +410,10 @@ export class RequestGate {
     }
 
     async #inside(session: string, folder: string, paths: readonly string[]): Promise<boolean> {
-        const shared = [...(await this.#options.shared()), ...(this.#temporary.get(session) ?? [])];
+        const shared = [
+            ...(await this.#options.shared(session)),
+            ...(this.#temporary.get(session) ?? []),
+        ];
 
         return paths.every(
             (path) =>

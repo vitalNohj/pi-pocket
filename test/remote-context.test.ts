@@ -286,7 +286,12 @@ describe("a session on another computer", () => {
             { path: stored, name: "plan.txt", mime: "text/plain", size: 9 },
         ]);
 
-        const copy = join(tmpdir(), "pi-pocket-uploads", String(id), "abc-12345678-plan.txt");
+        const copy = join(
+            tmpdir(),
+            "pi-pocket-uploads",
+            app.runnerScope(id as never).id,
+            "abc-12345678-plan.txt",
+        );
         const sent = (await modelTexts(app, id as never)).at(-2) ?? "";
 
         assert.equal(readFileSync(copy, "utf8"), "the plan\n");
@@ -310,7 +315,7 @@ describe("a session on another computer", () => {
     it("copies images too, and archiving removes the copies there", async () => {
         const uploads = app.workspace.uploadDirectory(id as never);
         const image = join(uploads, "def-12345678-shot.png");
-        const folder = join(tmpdir(), "pi-pocket-uploads", String(id));
+        const folder = join(tmpdir(), "pi-pocket-uploads", app.runnerScope(id as never).id);
 
         writeFileSync(image, "not really a png");
         await say(app, id as never, "look at this", [
@@ -349,7 +354,12 @@ describe("a session on another computer", () => {
 
         const uploads = app.workspace.uploadDirectory(id as never);
         const stored = join(uploads, "abc-87654321-later.txt");
-        const copy = join(tmpdir(), "pi-pocket-uploads", String(id), "abc-87654321-later.txt");
+        const copy = join(
+            tmpdir(),
+            "pi-pocket-uploads",
+            app.runnerScope(id as never).id,
+            "abc-87654321-later.txt",
+        );
         const before = (await modelTexts(app, id as never)).length;
 
         writeFileSync(stored, "later\n");

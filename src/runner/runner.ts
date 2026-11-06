@@ -464,7 +464,7 @@ export class Runner {
                 (await this.#approve(`resume-${scope.id}`, scope, "new", true, signal)).allow,
             send: (bytes) => made.daemon.write(bytes),
             reply: (bytes) => this.#relay(made, bytes),
-            shared: async () => this.#shared(await temporary),
+            shared: async (id) => this.#shared(await temporary, id),
             tmpdir: () => temporary,
             name: () => this.#options.link.name,
             working: (folder) => this.#activity.begin(folder),
@@ -510,16 +510,22 @@ export class Runner {
     }
 
     /**
-     * The runner's own folders that each approved session may use besides its folder: attached files
-     * (`<temp>/pi-pocket-uploads`) and browser downloads (`<temp>/pi-pocket-downloads`, or the downloads folder).
+     * The runner's own folders that session `id` (its permission) may use besides its folder: its own attached files
+     * (`<temp>/pi-pocket-uploads/<id>`) and browser downloads (`<temp>/pi-pocket-downloads/<id>`, or `<id>` in the
+     * downloads folder). Only its own: never another session's, and never the downloads folder itself.
      */
-    async #shared(temporary: string): Promise<string[]> {
+    async #shared(temporary: string, id: string): Promise<string[]> {
+        // A permission id names one folder: nothing that climbs or splits a path.
+        if (!/^[A-Za-z0-9._-]+$/.test(id) || id === "." || id === "..") {
+            return [];
+        }
+
         const downloads = this.#settings().downloads;
 
         return [
-            join(temporary, "pi-pocket-uploads"),
-            join(temporary, "pi-pocket-downloads"),
-            ...(downloads === undefined ? [] : [await realFolder(downloads)]),
+            join(temporary, "pi-pocket-uploads", id),
+            join(temporary, "pi-pocket-downloads", id),
+            ...(downloads === undefined ? [] : [join(await realFolder(downloads), id)]),
         ];
     }
 

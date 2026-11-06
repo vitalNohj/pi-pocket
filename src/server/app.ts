@@ -650,6 +650,7 @@ export class PocketApp {
                         tmpdir: info.tmpdir,
                         separator: info.separator,
                         ...(link.downloads === undefined ? {} : { folder: link.downloads }),
+                        session: scoped?.id ?? String(conversationId),
                     };
                 },
             },

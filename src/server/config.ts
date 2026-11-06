@@ -775,6 +775,14 @@ export class ConfigStore {
         this.save();
     }
 
+    /** Forget every open link code (too many wrong codes reached the server: `link-limits.ts`). */
+    voidRunnerCodes(): void {
+        if ((this.#config.runnerCodes ?? []).length > 0) {
+            this.#config.runnerCodes = [];
+            this.save();
+        }
+    }
+
     /** Use a one-time code: returns what it was for and forgets it; undefined when it is unknown or expired. */
     takeRunnerCode(code: string): StoredRunnerCode | undefined {
         const hash = hashToken(code);

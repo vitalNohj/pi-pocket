@@ -54,6 +54,7 @@ function LinkSteps({ made, onDone }) {
 
     return html`<div class="runner-link">
         <div class="group-title">Link ${made.name}</div>
+        <${TrustNote} />
         <p class="muted small">Give the runner on ${made.name} this address and code:</p>
         <${Copyable} label="Address" text=${server} />
         <${Copyable} label="Code" text=${made.code} />
@@ -74,6 +75,46 @@ function LinkSteps({ made, onDone }) {
         <div class="row">
             <button class="button" onClick=${onDone}>Done</button>
         </div>
+    </div>`;
+}
+
+/** What linking means for that computer, said where people link: before the code, and with it. */
+export function TrustNote() {
+    return html`<p class="runner-trust small">
+        <strong>The linked computer trusts this server fully.</strong> Sessions you start there run commands and change
+        files as that computer's user, with everything that user can reach. Nothing runs in a sandbox.
+    </p>`;
+}
+
+/** Linking paused, for one address or the whole server (`link-limits.ts`), with why. */
+function LinkLocks() {
+    const [locks, setLocks] = useState(null);
+
+    useEffect(() => {
+        attempt(async () => setLocks(await api("runners/locks")));
+    }, [store.state.runners]);
+
+    if (!locks || (!locks.server && locks.addresses.length === 0)) {
+        return null;
+    }
+
+    const until = (time) =>
+        new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+    return html`<div class="runner-trust small" role="status">
+        ${
+            locks.server &&
+            html`<p>
+                <strong>Linking is paused until ${until(locks.server)}.</strong> Too many wrong link codes reached this
+                server, so every open code was voided. Get a new one after that.
+            </p>`
+        }
+        ${locks.addresses.map(
+            (lock) => html`<p key=${lock.address}>
+                <strong>${lock.address}</strong> is locked out of linking until ${until(lock.until)}: it sent too many
+                wrong link codes.
+            </p>`,
+        )}
     </div>`;
 }
 
@@ -101,6 +142,7 @@ function LinkComputer({ onDone }) {
 
     return html`<div class="runner-link">
         <div class="group-title">Link a computer</div>
+        <${TrustNote} />
         <label class="field">
             <span class="label">Name</span>
             <input
@@ -443,6 +485,7 @@ export function ComputersSheet() {
                       <${Icon} name="plus" size=${16} /> Link a computer
                   </button>`
         }
+        <${LinkLocks} />
         <${SharedSessions} />
     <//>`;
 }

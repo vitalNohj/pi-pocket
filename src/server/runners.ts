@@ -51,6 +51,7 @@ import { LinkNetwork, NetError, type OpenOptions } from "./runner-network.ts";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import type { ConfigStore, StoredRunner } from "./config.ts";
 import { HttpError } from "./errors.ts";
+import { LinkLimits, type LinkLocks } from "./link-limits.ts";
 
 /**
  * The built-in extensions a session on another computer runs with: exactly these, in order. Drop-ins that say they work
@@ -1002,6 +1003,7 @@ export class RunnerEnv extends RemoteExecutionEnv {
 /** The computers whose runners may connect, and their links. */
 export class Runners {
     readonly #config: ConfigStore;
+    readonly #linkLimits = new LinkLimits();
     readonly #log: (line: string) => void;
     readonly #onChange: () => void;
     readonly #links = new Map<string, RunnerLink>();
@@ -1223,6 +1225,11 @@ export class Runners {
         };
     }
 
+    /** Who is locked out of linking now, and whether all of it is paused (`link-limits.ts`), for the Runners sheet. */
+    linkLocks(): LinkLocks {
+        return this.#linkLimits.locks();
+    }
+
     list(): RunnerView[] {
         return this.#config.runners.map((runner) => {
             const link = this.#links.get(runner.id);
@@ -1273,10 +1280,31 @@ export class Runners {
     }
 
     /** A runner gives its one-time code: it gets its computer's key, kept only there. */
-    redeem(code: string): { id: string; name: string; key: string } {
+    /**
+     * Trade one-time code `code` for a computer's key. `address`: the client's (`link-limits.ts` `clientAddress`).
+     * Wrong codes are counted: too many from one address lock it out, and too many in all void every open code.
+     */
+    redeem(code: string, address = "unknown"): { id: string; name: string; key: string } {
+        this.#linkLimits.check(address);
+
         const found = this.#config.takeRunnerCode(code.trim().toUpperCase());
 
         if (found === undefined) {
+            if (this.#linkLimits.wrong(address)) {
+                this.#config.voidRunnerCodes();
+                this.log(
+                    "Too many wrong link codes: linking is paused for 10 minutes, and open codes were voided.",
+                );
+            } else if (
+                this.#linkLimits.locks().addresses.some((each) => each.address === address)
+            ) {
+                this.log(
+                    `Too many wrong link codes from ${address}: it is locked out for 10 minutes.`,
+                );
+            }
+
+            this.changed();
+
             throw new HttpError(
                 403,
                 "This code is wrong, already used, or expired. Get a new one in Menu → Runners.",

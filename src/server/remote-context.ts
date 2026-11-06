@@ -608,22 +608,23 @@ export async function readRemoteText(env: RemoteEnv, path: string): Promise<stri
     return text.value;
 }
 
-/** Where a conversation's attached files go on a computer: `<temp>/pi-pocket-uploads/<conversation>/` there. */
+/** Where a session's attached files go on a computer: `<temp>/pi-pocket-uploads/<session>/` there. */
 export type UploadsFolder = { folder: string; paths: PathKit };
 
 /**
- * The folder on the computer for a conversation's attached files, from what it said of its system (`hello`, also kept
- * while it is offline): in its temporary folder, so they never pile up in a person's home. `clearUploads` empties it
- * when the session is archived; the system clears what is left.
+ * The folder on the computer for a session's attached files, from what it said of its system (`hello`, also kept
+ * while it is offline): in its temporary folder, so they never pile up in a person's home. `session`: its permission
+ * id there (`runnerScope`), the one folder of attached files its runner lets it reach. `clearUploads` empties it when
+ * the session is archived; the system clears what is left.
  */
 export function uploadsFolder(
     system: { os: string; tmpdir: string },
-    conversationId: number,
+    session: string,
 ): UploadsFolder {
     const paths = pathsFor(system.os);
 
     return {
-        folder: paths.join(system.tmpdir, "pi-pocket-uploads", String(conversationId)),
+        folder: paths.join(system.tmpdir, "pi-pocket-uploads", session),
         paths,
     };
 }
@@ -665,9 +666,9 @@ export async function copyUploads(
  * Remove a conversation's attached files from the computer (its session was archived): when it is offline, once it is
  * back. Errors are ignored.
  */
-export async function clearUploads(env: RemoteEnv, conversationId: number): Promise<void> {
+export async function clearUploads(env: RemoteEnv, session: string): Promise<void> {
     try {
-        const { folder } = uploadsFolder(await env.connection.info(), conversationId);
+        const { folder } = uploadsFolder(await env.connection.info(), session);
 
         await env.remove(folder, { recursive: true, force: true }, context);
     } catch {

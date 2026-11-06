@@ -126,7 +126,8 @@ export type Attachment = { path: string; name: string; mime: string; size: numbe
  * (`copyUploads`): the same name in the conversation's uploads, when it is still there.
  */
 function uploadedCopy(path: string, uploads: string): string | undefined {
-    const stored = /[/\\]pi-pocket-uploads[/\\]\d+[/\\]([^/\\]+)$/.exec(path)?.[1];
+    // `<session>`: the session's permission id since 0.28.0, its number before.
+    const stored = /[/\\]pi-pocket-uploads[/\\][A-Za-z0-9._-]+[/\\]([^/\\]+)$/.exec(path)?.[1];
 
     if (stored === undefined || stored === "." || stored === "..") {
         return undefined;
@@ -990,7 +991,10 @@ export class Commands {
         const runner = patch.archived === true ? app.runnerOf(id) : undefined;
 
         if (runner !== undefined) {
-            void clearUploads(app.runners.env(runner, app.cwdOf(id), app.runnerScope(id)), id);
+            void clearUploads(
+                app.runners.env(runner, app.cwdOf(id), app.runnerScope(id)),
+                app.runnerScope(id).id,
+            );
         }
 
         // Archiving leaves its repeating schedules running: the person is told how many.
@@ -1615,7 +1619,7 @@ export class Commands {
             return attachments.map((file) => file.path);
         }
 
-        const folder = uploadsFolder(system, id);
+        const folder = uploadsFolder(system, app.runnerScope(id).id);
 
         app.uploadsCopied(
             id,

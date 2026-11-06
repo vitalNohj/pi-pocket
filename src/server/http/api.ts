@@ -597,6 +597,12 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, app.runners.list());
         }
 
+        if (first === "runners" && second === "locks" && third === undefined && method === "GET") {
+            requireOwner(user);
+
+            return json(response, 200, app.runners.linkLocks());
+        }
+
         if (first === "runners" && second === "code" && method === "POST") {
             requireOwner(user);
 

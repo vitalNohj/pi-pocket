@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -383,6 +383,50 @@ describe("session permission on the runner", () => {
         } finally {
             await computer.runner.stop();
             await close(setup);
+        }
+    });
+
+    it("lets a session reach its own downloads and attached files only, never the downloads folder", async () => {
+        const setup = await serve();
+        const downloads = folder("chosen-downloads");
+        const computer = await start(setup);
+        const work = folder("own-work");
+        const temp = await realFolder(tmpdir());
+
+        computer.settings.downloads = downloads;
+
+        try {
+            for (const session of ["mine", "theirs"]) {
+                await setup.runners
+                    .link(computer.id)
+                    .confirm({ kind: "new", person: "Owner", folder: work, session });
+            }
+
+            const env = setup.runners.env(computer.id, work, {
+                id: "mine",
+                folder: work,
+                person: "Owner",
+            });
+
+            const write = async (path: string) => {
+                mkdirSync(dirname(path), { recursive: true });
+
+                return (await env.writeFile(path, "x", context)).ok;
+            };
+
+            assert.ok(await write(join(temp, "pi-pocket-downloads", "mine", "a.txt")));
+            assert.ok(await write(join(temp, "pi-pocket-uploads", "mine", "a.txt")));
+            assert.ok(await write(join(downloads, "mine", "a.txt")));
+            assert.equal(await write(join(temp, "pi-pocket-downloads", "theirs", "a.txt")), false);
+            assert.equal(await write(join(temp, "pi-pocket-uploads", "theirs", "a.txt")), false);
+            assert.equal(await write(join(downloads, "theirs", "a.txt")), false);
+            // The chosen folder itself, and what else is in it, belong to no session.
+            assert.equal(await write(join(downloads, "a.txt")), false);
+        } finally {
+            await computer.runner.stop();
+            await close(setup);
+            rmSync(join(tmpdir(), "pi-pocket-downloads", "mine"), { recursive: true, force: true });
+            rmSync(join(tmpdir(), "pi-pocket-uploads", "mine"), { recursive: true, force: true });
         }
     });
 

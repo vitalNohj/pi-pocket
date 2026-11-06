@@ -397,6 +397,10 @@ async function redeem(server: string, code: string, settings: RunnerSettings): P
     return { server, id: got.id, name: got.name, key: got.key, settings };
 }
 
+/** What linking trusts, said where people link (the Runners sheet and the desktop app say it too). */
+const TRUST =
+    "This computer will trust the server fully. Sessions started here run commands and change\nfiles as your user, with everything you can reach. Nothing runs in a sandbox.";
+
 /** `pi-pocket runner link <server> <code>`: no questions; plain HTTP only where `transport.ts` allows it. */
 async function link(file: string, args: string[]): Promise<void> {
     // `--allow-http`: the person allowed plain HTTP to this server (the desktop app's switch); kept with the link.
@@ -423,6 +427,7 @@ async function link(file: string, args: string[]): Promise<void> {
 
         writeLink(file, got);
         console.log(`Linked "${got.name}" to ${got.server}.`);
+        console.log(TRUST.replace(/\n/g, " "));
         console.log(`Link file: ${file}. It contains this computer's key. Do not share it.`);
         console.log("To start the runner, run: pi-pocket runner start");
     } catch (error) {
@@ -543,8 +548,8 @@ function settingsCommand(file: string, args: string[]): void {
             changeSettings(file, { downloads: folder });
             done(
                 folder === undefined
-                    ? "Sessions' browser downloads go to this computer's temporary folder, in pi-pocket-downloads/<session>/."
-                    : `Sessions' browser downloads go to ${join(folder, "<session>")}. A running runner uses it once it reconnects.`,
+                    ? "Sessions' browser downloads go to this computer's temporary folder, in pi-pocket-downloads/<session>/. The system can clear it on restart: move files to keep."
+                    : `Sessions' browser downloads go to ${join(folder, "<session>")}, each session to its own folder only. A running runner uses it once it reconnects.`,
             );
 
             return;
@@ -1229,6 +1234,7 @@ async function ask(question: string): Promise<string> {
 async function linkInteractively(file: string): Promise<Link | undefined> {
     console.log("");
     console.log(bold("  Link this computer"));
+    console.log(yellow(`  ${TRUST.replace(/\n/g, "\n  ")}`));
     console.log(dim("  Empty answer to go back."));
     console.log("");
 

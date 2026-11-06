@@ -36,6 +36,8 @@ export type Computer = {
     tmpdir: string;
     separator: string;
     folder?: string;
+    /** The session's permission id there (`runnerScope`): its downloads folder's name, the only one it may reach. */
+    session: string;
 };
 
 export type DownloadState = "downloading" | "copying" | "done" | "failed" | "canceled";
@@ -177,14 +179,19 @@ function failure(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+/** Whether a download landed in a temporary folder (`pi-pocket-downloads`), here or on a computer. */
+function temporary(path: string | undefined): boolean {
+    return path !== undefined && /[/\\]pi-pocket-downloads(?:-[^/\\]+)?[/\\]/.test(path);
+}
+
 /**
- * Copy a finished file to `<folder>/<conversation>/` on a computer (`folder`: its runner's setting, or else
- * `pi-pocket-downloads` in its temporary folder), in parts, under a free name; its path there. A part file takes
- * the bytes and gets its name only when complete.
+ * Copy a finished file to `<folder>/<session>/` on a computer (`folder`: its runner's setting, or else
+ * `pi-pocket-downloads` in its temporary folder; `session`: the session's permission id, the folder its runner lets
+ * that session reach), in parts, under a free name; its path there. A part file takes the bytes and gets its name only
+ * when complete.
  */
 export async function copyToComputer(
     computer: Computer,
-    conversationId: number,
     file: string,
     name: string,
 ): Promise<string> {
@@ -193,7 +200,7 @@ export async function copyToComputer(
         ...(computer.folder === undefined
             ? [computer.tmpdir.replace(/[\\/]+$/, ""), "pi-pocket-downloads"]
             : [computer.folder.replace(/(?<=.)[\\/]+$/, "")]),
-        String(conversationId),
+        computer.session,
     ].join(separator);
 
     const check = <T>(result: { ok: true; value: T } | { ok: false; error: Error }): T => {
@@ -479,7 +486,7 @@ export class Downloads {
             download.reported = "ended";
             lines.push(
                 download.state === "done"
-                    ? `Downloaded ${download.path} (${formatSize(download.bytes)}).`
+                    ? `Downloaded ${download.path} (${formatSize(download.bytes)}).${temporary(download.path) ? " It is in a temporary folder, which the system can clear on restart: move it out to keep it." : ""}`
                     : download.state === "canceled"
                       ? `The download of ${download.name} was canceled.`
                       : `The download of ${download.name} failed: ${download.error}.`,

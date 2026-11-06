@@ -277,7 +277,7 @@ describe("the browser of a session on another computer", () => {
 
     it("downloads to the computer's temporary folder, and keeps no copy here", real, async () => {
         const done = await download(id, { action: "click", selector: "#dl" });
-        const folder = join(computerTmp, "pi-pocket-downloads", String(id));
+        const folder = join(computerTmp, "pi-pocket-downloads", app.runnerScope(id as never).id);
         const file = join(folder, "report.bin");
 
         assert.ok(done.includes(`Downloaded ${file} (68 KB).`), done);
@@ -314,7 +314,7 @@ describe("the browser of a session on another computer", () => {
                 "the runner's folder",
             );
             const done = await download(id, { action: "navigate", url: `${page()}/report.bin` });
-            const file = join(chosen, String(id), "report.bin");
+            const file = join(chosen, app.runnerScope(id as never).id, "report.bin");
 
             assert.ok(done.includes(`Downloaded ${file} (68 KB).`), done);
             assert.deepEqual(readFileSync(file), REPORT);
@@ -432,7 +432,11 @@ describe("the browser of a session on another computer", () => {
         async () => {
             const downloads = app.browsers.downloads;
             const progress = downloads.progress.bind(downloads);
-            const folder = join(computerTmp, "pi-pocket-downloads", String(id));
+            const folder = join(
+                computerTmp,
+                "pi-pocket-downloads",
+                app.runnerScope(id as never).id,
+            );
 
             // The moment Chromium finishes the file, the computer goes away, and comes back a little later.
             downloads.progress = (params) => {

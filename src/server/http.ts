@@ -26,6 +26,7 @@ import {
 } from "./http/assets.ts";
 import { type HttpOptions, json, readJson } from "./http/io.ts";
 import { LINK_CODE_PATH } from "../runner/protocol.ts";
+import { clientAddress } from "./link-limits.ts";
 import { join as joinPage, login, sharePage } from "./http/sign-in.ts";
 import { themeFile } from "./http/theme-routes.ts";
 
@@ -128,7 +129,11 @@ export function createHandler(options: HttpOptions) {
                     throw new HttpError(400, "Give the link code.");
                 }
 
-                return json(response, 200, app.runners.redeem(body.code));
+                return json(
+                    response,
+                    200,
+                    app.runners.redeem(body.code, clientAddress(request, app.access?.mode)),
+                );
             }
 
             if (parts[0] === "a") {
