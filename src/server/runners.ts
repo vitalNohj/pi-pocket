@@ -1099,7 +1099,7 @@ export class Runners {
 
     /** The environment of a session that runs in `cwd` on computer `id`. */
     env(id: string, cwd: string, scope?: SessionScope): RunnerEnv {
-        const key = `${id}\0${cwd}\0${scope?.id ?? ""}`;
+        const key = `${id}\0${cwd}\0${scope?.id ?? ""}\0${scope?.folder ?? ""}`;
         let env = this.#envs.get(key);
 
         if (env === undefined) {

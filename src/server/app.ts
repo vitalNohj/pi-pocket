@@ -7,7 +7,7 @@
  * `alerts.ts`, provider sign-ins in `providers.ts`, and each conversation's shared live view in `room.ts`.
  */
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, posix, win32 } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
@@ -1756,14 +1756,29 @@ export class PocketApp {
         return this.#sessions[String(this.rootOf(id))]?.runner;
     }
 
-    /** All subagents use their root session permission. Old sessions ask once on their next request. */
-    runnerScope(id: ConversationId) {
+    /**
+     * All subagents use their root session permission. A worktree keeps its source folder's permission: the worktree
+     * is in that permission's own runner folder. `cwd` checks a move before it is saved. Old sessions ask once.
+     */
+    runnerScope(id: ConversationId, cwd?: string) {
         const root = this.rootOf(id);
         const meta = this.#sessions[String(root)];
+        const folder = cwd ?? this.cwdOf(root);
+        const path =
+            meta?.runner !== undefined && this.runners.link(meta.runner).platform().os === "windows"
+                ? win32
+                : posix;
+        const relative =
+            meta?.worktree === undefined ? undefined : path.relative(meta.worktree.path, folder);
+        const inWorktree =
+            relative !== undefined &&
+            relative !== ".." &&
+            !relative.startsWith(".." + path.sep) &&
+            !path.isAbsolute(relative);
 
         return {
             id: meta?.runnerPermission ?? String(root),
-            folder: this.cwdOf(root),
+            folder: inWorktree ? meta!.worktree!.source : folder,
             person: this.config.userById(meta?.createdBy ?? "")?.name ?? "The owner",
         };
     }
@@ -3401,7 +3416,7 @@ export class PocketApp {
             // Keep warm: the session's choice and what its cache keeper does now.
             ...(meta === undefined ? {} : { keepWarm: this.keepWarm.session(room.id) }),
             // Whether a fork could get a worktree of its own.
-            // A session on another computer: its folder is there, so no worktree or panel reads it here.
+            // A session on another computer: its folder and repository are read there, never here.
             ...(this.runnerOf(room.id) === undefined
                 ? meta === undefined
                     ? {}

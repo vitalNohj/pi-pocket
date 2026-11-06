@@ -2,7 +2,7 @@
 // the left, a value on the right that opens a picker), one main button, and small actions under it. The button tapped
 // decides the action: fork from a reply (`message.js`), send a message again (`message.js`), or fork the whole session
 // from the session list (here). The rows choose where the copy runs (a computer and a folder there), with which model
-// and thinking level, and in a git worktree of its own (this server only). Unchanged rows copy as the session is.
+// and thinking level, and in a git worktree of its own. Unchanged rows copy as the session is.
 import { useEffect, useState } from "preact/hooks";
 import { chooseFolder, copyDraft, modelOf, updateDraft, useCopyDraft } from "../copy-draft.js";
 import { shortPath } from "../folder-paths.js";
@@ -304,8 +304,8 @@ export function PlaceRows({ sessionId, draft, verb }) {
             <${SwitchRow}
                 label="Own git worktree"
                 on=${draft.worktree}
-                disabled=${!loaded || there || !draft.inRepository}
-                note=${there ? "server only" : loaded && draft.inRepository === false ? "not a git repository" : null}
+                disabled=${!loaded || (!there && !draft.inRepository)}
+                note=${loaded && draft.inRepository === false ? "not a git repository" : null}
                 onChange=${() => updateDraft({ worktree: !draft.worktree })}
             />
         <//>
@@ -351,7 +351,7 @@ export function placeOf(draft) {
         place.thinkingLevel = draft.thinkingLevel;
     }
 
-    if (draft.worktree && draft.runner === null) {
+    if (draft.worktree) {
         place.worktree = true;
     }
 

@@ -36,6 +36,7 @@ import {
     type Tx,
     type UserInput,
 } from "@earendil-works/pi-durable";
+import type { SessionScope } from "../runner/protocol.ts";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import {
@@ -64,7 +65,7 @@ import { attribute } from "./fence.ts";
 import { homePath } from "./paths.ts";
 import { localRepo, remoteRepo } from "./repo.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage, modelImageOf } from "./model-images.ts";
-import { Unreachable } from "./folder-access.ts";
+import { localAccess, Unreachable } from "./folder-access.ts";
 import { clearUploads, copyUploads, uploadedThere, uploadsFolder } from "./remote-context.ts";
 import { type FileView, mentionedPaths, viewFile } from "./files.ts";
 import { isThinkingLevel, THINKING_LEVELS } from "./models.ts";
@@ -92,6 +93,7 @@ import {
     discardWorktree,
     inWorktree,
     removeWorktree,
+    remoteWorktrees,
     sourceFolders,
     type Worktree,
 } from "./worktrees.ts";
@@ -269,7 +271,7 @@ function checkModel(asked: { provider?: unknown; modelId?: unknown } | undefined
 /**
  * Where a copy of a session runs, as a person picked it in the copy sheet (`POST /api/c/:id/fork` and `/resend`'s
  * `place`): the computer (`null`, this server; absent, the session's own), the folder there, the model and thinking
- * level, and a git worktree of its own (this server only). Absent fields keep the session's.
+ * level, and a git worktree of its own. Absent fields keep the session's.
  */
 export type CopyPlaceRequest = {
     runner?: string | null;
@@ -526,13 +528,6 @@ export class Commands {
             );
         }
 
-        if (request.worktree === true) {
-            throw new HttpError(
-                400,
-                "Worktrees are not available for sessions on another computer yet.",
-            );
-        }
-
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
 
         const runnerPermission = randomUUID();
@@ -546,37 +541,50 @@ export class Commands {
 
         const initial = this.#defaultModel();
         const now = Date.now();
-        const conversation = await app.harness.createConversation(
-            {
-                ownership: { kind: "ownerless" },
-                agent: {
-                    cwd,
-                    ...(initial.model === undefined ? {} : { model: initial.model }),
-                    ...(initial.thinkingLevel === undefined
-                        ? {}
-                        : { thinkingLevel: initial.thinkingLevel }),
-                },
-                init: async (tx, id) => {
-                    const sessions = await tx.doc(SessionsDoc);
+        const label = title ?? `${basename(cwd) || cwd} on ${app.runners.name(runner)}`;
 
-                    (await tx.doc(AgentDoc, id)).extensions = app.remoteExtensions();
-                    sessions.items[String(id)] = {
-                        cwd,
-                        createdAt: now,
-                        updatedAt: now,
-                        createdBy: user.id,
-                        runner,
-                        runnerPermission,
-                        title: title ?? `${basename(cwd) || cwd} on ${app.runners.name(runner)}`,
-                    };
-                },
+        return this.#inPlace(
+            cwd,
+            request.worktree === true,
+            label,
+            async (place) => {
+                const conversation = await app.harness.createConversation(
+                    {
+                        ownership: { kind: "ownerless" },
+                        agent: {
+                            cwd: place.cwd,
+                            ...(initial.model === undefined ? {} : { model: initial.model }),
+                            ...(initial.thinkingLevel === undefined
+                                ? {}
+                                : { thinkingLevel: initial.thinkingLevel }),
+                        },
+                        init: async (tx, id) => {
+                            const sessions = await tx.doc(SessionsDoc);
+
+                            (await tx.doc(AgentDoc, id)).extensions = app.remoteExtensions();
+                            sessions.items[String(id)] = {
+                                cwd: place.cwd,
+                                createdAt: now,
+                                updatedAt: now,
+                                createdBy: user.id,
+                                runner,
+                                runnerPermission,
+                                title: label,
+                                ...(place.worktree === undefined
+                                    ? {}
+                                    : { worktree: place.worktree }),
+                            };
+                        },
+                    },
+                    context,
+                );
+
+                void this.recordRepo(conversation.id, place.cwd);
+
+                return { id: conversation.id };
             },
-            context,
+            { runner, scope: { id: runnerPermission, folder: cwd, person: user.name } },
         );
-
-        void this.recordRepo(conversation.id, cwd);
-
-        return { id: conversation.id };
     }
 
     /** Start a session in a folder; with `worktree`, in a git worktree of its own made from that folder. */
@@ -748,17 +756,30 @@ export class Commands {
         isolated: boolean,
         label: string,
         create: (place: Place) => Promise<T>,
+        remote?: { runner: string; scope: SessionScope },
     ): Promise<T> {
         if (!isolated) {
             return create({ cwd, skipped: [] });
         }
 
-        const made = await createWorktree(cwd, join(this.#app.dataDir, "worktrees"), label);
+        const info =
+            remote === undefined
+                ? undefined
+                : await this.#app.runners.link(remote.runner).infoNow();
+        const access =
+            remote === undefined || info === undefined
+                ? undefined
+                : remoteWorktrees(this.#app.runners.env(remote.runner, cwd, remote.scope), info);
+        const folder =
+            access === undefined || info === undefined || remote === undefined
+                ? join(this.#app.dataDir, "worktrees")
+                : access.path.join(info.home, ".pi-pocket", "worktrees", remote.scope.id);
+        const made = await createWorktree(cwd, folder, label, access);
 
         try {
             return await create(made);
         } catch (error) {
-            await discardWorktree(made.worktree).catch((cleanup: unknown) =>
+            await discardWorktree(made.worktree, access).catch((cleanup: unknown) =>
                 this.#app.log(`worktree ${made.worktree.path} left behind: ${describe(cleanup)}`),
             );
 
@@ -782,21 +803,28 @@ export class Commands {
             throw new HttpError(404, "This session has no worktree");
         }
 
-        const inside = (cwd: string) => inWorktree(worktree, cwd);
+        const runner = app.runnerOf(id);
+        const access =
+            runner === undefined
+                ? localAccess
+                : remoteWorktrees(
+                      app.runners.env(runner, app.cwdOf(id), app.runnerScope(id)),
+                      await app.runners.link(runner).infoNow(),
+                  );
+        const inside = async (each: ConversationId) =>
+            app.runnerOf(each) === runner && (await inWorktree(worktree, app.cwdOf(each), access));
 
         // Anything at work there would lose its folder: this session's runs, its subagents', or another session's.
-        if (app.busyConversations().some((busy) => inside(app.cwdOf(busy)))) {
+        if ((await Promise.all(app.busyConversations().map(inside))).some(Boolean)) {
             throw new HttpError(409, "Pi is working in the worktree: stop it first.");
         }
 
         // A fork made without a worktree of its own works in this one.
-        const sharing = app
-            .sessions()
-            .find(
-                (session) =>
-                    session.id !== Number(id) &&
-                    inside(app.cwdOf(session.id as unknown as ConversationId)),
-            );
+        const sessions = app.sessions().filter((session) => session.id !== Number(id));
+        const shared = await Promise.all(
+            sessions.map((session) => inside(session.id as unknown as ConversationId)),
+        );
+        const sharing = sessions.find((_session, index) => shared[index]);
 
         if (sharing !== undefined) {
             throw new HttpError(
@@ -805,13 +833,16 @@ export class Commands {
             );
         }
 
-        const back = await sourceFolders(worktree);
-        const moves = app
-            .conversationsOf(id)
-            .filter((each) => inside(app.cwdOf(each)))
-            .map((each) => ({ id: each, cwd: back(app.cwdOf(each)) }));
+        const back = await sourceFolders(worktree, access);
+        const moves = [];
 
-        await removeWorktree(worktree, force === true);
+        for (const each of app.conversationsOf(id)) {
+            if (await inside(each)) {
+                moves.push({ id: each, cwd: await back(app.cwdOf(each)) });
+            }
+        }
+
+        await removeWorktree(worktree, force === true, access);
 
         // The session and its subagents go back to the folders the worktree came from.
         for (const move of moves) {
@@ -2114,7 +2145,7 @@ export class Commands {
             await app.runners.link(runner).confirm({
                 kind: "move",
                 person: user.name,
-                folder: cwd,
+                folder: app.runnerScope(id, cwd).folder,
                 session: app.runnerScope(id).id,
             });
         }
@@ -2969,7 +3000,7 @@ export class Commands {
     /**
      * Where a copy of session `id` runs: on the computer and in the folder `place` names, else where the session runs.
      * A copy is a new session there: on another computer, only the person who linked it may start one (also when the
-     * owner shares these sessions, `sharedRunnerSessions`), the folder must be there, and there is no worktree. A
+     * owner shares these sessions, `sharedRunnerSessions`), and the folder must be there. A
      * computer that is gone or offline fails with its name; the copy is never made here instead.
      */
     async #destination(
@@ -2990,13 +3021,6 @@ export class Commands {
                     app.runners.stored(runner) === undefined
                         ? "That computer is not linked to this server."
                         : "Only the person who linked this computer can start sessions on it, including forks.",
-                );
-            }
-
-            if (worktree) {
-                throw new HttpError(
-                    400,
-                    "Worktrees are not available for sessions on another computer yet.",
                 );
             }
         }
@@ -3037,8 +3061,41 @@ export class Commands {
         const title = `${sourceTitle} · ${branch.label}`.slice(0, MAX_TITLE);
         const destination = await this.#destination(id, user, branch.place, branch.worktree);
 
-        return this.#inPlace(destination.cwd, branch.worktree, title, (place) =>
-            this.#fork(id, user, { ...branch, title, sourceTitle, place, destination }, signal),
+        const runner = destination.runner;
+        const runnerPermission = runner === undefined ? undefined : randomUUID();
+
+        // Approve the source folder before git or copies use it. The worktree is this new permission's own folder.
+        if (runner !== undefined) {
+            await this.#app.runners.link(runner).confirm(
+                {
+                    kind: "fork",
+                    person: user.name,
+                    folder: destination.cwd,
+                    session: runnerPermission,
+                },
+                signal,
+            );
+        }
+
+        return this.#inPlace(
+            destination.cwd,
+            branch.worktree,
+            title,
+            (place) =>
+                this.#fork(id, user, {
+                    ...branch,
+                    title,
+                    sourceTitle,
+                    place,
+                    destination,
+                    runnerPermission,
+                }),
+            runner === undefined || runnerPermission === undefined
+                ? undefined
+                : {
+                      runner,
+                      scope: { id: runnerPermission, folder: destination.cwd, person: user.name },
+                  },
         );
     }
 
@@ -3056,9 +3113,9 @@ export class Commands {
             agent?: AgentChange;
             place: Place;
             destination: Destination;
+            runnerPermission?: string;
             resend?: Resend;
         },
-        signal?: AbortSignal,
     ): Promise<ConversationId> {
         const app = this.#app;
         const source = await app.agentState(id);
@@ -3072,20 +3129,7 @@ export class Commands {
         // folder can be from before the session moved or was copied to another computer, and is no folder there.
         const agent: AgentChange = { ...fork.agent, cwd: place.cwd };
 
-        const runnerPermission = runner === undefined ? undefined : randomUUID();
-
-        // A fork is a new session there too: the computer's person allows it, as for a new one.
-        if (runner !== undefined) {
-            await app.runners.link(runner).confirm(
-                {
-                    kind: "fork",
-                    person: user.name,
-                    folder: place.cwd,
-                    session: runnerPermission,
-                },
-                signal,
-            );
-        }
+        const runnerPermission = fork.runnerPermission;
 
         const now = Date.now();
         const from = destination.from;

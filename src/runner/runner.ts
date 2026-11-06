@@ -511,9 +511,10 @@ export class Runner {
 
     /**
      * The runner's own folders that session `id` (its permission) may use besides its folder: its own attached files
-     * (`<temp>/pi-pocket-uploads/<id>`), background tasks (`<temp>/pi-pocket-tasks/<id>`), and browser downloads
-     * (`<temp>/pi-pocket-downloads/<id>`, or `<id>` in the
-     * downloads folder). Only its own: never another session's, and never the downloads folder itself.
+     * (`<temp>/pi-pocket-uploads/<id>`), background tasks (`<temp>/pi-pocket-tasks/<id>`), browser downloads
+     * (`<temp>/pi-pocket-downloads/<id>`, or `<id>` in the downloads folder), and its git worktrees
+     * (`<home>/.pi-pocket/worktrees/<id>`). Only its own: never another session's, and never the downloads or worktrees
+     * folder itself.
      */
     async #shared(temporary: string, id: string): Promise<string[]> {
         // A permission id names one folder: nothing that climbs or splits a path.
@@ -527,6 +528,7 @@ export class Runner {
             join(temporary, "pi-pocket-uploads", id),
             join(temporary, "pi-pocket-tasks", id),
             join(temporary, "pi-pocket-downloads", id),
+            join(await realFolder(homedir()), ".pi-pocket", "worktrees", id),
             ...(downloads === undefined ? [] : [join(await realFolder(downloads), id)]),
         ];
     }

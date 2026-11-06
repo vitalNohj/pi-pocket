@@ -430,6 +430,52 @@ describe("session permission on the runner", () => {
         }
     });
 
+    it("limits worktree folders to one permission id and rejects path-like ids", async () => {
+        const setup = await serve();
+        const computer = await start(setup);
+        const work = folder("worktree-permission");
+        const id = randomUUID();
+        const worktrees = join(await realFolder(homedir()), ".pi-pocket", "worktrees");
+        const own = join(worktrees, id);
+        const other = join(worktrees, randomUUID());
+        const outside = join(worktrees, `${id}.txt`);
+
+        try {
+            for (const session of [id, "..", ".", `${id}/nested`, `${id}\\nested`]) {
+                await setup.runners
+                    .link(computer.id)
+                    .confirm({ kind: "new", person: "Owner", folder: work, session });
+                const env = setup.runners.env(computer.id, work, {
+                    id: session,
+                    folder: work,
+                    person: "Owner",
+                });
+                const made = await env.createDir(
+                    join(own, "checkout"),
+                    { recursive: true },
+                    context,
+                );
+
+                assert.equal(made.ok, session === id);
+                assert.equal(
+                    (await env.writeFile(join(own, "checkout", "note.txt"), "own", context)).ok,
+                    session === id,
+                );
+                assert.equal(
+                    (await env.createDir(join(other, "checkout"), { recursive: true }, context)).ok,
+                    false,
+                );
+                assert.equal((await env.writeFile(outside, "outside", context)).ok, false);
+            }
+        } finally {
+            await computer.runner.stop();
+            await close(setup);
+            rmSync(own, { recursive: true, force: true });
+            rmSync(other, { recursive: true, force: true });
+            rmSync(outside, { force: true });
+        }
+    });
+
     it("expires after idle time, keeps a running command in use, and asks again for an expired session", async () => {
         const setup = await serve();
         const computer = await start(setup, { approvalMs: 600 });

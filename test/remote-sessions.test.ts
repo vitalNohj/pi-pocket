@@ -191,7 +191,7 @@ describe("a session on another computer", () => {
                 runner: runnerId,
                 worktree: true,
             }),
-            /Worktrees are not available for sessions on another computer/,
+            /is not in a git repository/,
         );
     });
 
