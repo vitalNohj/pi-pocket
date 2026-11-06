@@ -34,10 +34,17 @@ Run these commands on the linked computer:
 | `pi-pocket runner sessions revoke <id>\|all`   | Removes the approval of one session or all. Their next request asks again.                                                                                                                                             |
 | `pi-pocket runner totp setup\|status [--json]` | Sets up an authenticator app, or shows whether one is set up.                                                                                                                                                          |
 | `pi-pocket runner totp off <code> [--json]`    | Turns the authenticator off. It needs a code from it.                                                                                                                                                                  |
+| `pi-pocket runner service [remove]`            | Linux with systemd: runs the runner as a user service, for a computer nobody sits at. It needs an authenticator first. `service remove` stops and removes it and keeps the link.                                       |
 | `pi-pocket runner status`                      | Shows the saved link, settings, and whether git and GitHub are ready. It does not check the connection.                                                                                                                |
 | `pi-pocket runner unlink [--json]`             | Deletes the saved link and all runner settings on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                                                                                |
 
 The runner runs while its terminal or a program that runs the runner, such as the desktop app, is open, so that it can ask before a session starts.
+
+### A computer nobody sits at (Linux)
+
+`pi-pocket runner service` keeps the runner running as a systemd user service (`pi-pocket-runner.service`), for a computer such as a build server. With nobody at that computer, nobody can answer the question before a session or a folder. A code from an authenticator app, typed in Pi Pocket, is then the only way to approve one. So the service needs an authenticator on that computer: set it up first with `pi-pocket runner totp setup` in a terminal there. Without one, `pi-pocket runner service` refuses and says how to set it up, and the service itself refuses to start and is not restarted. Saved folders alone are not enough: a folder outside them could never be approved.
+
+The service uses the Node.js, Pi Pocket, link file, and `PATH` of the shell that installed it. Install Pi Pocket with npm first (`npm install -g pi-pocket`): a copy in the npx cache is refused, because npm can clear it. Its log is in `journalctl --user -u pi-pocket-runner.service`. To keep it running while you are logged out, run `loginctl enable-linger $USER`. `pi-pocket runner service remove` stops and removes it.
 
 For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner start`.
 
