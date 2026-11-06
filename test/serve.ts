@@ -1,7 +1,8 @@
 /**
  * A throwaway Pi Pocket for checking a change by hand: the code in this folder, a data folder of its own (a temporary
  * one, deleted on exit), and a scripted model that answers "echo: …" and costs nothing; a message "run: COMMAND" makes it
- * call bash with COMMAND, and it says what bash said. It prints sign-in links for an owner and a guest, and takes
+ * call bash with COMMAND; `call: TOOL JSON` calls another tool with those arguments. It says what the tool said.
+ * It prints sign-in links for an owner and a guest, and takes
  * runners (`pi-pocket runner`) as the real server does. Web files and extension modules reload as they do in the real server; other server changes
  * need this process restarted.
  *
@@ -25,9 +26,16 @@ const app = await openApp(
     scriptedModel((context) => {
         const { role, text } = lastText(context as never);
         const command = /(?:^|] )run: ([\s\S]+)/.exec(text)?.[1];
+        const tool = /(?:^|] )call: (\w+) ([\s\S]+)/.exec(text);
 
         if (role === "toolResult") {
-            return fauxAssistantMessage([fauxText(`bash said:\n${text}`)]);
+            return fauxAssistantMessage([fauxText(`tool said:\n${text}`)]);
+        }
+
+        if (role === "user" && tool !== null) {
+            return fauxAssistantMessage([fauxToolCall(tool[1]!, JSON.parse(tool[2]!))], {
+                stopReason: "toolUse",
+            });
         }
 
         return role === "user" && command !== undefined

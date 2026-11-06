@@ -217,7 +217,16 @@ describe("a session on another computer", () => {
             (tool) => tool.name,
         );
 
-        for (const name of ["read", "write", "edit", "bash", "team", "codemode", "memory"]) {
+        for (const name of [
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "team",
+            "codemode",
+            "memory",
+            "artifact",
+        ]) {
             assert.ok(tools.includes(name), `${name} is offered`);
         }
 
@@ -230,7 +239,7 @@ describe("a session on another computer", () => {
         assert.ok(deferred.includes("subagent"), "subagent waits to be loaded");
         assert.ok(deferred.includes("browser"), "browser waits to be loaded");
 
-        for (const name of ["background", "artifact", "design_preview"]) {
+        for (const name of ["background", "design_preview"]) {
             assert.ok(!tools.includes(name), `${name} is not offered`);
         }
     });

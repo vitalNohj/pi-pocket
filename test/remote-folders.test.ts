@@ -295,15 +295,15 @@ describe("a session's folder on another computer", () => {
         await until(() => app.runners.list()[0]?.online === false, "the runner to go");
 
         for (const [what, attempt] of [
-            ["the file list", app.workspace.fileList(id, owner(app))],
-            ["the viewer", app.workspace.viewFile(id, owner(app), "a.txt")],
-            ["changes", app.workspace.changes(id, owner(app))],
-            ["a diff", app.workspace.changeDiff(id, owner(app), "a.txt")],
-            ["undo", app.workspace.revertChange(id, owner(app), "a.txt")],
-            ["branches", app.workspace.branches(id, owner(app))],
-            ["switching", app.workspace.switchBranch(id, owner(app), { name: "main" })],
+            ["the file list", () => app.workspace.fileList(id, owner(app))],
+            ["the viewer", () => app.workspace.viewFile(id, owner(app), "a.txt")],
+            ["changes", () => app.workspace.changes(id, owner(app))],
+            ["a diff", () => app.workspace.changeDiff(id, owner(app), "a.txt")],
+            ["undo", () => app.workspace.revertChange(id, owner(app), "a.txt")],
+            ["branches", () => app.workspace.branches(id, owner(app))],
+            ["switching", () => app.workspace.switchBranch(id, owner(app), { name: "main" })],
         ] as const) {
-            const failed = await failure(attempt);
+            const failed = await failure(attempt());
 
             assert.equal(failed.status, 409, what);
             assert.match(failed.message, /Laptop is offline/, what);
@@ -311,7 +311,15 @@ describe("a session's folder on another computer", () => {
 
         const image = await get(`/api/c/${id}/file?path=picture.png`);
 
-        assert.equal(image.status, 409);
+        assert.equal(image.status, 200);
+        assert.deepEqual(Buffer.from(await image.arrayBuffer()), PNG);
+        assert.equal((await app.workspace.viewFile(id, owner(app), "picture.png")).kind, "image");
+        // The original is still on this disk, but only the server-owned copy may load while the runner is away.
+        writeFileSync(join(there, "picture.png"), "changed on the offline computer");
+        const kept = await get(`/api/c/${id}/file?path=picture.png`);
+
+        assert.deepEqual(Buffer.from(await kept.arrayBuffer()), PNG);
+        assert.equal((await get(`/api/c/${id}/file?path=never-opened.png`)).status, 409);
         assert.equal(git("branch", "--show-current").trim(), "older");
         await until(() => app.workspace.head(id) === undefined, "the branch to go", 15_000);
     });

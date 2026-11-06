@@ -71,7 +71,11 @@ const IMAGE_EXTENSIONS = new Set([
     ".ico",
     ".svg",
 ]);
-const MAX_IMAGE_FILE = 25 * 1024 * 1024;
+
+export const MAX_IMAGE_FILE = 25 * 1024 * 1024;
+
+export const isImagePath = (file: string): boolean =>
+    IMAGE_EXTENSIONS.has(extname(file).toLowerCase());
 /** Opened on its own, an SVG could run script: give it an opaque origin and nothing to load. */
 const IMAGE_CSP =
     "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:";
@@ -393,73 +397,53 @@ export async function serveFile(
     response.end(body);
 }
 
-/**
- * An image file from a session's folder on another computer (`folder-access.ts`), with the same checks as one from this
- * machine: its first bytes and its size in one round trip, then the whole file unless the browser has it already.
- */
-export async function serveRemoteImage(
-    request: IncomingMessage,
-    response: ServerResponse,
+type ImagePeek = { kind: "file"; size: number; mtimeMs: number; bytes: Buffer };
+
+/** A bounded image read through the session's permission gate, never through this server's disk. */
+export async function peekRemoteImage(
     file: string,
     access: FolderAccess,
-): Promise<void> {
-    if (!IMAGE_EXTENSIONS.has(extname(file).toLowerCase())) {
-        throw new HttpError(415, "Only image files can be shown");
-    }
-
-    const peek = await access.peek(file, 1024).catch((error: unknown) => {
-        if (error instanceof Unreachable) {
-            throw new HttpError(409, error.message);
-        }
-
-        throw new HttpError(404, "Image not found");
+    maxBytes = 1024,
+): Promise<ImagePeek> {
+    const peek = await access.peek(file, maxBytes).catch((error: unknown) => {
+        throw new HttpError(
+            error instanceof Unreachable ? 409 : 404,
+            error instanceof Unreachable ? error.message : "Image not found",
+        );
     });
 
     if (peek.kind !== "file") {
         throw new HttpError(404, "Image not found");
     }
 
-    const type = sniffImage(peek.bytes);
-
-    if (type === undefined) {
+    if (sniffImage(peek.bytes) === undefined) {
         throw new HttpError(415, "That file is not an image");
     }
 
-    if (peek.size > MAX_IMAGE_FILE) {
+    if (peek.size > MAX_IMAGE_FILE || peek.bytes.length > MAX_IMAGE_FILE) {
         throw new HttpError(413, "Image too large to show");
     }
 
-    const headers = imageHeaders(peek.size, peek.mtimeMs);
+    return peek;
+}
 
-    if (request.headers["if-none-match"] === headers.etag) {
-        response.writeHead(304, headers);
-        response.end();
-
-        return;
-    }
-
-    // Small images came whole with their first bytes.
+/** The former remote image response, now copied to uploads before the local image route serves it. */
+export async function readRemoteImage(
+    file: string,
+    access: FolderAccess,
+    head: ImagePeek,
+): Promise<ImagePeek> {
+    // Recheck the bytes and size after a second read: the file can change between the 2 requests.
     const whole =
-        peek.bytes.length >= peek.size
-            ? peek
-            : await access.peek(file, MAX_IMAGE_FILE).catch((error: unknown) => {
-                  throw new HttpError(
-                      error instanceof Unreachable ? 409 : 404,
-                      error instanceof Unreachable ? error.message : "Image not found",
-                  );
-              });
+        head.bytes.length === head.size
+            ? head
+            : await peekRemoteImage(file, access, MAX_IMAGE_FILE + 1);
 
-    if (whole.kind !== "file" || whole.size > MAX_IMAGE_FILE) {
-        throw new HttpError(404, "Image not found");
+    if (whole.bytes.length !== whole.size) {
+        throw new HttpError(409, "Image changed while it was read. Try again.");
     }
 
-    // It can have changed in between: what is sent is what was read.
-    response.writeHead(200, {
-        ...imageHeaders(whole.bytes.length, whole.mtimeMs),
-        "content-type": type,
-        "content-length": String(whole.bytes.length),
-    });
-    response.end(whole.bytes);
+    return whole;
 }
 
 /** The headers of an image either route sends: its version, from its size and time, and its sandbox. */

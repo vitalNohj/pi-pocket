@@ -12,7 +12,7 @@ import { HttpError } from "../errors.ts";
 import type { CommandRequest } from "../extension-commands.ts";
 import { requireLocalBrowser } from "../local-browser.ts";
 import { prepareModelImage } from "../model-images.ts";
-import { serveImage, serveRemoteImage, TYPES } from "./assets.ts";
+import { serveImage, TYPES } from "./assets.ts";
 import { type ApiRequest, json, readJson, send } from "./io.ts";
 
 const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -493,12 +493,10 @@ export async function conversationRoutes(
             throw new HttpError(400, "path is required");
         }
 
-        // A session on another computer: its images are there, but for its uploads, kept here.
-        const { file, access } = await app.workspace.imageFile(user, id, requested);
+        // Images from another computer are kept in uploads first, so the same URL also works offline.
+        const { file } = await app.workspace.imageFile(user, id, requested);
 
-        return access === undefined
-            ? serveImage(request, response, file)
-            : serveRemoteImage(request, response, file, access);
+        return serveImage(request, response, file);
     }
 
     // A file of the session's folder as a download (a design's export): whom the file viewer lets read it, as it is.

@@ -58,7 +58,7 @@ import { LinkLimits, type LinkLocks, WRONG_CODE } from "./link-limits.ts";
  * there (`export const remoteSessions = true`) follow them (`App.remoteExtensions`); other drop-ins never load. Each
  * works through the session's environment, which is that computer's, or on app state only. Subagents and linked
  * sessions keep the computer, and codemode calls its tools without saving output on this server. The others read or
- * run things on this server's disk (background tasks, the browser, artifacts, design): they come back as they learn to.
+ * run things on this server's disk (background tasks, the browser, design): they come back as they learn to.
  */
 export const REMOTE_EXTENSIONS = [
     "coding-tools",
@@ -79,6 +79,7 @@ export const REMOTE_EXTENSIONS = [
     "pocket-triggers",
     // Its pages load through the computer (`runner-network.ts`), and it opens no files of this server.
     "pocket-browser",
+    "pocket-artifacts",
 ] as const;
 
 /** What a subagent of a session on another computer runs without: it starts no agents of its own, and asks nobody. */

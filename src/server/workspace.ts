@@ -6,7 +6,7 @@
  * `readableFile`, `uploadDirectory`) leave seeing the conversation to their callers.
  */
 import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join, posix, resolve, sep, win32 } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -32,6 +32,8 @@ import { GitError } from "./git.ts";
 import { displayPath, expandFolder, expandHome } from "./paths.ts";
 import { reveal, revealOn } from "./reveal.ts";
 import type { ClientEntry } from "./projection.ts";
+import { isImagePath } from "./http/assets.ts";
+import { RunnerImages, type ImageSource } from "./runner-images.ts";
 
 /** How many sessions' Pi edits are kept between looks at Changes (`#edits`). */
 const EDITS_KEPT = 64;
@@ -58,9 +60,15 @@ function remoteDisplay(path: string, cwd: string, home: string, access: FolderAc
 
 export class Workspace {
     readonly #app: PocketApp;
+    #runnerImages: RunnerImages | undefined;
 
     constructor(app: PocketApp) {
         this.#app = app;
+    }
+
+    get #images(): RunnerImages {
+        // Workspace is constructed before PocketApp's constructor assigns its data directory.
+        return (this.#runnerImages ??= new RunnerImages(this.#app.dataDir));
     }
 
     /** The files in each folder, for `@` mentions. */
@@ -603,15 +611,78 @@ export class Workspace {
         return { access, file: target, home };
     }
 
-    /**
-     * Where the image route finds a file: on this machine, or for a session on another computer, there, unless it is
-     * one of the session's uploads, which are kept here.
-     */
-    async imageFile(
+    /** Normalize without a remote read, so a kept image can load while its computer is offline, also after restart. */
+    #imageSource(id: ConversationId, path: string): ImageSource {
+        const runner = this.#app.runnerOf(id)!;
+        const info = this.#app.runners.stored(runner)?.platform;
+        const paths = info?.os === "windows" ? win32 : posix;
+        const trimmed = path.trim();
+        const home = info?.home;
+        const expanded =
+            home === undefined
+                ? trimmed
+                : trimmed === "~"
+                  ? home
+                  : trimmed.startsWith("~/") || trimmed.startsWith("~\\")
+                    ? paths.join(home, trimmed.slice(2))
+                    : trimmed;
+        const cwd = this.#app.cwdOf(id);
+
+        return { runner, cwd, file: paths.resolve(cwd, expanded) };
+    }
+
+    async #keptImage(
         user: User,
         id: ConversationId,
-        path: string,
-    ): Promise<{ file: string; access?: FolderAccess }> {
+        source: ImageSource,
+    ): Promise<string | undefined> {
+        for (const each of this.#lineage(id)) {
+            const file = await this.#images.latest(each, source, user.role !== "owner");
+
+            if (file !== undefined) {
+                return file;
+            }
+        }
+
+        return undefined;
+    }
+
+    async #copyImage(
+        id: ConversationId,
+        source: ImageSource,
+        access: FolderAccess,
+        file: string,
+    ): Promise<string> {
+        const [target, root] = await Promise.all([
+            access.realpath(file),
+            access.realpath(source.cwd),
+        ]).catch((error: unknown) => {
+            throw new HttpError(
+                error instanceof Unreachable ? 409 : 404,
+                error instanceof Unreachable ? error.message : "Image not found",
+            );
+        });
+        const shared =
+            target === root ||
+            target.startsWith(root.endsWith(access.path.sep) ? root : root + access.path.sep);
+
+        return this.#images.copy(id, source, access, shared, target);
+    }
+
+    /** Keep a successful tool write before the computer can go away, even if nobody has opened its image yet. */
+    async copyRunnerImage(id: ConversationId, path: string): Promise<void> {
+        if (this.#app.runnerOf(id) === undefined || !isImagePath(path)) {
+            return;
+        }
+
+        const source = this.#imageSource(id, path);
+        const access = await this.#access(id);
+
+        await this.#copyImage(id, source, access, source.file);
+    }
+
+    /** The image route always serves this disk: a local file, an upload, or a checked copy from the session's computer. */
+    async imageFile(user: User, id: ConversationId, path: string): Promise<{ file: string }> {
         if (this.#app.runnerOf(id) === undefined) {
             return { file: this.conversationFile(user, id, path) };
         }
@@ -622,9 +693,19 @@ export class Workspace {
             return { file: uploaded };
         }
 
+        const source = this.#imageSource(id, path);
+
+        if (!this.#app.runners.link(source.runner).online) {
+            const kept = await this.#keptImage(user, id, source);
+
+            if (kept !== undefined) {
+                return { file: kept };
+            }
+        }
+
         const { access, file } = await this.remoteFile(user, id, path);
 
-        return { file, access };
+        return { file: await this.#copyImage(id, source, access, file) };
     }
 
     /** A file people attached to a session, or to the sessions it was forked from: those are all that load here. */
@@ -722,6 +803,20 @@ export class Workspace {
                     : this.#uploadedOrUndefined(id, path);
 
             if (this.#app.runnerOf(id) !== undefined && uploaded === undefined) {
+                const source = this.#imageSource(id, path);
+
+                if (!this.#app.runners.link(source.runner).online) {
+                    const kept = await this.#keptImage(user, id, source);
+
+                    if (kept !== undefined) {
+                        return {
+                            path: source.file,
+                            display: path,
+                            ...(await viewFile(kept)),
+                        };
+                    }
+                }
+
                 const remote = await this.remoteFile(user, id, path);
 
                 return {

@@ -933,13 +933,24 @@ export class PocketApp {
                 // Values extensions hide (`host.hide`) leave every tool's result before it is stored.
                 hooks: [
                     hook(ToolTask, {
-                        afterTool: (call, result, api) => {
+                        afterTool: async (call, result, api) => {
                             // A context file or skill Pi wrote on another computer counts from the next request.
                             if (
                                 (call.name === "write" || call.name === "edit") &&
                                 typeof call.arguments?.path === "string"
                             ) {
                                 this.#projectFileChanged(api.conversationId, call.arguments.path);
+
+                                if (!result.isError) {
+                                    await this.workspace
+                                        .copyRunnerImage(api.conversationId, call.arguments.path)
+                                        .catch((error: unknown) => {
+                                            // A failed offline copy must not turn a successful write into a failed tool.
+                                            this.#log(
+                                                `Could not keep a runner image: ${describe(error)}`,
+                                            );
+                                        });
+                                }
                             }
 
                             const cleaned = this.hidden.result(result, api.conversationId);
