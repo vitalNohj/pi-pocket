@@ -511,7 +511,8 @@ export class Runner {
 
     /**
      * The runner's own folders that session `id` (its permission) may use besides its folder: its own attached files
-     * (`<temp>/pi-pocket-uploads/<id>`) and browser downloads (`<temp>/pi-pocket-downloads/<id>`, or `<id>` in the
+     * (`<temp>/pi-pocket-uploads/<id>`), background tasks (`<temp>/pi-pocket-tasks/<id>`), and browser downloads
+     * (`<temp>/pi-pocket-downloads/<id>`, or `<id>` in the
      * downloads folder). Only its own: never another session's, and never the downloads folder itself.
      */
     async #shared(temporary: string, id: string): Promise<string[]> {
@@ -524,6 +525,7 @@ export class Runner {
 
         return [
             join(temporary, "pi-pocket-uploads", id),
+            join(temporary, "pi-pocket-tasks", id),
             join(temporary, "pi-pocket-downloads", id),
             ...(downloads === undefined ? [] : [join(await realFolder(downloads), id)]),
         ];
