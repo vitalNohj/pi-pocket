@@ -603,6 +603,22 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, app.runners.linkLocks());
         }
 
+        // Lift a ban on an address that guessed link codes (`link-limits.ts`).
+        if (
+            first === "runners" &&
+            second === "bans" &&
+            third === undefined &&
+            method === "DELETE"
+        ) {
+            requireOwner(user);
+
+            const address = url.searchParams.get("address") ?? "";
+
+            app.runners.liftLinkBan(address);
+
+            return json(response, 200, { ok: true });
+        }
+
         if (first === "runners" && second === "code" && method === "POST") {
             requireOwner(user);
 

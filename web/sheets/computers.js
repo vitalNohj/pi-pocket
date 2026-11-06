@@ -86,35 +86,76 @@ export function TrustNote() {
     </p>`;
 }
 
-/** Linking paused, for one address or the whole server (`link-limits.ts`), with why. */
+/**
+ * Linking paused, for one address or the whole server, and the addresses banned for guessing codes, which the owner can
+ * lift (`link-limits.ts`). Only the owner opens Runners.
+ */
 function LinkLocks() {
     const [locks, setLocks] = useState(null);
+    const load = () => attempt(async () => setLocks(await api("runners/locks")));
 
     useEffect(() => {
-        attempt(async () => setLocks(await api("runners/locks")));
+        load();
     }, [store.state.runners]);
 
-    if (!locks || (!locks.server && locks.addresses.length === 0)) {
+    if (!locks || (!locks.server && locks.addresses.length === 0 && locks.bans.length === 0)) {
         return null;
     }
 
     const until = (time) =>
         new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const since = (time) =>
+        new Date(time).toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+        });
+    const lift = (address) =>
+        attempt(async () => {
+            await api(`runners/bans?address=${encodeURIComponent(address)}`, undefined, {
+                method: "DELETE",
+            });
+            load();
+        });
 
-    return html`<div class="runner-trust small" role="status">
+    return html`<div class="runner-locks">
         ${
-            locks.server &&
-            html`<p>
-                <strong>Linking is paused until ${until(locks.server)}.</strong> Too many wrong link codes reached this
-                server, so every open code was voided. Get a new one after that.
-            </p>`
+            (locks.server || locks.addresses.length > 0) &&
+            html`<div class="runner-trust small" role="status">
+                ${
+                    locks.server &&
+                    html`<p>
+                        <strong>New linking is paused until ${until(locks.server)}.</strong> Too many wrong link codes
+                        reached this server from many addresses, so every open code was voided. Get a new one after
+                        that. Linked computers keep working.
+                    </p>`
+                }
+                ${locks.addresses.map(
+                    (lock) => html`<p key=${lock.address}>
+                        <strong>${lock.address}</strong> is locked out of linking until ${until(lock.until)}: it sent
+                        too many wrong link codes. Lockout ${lock.blocks} of 3 this week; the third bans it.
+                    </p>`,
+                )}
+            </div>`
         }
-        ${locks.addresses.map(
-            (lock) => html`<p key=${lock.address}>
-                <strong>${lock.address}</strong> is locked out of linking until ${until(lock.until)}: it sent too many
-                wrong link codes.
-            </p>`,
-        )}
+        ${
+            locks.bans.length > 0 &&
+            html`<div class="runner-bans">
+                <div class="group-title">Banned from linking</div>
+                <p class="muted small">
+                    These addresses were locked out 3 times for guessing link codes. They get the same answer as a
+                    wrong code. Lift a ban to let one link again.
+                </p>
+                ${locks.bans.map(
+                    (ban) => html`<div class="runner-ban" key=${ban.address}>
+                        <span class="mono">${ban.address}</span>
+                        <span class="muted small">since ${since(ban.since)}</span>
+                        <button class="button ghost" onClick=${() => lift(ban.address)}>Lift</button>
+                    </div>`,
+                )}
+            </div>`
+        }
     </div>`;
 }
 

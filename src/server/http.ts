@@ -132,7 +132,7 @@ export function createHandler(options: HttpOptions) {
                 return json(
                     response,
                     200,
-                    app.runners.redeem(body.code, clientAddress(request, app.access?.mode)),
+                    app.runners.redeem(body.code, await clientAddress(request, app.access?.mode)),
                 );
             }
 

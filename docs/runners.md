@@ -16,6 +16,12 @@ As the server owner, you link a computer with a one-time code:
 
 Only the server owner can link computers. Only link a server you trust: its session commands run as your user account on the linked computer.
 
+**Wrong link codes.** The server counts wrong codes for each client address. Five wrong codes in 10 minutes lock that address out of linking for 10 minutes. The third lockout of an address bans it; its count starts over a week after its last lockout. A banned address gets the same answer as a wrong code. The ban stays until you lift it in **Runners**, under **Banned from linking**. The address of this server's own machine is never banned, because every client of an unnamed proxy shares it.
+
+Above that, a ceiling catches guessing from many changing addresses: 50 wrong codes in 10 minutes from all addresses together pause new linking for 10 minutes and void every open code. Linked computers and their keys are not affected. **Runners** says when an address or the whole server is locked, and why.
+
+The server takes the client address from the connection. It believes a proxy's header only for its own proxy: Cloudflare's `CF-Connecting-IP` behind the Cloudflare tunnel, and Tailscale Serve's `X-Forwarded-For` behind Tailscale Serve, when `tailscale whois` names that address as a device of the tailnet. Both only for requests from this machine. Without a working `tailscale` command, no address counts as a tailnet device.
+
 The computer connects out to the server over a WebSocket. It needs no open port, SSH, or provider key. Pi, its models, the provider keys, and session history stay on the server. Sessions read and write files and run commands, including git, on the linked computer.
 
 ## Commands

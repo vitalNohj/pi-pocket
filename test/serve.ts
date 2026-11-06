@@ -35,6 +35,15 @@ const app = await openApp(
             : fauxAssistantMessage([fauxText(`echo: ${text}`)]);
     }),
 );
+// PI_POCKET_TEST_LINK_BAN=<address>: start with that address banned from linking, as its third lockout leaves it, to
+// look at the Runners sheet's ban list.
+if (process.env.PI_POCKET_TEST_LINK_BAN) {
+    app.config.runnerLinkLimits = {
+        blocks: [],
+        bans: [{ address: process.env.PI_POCKET_TEST_LINK_BAN, since: Date.now() - 3_600_000 }],
+    };
+}
+
 const server = createServer(createHandler({ app, listen: { host, port }, restart: () => {} }));
 
 // Runners (`pi-pocket runner`), as `src/server/main.ts` takes them.

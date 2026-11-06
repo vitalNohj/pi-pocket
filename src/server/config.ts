@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { StoredLinkLimits } from "./link-limits.ts";
 
 /** The repository root: `web/` and `src/` live here, and `node_modules/` too, except in an npx or local install. */
 export const APP_ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -149,6 +150,8 @@ interface PocketConfig {
     runners?: StoredRunner[];
     /** One-time codes that link a computer, not yet used. */
     runnerCodes?: StoredRunnerCode[];
+    /** Wrong link codes (`link-limits.ts`): each address's lockouts toward a ban, and the banned addresses. */
+    runnerLinkLimits?: StoredLinkLimits;
     /**
      * Sessions on a linked computer follow the usual sharing rules (others who can see a session can see and prompt
      * it, so its tools run there for them too). Absent or false: each is its creator's alone. Starting one on a
@@ -772,6 +775,16 @@ export class ConfigStore {
             ...(this.#config.runnerCodes ?? []).filter((each) => each.expiresAt >= now),
             { codeHash: hashToken(code), name, createdBy, expiresAt },
         ];
+        this.save();
+    }
+
+    /** The saved part of the wrong link code limits (`link-limits.ts`). */
+    get runnerLinkLimits(): StoredLinkLimits | undefined {
+        return this.#config.runnerLinkLimits;
+    }
+
+    set runnerLinkLimits(value: StoredLinkLimits) {
+        this.#config.runnerLinkLimits = value;
         this.save();
     }
 
