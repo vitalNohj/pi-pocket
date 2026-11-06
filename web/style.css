@@ -5999,21 +5999,41 @@ pre.diff .del {
 }
 
 /*
- * A linked computer's session: the same states as the square, in an upward triangle. A 9px base keeps the hollow
- * states legible at 8px high. Masks cut transparent holes, so outlines keep the row's normal, selected, or hovered
- * background. Three small corner triangles, with one lit, replace the working square's four quadrants.
+ * A linked computer's session: the same states as the square, in an upward triangle. A triangle in the square's box
+ * has half its area and looks a size smaller, so it is drawn larger (11 × 10 beside the 8px square, 12 × 11 beside a
+ * peek tile's 9px one) with negative margins: its layout box stays the square's, and names line up from row to row.
+ * Its weight sits low, so it is drawn half a pixel high. Masks cut transparent holes, so outlines keep the row's
+ * normal, selected, or hovered background. Three small corner triangles, with one lit, replace the working square's
+ * four quadrants. Every inner size follows --tw and --th.
  */
-.state-mark.remote,
-.agent-tile .state-mark.remote {
+.state-mark.remote {
     --triangle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'%3E%3Cpath fill='white' d='M1 0 2 2H0Z'/%3E%3C/svg%3E");
-    /* Inset the sloping sides by --line-w, perpendicular to each edge of the 9 × 8 triangle. */
-    --inner-top: calc(var(--line-w) * 2.04);
-    --inner-width: calc(9px - var(--line-w) * 3.42);
-    width: 9px;
-    height: 8px;
+    --tw: 11px;
+    --th: 10px;
+    /* Inset the sloping sides by --line-w, perpendicular to each edge: for this 11 × 10 triangle. */
+    --inner-top: calc(var(--line-w) * 2.075);
+    --inner-width: calc(var(--tw) - var(--line-w) * 3.38);
+    /* A working corner: a little under half the triangle, and where the lit one moves. */
+    --cw: calc(var(--tw) * 0.45);
+    --ch: calc(var(--th) * 0.44);
+    width: var(--tw);
+    height: var(--th);
+    margin: calc((8px - var(--th)) / 2 - 0.5px) calc((8px - var(--tw)) / 2)
+        calc((8px - var(--th)) / 2 + 0.5px);
     border-radius: 0;
     clip-path: polygon(50% 0, 100% 100%, 0 100%);
     box-shadow: none;
+}
+
+.agent-tile .state-mark.remote {
+    --tw: 12px;
+    --th: 11px;
+    --inner-top: calc(var(--line-w) * 2.09);
+    --inner-width: calc(var(--tw) - var(--line-w) * 3.37);
+    width: var(--tw);
+    height: var(--th);
+    margin: calc((9px - var(--th)) / 2 - 0.5px) calc((9px - var(--tw)) / 2)
+        calc((9px - var(--th)) / 2 + 0.5px);
 }
 
 .state-mark.remote.seen:not(.failed) {
@@ -6039,23 +6059,25 @@ pre.diff .del {
     mask-composite: exclude;
 }
 
+/* Working triangles: their corners are smaller than the square's quadrants, so the unlit ones are a little brighter. */
 .state-mark.remote.working {
+    --dim: color-mix(in oklab, currentColor 42%, transparent);
     background: var(--dim);
     -webkit-mask:
-        var(--triangle) 50% 0 / 4px 3.5px no-repeat,
-        var(--triangle) 100% 100% / 4px 3.5px no-repeat,
-        var(--triangle) 0 100% / 4px 3.5px no-repeat;
+        var(--triangle) 50% 0 / var(--cw) var(--ch) no-repeat,
+        var(--triangle) 100% 100% / var(--cw) var(--ch) no-repeat,
+        var(--triangle) 0 100% / var(--cw) var(--ch) no-repeat;
     mask:
-        var(--triangle) 50% 0 / 4px 3.5px no-repeat,
-        var(--triangle) 100% 100% / 4px 3.5px no-repeat,
-        var(--triangle) 0 100% / 4px 3.5px no-repeat;
+        var(--triangle) 50% 0 / var(--cw) var(--ch) no-repeat,
+        var(--triangle) 100% 100% / var(--cw) var(--ch) no-repeat,
+        var(--triangle) 0 100% / var(--cw) var(--ch) no-repeat;
 }
 
 /* Still (reduced motion), the top corner stays lit. Each corner lasts as long as one square quadrant. */
 .state-mark.remote.working::before {
-    left: 2.5px;
-    width: 4px;
-    height: 3.5px;
+    left: calc((var(--tw) - var(--cw)) / 2);
+    width: var(--cw);
+    height: var(--ch);
     animation: state-corner 1.2s steps(1, end) infinite;
 }
 
@@ -6064,24 +6086,19 @@ pre.diff .del {
         transform: translate(0, 0);
     }
     33.333333% {
-        transform: translate(2.5px, 4.5px);
+        transform: translate(calc((var(--tw) - var(--cw)) / 2), calc(var(--th) - var(--ch)));
     }
     66.666667% {
-        transform: translate(-2.5px, 4.5px);
+        transform: translate(calc((var(--cw) - var(--tw)) / 2), calc(var(--th) - var(--ch)));
     }
-}
-
-/* Working triangles: their corners are smaller than the square's quadrants, so the unlit ones are a little brighter. */
-.state-mark.remote.working {
-    --dim: color-mix(in oklab, currentColor 42%, transparent);
 }
 
 /*
  * Failed: a cross cut out of the solid triangle. Once read, the same triangle dimmed, as read marks are: an outline
- * with a cross inside is too small to read at 8px.
+ * with a cross inside is too small to read at this size.
  */
 .state-mark.remote.failed {
-    --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 8' preserveAspectRatio='none'%3E%3Cpath d='M2.9 3.4 6.1 6.6M6.1 3.4 2.9 6.6' stroke='white' stroke-width='1.4'/%3E%3C/svg%3E");
+    --cross: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 8' preserveAspectRatio='none'%3E%3Cpath d='M2.9 3.4 6.1 6.6M6.1 3.4 2.9 6.6' stroke='white' stroke-width='1.3'/%3E%3C/svg%3E");
     background: currentColor;
     box-shadow: none;
     -webkit-mask:
@@ -6105,16 +6122,16 @@ pre.diff .del {
 .state-mark.remote.waiting {
     background: linear-gradient(
         90deg,
-        currentColor 0 2px,
-        transparent 0 3.5px,
-        currentColor 0 5.5px,
-        transparent 0 7px,
+        currentColor 0 22%,
+        transparent 0 39%,
+        currentColor 0 61%,
+        transparent 0 78%,
         currentColor 0
     );
 }
 
 .state-mark.remote.limited {
-    background: radial-gradient(circle at 50% 62%, currentColor 0 0.65px, transparent 0.9px);
+    background: radial-gradient(circle at 50% 64%, currentColor 0 0.9px, transparent 1.15px);
 }
 
 .folder-mark {
