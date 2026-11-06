@@ -144,7 +144,7 @@ export function CwdSheet({
     const changing = mode === "change";
     const picking = mode === "pick";
     // The computer whose folders these are (`runners.ts`): the one asked for, or the session's when moving it. Its
-    // folders are not this server's: no default workspace or worktrees; its favorites and recent folders are its own.
+    // folders are not this server's: no default workspace; its favorites and recent folders are its own.
     // A new session can switch computer in the places list (Runs on); moving one keeps its computer, and so does a
     // pick, whose computer the copy sheet chose.
     const [picked, setPicked] = useState(given);
@@ -320,7 +320,7 @@ export function CwdSheet({
             } else {
                 const created = await (runner
                     ? waitOnComputer(runner, path, "new", (signal) =>
-                          actions.createSession(path, { runner }, signal),
+                          actions.createSession(path, { runner, worktree }, signal),
                       )
                     : actions.createSession(path, { worktree }));
 
@@ -796,7 +796,6 @@ export function CwdSheet({
                 ${
                     !changing &&
                     !picking &&
-                    !runner &&
                     html`<label
                         class="check"
                         title="The session gets a branch of its own, apart from this folder"

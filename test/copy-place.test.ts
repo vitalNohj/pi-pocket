@@ -369,7 +369,7 @@ describe("a copy with a place", () => {
         assert.equal((await app.agentState(again.id))?.cwd, app.cwdOf(across.id));
     });
 
-    it("refuses a worktree on another computer, and a folder that is not there", async () => {
+    it("refuses a worktree outside a repository, and a folder that is not there", async () => {
         const { id, reply } = await talked();
 
         await assert.rejects(
@@ -377,7 +377,7 @@ describe("a copy with a place", () => {
                 entryId: reply,
                 place: { runner: laptop.id, worktree: true },
             }),
-            /Worktrees are not available/,
+            /is not in a git repository/,
         );
         await assert.rejects(
             app.commands.fork(id, owner(app), {
