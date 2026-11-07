@@ -362,8 +362,9 @@ async function start(): Promise<void> {
         try {
             await windowsJob();
         } catch (error) {
+            // Without the job, a task could outlive the runner: it does not start (`docs/runners.md`).
             report({
-                warning: `Windows Job Object protection is unavailable: ${(error as Error).message}`,
+                error: `Background tasks need a Windows Job Object, which could not be set up (${(error as Error).message}). The task did not start.`,
             });
             const failed = job;
 
@@ -381,6 +382,12 @@ async function start(): Promise<void> {
                 failed.kill();
                 await stopped;
             }
+
+            code = 127;
+            closed = true;
+            complete();
+
+            return;
         }
     }
 

@@ -169,7 +169,7 @@ export class Tasks {
                 process.execPath,
                 [...taskImports(), fileURLToPath(new URL("./task-host.ts", import.meta.url))],
                 {
-                    // IPC reports startup and the Windows Job Object warning; task output stays on disk.
+                    // IPC reports startup, or why the task could not start (no Windows Job Object); task output stays on disk.
                     stdio: ["pipe", "ignore", "ignore", "ipc"],
                     detached: process.platform !== "win32",
                     windowsHide: true,
