@@ -539,6 +539,7 @@ export class Commands {
             .confirm(
                 { kind: "new", person: user.name, folder: cwd, session: runnerPermission },
                 signal,
+                user.id,
             );
 
         const initial = this.#defaultModel();
@@ -2144,12 +2145,16 @@ export class Commands {
                   : await app.runners.checkFolder(runner, request.cwd);
 
         if (runner !== undefined && cwd !== undefined && cwd !== (current?.cwd ?? app.cwdOf(id))) {
-            await app.runners.link(runner).confirm({
-                kind: "move",
-                person: user.name,
-                folder: app.runnerScope(id, cwd).folder,
-                session: app.runnerScope(id).id,
-            });
+            await app.runners.link(runner).confirm(
+                {
+                    kind: "move",
+                    person: user.name,
+                    folder: app.runnerScope(id, cwd).folder,
+                    session: app.runnerScope(id).id,
+                },
+                undefined,
+                user.id,
+            );
         }
 
         const change = {
@@ -3080,6 +3085,7 @@ export class Commands {
                     session: runnerPermission,
                 },
                 signal,
+                user.id,
             );
         }
 

@@ -280,7 +280,6 @@ function FileActions({ file, shown, previewable, preview, onPreview, running, on
     ${
         file &&
         file.kind !== "folder" &&
-        !store.state.view.conversation?.runner &&
         html`<button
             class="icon-button"
             title="Download"

@@ -810,11 +810,26 @@ export class RunnerLink {
      * settings say. Throws 403 with the computer's reason when it says no, and 409 when it is offline or does not
      * answer in time (the person was away). A runner older than asking is not asked.
      */
-    async confirm(question: Omit<Confirm, "type" | "id">, signal?: AbortSignal): Promise<void> {
+    /** `asker`: the id of the person whose start waits, who may see and answer its question (`Runners.mayAnswer`). */
+    async confirm(
+        question: Omit<Confirm, "type" | "id">,
+        signal?: AbortSignal,
+        asker?: string,
+    ): Promise<void> {
         if (signal?.aborted) {
             throw new HttpError(409, "Cancelled.");
         }
 
+        const asked = this.#runners.asking(question.session, asker);
+
+        try {
+            await this.#confirm(question, signal);
+        } finally {
+            asked();
+        }
+    }
+
+    async #confirm(question: Omit<Confirm, "type" | "id">, signal?: AbortSignal): Promise<void> {
         if (this.#socket === undefined) {
             throw new HttpError(
                 409,
@@ -1114,6 +1129,8 @@ export class Runners {
     readonly #linkLimits: LinkLimits;
     readonly #log: (line: string) => void;
     readonly #onChange: () => void;
+    readonly #askerOf: (permission: string) => string | undefined;
+    readonly #asking = new Map<string, string>();
     readonly #links = new Map<string, RunnerLink>();
     readonly #envs = new Map<string, RunnerEnv>();
     readonly #server = new WebSocketServer({
@@ -1127,11 +1144,17 @@ export class Runners {
         config: ConfigStore;
         log: (line: string) => void;
         onChange?: () => void;
+        /**
+         * The person who started the session a runner's question is about (its permission id, `SessionScope.id`):
+         * they see and answer it, with the computer's linker and the owner. Undefined: nobody else does.
+         */
+        askerOf?: (permission: string) => string | undefined;
         /** The clock for the wrong link code limits (tests give their own). */
         now?: () => number;
     }) {
         this.#config = options.config;
         this.#log = options.log;
+        this.#askerOf = options.askerOf ?? (() => undefined);
         this.#onChange = options.onChange ?? (() => {});
 
         const config = options.config;
@@ -1150,6 +1173,39 @@ export class Runners {
 
     changed(): void {
         this.#onChange();
+    }
+
+    /**
+     * Whether `user` may see and answer question `id` of computer `runner`: one waiting for a code, or a session's
+     * question they can withdraw. The owner and the computer's linker answer any; a person the linker chose only the
+     * questions of sessions they started, whose folders and sessions are theirs.
+     */
+    mayAnswer(runner: string, question: ApprovalNeeded | undefined, user: User): boolean {
+        if (user.role === "owner" || this.stored(runner)?.createdBy === user.id) {
+            return true;
+        }
+
+        if (question === undefined || !this.mayUse(runner, user)) {
+            return false;
+        }
+
+        // A session being started has no record yet: whoever's start waits on the question asked it.
+        return (this.#asking.get(question.session) ?? this.#askerOf(question.session)) === user.id;
+    }
+
+    /** While `confirm` waits, who asked about session permission `permission` (`mayAnswer`). */
+    asking(permission: string | undefined, asker: string | undefined): () => void {
+        if (permission === undefined || asker === undefined) {
+            return () => {};
+        }
+
+        this.#asking.set(permission, asker);
+
+        return () => {
+            if (this.#asking.get(permission) === asker) {
+                this.#asking.delete(permission);
+            }
+        };
     }
 
     stored(id: string): StoredRunner | undefined {
@@ -1401,7 +1457,15 @@ export class Runners {
                     ...(link?.state === undefined || (user !== undefined && user.role !== "owner")
                         ? {}
                         : { approvals: link.state }),
-                    ...(link === undefined ? {} : { questions: [...link.questions.values()] }),
+                    ...(link === undefined
+                        ? {}
+                        : {
+                              questions: [...link.questions.values()].filter(
+                                  (question) =>
+                                      user === undefined ||
+                                      this.mayAnswer(runner.id, question, user),
+                              ),
+                          }),
                     online: link?.online === true,
                     asks: link?.asks === true,
                     away: link?.away === true,

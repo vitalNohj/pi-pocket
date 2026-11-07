@@ -812,12 +812,16 @@ export class LinkedSessions implements LinkedSessionsApi {
                   : randomUUID();
 
         if (runner !== undefined && !sameFolder) {
-            await app.runners.link(runner).confirm({
-                kind: "new",
-                person: user.name,
-                folder: cwd,
-                session: runnerPermission,
-            });
+            await app.runners.link(runner).confirm(
+                {
+                    kind: "new",
+                    person: user.name,
+                    folder: cwd,
+                    session: runnerPermission,
+                },
+                undefined,
+                user.id,
+            );
         }
 
         const now = Date.now();

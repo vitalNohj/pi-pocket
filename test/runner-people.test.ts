@@ -430,12 +430,83 @@ describe("people granted a computer", () => {
         const viewer = app.config.userById(guest.id)!;
 
         assert.equal((await app.hello(viewer)).runners, undefined);
+        // The session the guest started there no longer runs there at all, so no file of the computer is read.
         await assert.rejects(
             app.workspace.remoteFile(viewer, id, outside),
-            (error: unknown) => error instanceof HttpError && error.status === 404,
+            (error: unknown) =>
+                error instanceof HttpError &&
+                error.status === 403 &&
+                /can no longer use/.test(error.message),
         );
         app.setAccess(owner(app), guest.id, { role: "guest" });
         assert.equal(app.runners.mayUse(runnerId, guest), true);
+    });
+
+    it("stops a session the person already started, when their grant is withdrawn, and runs it again after", async () => {
+        const shell = async () => app.envFor(id).exec("echo still-here", {}, context);
+
+        assert.ok((await shell()).ok, "runs while granted");
+        await request(owner(app), `runners/${runnerId}/users`, { users: [] });
+        await assert.rejects(shell(), /can no longer use Laptop/);
+        assert.equal((await request(guest, `c/${id}/shell`, { command: "echo no" })).status, 403);
+        await request(owner(app), `runners/${runnerId}/users`, { users: [guest.id] });
+        assert.ok((await shell()).ok, "runs again once chosen again");
+    });
+
+    it("shows and lets answer only the questions of sessions the person started", async () => {
+        const link = app.runners.link(runnerId);
+        const ownSession = app.runnerScope(id).id;
+        const question = (session: string, id: string) => ({
+            type: "approval-needed" as const,
+            id,
+            session,
+            folder: there,
+            permission: "session" as const,
+            expired: true,
+            broad: false,
+            totp: true,
+        });
+
+        link.questions.set("theirs", question(ownSession, "theirs"));
+        link.questions.set("others", question("not-their-session", "others"));
+
+        try {
+            type Listed = { questions?: { id: string }[] }[];
+            const seen = (await request<Listed>(guest, "runners")).body;
+
+            assert.deepEqual(
+                seen[0]?.questions?.map((each) => each.id),
+                ["theirs"],
+            );
+
+            const owners = (await request<Listed>(owner(app), "runners")).body;
+
+            assert.deepEqual(owners[0]?.questions?.map((each) => each.id).sort(), [
+                "others",
+                "theirs",
+            ]);
+            assert.equal(
+                (
+                    await request(guest, `runners/${runnerId}/approval`, {
+                        id: "others",
+                        withdraw: true,
+                    })
+                ).status,
+                404,
+            );
+            assert.equal(
+                (
+                    await request(guest, `runners/${runnerId}/approval`, {
+                        id: "unknown",
+                        withdraw: true,
+                    })
+                ).status,
+                404,
+            );
+        } finally {
+            link.questions.delete("theirs");
+            link.questions.delete("others");
+        }
     });
 
     it("ends access when a grant is withdrawn or the person is removed", async () => {

@@ -574,6 +574,11 @@ export class PocketApp {
             config: this.config,
             log: (line) => this.#log(line),
             onChange: () => this.#runnersChanged(),
+            // A runner's question names a session by its permission: who started that session answers it.
+            askerOf: (permission) =>
+                Object.entries(this.#sessions).find(
+                    ([id, meta]) => (meta.runnerPermission ?? id) === permission,
+                )?.[1].createdBy,
         });
         this.cacheKeeper = new CacheKeeper({
             log: (line) => this.#log(line),
@@ -1763,6 +1768,14 @@ export class PocketApp {
     runnerScope(id: ConversationId, cwd?: string) {
         const root = this.rootOf(id);
         const meta = this.#sessions[String(root)];
+
+        // Everything a session does on its computer goes through this scope, so it runs only while the person who
+        // started it may still use that computer (`Runners.mayUse`): a removed grant, a person made a viewer, or a
+        // removed person stops their sessions there, also ones already running, their subagents, and their schedules.
+        if (meta?.runner !== undefined) {
+            this.requireRunnerAccess(meta);
+        }
+
         const folder = cwd ?? this.cwdOf(root);
         const path =
             meta?.runner !== undefined && this.runners.link(meta.runner).platform().os === "windows"
@@ -2654,6 +2667,30 @@ export class PocketApp {
             meta?.runner === undefined ||
             meta.createdBy === user.id ||
             this.config.sharedRunnerSessions
+        );
+    }
+
+    /**
+     * A session on another computer acts there as the person who started it: only while they may still use it
+     * (`Runners.mayUse`): the linker, or a person the linker chose.
+     */
+    requireRunnerAccess(meta: SessionMeta): void {
+        const runner = meta.runner;
+
+        if (runner === undefined) {
+            return;
+        }
+
+        const starter =
+            meta.createdBy === undefined ? undefined : this.config.userById(meta.createdBy);
+
+        if (starter !== undefined && this.runners.mayUse(runner, starter)) {
+            return;
+        }
+
+        throw new HttpError(
+            403,
+            `${starter?.name ?? "The person who started this session"} can no longer use ${this.runners.name(runner)}, so this session cannot run there. The person who linked it can choose them again in Runners.`,
         );
     }
 

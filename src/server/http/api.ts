@@ -665,6 +665,13 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 throw new HttpError(400, "id is required");
             }
 
+            // Only the person whose session waits (or the linker, or the owner) answers or withdraws its question.
+            const question = app.runners.link(second).questions.get(body.id);
+
+            if (!app.runners.mayAnswer(second, question, user)) {
+                throw new HttpError(404, "No such question.");
+            }
+
             if (body.withdraw === true) {
                 app.runners.link(second).withdraw(body.id);
             } else if (typeof body.code === "string" && /^\d{6}$/.test(body.code)) {
