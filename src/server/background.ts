@@ -995,7 +995,8 @@ export class BackgroundTasks {
                 }
 
                 stored.status = "running";
-                stored.pid = leader?.pid ?? found[0]!.pgid;
+                // A runner's task whose shell ended reports no group (0): its own id stands for it.
+                stored.pid = leader?.pid ?? (found[0]!.pgid || found[0]!.pid);
 
                 // A leader that carries the marker is known for sure; a group whose leader is gone counts by its members.
                 if (

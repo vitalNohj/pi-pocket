@@ -151,9 +151,18 @@ export class RemoteBackground {
     ): Promise<{ pid: number; pgid: number }[]> {
         if (this.env.link.tasks) {
             const task = marker.slice(marker.lastIndexOf("/") + 1);
+            // Its shell ending ends the task, as a group's leader does on a server: what it left running is named and
+            // stopped then (`background.ts`, `#left`), while the host stays until it is gone or the runner stops.
             const tasks = (await this.env.link.taskList(this.permission)).filter(
-                (item) => item.task === task && (!onlyGroup || item.pid === group),
+                (item) =>
+                    item.task === task &&
+                    (!onlyGroup || (item.pid === group && item.ended !== true)),
             );
+
+            // What an ended task left: its group, outside its leader's (`#left` takes those).
+            if (signal === "" && !onlyGroup) {
+                return tasks.map(({ pid, ended }) => ({ pid, pgid: ended === true ? 0 : pid }));
+            }
 
             if (signal !== "" && tasks.length > 0) {
                 if (signal !== "TERM" && signal !== "KILL") {

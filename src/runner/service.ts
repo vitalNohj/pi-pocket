@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { windowsSystemProgram } from "./windows.ts";
 
 /** The systemd user unit. */
 export const UNIT = "pi-pocket-runner.service";
@@ -55,7 +56,7 @@ export function canService(platform: NodeJS.Platform = process.platform): boolea
 
 function powershell(script: string, showOutput = false) {
     return spawnSync(
-        "powershell.exe",
+        windowsSystemProgram("powershell.exe"),
         [
             "-NoProfile",
             "-NonInteractive",

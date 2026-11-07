@@ -5,6 +5,7 @@ import { constants as osConstants } from "node:os";
 import { win32 } from "node:path";
 import { createInterface } from "node:readline";
 import type { TaskInput } from "./tasks.ts";
+import { windowsSystemProgram } from "./windows.ts";
 
 /** The helper stays outside the job. Its pipe closes even if this host is killed without cleanup. */
 const JOB = String.raw`
@@ -215,7 +216,7 @@ function signal(name: "TERM" | "KILL"): void {
         }
 
         const killer = spawn(
-            win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+            windowsSystemProgram("taskkill.exe"),
             ["/PID", String(child.pid), "/T", ...(name === "KILL" ? ["/F"] : [])],
             { stdio: "ignore", windowsHide: true },
         );
@@ -258,7 +259,7 @@ function stop(): void {
 
 async function windowsJob(): Promise<void> {
     const helper = spawn(
-        "powershell.exe",
+        windowsSystemProgram("powershell.exe"),
         ["-NoProfile", "-NonInteractive", "-Command", JOB.replace("HOST_PID", String(process.pid))],
         { stdio: ["pipe", "pipe", "ignore"], windowsHide: true },
     );
@@ -311,7 +312,7 @@ async function shell(): Promise<{ file: string; args: string[]; verbatim?: boole
     }
 
     const found = await new Promise<string>((resolve) => {
-        const where = spawn("where.exe", ["bash.exe"], {
+        const where = spawn(windowsSystemProgram("where.exe"), ["bash.exe"], {
             stdio: ["ignore", "pipe", "ignore"],
             windowsHide: true,
         });

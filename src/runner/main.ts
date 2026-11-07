@@ -1227,6 +1227,7 @@ async function status(file: string): Promise<string> {
     const settings = settingsOf(saved);
 
     return [
+        `Runner: Pi Pocket ${pocketVersion()}`,
         `Computer: ${saved.name}`,
         `Server: ${saved.server}`,
         `Link file: ${file}`,

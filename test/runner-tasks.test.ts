@@ -448,6 +448,22 @@ test("the task gate refuses unapproved permissions and outside or symlinked cwd;
     await assert.rejects(link.taskStart({ ...request, task: "revoked" }), /Session not approved/);
 });
 
+test("a task whose shell ended counts as ended while what it started still runs, as on a server", async () => {
+    const id = await session();
+    const { item, pid } = await endedTree(id);
+
+    await until(
+        async () => (await items(id))[0]?.status === "exited",
+        "the task recorded as ended",
+    );
+    assert.equal(living(pid), true, "the task's child still runs");
+    assert.equal((await items(id))[0]?.code, 0);
+    assert.equal((await items(id))[0]?.left?.length, 1, "what it left is named");
+
+    await app.runners.link(computer).taskSignal(app.runnerScope(id).id, item.id, "KILL");
+    await until(() => !living(pid), "the child stopped");
+});
+
 test("signals still reach descendants of an ended task", async () => {
     const id = await session();
     const { item, pid } = await endedTree(id);
