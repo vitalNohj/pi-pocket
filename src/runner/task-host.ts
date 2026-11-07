@@ -29,6 +29,12 @@ public static class TaskJob {
         public Io Io;
         public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
     }
+    [StructLayout(LayoutKind.Sequential)] public struct Accounting {
+        public long UserTime, KernelTime, PeriodUserTime, PeriodKernelTime;
+        public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool QueryInformationJobObject(IntPtr job, int kind, out Accounting info, uint size, IntPtr returned);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern IntPtr CreateJobObject(IntPtr attributes, string name);
     [DllImport("kernel32.dll", SetLastError=true)]
@@ -54,7 +60,15 @@ $assigned = [TaskJob]::AssignProcessToJobObject($job, $hostProcess)
 if (-not $assigned) { throw 'AssignProcessToJobObject failed' }
 [Console]::Out.WriteLine('ok')
 [Console]::Out.Flush()
-while ([Console]::In.Read() -ne -1) {}
+while ($null -ne ($request = [Console]::In.ReadLine())) {
+    if ($request -eq 'active') {
+        $info = New-Object TaskJob+Accounting
+        if ([TaskJob]::QueryInformationJobObject($job, 1, [ref]$info, [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][TaskJob+Accounting]), [IntPtr]::Zero)) {
+            [Console]::Out.WriteLine('active ' + $info.ActiveProcesses)
+            [Console]::Out.Flush()
+        }
+    }
+}
 [void][TaskJob]::CloseHandle($job)
 `;
 
@@ -66,6 +80,9 @@ let closed = false;
 let done = false;
 let code = 1;
 let killTimer: NodeJS.Timeout | undefined;
+let groupTimer: NodeJS.Timeout | undefined;
+/** The Windows job includes this host, so 1 means that the task has no processes left. */
+let jobActive: number | undefined;
 let log: number | undefined;
 let used = 0;
 let segment = 0;
@@ -114,18 +131,15 @@ function output(bytes: Buffer): void {
     }
 }
 
-function finish(): void {
-    if (done || !closed || killTimer !== undefined || input === undefined) {
+/** The shell's result is final even when its descendants still need this host's lifetime lease. */
+function complete(): void {
+    if (done || input === undefined) {
         return;
     }
 
     done = true;
 
     try {
-        if (log !== undefined) {
-            closeSync(log);
-        }
-
         const exit = openSync(
             input.exitFile,
             constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
@@ -141,6 +155,48 @@ function finish(): void {
         report({ error: `Cannot write the background task files: ${(error as Error).message}` });
     }
 
+    report({ ended: true });
+    finish();
+}
+
+function groupAlive(): boolean {
+    if (child?.pid === undefined) {
+        return false;
+    }
+
+    if (process.platform === "win32") {
+        // Without a queryable job, taskkill cannot reliably see a tree after its root exits. Keep the lease.
+        return job === undefined || jobActive === undefined || jobActive > 1;
+    }
+
+    try {
+        process.kill(-child.pid, 0);
+
+        return true;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+}
+
+function finish(): void {
+    if (!done || !closed || killTimer !== undefined) {
+        return;
+    }
+
+    if (!stopping && groupAlive()) {
+        groupTimer ??= setTimeout(() => {
+            groupTimer = undefined;
+            job?.stdin?.write("active\n");
+            finish();
+        }, 1000);
+
+        return;
+    }
+
+    if (log !== undefined) {
+        closeSync(log);
+    }
+
     job?.stdin?.end();
     process.exit(0);
 }
@@ -151,6 +207,13 @@ function signal(name: "TERM" | "KILL"): void {
     }
 
     if (process.platform === "win32") {
+        if (done && job !== undefined) {
+            // The job still owns the descendants after taskkill loses their shell. Closing it kills the whole job.
+            job.stdin?.end();
+
+            return;
+        }
+
         const killer = spawn(
             win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
             ["/PID", String(child.pid), "/T", ...(name === "KILL" ? ["/F"] : [])],
@@ -212,18 +275,29 @@ async function windowsJob(): Promise<void> {
 
         const end = (error?: Error) => {
             clearTimeout(timer);
-            lines.close();
 
             if (error === undefined) {
                 resolve();
             } else {
+                lines.close();
                 reject(error);
             }
         };
 
         helper.once("error", end);
         helper.once("exit", () => end(new Error("The Windows Job Object helper stopped.")));
-        lines.once("line", (line) => end(line === "ok" ? undefined : new Error(line)));
+        lines.on("line", (line) => {
+            if (line.startsWith("active ")) {
+                const count = Number(line.slice(7));
+
+                if (Number.isSafeInteger(count) && count >= 1) {
+                    jobActive = count;
+                    finish();
+                }
+            } else {
+                end(line === "ok" ? undefined : new Error(line));
+            }
+        });
     });
 }
 
@@ -314,7 +388,7 @@ async function start(): Promise<void> {
 
     if (stopping || config === undefined) {
         closed = true;
-        finish();
+        complete();
 
         return;
     }
@@ -343,10 +417,11 @@ async function start(): Promise<void> {
             report({ error: `Cannot start the background task: ${error.message}` });
             code = 127;
             closed = true;
-            finish();
+            complete();
         });
         command.once("exit", (status, killed) => {
             code = status ?? 128 + (killed === null ? 0 : (osConstants.signals[killed] ?? 0));
+            complete();
         });
         command.once("close", () => {
             if (child === command) {
@@ -385,7 +460,7 @@ lines.on("line", (line) => {
                 report({ error: error.message });
                 code = 127;
                 closed = true;
-                finish();
+                complete();
             });
         }
     } catch (error) {

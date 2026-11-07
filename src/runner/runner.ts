@@ -31,6 +31,8 @@ import type { RunnerTools, TaskRequest, TaskResult } from "./protocol.ts";
 import {
     CLOSE,
     type Confirm,
+    type Confirmed,
+    type ApprovalNeeded,
     type ControlMessage,
     FRAME,
     FrameSplitter,
@@ -110,7 +112,7 @@ export type SessionQuestion = {
     folder: string;
     server: string;
     computer: string;
-    /** Aborts when the server stops waiting (the link dropped, or it gave up). */
+    /** Aborts when the question ends, not when the network link drops. */
     signal: AbortSignal;
 };
 
@@ -286,10 +288,16 @@ export class Runner {
     readonly #log: (line: string) => void;
     readonly #retry: readonly number[];
     #socket: WebSocket | undefined;
+    /** Confirm answers wait until this socket has received its welcome. */
+    #welcomed: WebSocket | undefined;
     #session!: Session;
     #stopping = false;
     /** Questions that the server can withdraw while the person answers. */
     readonly #questions = new Map<string, AbortController>();
+    /** Questions belong to this computer, not its WebSocket; announce them again after a drop. */
+    readonly #notices = new Map<string, ApprovalNeeded>();
+    /** A local answer made offline must still reach the server's waiting confirm. */
+    readonly #answers = new Map<string, Confirmed>();
     readonly #approvals: Approvals;
     readonly #tasks: Tasks;
     /** Starts are replayed after reconnects, once per id for this runner's lifetime. */
@@ -858,6 +866,7 @@ export class Runner {
                 this.#log(
                     `Reconnected to ${this.#options.link.server}. Running commands continue.`,
                 );
+                this.#welcomeApprovals(ws);
 
                 return true;
             }
@@ -881,6 +890,7 @@ export class Runner {
             }
 
             this.#log(`Connected to ${this.#options.link.server} as "${this.#options.link.name}".`);
+            this.#welcomeApprovals(ws);
 
             return true;
         }
@@ -893,7 +903,7 @@ export class Runner {
                 session.daemon.resume();
             }
         } else if (message?.type === "confirm") {
-            void this.#answer(ws, message);
+            void this.#answer(message);
         } else if (message?.type === "withdraw") {
             this.#questions.get(message.id)?.abort(WITHDRAWN);
         } else if (message?.type === "approval-code") {
@@ -980,8 +990,32 @@ export class Runner {
         }
     }
 
+    /** Reattach the computer's open questions and saved answers to the welcomed link. */
+    #welcomeApprovals(ws: WebSocket): void {
+        this.#welcomed = ws;
+
+        if (this.#session.gate.scoped) {
+            for (const notice of this.#notices.values()) {
+                this.#control(notice);
+            }
+        }
+
+        this.#sendAnswers();
+    }
+
+    #sendAnswers(): void {
+        if (this.#welcomed !== this.#socket || !this.connected) {
+            return;
+        }
+
+        for (const [id, answer] of this.#answers) {
+            this.#control(answer);
+            this.#answers.delete(id);
+        }
+    }
+
     /** The server's question before a session starts, moves, or is copied here. */
-    async #answer(ws: WebSocket, question: Confirm): Promise<void> {
+    async #answer(question: Confirm): Promise<void> {
         const scope: SessionScope = {
             // An older server names no session: its sessions are approved one question at a time.
             id: question.session ?? `server-${question.id}`,
@@ -1000,22 +1034,18 @@ export class Runner {
             this.#session.gate.legacy.push({ ...scope, folder: await realFolder(scope.folder) });
         }
 
-        if (ws.readyState === WebSocket.OPEN) {
-            ws.send(
-                JSON.stringify({
-                    type: "confirmed",
-                    id: question.id,
-                    allow: answer.allow,
-                    ...(answer.allow
-                        ? {}
-                        : {
-                              reason:
-                                  answer.reason ??
-                                  `${this.#options.link.name} did not allow the session.`,
-                          }),
-                } satisfies ControlMessage),
-            );
-        }
+        this.#answers.set(question.id, {
+            type: "confirmed",
+            id: question.id,
+            allow: answer.allow,
+            ...(answer.allow
+                ? {}
+                : {
+                      reason:
+                          answer.reason ?? `${this.#options.link.name} did not allow the session.`,
+                  }),
+        });
+        this.#sendAnswers();
     }
 
     /**
@@ -1048,7 +1078,6 @@ export class Runner {
                 : "a session";
         const stop = new AbortController();
         const abort = () => stop.abort();
-        const ws = this.#socket;
         const totp = this.#settings().totp !== undefined;
         const timer = setTimeout(abort, totp ? ASK_TOTP_MS : ASK_MS);
 
@@ -1089,7 +1118,6 @@ export class Runner {
         };
 
         hold(signal);
-        ws?.once("close", abort);
 
         const promise = (async (): Promise<Approval> => {
             try {
@@ -1128,17 +1156,21 @@ export class Runner {
                         signal: stop.signal,
                     };
 
+                    const notice: ApprovalNeeded = {
+                        type: "approval-needed",
+                        id,
+                        session: scope.id,
+                        folder,
+                        permission: question.permission,
+                        expired,
+                        broad,
+                        totp,
+                    };
+
+                    this.#notices.set(id, notice);
+
                     if (this.#session.gate.scoped) {
-                        this.#control({
-                            type: "approval-needed",
-                            id,
-                            session: scope.id,
-                            folder,
-                            permission: question.permission,
-                            expired,
-                            broad,
-                            totp,
-                        });
+                        this.#control(notice);
                     }
 
                     answer = await new Promise<Approval>((resolve) => {
@@ -1215,7 +1247,7 @@ export class Runner {
                     release();
                 }
 
-                ws?.off("close", abort);
+                this.#notices.delete(id);
                 this.#pending.delete(id);
                 this.#questions.delete(id);
 
