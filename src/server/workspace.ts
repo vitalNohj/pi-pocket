@@ -585,7 +585,13 @@ export class Workspace {
         const cwd = this.#app.cwdOf(id);
         const file = paths.resolve(cwd, expanded);
 
-        if (user.role === "owner" || this.#app.runners.mayUse(runner, user)) {
+        // Pi's own read access (`docs/runners.md`): the owner's, and a chosen person's in the sessions they started there.
+        // In another person's session shared with them, they read what anyone it is shared with may: its folder.
+        if (
+            user.role === "owner" ||
+            (this.#app.runners.mayUse(runner, user) &&
+                this.#app.sessionMeta(this.#app.rootOf(id))?.createdBy === user.id)
+        ) {
             return { access, file, home };
         }
 

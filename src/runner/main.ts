@@ -1129,7 +1129,9 @@ async function serve(
     }
 
     if (saved === undefined) {
-        fail("This computer is not linked. In a terminal, run: pi-pocket runner");
+        // A service of an unlinked computer cannot start again by itself: the code says so, as for one removed.
+        console.error("This computer is not linked. In a terminal, run: pi-pocket runner");
+        process.exit(serviceExitCode(STOPPED_BY_SERVER, asService));
     }
 
     // A service has nobody to ask: without an authenticator, nothing could ever be approved (`service.ts`).

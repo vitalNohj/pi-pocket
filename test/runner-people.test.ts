@@ -509,6 +509,26 @@ describe("people granted a computer", () => {
         }
     });
 
+    it("reads only the folder of another person's session shared with them, not Pi's whole access", async () => {
+        const ownerSession = await app.commands.createSession(owner(app), {
+            runner: runnerId,
+            cwd: there,
+        });
+
+        app.config.sharedRunnerSessions = true;
+
+        try {
+            await assert.rejects(
+                app.workspace.remoteFile(guest, ownerSession.id, outside),
+                (error: unknown) => error instanceof HttpError && error.status === 404,
+            );
+            // Their own session there still reads outside its folder, as Pi does.
+            assert.equal((await app.workspace.remoteFile(guest, id, outside)).file, outside);
+        } finally {
+            app.config.sharedRunnerSessions = false;
+        }
+    });
+
     it("ends access when a grant is withdrawn or the person is removed", async () => {
         await request(owner(app), `runners/${runnerId}/users`, { users: [] });
         assert.equal(app.runners.mayUse(runnerId, guest), false);

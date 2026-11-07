@@ -2,7 +2,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonical } from "./request-gate.ts";
 import { folderContains } from "./folders.ts";
@@ -18,16 +18,25 @@ export type TaskInput = {
     shell?: string;
 };
 
-/** Keep the launcher's type-stripping hook, never its inspector or test-runner flags. */
-export function taskImports(): string[] {
-    const args: string[] = [];
+/**
+ * The task host's `--import` flags: this process's own (never its inspector or test-runner flags), and from an npm install
+ * (a node_modules folder, where Node strips no types) the hook that does (`bin/strip-types.js`), which `bin/pi-pocket.js`
+ * loads in its own process rather than with a flag, so `process.execArgv` does not have it.
+ */
+export function taskImports(root = fileURLToPath(new URL("../..", import.meta.url))): string[] {
+    const hook = new URL("../../bin/strip-types.js", import.meta.url).href;
+    const args: string[] = root.split(sep).includes("node_modules") ? ["--import", hook] : [];
 
     for (let index = 0; index < process.execArgv.length; index++) {
         const arg = process.execArgv[index]!;
 
         if (arg === "--import" && process.execArgv[index + 1] !== undefined) {
-            args.push(arg, process.execArgv[++index]!);
-        } else if (arg.startsWith("--import=")) {
+            const value = process.execArgv[++index]!;
+
+            if (value !== hook) {
+                args.push(arg, value);
+            }
+        } else if (arg.startsWith("--import=") && arg !== `--import=${hook}`) {
             args.push(arg);
         }
     }
