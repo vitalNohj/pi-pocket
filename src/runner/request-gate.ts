@@ -168,6 +168,31 @@ export class RequestGate {
         this.#options = options;
     }
 
+    /** A control request uses the same live permission and canonical path check as an exec request, without asking. */
+    async task(id: string, cwd?: string): Promise<() => void> {
+        const permission = await this.#options.approvals.valid(id);
+
+        if (permission === undefined) {
+            throw new Error(`Session not approved on ${this.#options.name()}`);
+        }
+
+        const paths = await this.#paths(cwd === undefined ? {} : { cwd }, undefined);
+
+        if (!(await this.#inside(id, permission.folder, paths))) {
+            throw new Error(
+                `The path is outside the session's approved folder on ${this.#options.name()}`,
+            );
+        }
+
+        const used = this.#options.approvals.begin(id);
+        const working = this.#options.working?.(permission.folder);
+
+        return () => {
+            used();
+            working?.();
+        };
+    }
+
     /** The daemon stopped, or the runner: what waits is dropped, and use ends. */
     stop(): void {
         for (const request of this.#requests.values()) {

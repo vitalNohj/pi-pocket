@@ -3,7 +3,6 @@ import { posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import type { BackgroundTask } from "./docs.ts";
-import { HttpError } from "./errors.ts";
 import type { RunnerEnv } from "./runners.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -78,12 +77,7 @@ export class RemoteBackground {
     }
 
     async supported(): Promise<void> {
-        if ((await this.env.connection.info()).os === "windows") {
-            throw new HttpError(
-                501,
-                `Background tasks need macOS or Linux on ${this.env.computer().name} for now.`,
-            );
-        }
+        await this.env.connection.info();
     }
 
     async exec(script: string, args: string[], env?: Record<string, string>): Promise<string> {
@@ -117,6 +111,17 @@ export class RemoteBackground {
         added: Record<string, string>,
         segment: number,
     ): Promise<number> {
+        if (this.env.link.tasks) {
+            return this.env.link.taskStart({
+                permission: this.permission,
+                task: item.id,
+                command: item.command,
+                cwd: item.cwd,
+                env: added,
+                segment: item.segment ?? segment,
+            });
+        }
+
         const dir = await this.dir();
 
         getOrThrow(await this.env.createDir(dir, { recursive: true }, context));
@@ -144,6 +149,25 @@ export class RemoteBackground {
         signal = "",
         onlyGroup = false,
     ): Promise<{ pid: number; pgid: number }[]> {
+        if (this.env.link.tasks) {
+            const task = marker.slice(marker.lastIndexOf("/") + 1);
+            const tasks = (await this.env.link.taskList(this.permission)).filter(
+                (item) => item.task === task && (!onlyGroup || item.pid === group),
+            );
+
+            if (signal !== "" && tasks.length > 0) {
+                if (signal !== "TERM" && signal !== "KILL") {
+                    throw new Error("Invalid background task signal.");
+                }
+
+                await this.env.link.taskSignal(this.permission, task, signal);
+
+                return [];
+            }
+
+            return tasks.map(({ pid }) => ({ pid, pgid: pid }));
+        }
+
         // kill -0 alone also counts zombies and reused ids. Always check a live process's exact marker too.
         const script = onlyGroup ? `kill -0 -- "-$2" 2>/dev/null || exit 0; ${INSPECT}` : INSPECT;
         const text = await this.exec(script, [

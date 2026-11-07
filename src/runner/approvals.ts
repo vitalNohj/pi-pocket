@@ -57,8 +57,17 @@ export class Approvals {
         await write;
     }
 
-    async valid(scope: SessionScope): Promise<SessionPermission | undefined> {
+    async valid(named: SessionScope | string): Promise<SessionPermission | undefined> {
         await this.#writes;
+        const scope =
+            typeof named === "string"
+                ? (this.#read().sessions ?? []).find((entry) => entry.id === named)
+                : named;
+
+        if (scope === undefined) {
+            return undefined;
+        }
+
         const folder = await realFolder(scope.folder);
         const permission = (this.#read().sessions ?? []).find(
             (entry) => entry.id === scope.id && entry.folder === folder,

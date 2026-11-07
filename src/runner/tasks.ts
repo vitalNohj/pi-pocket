@@ -1,0 +1,249 @@
+/** Task hosts belong to the runner, not its replaceable pi-env daemon or WebSocket. */
+import { spawn, type ChildProcess } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { canonical } from "./request-gate.ts";
+import { folderContains } from "./folders.ts";
+import type { TaskRequest, TaskResult } from "./protocol.ts";
+
+export type TaskInput = {
+    command: string;
+    cwd: string;
+    env: Record<string, string>;
+    logPrefix: string;
+    exitFile: string;
+    segment: number;
+    shell?: string;
+};
+
+/** Keep the launcher's type-stripping hook, never its inspector or test-runner flags. */
+export function taskImports(): string[] {
+    const args: string[] = [];
+
+    for (let index = 0; index < process.execArgv.length; index++) {
+        const arg = process.execArgv[index]!;
+
+        if (arg === "--import" && process.execArgv[index + 1] !== undefined) {
+            args.push(arg, process.execArgv[++index]!);
+        } else if (arg.startsWith("--import=")) {
+            args.push(arg);
+        }
+    }
+
+    return args;
+}
+
+type Host = {
+    child: ChildProcess;
+    permission: string;
+    task: string;
+    pid: number;
+    ended: Promise<void>;
+};
+
+export class Tasks {
+    readonly #hosts = new Map<string, Host>();
+    readonly #starts = new Map<string, Promise<TaskResult>>();
+    readonly #authorize: (permission: string, cwd?: string) => Promise<() => void>;
+    readonly #log: (line: string) => void;
+    #stopping = false;
+    #warned = false;
+
+    constructor(
+        authorize: (permission: string, cwd?: string) => Promise<() => void>,
+        log: (line: string) => void,
+    ) {
+        this.#authorize = authorize;
+        this.#log = log;
+    }
+
+    async request(request: TaskRequest): Promise<TaskResult> {
+        const key = request.op === "list" ? "" : `${request.permission}/${request.task}`;
+        const pending =
+            request.op === "list"
+                ? [...this.#starts]
+                      .filter(([key]) => key.startsWith(`${request.permission}/`))
+                      .map(([, value]) => value)
+                : [this.#starts.get(key)];
+        const previous = Promise.allSettled(pending);
+
+        if (request.op !== "start") {
+            await previous;
+
+            return this.#request(request);
+        }
+
+        const started = previous.then(() => this.#request(request));
+
+        this.#starts.set(key, started);
+
+        try {
+            return await started;
+        } finally {
+            if (this.#starts.get(key) === started) {
+                this.#starts.delete(key);
+            }
+        }
+    }
+
+    async #request(request: TaskRequest): Promise<TaskResult> {
+        const finish = await this.#authorize(
+            request.permission,
+            request.op === "start" ? request.cwd : undefined,
+        );
+        let held = false;
+
+        try {
+            if (this.#stopping) {
+                throw new Error("The runner is stopping.");
+            }
+
+            if (
+                !/^[A-Za-z0-9._-]+$/.test(request.permission) ||
+                [".", ".."].includes(request.permission)
+            ) {
+                throw new Error("Invalid background task permission id.");
+            }
+
+            if (request.op === "list") {
+                return {
+                    type: "task-result",
+                    id: request.id,
+                    ok: true,
+                    tasks: [...this.#hosts.values()]
+                        .filter((host) => host.permission === request.permission)
+                        .map(({ task, pid }) => ({ task, pid })),
+                };
+            }
+
+            const key = `${request.permission}/${request.task}`;
+            const existing = this.#hosts.get(key);
+
+            if (request.op === "signal") {
+                // Unknown tasks and tasks of another permission are indistinguishable.
+                if (existing?.child.connected) {
+                    existing.child.send({ signal: request.signal }, () => {});
+                }
+
+                return { type: "task-result", id: request.id, ok: true };
+            }
+
+            if (existing !== undefined) {
+                return { type: "task-result", id: request.id, ok: true, pid: existing.pid };
+            }
+
+            if (!/^[A-Za-z0-9._-]+$/.test(request.task) || [".", ".."].includes(request.task)) {
+                throw new Error("Invalid background task id.");
+            }
+
+            const dir = join(await canonical(tmpdir()), "pi-pocket-tasks", request.permission);
+            const real = await canonical(dir);
+
+            if (!folderContains(dir, real) || !folderContains(real, dir)) {
+                throw new Error("The background task folder is outside its permitted folder.");
+            }
+
+            await mkdir(dir, { recursive: true });
+
+            if (this.#stopping) {
+                throw new Error("The runner is stopping.");
+            }
+
+            const child = spawn(
+                process.execPath,
+                [...taskImports(), fileURLToPath(new URL("./task-host.ts", import.meta.url))],
+                {
+                    // IPC reports startup and the Windows Job Object warning; task output stays on disk.
+                    stdio: ["pipe", "ignore", "ignore", "ipc"],
+                    detached: process.platform !== "win32",
+                    windowsHide: true,
+                },
+            );
+            const ended = new Promise<void>((resolve) => {
+                child.once("exit", () => resolve());
+                child.once("error", () => resolve());
+            });
+            const host: Host = {
+                child,
+                permission: request.permission,
+                task: request.task,
+                pid: child.pid ?? 0,
+                ended,
+            };
+
+            this.#hosts.set(key, host);
+            held = true;
+            child.stdin!.on("error", () => {});
+            void ended.then(() => {
+                if (this.#hosts.get(key) === host) {
+                    this.#hosts.delete(key);
+                }
+
+                finish();
+            });
+
+            const ready = new Promise<number>((resolve, reject) => {
+                child.once("error", reject);
+                child.once("exit", () =>
+                    reject(new Error("The task host stopped before starting its command.")),
+                );
+                child.on("message", (value: { pid?: number; warning?: string; error?: string }) => {
+                    if (value.warning !== undefined && !this.#warned) {
+                        this.#warned = true;
+                        this.#log(`Background tasks: ${value.warning}`);
+                    }
+
+                    if (value.error !== undefined) {
+                        reject(new Error(value.error));
+                    } else if (typeof value.pid === "number" && value.pid > 0) {
+                        host.pid = value.pid;
+                        resolve(value.pid);
+                    }
+                });
+            });
+            const input: TaskInput = {
+                command: request.command,
+                cwd: request.cwd,
+                env: request.env,
+                logPrefix: join(dir, `${request.task}.log.`),
+                exitFile: join(dir, `${request.task}.exit`),
+                segment: request.segment,
+            };
+
+            child.stdin!.write(`${JSON.stringify(input)}\n`);
+
+            try {
+                return { type: "task-result", id: request.id, ok: true, pid: await ready };
+            } catch (error) {
+                child.stdin!.end();
+
+                throw error;
+            }
+        } finally {
+            if (!held) {
+                finish();
+            }
+        }
+    }
+
+    async stop(): Promise<void> {
+        this.#stopping = true;
+        const hosts = [...this.#hosts.values()];
+
+        for (const host of hosts) {
+            host.child.stdin?.end();
+        }
+
+        let timer: NodeJS.Timeout | undefined;
+
+        await Promise.race([
+            Promise.all(hosts.map((host) => host.ended)),
+            new Promise<void>((resolve) => {
+                timer = setTimeout(resolve, 6000);
+            }),
+        ]);
+        clearTimeout(timer);
+    }
+}

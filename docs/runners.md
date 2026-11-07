@@ -182,7 +182,11 @@ These also work, on that computer:
 
 Artifacts read their `path` and asset files on the session's computer, then keep the published bundle on the server. Automatic design-system attachments are not available there: give their files in `assets`. Images opened from that computer, or written with `write` or `edit`, are kept in the session's uploads for offline viewing (25 MiB per image, 500 MiB per session; the oldest copies are removed above that).
 
-Background tasks run on the computer in the session's folder, on macOS or Linux (not Windows yet). Their logs and exit codes stay in `<temp>/pi-pocket-tasks/<permission id>/` on that computer, reachable only by their session. Running now and the log view read them there, with the same output limits as local tasks. A task runs independently of the server, runner, and pi-env daemon: restarting them does not stop it. While the computer is offline, its watch waits, then checks again when it reconnects. Stop sends a polite signal to its process group and any processes with its marker, then forces what remains to stop. Temporary files can disappear when the computer restarts.
+Background tasks run on the computer in the session's folder, on Linux, macOS, and Windows. The runner owns each task through a separate child process, not through the pi-env tool process. A network drop, a server restart, or a tool-process restart does not stop tasks. When the runner stops or crashes, its task processes stop too: on Linux and macOS, the task's process group gets a polite signal, then a forced stop after 5 seconds. On Windows, the host uses `taskkill /T /F`; a Windows Job Object also stops the process tree if the host dies. If the computer cannot set up that Job Object, the runner logs a warning and continues with `taskkill` protection.
+
+Their logs and exit codes stay in `<temp>/pi-pocket-tasks/<permission id>/` on that computer, reachable only by their session. Running now and the log view read them there, with the same output limits as local tasks. While the computer is offline, its watch waits, then checks again when it reconnects. Completed output and exit codes reach the session when it is back. The runner checks a live session permission and the command's folder before it starts a task. On Linux and macOS, commands use Bash, or `sh` if Bash is absent. On Windows, they use an installed Bash (not the Windows WSL launcher), or `cmd.exe` if Bash is absent. Temporary files can disappear when the computer restarts.
+
+Older runners that do not advertise task support keep the earlier Bash implementation on Linux and macOS. Those tasks run independently of the runner and tool process, and Stop finds them by their environment marker. Update the runner to get runner-owned task lifetimes and Windows support.
 
 A project's own `.pi/settings.json` and prompt templates on that computer are not read.
 
@@ -231,12 +235,12 @@ This setting applies to the whole server. A switch for each session (who can see
 
 Offline is offline. While a linked computer is offline, its sessions are offline too: there is no grace period, and nothing fails because the computer is away. The server keeps the link's work and waits. The session shows "<computer> offline, reconnecting…", and its mark in the session list is dimmed.
 
-| What happens                                             | What happens to the work                                                                                                                             |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The connection drops, for any length of time             | Nothing is lost. Commands keep running on the computer. Their output arrives when the runner reconnects, and the session continues where it stopped. |
-| A tool call, or a message, while the computer is offline | It waits for the computer. Attached files are copied there when it is back. **Stop** ends the wait.                                                  |
-| The runner quits, or the computer restarts               | Commands that were running stopped with it, and come back as interrupted. The session continues when the runner is back.                             |
-| The server restarts                                      | As with sessions on the server, running commands return as interrupted. The session continues.                                                       |
+| What happens                                             | What happens to the work                                                                                                                                            |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The connection drops, for any length of time             | Nothing is lost. Commands keep running on the computer. Their output arrives when the runner reconnects, and the session continues where it stopped.                |
+| A tool call, or a message, while the computer is offline | It waits for the computer. Attached files are copied there when it is back. **Stop** ends the wait.                                                                 |
+| The runner quits, or the computer restarts               | Commands and runner-owned background tasks stop. Commands come back as interrupted; task logs and exit codes remain. The session continues when the runner is back. |
+| The server restarts                                      | Running commands return as interrupted. Background tasks keep running on the computer, and the session picks up their output when the runner reconnects.            |
 
 Panels that show the computer's files (Files, Changes, the folder picker) say that the computer is offline instead of waiting. A new session, a fork, or a move to another folder on an offline computer cannot start: the computer must answer whether it allows the folder.
 

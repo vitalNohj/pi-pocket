@@ -68,6 +68,7 @@ before(async () => {
     );
 
     computer = linked.id;
+    legacyRunner();
     options = {
         link: { server: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, ...linked },
         version: "test",
@@ -133,16 +134,24 @@ async function userTexts(id: ConversationId): Promise<string> {
         .join("\n");
 }
 
-test("Windows is refused with the computer's name", async () => {
+/** Exercise the unchanged bash implementation with a hello from before runner-owned tasks. */
+function legacyRunner(): void {
+    const link = app.runners.link(computer);
+    const attach = link.attach.bind(link);
+
+    link.attach = (socket, hello) => {
+        delete hello.tasks;
+        attach(socket, hello);
+    };
+}
+
+test("the server no longer refuses Windows background tasks", async () => {
     const env = {
         connection: { info: () => Promise.resolve({ os: "windows" }) },
         computer: () => ({ name: "Windows workstation" }),
     } as unknown as RunnerEnv;
 
-    await assert.rejects(new RemoteBackground(env, "permission").supported(), {
-        status: 501,
-        message: "Background tasks need macOS or Linux on Windows workstation for now.",
-    });
+    await new RemoteBackground(env, "permission").supported();
 });
 
 test("the no-setsid fallback detaches with nohup and perl, and command env is kept", async () => {
@@ -281,6 +290,7 @@ test("a server reopen resumes the watch without stopping or starting the task ag
 
     await app.close();
     app = await openApp(model);
+    legacyRunner();
     app.background.timing.grace = 300;
     app.background.timing.starting = 300;
     server.removeAllListeners("request");

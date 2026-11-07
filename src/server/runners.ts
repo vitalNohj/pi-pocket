@@ -43,6 +43,8 @@ import {
     type ApprovalNeeded,
     type SessionScope,
     type RunnerAction,
+    type TaskRequest,
+    type TaskResult,
     SESSION_FIELD,
     readStreamData,
     STREAM_DATA,
@@ -214,6 +216,17 @@ export class RunnerLink {
     state: ApprovalState | undefined;
     readonly questions = new Map<string, ApprovalNeeded>();
     readonly #results = new Map<string, (message: ControlMessage) => void>();
+    /** Unlike daemon requests, these survive a reset of the daemon session. */
+    readonly #taskRequests = new Map<
+        string,
+        {
+            message: TaskRequest;
+            resolve: (result: TaskResult) => void;
+            reject: (error: Error) => void;
+        }
+    >();
+    /** The runner owns background tasks; absent on older runners. */
+    tasks = false;
     /** Questions sent to its runner, waiting for `confirmed`. */
     readonly #questions = new Map<string, (answer: Confirmed) => void>();
     /** The network streams of the current connection, when its runner opens them (`hello.network`). */
@@ -400,6 +413,12 @@ export class RunnerLink {
         }
 
         this.#wake(lost(`${this.name} was removed from this server`));
+
+        for (const pending of this.#taskRequests.values()) {
+            pending.reject(lost(`${this.name} was removed from this server`));
+        }
+
+        this.#taskRequests.clear();
         this.#drop(CLOSE.removed, "This computer was removed from the server");
     }
 
@@ -495,6 +514,7 @@ export class RunnerLink {
         this.#asks = hello.asks === true;
         this.#withdraws = hello.withdraws === true;
         this.#scoped = hello.approvals === true;
+        this.tasks = hello.tasks === true;
         this.#runners.toolsSeen(this.id, hello.tools);
 
         this.#network?.drop();
@@ -568,6 +588,25 @@ export class RunnerLink {
             this.#runners.log(`${this.name} connected (pi-env session ${session.number}).`);
         }
 
+        // Welcome always goes first. Replay requests whose result the previous connection lost.
+        void session.ready
+            .then(() => {
+                if (this.#socket === socket) {
+                    for (const pending of this.#taskRequests.values()) {
+                        if (this.tasks) {
+                            this.#control(pending.message);
+                        } else {
+                            pending.reject(
+                                new HttpError(
+                                    409,
+                                    "Connect an updated runner on this computer first.",
+                                ),
+                            );
+                        }
+                    }
+                }
+            })
+            .catch(() => {});
         this.#runners.changed();
 
         if (session.known) {
@@ -655,6 +694,8 @@ export class RunnerLink {
             this.state = message.state;
             this.downloads = message.state.settings.downloads ?? undefined;
             this.#runners.changed();
+        } else if (message?.type === "task-result") {
+            this.#taskRequests.get(message.id)?.resolve(message);
         } else if (message?.type === "code-result" || message?.type === "runner-result") {
             if (message.type === "runner-result" && message.state !== undefined) {
                 this.state = message.state;
@@ -885,6 +926,67 @@ export class RunnerLink {
         });
     }
 
+    async taskStart(
+        request: Omit<Extract<TaskRequest, { op: "start" }>, "type" | "id" | "op">,
+    ): Promise<number> {
+        const result = await this.#taskRequest({
+            ...request,
+            type: "task",
+            id: randomUUID(),
+            op: "start",
+        });
+
+        if (result.pid === undefined) {
+            throw new Error("The background task did not return its process id.");
+        }
+
+        return result.pid;
+    }
+
+    async taskList(permission: string): Promise<{ task: string; pid: number }[]> {
+        const result = await this.#taskRequest({
+            type: "task",
+            id: randomUUID(),
+            op: "list",
+            permission,
+        });
+
+        return result.tasks ?? [];
+    }
+
+    async taskSignal(permission: string, task: string, signal: "TERM" | "KILL"): Promise<void> {
+        await this.#taskRequest({
+            type: "task",
+            id: randomUUID(),
+            op: "signal",
+            permission,
+            task,
+            signal,
+        });
+    }
+
+    async #taskRequest(message: TaskRequest): Promise<TaskResult> {
+        await this.whenOnline();
+
+        if (!this.tasks) {
+            throw new HttpError(409, "Connect an updated runner on this computer first.");
+        }
+
+        const result = await new Promise<TaskResult>((resolve, reject) => {
+            this.#taskRequests.set(message.id, { message, resolve, reject });
+            this.#control(message);
+        }).finally(() => this.#taskRequests.delete(message.id));
+
+        if (!result.ok) {
+            throw new HttpError(
+                403,
+                result.error ?? "The runner refused the background task request.",
+            );
+        }
+
+        return result;
+    }
+
     withdraw(id: string): void {
         this.#control({ type: "withdraw", id });
     }
@@ -977,7 +1079,7 @@ function toBuffer(data: RawData): Buffer {
 /** A session's environment on a computer: pi-env's, with which computer it is. */
 export class RunnerEnv extends RemoteExecutionEnv {
     readonly runner: string;
-    readonly #link: RunnerLink;
+    readonly link: RunnerLink;
 
     constructor(link: RunnerLink, cwd: string, scope?: SessionScope) {
         const connection = {
@@ -995,12 +1097,12 @@ export class RunnerEnv extends RemoteExecutionEnv {
             cwd,
         });
         this.runner = link.id;
-        this.#link = link;
+        this.link = link;
     }
 
     /** The computer, for the system prompt: its name, and its system as it last said. */
     computer(): { name: string; os?: string; arch?: string } {
-        return { name: this.#link.name, ...this.#link.platform() };
+        return { name: this.link.name, ...this.link.platform() };
     }
 }
 

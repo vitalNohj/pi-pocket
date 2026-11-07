@@ -26,7 +26,8 @@ import {
 import type { TotpState } from "./totp.ts";
 import { Activity, type ActivityOptions, type ActivityState } from "./activity.ts";
 import { RequestGate, sessionScope } from "./request-gate.ts";
-import type { RunnerTools } from "./protocol.ts";
+import { Tasks } from "./tasks.ts";
+import type { RunnerTools, TaskRequest, TaskResult } from "./protocol.ts";
 import {
     CLOSE,
     type Confirm,
@@ -290,6 +291,9 @@ export class Runner {
     /** Questions that the server can withdraw while the person answers. */
     readonly #questions = new Map<string, AbortController>();
     readonly #approvals: Approvals;
+    readonly #tasks: Tasks;
+    /** Starts are replayed after reconnects, once per id for this runner's lifetime. */
+    readonly #taskResults = new Map<string, Promise<TaskResult>>();
     /** Questions that wait here, by id: a code from Pi Pocket can answer them. */
     readonly #pending = new Map<
         string,
@@ -339,6 +343,10 @@ export class Runner {
         );
         this.#activity = new Activity((state) => options.activity?.(state), options.activityTiming);
         this.#log = options.log ?? (() => {});
+        this.#tasks = new Tasks(
+            (permission, cwd) => this.#session.gate.task(permission, cwd),
+            this.#log,
+        );
         this.#retry = options.retryMs ?? RETRY_MS;
         this.#url = new URL(options.link.server);
         this.#url.protocol = this.#url.protocol === "https:" ? "wss:" : "ws:";
@@ -393,7 +401,7 @@ export class Runner {
 
         this.#control({ type: "bye", reason: "The runner was stopped" });
         this.#socket?.close(1000, "Stopped");
-        await this.#session.daemon.stop();
+        await Promise.all([this.#session.daemon.stop(), this.#tasks.stop()]);
         this.#done();
     }
 
@@ -506,7 +514,9 @@ export class Runner {
         }
 
         this.#log(message);
-        void this.#session.daemon.stop().then(() => this.#done(new RunnerStopped(message)));
+        void Promise.all([this.#session.daemon.stop(), this.#tasks.stop()]).then(() =>
+            this.#done(new RunnerStopped(message)),
+        );
     }
 
     /**
@@ -531,6 +541,29 @@ export class Runner {
             join(await realFolder(homedir()), ".pi-pocket", "worktrees", id),
             ...(downloads === undefined ? [] : [join(await realFolder(downloads), id)]),
         ];
+    }
+
+    async #task(ws: WebSocket, message: TaskRequest): Promise<void> {
+        let result = message.op === "start" ? this.#taskResults.get(message.id) : undefined;
+
+        if (result === undefined) {
+            result = this.#tasks.request(message).catch((error: unknown): TaskResult => ({
+                type: "task-result",
+                id: message.id,
+                ok: false,
+                error: (error as Error).message,
+            }));
+
+            if (message.op === "start") {
+                this.#taskResults.set(message.id, result);
+            }
+        }
+
+        const answer = await result;
+
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(answer));
+        }
     }
 
     /** The link's settings now. */
@@ -674,6 +707,7 @@ export class Runner {
                     asks: true,
                     approvals: true,
                     withdraws: true,
+                    tasks: true,
                     tools,
                     // And opens network streams (`net-open`), or refuses them as its settings say.
                     network: true,
@@ -864,6 +898,8 @@ export class Runner {
             this.#questions.get(message.id)?.abort(WITHDRAWN);
         } else if (message?.type === "approval-code") {
             void this.#code(message.id, message.code);
+        } else if (message?.type === "task" && welcomed) {
+            void this.#task(ws, message);
         } else if (message?.type === "runner-action") {
             void this.#approvals.action(message.request).then(
                 async () => {

@@ -91,6 +91,28 @@ export type ActionResult = {
     state?: ApprovalState;
 };
 
+/** Runner-owned background tasks, independent of the pi-env daemon session. */
+export type TaskRequest = { type: "task"; id: string; permission: string } & (
+    | {
+          op: "start";
+          task: string;
+          command: string;
+          cwd: string;
+          env: Record<string, string>;
+          segment: number;
+      }
+    | { op: "list" }
+    | { op: "signal"; task: string; signal: "TERM" | "KILL" }
+);
+export type TaskResult = {
+    type: "task-result";
+    id: string;
+    ok: boolean;
+    error?: string;
+    pid?: number;
+    tasks?: { task: string; pid: number }[];
+};
+
 /** Runner to server, first: who it is and where its stream from the server stopped. */
 export type Hello = {
     type: "hello";
@@ -110,6 +132,8 @@ export type Hello = {
     approvals?: boolean;
     /** The runner understands `Withdraw`: a session question can be cancelled by the server. */
     withdraws?: boolean;
+    /** Background tasks belong to this runner process, not its tool daemon. */
+    tasks?: true;
     tools?: RunnerTools;
     /** The runner opens network streams (`net-open`). Absent (an older runner): the server asks it for none. */
     network?: boolean;
@@ -209,7 +233,9 @@ export type ControlMessage =
     | CodeResult
     | StateMessage
     | ActionMessage
-    | ActionResult;
+    | ActionResult
+    | TaskRequest
+    | TaskResult;
 
 /** The first byte of a network stream's binary message. */
 export const STREAM_DATA = 1;
@@ -278,6 +304,57 @@ export function parseControl(text: string): ControlMessage | undefined {
                 : undefined;
         }
 
+        case "task": {
+            if (typeof message.id !== "string" || typeof message.permission !== "string") {
+                return undefined;
+            }
+
+            if (message.op === "list") {
+                return message as TaskRequest;
+            }
+
+            if (typeof message.task !== "string") {
+                return undefined;
+            }
+
+            if (message.op === "signal") {
+                return message.signal === "TERM" || message.signal === "KILL"
+                    ? (message as TaskRequest)
+                    : undefined;
+            }
+
+            return message.op === "start" &&
+                typeof message.command === "string" &&
+                typeof message.cwd === "string" &&
+                count("segment") &&
+                (message.segment as number) > 0 &&
+                typeof message.env === "object" &&
+                message.env !== null &&
+                !Array.isArray(message.env) &&
+                Object.values(message.env).every((value) => typeof value === "string")
+                ? (message as TaskRequest)
+                : undefined;
+        }
+
+        case "task-result":
+            return typeof message.id === "string" &&
+                typeof message.ok === "boolean" &&
+                (message.error === undefined || typeof message.error === "string") &&
+                (message.pid === undefined || (count("pid") && (message.pid as number) > 0)) &&
+                (message.tasks === undefined ||
+                    (Array.isArray(message.tasks) &&
+                        message.tasks.every((item: unknown) => {
+                            const task = item as { task?: unknown; pid?: unknown } | null;
+
+                            return (
+                                task !== null &&
+                                typeof task?.task === "string" &&
+                                Number.isSafeInteger(task.pid) &&
+                                (task.pid as number) > 0
+                            );
+                        })))
+                ? (message as TaskResult)
+                : undefined;
         case "runner-result":
             return typeof message.id === "string" && typeof message.ok === "boolean"
                 ? (message as ActionResult)
