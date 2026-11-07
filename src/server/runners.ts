@@ -1396,7 +1396,11 @@ export class Runners {
                               }),
                           }
                         : {}),
-                    ...(link?.state === undefined ? {} : { approvals: link.state }),
+                    // The computer's approvals (every session's folder and person, its settings) are its
+                    // linker's and the owner's business; a granted person sees only that it is there.
+                    ...(link?.state === undefined || (user !== undefined && user.role !== "owner")
+                        ? {}
+                        : { approvals: link.state }),
                     ...(link === undefined ? {} : { questions: [...link.questions.values()] }),
                     online: link?.online === true,
                     asks: link?.asks === true,

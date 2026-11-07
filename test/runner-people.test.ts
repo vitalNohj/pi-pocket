@@ -259,6 +259,13 @@ describe("people granted a computer", () => {
             [runnerId],
         );
         assert.equal(list.body[0]?.users, undefined);
+        // The computer's approvals list (every session's folder and person) stays the linker's and the owner's.
+        await until(
+            () => app.runners.list(owner(app)).some((runner) => runner.approvals !== undefined),
+            "the computer's approvals state",
+        );
+        assert.equal(list.body[0]?.approvals, undefined);
+        assert.ok(app.runners.list(guest).every((runner) => runner.approvals === undefined));
         const hello = await app.hello(guest);
 
         assert.deepEqual(
