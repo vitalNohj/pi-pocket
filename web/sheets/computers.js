@@ -410,6 +410,87 @@ function Permissions({ runner }) {
     </div>`;
 }
 
+/** The people this computer's linker grants access to, from the same list as the People sheet. */
+function RunnerPeople({ runner }) {
+    const people = store.state.users.filter(
+        (person) => person.role !== "owner" && person.role !== "viewer" && !person.sessions,
+    );
+    const [choosing, setChoosing] = useState(false);
+    const [selected, setSelected] = useState([]);
+    const [busy, setBusy] = useState(false);
+    const mine = runner.createdBy === store.state.me?.id;
+
+    const choose = () => {
+        setSelected((runner.users ?? []).map((person) => person.id));
+        setChoosing(true);
+    };
+
+    const save = () =>
+        attempt(async () => {
+            setBusy(true);
+
+            try {
+                await api(`runners/${encodeURIComponent(runner.id)}/users`, { users: selected });
+                setChoosing(false);
+            } finally {
+                setBusy(false);
+            }
+        });
+
+    return html`<div class="group">
+        <div class="group-title">People</div>
+        <div class="row wrap">
+            <span class="small">
+                ${runner.users?.map((person) => person.name).join(", ") || "No people chosen"}
+            </span>
+            ${
+                mine &&
+                !choosing &&
+                html`<button class="button small ghost" onClick=${choose}>
+                    Choose people
+                </button>`
+            }
+        </div>
+        ${
+            choosing &&
+            html`<div role="group" aria-label=${`People who may use ${runner.name}`}>
+                ${people.length === 0 && html`<p class="muted small">No other people who can steer.</p>`}
+                ${people.map(
+                    (person) => html`<label class="check" key=${person.id}>
+                        <input
+                            type="checkbox"
+                            checked=${selected.includes(person.id)}
+                            disabled=${busy}
+                            onChange=${(event) =>
+                                setSelected(
+                                    event.currentTarget.checked
+                                        ? [...selected, person.id]
+                                        : selected.filter((id) => id !== person.id),
+                                )}
+                        />
+                        ${person.name}
+                    </label>`,
+                )}
+                <div class="row">
+                    <button class="button small primary" disabled=${busy} onClick=${save}>
+                        Save
+                    </button>
+                    <button
+                        class="button small ghost"
+                        disabled=${busy}
+                        onClick=${() => setChoosing(false)}
+                    >
+                        Cancel
+                    </button>
+                </div>
+            </div>`
+        }
+        <p class="muted small">
+            They can start sessions on this computer. Their sessions run as this computer's user, like yours.
+        </p>
+    </div>`;
+}
+
 /** One linked computer: its state, and what can be done with it. */
 function ComputerRow({ runner }) {
     const remove = () =>
@@ -431,6 +512,7 @@ function ComputerRow({ runner }) {
                 ${[status(runner), system(runner)].filter(Boolean).join(" · ")}
             </div>
             <${Tools} runner=${runner} />
+            <${RunnerPeople} runner=${runner} />
             <${Permissions} runner=${runner} />
         </div>
         <div class="person-actions">
@@ -449,7 +531,7 @@ function ComputerRow({ runner }) {
 
 /**
  * Who may use sessions on linked computers (`sharedRunnerSessions`): each its creator's alone (the default), or the
- * usual sharing rules. Starting one stays the linker's either way.
+ * usual sharing rules. Starting one stays with the linker and granted people either way.
  */
 function SharedSessions() {
     const shared = store.state.server?.sharedRunnerSessions === true;
@@ -504,7 +586,7 @@ export function ComputersSheet() {
         <p class="muted small">
             Run a session's tools on another of your computers: its files and commands are used there, while Pi,
             your models, and the history stay on this server. The computer connects out to this server, so it
-            needs no open port. Only you can start sessions on computers you link.
+            needs no open port. You and the people you choose can start sessions on computers you link.
         </p>
         ${
             runners.length > 0 &&

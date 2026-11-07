@@ -508,7 +508,7 @@ export class Commands {
 
     /**
      * Start a session whose tools run on computer `runner` (`runners.ts`), in a folder there; home without one. Only
-     * the owner: everything it runs runs as the person whose computer that is. It runs with `App.remoteExtensions` only,
+     * the linker and granted people: everything runs as that computer's user. It runs with `App.remoteExtensions` only,
      * so nothing in it works on this server's disk.
      */
     async #createRemote(
@@ -520,11 +520,13 @@ export class Commands {
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
 
-        // Only the person who linked the computer runs things on it: everything there runs as them.
-        if (app.runners.require(runner).createdBy !== user.id) {
+        // The linker and granted people run commands as this computer's user.
+        app.runners.require(runner);
+
+        if (!app.runners.mayUse(runner, user)) {
             throw new HttpError(
                 403,
-                "Only the person who linked this computer can start sessions on it.",
+                "Only the person who linked this computer or the people they chose can start sessions on it.",
             );
         }
 
@@ -2927,11 +2929,15 @@ export class Commands {
         const meta = app.sessionMeta(id)!;
         const target = runner ?? undefined;
 
-        if (target !== undefined && app.runners.require(target).createdBy !== user.id) {
-            throw new HttpError(
-                403,
-                "Only the person who linked this computer can start sessions on it.",
-            );
+        if (target !== undefined) {
+            app.runners.require(target);
+
+            if (!app.runners.mayUse(target, user)) {
+                throw new HttpError(
+                    403,
+                    "Only the person who linked this computer or the people they chose can start sessions on it.",
+                );
+            }
         }
 
         if (target === meta.runner) {
@@ -2999,7 +3005,7 @@ export class Commands {
 
     /**
      * Where a copy of session `id` runs: on the computer and in the folder `place` names, else where the session runs.
-     * A copy is a new session there: on another computer, only the person who linked it may start one (also when the
+     * A copy is a new session there: on another computer, only its linker and granted people may start one (also when the
      * owner shares these sessions, `sharedRunnerSessions`), and the folder must be there. A
      * computer that is gone or offline fails with its name; the copy is never made here instead.
      */
@@ -3015,12 +3021,12 @@ export class Commands {
         const runner = place?.runner === undefined ? own.runner : (place.runner ?? undefined);
 
         if (runner !== undefined) {
-            if (app.runners.stored(runner)?.createdBy !== user.id) {
+            if (!app.runners.mayUse(runner, user)) {
                 throw new HttpError(
                     403,
                     app.runners.stored(runner) === undefined
                         ? "That computer is not linked to this server."
-                        : "Only the person who linked this computer can start sessions on it, including forks.",
+                        : "Only the person who linked this computer or the people they chose can start sessions on it, including forks.",
                 );
             }
         }

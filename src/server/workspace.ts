@@ -563,7 +563,7 @@ export class Workspace {
 
     /**
      * Where a file of a session on another computer is, for a person who may read it there: a path there, in its path
-     * rules, with `~` its home there. Its owner reads what Pi can; anyone else (a shared session's guests) only what is
+     * rules, with `~` its home there. Owners and people granted this computer read what Pi can; anyone else only what is
      * under the session's folder, links followed, as viewers here. Not there, or not theirs: 404.
      */
     async remoteFile(
@@ -585,7 +585,7 @@ export class Workspace {
         const cwd = this.#app.cwdOf(id);
         const file = paths.resolve(cwd, expanded);
 
-        if (user.role === "owner") {
+        if (user.role === "owner" || this.#app.runners.mayUse(runner, user)) {
             return { access, file, home };
         }
 

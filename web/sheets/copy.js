@@ -227,8 +227,8 @@ export function PlaceRows({ sessionId, draft, verb }) {
     const there = runner !== null && runner !== undefined;
     const choices = [
         { id: null, name: "This server", online: true },
-        // Only the owner starts sessions on linked computers.
-        ...(owner ? runners : []),
+        // Each person gets only the linked computers they may use.
+        ...runners,
         // The session's own computer, when the list does not have it.
         ...(there && !runners.some((each) => each.id === runner)
             ? [{ id: runner, name, online: true }]

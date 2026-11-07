@@ -1893,16 +1893,15 @@ export class PocketApp {
     }
 
     /**
-     * The computers list changed (linked, removed, online, away): tell the owner's tabs, and when a computer came or went,
+     * The computers list changed (linked, removed, online, away, access): tell each person their list, and when one came or went,
      * everyone who sees its sessions (the session list's offline mark, a session's "offline, reconnecting…").
      */
     #runnersChanged(): void {
         const list = this.runners.list();
 
         for (const client of this.#clients) {
-            if (client.user.role === "owner") {
-                client.send("runners", list);
-            }
+            // An empty list also clears computers this person can no longer use.
+            client.send("runners", this.runners.list(client.user));
         }
 
         const online = new Set(list.filter((runner) => runner.online).map((runner) => runner.id));
@@ -2535,6 +2534,7 @@ export class PocketApp {
     rename(user: User, name: string): void {
         this.config.updateUser(user.id, { name });
         this.#peopleChanged();
+        this.runners.changed();
 
         for (const pending of this.#rooms.values()) {
             void pending.then(
@@ -2941,6 +2941,13 @@ export class PocketApp {
     }
 
     async hello(user: User) {
+        const models = await this.modelList();
+        const guard = await this.guardStatus();
+        // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
+        const folderFavorites = await this.folderFavorites.list(user);
+        const runnerFavorites = await this.folderFavorites.runners(user);
+        const runners = this.runners.list(user);
+
         return {
             user: {
                 id: user.id,
@@ -2949,8 +2956,8 @@ export class PocketApp {
                 ...(user.sessions === undefined ? {} : { sessions: user.sessions.map(Number) }),
             },
             users: this.people(user),
-            models: await this.modelList(),
-            guard: await this.guardStatus(),
+            models,
+            guard,
             server: {
                 pocketVersion: pocketVersion(),
                 supervised: this.supervised,
@@ -3008,12 +3015,11 @@ export class PocketApp {
                 // Keeping prompt caches warm once a run ends (`keep-warm.ts`): the owner's time limit.
                 keepWarm: this.keepWarm.hello(),
             },
-            // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
-            folderFavorites: await this.folderFavorites.list(user),
-            // The same, on each computer they linked (`runners.ts`), by its id.
-            runnerFavorites: await this.folderFavorites.runners(user),
+            folderFavorites,
+            // The same, on each computer they may use (`runners.ts`), by its id.
+            runnerFavorites,
             // Linked computers (`runners.ts`), for the owner's Runners sheet and New session's Runs on.
-            ...(user.role === "owner" ? { runners: this.runners.list() } : {}),
+            ...(user.role === "owner" || runners.length > 0 ? { runners } : {}),
             // Every theme folder, for Appearance and for the look this tab uses (`theme.js`).
             themes: this.themes.list(user.role === "owner"),
         };
@@ -3617,6 +3623,7 @@ export class PocketApp {
 
         void this.#refreshUser(userId);
         this.#peopleChanged();
+        this.runners.changed();
     }
 
     removeUser(owner: User, userId: string): void {
@@ -3652,6 +3659,7 @@ export class PocketApp {
 
     #forget(userId: string): void {
         this.config.removeUser(userId);
+        this.runners.changed();
         removeAvatar(this.dataDir, userId);
         this.pushStore?.removeUser(userId);
 

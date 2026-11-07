@@ -79,8 +79,10 @@ export interface StoredRunner {
     name: string;
     keyHash: string;
     createdAt: number;
-    /** Who linked it: the owner. Its sessions are theirs. */
+    /** Who linked it: the owner, who changes its settings and access. */
     createdBy: string;
+    /** People the owner granted access to start sessions on this computer. */
+    users?: string[];
     /** When it last connected. */
     lastSeen?: number;
     /**
@@ -748,6 +750,20 @@ export class ConfigStore {
 
         if (runner !== undefined) {
             Object.assign(runner, patch);
+            this.save();
+        }
+    }
+
+    /** Grant access to existing people with access to the whole server, never to owners. */
+    setRunnerUsers(id: string, users: string[]): void {
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            runner.users = [...new Set(users)].filter((id) => {
+                const user = this.userById(id);
+
+                return user !== undefined && user.role !== "owner" && user.sessions === undefined;
+            });
             this.save();
         }
     }

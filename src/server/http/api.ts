@@ -590,11 +590,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, await app.commands.continuePiSession(user, body.path));
         }
 
-        // Other computers that run sessions' tools (`runners.ts`): the owner's alone.
+        // Owners see every computer; other people see only the computers they may use.
         if (first === "runners" && second === undefined && method === "GET") {
-            requireOwner(user);
+            const runners = app.runners.list(user);
 
-            return json(response, 200, app.runners.list());
+            if (runners.length === 0) {
+                requireOwner(user);
+            }
+
+            return json(response, 200, runners);
         }
 
         if (first === "runners" && second === "locks" && third === undefined && method === "GET") {
@@ -649,17 +653,13 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === "approval" &&
             method === "POST"
         ) {
-            requireOwner(user);
+            if (!app.runners.mayUse(second, user)) {
+                throw new HttpError(403, "You cannot use this computer.");
+            }
+
             const body = await readJson<{ id?: unknown; code?: unknown; withdraw?: unknown }>(
                 request,
             );
-
-            if (app.runners.require(second).createdBy !== user.id) {
-                throw new HttpError(
-                    403,
-                    "Only the person who linked this computer can approve sessions on it.",
-                );
-            }
 
             if (typeof body.id !== "string") {
                 throw new HttpError(400, "id is required");
@@ -674,6 +674,32 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             return json(response, 200, { ok: true });
+        }
+
+        if (first === "runners" && second !== undefined && third === "users" && method === "POST") {
+            requireOwner(user);
+
+            if (app.runners.require(second).createdBy !== user.id) {
+                throw new HttpError(
+                    403,
+                    "Only the person who linked this computer can choose who may use it.",
+                );
+            }
+
+            const body = await readJson<{ users?: unknown } | null>(request);
+
+            if (!Array.isArray(body?.users) || !body.users.every((id) => typeof id === "string")) {
+                throw new HttpError(400, "users must be a list of person ids.");
+            }
+
+            app.config.setRunnerUsers(second, body.users);
+            app.runners.changed();
+
+            return json(
+                response,
+                200,
+                app.runners.list(user).find((runner) => runner.id === second),
+            );
         }
 
         if (
@@ -717,13 +743,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(
                 response,
                 200,
-                app.runners.list().find((runner) => runner.id === second),
+                app.runners.list(user).find((runner) => runner.id === second),
             );
         }
 
         // The folders on another computer, for the folder picker of a new session there.
         if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
-            requireOwner(user);
+            if (!app.runners.mayUse(second, user)) {
+                throw new HttpError(403, "You cannot use this computer.");
+            }
 
             return json(response, 200, {
                 ...(await app.runners.folders(

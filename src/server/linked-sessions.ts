@@ -771,10 +771,10 @@ export class LinkedSessions implements LinkedSessionsApi {
         const title = request.title;
         const runner = app.runnerOf(source);
 
-        if (runner !== undefined && app.runners.require(runner).createdBy !== user.id) {
+        if (runner !== undefined && !app.runners.mayUse(runner, user)) {
             throw new HttpError(
                 403,
-                "Only the person who linked this computer can start sessions on it.",
+                "Only the person who linked this computer or the people they chose can start sessions on it.",
             );
         }
 

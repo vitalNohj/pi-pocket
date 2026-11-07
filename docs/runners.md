@@ -123,7 +123,7 @@ With an authenticator set up:
 
 - The waiting dialog in Pi Pocket has a field for the code from your authenticator. A right code approves the session, and saves the folder when the question was for folder permission. A wrong or used code shows "That code is wrong or used. Try the next one.", and the question stays.
 - In **Runners**, each change to a setting asks for a code. One code makes one change.
-- Only the person who linked the computer can use a code.
+- The linker and the people the owner chose can use a code to approve a session. Only the linker changes settings.
 
 A code works once. Codes are 6 digits and change every 30 seconds; the code before and after the current one also work. After 5 wrong codes in 10 minutes, codes are refused for 10 minutes. Only the runner checks codes. The secret stays in the link file on the computer; the server never stores a code.
 
@@ -232,7 +232,7 @@ The risk: pages in the browser of a session on a computer can reach that compute
 
 ## Sharing
 
-Only the person who linked a computer can start sessions on it, including forks. Sharing does not change this rule.
+The person who linked a computer and the people the owner chose in Menu → **Runners** can start sessions on it, including forks. Their sessions run as the computer's user, with the same access to its files and commands. The linker alone changes its settings, its approvals, and who may use it. Sharing does not change this rule.
 
 By default, a session on a linked computer is private to its creator. Other people cannot see it in their session list, open it, prompt it, or fork it. This includes other server owners. These access rules also protect a private session's forks and subagents.
 
@@ -257,4 +257,4 @@ Removing a computer in **Runners** stops its runner and cancels its key. A runne
 
 ## Later
 
-- **The folder picker before any folder is approved.** Today the picker can list every folder on a linked computer before anyone approved a folder there. Only the person who linked the computer can start sessions on it, so only they get its picker. Three ways to limit it were considered: (1) the home folder and the folders directly in it, plus approved folders and below, with a check that a typed path exists allowed anywhere; (2) all of the home folder, plus approved folders; (3) as (1), and the existence check limited the same way, so a deeper typed path is refused until approved. Deferred: no change yet.
+- **The folder picker before any folder is approved.** Today the picker can list every folder on a linked computer before anyone approved a folder there. The linker and the people the owner chose can start sessions on it, so only they get its picker. Three ways to limit it were considered: (1) the home folder and the folders directly in it, plus approved folders and below, with a check that a typed path exists allowed anywhere; (2) all of the home folder, plus approved folders; (3) as (1), and the existence check limited the same way, so a deeper typed path is refused until approved. Deferred: no change yet.

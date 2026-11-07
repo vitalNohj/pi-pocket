@@ -98,7 +98,7 @@ function LineInput({ value, placeholder, label, onSubmit, onCancel, class: class
 
 /**
  * Where a new session runs, among the places: this server, or a linked computer (`computers.js`), and a way to
- * Runners to link one. Only the owner links computers, so only the owner sees it.
+ * Runners to link one (owners only). Each person sees the computers they may use.
  */
 function RunsOn({ runner, runners, onPick }) {
     const choices = [{ id: null, name: "This server", online: true }, ...runners];
@@ -119,13 +119,16 @@ function RunsOn({ runner, runners, onPick }) {
                 ${each.id !== null && html`<span class=${`runner-dot ${each.online ? "on" : ""}`}></span>`}
             </button>`,
         )}
-        <button
-            type="button"
-            class="link small fp-pi"
-            onClick=${() => openSheet({ type: "computers" })}
-        >
-            ${runners.length === 0 ? "Link a computer…" : "Manage runners…"}
-        </button>`;
+        ${
+            store.state.me?.role === "owner" &&
+            html`<button
+                type="button"
+                class="link small fp-pi"
+                onClick=${() => openSheet({ type: "computers" })}
+            >
+                ${runners.length === 0 ? "Link a computer…" : "Manage runners…"}
+            </button>`
+        }`;
 }
 
 /**
@@ -343,8 +346,9 @@ export function CwdSheet({
         }
     };
 
-    // On a linked computer, only the person who linked it (the owner) keeps favorites.
-    const mayStar = canSteer() && !scoped() && (!runner || owner);
+    // Each person keeps favorites on the computers they may use.
+    const mayStar =
+        canSteer() && !scoped() && (!runner || runners.some((each) => each.id === runner));
     const starred = target !== null && favorites.includes(target);
 
     /** Star or unstar a folder. The list changes when the server says it did, on every device. */
@@ -703,7 +707,7 @@ export function CwdSheet({
                 )}
                 ${recent.length > 0 && html`<div class="fp-places-title">Recent</div>`}
                 ${recent.map((path, index) => place(path, labels[index], "folder"))}
-                ${!changing && !picking && owner && html`<${RunsOn} runner=${runner} runners=${runners} onPick=${pick} />`}
+                ${!changing && !picking && runners.length > 0 && html`<${RunsOn} runner=${runner} runners=${runners} onPick=${pick} />`}
                 ${
                     !changing &&
                     !picking &&

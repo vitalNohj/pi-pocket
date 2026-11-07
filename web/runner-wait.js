@@ -31,7 +31,13 @@ export function ApprovalCode({ runner, question }) {
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
 
-    if (!question?.totp || runner?.createdBy !== store.state.me?.id) {
+    // Owners see all computers; other people receive only the computers they may use.
+    const permitted =
+        store.state.me?.role === "owner"
+            ? runner?.createdBy === store.state.me.id
+            : store.state.runners.some((each) => each.id === runner?.id);
+
+    if (!question?.totp || !permitted) {
         return null;
     }
 

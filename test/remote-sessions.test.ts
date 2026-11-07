@@ -635,7 +635,7 @@ describe("a session on another computer", () => {
         }
     });
 
-    it("keeps the runner for a human team start and restricts starts to the computer's linker", async () => {
+    it("keeps the runner for a human team start and restricts starts to people who may use it", async () => {
         const actor = new ExtensionRequest(app, owner(app).id, "owner", id as never);
 
         actor.bindSource((await app.agentState(id as never))!);
@@ -675,9 +675,9 @@ describe("a session on another computer", () => {
             asked.length = 0;
             await assert.rejects(
                 app.linkedSessions.start(shared.id, { message: "hello" }, crypto.randomUUID()),
-                /Only the person who linked this computer can start sessions on it/,
+                /Only the person who linked this computer or the people they chose can start sessions on it/,
             );
-            assert.equal(asked.length, 0, "a non-linker cannot ask the computer");
+            assert.equal(asked.length, 0, "an ungranted person cannot ask the computer");
             assert.equal(app.sessions(owner(app)).length, before);
         } finally {
             await app.setSharedRunnerSessions(owner(app), false);

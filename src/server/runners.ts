@@ -51,7 +51,7 @@ import {
 } from "../runner/protocol.ts";
 import { LinkNetwork, NetError, type OpenOptions } from "./runner-network.ts";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
-import type { ConfigStore, StoredRunner } from "./config.ts";
+import type { ConfigStore, StoredRunner, User } from "./config.ts";
 import { HttpError } from "./errors.ts";
 import { LinkLimits, type LinkLocks, WRONG_CODE } from "./link-limits.ts";
 
@@ -140,6 +140,8 @@ export type RunnerView = {
     version?: string;
     tools?: Hello["tools"];
     createdBy: string;
+    /** Granted people, visible only in the owner's list. */
+    users?: { id: string; name: string }[];
     approvals?: ApprovalState;
     questions?: ApprovalNeeded[];
 };
@@ -1357,24 +1359,53 @@ export class Runners {
         this.changed();
     }
 
-    list(): RunnerView[] {
-        return this.#config.runners.map((runner) => {
-            const link = this.#links.get(runner.id);
+    /** A computer's linker and granted people may use it while they can steer on this server. */
+    mayUse(runnerId: string, user: User): boolean {
+        const runner = this.stored(runnerId);
+        const current = this.#config.userById(user.id);
 
-            return {
-                id: runner.id,
-                name: runner.name,
-                createdBy: runner.createdBy,
-                ...(link?.state === undefined ? {} : { approvals: link.state }),
-                ...(link === undefined ? {} : { questions: [...link.questions.values()] }),
-                online: link?.online === true,
-                asks: link?.asks === true,
-                away: link?.away === true,
-                ...(runner.lastSeen === undefined ? {} : { lastSeen: runner.lastSeen }),
-                ...(runner.platform ?? {}),
-                ...(runner.tools === undefined ? {} : { tools: runner.tools }),
-            };
-        });
+        return (
+            runner !== undefined &&
+            (runner.createdBy === user.id || runner.users?.includes(user.id) === true) &&
+            current !== undefined &&
+            current.sessions === undefined &&
+            current.role !== "viewer"
+        );
+    }
+
+    /** With a person, only the computers they may use; owners see all, and the granted people. */
+    list(user?: User): RunnerView[] {
+        return this.#config.runners
+            .filter(
+                (runner) =>
+                    user === undefined || user.role === "owner" || this.mayUse(runner.id, user),
+            )
+            .map((runner) => {
+                const link = this.#links.get(runner.id);
+
+                return {
+                    id: runner.id,
+                    name: runner.name,
+                    createdBy: runner.createdBy,
+                    ...(user?.role === "owner"
+                        ? {
+                              users: (runner.users ?? []).flatMap((id) => {
+                                  const person = this.#config.userById(id);
+
+                                  return person === undefined ? [] : [{ id, name: person.name }];
+                              }),
+                          }
+                        : {}),
+                    ...(link?.state === undefined ? {} : { approvals: link.state }),
+                    ...(link === undefined ? {} : { questions: [...link.questions.values()] }),
+                    online: link?.online === true,
+                    asks: link?.asks === true,
+                    away: link?.away === true,
+                    ...(runner.lastSeen === undefined ? {} : { lastSeen: runner.lastSeen }),
+                    ...(runner.platform ?? {}),
+                    ...(runner.tools === undefined ? {} : { tools: runner.tools }),
+                };
+            });
     }
 
     /** A one-time code that links a computer named `name`: `pi-pocket runner link <server> <code>` on it. */

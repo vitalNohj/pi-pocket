@@ -45,7 +45,7 @@ export class FolderFavorites {
         return [...(doc?.users[user.id] ?? [])];
     }
 
-    /** The favorites of `user` on each linked computer: only the computers they linked, and only those still linked. */
+    /** The favorites of `user` on each linked computer: only the computers they may use. */
     async runners(user: User): Promise<RunnerFavorites> {
         const doc = await this.#app.harness.snapshot(FolderFavoritesDoc, BACKGROUND_CONTEXT);
 
@@ -56,7 +56,7 @@ export class FolderFavorites {
         const own: RunnerFavorites = {};
 
         for (const [runner, folders] of Object.entries(doc?.runners?.[user.id] ?? {})) {
-            if (this.#app.runners.stored(runner)?.createdBy === user.id && folders.length > 0) {
+            if (this.#app.runners.mayUse(runner, user) && folders.length > 0) {
                 own[runner] = [...folders];
             }
         }
@@ -66,7 +66,7 @@ export class FolderFavorites {
 
     /**
      * Explicit star/unstar, not toggle: retries and two devices cannot undo one another's request. `runner`: a folder
-     * on that linked computer, only for the person who linked it; absent or null: this server's.
+     * on that linked computer, only for people who may use it; absent or null: this server's.
      */
     async set(
         user: User,
@@ -86,11 +86,12 @@ export class FolderFavorites {
             throw new HttpError(400, "runner must be a computer's id, or null for this server.");
         }
 
-        if (runner !== undefined && app.runners.require(runner).createdBy !== user.id) {
-            throw new HttpError(
-                403,
-                "Only the person who linked this computer keeps favorites on it.",
-            );
+        if (runner !== undefined) {
+            app.runners.require(runner);
+
+            if (!app.runners.mayUse(runner, user)) {
+                throw new HttpError(403, "You cannot use this computer.");
+            }
         }
 
         const path =
