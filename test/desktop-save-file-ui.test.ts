@@ -170,7 +170,7 @@ async function filePage(capabilities: string[]) {
 }
 
 test(
-    "Download is offered to readers of server files, but not for folders or runner files",
+    "Download is offered to readers of files on the server and on a linked computer, but not for folders",
     real,
     async () => {
         const page = await filePage([]);
@@ -188,7 +188,8 @@ test(
             await page.evaluate(
                 `import("/store.js").then(({ store }) => store.set({ view: { ...store.state.view, conversation: { ...store.state.view.conversation, runner: "test-runner" } } }))`,
             );
-            await until(async () => !(await downloadShows()), "no Download for a runner file");
+            // A session on a linked computer downloads its files too (the session's folder, through the runner).
+            assert.equal(await downloadShows(), true, "Download for a file on a linked computer");
 
             await page.evaluate(
                 `import("/store.js").then(({ store }) => store.set({ view: { ...store.state.view, conversation: { ...store.state.view.conversation, runner: undefined } } }))`,
