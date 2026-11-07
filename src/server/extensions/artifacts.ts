@@ -106,7 +106,7 @@ async function readSessionFile(
         const agent = await api.agent(context);
 
         if (workspaceScheme(agent.cwd ?? "") !== undefined) {
-            throw new Error("This workspace's files cannot be read here: give content.");
+            throw new Error("A remote session's files are not on this machine: give content.");
         }
 
         return readFileBytes(resolve(agent.cwd ?? process.cwd(), expandHome(path)), limit);
