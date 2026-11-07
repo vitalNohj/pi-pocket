@@ -17,7 +17,7 @@
  *   pi-pocket runner folders [--json]       list saved folders; `folders remove <folder>` removes one
  *   pi-pocket runner sessions [--json]      list approved sessions; `sessions revoke <id>|all` revokes
  *   pi-pocket runner totp setup|off|status  the authenticator; turning it off needs a code from it
- *   pi-pocket runner service [remove]       run as a systemd user service (Linux); needs the authenticator
+ *   pi-pocket runner service [remove]       run as a service, task, or launch agent; needs the authenticator
  *   pi-pocket runner unlink                 delete the link file: the link and all runner settings, the
  *                                           authenticator, saved folders, and approved sessions
  *
@@ -40,7 +40,6 @@ import {
     rmSync,
     writeFileSync,
 } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
 import { createInterface as createQuestions } from "node:readline/promises";
@@ -75,12 +74,17 @@ import { checkTransport, refusal, unsafe } from "./transport.ts";
 import { checkTools, toolsStatus } from "./tools.ts";
 import {
     canService,
+    installService,
     NEEDS_TOTP,
+    removeService,
     SERVICE_NEEDS_TOTP,
+    SERVICE_UNAVAILABLE,
     serviceActive,
-    serviceUnit,
-    UNIT,
-    unitPath,
+    serviceExitCode,
+    serviceHelp,
+    serviceMenu,
+    serviceName,
+    STOPPED_BY_SERVER,
 } from "./service.ts";
 
 const HELP = `pi-pocket runner: run session tools on this computer.
@@ -130,12 +134,7 @@ In a terminal, run pi-pocket runner for a menu. For scripts:
     Turning it off needs a code. Lost your authenticator? Unlink this computer
     (pi-pocket runner unlink, or Unlink in a program that runs the runner, such
     as the desktop app), then link it again.
-  pi-pocket runner service
-    Linux with systemd: keep the runner running as a user service, for a
-    computer nobody sits at. Needs an authenticator (totp setup) first: with
-    nobody here, only a code from it, typed in Pi Pocket, approves sessions.
-  pi-pocket runner service remove
-    Stop and remove the service. Keep the saved link.
+${serviceHelp()}
   pi-pocket runner unlink
     Delete the saved link and all runner settings, including the authenticator,
     saved folders, and approved sessions. No code is needed. Linking again needs
@@ -158,7 +157,7 @@ Tailscale reports it. Anything else needs https://, or "http allow".`;
 type Link = RunnerLinkFile;
 
 /** The exit code when the server ended the link for good: starting it again would not help. */
-export const STOPPED_BY_SERVER = 3;
+export { STOPPED_BY_SERVER } from "./service.ts";
 /** What the desktop app reads on stdout: a question (`CONFIRM`), and that it no longer stands (`CONFIRM-END`). */
 const CONFIRM_LINE = "PI-POCKET-CONFIRM";
 const CONFIRM_END_LINE = "PI-POCKET-CONFIRM-END";
@@ -1136,7 +1135,7 @@ async function serve(
     // A service has nobody to ask: without an authenticator, nothing could ever be approved (`service.ts`).
     if (asService && saved.settings?.totp === undefined) {
         console.error(NEEDS_TOTP);
-        process.exit(SERVICE_NEEDS_TOTP);
+        process.exit(serviceExitCode(SERVICE_NEEDS_TOTP, asService));
     }
 
     const ask = via === "terminal" ? terminalAsker() : via === "stdio" ? stdioAsker() : undefined;
@@ -1208,7 +1207,7 @@ async function serve(
 
         if (error instanceof RunnerStopped) {
             console.error(`pi-pocket runner: ${error.message}`);
-            process.exit(STOPPED_BY_SERVER);
+            process.exit(serviceExitCode(STOPPED_BY_SERVER, asService));
         }
 
         throw error;
@@ -1237,91 +1236,46 @@ async function status(file: string): Promise<string> {
         `Plain HTTP: ${settings.allowHttp ? "allowed to this server" : "only to this computer or your tailnet"}`,
         `Share the network with browsers: ${settings.network ? "on" : "off"}`,
         `Browser downloads: ${downloadsLine(settings)}`,
-        ...(serviceActive() ? [`Service: ${UNIT} (running)`] : []),
+        ...(serviceActive() ? [`Service: ${serviceName()} (running)`] : []),
     ].join("\n");
 }
 
 // ─── The service ────────────────────────────────────────────────────────
 
-/** `systemctl --user …`, its output shown; false when it failed. */
-function systemctl(...args: string[]): boolean {
-    return spawnSync("systemctl", ["--user", ...args], { stdio: "inherit" }).status === 0;
-}
-
-/**
- * Keep the runner running as a systemd user service (`service.ts`). Refused without an authenticator: with nobody
- * at the computer, a code from it is the only way to approve a session or a folder.
- */
+/** Install or remove the platform's service (`service.ts`), keeping the saved link. */
 function service(file: string, args: string[]): void {
     if (!canService()) {
-        fail(
-            "The service command needs Linux with systemd. Keep the runner open in a terminal, or use the Pi Pocket desktop app.",
-        );
+        fail(SERVICE_UNAVAILABLE);
     }
-
-    const unit = unitPath();
-
-    if (args[0] === "remove") {
-        systemctl("disable", "--now", UNIT);
-        rmSync(unit, { force: true });
-        systemctl("daemon-reload");
-        console.log(`Stopped and removed ${UNIT}. The saved link is still in ${file}.`);
-
-        return;
-    }
-
-    let saved: Link | undefined;
 
     try {
-        saved = readLink(file);
+        if (args[0] === "remove") {
+            console.log(removeService(file));
+
+            return;
+        }
+
+        const saved = readLink(file);
+
+        if (saved === undefined) {
+            fail("This computer is not linked. In a terminal, run: pi-pocket runner");
+        }
+
+        const messages = installService({
+            node: process.execPath,
+            launcher: realpathSync(process.argv[1] ?? ""),
+            file,
+            path: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+            home: homedir(),
+            authenticator: saved.settings?.totp !== undefined,
+        });
+
+        for (const message of messages) {
+            console.log(message);
+        }
     } catch (error) {
         fail((error as Error).message);
     }
-
-    if (saved === undefined) {
-        fail("This computer is not linked. In a terminal, run: pi-pocket runner");
-    }
-
-    if (saved.settings?.totp === undefined) {
-        fail(NEEDS_TOTP);
-    }
-
-    const launcher = realpathSync(process.argv[1] ?? "");
-
-    // npx's copy is a cache npm can clear: the service would stop starting.
-    if (launcher.includes("_npx")) {
-        fail(
-            "A service cannot use Pi Pocket from the npx cache. Install it with: npm install -g pi-pocket@latest\nThen run: pi-pocket runner service",
-        );
-    }
-
-    mkdirSync(dirname(unit), { recursive: true });
-    writeFileSync(
-        unit,
-        serviceUnit({
-            node: process.execPath,
-            launcher,
-            file,
-            path: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-            // The server removed this computer or its key is wrong, or no authenticator: starting again would not help.
-            noRestart: [STOPPED_BY_SERVER, SERVICE_NEEDS_TOTP],
-        }),
-    );
-
-    if (!systemctl("daemon-reload") || !systemctl("enable", "--now", UNIT)) {
-        fail(
-            `The service file is in ${unit}, but the runner did not start. Check the error with: systemctl --user status ${UNIT}`,
-        );
-    }
-
-    console.log(`The runner is running as ${UNIT}. It starts with your user session.`);
-    console.log(
-        "  Approve its sessions and folders in Pi Pocket with a code from your authenticator.",
-    );
-    console.log(`  View logs: journalctl --user -u ${UNIT} -f`);
-    console.log(
-        `  To run while you are logged out: loginctl enable-linger ${process.env.USER ?? "$USER"}`,
-    );
 }
 
 // ─── The menu ───────────────────────────────────────────────────────────
@@ -1576,6 +1530,7 @@ async function menu(file: string): Promise<void> {
         );
         console.log("");
 
+        const serviceLabels = serviceMenu();
         const choices: (Choice & { run: () => Promise<boolean> })[] =
             saved === undefined
                 ? [
@@ -1640,7 +1595,7 @@ async function menu(file: string): Promise<void> {
                           ? [
                                 serviceActive()
                                     ? {
-                                          label: "Stop the service",
+                                          label: serviceLabels.stop,
                                           detail: "keep the link",
                                           run: async () => {
                                               service(file, ["remove"]);
@@ -1649,11 +1604,11 @@ async function menu(file: string): Promise<void> {
                                           },
                                       }
                                     : {
-                                          label: "Run as a service",
+                                          label: serviceLabels.start,
                                           detail:
                                               saved.settings?.totp === undefined
                                                   ? "needs an authenticator first (Settings)"
-                                                  : "keep running with nobody here",
+                                                  : serviceLabels.detail,
                                           run: async () => {
                                               if (saved.settings?.totp === undefined) {
                                                   console.log("");

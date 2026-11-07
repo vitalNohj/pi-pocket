@@ -40,7 +40,7 @@ Run these commands on the linked computer:
 | `pi-pocket runner sessions revoke <id>\|all`   | Removes the approval of one session or all. Their next request asks again.                                                                                                                                             |
 | `pi-pocket runner totp setup\|status [--json]` | Sets up an authenticator app, or shows whether one is set up.                                                                                                                                                          |
 | `pi-pocket runner totp off <code> [--json]`    | Turns the authenticator off. It needs a code from it.                                                                                                                                                                  |
-| `pi-pocket runner service [remove]`            | Linux with systemd: runs the runner as a user service, for a computer nobody sits at. It needs an authenticator first. `service remove` stops and removes it and keeps the link.                                       |
+| `pi-pocket runner service [remove]`            | Runs as a systemd user service on Linux, or starts at sign-in with a Windows scheduled task or macOS launch agent. Needs an authenticator first. `service remove` stops and removes it and keeps the link.             |
 | `pi-pocket runner status`                      | Shows the saved link, settings, and whether git and GitHub are ready. It does not check the connection.                                                                                                                |
 | `pi-pocket runner unlink [--json]`             | Deletes the saved link and all runner settings on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                                                                                |
 
@@ -51,6 +51,15 @@ The runner runs while its terminal or a program that runs the runner, such as th
 `pi-pocket runner service` keeps the runner running as a systemd user service (`pi-pocket-runner.service`), for a computer such as a build server. With nobody at that computer, nobody can answer the question before a session or a folder. A code from an authenticator app, typed in Pi Pocket, is then the only way to approve one. So the service needs an authenticator on that computer: set it up first with `pi-pocket runner totp setup` in a terminal there. Without one, `pi-pocket runner service` refuses and says how to set it up, and the service itself refuses to start and is not restarted. Saved folders alone are not enough: a folder outside them could never be approved.
 
 The service uses the Node.js, Pi Pocket, link file, and `PATH` of the shell that installed it. Install Pi Pocket with npm first (`npm install -g pi-pocket`): a copy in the npx cache is refused, because npm can clear it. Its log is in `journalctl --user -u pi-pocket-runner.service`. To keep it running while you are logged out, run `loginctl enable-linger $USER`. `pi-pocket runner service remove` stops and removes it.
+
+### Start at sign-in (Windows and macOS)
+
+On Windows and macOS, `pi-pocket runner service` starts the runner now and each time you sign in. These are per-user sign-in jobs, not system services: they do not run while you are signed out. As on Linux, you must first set up an authenticator on this computer with `pi-pocket runner totp setup`. Both installation and `runner start --service` refuse without one, with the same setup message. Approve sessions and folders in Pi Pocket with its codes. A copy of Pi Pocket in the npx cache is refused on all three systems; install with `npm install -g pi-pocket@latest` first.
+
+- **Windows:** installs the **Pi Pocket runner** scheduled task in Task Scheduler. It runs as the current user at log-on, without admin rights or a password. It uses the selected Node.js, Pi Pocket, and link file, and starts in your home folder. The task can run on battery power, has no time limit, and retries failures up to 3 times, 1 minute apart. If Windows refuses registration, the command prints the PowerShell error and fails; it does not try another installation method. To check task history, open Task Scheduler → Task Scheduler Library → **Pi Pocket runner** → **History** (enable task history if needed). This history records task events; it does not save the runner's console output.
+- **macOS:** writes `~/Library/LaunchAgents/dev.pi-pocket.runner.plist` and loads it into your signed-in GUI session. It uses the selected Node.js, Pi Pocket, link file, and the current shell's `PATH`. Both output and errors go to `~/Library/Logs/pi-pocket-runner.log`. launchd restarts failures with a 10-second throttle. A runner stopped permanently by the server, or missing an authenticator, prints its message and exits with code 0 in macOS service mode so launchd does not restart it. Other modes and platforms keep exit codes 3 and 4 for these cases.
+
+`pi-pocket runner status` names a running scheduled task or launch agent. The terminal menu names the same mechanism. `pi-pocket runner service remove` stops and removes the scheduled task or launch agent, but keeps the saved link and settings.
 
 For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner start`.
 
@@ -244,7 +253,7 @@ Offline is offline. While a linked computer is offline, its sessions are offline
 
 Panels that show the computer's files (Files, Changes, the folder picker) say that the computer is offline instead of waiting. A new session, a fork, or a move to another folder on an offline computer cannot start: the computer must answer whether it allows the folder.
 
-Removing a computer in **Runners** stops its runner and cancels its key. A runner that the server removed exits with code 3. The desktop app does not restart it.
+Removing a computer in **Runners** stops its runner and cancels its key. A runner that the server removed exits with code 3, except in macOS service mode, where it exits with code 0 so launchd does not restart it. The desktop app does not restart it.
 
 ## Later
 
