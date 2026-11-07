@@ -876,13 +876,16 @@ kbd {
     overflow: hidden;
 }
 
-:root.resizing .sidebar {
+.sidebar.resizing {
     transition: none;
 }
 
-:root.resizing,
-:root.resizing * {
-    cursor: col-resize !important;
+/* Over the page while an edge is dragged (`dragWidth`): its cursor, and nothing under it hovers or selects. */
+.resize-veil {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    cursor: col-resize;
     user-select: none;
 }
 
@@ -1061,7 +1064,7 @@ kbd {
         transform var(--t-in) var(--ease-out);
 }
 
-:root.resizing .resize-handle::before {
+.resizing > .resize-handle::before {
     opacity: 1;
     transform: none;
 }
@@ -3442,8 +3445,11 @@ pre.diff .del {
     font-size: 14px;
 }
 
-.ask-other::placeholder {
-    color: var(--muted);
+/* A finger's box stays 44 px high, as every touch target. */
+@media (pointer: coarse) {
+    .ask-other {
+        height: 44px;
+    }
 }
 
 /* The answers end above a hairline; Decline and Send sit apart below it. */
@@ -5684,16 +5690,41 @@ pre.diff .del {
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 2px;
 }
 
 .session-group.closed .group-body {
     grid-template-rows: 0fr;
 }
 
+/* The list's own groups while a search shows its matches: kept as they were, out of sight and with no room. */
+.session-group.kept {
+    content-visibility: hidden;
+    contain-intrinsic-size: 0 0;
+}
+
+/* A browser without it (Safari before 18, Firefox before 125) would show them under the matches. */
+@supports not (content-visibility: hidden) {
+    .session-group.kept {
+        display: none;
+    }
+}
+
+/*
+ * A row out of sight is not styled or laid out (`content-visibility`): with hundreds of sessions, each restyle and each
+ * width change (the sidebar's drag, the window's) paid for every row. Meanwhile it keeps the size it last had, or its
+ * button's usual height, which its padding adds to. It clips what it draws to its box, so the 2px between rows is that
+ * padding, and linked rows' branch lines run on from one row into the next.
+ */
 .session-row {
     position: relative;
+    padding-block: 1px;
     padding-inline-start: calc(var(--linked-depth, 0) * 14px);
+    content-visibility: auto;
+    contain-intrinsic-size: auto calc(24px + 12px * var(--space-y));
+}
+
+.session-row.with-chips {
+    contain-intrinsic-size: auto calc(44px + 12px * var(--space-y));
 }
 
 /* A row new to this page rises in, the rows in turn. Back to the list builds it again: those rows show as they were,
@@ -5753,9 +5784,10 @@ pre.diff .del {
  */
 .session-fold {
     position: absolute;
-    top: 0;
+    /* Inside the row by its focus ring, which the row would cut. */
+    top: 2px;
     right: 0;
-    bottom: 0;
+    bottom: 2px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -5812,7 +5844,7 @@ pre.diff .del {
 
 /* Chips take a line under the title: the fold stays beside the title's line. */
 .session-row.with-chips .session-fold {
-    bottom: 20px;
+    bottom: 22px;
 }
 
 /* One line: the folder's color, the title, and what goes on there on the right. */
@@ -6199,6 +6231,13 @@ pre.diff .del {
     font-weight: 600;
 }
 
+/* A search's match in a row, marked by the browser (`searchMarks` in sessions.js), which cannot make it bold. */
+::highlight(session-search) {
+    color: var(--accent);
+    text-decoration: underline 1px;
+    text-underline-offset: 2px;
+}
+
 .session-title mark,
 .launcher mark {
     background: none;
@@ -6429,14 +6468,14 @@ pre.diff .del {
 }
 
 .session-row.with-chips .session-actions {
-    top: calc(12px + 6px * var(--space-y));
+    top: calc(13px + 6px * var(--space-y));
 }
 
 .session-chips {
     position: absolute;
     left: calc(var(--linked-depth, 0) * 14px + 30px);
     right: 10px;
-    bottom: calc(4px + 2px * var(--space-y));
+    bottom: calc(5px + 2px * var(--space-y));
     display: flex;
     gap: 4px;
     overflow: hidden;
@@ -6494,7 +6533,7 @@ button.session-chip {
 /* A linked row's branch turns into its title's line, not the middle of the taller row. */
 .session-row.with-chips .session-branches > .elbow::after {
     bottom: auto;
-    height: calc(13px + 6px * var(--space-y));
+    height: calc(14px + 6px * var(--space-y));
 }
 
 /* Extensions' filters beside the search (`pocket.sessionFilter`): lit while one narrows the list. */
@@ -6647,7 +6686,7 @@ div.group-head {
 
 .session-quick {
     position: absolute;
-    top: 0;
+    top: 1px;
     right: 6px;
     display: flex;
     align-items: center;
@@ -6842,7 +6881,7 @@ div.group-head {
 
 .more-needs {
     min-height: 32px;
-    margin-top: 2px;
+    margin-top: 3px;
     border: 1px dashed var(--warn-line);
     border-radius: var(--r-row);
     color: var(--warn);
@@ -6885,14 +6924,11 @@ div.group-head {
     transition: opacity var(--t-hover) var(--ease-out);
 }
 
-:root.selecting,
-:root.selecting * {
-    user-select: none;
-}
-
-/* A finger held on a row: nothing selects, the sheet that press opens rising under the finger included. */
-:root.holding,
-:root.holding * {
+/*
+ * A finger held on a row: the sheet that press opens, rising under the finger, selects nothing (the row selects nothing
+ * already). Not `:root.holding *`: a class on the root that every element matches restyles them all at each press.
+ */
+:root.holding .sheet-host {
     -webkit-user-select: none;
     user-select: none;
 }
@@ -11340,7 +11376,14 @@ textarea.notes {
     pointer-events: none;
 }
 
+/* The track scrolls to now: the line stays in view at the scroller's left, over the now line. */
 .rb-tl-empty {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    width: max-content;
+    border-radius: 3px;
+    background: var(--card);
     padding: 10px 14px;
     font-size: 12px;
     color: var(--muted);
@@ -16815,6 +16858,9 @@ textarea.notes {
     /* Rows a thumb can take, and that answer the press: 40px, 37px, and 34px. */
     .session {
         height: calc(30px + 10px * var(--space-y));
+    }
+    .session-row {
+        contain-intrinsic-size: auto calc(30px + 10px * var(--space-y));
     }
     .session:active {
         background: var(--pressed);

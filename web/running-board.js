@@ -885,7 +885,7 @@ function Timeline({
                             class="rb-pin-label"
                             style=${`left:${left}px`}
                         >
-                            ${clock(t, schedule.zone, now)}
+                            ${clock(t, HERE, now)}
                         </span>`);
                         labelled = true;
                     }
@@ -1245,6 +1245,7 @@ function Needs({ needs, colorOf, onOpen, onPick }) {
     </div>`;
 }
 
+/** The next runs of all schedules, by moment: their times are this browser's, so the list reads in order. */
 function NextUp({ schedules, now, colorOf, onPick }) {
     const times = schedules
         .filter((each) => !each.held)
@@ -1264,7 +1265,7 @@ function NextUp({ schedules, now, colorOf, onPick }) {
                 class="rb-next"
                 onClick=${() => onPick(schedule)}
             >
-                <span class="rb-next-time">${clock(at, schedule.zone, now)}</span>
+                <span class="rb-next-time">${clock(at, HERE, now)}</span>
                 <span class="folder-mark" style=${`--folder:${colorOf(schedule.session)}`}></span>
                 <span class="rb-ellipsis grow">${schedule.text}</span>
                 <span class="rb-next-rel">${relative(at, now)}</span>
