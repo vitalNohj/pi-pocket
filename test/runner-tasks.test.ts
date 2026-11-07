@@ -173,6 +173,37 @@ async function tree(
     return { item, found };
 }
 
+/** The shell has exited, but its redirected descendant still belongs to the runner. */
+async function endedTree(id: ConversationId) {
+    const item = await app.background.start(id, {
+        command: "sleep 300 >/dev/null 2>&1 & printf '%s\\n' \"$!\"",
+        notify: false,
+    });
+    let pid = 0;
+
+    await until(async () => {
+        pid = Number((await app.background.output(id, item.id))!.text.trim());
+
+        return Number.isSafeInteger(pid) && pid > 0;
+    }, "redirected descendant id");
+    pids.add(pid);
+    assert.equal(living(pid), true);
+    const scope = app.runnerScope(id);
+    const io = new RemoteBackground(app.runners.env(computer, there, scope), scope.id);
+
+    await until(async () => (await io.exitCodes(item.id))?.code === 0, "shell exit file");
+    await until(
+        async () =>
+            (await app.runners.link(computer).taskList(scope.id)).some(
+                (task) => task.task === item.id && "ended" in task && task.ended === true,
+            ),
+        "ended task in the runner registry",
+    );
+    assert.equal(living(pid), true, "the shell exit does not kill the descendant");
+
+    return { item, pid };
+}
+
 test("the background tool reads segmented task logs and the real exit code through the session", async () => {
     const id = await session();
     const saved = app.background.sizes.segment;
@@ -417,12 +448,23 @@ test("the task gate refuses unapproved permissions and outside or symlinked cwd;
     await assert.rejects(link.taskStart({ ...request, task: "revoked" }), /Session not approved/);
 });
 
-test("runner.stop stops the task and its grandchild within 7 seconds, including TERM-resistant commands", async () => {
+test("signals still reach descendants of an ended task", async () => {
+    const id = await session();
+    const { item, pid } = await endedTree(id);
+
+    await app.runners.link(computer).taskSignal(app.runnerScope(id).id, item.id, "KILL");
+    await until(() => !living(pid), "signalled descendant of an ended task");
+});
+
+test("runner.stop stops running and ended task groups within 7 seconds, including TERM-resistant commands", async () => {
     const id = await session();
     const { item, found } = await tree(
         id,
         "trap '' TERM; sleep 300 & printf '%s %s\\n' \"$$\" \"$!\"; wait",
     );
+    const ended = await endedTree(id);
+
+    found.push(ended.pid);
     const started = Date.now();
 
     await runner.stop();
@@ -438,9 +480,10 @@ test("runner.stop stops the task and its grandchild within 7 seconds, including 
     const io = new RemoteBackground(app.runners.env(computer, there, permission), permission.id);
 
     assert.equal((await io.exitCodes(item.id))?.code, 137);
+    assert.equal((await io.exitCodes(ended.item.id))?.code, 0, "the shell's result stays final");
 });
 
-test("SIGKILL of a separate runner process closes the lease and stops the task and grandchild within 7 seconds", async () => {
+test("SIGKILL of a separate runner stops running and ended task groups within 7 seconds", async () => {
     await runner.stop();
     await until(() => !app.runners.link(computer).online, "runner offline");
     const source = `
@@ -465,6 +508,9 @@ test("SIGKILL of a separate runner process closes the lease and stops the task a
         id,
         "trap '' TERM; sleep 300 & printf '%s %s\\n' \"$$\" \"$!\"; wait",
     );
+    const ended = await endedTree(id);
+
+    found.push(ended.pid);
     const started = Date.now();
 
     childRunner.kill("SIGKILL");

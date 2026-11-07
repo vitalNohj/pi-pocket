@@ -110,7 +110,7 @@ export type TaskResult = {
     ok: boolean;
     error?: string;
     pid?: number;
-    tasks?: { task: string; pid: number }[];
+    tasks?: { task: string; pid: number; ended?: true }[];
 };
 
 /** Runner to server, first: who it is and where its stream from the server stopped. */

@@ -536,6 +536,120 @@ describe("session permission on the runner", () => {
         }
     });
 
+    it("keeps an expired approval question and its requests across a drop, then accepts a code after reconnect", async () => {
+        const setup = await serve();
+        const computer = await start(setup, { approvalMs: 600, retryMs: [700] });
+        const work = folder("expiry-drop");
+        const link = setup.runners.link(computer.id);
+
+        computer.settings.totp = { secret: base32(Buffer.from("reconnect approval!!")) };
+
+        try {
+            await link.confirm({ kind: "new", person: "Owner", folder: work, session: "s" });
+            const approvedAt = computer.settings.sessions![0]!.approvedAt;
+            const env = setup.runners.env(computer.id, work, {
+                id: "s",
+                folder: work,
+                person: "Owner",
+            });
+
+            await sleep(900);
+            computer.answer = undefined;
+            const waiting = exec(env, "echo approved after reconnect");
+            let settled = false;
+
+            void waiting.then(() => (settled = true));
+            await until(() => link.questions.size === 1, "the expired approval question");
+            const question = [...link.questions.values()][0]!;
+            const local = computer.asked[1]!;
+
+            assert.equal(question.expired, true);
+            assert.equal(local.expired, true);
+            computer.runner.drop();
+            await until(() => !link.online, "the dropped link");
+            assert.equal(link.questions.size, 0, "the server clears its disconnected view");
+            await sleep(100);
+            assert.equal(local.signal.aborted, false, "the computer keeps its question open");
+            assert.equal(settled, false, "a drop neither denies nor grants the request");
+            assert.equal(computer.settings.sessions![0]!.approvedAt, approvedAt);
+
+            await until(
+                () => link.online && link.questions.has(question.id),
+                "the same approval question after reconnect",
+            );
+            await sleep(100);
+            assert.equal(settled, false, "reconnecting does not approve the session");
+            assert.equal(computer.asked.length, 2, "the computer did not ask a second question");
+            assert.equal(local.signal.aborted, false);
+            await link.approveCode(question.id, codeNow(computer.settings));
+            const result = await waiting;
+
+            assert.equal(result.ok, true, result.message);
+            assert.equal(result.output, "approved after reconnect\n");
+            assert.equal(computer.settings.sessions![0]!.approvedBy, "totp");
+            await until(() => link.questions.size === 0, "the answered question to end");
+        } finally {
+            await computer.runner.stop();
+            await close(setup);
+        }
+    });
+
+    for (const allow of [true, false]) {
+        it(`delivers a new session's offline ${allow ? "Allow" : "Deny"} answer after reconnect`, async () => {
+            const setup = await serve();
+            const computer = await start(setup, { retryMs: [1000] });
+            const work = folder("confirm-drop");
+            const link = setup.runners.link(computer.id);
+
+            computer.answer = undefined;
+
+            try {
+                const confirmed = link.confirm({
+                    kind: "new",
+                    person: "Owner",
+                    folder: work,
+                    session: "new",
+                });
+                let settled = false;
+
+                void confirmed.then(
+                    () => (settled = true),
+                    () => (settled = true),
+                );
+                await until(() => computer.asked.length === 1, "the new session's question");
+                const local = computer.asked[0]!;
+
+                computer.runner.drop();
+                await until(() => !link.online, "the dropped confirm link");
+                assert.equal(local.signal.aborted, false);
+                computer.release(allow);
+                await until(() => local.signal.aborted, "the offline answer to finish saving");
+                assert.equal(link.online, false, "the computer answered while still offline");
+                assert.equal(settled, false, "the server still waits for its confirm answer");
+                assert.equal(
+                    computer.settings.sessions?.some((session) => session.id === "new") ?? false,
+                    allow,
+                );
+                await until(() => link.online, "the confirm link to reconnect");
+
+                if (allow) {
+                    await confirmed;
+                } else {
+                    await assert.rejects(confirmed, /did not allow the session/);
+                }
+
+                assert.equal(computer.asked.length, 1);
+                await until(
+                    () => link.questions.size === 0,
+                    "the offline-answered question to end",
+                );
+            } finally {
+                await computer.runner.stop();
+                await close(setup);
+            }
+        });
+    }
+
     it("never saves a broad folder, and ignores one found in the list", async () => {
         const setup = await serve();
         const computer = await start(setup);

@@ -40,6 +40,7 @@ type Host = {
     permission: string;
     task: string;
     pid: number;
+    shellEnded: boolean;
     ended: Promise<void>;
 };
 
@@ -114,7 +115,11 @@ export class Tasks {
                     ok: true,
                     tasks: [...this.#hosts.values()]
                         .filter((host) => host.permission === request.permission)
-                        .map(({ task, pid }) => ({ task, pid })),
+                        .map(({ task, pid, shellEnded }) => ({
+                            task,
+                            pid,
+                            ...(shellEnded ? { ended: true as const } : {}),
+                        })),
                 };
             }
 
@@ -170,6 +175,7 @@ export class Tasks {
                 permission: request.permission,
                 task: request.task,
                 pid: child.pid ?? 0,
+                shellEnded: false,
                 ended,
             };
 
@@ -189,19 +195,31 @@ export class Tasks {
                 child.once("exit", () =>
                     reject(new Error("The task host stopped before starting its command.")),
                 );
-                child.on("message", (value: { pid?: number; warning?: string; error?: string }) => {
-                    if (value.warning !== undefined && !this.#warned) {
-                        this.#warned = true;
-                        this.#log(`Background tasks: ${value.warning}`);
-                    }
+                child.on(
+                    "message",
+                    (value: {
+                        pid?: number;
+                        ended?: boolean;
+                        warning?: string;
+                        error?: string;
+                    }) => {
+                        if (value.ended === true) {
+                            host.shellEnded = true;
+                        }
 
-                    if (value.error !== undefined) {
-                        reject(new Error(value.error));
-                    } else if (typeof value.pid === "number" && value.pid > 0) {
-                        host.pid = value.pid;
-                        resolve(value.pid);
-                    }
-                });
+                        if (value.warning !== undefined && !this.#warned) {
+                            this.#warned = true;
+                            this.#log(`Background tasks: ${value.warning}`);
+                        }
+
+                        if (value.error !== undefined) {
+                            reject(new Error(value.error));
+                        } else if (typeof value.pid === "number" && value.pid > 0) {
+                            host.pid = value.pid;
+                            resolve(value.pid);
+                        }
+                    },
+                );
             });
             const input: TaskInput = {
                 command: request.command,
