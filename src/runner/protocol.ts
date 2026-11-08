@@ -110,7 +110,8 @@ export type TaskResult = {
     ok: boolean;
     error?: string;
     pid?: number;
-    tasks?: { task: string; pid: number; ended?: true }[];
+    /** `left`: of a task whose shell ended, the processes it started that still run, as the runner found them. */
+    tasks?: { task: string; pid: number; ended?: true; left?: number[] }[];
 };
 
 /** Runner to server, first: who it is and where its stream from the server stopped. */
@@ -344,13 +345,22 @@ export function parseControl(text: string): ControlMessage | undefined {
                 (message.tasks === undefined ||
                     (Array.isArray(message.tasks) &&
                         message.tasks.every((item: unknown) => {
-                            const task = item as { task?: unknown; pid?: unknown } | null;
+                            const task = item as {
+                                task?: unknown;
+                                pid?: unknown;
+                                left?: unknown;
+                            } | null;
 
                             return (
                                 task !== null &&
                                 typeof task?.task === "string" &&
                                 Number.isSafeInteger(task.pid) &&
-                                (task.pid as number) > 0
+                                (task.pid as number) > 0 &&
+                                (task.left === undefined ||
+                                    (Array.isArray(task.left) &&
+                                        task.left.every(
+                                            (pid) => Number.isSafeInteger(pid) && pid > 0,
+                                        )))
                             );
                         })))
                 ? (message as TaskResult)

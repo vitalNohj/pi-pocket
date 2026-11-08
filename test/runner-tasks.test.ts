@@ -458,7 +458,8 @@ test("a task whose shell ended counts as ended while what it started still runs,
     );
     assert.equal(living(pid), true, "the task's child still runs");
     assert.equal((await items(id))[0]?.code, 0);
-    assert.equal((await items(id))[0]?.left?.length, 1, "what it left is named");
+    // The process that still runs, by its own id: not the task's shell, which has ended.
+    assert.deepEqual((await items(id))[0]?.left, [pid], "what it left is named");
 
     await app.runners.link(computer).taskSignal(app.runnerScope(id).id, item.id, "KILL");
     await until(() => !living(pid), "the child stopped");

@@ -1,5 +1,5 @@
 /** One runner-owned command: stdin is its lifetime lease, and only this process writes its task files. */
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { constants, closeSync, existsSync, openSync, writeFileSync, writeSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { win32 } from "node:path";
@@ -36,6 +36,8 @@ public static class TaskJob {
     }
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool QueryInformationJobObject(IntPtr job, int kind, out Accounting info, uint size, IntPtr returned);
+    [DllImport("kernel32.dll", SetLastError=true, EntryPoint="QueryInformationJobObject")]
+    public static extern bool QueryProcessIds(IntPtr job, int kind, IntPtr list, uint size, IntPtr returned);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern IntPtr CreateJobObject(IntPtr attributes, string name);
     [DllImport("kernel32.dll", SetLastError=true)]
@@ -68,6 +70,23 @@ while ($null -ne ($request = [Console]::In.ReadLine())) {
             [Console]::Out.WriteLine('active ' + $info.ActiveProcesses)
             [Console]::Out.Flush()
         }
+    } elseif ($request -eq 'pids') {
+        # JOBOBJECT_BASIC_PROCESS_ID_LIST: two DWORDs, then one ULONG_PTR per process, from offset 8.
+        $size = 8 + 1024 * [IntPtr]::Size
+        $list = [Runtime.InteropServices.Marshal]::AllocHGlobal($size)
+        try {
+            $ids = @()
+            if ([TaskJob]::QueryProcessIds($job, 3, $list, [uint32]$size, [IntPtr]::Zero)) {
+                $count = [Runtime.InteropServices.Marshal]::ReadInt32($list, 4)
+                for ($i = 0; $i -lt $count; $i++) {
+                    $ids += [Runtime.InteropServices.Marshal]::ReadIntPtr($list, 8 + $i * [IntPtr]::Size).ToInt64()
+                }
+            }
+            [Console]::Out.WriteLine('pids ' + ($ids -join ','))
+            [Console]::Out.Flush()
+        } finally {
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($list)
+        }
     }
 }
 [void][TaskJob]::CloseHandle($job)
@@ -84,6 +103,8 @@ let killTimer: NodeJS.Timeout | undefined;
 let groupTimer: NodeJS.Timeout | undefined;
 /** The Windows job includes this host, so 1 means that the task has no processes left. */
 let jobActive: number | undefined;
+/** Who waits for the job's list of processes (`left`). */
+let jobLists: ((pids: number[] | undefined) => void)[] = [];
 let log: number | undefined;
 let used = 0;
 let segment = 0;
@@ -257,6 +278,59 @@ function stop(): void {
     }, 5000);
 }
 
+/**
+ * The processes of the task that still run after its shell ended: what it left behind, which the session names. Its
+ * group on Linux and macOS (`pgrep -g`), its Job Object's processes but this host on Windows. Undefined when they
+ * cannot be listed (no `pgrep`, no job): the runner then names the task's shell, as before.
+ */
+async function left(): Promise<number[] | undefined> {
+    if (child?.pid === undefined) {
+        return [];
+    }
+
+    if (process.platform === "win32") {
+        const helper = job;
+
+        if (helper?.stdin === undefined || helper.stdin === null || helper.exitCode !== null) {
+            return undefined;
+        }
+
+        const pids = await new Promise<number[] | undefined>((resolve) => {
+            const timer = setTimeout(() => resolve(undefined), 3000);
+
+            jobLists.push((found) => {
+                clearTimeout(timer);
+                resolve(found);
+            });
+            helper.stdin!.write("pids\n");
+        });
+
+        return pids?.filter((pid) => pid !== process.pid);
+    }
+
+    const group = child.pid;
+
+    return new Promise((resolve) => {
+        execFile("pgrep", ["-g", String(group)], { timeout: 3000 }, (error, stdout) => {
+            // Its exit code, 1 when no process is in the group; a string (ENOENT) when there is no pgrep.
+            const code: unknown = (error as { code?: unknown } | null)?.code;
+
+            if (error !== null && code !== 1) {
+                resolve(undefined);
+
+                return;
+            }
+
+            resolve(
+                stdout
+                    .split(/\s+/)
+                    .map(Number)
+                    .filter((pid) => Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid),
+            );
+        });
+    });
+}
+
 async function windowsJob(): Promise<void> {
     const helper = spawn(
         windowsSystemProgram("powershell.exe"),
@@ -288,7 +362,20 @@ async function windowsJob(): Promise<void> {
         helper.once("error", end);
         helper.once("exit", () => end(new Error("The Windows Job Object helper stopped.")));
         lines.on("line", (line) => {
-            if (line.startsWith("active ")) {
+            if (line.startsWith("pids")) {
+                const pids = line
+                    .slice(4)
+                    .split(",")
+                    .map((each) => Number(each.trim()))
+                    .filter((each) => Number.isSafeInteger(each) && each > 0);
+                const waiting = jobLists;
+
+                jobLists = [];
+
+                for (const done of waiting) {
+                    done(pids);
+                }
+            } else if (line.startsWith("active ")) {
                 const count = Number(line.slice(7));
 
                 if (Number.isSafeInteger(count) && count >= 1) {
@@ -476,9 +563,11 @@ lines.on("line", (line) => {
         stop();
     }
 });
-process.on("message", (request: { signal?: string }) => {
+process.on("message", (request: { signal?: string; query?: string }) => {
     if (request.signal === "TERM" || request.signal === "KILL") {
         signal(request.signal);
+    } else if (request.query === "left") {
+        void left().then((pids) => report({ left: pids ?? null }));
     }
 });
 lines.on("close", stop);

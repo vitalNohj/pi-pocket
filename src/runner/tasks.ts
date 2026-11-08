@@ -51,6 +51,8 @@ type Host = {
     pid: number;
     shellEnded: boolean;
     ended: Promise<void>;
+    /** Who waits for the host's list of what the task left running (`#left`). */
+    leftWaiting: ((pids: number[] | undefined) => void)[];
 };
 
 export class Tasks {
@@ -122,13 +124,20 @@ export class Tasks {
                     type: "task-result",
                     id: request.id,
                     ok: true,
-                    tasks: [...this.#hosts.values()]
-                        .filter((host) => host.permission === request.permission)
-                        .map(({ task, pid, shellEnded }) => ({
-                            task,
-                            pid,
-                            ...(shellEnded ? { ended: true as const } : {}),
-                        })),
+                    tasks: await Promise.all(
+                        [...this.#hosts.values()]
+                            .filter((host) => host.permission === request.permission)
+                            .map(async (host) => {
+                                const left = host.shellEnded ? await this.#left(host) : undefined;
+
+                                return {
+                                    task: host.task,
+                                    pid: host.pid,
+                                    ...(host.shellEnded ? { ended: true as const } : {}),
+                                    ...(left === undefined ? {} : { left }),
+                                };
+                            }),
+                    ),
                 };
             }
 
@@ -186,6 +195,7 @@ export class Tasks {
                 pid: child.pid ?? 0,
                 shellEnded: false,
                 ended,
+                leftWaiting: [],
             };
 
             this.#hosts.set(key, host);
@@ -211,9 +221,22 @@ export class Tasks {
                         ended?: boolean;
                         warning?: string;
                         error?: string;
+                        left?: number[] | null;
                     }) => {
                         if (value.ended === true) {
                             host.shellEnded = true;
+                        }
+
+                        if ("left" in value) {
+                            const waiting = host.leftWaiting;
+
+                            host.leftWaiting = [];
+
+                            for (const done of waiting) {
+                                done(Array.isArray(value.left) ? value.left : undefined);
+                            }
+
+                            return;
                         }
 
                         if (value.warning !== undefined && !this.#warned) {
@@ -253,6 +276,31 @@ export class Tasks {
                 finish();
             }
         }
+    }
+
+    /**
+     * What an ended task left running, as its host finds it: the processes themselves, not the shell that started them
+     * and is gone. Undefined when the host cannot say (an older one, or no way to list them), within 4 seconds.
+     */
+    #left(host: Host): Promise<number[] | undefined> {
+        if (!host.child.connected) {
+            return Promise.resolve(undefined);
+        }
+
+        return new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                host.leftWaiting = host.leftWaiting.filter((each) => each !== done);
+                resolve(undefined);
+            }, 4000);
+
+            const done = (pids: number[] | undefined) => {
+                clearTimeout(timer);
+                resolve(pids);
+            };
+
+            host.leftWaiting.push(done);
+            host.child.send({ query: "left" }, () => {});
+        });
     }
 
     async stop(): Promise<void> {

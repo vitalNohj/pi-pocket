@@ -961,7 +961,9 @@ export class RunnerLink {
     }
 
     /** The runner's tasks of a session; `ended`: its shell ended, while what it started may still run. */
-    async taskList(permission: string): Promise<{ task: string; pid: number; ended?: boolean }[]> {
+    async taskList(
+        permission: string,
+    ): Promise<{ task: string; pid: number; ended?: boolean; left?: number[] }[]> {
         const result = await this.#taskRequest({
             type: "task",
             id: randomUUID(),

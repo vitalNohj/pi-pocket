@@ -159,9 +159,14 @@ export class RemoteBackground {
                     (!onlyGroup || (item.pid === group && item.ended !== true)),
             );
 
-            // What an ended task left: its group, outside its leader's (`#left` takes those).
+            // What an ended task left: outside its leader's group (`#left` takes those). The runner names the processes
+            // that still run; an older one names only the task's shell, which has ended.
             if (signal === "" && !onlyGroup) {
-                return tasks.map(({ pid, ended }) => ({ pid, pgid: ended === true ? 0 : pid }));
+                return tasks.flatMap(({ pid, ended, left }) =>
+                    ended !== true
+                        ? [{ pid, pgid: pid }]
+                        : (left ?? [pid]).map((each) => ({ pid: each, pgid: 0 })),
+                );
             }
 
             if (signal !== "" && tasks.length > 0) {
