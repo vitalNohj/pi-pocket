@@ -29,6 +29,7 @@ const HEADED = new Map([
     ["SafeText", "text."],
     ["LinkedSessions", "linkedSessions."],
     ["Sessions", "sessions."],
+    ["PendingApprovals", "pendingApprovals."],
 ]);
 
 /** Which types each page describes. */
@@ -51,6 +52,10 @@ export const PAGES = {
         "BrowserPageHandle",
         "AppEvents",
         "AppEventName",
+        "PendingApprovals",
+        "PendingApproval",
+        "ResolvedApproval",
+        "ApprovalEvents",
     ],
     "web.md": [
         "Web",
