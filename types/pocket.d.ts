@@ -896,14 +896,20 @@ export interface LinkedSessions {
             model?: string;
             thinking?: string;
             cwd?: string;
+            /**
+             * Automatic end-of-run reports to the source: all (default), or none. Kept across restarts.
+             * @since 0.29.0
+             * @experimental
+             */
+            report?: "all" | "none";
         },
         key: string,
     ): Promise<{ session: ConversationId; address: string }>;
     /**
      * Sends `message` to the linked session at the address `to`: at its next pause (since 0.28.0; before, only with
      * `steer: true`), or with `steer: false` after its run. `answers` (since 0.28.0) says whether its final answer comes
-     * back to the source by itself, which it does when the source started it; otherwise the message asks it to reply
-     * when an answer is needed.
+     * back to the source by itself, which it does when the source started it and left reports on. With reports off,
+     * the message follows the starting extension's return instructions; other sessions ask for a reply.
      * @since 0.14.0
      * @experimental
      */
@@ -1040,6 +1046,11 @@ export interface HumanLinkedSessions {
             model?: string;
             thinking?: ModelThinkingLevel;
             cwd?: string;
+            /**
+             * Automatic end-of-run reports to the source: all (default), or none. Kept across restarts.
+             * @since 0.29.0
+             */
+            report?: "all" | "none";
         },
         key: string,
     ): Promise<{ session: ConversationId; address: string }>;

@@ -36,7 +36,11 @@ export type SessionMeta = {
     /** The session this one was forked from, and the last entry it inherited; no entry: forked before the first message. */
     forkedFrom?: { id: number; entryId?: number };
     /** The session that started this one (`linked-sessions.ts`): a link only, which gives no access and owns nothing. */
-    linkedFrom?: { id: number };
+    linkedFrom?: {
+        id: number;
+        /** Automatic end-of-run reports to the session that started this one. Omission keeps all reports. */
+        report?: "all" | "none";
+    };
     /** The most Pi may spend here, in dollars, subagents included. */
     budget?: number;
     /** The git worktree the session works in, when it has one of its own. */
