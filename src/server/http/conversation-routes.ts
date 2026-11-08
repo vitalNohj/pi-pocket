@@ -783,8 +783,7 @@ export async function conversationRoutes(
         parts[4] === "stop" &&
         method === "POST"
     ) {
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const item = await app.background.byTask(id, fourth);
 
         if (item === undefined) {
@@ -871,7 +870,7 @@ export async function conversationRoutes(
     }
 
     if (third === "upload" && method === "POST") {
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         if (Number(request.headers["content-length"] ?? 0) > MAX_UPLOAD) {
             throw new HttpError(413, "Files can be up to 50 MB");

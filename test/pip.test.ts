@@ -2,6 +2,7 @@
 // sessions started and messaged as its person, with reports when their runs end, across a restart too; denials but no
 // approvals; and a tab's panel, which watches PiP beside the session the tab shows.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -153,7 +154,7 @@ test("PiP is made once, for the owner, and stays out of the session list", async
         /PiP's conversation cannot be forked/,
     );
 
-    const guest = app.config.addUser("Guest", "guest").user;
+    const guest = (await addPerson(app, "Guest", "guest")).user;
 
     await assert.rejects(app.pip.ensure(guest), /owner/);
     assert.equal(app.pip.state(guest), null);
@@ -480,8 +481,8 @@ test("a follow outlives a restart: the report comes once the session's run ends"
 
 test("nobody but its person sees PiP or writes to it: PiP acts as its person", async () => {
     const id = await pip();
-    const guest = app.config.addUser("Gus", "guest").user;
-    const viewer = app.config.addUser("Vic", "viewer").user;
+    const guest = (await addPerson(app, "Gus", "guest")).user;
+    const viewer = (await addPerson(app, "Vic", "viewer")).user;
 
     assert.ok(app.canSee(owner(app), id));
     assert.ok(!app.canSee(guest, id));
@@ -724,7 +725,7 @@ test("PiP works in its person's own checkouts only, and takes a clone once it is
     // The owner's own checkout is used; a guest's, of another repository, is not.
     const mine = join(root, "checkouts", "mine");
     const theirs = join(root, "checkouts", "guestclaim");
-    const guest = app.config.addUser("Gina", "guest").user;
+    const guest = (await addPerson(app, "Gina", "guest")).user;
 
     checkout(mine, "acme/mine");
     checkout(theirs, "acme/guestclaim");

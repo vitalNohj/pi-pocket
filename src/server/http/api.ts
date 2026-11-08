@@ -72,8 +72,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
     };
 
     /**
-     * What an invite may grant: viewers and people invited to one session cannot invite anyone, and only the owner can
-     * sign a device in as the owner (never for one session).
+     * What an invite may grant (`access.ts` `mayInvite`): to this server, who may start sessions on it; to one session,
+     * who may share it. Only the owner can sign a device in as the owner (never for one session).
      */
     const inviteGrant = (user: User, body: { role?: unknown; session?: unknown }): InviteGrant => {
         if (body.role === "owner") {
@@ -82,23 +82,33 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return { role: "owner" };
         }
 
-        if (user.role === "viewer" || user.sessions !== undefined) {
-            throw new HttpError(403, "Only people with access to every session can invite others.");
-        }
-
         const role = body.role === "viewer" ? "viewer" : "guest";
 
         if (body.session === undefined || body.session === null) {
+            if (!app.policy.mayInvite(user)) {
+                throw new HttpError(
+                    403,
+                    "Only people who may start sessions on this server can invite others.",
+                );
+            }
+
             return { role };
         }
 
         const session = conversationId(String(body.session));
 
-        if (!app.sessions(user).some((each) => each.id === Number(session))) {
+        if (!app.canSee(user, session) || app.sessionMeta(session) === undefined) {
             throw new HttpError(400, "No such session");
         }
 
-        return { role, session: String(session) };
+        if (!app.policy.mayInvite(user, String(app.rootOf(session)))) {
+            throw new HttpError(
+                403,
+                "Only people who may share this session can invite others to it.",
+            );
+        }
+
+        return { role, session: String(app.rootOf(session)) };
     };
 
     /** How long an invite lasts, in minutes: one of `INVITE_MINUTES`, 15 when not said. */
@@ -653,7 +663,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === "approval" &&
             method === "POST"
         ) {
-            if (!app.runners.mayUse(second, user)) {
+            // Answering a question about a new session there: whoever may start sessions there.
+            if (!app.policy.mayStart(user, second)) {
                 throw new HttpError(403, "You cannot use this computer.");
             }
 
@@ -676,15 +687,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // Who may use a computer: its linker's and the owner's to choose (`access.ts` `mayManage`).
         if (first === "runners" && second !== undefined && third === "users" && method === "POST") {
-            requireOwner(user);
-
-            if (app.runners.require(second).createdBy !== user.id) {
-                throw new HttpError(
-                    403,
-                    "Only the person who linked this computer can choose who may use it.",
-                );
-            }
+            app.runners.require(second);
+            app.policy.requireManage(user, second);
 
             const body = await readJson<{ users?: unknown } | null>(request);
 
@@ -693,7 +699,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             app.config.setRunnerUsers(second, body.users);
-            app.runners.changed();
+            // Someone no longer chosen leaves its sessions at once, and every list is sent again.
+            app.accessChanged();
 
             return json(
                 response,
@@ -708,7 +715,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === "permissions" &&
             method === "POST"
         ) {
-            requireOwner(user);
+            app.runners.require(second);
+            app.policy.requireManage(user, second);
             const body = await readJson<{ request?: unknown }>(request);
             const action = body.request as Record<string, unknown> | undefined;
 
@@ -749,7 +757,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // The folders on another computer, for the folder picker of a new session there.
         if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
-            if (!app.runners.mayUse(second, user)) {
+            if (!app.policy.mayBrowse(user, second)) {
                 throw new HttpError(403, "You cannot use this computer.");
             }
 
@@ -789,7 +797,30 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
-        if (first === "sessions" && second !== undefined && method === "POST") {
+        // Whom a session is shared with: its starter's and the owner's to change (`access.ts` `mayShare`).
+        if (
+            first === "sessions" &&
+            second !== undefined &&
+            third === "share" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ people?: unknown }>(request);
+
+            return json(response, 200, {
+                sharedWith: await app.commands.shareSession(
+                    conversationId(second),
+                    user,
+                    body.people,
+                ),
+            });
+        }
+
+        if (
+            first === "sessions" &&
+            second !== undefined &&
+            third === undefined &&
+            method === "POST"
+        ) {
             const body = await readJson<{ title?: string; archived?: boolean; keepWarm?: unknown }>(
                 request,
             );
@@ -831,12 +862,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // This server's folders, for the folder picker: whoever may start sessions here (`access.ts` `mayBrowse`).
         if (first === "fs" && method === "GET") {
-            app.requireSteer(user);
-
-            if (user.sessions !== undefined) {
-                throw new HttpError(403, "You were invited to one session.");
-            }
+            app.requireBrowse(user);
 
             const requested = url.searchParams.get("path") || "~";
             const path = app.workspace.checkDirectory(requested);
@@ -905,7 +933,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
         if (first === "settings" && method === "POST") {
             const body = await readJson<{
                 approvalRule?: unknown;
-                sharedRunnerSessions?: unknown;
                 defaultModel?: unknown;
                 pipCompactAt?: unknown;
                 subagentModels?: unknown;
@@ -916,7 +943,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
             if (
                 [
                     body.approvalRule,
-                    body.sharedRunnerSessions,
                     body.defaultModel,
                     body.pipCompactAt,
                     body.subagentModels,
@@ -942,11 +968,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             if (body.approvalRule !== undefined) {
                 await app.setApprovalRule(user, body.approvalRule);
-            }
-
-            // Sessions on linked computers shared like any other, or their creators' alone: the owner's.
-            if (body.sharedRunnerSessions !== undefined) {
-                await app.setSharedRunnerSessions(user, body.sharedRunnerSessions);
             }
 
             // Null clears it: new sessions start with the last model picked again.

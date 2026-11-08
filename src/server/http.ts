@@ -61,7 +61,7 @@ function pageFacts(
 
 export function createHandler(options: HttpOptions) {
     const { app } = options;
-    const auth = new Auth(app.config);
+    const auth = new Auth(app.config, (creator, session) => app.policy.mayInvite(creator, session));
     const api = createApi(options, auth);
 
     return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {

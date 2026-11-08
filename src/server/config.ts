@@ -98,6 +98,24 @@ export interface StoredRunner {
     platform?: { os: string; arch: string; home: string; version: string; tmpdir?: string };
     /** Programs ready on this computer, as its runner last reported. */
     tools?: { git: boolean; gh: boolean; github: boolean };
+    /** New sessions on it start shared with its people (`access.ts` `initialShares`). Absent: with no one. */
+    shareNew?: true;
+}
+
+/**
+ * This server as a computer (`access.ts` `THIS_SERVER`): the same settings a runner has, with the owner as its linker.
+ * Since the access policy; before it, everyone with access to the whole server could use it. Absent: no one chosen, no
+ * saved folders, asking on, new sessions shared with no one.
+ */
+export interface StoredServer {
+    /** The people the owner chose: they may use this server. Viewers among them only see. */
+    users?: string[];
+    /** Saved folders (real paths here): with "Stop asking" on, a session in one needs no approval. */
+    folders?: string[];
+    /** "Stop asking": a saved folder needs no approval. */
+    stopAsking?: true;
+    /** New sessions here start shared with its people. */
+    shareNew?: true;
 }
 
 /** A one-time code that links a computer, not yet used: kept by its sha256, for a few minutes. */
@@ -160,13 +178,12 @@ interface PocketConfig {
     runnerCodes?: StoredRunnerCode[];
     /** Wrong link codes (`link-limits.ts`): each address's lockouts toward a ban, and the banned addresses. */
     runnerLinkLimits?: StoredLinkLimits;
-    /**
-     * Sessions on a linked computer follow the usual sharing rules (others who can see a session can see and prompt
-     * it, so its tools run there for them too). Absent or false: each is its creator's alone. Starting one on a
-     * computer stays its linker's either way.
-     */
-    sharedRunnerSessions?: boolean;
+    /** This server as a computer: its people, saved folders, and rules (`access.ts`). */
+    server?: StoredServer;
 }
+
+/** The parts of `StoredServer` and `StoredRunner` the owner or a linker can change. */
+export type ComputerSettings = { stopAsking?: boolean; shareNew?: boolean };
 
 /** The hours a run waits for a model's limit to clear, until the owner says otherwise. */
 export const DEFAULT_LIMIT_WAIT_HOURS = 6;
@@ -310,6 +327,7 @@ export class ConfigStore {
 
         if (existsSync(this.file)) {
             this.#config = JSON.parse(readFileSync(this.file, "utf8")) as PocketConfig;
+            this.#migrate();
         } else {
             const ownerToken = newToken();
 
@@ -326,6 +344,19 @@ export class ConfigStore {
                     },
                 ],
             };
+            this.save();
+        }
+    }
+
+    /**
+     * Bring an older file up to date. The one global switch that shared every runner session went with the access
+     * policy: each session now has its own share list, and every existing one starts private (the owner's choice).
+     */
+    #migrate(): void {
+        const old = this.#config as PocketConfig & { sharedRunnerSessions?: boolean };
+
+        if ("sharedRunnerSessions" in old) {
+            delete old.sharedRunnerSessions;
             this.save();
         }
     }
@@ -480,21 +511,6 @@ export class ConfigStore {
             delete this.#config.keepWarm;
         } else {
             this.#config.keepWarm = kept;
-        }
-
-        this.save();
-    }
-
-    /** Whether sessions on linked computers are shared like any other (`sharedRunnerSessions`). Default: no. */
-    get sharedRunnerSessions(): boolean {
-        return this.#config.sharedRunnerSessions === true;
-    }
-
-    set sharedRunnerSessions(shared: boolean) {
-        if (shared) {
-            this.#config.sharedRunnerSessions = true;
-        } else {
-            delete this.#config.sharedRunnerSessions;
         }
 
         this.save();
@@ -782,18 +798,108 @@ export class ConfigStore {
         }
     }
 
+    /** The people who may be chosen for a computer: everyone but owners and people invited to one session. */
+    #choosable(users: readonly string[]): string[] {
+        return [...new Set(users)].filter((id) => {
+            const user = this.userById(id);
+
+            return user !== undefined && user.role !== "owner" && user.sessions === undefined;
+        });
+    }
+
     /** Grant access to existing people with access to the whole server, never to owners. */
     setRunnerUsers(id: string, users: string[]): void {
         const runner = this.runnerById(id);
 
         if (runner !== undefined) {
-            runner.users = [...new Set(users)].filter((id) => {
-                const user = this.userById(id);
-
-                return user !== undefined && user.role !== "owner" && user.sessions === undefined;
-            });
+            runner.users = this.#choosable(users);
             this.save();
         }
+    }
+
+    /** This server as a computer (`StoredServer`): a copy, so a change goes through the setters below. */
+    get server(): Readonly<StoredServer> {
+        return this.#config.server ?? {};
+    }
+
+    /** Choose the people who may use this server. */
+    setServerUsers(users: string[]): void {
+        this.#changeServer((server) => {
+            server.users = this.#choosable(users);
+        });
+    }
+
+    /** Save a folder (a real path here), so it needs no approval while "Stop asking" is on. */
+    saveServerFolder(folder: string): void {
+        this.#changeServer((server) => {
+            server.folders = [...new Set([...(server.folders ?? []), folder])];
+        });
+    }
+
+    removeServerFolder(folder: string): boolean {
+        const before = this.#config.server?.folders ?? [];
+
+        if (!before.includes(folder)) {
+            return false;
+        }
+
+        this.#changeServer((server) => {
+            server.folders = before.filter((each) => each !== folder);
+        });
+
+        return true;
+    }
+
+    /**
+     * Change this server's rules (`id` undefined), or a runner's `shareNew`: a runner keeps its other rules, like
+     * "Stop asking", on that computer, so `stopAsking` is ignored for one.
+     */
+    setComputerSettings(id: string | undefined, change: ComputerSettings): void {
+        const apply = (
+            target: { stopAsking?: true; shareNew?: true },
+            keys: readonly (keyof ComputerSettings)[],
+        ): void => {
+            for (const key of keys) {
+                if (change[key] === true) {
+                    target[key] = true;
+                } else if (change[key] === false) {
+                    delete target[key];
+                }
+            }
+        };
+
+        if (id === undefined) {
+            this.#changeServer((server) => apply(server, ["stopAsking", "shareNew"]));
+
+            return;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            apply(runner, ["shareNew"]);
+            this.save();
+        }
+    }
+
+    #changeServer(change: (server: StoredServer) => void): void {
+        const server: StoredServer = structuredClone(this.#config.server ?? {});
+
+        change(server);
+
+        for (const key of ["users", "folders"] as const) {
+            if (server[key]?.length === 0) {
+                delete server[key];
+            }
+        }
+
+        if (Object.keys(server).length === 0) {
+            delete this.#config.server;
+        } else {
+            this.#config.server = server;
+        }
+
+        this.save();
     }
 
     /** Forget a computer: its key stops working. */

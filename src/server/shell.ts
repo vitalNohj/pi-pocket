@@ -338,8 +338,7 @@ export class Shell {
     async stop(id: ConversationId, user: User, taskId: number): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const task = Number.isInteger(taskId)
             ? await app.harness.getTask(taskId as unknown as TaskId, BACKGROUND_CONTEXT)
             : undefined;

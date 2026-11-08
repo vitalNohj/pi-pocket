@@ -32,6 +32,7 @@ import {
     scriptedModel,
     until,
     work,
+    addPerson,
 } from "./helpers.ts";
 
 /** What the model got in its newest request, as text. */
@@ -388,16 +389,18 @@ describe("a copy with a place", () => {
         );
     });
 
-    it("is the linker's alone on their computer", async () => {
+    it("is refused to someone not chosen for that computer, and to a computer that is gone", async () => {
         const { id, reply } = await talked();
-        const { user: coOwner } = app.config.addUser("Co-owner", "owner");
+        // Chosen for this server and shared the session, but not chosen for the laptop.
+        const { user: guest } = await addPerson(app, "Not chosen", "guest");
 
+        await app.commands.shareSession(id, owner(app), [guest.id]);
         await assert.rejects(
-            app.commands.fork(id, coOwner, { entryId: reply, place: { runner: laptop.id } }),
+            app.commands.fork(id, guest, { entryId: reply, place: { runner: laptop.id } }),
             { status: 403 },
         );
         await assert.rejects(
-            app.commands.fork(id, coOwner, { entryId: reply, place: { runner: "nobody" } }),
+            app.commands.fork(id, owner(app), { entryId: reply, place: { runner: "nobody" } }),
             { status: 403 },
         );
     });
@@ -606,10 +609,11 @@ describe("the folder picker's places, per computer", () => {
         });
         assert.deepEqual(await app.folderFavorites.runners(me), { [desk.id]: ["C:\\work"] });
 
-        const { user: coOwner } = app.config.addUser("Other owner", "owner");
+        // Someone not chosen for the laptop keeps no favorites there.
+        const { user: guest } = await addPerson(app, "Not chosen there", "guest");
 
         await assert.rejects(
-            app.folderFavorites.set(coOwner, { path: "/x", starred: true, runner: laptop.id }),
+            app.folderFavorites.set(guest, { path: "/x", starred: true, runner: laptop.id }),
             { status: 403 },
         );
         await assert.rejects(

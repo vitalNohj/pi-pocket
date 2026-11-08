@@ -29,6 +29,7 @@ export const home = join(root, "home");
 mkdirSync(home);
 
 const { PocketApp } = await import("../src/server/app.ts");
+const { SessionsDoc } = await import("../src/server/docs.ts");
 
 export type App = Awaited<ReturnType<typeof PocketApp.open>>;
 
@@ -131,6 +132,37 @@ export async function recordCost(app: App, id: ConversationId, dollars: number):
 }
 
 export const owner = (app: App) => app.config.users.find((user) => user.role === "owner")!;
+
+/**
+ * Add a person with what everyone with access to the whole server had before the access policy (`access.ts`): chosen
+ * for this server, with every session here shared with them, the ones there are now and the ones started later. A
+ * person invited to `sessions` gets only those, as `addUser` gives. For tests of something else than who may see what;
+ * the policy's own tests choose and share by hand.
+ */
+export async function addPerson(
+    app: App,
+    name: string,
+    role: User["role"],
+    sessions?: string[],
+): Promise<{ user: User; token: string }> {
+    const added = app.config.addUser(name, role, sessions);
+
+    if (sessions !== undefined || role === "owner") {
+        return added;
+    }
+
+    app.config.setServerUsers([...(app.config.server.users ?? []), added.user.id]);
+    app.config.setComputerSettings(undefined, { shareNew: true });
+    await app.harness.commit(async (tx) => {
+        for (const meta of Object.values((await tx.doc(SessionsDoc)).items)) {
+            if (meta.pip === undefined && meta.runner === undefined) {
+                meta.sharedWith = [...new Set([...(meta.sharedWith ?? []), added.user.id])];
+            }
+        }
+    }, context);
+
+    return added;
+}
 
 /** A session in `cwd` with the scripted model, no thinking. */
 export async function newSession(app: App, cwd = work): Promise<ConversationId> {

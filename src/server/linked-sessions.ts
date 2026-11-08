@@ -25,6 +25,7 @@ import {
     SessionsDoc,
     TurnsDoc,
 } from "./docs.ts";
+import { THIS_SERVER } from "./access.ts";
 import { ChooseModelError, describe, HttpError } from "./errors.ts";
 import { defang, INVISIBLE_CLASS } from "./fence.ts";
 import { isThinkingLevel, levelFor, resolveModel, THINKING_LEVELS } from "./models.ts";
@@ -146,7 +147,7 @@ export class LinkedSessions implements LinkedSessionsApi {
 
         const user = actor.current();
 
-        this.#app.requireSteer(user);
+        this.#app.requireSteer(user, source);
 
         if (plan.on) {
             throw new HttpError(409, "This session is in plan mode.");
@@ -172,8 +173,7 @@ export class LinkedSessions implements LinkedSessionsApi {
         const child = await tx.doc(AgentDoc, target);
         const user = actor.current();
 
-        this.#app.requireSee(user, target);
-        this.#app.requireSteer(user);
+        this.#app.requireSteer(user, target);
         this.#app.spend.check(user, source);
         this.#app.spend.check(user, target);
 
@@ -289,13 +289,12 @@ export class LinkedSessions implements LinkedSessionsApi {
                     const current = actor.current();
 
                     actor.checkSource(sourceAgent);
-                    app.requireSee(current, target);
-                    app.requireSteer(current);
+                    app.requireSteer(current, target);
                     app.spend.check(current, source);
                     app.spend.check(current, target);
 
                     if (
-                        current.sessions !== undefined ||
+                        !app.policy.mayStart(current, app.runnerOf(source) ?? THIS_SERVER) ||
                         app.sessionMeta(source)?.linkedFrom !== undefined ||
                         app.sessionMeta(target)?.linkedFrom?.id !== Number(source)
                     ) {
@@ -612,7 +611,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             throw new HttpError(409, "This start key belongs to another person.");
         }
 
-        app.requireSteer(user);
+        app.requireSteer(user, source);
 
         let approved: StartSettings | undefined;
 
@@ -771,16 +770,8 @@ export class LinkedSessions implements LinkedSessionsApi {
         const title = request.title;
         const runner = app.runnerOf(source);
 
-        if (runner !== undefined && !app.runners.mayUse(runner, user)) {
-            throw new HttpError(
-                403,
-                "Only the person who linked this computer or the people they chose can start sessions on it.",
-            );
-        }
-
-        if (user.sessions !== undefined) {
-            throw new HttpError(403, "You were invited to one session and cannot start new ones.");
-        }
+        // A linked session is a new session on the source's computer: it has its starter's rights there, not more.
+        app.policy.requireStart(user, runner ?? THIS_SERVER);
 
         if (app.sessionMeta(source)?.linkedFrom !== undefined) {
             throw new HttpError(403, "A linked session cannot start sessions.");
@@ -840,7 +831,7 @@ export class LinkedSessions implements LinkedSessionsApi {
                 }
 
                 if (
-                    user.sessions !== undefined ||
+                    !app.policy.mayStart(user, app.runnerOf(source) ?? THIS_SERVER) ||
                     app.sessionMeta(source)?.linkedFrom !== undefined
                 ) {
                     throw new HttpError(403, "This person or source cannot start linked sessions.");
@@ -883,6 +874,8 @@ export class LinkedSessions implements LinkedSessionsApi {
                 createdAt: now,
                 updatedAt: now,
                 createdBy: user.id,
+                // Linking does not share: the new session starts shared as its computer says.
+                ...app.initialShares(runner, user),
                 linkedFrom: { id: Number(source) },
             };
             receipt.conversationId = Number(child.id);
@@ -935,7 +928,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             ?.items[token];
         const user = this.#person(source, previous?.by);
 
-        app.requireSteer(user);
+        app.requireSteer(user, source);
 
         if (!this.#family(source, user).some((each) => each.id === target)) {
             throw new HttpError(
@@ -1148,7 +1141,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             ?.items[token];
         const user = this.#person(source, previous?.by);
 
-        app.requireSteer(user);
+        app.requireSteer(user, source);
 
         if (!this.#family(source, user).some((each) => each.id === target)) {
             throw new HttpError(

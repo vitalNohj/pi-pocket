@@ -143,6 +143,8 @@ export type RunnerView = {
     /** Granted people, visible only in the owner's list. */
     users?: { id: string; name: string }[];
     approvals?: ApprovalState;
+    /** New sessions there start shared with its people. */
+    shareNew?: true;
     questions?: ApprovalNeeded[];
 };
 
@@ -1114,6 +1116,13 @@ export class Runners {
     readonly #linkLimits: LinkLimits;
     readonly #log: (line: string) => void;
     readonly #onChange: () => void;
+    /**
+     * Whether the Runners sheet lists computer `id` for this person: the access policy's "may start sessions there"
+     * (`access.ts` `mayStart`). A viewer sees sessions shared with them in the session list, not the computer here.
+     */
+    readonly #mayList: (id: string, user: User) => boolean;
+    /** May this person change computer `id`'s people and settings (`access.ts` `mayManage`). */
+    readonly #mayManage: (id: string, user: User) => boolean;
     readonly #links = new Map<string, RunnerLink>();
     readonly #envs = new Map<string, RunnerEnv>();
     readonly #server = new WebSocketServer({
@@ -1129,10 +1138,19 @@ export class Runners {
         onChange?: () => void;
         /** The clock for the wrong link code limits (tests give their own). */
         now?: () => number;
+        /** The access policy's "may start sessions there"; absent (tests of the link alone): the owner only. */
+        mayList?: (id: string, user: User) => boolean;
+        /** The access policy's "may manage"; absent: the owner only. */
+        mayManage?: (id: string, user: User) => boolean;
     }) {
         this.#config = options.config;
         this.#log = options.log;
         this.#onChange = options.onChange ?? (() => {});
+        const ownerOnly = (_id: string, user: User) =>
+            this.#config.userById(user.id)?.role === "owner";
+
+        this.#mayList = options.mayList ?? ownerOnly;
+        this.#mayManage = options.mayManage ?? ownerOnly;
 
         const config = options.config;
 
@@ -1154,6 +1172,11 @@ export class Runners {
 
     stored(id: string): StoredRunner | undefined {
         return this.#config.runnerById(id);
+    }
+
+    /** What computer `id` last reported of its approvals: its saved folders and settings. Undefined until it did. */
+    approvalState(id: string): ApprovalState | undefined {
+        return this.#links.get(id)?.state;
     }
 
     /** Note what a computer's daemon reported, for the computers list. */
@@ -1359,35 +1382,20 @@ export class Runners {
         this.changed();
     }
 
-    /** A computer's linker and granted people may use it while they can steer on this server. */
-    mayUse(runnerId: string, user: User): boolean {
-        const runner = this.stored(runnerId);
-        const current = this.#config.userById(user.id);
-
-        return (
-            runner !== undefined &&
-            (runner.createdBy === user.id || runner.users?.includes(user.id) === true) &&
-            current !== undefined &&
-            current.sessions === undefined &&
-            current.role !== "viewer"
-        );
-    }
-
     /** With a person, only the computers they may use; owners see all, and the granted people. */
     list(user?: User): RunnerView[] {
         return this.#config.runners
-            .filter(
-                (runner) =>
-                    user === undefined || user.role === "owner" || this.mayUse(runner.id, user),
-            )
+            .filter((runner) => user === undefined || this.#mayList(runner.id, user))
             .map((runner) => {
                 const link = this.#links.get(runner.id);
+                // Its people and approvals are the business of those who manage it: its linker and the owner.
+                const manages = user === undefined || this.#mayManage(runner.id, user);
 
                 return {
                     id: runner.id,
                     name: runner.name,
                     createdBy: runner.createdBy,
-                    ...(user?.role === "owner"
+                    ...(manages
                         ? {
                               users: (runner.users ?? []).flatMap((id) => {
                                   const person = this.#config.userById(id);
@@ -1398,9 +1406,8 @@ export class Runners {
                         : {}),
                     // The computer's approvals (every session's folder and person, its settings) are its
                     // linker's and the owner's business; a granted person sees only that it is there.
-                    ...(link?.state === undefined || (user !== undefined && user.role !== "owner")
-                        ? {}
-                        : { approvals: link.state }),
+                    ...(link?.state === undefined || !manages ? {} : { approvals: link.state }),
+                    ...(runner.shareNew === true ? { shareNew: true as const } : {}),
                     ...(link === undefined ? {} : { questions: [...link.questions.values()] }),
                     online: link?.online === true,
                     asks: link?.asks === true,

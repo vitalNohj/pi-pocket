@@ -2,6 +2,7 @@
 // once, without a turn of the parent's per report; a restart, a stopped courier, or a withdrawn queue loses none. Who
 // sees a subagent's peek and the board. Past a spend limit, reports wait, and go once it is raised.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -379,7 +380,7 @@ test("an open board loses the subagents of a session no longer shared, at once",
     // The plan is read when the model answers: the first one's, before the next session's.
     await until(() => app.subagents().some((each) => each.name === "kept"), "the first subagent");
     const unshared = await orchestrate({ spawn: ["hidden"], rounds: 0, sleep: 0 });
-    const guest = app.config.addUser("Narrowed", "guest");
+    const guest = await addPerson(app, "Narrowed", "guest");
     const tab = fakeTab(undefined, guest.user);
     const names = () =>
         ((tab.last("subagents") ?? []) as unknown as { name: string }[])

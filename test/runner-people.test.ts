@@ -153,19 +153,20 @@ describe("people granted a computer", () => {
             assert.equal(response.status, 403);
         }
 
-        assert.equal(app.runners.mayUse(runnerId, guest), false);
-        assert.equal(app.runners.mayUse("missing", owner(app)), false);
+        assert.equal(app.policy.mayStart(guest, runnerId), false);
+        assert.equal(app.policy.mayStart(owner(app), "missing"), false);
         assert.equal((await app.hello(guest)).runners, undefined);
         tab = fakeTab(undefined, guest);
         await app.attach(tab.client);
         assert.equal(tab.last("hello")?.runners, undefined);
     });
 
-    it("lets only the linker grant people, validates the body, and saves unique existing ids", async () => {
+    it("lets the linker and the owner grant people, validates the body, and saves unique existing ids", async () => {
         const otherOwner = person("Another owner", "owner");
 
+        // A guest who did not link it may not choose its people.
         assert.equal(
-            (await request(otherOwner, `runners/${runnerId}/users`, { users: [guest.id] })).status,
+            (await request(stranger, `runners/${runnerId}/users`, { users: [guest.id] })).status,
             403,
         );
 
@@ -184,8 +185,10 @@ describe("people granted a computer", () => {
         assert.deepEqual(granted.body.users, [{ id: guest.id, name: guest.name }]);
         assert.deepEqual(app.config.runnerById(runnerId)?.users, [guest.id]);
         assert.deepEqual(new ConfigStore(app.dataDir).runnerById(runnerId)?.users, [guest.id]);
-        assert.equal(app.runners.mayUse(runnerId, guest), true);
-        assert.equal(app.runners.mayUse(runnerId, otherOwner), false);
+        assert.equal(app.policy.mayStart(guest, runnerId), true);
+        // Owners may do everything (`access.ts`).
+        assert.equal(app.policy.mayStart(otherOwner, runnerId), true);
+        assert.equal(app.policy.mayStart(stranger, runnerId), false);
         assert.deepEqual(
             (tab.last("runners") as unknown as RunnerView[]).map((runner) => runner.id),
             [runnerId],
@@ -209,10 +212,10 @@ describe("people granted a computer", () => {
             settings.sessions?.find((entry) => entry.id === app.runnerScope(id)?.id)?.person,
             guest.name,
         );
-        // Grants do not change session visibility, even for other owners.
+        // Grants do not change session visibility: a session is its starter's, and the owner sees every one.
         assert.equal(app.canSee(guest, id), true);
         assert.equal(app.canSee(stranger, id), false);
-        assert.equal(app.canSee(owner(app), id), false);
+        assert.equal(app.canSee(owner(app), id), true);
     });
 
     it("forks to the same computer and suggests its folder for copies", async () => {
@@ -374,15 +377,30 @@ describe("people granted a computer", () => {
             (await request(guest, "runners/bans?address=127.0.0.1", undefined, "DELETE")).status,
             403,
         );
+        // The guest started this session, so they may share it, but only with people chosen for its computer. A
+        // session someone else started is not theirs to share.
+        const response = await request<{ error?: string }>(guest, `sessions/${id}/share`, {
+            people: [stranger.id],
+        });
+
+        assert.equal(response.status, 400);
+        assert.match(String(response.body.error), /choose them for it first/);
+        const others = await app.commands.createSession(owner(app), {
+            runner: runnerId,
+            cwd: there,
+        });
+
         assert.equal(
-            (await request(guest, "settings", { sharedRunnerSessions: true })).status,
-            403,
+            (await request(guest, `sessions/${others.id}/share`, { people: [] })).status,
+            404,
         );
         assert.equal(app.runners.stored(runnerId)?.name, "Laptop");
     });
 
-    it("lets a granted guest read outside the session folder, but not an ungranted shared-session guest", async () => {
-        await app.setSharedRunnerSessions(owner(app), true);
+    it("lets a guest who may start sessions there read outside the session folder, but not someone invited to it", async () => {
+        // Invited to this one session: they steer it, but may not start sessions on its computer, nor read past its
+        // folder there.
+        app.setAccess(owner(app), stranger.id, { sessions: [String(id)] });
         assert.equal(app.canSee(stranger, id), true);
         const file = await app.workspace.viewFile(id, guest, outside);
 
@@ -399,7 +417,8 @@ describe("people granted a computer", () => {
             404,
         );
         assert.equal((await request(stranger, `c/${id}/view?path=inside.txt`)).status, 200);
-        await app.setSharedRunnerSessions(owner(app), false);
+        app.setAccess(owner(app), stranger.id, { sessions: null });
+        assert.equal(app.canSee(stranger, id), false);
     });
 
     it("does not grant people invited to one session, even with an empty session limit", async () => {
@@ -408,14 +427,18 @@ describe("people granted a computer", () => {
 
         app.config.setRunnerUsers(runnerId, [guest.id, scoped.id, empty.id]);
         assert.deepEqual(app.runners.stored(runnerId)?.users, [guest.id]);
-        assert.equal(app.runners.mayUse(runnerId, scoped), false);
-        assert.equal(app.runners.mayUse(runnerId, empty), false);
+        assert.equal(app.policy.mayStart(scoped, runnerId), false);
+        assert.equal(app.policy.mayStart(empty, runnerId), false);
     });
 
     it("ends access when the guest becomes a viewer, without cleaning the saved grant", async () => {
         app.setAccess(owner(app), guest.id, { role: "viewer" });
         assert.deepEqual(app.runners.stored(runnerId)?.users, [guest.id]);
-        assert.equal(app.runners.mayUse(runnerId, guest), false, "even a stale guest object fails");
+        assert.equal(
+            app.policy.mayStart(guest, runnerId),
+            false,
+            "even a stale guest object fails",
+        );
         assert.deepEqual(tab.last("runners"), []);
         assert.deepEqual(await app.folderFavorites.runners(guest), {});
 
@@ -435,17 +458,17 @@ describe("people granted a computer", () => {
             (error: unknown) => error instanceof HttpError && error.status === 404,
         );
         app.setAccess(owner(app), guest.id, { role: "guest" });
-        assert.equal(app.runners.mayUse(runnerId, guest), true);
+        assert.equal(app.policy.mayStart(guest, runnerId), true);
     });
 
     it("ends access when a grant is withdrawn or the person is removed", async () => {
         await request(owner(app), `runners/${runnerId}/users`, { users: [] });
-        assert.equal(app.runners.mayUse(runnerId, guest), false);
+        assert.equal(app.policy.mayStart(guest, runnerId), false);
         assert.deepEqual(tab.last("runners"), []);
         assert.equal((await request(guest, `runners/${runnerId}/fs`)).status, 403);
         await request(owner(app), `runners/${runnerId}/users`, { users: [guest.id] });
         app.removeUser(owner(app), guest.id);
-        assert.equal(app.runners.mayUse(runnerId, guest), false);
+        assert.equal(app.policy.mayStart(guest, runnerId), false);
         assert.deepEqual(app.runners.stored(runnerId)?.users, [guest.id]);
         assert.equal((await request(guest, "runners")).status, 401);
         await assert.rejects(

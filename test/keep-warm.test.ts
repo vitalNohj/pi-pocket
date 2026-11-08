@@ -7,7 +7,16 @@ import { keepWarmFrom } from "../src/server/config.ts";
 import { ChatDoc, type SessionMeta } from "../src/server/docs.ts";
 import { KeepWarm, type KeepWarmDeps, keepWarmLabel } from "../src/server/keep-warm.ts";
 import { cachePrices } from "../src/server/model-cache-facts.ts";
-import { cleanUp, context, newSession, openApp, owner, scriptedModel, work } from "./helpers.ts";
+import {
+    addPerson,
+    cleanUp,
+    context,
+    newSession,
+    openApp,
+    owner,
+    scriptedModel,
+    work,
+} from "./helpers.ts";
 
 const model = (api: string, cost: Partial<Model<Api>["cost"]>) =>
     ({ api, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...cost } }) as Model<Api>;
@@ -126,7 +135,7 @@ test("keep warm: session changes validate together, check permissions, and recor
     const app = await openApp(scriptedModel());
 
     try {
-        const guest = app.config.addUser("Alex", "guest").user;
+        const guest = (await addPerson(app, "Alex", "guest")).user;
         const id = await newSession(app);
         const before = structuredClone(app.sessionMeta(id));
         const activityBefore = await app.harness.snapshot(ChatDoc, id, context);
@@ -190,7 +199,7 @@ test("keep warm: session changes validate together, check permissions, and recor
         assert.equal(app.sessionMeta(id)?.keepWarm, 0.5);
 
         // A viewer cannot steer, and a guest with access to another session cannot change this one.
-        const viewer = app.config.addUser("Bea", "viewer").user;
+        const viewer = (await addPerson(app, "Bea", "viewer")).user;
         const stranger = app.config.addUser("Chris", "guest", []).user;
 
         await assert.rejects(app.commands.updateSession(id, viewer, { keepWarm: 0 }));

@@ -1,5 +1,6 @@
 // Background tasks: commands Pi starts without waiting, read later, and stops; a message when one ends; across restarts.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -283,7 +284,7 @@ test(
     { skip },
     async () => {
         const id = await session();
-        const { user } = app.config.addUser("Batch guest", "guest");
+        const { user } = await addPerson(app, "Batch guest", "guest");
 
         await app.background.start(id, { command: "echo mine", requestedBy: owner(app).id });
         await app.background.start(id, { command: "echo theirs", requestedBy: user.id });
@@ -565,7 +566,7 @@ test(
                 fetch(`http://127.0.0.1:${port}/api/c/${String(id)}/${path}`, {
                     headers: { authorization: `Bearer ${token}`, "x-pocket": "1" },
                 });
-            const viewer = app.config.addUser("Watcher", "viewer");
+            const viewer = await addPerson(app, "Watcher", "viewer");
             const list = await get(viewer.token, "background");
 
             assert.equal(list.status, 200);
@@ -965,7 +966,7 @@ test("Running now's Stop ends a background task, for those who may steer", { ski
                 },
                 body: "{}",
             });
-        const viewer = app.config.addUser("Viewer", "viewer");
+        const viewer = await addPerson(app, "Viewer", "viewer");
 
         assert.equal((await stop(viewer.token, String(item.taskId))).status, 403);
         assert.equal((await stop(app.config.ownerToken, "999999")).status, 404);

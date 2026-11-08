@@ -1,6 +1,7 @@
 // The message box's helpers on the server: `!` commands, mentioned files sent along, skills, the file viewer, undoing a
 // file from Changes, and session titles.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -90,7 +91,7 @@ test("`!` runs a command in the session's folder and Pi sees it; `!!` shows it t
 
 test("a `!` command Pi sees makes Pi work for its person, as a message does; one Pi does not see does not", async () => {
     const id = await newSession(app, folder);
-    const { user: guest } = app.config.addUser("Runner", "guest");
+    const { user: guest } = await addPerson(app, "Runner", "guest");
 
     try {
         await say(app, id, "hello from the owner");
@@ -144,7 +145,7 @@ test("a command that is stopped says so and keeps what it printed; a retried req
 
     assert.equal(stopped.length, 1);
     assert.equal(stopped[0]?.kind === "shell" && stopped[0].output, "before\n");
-    const { user: viewer } = app.config.addUser("Watcher", "viewer");
+    const { user: viewer } = await addPerson(app, "Watcher", "viewer");
 
     try {
         await assert.rejects(
@@ -240,7 +241,7 @@ test("after a restart, an older message settling does not take Pi back from the 
             : fauxAssistantMessage([fauxText("word ".repeat(6000))]);
     const first = await openApp(scriptedModel(slow), data);
     const id = await newSession(first, folder);
-    const { user: guest } = first.config.addUser("Late", "guest");
+    const { user: guest } = await addPerson(first, "Late", "guest");
 
     await first.commands.submit(id, owner(first), { text: "write a lot", requestId: "slow-1" });
     await until(() => first.isBusy(id), "Pi to start answering");
@@ -273,7 +274,7 @@ test("after a restart, an older message settling does not take Pi back from the 
 
 test("only the owner may read Pi's folder and the app's data, but anyone who steers may read uploads", async () => {
     const id = await newSession(app, folder);
-    const { user: guest } = app.config.addUser("Guest", "guest");
+    const { user: guest } = await addPerson(app, "Guest", "guest");
 
     try {
         const agentFile = join(process.env.PI_CODING_AGENT_DIR!, "settings-test.json");

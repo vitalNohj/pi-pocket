@@ -1,6 +1,6 @@
 // Session tags (`extensions/session-tags.ts`) over HTTP, and `WebRequest.sessions()`, which its routes check ids with:
 // who may read and change tags, the limits, all-or-nothing changes, and that tags last across a restart.
-import { cleanUp, newSession, openApp, owner, root, scriptedModel } from "./helpers.ts";
+import { addPerson, cleanUp, newSession, openApp, owner, root, scriptedModel } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -52,7 +52,7 @@ export default (_host, web) => { web.route("GET", "sessions", (request) => reque
         ["Vic", "viewer", undefined],
         ["Sid", "guest", [String(first)]],
     ] as const) {
-        const added = app.config.addUser(name, role, sessions ? [...sessions] : undefined);
+        const added = await addPerson(app, name, role, sessions ? [...sessions] : undefined);
 
         people[name] = { token: added.token, id: added.user.id };
     }

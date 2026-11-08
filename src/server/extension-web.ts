@@ -159,8 +159,14 @@ const WEB_FILE_TYPES: Readonly<Record<string, string>> = {
     ".woff2": "font/woff2",
 };
 
-/** Whether someone may use a web part open to `access`. The owner always may; people invited to one session never. */
-export function mayUse(user: Pick<User, "role" | "sessions">, access: WebAccess): boolean {
+/** Who asks for a module's routes, browser module, or files. */
+export type WebUser = Pick<User, "id" | "role" | "sessions">;
+
+/**
+ * Whether someone may use a web part open to `access`, without the app's access policy (`Options.mayUse`): by role
+ * alone, for a module's parts tested on their own. The owner always may; people invited to one session never.
+ */
+function byRole(user: WebUser, access: WebAccess): boolean {
     if (user.role === "owner") {
         return true;
     }
@@ -186,15 +192,18 @@ function isTrustedDiagramsClient(part: WebPart): boolean {
     );
 }
 
-/** Session invitations allow the trusted built-in diagrams client, but not extension routes. */
-function mayUseClient(part: WebPart, user: Pick<User, "role" | "sessions">): boolean {
+/**
+ * Whether someone may load a part's browser module. The trusted built-in diagrams client draws the diagrams of every
+ * transcript, so whoever sees a session loads it: a person invited to one session, or one chosen only for a runner.
+ */
+function mayUseClient(
+    part: WebPart,
+    user: WebUser,
+    mayUse: (user: WebUser, access: WebAccess) => boolean,
+): boolean {
     const client = part.client;
 
-    return (
-        client !== undefined &&
-        (mayUse(user, client.access) ||
-            (user.sessions !== undefined && isTrustedDiagramsClient(part)))
-    );
+    return client !== undefined && (mayUse(user, client.access) || isTrustedDiagramsClient(part));
 }
 
 /** A module's name, from its file: `server-status.ts` is `server-status`. */
@@ -296,6 +305,8 @@ interface Options {
     presentationsChanged?: () => void;
     /** Where public links are kept (`public-links.ts`). Without it, `web.links` refuses. */
     links?: PublicLinks;
+    /** The access policy's "may use an extension's parts open to `access`" (`access.ts`); without it, by role alone. */
+    mayUse?: (user: WebUser, access: WebAccess) => boolean;
     /** The owner's values for modules' settings (config.json). Without it, every setting has its default. */
     settings?: (module: string) => Record<string, SettingValue>;
 }
@@ -316,7 +327,10 @@ export class ExtensionWebs {
 
     constructor(options: Options = {}) {
         this.#options = options;
+        this.#mayUse = options.mayUse ?? byRole;
     }
+
+    readonly #mayUse: (user: WebUser, access: WebAccess) => boolean;
 
     /** What a module registers while `file` (in `directory`) loads, and the `web` its default export gets. */
     stage(file: string, directory: string, title: string): { part: WebPart; web: ExtensionWeb } {
@@ -945,7 +959,7 @@ export class ExtensionWebs {
         module: string,
         method: string,
         path: readonly string[],
-        user: Pick<User, "role" | "sessions">,
+        user: WebUser,
     ): RouteMatch | undefined {
         const part = this.#parts.get(module);
 
@@ -954,7 +968,9 @@ export class ExtensionWebs {
         }
 
         const found = part.routes.flatMap((route) => {
-            const params = mayUse(user, route.access) ? matchPath(route.segments, path) : undefined;
+            const params = this.#mayUse(user, route.access)
+                ? matchPath(route.segments, path)
+                : undefined;
 
             return params === undefined ? [] : [{ route, params }];
         });
@@ -973,11 +989,9 @@ export class ExtensionWebs {
     }
 
     /** The browser modules someone's tabs load: each module's name, title, and address. */
-    clients(
-        user: Pick<User, "role" | "sessions">,
-    ): { module: string; title: string; url: string }[] {
+    clients(user: WebUser): { module: string; title: string; url: string }[] {
         return [...this.#parts.values()]
-            .filter((part) => part.client !== undefined && mayUseClient(part, user))
+            .filter((part) => part.client !== undefined && mayUseClient(part, user, this.#mayUse))
             .map((part) => ({
                 module: part.module,
                 title: part.title,
@@ -994,7 +1008,7 @@ export class ExtensionWebs {
     file(
         module: string,
         path: readonly string[],
-        user: Pick<User, "role" | "sessions">,
+        user: WebUser,
     ): { file: string; type: string; dev: number; ino: number } | undefined {
         const part = this.#parts.get(module);
         const client = part?.client;
@@ -1002,7 +1016,7 @@ export class ExtensionWebs {
         if (
             part === undefined ||
             client === undefined ||
-            !mayUseClient(part, user) ||
+            !mayUseClient(part, user, this.#mayUse) ||
             path.length === 0
         ) {
             return undefined;

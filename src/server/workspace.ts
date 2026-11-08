@@ -223,9 +223,8 @@ export class Workspace {
 
     /** The branches of a session's repository, for the branch sheet: for people who can steer, as Changes is. */
     async branches(id: ConversationId, user: User): Promise<Branches> {
-        this.#app.requireSee(user, id);
+        this.#app.requireSteer(user, id);
         this.requireLocal(id);
-        this.#app.requireSteer(user);
 
         const cwd = this.#app.cwdOf(id);
         const access = await this.#access(id);
@@ -257,12 +256,15 @@ export class Workspace {
         user: User,
         request: { name?: unknown; create?: unknown; track?: unknown },
     ): Promise<{ branch: string }> {
-        this.#app.requireSee(user, id);
+        this.#app.requireSteer(user, id);
         this.requireLocal(id);
-        this.#app.requireSteer(user);
 
-        if (user.sessions !== undefined) {
-            throw new HttpError(403, "You were invited to one session.");
+        // A branch changes what the whole folder holds: only who may start sessions on this computer may switch it.
+        if (!this.#app.policy.mayReadComputer(user, String(id))) {
+            throw new HttpError(
+                403,
+                "Only people who may start sessions on this computer can switch its branch.",
+            );
         }
 
         await this.#app.requireDriver(id, user);
@@ -375,11 +377,8 @@ export class Workspace {
      * one asked for. Returns its path.
      */
     makeFolder(user: User, path: string): string {
-        this.#app.requireSteer(user);
-
-        if (user.sessions !== undefined) {
-            throw new HttpError(403, "You were invited to one session.");
-        }
+        // Making a folder is part of choosing one: whoever may browse this server's folders.
+        this.#app.requireBrowse(user);
 
         const written = path.trim();
 
@@ -479,8 +478,9 @@ export class Workspace {
     }
 
     /**
-     * A file a person may load through a conversation. People who can steer reach the whole machine through Pi anyway;
-     * viewers and people invited to one session get only files under the conversation's folder or its uploads.
+     * A file a person may load through a conversation. Who may start sessions on this computer reaches the whole machine
+     * through Pi anyway (`access.ts` `mayReadComputer`); anyone else who sees the session gets only files under its
+     * folder or its uploads.
      */
     conversationFile(user: User, id: ConversationId, path: string): string {
         const file = this.conversationPath(id, path);
@@ -490,7 +490,7 @@ export class Workspace {
             return this.#uploaded(id, path);
         }
 
-        if (user.role !== "viewer" && user.sessions === undefined) {
+        if (this.#app.policy.mayReadComputer(user, String(id))) {
             return file;
         }
 
@@ -585,7 +585,8 @@ export class Workspace {
         const cwd = this.#app.cwdOf(id);
         const file = paths.resolve(cwd, expanded);
 
-        if (user.role === "owner" || this.#app.runners.mayUse(runner, user)) {
+        // Who may start sessions on that computer reads what Pi can there; anyone else, the session's folder only.
+        if (this.#app.policy.mayStart(user, runner)) {
             return { access, file, home };
         }
 
@@ -771,9 +772,8 @@ export class Workspace {
      * names under the folder only, so someone invited to one session sees no more than `conversationFile` lets them load.
      */
     async fileList(id: ConversationId, user: User): Promise<FileListing> {
-        this.#app.requireSee(user, id);
+        this.#app.requireSteer(user, id);
         this.requireLocal(id);
-        this.#app.requireSteer(user);
         await this.#app.conversation(id);
 
         const access = await this.#access(id);
@@ -790,8 +790,7 @@ export class Workspace {
         user: User,
         path: string,
     ): Promise<{ path: string; display: string } & FileView> {
-        this.#app.requireSee(user, id);
-        this.#app.requireSteer(user);
+        this.#app.requireSteer(user, id);
         await this.#app.conversation(id);
         let file: string;
 
@@ -874,7 +873,7 @@ export class Workspace {
         const kind = await revertFile(
             this.#app.cwdOf(id),
             path,
-            user.sessions !== undefined,
+            !this.#app.policy.mayReadComputer(user, String(id)),
             access,
         ).catch((error: unknown) => {
             throw new HttpError(409, describe(error));
@@ -891,12 +890,11 @@ export class Workspace {
 
     /** What changed in a session's folder: Pi's edits, and the uncommitted changes of its git repository. */
     async changes(id: ConversationId, user: User): Promise<Changes> {
-        this.#app.requireSee(user, id);
+        this.#app.requireSteer(user, id);
         this.requireLocal(id);
-        this.#app.requireSteer(user);
 
-        // Someone invited to this session only sees the files in its folder, here as in `conversationFile`.
-        const onlyHere = user.sessions !== undefined;
+        // Who may not start sessions on this computer only sees the files in its folder, here as in `conversationFile`.
+        const onlyHere = !this.#app.policy.mayReadComputer(user, String(id));
         const key = `${id}:${onlyHere}`;
         const underWay = this.#changesUnderWay.get(key);
 
@@ -956,14 +954,15 @@ export class Workspace {
 
     /** The diff of one changed file in a session's repository. */
     async changeDiff(id: ConversationId, user: User, path: string): Promise<string> {
-        this.#app.requireSee(user, id);
+        this.#app.requireSteer(user, id);
         this.requireLocal(id);
-        this.#app.requireSteer(user);
 
         const access = await this.#access(id);
 
         try {
-            return await diffOf(this.#app.cwdOf(id), path, user.sessions !== undefined, access);
+            const onlyHere = !this.#app.policy.mayReadComputer(user, String(id));
+
+            return await diffOf(this.#app.cwdOf(id), path, onlyHere, access);
         } catch (error) {
             throw new HttpError(error instanceof Unreachable ? 409 : 404, describe(error));
         }

@@ -10,6 +10,7 @@
  */
 import { HttpError } from "./errors.ts";
 import type { Role } from "./config.ts";
+import type { WebAccess } from "./host.ts";
 
 /** The id of this server's own computer record, as `SessionMeta.runner` is absent for its sessions. */
 export const THIS_SERVER = "this-server";
@@ -127,6 +128,59 @@ export class AccessPolicy {
     /** Only the owner links computers. */
     mayLink(person: Pick<Person, "id">): boolean {
         return this.#current(person)?.role === "owner";
+    }
+
+    /**
+     * May `person` use a workspace a provider module opens (a URI, not a folder on a computer): the owner alone, as its
+     * provider, not this policy, decides what it reaches.
+     */
+    mayUseWorkspaces(person: Pick<Person, "id">): boolean {
+        return this.#current(person)?.role === "owner";
+    }
+
+    /**
+     * May `person` use an extension's routes, browser module, or settings open to `access` on this server: the owner
+     * always; anyone else must be able to use this server, and then "steer" lets guests in and "view" viewers too. What
+     * a module does there is server wide, so a person invited to one session never may (`extension-web.ts` lets the
+     * trusted diagrams client through for them alone).
+     */
+    mayUseExtension(person: Pick<Person, "id">, access: WebAccess): boolean {
+        const current = this.#current(person);
+
+        if (current === undefined) {
+            return false;
+        }
+
+        if (current.role === "owner") {
+            return true;
+        }
+
+        return (
+            this.mayUse(current, THIS_SERVER) &&
+            (access === "view" || (access === "steer" && current.role === "guest"))
+        );
+    }
+
+    /**
+     * May `person` invite someone new: to session `session` alone, who may share it (`mayShare`); to this server, who
+     * may start sessions on it. A new person starts with no access until the owner chooses them, so this asks no more.
+     * An owner invite is the owner's alone; it is a role, not access, and `api.ts` checks it.
+     */
+    mayInvite(person: Pick<Person, "id">, session?: string): boolean {
+        return session === undefined
+            ? this.mayStart(person, THIS_SERVER)
+            : this.mayShare(person, session);
+    }
+
+    /**
+     * May `person` read files in session `id`'s computer outside its folder, in its Files panel, mentions, and changes:
+     * who may start sessions on that computer reads what Pi can there. Anyone else who sees the session reads its
+     * folder only.
+     */
+    mayReadComputer(person: Pick<Person, "id">, id: string): boolean {
+        const facts = this.#facts.session(id);
+
+        return facts !== undefined && this.mayStart(person, facts.computer);
     }
 
     // Folders.
@@ -247,15 +301,29 @@ export class AccessPolicy {
         }
     }
 
+    /** Refuse who may not start sessions on computer `id` (`mayStart`), which also covers browsing its folders. */
     requireStart(person: Pick<Person, "id">, id: string): void {
-        if (!this.mayStart(person, id)) {
-            throw new HttpError(
-                403,
-                id === THIS_SERVER
+        if (this.mayStart(person, id)) {
+            return;
+        }
+
+        const current = this.#current(person);
+
+        throw new HttpError(
+            403,
+            current?.sessions !== undefined
+                ? "You were invited to one session and cannot start new ones."
+                : current?.role === "viewer" && this.mayUse(current, id)
+                  ? "You can view sessions but not start them. Ask the owner for steering rights."
+                  : id === THIS_SERVER
                     ? "The owner has not chosen you for this server yet."
                     : "Only the person who linked this computer or the people they chose can start sessions on it.",
-            );
-        }
+        );
+    }
+
+    /** Refuse who may not browse computer `id`'s folders (`mayBrowse`): the same people who may start sessions there. */
+    requireBrowse(person: Pick<Person, "id">, id: string): void {
+        this.requireStart(person, id);
     }
 
     requireManage(person: Pick<Person, "id">, id: string): void {

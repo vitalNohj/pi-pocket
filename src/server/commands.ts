@@ -65,6 +65,7 @@ import { attribute } from "./fence.ts";
 import { homePath } from "./paths.ts";
 import { localRepo, remoteRepo } from "./repo.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage, modelImageOf } from "./model-images.ts";
+import { THIS_SERVER } from "./access.ts";
 import { localAccess, Unreachable } from "./folder-access.ts";
 import { clearUploads, copyUploads, uploadedThere, uploadsFolder } from "./remote-context.ts";
 import { type FileView, mentionedPaths, viewFile } from "./files.ts";
@@ -522,13 +523,7 @@ export class Commands {
 
         // The linker and granted people run commands as this computer's user.
         app.runners.require(runner);
-
-        if (!app.runners.mayUse(runner, user)) {
-            throw new HttpError(
-                403,
-                "Only the person who linked this computer or the people they chose can start sessions on it.",
-            );
-        }
+        app.policy.requireStart(user, runner);
 
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
 
@@ -569,6 +564,7 @@ export class Commands {
                                 createdAt: now,
                                 updatedAt: now,
                                 createdBy: user.id,
+                                ...app.initialShares(runner, user),
                                 runner,
                                 runnerPermission,
                                 title: label,
@@ -611,13 +607,7 @@ export class Commands {
         } = {},
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
-
-        app.requireSteer(user);
-
-        if (user.sessions !== undefined) {
-            throw new HttpError(403, "You were invited to one session and cannot start new ones.");
-        }
-
+        // Each computer's own `requireStart` decides who starts a session on it: here below, `#createRemote` there.
         const given = optionalText(request.title, "title");
         const title = (given === undefined ? undefined : oneLine(given)) || undefined;
         const runner = optionalText(request.runner, "runner");
@@ -626,6 +616,8 @@ export class Commands {
             return this.#createRemote(user, runner, request, title, signal);
         }
 
+        // Starting a session here: whoever the owner chose for this server, and steers.
+        app.policy.requireStart(user, THIS_SERVER);
         const requested = optionalText(request.cwd, "cwd") ?? app.defaultCwd;
 
         app.requireWorkspaceOwner(user, requested);
@@ -672,6 +664,7 @@ export class Commands {
                                 createdAt: now,
                                 updatedAt: now,
                                 createdBy: user.id,
+                                ...app.initialShares(undefined, user),
                                 ...(title === undefined ? {} : { title }),
                                 ...(worktree === undefined ? {} : { worktree }),
                             };
@@ -730,6 +723,7 @@ export class Commands {
                         createdAt: now,
                         updatedAt: now,
                         createdBy: user.id,
+                        ...app.initialShares(undefined, user),
                         fromPi: { session: session.id, count: session.count },
                     };
                     copies = await writePiSession(tx, id, session, {
@@ -948,6 +942,99 @@ export class Commands {
         };
     }
 
+    /**
+     * Share session `id` with exactly `people` (person ids), one at a time: its starter and the owner may (`access.ts`
+     * `mayShare`). Each must be able to use the session's computer; owners see every session anyway, and the starter
+     * has it, so neither is kept. Someone taken off leaves it at once (`app.accessChanged`).
+     */
+    async shareSession(id: ConversationId, user: User, people: unknown): Promise<string[]> {
+        const app = this.#app;
+        const root = app.rootOf(id);
+        const meta = app.sessionMeta(root);
+
+        app.requireSee(user, root);
+
+        if (meta === undefined) {
+            throw new HttpError(404, "Not a session");
+        }
+
+        if (!app.policy.mayShare(user, String(root))) {
+            throw new HttpError(
+                403,
+                "Only the person who started this session or the owner can share it.",
+            );
+        }
+
+        if (
+            !Array.isArray(people) ||
+            people.length > 200 ||
+            !people.every((each): each is string => typeof each === "string")
+        ) {
+            throw new HttpError(400, "people must be a list of person ids.");
+        }
+
+        const computer = meta.runner ?? THIS_SERVER;
+        const starter = app.policy.starter({ id: String(root), computer, ...meta });
+        const shared: string[] = [];
+
+        for (const each of new Set(people)) {
+            const person = app.config.userById(each);
+
+            if (person === undefined) {
+                throw new HttpError(400, "That person is not on this server.");
+            }
+
+            if (person.role === "owner" || person.id === starter) {
+                continue;
+            }
+
+            if (!app.policy.mayUse(person, computer)) {
+                throw new HttpError(
+                    400,
+                    `${person.name} cannot use ${computer === THIS_SERVER ? "this server" : app.runners.name(computer)}: choose them for it first.`,
+                );
+            }
+
+            shared.push(person.id);
+        }
+
+        const before = new Set(meta.sharedWith ?? []);
+
+        await app.harness.commit(async (tx) => {
+            const sessions = await tx.doc(SessionsDoc);
+            const item = sessions.items[String(root)];
+
+            if (item === undefined) {
+                throw new HttpError(404, "Not a session");
+            }
+
+            if (shared.length === 0) {
+                delete item.sharedWith;
+            } else {
+                item.sharedWith = shared;
+            }
+        }, context);
+
+        const added = shared.filter((each) => !before.has(each));
+        const removed = [...before].filter((each) => !shared.includes(each));
+        const names = (ids: string[]) =>
+            ids.map((each) => app.config.userById(each)?.name ?? "someone").join(", ");
+
+        if (added.length > 0) {
+            await app.collab.activity(root, user, `shared the session with ${names(added)}`);
+        }
+
+        if (removed.length > 0) {
+            await app.collab.activity(
+                root,
+                user,
+                `stopped sharing the session with ${names(removed)}`,
+            );
+        }
+
+        return shared;
+    }
+
     async updateSession(
         id: ConversationId,
         user: User,
@@ -955,8 +1042,7 @@ export class Commands {
     ): Promise<{ repeating: number }> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         optionalText(patch.title, "title");
 
         if (patch.archived !== undefined && typeof patch.archived !== "boolean") {
@@ -1330,8 +1416,7 @@ export class Commands {
     async dismissSubagent(id: ConversationId, user: User, at: unknown): Promise<Dismissal> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         if (typeof at !== "number" || !Number.isFinite(at)) {
             throw new HttpError(400, "at must be the time of the failure seen");
@@ -1773,8 +1858,7 @@ export class Commands {
     async retryLimit(id: ConversationId, user: User): Promise<boolean> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         let sent = app.limits.retryNow(Number(id));
 
@@ -1795,8 +1879,7 @@ export class Commands {
     async abort(id: ConversationId, user: User): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const conversation = await app.conversation(id);
         const busy = app.isBusy(id);
 
@@ -1841,8 +1924,7 @@ export class Commands {
     async withdraw(id: ConversationId, user: User, submissionId: number): Promise<string> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const by = await app.attribution.submitter(submissionId);
 
         if (by !== user.id) {
@@ -1872,8 +1954,7 @@ export class Commands {
     ): Promise<{ text: string; attachments: Attachment[] }> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         if (!Number.isInteger(submissionId) || submissionId <= 0) {
             throw new HttpError(400, "Say which queued message to edit.");
@@ -1927,8 +2008,7 @@ export class Commands {
     ): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         if (!Number.isInteger(submissionId) || submissionId <= 0) {
             throw new HttpError(400, "Say which queued message to move.");
@@ -2106,11 +2186,14 @@ export class Commands {
 
         optionalText(request.cwd, "cwd");
 
-        // Someone invited to one session sees files in its folder only: moving it would move what they see.
-        if (request.cwd !== undefined && user.sessions !== undefined) {
+        // A move picks another folder of the session's computer: only who may start sessions there may, as for a new
+        // one. Anyone else sees files in its folder only: moving it would move what they see.
+        if (request.cwd !== undefined && !app.policy.mayReadComputer(user, String(id))) {
             throw new HttpError(
                 403,
-                "You were invited to one session and cannot move it to another folder.",
+                app.config.userById(user.id)?.sessions === undefined
+                    ? "Only people who may start sessions on this computer can move a session to another folder."
+                    : "You were invited to one session and cannot move it to another folder.",
             );
         }
 
@@ -2563,8 +2646,7 @@ export class Commands {
     async clearGoal(id: ConversationId, user: User): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const goal = await app.goals.get(id);
 
         if (!(await app.goals.clear(id)) || goal === undefined) {
@@ -2931,14 +3013,9 @@ export class Commands {
 
         if (target !== undefined) {
             app.runners.require(target);
-
-            if (!app.runners.mayUse(target, user)) {
-                throw new HttpError(
-                    403,
-                    "Only the person who linked this computer or the people they chose can start sessions on it.",
-                );
-            }
         }
+
+        app.policy.requireStart(user, target ?? THIS_SERVER);
 
         if (target === meta.runner) {
             return { cwd: app.cwdOf(id), reason: "current" };
@@ -2979,16 +3056,14 @@ export class Commands {
         };
     }
 
-    /** Forks are new sessions: who may start one may fork, from a session they can see. */
+    /**
+     * Forks are new sessions: who may start one may fork, from a session they can steer. Where the fork goes decides
+     * who may start it there (`#destination`, `copySuggestion`).
+     */
     #requireForkable(id: ConversationId, user: User): void {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
-
-        if (user.sessions !== undefined) {
-            throw new HttpError(403, "You were invited to one session and cannot start new ones.");
-        }
+        app.requireSteer(user, id);
 
         if (app.sessionMeta(id) === undefined) {
             throw new HttpError(400, "Only sessions can be forked");
@@ -3005,8 +3080,8 @@ export class Commands {
 
     /**
      * Where a copy of session `id` runs: on the computer and in the folder `place` names, else where the session runs.
-     * A copy is a new session there: on another computer, only its linker and granted people may start one (also when the
-     * owner shares these sessions, `sharedRunnerSessions`), and the folder must be there. A
+     * A copy is a new session there: only people who may start sessions on that computer may copy to it (`access.ts`
+     * `mayStart`), also from a session shared with them, and the folder must be there. A
      * computer that is gone or offline fails with its name; the copy is never made here instead.
      */
     async #destination(
@@ -3020,16 +3095,12 @@ export class Commands {
         const own = { runner: meta.runner, cwd: (await app.agentState(id))?.cwd ?? meta.cwd };
         const runner = place?.runner === undefined ? own.runner : (place.runner ?? undefined);
 
-        if (runner !== undefined) {
-            if (!app.runners.mayUse(runner, user)) {
-                throw new HttpError(
-                    403,
-                    app.runners.stored(runner) === undefined
-                        ? "That computer is not linked to this server."
-                        : "Only the person who linked this computer or the people they chose can start sessions on it, including forks.",
-                );
-            }
+        if (runner !== undefined && app.runners.stored(runner) === undefined) {
+            throw new HttpError(403, "That computer is not linked to this server.");
         }
+
+        // A copy is a new session there: who may start one there may copy to it.
+        app.policy.requireStart(user, runner ?? THIS_SERVER);
 
         const asked = place?.cwd?.trim() || undefined;
         const cwd =
@@ -3158,6 +3229,8 @@ export class Commands {
                 createdAt: now,
                 updatedAt: now,
                 createdBy: user.id,
+                // A copy is a new session: it starts shared as its computer says, not as the one it came from.
+                ...app.initialShares(runner, user),
                 forkedFrom: { id: Number(id), ...(at === undefined ? {} : { entryId: at }) },
                 ...(runner === undefined ? {} : { runner, runnerPermission }),
                 ...(place.worktree === undefined ? {} : { worktree: place.worktree }),

@@ -27,6 +27,7 @@ import type { Lesson } from "../src/server/docs.ts";
 import { ExtensionRequest } from "../src/server/extension-request.ts";
 import { createHandler } from "../src/server/http.ts";
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -259,11 +260,11 @@ describe("a session on another computer", () => {
         assert.equal(app.workspace.head(id as never), undefined);
     });
 
-    it("is its creator's alone: others on the server neither see nor start, fork, or prompt one", async () => {
-        const { user: other } = app.config.addUser("Someone", "guest");
+    it("is private to its starter: someone not chosen neither sees nor starts, forks, or prompts one", async () => {
+        const { user: other } = await addPerson(app, "Someone", "guest");
         const { user: anotherOwner } = app.config.addUser("Co-owner", "owner");
 
-        for (const person of [other, anotherOwner]) {
+        for (const person of [other]) {
             assert.equal(app.canSee(person, id as never), false, `${person.name} cannot see it`);
             assert.ok(
                 !app.sessions(person).some((each) => each.id === Number(id)),
@@ -280,38 +281,43 @@ describe("a session on another computer", () => {
             );
         }
 
+        // Every owner sees every session (`access.ts`): they control the server's system user anyway.
         assert.equal(app.canSee(owner(app), id as never), true);
+        assert.equal(app.canSee(anotherOwner, id as never), true);
     });
 
-    it("follows the usual rules when the owner shares them, but starting one stays the linker's", async () => {
-        const other = app.config.users.find((each) => each.name === "Co-owner")!;
+    it("lets a shared person see it, but starting one there stays the chosen people's", async () => {
+        const other = app.config.users.find((each) => each.name === "Someone")!;
 
+        // Only its starter or an owner shares it, and only with people who may use its computer.
         await assert.rejects(
-            app.setSharedRunnerSessions(
-                app.config.users.find((each) => each.name === "Someone")!,
-                true,
-            ),
-            /Only the owner/,
+            app.commands.shareSession(id as never, other, [other.id]),
+            /not shared/,
         );
-        await app.setSharedRunnerSessions(owner(app), true);
+        await assert.rejects(
+            app.commands.shareSession(id as never, owner(app), [other.id]),
+            /choose them for it first/,
+        );
+        app.config.setRunnerUsers(runnerId, [other.id]);
+        app.setAccess(owner(app), other.id, { role: "viewer" });
+        await app.commands.shareSession(id as never, owner(app), [other.id]);
 
         try {
             assert.equal(app.canSee(other, id as never), true);
             assert.ok(app.sessions(other).some((each) => each.id === Number(id)));
             await assert.rejects(
                 app.commands.createSession(other, { cwd: there, runner: runnerId }),
-                /Only the person who linked this computer/,
+                /view sessions but not start them/,
             );
-            await assert.rejects(
-                app.commands.fork(id as never, other, {}),
-                /Only the person who linked/,
-            );
+            await assert.rejects(app.commands.fork(id as never, other, {}), /not steer/);
         } finally {
-            await app.setSharedRunnerSessions(owner(app), false);
+            await app.commands.shareSession(id as never, owner(app), []);
+            app.config.setRunnerUsers(runnerId, []);
+            app.setAccess(owner(app), other.id, { role: "guest" });
         }
 
         assert.equal(app.canSee(other, id as never), false);
-        assert.equal(app.config.sharedRunnerSessions, false);
+        assert.equal(app.sessionMeta(id as never)?.sharedWith, undefined);
     });
 
     it("keeps the computer in a fork", async () => {
@@ -651,20 +657,18 @@ describe("a session on another computer", () => {
             actor.close();
         }
 
-        const other = app.config.users.find((each) => each.name === "Co-owner")!;
-
-        await app.setSharedRunnerSessions(owner(app), true);
-
-        // A session of its own, where the co-owner writes last: the linked session above answers its own session by
-        // itself (since 0.29.0), which would make the owner its last writer again.
+        // A session of its own, where someone invited to it alone writes last: they steer it, but may not start
+        // sessions on its computer. The linked session above answers its own session by itself (since 0.29.0), which
+        // would make the owner its last writer again.
         const shared = await app.commands.createSession(owner(app), {
             cwd: there,
             runner: runnerId,
         });
+        const { user: other } = app.config.addUser("Invited", "guest", [String(shared.id)]);
 
         try {
             const { submissionId } = await app.commands.submit(shared.id, other, {
-                text: "hello from a co-owner",
+                text: "hello from an invited person",
                 requestId: crypto.randomUUID(),
             });
 
@@ -675,12 +679,12 @@ describe("a session on another computer", () => {
             asked.length = 0;
             await assert.rejects(
                 app.linkedSessions.start(shared.id, { message: "hello" }, crypto.randomUUID()),
-                /Only the person who linked this computer or the people they chose can start sessions on it/,
+                /invited to one session and cannot start new ones/,
             );
             assert.equal(asked.length, 0, "an ungranted person cannot ask the computer");
             assert.equal(app.sessions(owner(app)).length, before);
         } finally {
-            await app.setSharedRunnerSessions(owner(app), false);
+            app.removeUser(owner(app), other.id);
         }
     });
 

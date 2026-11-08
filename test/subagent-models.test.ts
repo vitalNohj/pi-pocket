@@ -4,6 +4,7 @@
 // the session's own when that is listed and none is named, else the one named, which is required when the session's is not listed. A subagent its model failed is reported as such, and Pi is told to stop
 // and tell the user rather than try another model.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -174,7 +175,7 @@ test("with no models allowed, a subagent runs on its session's model, and Pi is 
 
 test("the owner allows models: Pi may use those, and is refused any other and told to choose from the list", async () => {
     const me = owner(app);
-    const guest = app.config.addUser("Guest", "guest").user;
+    const guest = (await addPerson(app, "Guest", "guest")).user;
 
     await assert.rejects(app.setSubagentModels(guest, ["faux/pricey"]), { status: 403 });
     await app.setSubagentModels(me, ["faux/pricey"]);
@@ -277,7 +278,7 @@ test("models allowed together, as from two tabs, all count, and only the owner m
         );
         assert.deepEqual(kept(), ["faux/mine", "faux/other", "faux/pricey"]);
 
-        const guest = app.config.addUser("Cal", "guest").token;
+        const guest = (await addPerson(app, "Cal", "guest")).token;
 
         assert.equal((await toggle({ model: "faux/other", allowed: true }, guest)).status, 403);
     } finally {

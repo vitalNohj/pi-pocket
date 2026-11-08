@@ -12,7 +12,16 @@ import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { Runner } from "../src/runner/runner.ts";
 import { HttpError } from "../src/server/errors.ts";
-import { type App, cleanUp, openApp, owner, root, scriptedModel, until } from "./helpers.ts";
+import {
+    addPerson,
+    type App,
+    cleanUp,
+    openApp,
+    owner,
+    root,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
 
 /** The remote computer's repository, and a file beside it that a guest must not reach. */
 const there = join(root, "there");
@@ -257,9 +266,11 @@ describe("a session's folder on another computer", () => {
     });
 
     it("keeps a guest of a shared session to its folder there", async () => {
-        const { user: guest, token } = app.config.addUser("Guest", "guest");
+        const { user: guest, token } = await addPerson(app, "Guest", "guest");
 
-        await app.setSharedRunnerSessions(owner(app), true);
+        // Shared with them, and they may see the computer, but cannot start sessions there: that grants reading what
+        // Pi can there. A person invited to this one session is such a person.
+        app.setAccess(owner(app), guest.id, { sessions: [String(id)] });
 
         try {
             const file = await app.workspace.viewFile(id, guest, "sub/b.txt");
@@ -286,7 +297,7 @@ describe("a session's folder on another computer", () => {
             );
             assert.equal((await get(`/api/c/${id}/file?path=picture.png`, token)).status, 200);
         } finally {
-            await app.setSharedRunnerSessions(owner(app), false);
+            app.removeUser(owner(app), guest.id);
         }
     });
 

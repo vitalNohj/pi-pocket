@@ -1,5 +1,6 @@
 // Artifacts and kept images across a real runner link. The server must not fall back to its disk for session files.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -129,10 +130,12 @@ before(async () => {
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the image runner to connect");
     id = (await app.commands.createSession(owner(app), { cwd: there, runner: linked.id })).id;
-    const guest = app.config.addUser("Image guest", "guest");
+    const guest = await addPerson(app, "Image guest", "guest");
 
     guestToken = guest.token;
-    await app.setSharedRunnerSessions(owner(app), true);
+    // A guest the owner chose for the computer, with this one session shared with them.
+    app.config.setRunnerUsers(linked.id, [guest.user.id]);
+    await app.commands.shareSession(id, owner(app), [guest.user.id]);
 });
 
 after(async () => {

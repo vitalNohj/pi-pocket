@@ -1,5 +1,6 @@
 // Forks, sending a message again (edited, or to another model), new contexts, and instructions for Pi.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -342,7 +343,7 @@ test("forks need a steering person with access to every session, and an existing
 
     await say(app, id, "something to fork");
     const [answer] = await ofKind(id, "pi.assistant");
-    const viewer = app.config.addUser("Vera", "viewer").user;
+    const viewer = (await addPerson(app, "Vera", "viewer")).user;
 
     await assert.rejects(app.commands.fork(id, viewer, { entryId: Number(answer!.id) }), {
         status: 403,
@@ -462,10 +463,9 @@ test("the folder picker makes a new folder, nested ones too, for people who may 
 
     assert.equal(app.workspace.makeFolder(owner(app), made), made);
     assert.ok(statSync(made).isDirectory());
-    assert.throws(
-        () => app.workspace.makeFolder(app.config.addUser("Vic", "viewer").user, join(root, "v")),
-        { status: 403 },
-    );
+    const vic = (await addPerson(app, "Vic", "viewer")).user;
+
+    assert.throws(() => app.workspace.makeFolder(vic, join(root, "v")), { status: 403 });
     assert.throws(() => app.workspace.makeFolder(guest("Scoped Sam", ["1"]), join(root, "s")), {
         status: 403,
     });

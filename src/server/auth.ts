@@ -84,11 +84,21 @@ export type InviteGrant =
     { role: Exclude<Role, "owner">; session?: string } | { role: "owner"; session?: never };
 
 /** Invites live in `config.json` (by their codes' hashes), so one that lasts a day or a week outlives a restart. */
+/**
+ * May `creator` invite someone new, to session `session` alone or to this server: the app's access policy
+ * (`access.ts` `mayInvite`). Without it, by role alone: no viewer, no one invited to one session.
+ */
+export type MayInvite = (creator: User, session?: string) => boolean;
+
+const byRole: MayInvite = (creator) => creator.role !== "viewer" && creator.sessions === undefined;
+
 export class Auth {
     readonly #config: ConfigStore;
+    readonly #mayInvite: MayInvite;
 
-    constructor(config: ConfigStore) {
+    constructor(config: ConfigStore, mayInvite: MayInvite = byRole) {
         this.#config = config;
+        this.#mayInvite = mayInvite;
     }
 
     user(request: IncomingMessage): User | undefined {
@@ -169,10 +179,10 @@ export class Auth {
             return undefined;
         }
 
-        // The person who made it must still be allowed to: not removed, not view only, not limited to one session.
+        // The person who made it must still be allowed to: not removed, and still free to invite to what it grants.
         const creator = this.#config.userById(invite.createdBy);
 
-        if (creator === undefined || creator.role === "viewer" || creator.sessions !== undefined) {
+        if (creator === undefined) {
             return undefined;
         }
 
@@ -180,6 +190,10 @@ export class Auth {
             return creator.role === "owner"
                 ? { user: creator, token: this.#config.ownerToken }
                 : undefined;
+        }
+
+        if (!this.#mayInvite(creator, invite.session)) {
+            return undefined;
         }
 
         const clean = name.replace(/\s+/g, " ").trim().slice(0, 40) || "Guest";

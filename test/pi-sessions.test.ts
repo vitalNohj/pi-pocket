@@ -1,6 +1,7 @@
 // Pi's sessions from the terminal, continued here: Pi gets the context Pi itself builds from the file, people get the
 // whole conversation, nothing Pi did runs again, the file is never written, and only the owner can do it.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -420,7 +421,7 @@ test("only the owner can list, look at, or continue Pi's sessions", async () => 
 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
-    const guest = app.config.addUser("Guest", "guest");
+    const guest = await addPerson(app, "Guest", "guest");
     const call = (token: string, route: string, body?: unknown) =>
         fetch(`http://127.0.0.1:${port}/api/pi-sessions${route}`, {
             method: body === undefined ? "GET" : "POST",

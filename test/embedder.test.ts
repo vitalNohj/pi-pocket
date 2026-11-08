@@ -9,6 +9,7 @@ import { createHandler } from "../src/server/http.ts";
 import type { Client } from "../src/server/room.ts";
 import type { EmbedderMessage } from "../src/server/push.ts";
 import {
+    addPerson,
     type App,
     cleanUp,
     fakeTab,
@@ -183,7 +184,7 @@ test("an approval reaches an embedder with the whole call, and whether its perso
 test("another person's embedder gets nothing of a session they cannot see", async () => {
     const id = await newSession(app);
     const mine = embedderTab(id);
-    const guest = app.config.addUser("Desk Guest", "guest").user;
+    const guest = (await addPerson(app, "Desk Guest", "guest")).user;
     const theirs = embedderTab(undefined, guest);
 
     for (const each of [mine, theirs]) {

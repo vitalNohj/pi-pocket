@@ -1,4 +1,13 @@
-import { type App, cleanUp, openApp, owner, root, scriptedModel, until } from "./helpers.ts";
+import {
+    addPerson,
+    type App,
+    cleanUp,
+    openApp,
+    owner,
+    root,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -318,7 +327,7 @@ body { margin: 0; padding: 24px; background: ${hex("color.bg.canvas")}; font: 16
         });
     }
 
-    viewerToken = app.config.addUser("Vic", "viewer").token;
+    viewerToken = (await addPerson(app, "Vic", "viewer")).token;
 
     const faint = mkdtempSync(join(root, "faint-"));
 

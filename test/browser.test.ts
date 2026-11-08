@@ -1,4 +1,5 @@
 import {
+    addPerson,
     type App,
     cleanUp,
     fakeTab,
@@ -244,8 +245,8 @@ test(
 
         await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
         const api = `http://127.0.0.1:${(server.address() as { port: number }).port}/api`;
-        const viewer = app.config.addUser("Vee", "viewer");
-        const guest = app.config.addUser("Gus", "guest");
+        const viewer = await addPerson(app, "Vee", "viewer");
+        const guest = await addPerson(app, "Gus", "guest");
         const request = (token: string, path: string, body?: unknown) =>
             fetch(
                 `${api}/${path}`,
