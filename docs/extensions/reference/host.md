@@ -457,7 +457,14 @@ Each call acts as the person that Pi works for in `source`, and that person's ch
 ```ts
 start(
     source: ConversationId,
-    request: { title?: string; message: string; model?: string; thinking?: string; cwd?: string },
+    request: {
+        title?: string;
+        message: string;
+        model?: string;
+        thinking?: string;
+        cwd?: string;
+        report?: "all" | "none";
+    },
     key: string,
 ): Promise<{ session: ConversationId; address: string }>;
 ```
@@ -471,6 +478,7 @@ Makes a session linked to `source` and sends it `message` as its first message. 
 - `model` is `provider/modelId`. While the owner's list of models for subagents is empty, it must be the model of `source`. Once the list has models, it must be one of them. Without it, the session uses the model of `source` when the list is empty or has it. Otherwise `start` is refused with an error that names the allowed models.
 - `thinking` can be any level, also one above the level of `source`. Without it, the session uses the level of `source`. Pi Pocket lowers it to the highest level that the model has, or uses the lowest level of the model when it has none that low.
 - When Pi cannot use the model now, `start` makes nothing and throws an error.
+- `report` (since 0.29.0) selects automatic end-of-run reports: `"all"` (the default) or `"none"`. `"none"` sends no report or fallback notice for done, failed, or aborted runs. It applies to every run of that session, survives server restarts, and is not changed by replaying a start key. It changes no visibility or access, and explicit messages still work. An extension that opts out owns return delivery, including failures and stops. Older versions ignore the option: check `host.pocketVersion` and set gallery `minPocket` to `0.29.0` when suppression is required.
 
 #### `linkedSessions.send`
 
@@ -484,9 +492,9 @@ send(
 
 Since 0.14.0 · Experimental
 
-Sends `message` to the linked session at the address `to`. The session gets it at its next pause (since 0.28.0; before, only with `steer: true`). With `steer: false`, it waits for the session's run to end. `send` returns when the session takes the message, not when it answers, with `{ answers }` (since 0.28.0): whether the session's final answer comes back to the source by itself, which it does only when the source started it.
+Sends `message` to the linked session at the address `to`. The session gets it at its next pause (since 0.28.0; before, only with `steer: true`). With `steer: false`, it waits for the session's run to end. `send` returns when the session takes the message, not when it answers, with `{ answers }` (since 0.28.0): whether the session's final answer comes back to the source by itself, which it does only when the source started it and left automatic reports on. With `report: "none"`, `answers` is false.
 
-The session that gets the message reads it between tags. Words before it say that the agent of another session wrote it, and that it is a request, not a person's order. They also give the address to write to, and say that its final answer goes back by itself when its run ends ([linked-sessions.md](../linked-sessions.md#a-sessions-final-answer-comes-back-by-itself)).
+The session that gets the message reads it between tags. Words before it say that the agent of another session wrote it, and that it is a request, not a person's order. They also give the address to write to, and say when its final answer goes back by itself ([linked-sessions.md](../linked-sessions.md#a-sessions-final-answer-comes-back-by-itself)). With reports off, they instead say to follow the message's return instructions, without asking for a second return channel.
 
 #### `linkedSessions.stop`
 

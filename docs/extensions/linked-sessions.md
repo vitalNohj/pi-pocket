@@ -14,7 +14,7 @@ A linked session is an ordinary session. The session list shows it under the ses
 
 ## Start a session
 
-`start(source, { title?, message, model?, thinking?, cwd? }, key)` makes the session, and sends `message` to it as its first message. It returns `{ session, address }`: the id of the new session, and the source's address for it.
+`start(source, { title?, message, model?, thinking?, cwd?, report? }, key)` makes the session, and sends `message` to it as its first message. It returns `{ session, address }`: the id of the new session, and the source's address for it.
 
 - `cwd` selects an existing working folder using the same path rules as the folder picker (including `~`). Prefer an absolute path. A blank `cwd` counts as no `cwd`. A relative `cwd` resolves against the folder of the server process, not the folder of the source. The child loads that folder's project context and tools; the source stays in its own folder. A missing path or a file is rejected before a session is created. Since 0.19.0: an older Pi Pocket ignores `cwd` and uses the source's folder, so a gallery entry that needs it sets `minPocket` to `0.19.0`.
 - Without `title`, the title is the first line of the message.
@@ -22,10 +22,11 @@ A linked session is an ordinary session. The session list shows it under the ses
 - `send` refuses a session that runs on a model off the list (a person changed it, or the owner changed the list), when the list is not empty. A message from a linked session to the session that started it is a reply, not work: it goes whatever model that session runs on.
 - `thinking` can be any level, also one above the source's. Without it, the session uses the source's level. Pi Pocket lowers it to the highest level that the model has, or uses the lowest level of the model when it has none that low.
 - When a model cannot be used now, Pi Pocket refuses the call before it makes anything.
+- `report` selects automatic end-of-run reports: `"all"` (the default) or `"none"`. With `"none"`, no done, failed, or aborted run sends a report or a fallback notice to the source. The setting stays with the linked session across server restarts and applies to later runs too. A repeated start keeps the first call's setting. The session stays visible and can be opened as before; explicit `send` messages still work. Since 0.29.0: older versions ignore this option, so an extension that needs suppression must check `host.pocketVersion` and set gallery `minPocket` to `0.29.0`.
 
 ## Starts from a human page
 
-Since 0.16.0, a [conversation-bound route](routes.md#bind-a-source-conversation) gets `request.linkedSessions.start({ title?, message, model?, thinking?, cwd? }, key)` and `list()`. These methods act as the authenticated person and bound source, not `host.requesterOf(source)`. They have no source-id or actor parameter. They end with the request, so await each start in the handler.
+Since 0.16.0, a [conversation-bound route](routes.md#bind-a-source-conversation) gets `request.linkedSessions.start({ title?, message, model?, thinking?, cwd?, report? }, key)` and `list()`. These methods act as the authenticated person and bound source, not `host.requesterOf(source)`. They have no source-id or actor parameter. They end with the request, so await each start in the handler.
 
 - The same team, source plan, turn, spend, allowed-model, and provider checks apply. No message is added to the source, and its requester is unchanged.
 - Explicit thinking must be a level that the chosen model has. It is rejected rather than silently lowered. Omitted thinking inherits the source's level, which Pi Pocket lowers to a level that the model has. Read `request.conversation.model` and `thinkingLevel`, with `host.modelInfo("provider/modelId")`, to show the effective choices.
@@ -42,8 +43,8 @@ Check for `web.conversationRoute` at runtime and set gallery `minPocket: "0.16.0
 
 - Since 0.28.0 the message lands at the session's next pause, after its current tool round, as `steer: true` did before. With `steer: false` it waits for the session's run to end. Before 0.28.0 the default was to wait.
 - `send` returns when the session takes the message, not when it answers.
-- It returns `{ answers }` (since 0.28.0; before, nothing): whether the target's final answer comes back to the source by itself, which it does only when the source started the target (see below).
-- The session that gets the message reads it in a fence. Words before it say that another session's agent wrote it, that it is a request and not an order from a person, and which address to write to. From the session that started it, they say its final answer goes back by itself; from any other session (a linked session writing to its lead, or to a sibling), they ask it to send its answer to that address when the message asks for one.
+- It returns `{ answers }` (since 0.28.0; before, nothing): whether the target's final answer comes back to the source by itself, which it does only when the source started the target and left automatic reports on (see below). With `report: "none"`, `answers` is false.
+- The session that gets the message reads it in a fence. Words before it say that another session's agent wrote it, that it is a request and not an order from a person, and which address to write to. From the session that started it, they say its final answer goes back by itself. With `report: "none"`, they instead say reports are off and to follow the message's return instructions, without asking for a second return channel. From any other session (a linked session writing to its lead, or to a sibling), they ask it to send its answer to that address when the message asks for one.
 - Every message that waits in a session's queue goes in together at its next pause (Pi Pocket sets Pi's `steeringMode` and `followUpMode` to `all` unless the owner set them in Pi's settings): a queue of agents' messages costs one turn, not one each.
 
 ## A session's final answer comes back by itself
@@ -51,6 +52,18 @@ Check for `web.conversationRoute` at runtime and set gallery `minPocket: "0.16.0
 Since 0.28.0, when a linked session's run ends, Pi Pocket sends the session that started it one message from the linked session's address: its final answer, up to 6,000 characters (more says how much is in the session), or why it failed, or that it was stopped. It lands at the lead's next pause, once for each run, through the same path as `send`, so the same checks apply there: a lead that cannot take it (plan mode, a spend limit, someone else's turn) gets a notice instead, and nothing waits in silence. An archived lead gets nothing.
 
 So a tool that starts linked sessions need not ask them to report, and need not poll: the lead ends its turn, and the answers wake it. The report's fence shows as a linked session's card, like a message. Only the session that started one hears its end of run: a linked session that asks its lead, or a sibling, gets an answer only when that session sends one, and the message tells it to.
+
+An orchestration extension with its own return channel can opt out for each session it starts:
+
+```ts
+const { session, address } = await host.linkedSessions.start(
+    source,
+    { message: "Do the task; return the result through the extension's channel.", report: "none" },
+    key,
+);
+```
+
+With `report: "none"`, the extension must deliver results, failures, and stops through its own channel when needed. Pi Pocket does not wake the lead for those runs. This only turns off automatic reports, not explicit messages between sessions or access to the session. Agent Teams and extensions that omit `report` keep reporting every run.
 
 ## Stop a run
 
