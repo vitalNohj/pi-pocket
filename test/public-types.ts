@@ -30,6 +30,7 @@ import type {
     PublicPageRequest as RealPublicPageRequest,
     WebRequest as RealWebRequest,
 } from "../src/server/host.ts";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import type {
     Command,
     CommandContext,
@@ -84,6 +85,19 @@ type PublicHost = Pick<PocketHost, keyof Host>;
 
 export const host = (real: PublicHost): Host => real;
 export const hostBack = (types: Host): PublicHost => types;
+
+// Approval observations are deliberately not an approval capability, even for code with the public host type.
+export function approvalsAreReadOnly(types: Host, source: ConversationId): void {
+    // @ts-expect-error No decision methods are exposed.
+    types.pendingApprovals.answer("id", { allow: true });
+    // @ts-expect-error No decision methods are exposed.
+    types.pendingApprovals.approve("id");
+    // @ts-expect-error No decision methods are exposed.
+    types.pendingApprovals.deny("id");
+    // @ts-expect-error Snapshot items cannot be mutated.
+    types.pendingApprovals.list(source)[0]!.state = "resolved";
+}
+
 /** A member of the real host that is neither public nor internal. */
 export const hostMembers = (member: Exclude<keyof PocketHost, keyof Host | Internal>): never =>
     member;
