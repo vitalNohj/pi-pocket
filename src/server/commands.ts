@@ -3056,7 +3056,7 @@ export class Commands {
                     kind: "fork",
                     person: user.name,
                     folder: destination.cwd,
-                    session: runnerPermission,
+                    session: runnerPermission!,
                 },
                 signal,
                 user.id,
