@@ -139,6 +139,23 @@ describe("authenticator codes", () => {
             "a right code is refused while locked",
         );
         assert.equal(checkCode(locked, totp(secret, step + 20), now + 10 * 60_000 + 10), true);
+
+        // The next lockout within a day lasts 30 minutes, the one after an hour, also after a right code.
+        const later = now + 10 * 60_000 + 10;
+
+        for (const [index, minutes] of [30, 60, 60].entries()) {
+            const start = later + index * 2 * 60 * 60_000;
+
+            for (let wrong = 0; wrong < 5; wrong++) {
+                assert.equal(checkCode(locked, "000000", start + wrong), false);
+            }
+
+            assert.equal(
+                locked.lockedUntil,
+                start + 4 + minutes * 60_000,
+                `${String(minutes)} min`,
+            );
+        }
     });
 });
 

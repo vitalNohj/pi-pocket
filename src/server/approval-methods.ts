@@ -21,6 +21,8 @@ export type MethodId = Proof["method"];
 export interface ApprovalMethod<P extends Proof = Proof> {
     readonly id: P["method"];
     verify(approver: Person, requester: Person, proof: P): Promise<boolean>;
+    /** The error for a refused proof: why, and what to do (a lockout says when to try again). */
+    refusal(approver: Person): HttpError;
 }
 
 /** A person's linked authenticator, as stored with their account. Its secret never leaves the server. */
@@ -36,14 +38,70 @@ export interface AuthenticatorStore {
     set(person: string, authenticator: StoredAuthenticator | undefined): void;
 }
 
+/** A new lockout of a person's codes: until when, and which one within a day (`LOCK_STEPS_MS`). */
+export type Lockout = { person: string; until: number; count: number };
+
+export type AuthenticatorOptions = {
+    now?: () => number;
+    /** Too many wrong codes just locked `person`'s codes out: the app tells the owner. */
+    locked?: (lockout: Lockout) => void;
+};
+
 /** Each person links their own authenticator app to their account, and approves with its codes. */
 export class Authenticators {
     readonly #store: AuthenticatorStore;
     readonly #now: () => number;
+    readonly #locked: (lockout: Lockout) => void;
 
-    constructor(store: AuthenticatorStore, now = () => Date.now()) {
+    constructor(store: AuthenticatorStore, options: AuthenticatorOptions = {}) {
         this.#store = store;
-        this.#now = now;
+        this.#now = options.now ?? (() => Date.now());
+        this.#locked = options.locked ?? (() => {});
+    }
+
+    /** Until when `person`'s codes are refused after too many wrong ones; undefined when they are not. */
+    lockedUntil(person: string): number | undefined {
+        const until = this.#store.get(person)?.lockedUntil;
+
+        return until !== undefined && until > this.#now() ? until : undefined;
+    }
+
+    /**
+     * Check `code` against a copy of `state`, save the result (wrong codes and lockouts count), and report a new
+     * lockout. The refusal names when codes work again, so a locked-out person knows to wait.
+     */
+    #checkSaved(
+        person: string,
+        state: StoredAuthenticator,
+        code: string,
+        save: (state: StoredAuthenticator, valid: boolean) => StoredAuthenticator,
+    ): boolean {
+        const copy = structuredClone(state);
+        const valid = checkCode(copy, code, this.#now());
+
+        this.#store.set(person, save(copy, valid));
+
+        if (copy.lockedUntil !== undefined && copy.lockedUntil !== state.lockedUntil) {
+            this.#locked({ person, until: copy.lockedUntil, count: copy.lockouts?.length ?? 1 });
+        }
+
+        return valid;
+    }
+
+    /** The error for a refused code: wrong or used, or locked out until a time. */
+    refusal(person: string): HttpError {
+        const until = this.lockedUntil(person);
+
+        if (until === undefined) {
+            return new HttpError(400, "That code is wrong or used. Try the next one.");
+        }
+
+        const minutes = Math.ceil((until - this.#now()) / 60_000);
+
+        return new HttpError(
+            429,
+            `Too many wrong codes. Try again in ${String(minutes)} minute${minutes === 1 ? "" : "s"}.`,
+        );
     }
 
     /** Whether `person` has a linked authenticator. */
@@ -77,13 +135,12 @@ export class Authenticators {
             throw new HttpError(409, "Start linking an authenticator first.");
         }
 
-        const state = structuredClone(current);
-        const valid = checkCode(state, code, this.#now());
-
-        this.#store.set(person, valid ? { ...state, confirmedAt: this.#now() } : state);
+        const valid = this.#checkSaved(person, current, code, (state, ok) =>
+            ok ? { ...state, confirmedAt: this.#now() } : state,
+        );
 
         if (!valid) {
-            throw new HttpError(400, "That code is wrong or used. Try the next one.");
+            throw this.refusal(person);
         }
     }
 
@@ -91,7 +148,7 @@ export class Authenticators {
     remove(person: string, by: Person, code?: string): void {
         if (by.role !== "owner" || by.id === person) {
             if (this.linked(person) && (code === undefined || !this.check(person, code))) {
-                throw new HttpError(400, "That code is wrong or used. Try the next one.");
+                throw this.refusal(person);
             }
         }
 
@@ -106,12 +163,7 @@ export class Authenticators {
             return false;
         }
 
-        const state = structuredClone(current);
-        const valid = checkCode(state, code, this.#now());
-
-        this.#store.set(person, state);
-
-        return valid;
+        return this.#checkSaved(person, current, code, (state) => state);
     }
 }
 
@@ -128,10 +180,12 @@ export class ApprovalMethods {
                         typeof proof.code === "string" &&
                         authenticators.check(approver.id, proof.code),
                 ),
+            refusal: (approver) => authenticators.refusal(approver.id),
         });
         this.#add({
             id: "owner",
             verify: (approver) => Promise.resolve(approver.role === "owner"),
+            refusal: () => new HttpError(403, "Only the owner can approve this."),
         });
     }
 
@@ -148,12 +202,7 @@ export class ApprovalMethods {
         }
 
         if (!(await method.verify(approver, requester, proof))) {
-            throw new HttpError(
-                proof.method === "owner" ? 403 : 400,
-                proof.method === "owner"
-                    ? "Only the owner can approve this."
-                    : "That code is wrong or used. Try the next one.",
-            );
+            throw method.refusal(approver);
         }
 
         return method.id;

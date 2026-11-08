@@ -1,7 +1,7 @@
 // Phone notifications: this device subscribes to the server's pushes, and each person picks what they hear about.
 import { useEffect, useState } from "preact/hooks";
 import { callHost, hostCan } from "./host.js";
-import { api, attempt, closeSheet, notify, sessionUnread } from "./store.js";
+import { api, attempt, closeSheet, notify, sessionUnread, store } from "./store.js";
 import { html, Loader, Sheet, Switch } from "./ui.js";
 
 const supported =
@@ -125,6 +125,12 @@ const KINDS = [
     ],
     ["mention", "Mentions", "when someone writes @your name in a chat"],
     ["chat", "Chat messages", "in sessions you take part in"],
+    [
+        "security",
+        "Security",
+        "when too many wrong authenticator codes lock someone's codes out",
+        "owner",
+    ],
 ];
 
 export function NotificationsSheet() {
@@ -237,7 +243,9 @@ export function NotificationsSheet() {
                 </div>
                 <div class="group-title">Notify me about</div>
                 <div class="sheet-list">
-                    ${KINDS.map(
+                    ${KINDS.filter(
+                        ([, , , only]) => only === undefined || store.state.me?.role === only,
+                    ).map(
                         ([key, title, hint]) => html`<div class="extension">
                             <div class="extension-main">
                                 <div>${title}</div>

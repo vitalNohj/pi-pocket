@@ -46,6 +46,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { Alerts } from "./alerts.ts";
+import { ApprovalMethods, Authenticators } from "./approval-methods.ts";
 import { Attribution, type Missing } from "./attribution.ts";
 import { Browsers } from "./browser.ts";
 import type { BrowserState } from "./browser/page.ts";
@@ -380,6 +381,9 @@ export interface OpenOptions {
 
 export class PocketApp {
     readonly config: ConfigStore;
+    /** Each person's own authenticator app, and the ways to approve with it (`approval-methods.ts`). */
+    readonly authenticators: Authenticators;
+    readonly approvalMethods: ApprovalMethods;
     /** Other computers that run sessions' tools (`runners.ts`): their links, keys, and environments. */
     readonly runners: Runners;
     /** Push subscriptions and their keys; undefined until the server opened. */
@@ -568,6 +572,11 @@ export class PocketApp {
                 : {}),
         });
         this.config = new ConfigStore(options.dataDir);
+        this.authenticators = new Authenticators(this.config.authenticators, {
+            now: () => this.now(),
+            locked: (lockout) => this.alerts.lockout(lockout),
+        });
+        this.approvalMethods = new ApprovalMethods(this.authenticators);
         this.#lockFile = join(options.dataDir, "harness.lock");
         this.#log = options.log ?? ((line) => console.log(line));
         this.runners = new Runners({

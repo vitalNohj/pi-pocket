@@ -12,6 +12,7 @@ import { describe } from "./errors.ts";
 import { entryText, projectEntry, snippet } from "./projection.ts";
 import { span, type WaitView } from "./limit-gate.ts";
 import { DEFAULT_PREFS, type EmbedderMessage, type PushMessage, type PushPrefs } from "./push.ts";
+import type { Lockout } from "./approval-methods.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -84,6 +85,52 @@ export class Alerts {
             urgency,
             ...(subject === undefined ? {} : { subject }),
         });
+    }
+
+    /**
+     * Too many wrong codes locked out someone's authenticator (`approval-methods.ts`): the owner hears at once, in their
+     * open tabs and as a push, whoever it was, themselves too. It names the person, not what they asked for.
+     */
+    lockout(lockout: Lockout): void {
+        const app = this.#app;
+        const person = app.config.userById(lockout.person);
+        const who =
+            person === undefined ? "Someone" : person.role === "owner" ? "You" : person.name;
+        const whose = person?.role === "owner" ? "your" : "their";
+        const time = span(lockout.until - app.now());
+        const again =
+            lockout.count > 1
+                ? ` This is lockout ${String(lockout.count)} today: each one lasts longer.`
+                : "";
+        const body = `${who} entered 5 wrong authenticator codes. Codes for ${whose} account are refused for ${time}.${again}`;
+
+        app.ownerNotice("warning", body);
+
+        const owner = app.config.users.find((each) => each.role === "owner");
+        const store = app.pushStore;
+
+        if (owner === undefined || !(store?.prefs(owner.id) ?? DEFAULT_PREFS).security) {
+            return;
+        }
+
+        const message = {
+            title: "Authenticator codes locked out",
+            body,
+            url: "/",
+            tag: `lockout-${lockout.person}`,
+        } satisfies PushMessage;
+
+        app.notifyEmbedders(owner.id, { ...message, urgency: "high" });
+
+        // Push services want a real contact; Apple rejects placeholders. A tunnel's https address will do.
+        const subject = app.access?.url?.startsWith("https://") ? app.access.url : undefined;
+
+        void store
+            ?.notify(owner.id, message, {
+                urgency: "high",
+                ...(subject === undefined ? {} : { subject }),
+            })
+            .catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
     }
 
     /** A run started or ended. "Pi finished" goes out once it has stayed finished for a moment. */

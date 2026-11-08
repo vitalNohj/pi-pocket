@@ -13,6 +13,7 @@ import {
 import {
     ApprovalMethods,
     Authenticators,
+    type Lockout,
     type StoredAuthenticator,
 } from "../src/server/approval-methods.ts";
 import { HttpError } from "../src/server/errors.ts";
@@ -346,18 +347,29 @@ describe("approval methods", () => {
         auth: Authenticators;
         store: Map<string, StoredAuthenticator>;
         clock: { now: number };
+        lockouts: Lockout[];
     } {
         const store = new Map<string, StoredAuthenticator>();
         const clock = { now: at };
+        const lockouts: Lockout[] = [];
         const auth = new Authenticators(
             {
                 get: (id) => store.get(id),
                 set: (id, value) => (value === undefined ? store.delete(id) : store.set(id, value)),
             },
-            () => clock.now,
+            { now: () => clock.now, locked: (lockout) => lockouts.push(lockout) },
         );
 
-        return { auth, store, clock };
+        return { auth, store, clock, lockouts };
+    }
+
+    /** Five wrong codes for `person`, then the clock moves on a step, inside the lockout. */
+    function guessFive(auth: Authenticators, person: string, clock: { now: number }): void {
+        for (let i = 0; i < 5; i++) {
+            assert.equal(auth.check(person, "000000"), false);
+        }
+
+        clock.now += STEP_MS;
     }
 
     function code(secret: string, now: number): string {
@@ -414,18 +426,81 @@ describe("approval methods", () => {
         });
     });
 
-    it("locks an authenticator after five wrong codes", () => {
-        const { auth, clock } = authenticators();
+    it("locks an authenticator after five wrong codes, tells the owner, and says when to try again", async () => {
+        const { auth, clock, lockouts } = authenticators();
+        const methods = new ApprovalMethods(auth);
+        const { secret } = auth.begin(guest.id, "Guest");
+
+        auth.confirm(guest.id, code(secret, clock.now));
+        guessFive(auth, guest.id, clock);
+
+        assert.deepEqual(lockouts, [{ person: guest.id, until: at + 10 * 60_000, count: 1 }]);
+        assert.equal(auth.check(guest.id, code(secret, clock.now)), false);
+        await assert.rejects(
+            methods.verify(guest, guest, { method: "totp", code: code(secret, clock.now) }),
+            (error: HttpError) =>
+                error.status === 429 && /Try again in 10 minutes/.test(error.message),
+        );
+        // Another wrong code while locked does not lock it again, nor tell the owner twice.
+        assert.equal(auth.check(guest.id, "000000"), false);
+        assert.equal(lockouts.length, 1);
+        clock.now = at + 10 * 60_000 + STEP_MS;
+        assert.equal(auth.lockedUntil(guest.id), undefined);
+        assert.equal(auth.check(guest.id, code(secret, clock.now)), true);
+    });
+
+    it("locks for longer each time within a day: 10 minutes, then 30, then an hour", () => {
+        const { auth, clock, lockouts } = authenticators();
         const { secret } = auth.begin(guest.id, "Guest");
 
         auth.confirm(guest.id, code(secret, clock.now));
 
-        for (let i = 0; i < 5; i++) {
-            assert.equal(auth.check(guest.id, "000000"), false);
+        for (const minutes of [10, 30, 60, 60]) {
+            const start = clock.now;
+
+            guessFive(auth, guest.id, clock);
+            assert.equal(
+                auth.lockedUntil(guest.id),
+                start + minutes * 60_000,
+                `${String(minutes)} min`,
+            );
+            clock.now = auth.lockedUntil(guest.id)! + STEP_MS;
+            // A right code in between does not start the count over.
+            assert.equal(auth.check(guest.id, code(secret, clock.now)), true);
+            clock.now += STEP_MS;
         }
 
-        clock.now += STEP_MS;
-        assert.equal(auth.check(guest.id, code(secret, clock.now)), false);
+        assert.deepEqual(
+            lockouts.map((each) => each.count),
+            [1, 2, 3, 4],
+        );
+    });
+
+    it("starts again at 10 minutes once a day has passed since the earlier lockouts", () => {
+        const { auth, clock } = authenticators();
+        const { secret } = auth.begin(guest.id, "Guest");
+
+        auth.confirm(guest.id, code(secret, clock.now));
+        guessFive(auth, guest.id, clock);
+        clock.now += 24 * 60 * 60_000;
+
+        const start = clock.now;
+
+        guessFive(auth, guest.id, clock);
+        assert.equal(auth.lockedUntil(guest.id), start + 10 * 60_000);
+    });
+
+    it("refuses a code from someone who never locked out with a plain wrong-code message", async () => {
+        const { auth, clock, lockouts } = authenticators();
+        const methods = new ApprovalMethods(auth);
+        const { secret } = auth.begin(guest.id, "Guest");
+
+        auth.confirm(guest.id, code(secret, clock.now));
+        await assert.rejects(methods.verify(guest, guest, { method: "totp", code: "000000" }), {
+            status: 400,
+            message: "That code is wrong or used. Try the next one.",
+        });
+        assert.deepEqual(lockouts, []);
     });
 
     it("lets the owner approve anyone's request from the app, and refuses anyone else", async () => {

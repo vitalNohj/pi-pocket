@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AuthenticatorStore, StoredAuthenticator } from "./approval-methods.ts";
 import type { StoredLinkLimits } from "./link-limits.ts";
 
 /** The repository root: `web/` and `src/` live here, and `node_modules/` too, except in an npx or local install. */
@@ -57,6 +58,11 @@ export interface User {
     budget?: number;
     /** When their profile picture was set (`avatars.ts`); absent means they have none. */
     avatar?: number;
+    /**
+     * The authenticator app this person linked, to approve with its codes (`approval-methods.ts`). Its secret never
+     * leaves the server: nothing that sends a person's record to a browser may include it.
+     */
+    authenticator?: StoredAuthenticator;
 }
 
 /** An invite not yet used, kept by its code's sha256 (the code itself is only shown to whoever made it). */
@@ -623,6 +629,28 @@ export class ConfigStore {
         }
 
         this.save();
+    }
+
+    /** Each person's linked authenticator, kept with their account. Setting one for someone removed does nothing. */
+    get authenticators(): AuthenticatorStore {
+        return {
+            get: (id) => this.userById(id)?.authenticator,
+            set: (id, authenticator) => {
+                const user = this.userById(id);
+
+                if (user === undefined) {
+                    return;
+                }
+
+                if (authenticator === undefined) {
+                    delete user.authenticator;
+                } else {
+                    user.authenticator = authenticator;
+                }
+
+                this.save();
+            },
+        };
     }
 
     /** Remove someone (never the owner), and the invites they made, which could no longer be used. */
