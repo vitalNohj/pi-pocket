@@ -100,6 +100,13 @@ export interface StoredApproval {
     approvedAt: number;
     /** When it was last used; its clock starts here. */
     usedAt: number;
+    /**
+     * A recurring task's own approval (`folder-approvals.ts` `addTask`): `schedule:<task>`, `hook:<id>`,
+     * `rwatch:<id>`, or `watch:<task>`. It lasts while the task exists, and covers that task's runs alone.
+     */
+    task?: string;
+    /** What the task is, for the approvals list. */
+    label?: string;
 }
 
 /** An invite not yet used, kept by its code's sha256 (the code itself is only shown to whoever made it). */

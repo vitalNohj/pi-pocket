@@ -18,7 +18,7 @@ export const FOLDER_REQUEST_MS = 300_000;
  * What it is for: a new session, a copy, a move of one, one an agent links, or sending to a session (their own, whose
  * folder's approval ended, or one shared with them).
  */
-export type FolderRequestKind = "new" | "fork" | "move" | "linked" | "steer";
+export type FolderRequestKind = "new" | "fork" | "move" | "linked" | "steer" | "task";
 
 /** What a request asks for, and where. */
 export type FolderQuestion = {

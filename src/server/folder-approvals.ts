@@ -44,12 +44,19 @@ export class FolderApprovals {
         this.#changed = options.changed ?? (() => {});
     }
 
-    /** When `approval` ends unless used again; null: never (its person is never asked). Undefined: its person is gone. */
+    /**
+     * When `approval` ends unless used again; null: never (its person is never asked, or a task's, which lasts while its
+     * task does). Undefined: its person is gone.
+     */
     #expiresAt(approval: StoredApproval): number | null | undefined {
         const person = this.#store.userById(approval.person);
 
         if (person === undefined) {
             return undefined;
+        }
+
+        if (approval.task !== undefined) {
+            return null;
         }
 
         const days = approvalDays(person);
@@ -65,6 +72,7 @@ export class FolderApprovals {
 
     #matches(approval: StoredApproval, person: string, target: ApprovalTarget): boolean {
         return (
+            approval.task === undefined &&
             approval.person === person &&
             approval.computer === target.computer &&
             ("folder" in target
@@ -101,9 +109,56 @@ export class FolderApprovals {
 
     /** Whether `person` has a live approval for `target`, without using it. */
     has(person: string, target: ApprovalTarget): boolean {
-        return this.#store.folderApprovals.some(
+        return this.find(person, target) !== undefined;
+    }
+
+    /** `person`'s live approval for `target`, without using it. */
+    find(person: string, target: ApprovalTarget): StoredApproval | undefined {
+        return this.#store.folderApprovals.find(
             (each) => this.#matches(each, person, target) && this.#live(each),
         );
+    }
+
+    /**
+     * Keep an approval for recurring task `task` (`schedule:<task>`, `hook:<id>`, ...): `person`'s, of `target`, as
+     * `method` and `by` gave it. It does not end while unused, for the task runs when nobody is there; it covers the
+     * task's runs alone, never a session someone starts. Revoking it stops the task's runs.
+     */
+    addTask(
+        person: string,
+        target: ApprovalTarget,
+        task: string,
+        label: string,
+        method: StoredApproval["method"],
+        by: string,
+    ): void {
+        const now = this.#now();
+        const approval: StoredApproval = {
+            id: randomUUID(),
+            person,
+            computer: target.computer,
+            ...("folder" in target ? { folder: target.folder } : { session: target.session }),
+            method,
+            by,
+            approvedAt: now,
+            usedAt: now,
+            task,
+            label,
+        };
+
+        this.#save((list) => [...list.filter((each) => each.task !== task), approval]);
+    }
+
+    /** Task `task`'s approval, while its person is here; undefined when there is none (revoked, or never given). */
+    task(task: string): StoredApproval | undefined {
+        return this.#store.folderApprovals.find((each) => each.task === task && this.#live(each));
+    }
+
+    /** Task `task` is gone: its approval goes with it. */
+    dropTask(task: string): void {
+        if (this.#store.folderApprovals.some((each) => each.task === task)) {
+            this.#save((list) => list.filter((each) => each.task !== task));
+        }
     }
 
     /** Keep a new approval of `target` for `person`, in place of an older one for the same. */

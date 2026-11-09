@@ -326,6 +326,26 @@ export class RepoWatches {
         // Only where gh's account can push: someone else's repository could hand Pi work as if it were this person's.
         const info = await requirePush(this.#gh, named);
         const now = app.now();
+        // Its id is chosen before the task is made, so its approval comes first (`app.ts` `approveTask`): it runs when
+        // nobody is there, on its own approval while it exists. A replayed request finds the watch it made.
+        const replay =
+            request.key === undefined
+                ? undefined
+                : (await this.#all()).find((item) => item.key === request.key);
+
+        if (replay !== undefined) {
+            return this.view(replay);
+        }
+
+        const existing = new Set((await this.#all()).map((item) => item.id));
+        let chosen: string;
+
+        // Short, so a new one could be one there is already: that one would be lost.
+        do {
+            chosen = randomUUID().slice(0, 6);
+        } while (existing.has(chosen));
+
+        await app.approveTask(person, request.target, `rwatch:${chosen}`, `Watch of ${info.repo}`);
 
         const watch = await app.harness.commit(async (tx) => {
             const doc = await tx.doc(RepoWatchesDoc);
@@ -348,12 +368,11 @@ export class RepoWatches {
                 );
             }
 
-            let id: string;
+            const id = chosen;
 
-            // Short, so a new one could be one there is already: that one would be lost.
-            do {
-                id = randomUUID().slice(0, 6);
-            } while (Object.hasOwn(doc.items, id));
+            if (Object.hasOwn(doc.items, id)) {
+                throw new HttpError(409, "Another watch took this id: try again.");
+            }
 
             const taskId = await tx.createTask(
                 this.task,
@@ -407,6 +426,7 @@ export class RepoWatches {
             delete (await tx.doc(RepoWatchesDoc)).items[watch.id];
         }, context);
         this.#sent.delete(watch.id);
+        this.#app.folderApprovals.dropTask(`rwatch:${watch.id}`);
 
         return this.view(watch);
     }
@@ -724,11 +744,11 @@ export class RepoWatches {
         const target = watch.target as unknown as ConversationId;
         const person = app.config.userById(watch.by);
 
-        if (person === undefined || !app.policy.maySteer(person, String(target))) {
+        if (person === undefined || !app.taskMayRun(`rwatch:${watch.id}`, person, target)) {
             return this.#failed(
                 id,
                 runtime,
-                "its person can no longer reach where it sends",
+                "its person can no longer reach where it sends, or its approval was revoked",
                 context,
             );
         }
@@ -757,6 +777,8 @@ export class RepoWatches {
                     person,
                     { text: state.text, requestId: key },
                     `${REPO_WATCH_VIA} ${watch.repo}`,
+                    undefined,
+                    `rwatch:${watch.id}`,
                 );
             } catch (error) {
                 // A spend limit, someone else's turn, no model: it may pass. The look runs again, and finds the same.

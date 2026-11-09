@@ -20,6 +20,11 @@ function what(approval) {
             : (store.state.runners.find((each) => each.id === approval.computer)?.name ??
               "a computer");
 
+    // A recurring task's own: it lasts while the task does, and Revoke stops its runs.
+    if (approval.task !== undefined) {
+        return html`<strong>${approval.label ?? "A task"}</strong> on ${computer}`;
+    }
+
     if (approval.session !== undefined) {
         const title =
             store.state.sessions.find((each) => String(each.id) === approval.session)?.title ??
@@ -37,6 +42,10 @@ function what(approval) {
 
 /** When an approval ends, unless used before. */
 function ends(approval) {
+    if (approval.task !== undefined) {
+        return "lasts while the task does";
+    }
+
     if (approval.expiresAt === null) {
         return "does not end";
     }

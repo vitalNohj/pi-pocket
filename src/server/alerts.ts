@@ -155,7 +155,9 @@ export class Alerts {
         const body =
             request.kind === "steer"
                 ? `${request.name} asks to go on working in ${place}.`
-                : `${request.name} asks to start a session in ${place}.`;
+                : request.kind === "task"
+                  ? `${request.name} asks to set up a task that runs on its own in ${place}.`
+                  : `${request.name} asks to start a session in ${place}.`;
         const store = app.pushStore;
 
         if (!(store?.prefs(owner.id) ?? DEFAULT_PREFS).folders) {

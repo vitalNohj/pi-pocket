@@ -12,6 +12,7 @@ const KIND_TEXT = {
     move: "moving a session",
     linked: "a session an agent starts",
     steer: "steering a shared session",
+    task: "a task that runs on its own (a schedule, webhook, or watch)",
 };
 
 /** Where a request is: its folder, on which computer; the whole computer for the owner on a runner. */

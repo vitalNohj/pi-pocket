@@ -62,6 +62,7 @@ import {
     approvalDays,
     ConfigStore,
     modulesWith,
+    type StoredApproval,
     type User,
 } from "./config.ts";
 import {
@@ -170,7 +171,7 @@ import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.t
 import { AccessPolicy, THIS_SERVER } from "./access.ts";
 import { realFolder } from "../runner/folders.ts";
 import { FolderRequests, type FolderRequestKind } from "./folder-requests.ts";
-import { FolderApprovals, WHOLE_COMPUTER } from "./folder-approvals.ts";
+import { type ApprovalTarget, FolderApprovals, WHOLE_COMPUTER } from "./folder-approvals.ts";
 import {
     changedThere,
     type FolderScan,
@@ -2992,6 +2993,96 @@ export class PocketApp {
         );
     }
 
+    /**
+     * Approve recurring task `task` (`schedule:<task>`, `hook:<id>`, `rwatch:<id>`, `watch:<task>`) that `user` sets up
+     * in session `id`, before it is made or changed (`label` names it in the approvals list). It keeps its approval while
+     * it exists, for it runs when nobody is there. A live approval of the session's folder (or of the session, for one
+     * shared with them) gives it, unless `fresh`: changed instructions, a folder, or a computer need a new code. The
+     * owner on this server, and anyone never asked, need none. Throws (403, or a refused request) when not allowed.
+     */
+    async approveTask(
+        user: User,
+        id: ConversationId,
+        task: string,
+        label: string,
+        fresh = false,
+    ): Promise<void> {
+        const facts = this.policy.session(String(id));
+
+        if (facts === undefined) {
+            return;
+        }
+
+        this.policy.requireSteer(user, String(id));
+
+        const mine = this.policy.starter(facts) === user.id || user.role === "owner";
+        const folder = this.#approvalFolder(id);
+        const target = mine
+            ? { computer: facts.computer, folder }
+            : { computer: facts.computer, session: facts.id };
+        const free =
+            facts.pip !== undefined ||
+            (user.role === "owner" && facts.computer === THIS_SERVER) ||
+            approvalDays(user) === 0 ||
+            user.sessions !== undefined;
+        const live = fresh || free ? undefined : this.#liveApproval(user, target);
+
+        if (free) {
+            this.folderApprovals.addTask(user.id, target, task, label, "owner", user.id);
+
+            return;
+        }
+
+        if (live !== undefined) {
+            this.folderApprovals.addTask(user.id, target, task, label, live.method, live.by);
+
+            return;
+        }
+
+        const whole = user.role === "owner";
+        const answer = await this.folderRequests.ask(user, {
+            computer: facts.computer,
+            computerName: this.#computerName(facts.computer),
+            folder,
+            kind: "task",
+            ...(whole ? { whole: true } : {}),
+            ...(mine ? {} : { session: facts.id }),
+        });
+
+        this.folderApprovals.addTask(user.id, target, task, label, answer.method, answer.by);
+    }
+
+    /** `user`'s live approval for `target`, or the owner's of the whole computer on a runner. */
+    #liveApproval(user: User, target: ApprovalTarget): StoredApproval | undefined {
+        return (
+            this.folderApprovals.find(user.id, target) ??
+            (user.role === "owner" && "folder" in target
+                ? this.folderApprovals.find(user.id, {
+                      computer: target.computer,
+                      folder: WHOLE_COMPUTER,
+                  })
+                : undefined)
+        );
+    }
+
+    /**
+     * May recurring task `task` run now as `user` in session `id`: its approval stands (not revoked), and its person may
+     * still steer there and work in its folder (the owner's rules, checked at each run).
+     */
+    taskMayRun(task: string, user: User, id: ConversationId): boolean {
+        const approval = this.folderApprovals.task(task);
+        const facts = this.policy.session(String(id));
+
+        return (
+            approval !== undefined &&
+            approval.person === user.id &&
+            facts !== undefined &&
+            this.policy.maySteer(user, String(id)) &&
+            (facts.pip !== undefined ||
+                this.policy.mayUseFolder(user, facts.computer, this.#approvalFolder(id)))
+        );
+    }
+
     /** Each person's tabs hear their own approvals; the owner's hear every one. */
     #approvalsChanged(): void {
         for (const client of this.#clients) {
@@ -3060,13 +3151,23 @@ export class PocketApp {
         }
     }
 
-    /** While take turns is on, only the driver sends to Pi or changes its settings. */
-    async requireDriver(id: ConversationId, user: User): Promise<void> {
+    /**
+     * While take turns is on, only the driver sends to Pi or changes its settings. `task`: a recurring task's run, which
+     * needs its own approval (`taskMayRun`) in place of a live one of its person.
+     */
+    async requireDriver(id: ConversationId, user: User, task?: string): Promise<void> {
         this.requireSteer(user, id);
         const turns = await this.harness.snapshot(TurnsDoc, this.rootOf(id), context);
 
         if (turns?.on !== true || turns.driver === user.id) {
-            await this.#requireApproval(id, user);
+            if (task === undefined) {
+                await this.#requireApproval(id, user);
+            } else if (!this.taskMayRun(task, user, id)) {
+                throw new HttpError(
+                    403,
+                    "This task's approval was revoked, or its person may no longer work here.",
+                );
+            }
 
             return;
         }

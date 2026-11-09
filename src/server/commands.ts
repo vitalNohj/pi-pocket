@@ -1188,11 +1188,13 @@ export class Commands {
             beforeSubmit(): Promise<{ user: User; context: Context }>;
             afterSubmit(): void;
         },
+        task?: string,
     ): Promise<{ submissionId: SubmissionId; requestId: string }> {
         const app = this.#app;
 
         app.requireSee(user, id);
-        await app.requireDriver(id, user);
+        // A recurring task's run needs its own approval, not one its person used lately (`app.ts` `approveTask`).
+        await app.requireDriver(id, user, task);
 
         // PiP turned off takes nothing, from its person either: it would run without its rules, and be compacted without
         // its own summary (`pip-compact.ts`). What else goes to it (reports, schedules, watches) waits meanwhile.
