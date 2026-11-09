@@ -200,6 +200,13 @@ class LinkSession {
  * The link to one computer's daemon. Has the part of pi-env's `Connection` that `RemoteExecutionEnv` uses (`info`,
  * `session`, `request`, `kill`, `close`), so the env works on it unchanged.
  */
+/**
+ * LIVE ONLY, temporary (not in the upstream PR): runners from before the protocol cleanup (76d48961) reject a welcome
+ * without `graceMs`, and scope requests to sessions only when it says `approvals`. Remove once every linked runner
+ * runs the cleanup's version.
+ */
+const OLD_RUNNER_WELCOME = { graceMs: 2_000_000_000, approvals: true } as const;
+
 export class RunnerLink {
     readonly id: string;
     readonly #runners: Runners;
@@ -524,6 +531,7 @@ export class RunnerLink {
             session = current;
             this.#control({
                 type: "welcome",
+                ...OLD_RUNNER_WELCOME,
                 session: session.id,
                 resume: true,
                 received: session.inbox.received,
@@ -546,6 +554,7 @@ export class RunnerLink {
             this.#session = session;
             this.#control({
                 type: "welcome",
+                ...OLD_RUNNER_WELCOME,
                 session: session.id,
                 resume: false,
                 received: 0,
