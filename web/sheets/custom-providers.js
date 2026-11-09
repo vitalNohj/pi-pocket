@@ -139,8 +139,11 @@ const PRICES = [
 const MAX_TOKENS = 1_000_000_000;
 const MAX_PRICE = 1_000_000;
 
-/** A number as its field shows it: empty when there is none. */
-const shown = (value) => (typeof value === "number" ? String(value) : "");
+/** A number as its field shows it, every digit and no exponent (0.0000003, not 3e-7): empty when there is none. */
+const shown = (value) =>
+    typeof value === "number"
+        ? value.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: 20 })
+        : "";
 
 /** What a model's fields start with: its context window, maximum output, and price, as text. */
 const limitsText = (model) => ({
@@ -151,21 +154,27 @@ const limitsText = (model) => ({
 
 /** A count of tokens from its field: null when empty (Pi's default), NaN when it is not one. */
 function tokensFrom(text) {
-    const value = Number(text.trim());
+    const trimmed = text.trim();
 
-    if (text.trim() === "") {
+    if (trimmed === "") {
         return null;
     }
 
-    return Number.isSafeInteger(value) && value >= 1 && value <= MAX_TOKENS ? value : Number.NaN;
+    const value = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN;
+
+    return value >= 1 && value <= MAX_TOKENS ? value : Number.NaN;
 }
+
+/** Dollars from a price field: a plain number (3, 0.15, .5), NaN when it is not one. */
+const amountFrom = (text) =>
+    /^(\d+(\.\d*)?|\.\d+)$/.test(text.trim()) ? Number(text.trim()) : Number.NaN;
 
 /** A price from its fields: null when all are empty (the model costs nothing); a cache part left empty is 0. */
 const priceFrom = (cost) =>
     PRICES.every(([part]) => cost[part].trim() === "")
         ? null
         : Object.fromEntries(
-              PRICES.map(([part]) => [part, cost[part].trim() === "" ? 0 : Number(cost[part])]),
+              PRICES.map(([part]) => [part, cost[part].trim() === "" ? 0 : amountFrom(cost[part])]),
           );
 
 /** What is wrong with a model's context window, maximum output, or price; empty when nothing is. */
@@ -190,11 +199,11 @@ function limitsProblem({ contextWindow, maxTokens, cost }) {
 
     return Object.values(price).every((each) => each >= 0 && each <= MAX_PRICE)
         ? ""
-        : "A price is 0 or more dollars per million tokens.";
+        : "A price is a plain number of dollars per million tokens, like 0.15.";
 }
 
-/** A price as its button shows it: 3, 0.15, 0.075. */
-const dollars = (value) => String(Number(value.toFixed(value < 0.1 ? 3 : 2)));
+/** A price as its button shows it: 3, 0.15, 0.075, 0.0003. */
+const dollars = (value) => shown(Number(value < 0.1 ? value.toPrecision(2) : value.toFixed(2)));
 
 /** Whether any of a model's context, output, or price fields has something in it. */
 const limitsSet = ({ contextWindow, maxTokens, cost }) =>
@@ -221,11 +230,9 @@ function ModelLimits({ id, limits, onChange }) {
     const tokens = (field, label, fallback) => html`<label class="field">
         <span class="label">${label}</span>
         <input
-            type="number"
             inputmode="numeric"
-            min="1"
-            step="1"
             autocomplete="off"
+            spellcheck="false"
             value=${limits[field]}
             placeholder=${fallback}
             onInput=${(event) => onChange({ [field]: event.currentTarget.value })}
@@ -239,7 +246,8 @@ function ModelLimits({ id, limits, onChange }) {
         </div>
         <p class="muted small">
             In tokens. Empty uses Pi's default (128k and 16k). The context meter and compaction go by
-            the context window.
+            the context window. Each request asks for up to the max output, so keep it at or below
+            what the endpoint allows.
         </p>
         <span class="label">Price in dollars per million tokens</span>
         <div class="model-limits-grid">
@@ -247,11 +255,9 @@ function ModelLimits({ id, limits, onChange }) {
                 ([part, label]) => html`<label class="field" key=${part}>
                     <span class="label">${label}</span>
                     <input
-                        type="number"
                         inputmode="decimal"
-                        min="0"
-                        step="any"
                         autocomplete="off"
+                        spellcheck="false"
                         value=${limits.cost[part]}
                         placeholder=${part === "input" || part === "output" ? "" : "0"}
                         onInput=${(event) =>
@@ -276,8 +282,8 @@ export function EndpointForm({ editing, onDone, onCancel }) {
     const [baseUrl, setBaseUrl] = useState(editing?.baseUrl ?? "");
     const [apiKey, setApiKey] = useState("");
     const [noKey, setNoKey] = useState(editing?.key === "none");
-    // The models chosen, in order, and what the endpoint listed (with what it said of each model:
-    // context window, maximum output, price, and what it can do).
+    // The models chosen, in order, and what the endpoint listed (with context windows, and what the
+    // model can do, when it said them).
     const [chosen, setChosen] = useState((editing?.models ?? []).map((model) => model.id));
     // What each model is, by id: it sees images, its thinking levels (null: it does not think), and
     // its context window, maximum output, and price, as their fields' text.
@@ -313,7 +319,8 @@ export function EndpointForm({ editing, onDone, onCancel }) {
             ?.scrollIntoView({ block: "start", behavior: "smooth" });
     }, []);
 
-    // A new model starts with what the endpoint said of it: images, thinking, context, and price.
+    // A new model starts with what the endpoint said of it: images, thinking, and a vLLM context
+    // window. Its maximum output and price are typed by hand.
     const capsOf = (id) => {
         const said = (listed ?? []).find((model) => model.id === id);
 

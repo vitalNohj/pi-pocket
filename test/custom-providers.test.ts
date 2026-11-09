@@ -574,52 +574,23 @@ test("a model's images and thinking levels go into models.json, and Pi offers wh
     await app.customProviders.remove("caps");
 });
 
-test("discovery reads context windows, maximum outputs, and prices where the list says them", () => {
+test("discovery reads no price, and no context or output beyond vLLM's max_model_len", () => {
     assert.deepEqual(
         parseModelList({
             data: [
-                // OpenRouter: dollars per token, as text.
                 {
                     id: "router/claude",
                     context_length: 200000,
+                    context_window: 200000,
+                    max_completion_tokens: 64000,
                     top_provider: { context_length: 200000, max_completion_tokens: 64000 },
-                    pricing: {
-                        prompt: "0.000003",
-                        completion: "0.000015",
-                        input_cache_read: "0.0000003",
-                        input_cache_write: "0.00000375",
-                    },
+                    pricing: { prompt: "0.000003", completion: "0.000015" },
                 },
-                // Its router models price at -1: no price.
-                {
-                    id: "router/auto",
-                    context_length: 2000000,
-                    pricing: { prompt: "-1", completion: "-1" },
-                },
-                // Free, without cache prices.
-                { id: "router/free", pricing: { prompt: "0", completion: "0" } },
-                // Groq.
-                { id: "groq/llama", context_window: 131072, max_completion_tokens: 32768 },
-                {
-                    id: "broken",
-                    context_length: -5,
-                    max_completion_tokens: "lots",
-                    pricing: "cheap",
-                },
+                { id: "vllm/qwen", max_model_len: 32768.7 },
+                { id: "broken", max_model_len: -5 },
             ],
         }),
-        [
-            { id: "broken" },
-            { id: "groq/llama", contextWindow: 131072, maxTokens: 32768 },
-            { id: "router/auto", contextWindow: 2000000 },
-            {
-                id: "router/claude",
-                contextWindow: 200000,
-                maxTokens: 64000,
-                cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-            },
-            { id: "router/free", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
-        ],
+        [{ id: "broken" }, { id: "router/claude" }, { id: "vllm/qwen", contextWindow: 32768 }],
     );
 });
 

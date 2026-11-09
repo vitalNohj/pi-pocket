@@ -97,10 +97,8 @@ export interface CustomModelInfo {
 export interface ListedModel {
     id: string;
     contextWindow?: number;
-    maxTokens?: number;
     images?: boolean;
     reasoning?: boolean;
-    cost?: ModelPrice;
 }
 
 export interface CustomProvider {
@@ -431,11 +429,9 @@ export function idFor(name: string, taken: (id: string) => boolean): string {
 }
 
 /**
- * The ids of an endpoint's models, from an OpenAI `/models` answer, and what the list says of each: its context window
- * (vLLM's `max_model_len`, OpenRouter's `context_length`, Groq's `context_window`), its maximum output (OpenRouter's
- * `top_provider.max_completion_tokens`, Groq's `max_completion_tokens`), its price (OpenRouter's `pricing`), and what it
- * can do: OpenRouter's `architecture.input_modalities` and `supported_parameters`, or a `capabilities` list (`vision`,
- * `thinking`).
+ * The ids of an endpoint's models, from an OpenAI `/models` answer, with vLLM's context windows, and what the model can
+ * do where the list says it: OpenRouter's `architecture.input_modalities` and `supported_parameters`, or a
+ * `capabilities` list (`vision`, `thinking`).
  */
 export function parseModelList(body: unknown): ListedModel[] {
     const list = (body as Json | null)?.data;
@@ -448,17 +444,9 @@ export function parseModelList(body: unknown): ListedModel[] {
 
     for (const entry of list as (Json | null)[]) {
         const id = entry?.id;
+        const window = entry?.max_model_len;
 
         if (typeof id === "string" && id !== "" && id.length <= MAX_ID) {
-            const top = (entry?.top_provider ?? null) as Json | null;
-            const window = tokenCount(
-                entry?.max_model_len,
-                entry?.context_length,
-                entry?.context_window,
-                top?.context_length,
-            );
-            const most = tokenCount(top?.max_completion_tokens, entry?.max_completion_tokens);
-            const cost = listedPrice(entry?.pricing);
             const said = (value: unknown): string[] =>
                 Array.isArray(value)
                     ? value.filter((each): each is string => typeof each === "string")
@@ -475,62 +463,16 @@ export function parseModelList(body: unknown): ListedModel[] {
 
             models.set(id, {
                 id,
-                ...(window === undefined ? {} : { contextWindow: window }),
-                ...(most === undefined ? {} : { maxTokens: most }),
+                ...(typeof window === "number" && window >= 1 && window <= MAX_TOKENS
+                    ? { contextWindow: Math.floor(window) }
+                    : {}),
                 ...(images ? { images } : {}),
                 ...(reasoning ? { reasoning } : {}),
-                ...(cost === undefined ? {} : { cost }),
             });
         }
     }
 
     return [...models.values()].sort((a, b) => a.id.localeCompare(b.id)).slice(0, MAX_MODELS);
-}
-
-/** The first of a model list's token counts that is one: 1 or more, whole. */
-function tokenCount(...values: unknown[]): number | undefined {
-    const found = values.find(
-        (value): value is number => typeof value === "number" && value >= 1 && value <= MAX_TOKENS,
-    );
-
-    return found === undefined ? undefined : Math.floor(found);
-}
-
-/**
- * OpenRouter's `pricing` as Pi's price: it gives dollars per token, as text, where Pi has dollars per million tokens.
- * None when it lacks the input or output price, or gives one below 0 (its router models say -1).
- */
-function listedPrice(value: unknown): ModelPrice | undefined {
-    const pricing = (typeof value === "object" ? value : null) as Json | null;
-
-    const perMillion = (field: unknown): number | undefined => {
-        const each =
-            typeof field === "string" && field.trim() !== ""
-                ? Number(field)
-                : typeof field === "number"
-                  ? field
-                  : Number.NaN;
-        // 0.000003 dollars a token is 3 a million, not 2.9999999999999996.
-        const dollars = Number((each * 1_000_000).toPrecision(12));
-
-        return Number.isFinite(dollars) && dollars >= 0 && dollars <= MAX_PRICE
-            ? dollars
-            : undefined;
-    };
-
-    const input = perMillion(pricing?.prompt);
-    const output = perMillion(pricing?.completion);
-
-    if (input === undefined || output === undefined) {
-        return undefined;
-    }
-
-    return {
-        input,
-        output,
-        cacheRead: perMillion(pricing?.input_cache_read) ?? 0,
-        cacheWrite: perMillion(pricing?.input_cache_write) ?? 0,
-    };
 }
 
 export class CustomProviders {
