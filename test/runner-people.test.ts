@@ -19,8 +19,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner, type RunnerSettings, type SessionQuestion } from "../src/runner/runner.ts";
-import { base32, STEP_MS, totp } from "../src/runner/totp.ts";
+import { Runner } from "../src/runner/runner.ts";
 import { ConfigStore, type User } from "../src/server/config.ts";
 import { HttpError } from "../src/server/errors.ts";
 import { createHandler } from "../src/server/http.ts";
@@ -29,8 +28,6 @@ import type { RunnerView } from "../src/server/runners.ts";
 const there = join(root, "there");
 // Pi can read a parent context file outside its approved folder. Other outside paths remain runner-restricted.
 const outside = join(root, "AGENTS.md");
-const settings: RunnerSettings = {};
-const asked: SessionQuestion[] = [];
 let app: App;
 let server: Server;
 let runner: Runner;
@@ -41,7 +38,6 @@ let guest: User;
 let stranger: User;
 let id: ConversationId;
 let tab: ReturnType<typeof fakeTab>;
-let waiting = false;
 const tokens = new Map<string, string>();
 
 function person(name: string, role: User["role"], sessions?: string[]): User {
@@ -108,33 +104,10 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => settings,
-        saveSettings: (change) => {
-            Object.assign(settings, change);
-        },
-        ask: (question) => {
-            asked.push(question);
-
-            if (!waiting) {
-                return Promise.resolve({ allow: true });
-            }
-
-            return new Promise((resolve) => {
-                question.signal.addEventListener("abort", () => resolve({ allow: false }), {
-                    once: true,
-                });
-            });
-        },
     });
     runner.start();
-    await until(() => app.runners.link(runnerId).state !== undefined, "the runner's state");
-    // This computer already saved the owner's folder before another person starts a session there.
-    await app.commands.createSession(owner(app), { runner: runnerId, cwd: there });
-    assert.ok(settings.folders?.includes(there));
-    // Saved folders skip questions only with the computer's existing Stop asking setting.
-    settings.confirm = false;
+    await until(() => app.runners.link(runnerId).online, "the runner to connect");
     // The server's own rules (`access.ts`): the guest may work in the test folders there, and is not asked for a code.
-    // What the runner itself asks is what these tests check.
     app.config.setGivenFolders(runnerId, guest.id, [root]);
     app.config.updateUser(guest.id, { approvalDays: 0 });
 });
@@ -148,22 +121,13 @@ after(async () => {
 });
 
 describe("people granted a computer", () => {
-    it("refuses an ungranted guest's sessions, list, folders, and approval requests", async () => {
+    it("refuses an ungranted guest's sessions, list, and folders", async () => {
         for (const response of [
             await request(guest, "sessions", { runner: runnerId, cwd: there }),
             await request(guest, "runners"),
             await request(guest, `runners/${runnerId}/fs`),
         ]) {
             assert.equal(response.status, 403);
-        }
-
-        // A question they may not see is no question for them: they learn nothing of it.
-        for (const body of [
-            { id: "question", code: "123456" },
-            { id: "question", withdraw: true },
-            { id: "question", approve: true },
-        ]) {
-            assert.equal((await request(guest, `runners/${runnerId}/approval`, body)).status, 404);
         }
 
         assert.equal(app.policy.mayStart(guest, runnerId), false);
@@ -209,8 +173,7 @@ describe("people granted a computer", () => {
         assert.equal((tab.last("runners") as unknown as RunnerView[])[0]?.users, undefined);
     });
 
-    it("starts in the computer's saved folder without asking the person at the runner", async () => {
-        const before = asked.length;
+    it("starts in a folder given to the guest, with nobody asked at the computer", async () => {
         const created = await request<{ id: ConversationId }>(guest, "sessions", {
             runner: runnerId,
             cwd: there,
@@ -220,11 +183,7 @@ describe("people granted a computer", () => {
         id = created.body.id;
         assert.equal(app.runnerOf(id), runnerId);
         assert.equal(app.sessionMeta(id)?.createdBy, guest.id);
-        assert.equal(asked.length, before, "saved folders belong to the computer, not the person");
-        assert.equal(
-            settings.sessions?.find((entry) => entry.id === app.runnerScope(id)?.id)?.person,
-            guest.name,
-        );
+        assert.equal(app.runnerScope(id).person, guest.name, "the runner is told who started it");
         // Grants do not change session visibility: a session is its starter's, and the owner sees every one.
         assert.equal(app.canSee(guest, id), true);
         assert.equal(app.canSee(stranger, id), false);
@@ -241,7 +200,6 @@ describe("people granted a computer", () => {
         const entries = (await (await app.conversation(id)).entries({}, 10, undefined, context))
             .items;
         const entryId = Number(entries.find((entry) => entry.kind === "pi.assistant")!.id);
-        const before = asked.length;
         const copy = await request<{ id: ConversationId }>(guest, `c/${id}/fork`, {
             entryId,
             place: { runner: runnerId, cwd: there },
@@ -250,7 +208,6 @@ describe("people granted a computer", () => {
         assert.equal(copy.status, 200);
         assert.equal(app.runnerOf(copy.body.id), runnerId);
         assert.equal(app.sessionMeta(copy.body.id)?.createdBy, guest.id);
-        assert.equal(asked.length, before);
         assert.equal((await request(guest, `c/${id}/copy-place?runner=${runnerId}`)).status, 200);
         assert.equal(
             (await request(guest, `c/${id}/copy-place?runner=${otherRunnerId}`)).status,
@@ -275,13 +232,10 @@ describe("people granted a computer", () => {
             [runnerId],
         );
         assert.equal(list.body[0]?.users, undefined);
-        // The computer's approvals list (every session's folder and person) stays the linker's and the owner's.
-        await until(
-            () => app.runners.list(owner(app)).some((runner) => runner.approvals !== undefined),
-            "the computer's approvals state",
-        );
-        assert.equal(list.body[0]?.approvals, undefined);
-        assert.ok(app.runners.list(guest).every((runner) => runner.approvals === undefined));
+        // The computer's settings and who may use which folders stay the linker's and the owner's.
+        assert.equal(list.body[0]?.given, undefined);
+        assert.equal(list.body[0]?.network, undefined);
+        assert.equal(app.runners.list(owner(app))[0]?.network, true);
         const hello = await app.hello(guest);
 
         assert.deepEqual(
@@ -306,188 +260,20 @@ describe("people granted a computer", () => {
         assert.deepEqual((await app.folderFavorites.runners(guest))[runnerId], [there]);
     });
 
-    it("approves a waiting session with the guest's own code and withdraws another waiting session", async () => {
-        // The runner's own authenticator: a code from it is no longer the guest's to give, once the runner takes grants.
-        const computerSecret = base32(Buffer.from("12345678901234567890"));
-        const folder = join(root, "needs-code");
-        const next = join(root, "withdrawn");
+    it("does not let a granted guest change settings, folders, access, name, or remove a computer", async () => {
+        for (const body of [{ network: false }, { downloads: "/tmp" }, { shareNew: true }]) {
+            assert.equal((await request(guest, `runners/${runnerId}/settings`, body)).status, 403);
+        }
 
-        mkdirSync(folder);
-        mkdirSync(next);
-        settings.totp = { secret: computerSecret };
-
-        // The guest links their own authenticator to their account on the server.
-        const step = Math.floor(Date.now() / STEP_MS);
-        const { secret } = app.authenticators.begin(guest.id, "Guest");
-
-        app.authenticators.confirm(guest.id, totp(secret, step));
-        waiting = true;
-        const creating = request<{ id: ConversationId }>(guest, "sessions", {
-            runner: runnerId,
-            cwd: folder,
-        });
-        const link = app.runners.link(runnerId);
-
-        assert.equal(link.grants, true, "this runner takes the server's answers");
-        await until(() => link.questions.size === 1, "the question for an authenticator code");
-        const question = [...link.questions.values()][0]!;
-        const seen = app.runners
-            .list(guest)[0]!
-            .questions!.find((each) => each.id === question.id)!;
-
-        assert.equal(seen.asker, guest.id);
-        assert.equal(seen.code, true, "the guest can answer with their own code");
-        assert.equal(seen.approve, false, "only the owner allows from the app");
         assert.equal(
             (
-                await request(guest, `runners/${runnerId}/approval`, {
-                    id: question.id,
-                    code: totp(computerSecret, step),
-                })
-            ).status,
-            400,
-            "the computer's own code is not the guest's",
-        );
-        assert.equal(
-            (
-                await request(guest, `runners/${runnerId}/approval`, {
-                    id: question.id,
-                    approve: true,
+                await request(guest, `runners/${runnerId}/given`, {
+                    person: guest.id,
+                    folders: ["/"],
                 })
             ).status,
             403,
-            "a guest cannot approve without a code",
         );
-        assert.equal(
-            (
-                await request(guest, `runners/${runnerId}/approval`, {
-                    id: question.id,
-                    code: totp(secret, step + 1),
-                })
-            ).status,
-            200,
-        );
-        assert.equal((await creating).status, 200);
-        assert.equal(settings.sessions?.find((each) => each.folder === folder)?.approvedBy, "totp");
-        assert.ok(settings.folders?.includes(folder), "the folder is saved on the computer");
-        const controller = new AbortController();
-        const withdrawing = request(
-            guest,
-            "sessions",
-            { runner: runnerId, cwd: next },
-            "POST",
-            controller.signal,
-        );
-
-        await until(() => link.questions.size === 1, "the question to withdraw");
-        assert.equal(
-            (
-                await request(guest, `runners/${runnerId}/approval`, {
-                    id: [...link.questions.values()][0]!.id,
-                    withdraw: true,
-                })
-            ).status,
-            200,
-        );
-        await until(() => link.questions.size === 0, "the withdrawn question to end");
-        // A new-session sheet also cancels its HTTP request, as waitOnComputer does.
-        controller.abort();
-        await assert.rejects(withdrawing, { name: "AbortError" });
-        waiting = false;
-        delete settings.totp;
-        app.authenticators.remove(guest.id, owner(app));
-    });
-
-    it("lets the owner allow or deny a guest's question from the app, and shows it to nobody else", async () => {
-        const allowed = join(root, "owner-allows");
-        const denied = join(root, "owner-denies");
-        const link = app.runners.link(runnerId);
-        const users = app.config.runnerById(runnerId)?.users ?? [];
-
-        mkdirSync(allowed);
-        mkdirSync(denied);
-        app.config.setRunnerUsers(runnerId, [...new Set([...users, guest.id, stranger.id])]);
-        waiting = true;
-
-        try {
-            const creating = request<{ id: ConversationId }>(guest, "sessions", {
-                runner: runnerId,
-                cwd: allowed,
-            });
-
-            await until(() => link.questions.size === 1, "the guest's question");
-            const question = [...link.questions.values()][0]!;
-            const forOwner = app.runners
-                .list(owner(app))
-                .find((each) => each.id === runnerId)!
-                .questions!.find((each) => each.id === question.id)!;
-
-            assert.equal(forOwner.name, "Guest");
-            assert.equal(forOwner.approve, true);
-
-            // Another person chosen for the computer neither sees the guest's question nor answers it.
-            assert.deepEqual(app.runners.list(stranger)[0]!.questions, []);
-            assert.equal(
-                (
-                    await request(stranger, `runners/${runnerId}/approval`, {
-                        id: question.id,
-                        withdraw: true,
-                    })
-                ).status,
-                404,
-            );
-            assert.equal(
-                (
-                    await request(owner(app), `runners/${runnerId}/approval`, {
-                        id: question.id,
-                        approve: true,
-                    })
-                ).status,
-                200,
-            );
-            assert.equal((await creating).status, 200);
-            assert.equal(
-                settings.sessions?.find((each) => each.folder === allowed)?.approvedBy,
-                "owner",
-            );
-
-            const refusing = request(guest, "sessions", { runner: runnerId, cwd: denied });
-
-            await until(() => link.questions.size === 1, "the next question");
-            assert.equal(
-                (
-                    await request(owner(app), `runners/${runnerId}/approval`, {
-                        id: [...link.questions.values()][0]!.id,
-                        deny: true,
-                    })
-                ).status,
-                200,
-            );
-
-            const refused = await refusing;
-
-            assert.equal(refused.status, 403);
-            assert.match(String(refused.body.error), /owner did not allow it/);
-            assert.ok(!settings.folders?.includes(denied), "a denied folder is not saved");
-        } finally {
-            waiting = false;
-            app.config.setRunnerUsers(runnerId, users);
-        }
-    });
-
-    it("does not let a granted guest change settings, approvals, access, name, or remove a computer", async () => {
-        for (const action of [
-            { action: "settings", code: "123456", change: { stopAsking: true } },
-            { action: "settings", code: "123456", change: { name: "Renamed" } },
-            { action: "revoke", session: "all" },
-            { action: "remove-folder", folder: there },
-        ]) {
-            assert.equal(
-                (await request(guest, `runners/${runnerId}/permissions`, { request: action }))
-                    .status,
-                403,
-            );
-        }
 
         assert.equal(
             (await request(guest, `runners/${runnerId}/users`, { users: [stranger.id] })).status,

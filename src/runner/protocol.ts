@@ -23,7 +23,7 @@
  */
 
 /** The link protocol's version. Both sides refuse a different one. */
-export const LINK_PROTOCOL = 1;
+export const LINK_PROTOCOL = 2;
 
 /** The WebSocket subprotocol a runner asks for. */
 export const LINK_SUBPROTOCOL = `pi-pocket-runner.${LINK_PROTOCOL}`;
@@ -63,51 +63,29 @@ export const MAX_FRAME = 16 * 1024 * 1024;
 /** Programs ready on the runner, checked at each connection; older runners do not send this. */
 export type RunnerTools = { git: boolean; gh: boolean; github: boolean };
 
-import type { ApprovalState, RunnerAction, SessionScope } from "./approvals.ts";
-export type { ApprovalState, RunnerAction, SessionScope } from "./approvals.ts";
-
-/** Removed by the runner before a request reaches pi-env. Negotiated with hello/welcome.approvals. */
-export const SESSION_FIELD = "_pocketSession";
-export type ApprovalNeeded = {
-    type: "approval-needed";
-    id: string;
-    session: string;
-    folder: string;
-    permission: "folder" | "session";
-    expired: boolean;
-    broad: boolean;
-    totp: boolean;
-};
-export type ApprovalEnded = { type: "approval-ended"; id: string };
-/** Server to a runner without grants: a code for the runner's own authenticator, which only the runner checks. */
-export type ApprovalCode = { type: "approval-code"; id: string; code: string };
 /**
- * Server to a runner that takes grants (`Hello.grants`, `Welcome.grants`): the answer to its question `id`. The server
- * checked the proof: the asking person's own authenticator code (`totp`), or the owner from the app (`owner`). The
- * runner trusts its server after the link, so it takes the answer as it takes one from the person at the computer.
- * `by` names who approved, for the computer's log.
+ * The session a request belongs to, as the server names it: its id (the root session's permission id), its folder on the
+ * computer, and who started it. The server decided that this person may use this folder (`src/server/access.ts`); the
+ * runner keeps the request inside it (`request-gate.ts`).
  */
-export type ApprovalGrant = {
-    type: "approval-grant";
-    id: string;
-    allow: boolean;
-    method?: "totp" | "owner";
-    by?: string;
-    reason?: string;
-};
-export type CodeResult = { type: "code-result"; id: string; allow: boolean; reason?: string };
-export type StateMessage = { type: "runner-state"; state: ApprovalState };
-export type ActionMessage = { type: "runner-action"; id: string; request: RunnerAction };
-export type ActionResult = {
-    type: "runner-result";
-    id: string;
-    ok: boolean;
-    reason?: string;
-    state?: ApprovalState;
+export type SessionScope = { id: string; folder: string; person: string };
+
+/** Removed by the runner before a request reaches pi-env: the request's `SessionScope`. */
+export const SESSION_FIELD = "_pocketSession";
+
+/**
+ * Server to runner: this computer's settings, kept on the server and changed in its Runners sheet. Sent after each
+ * welcome and on each change. `network` false: sessions' browsers do not use this computer's network. `downloads`: where
+ * their downloads go, an absolute folder here; absent, the temporary folder.
+ */
+export type RunnerSettingsMessage = {
+    type: "runner-settings";
+    network: boolean;
+    downloads?: string;
 };
 
-/** Runner-owned background tasks, independent of the pi-env daemon session. */
-export type TaskRequest = { type: "task"; id: string; permission: string } & (
+/** Runner-owned background tasks, independent of the pi-env daemon session. `scope`: the session's, for its folder. */
+export type TaskRequest = { type: "task"; id: string; permission: string; scope: SessionScope } & (
     | {
           op: "start";
           task: string;
@@ -138,50 +116,12 @@ export type Hello = {
     received: number;
     /** The runner's Pi Pocket version, for the computers list. */
     version: string;
-    /**
-     * The runner answers `Confirm`: it decides on its computer whether a new session may start there. Absent (a runner
-     * older than this): the server does not ask, and sessions start as before.
-     */
-    asks?: boolean;
-    /** Enforces and reports per-session grants, TOTP, and settings. */
-    approvals?: boolean;
-    /** The runner understands `Withdraw`: a session question can be cancelled by the server. */
-    withdraws?: boolean;
-    /** The runner takes the server's answers to its questions (`ApprovalGrant`). Absent: codes are relayed to it. */
-    grants?: boolean;
     /** Background tasks belong to this runner process, not its tool daemon. */
     tasks?: true;
     tools?: RunnerTools;
-    /** The runner opens network streams (`net-open`). Absent (an older runner): the server asks it for none. */
-    network?: boolean;
-    /** The folder for its browser downloads, absolute (`settings downloads`). Absent: its temporary folder. */
-    downloads?: string;
+    /** Plain HTTP to this server is allowed on this computer (`pi-pocket runner link --allow-http`), for the sheet. */
+    allowHttp?: boolean;
 };
-
-/**
- * Server to runner, before a session starts on its computer: who wants it and where. The runner asks its person (or
- * not, as its settings say) and answers with `Confirmed`.
- */
-export type Confirm = {
-    type: "confirm";
-    id: string;
-    /** A new session, a fork (a copy), or a change of working folder. */
-    kind: "new" | "fork" | "move";
-    /** Moves travel as kind new + move so older runners still ask rather than reject the message. */
-    move?: true;
-    /** Who asked, by their name on the server. */
-    person: string;
-    /** The folder on this computer. */
-    folder: string;
-    /** Root session permission, absent on older servers. */
-    session?: string;
-};
-
-/** Runner to server: the answer to `Confirm`; `reason` says why not, in words for the person who asked. */
-export type Confirmed = { type: "confirmed"; id: string; allow: boolean; reason?: string };
-
-/** Server to runner: the session question with this id no longer stands. */
-export type Withdraw = { type: "withdraw"; id: string };
 
 /** Server to runner, the answer to `Hello`. */
 export type Welcome = {
@@ -193,10 +133,6 @@ export type Welcome = {
     received: number;
     /** Unused since the server keeps the session while it runs (`LEGACY_GRACE_MS`); older runners read it. */
     graceMs: number;
-    /** Requests carry SESSION_FIELD, and net-open carries its session scope. */
-    approvals?: boolean;
-    /** The server answers the runner's questions with `ApprovalGrant` (the runner said `grants`). */
-    grants?: boolean;
 };
 
 /** Either side: bytes of the other side's stream received so far, so the other side can drop them. */
@@ -238,29 +174,24 @@ export type NetCredit = { type: "net-credit"; id: number; bytes: number };
 export type NetMessage = NetOpen | NetOpened | NetFailed | NetEnd | NetReset | NetCredit;
 
 export type ControlMessage =
-    | Hello
-    | Welcome
-    | Ack
-    | Bye
-    | Confirm
-    | Confirmed
-    | Withdraw
-    | NetMessage
-    | ApprovalNeeded
-    | ApprovalEnded
-    | ApprovalCode
-    | ApprovalGrant
-    | CodeResult
-    | StateMessage
-    | ActionMessage
-    | ActionResult
-    | TaskRequest
-    | TaskResult;
+    Hello | Welcome | Ack | Bye | NetMessage | RunnerSettingsMessage | TaskRequest | TaskResult;
 
 /** The first byte of a network stream's binary message. */
 export const STREAM_DATA = 1;
 
 const NET_FAILURES = new Set(["refused", "unreachable", "timeout", "limit"]);
+
+function scopeOf(value: unknown): value is SessionScope {
+    const scope = value as Record<string, unknown> | null;
+
+    return (
+        typeof scope === "object" &&
+        scope !== null &&
+        typeof scope.id === "string" &&
+        typeof scope.folder === "string" &&
+        typeof scope.person === "string"
+    );
+}
 
 /** Parse a text message; undefined for anything that is not a control message. */
 export function parseControl(text: string): ControlMessage | undefined {
@@ -282,60 +213,18 @@ export function parseControl(text: string): ControlMessage | undefined {
     const stream = count("id") && (message.id as number) <= 0xffffffff;
 
     switch (message.type) {
-        case "approval-needed":
-            return typeof message.id === "string" &&
-                typeof message.session === "string" &&
-                typeof message.folder === "string" &&
-                ["folder", "session"].includes(message.permission as string) &&
-                typeof message.expired === "boolean" &&
-                typeof message.broad === "boolean" &&
-                typeof message.totp === "boolean"
-                ? (message as ApprovalNeeded)
+        case "runner-settings":
+            return typeof message.network === "boolean" &&
+                (message.downloads === undefined || typeof message.downloads === "string")
+                ? (message as RunnerSettingsMessage)
                 : undefined;
-        case "approval-ended":
-            return typeof message.id === "string" ? (message as ApprovalEnded) : undefined;
-        case "approval-code":
-            return typeof message.id === "string" && typeof message.code === "string"
-                ? (message as ApprovalCode)
-                : undefined;
-        case "approval-grant":
-            return typeof message.id === "string" &&
-                typeof message.allow === "boolean" &&
-                (message.allow
-                    ? message.method === "totp" || message.method === "owner"
-                    : message.method === undefined) &&
-                (message.by === undefined || typeof message.by === "string") &&
-                (message.reason === undefined || typeof message.reason === "string")
-                ? (message as ApprovalGrant)
-                : undefined;
-        case "code-result":
-            return typeof message.id === "string" && typeof message.allow === "boolean"
-                ? (message as CodeResult)
-                : undefined;
-        case "runner-state":
-            return typeof message.state === "object" && message.state !== null
-                ? (message as StateMessage)
-                : undefined;
-
-        case "runner-action": {
-            const request = message.request as Record<string, unknown> | undefined;
-
-            return typeof message.id === "string" &&
-                request !== null &&
-                typeof request === "object" &&
-                ((request.action === "revoke" && typeof request.session === "string") ||
-                    (request.action === "remove-folder" && typeof request.folder === "string") ||
-                    (request.action === "settings" &&
-                        typeof request.code === "string" &&
-                        typeof request.change === "object" &&
-                        request.change !== null &&
-                        !Array.isArray(request.change)))
-                ? (message as ActionMessage)
-                : undefined;
-        }
 
         case "task": {
-            if (typeof message.id !== "string" || typeof message.permission !== "string") {
+            if (
+                typeof message.id !== "string" ||
+                typeof message.permission !== "string" ||
+                (message.scope !== undefined && !scopeOf(message.scope))
+            ) {
                 return undefined;
             }
 
@@ -384,10 +273,6 @@ export function parseControl(text: string): ControlMessage | undefined {
                             );
                         })))
                 ? (message as TaskResult)
-                : undefined;
-        case "runner-result":
-            return typeof message.id === "string" && typeof message.ok === "boolean"
-                ? (message as ActionResult)
                 : undefined;
         case "net-open":
             return stream &&
@@ -438,21 +323,6 @@ export function parseControl(text: string): ControlMessage | undefined {
             return count("received") ? (message as Ack) : undefined;
         case "bye":
             return typeof message.reason === "string" ? (message as Bye) : undefined;
-        case "confirm":
-            return typeof message.id === "string" &&
-                (message.kind === "new" || message.kind === "fork" || message.kind === "move") &&
-                typeof message.person === "string" &&
-                typeof message.folder === "string"
-                ? (message as Confirm)
-                : undefined;
-        case "withdraw":
-            return typeof message.id === "string" ? (message as Withdraw) : undefined;
-        case "confirmed":
-            return typeof message.id === "string" &&
-                typeof message.allow === "boolean" &&
-                (message.reason === undefined || typeof message.reason === "string")
-                ? (message as Confirmed)
-                : undefined;
         default:
             return undefined;
     }

@@ -112,8 +112,6 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => ({ confirm: false }),
-        ask: () => Promise.resolve({ allow: true }),
     });
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
@@ -289,7 +287,7 @@ describe("a session's folder on another computer", () => {
             // The owner reads what Pi can there: the session's folder. Its runner refuses a path outside it.
             assert.match(
                 (await failure(app.workspace.viewFile(id, owner(app), outside))).message,
-                /outside the session's approved folder|is not there/,
+                /outside the session's folder|is not there/,
             );
 
             assert.equal(

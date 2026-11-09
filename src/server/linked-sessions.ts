@@ -804,13 +804,6 @@ export class LinkedSessions implements LinkedSessionsApi {
 
         if (runner !== undefined && !sameFolder) {
             await app.approveFolder(user, cwd, "linked", undefined, runner);
-            await app.runners
-                .link(runner)
-                .confirm(
-                    { kind: "new", person: user.name, folder: cwd, session: runnerPermission },
-                    undefined,
-                    user.id,
-                );
         }
 
         // Another folder here asks its starter, as a session they start there would: an agent gets no more.

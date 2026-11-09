@@ -883,44 +883,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
-        if (
-            first === "runners" &&
-            second !== undefined &&
-            third === "approval" &&
-            method === "POST"
-        ) {
-            // Answering a computer's question about a session there (`app.answerRunnerQuestion`): its asker with their
-            // own code, the owner from the app, and who manages it withdraws. Whoever may not see it gets a 404.
-            app.runners.require(second);
-
-            const body = await readJson<{
-                id?: unknown;
-                code?: unknown;
-                approve?: unknown;
-                deny?: unknown;
-                withdraw?: unknown;
-            } | null>(request);
-
-            if (typeof body?.id !== "string") {
-                throw new HttpError(400, "id is required");
-            }
-
-            await app.answerRunnerQuestion(
-                user,
-                second,
-                body.id,
-                body.withdraw === true
-                    ? { withdraw: true }
-                    : body.deny === true
-                      ? { deny: true }
-                      : body.approve === true
-                        ? { approve: true }
-                        : { code: sixDigits(body.code) },
-            );
-
-            return json(response, 200, { ok: true });
-        }
-
         // Who may use a computer: its linker's and the owner's to choose (`access.ts` `mayManage`).
         if (first === "runners" && second !== undefined && third === "users" && method === "POST") {
             if (second !== THIS_SERVER) {
@@ -954,9 +916,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         /**
-         * A computer's rules kept here: "Default sharing" (`shareNew`) for any computer, and "Stop asking" for this
-         * server (a runner keeps its own on that computer). Its linker's and the owner's; this server's owner needs no
-         * code for its own server, as for its other settings.
+         * A computer's settings kept here: "Default sharing" (`shareNew`) for any computer; for a runner, whether its
+         * sessions' browsers use its network, and where their downloads go there. Its linker's and the owner's. A runner
+         * gets its settings at once (`runner-settings`).
          */
         if (
             first === "runners" &&
@@ -970,7 +932,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             app.policy.requireManage(user, second);
 
-            const body = await readJson<{ shareNew?: unknown } | null>(request);
+            const body = await readJson<{
+                shareNew?: unknown;
+                network?: unknown;
+                downloads?: unknown;
+            } | null>(request);
             const change: ComputerSettings = {};
 
             if (body?.shareNew !== undefined) {
@@ -981,7 +947,35 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 change.shareNew = body.shareNew;
             }
 
+            if (second !== THIS_SERVER && body?.network !== undefined) {
+                if (typeof body.network !== "boolean") {
+                    throw new HttpError(400, "network must be true or false.");
+                }
+
+                change.network = body.network;
+            }
+
+            if (second !== THIS_SERVER && body?.downloads !== undefined) {
+                // An absolute folder on that computer (POSIX or Windows), or null for its temporary folder.
+                if (
+                    body.downloads !== null &&
+                    (typeof body.downloads !== "string" ||
+                        body.downloads.length > 1024 ||
+                        !/^(\/|[A-Za-z]:[\\/])/.test(body.downloads))
+                ) {
+                    throw new HttpError(400, "downloads must be an absolute folder, or null.");
+                }
+
+                change.downloads = body.downloads;
+            }
+
             app.config.setComputerSettings(second === THIS_SERVER ? undefined : second, change);
+
+            if (second !== THIS_SERVER) {
+                app.runners.link(second).sendSettings();
+                app.runners.changed();
+            }
+
             app.accessChanged();
 
             return json(
@@ -1013,52 +1007,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 second === THIS_SERVER
                     ? app.thisServer(user)
                     : app.runners.list(user).find((runner) => runner.id === second),
-            );
-        }
-
-        if (
-            first === "runners" &&
-            second !== undefined &&
-            third === "permissions" &&
-            method === "POST"
-        ) {
-            app.runners.require(second);
-            app.policy.requireManage(user, second);
-            const body = await readJson<{ request?: unknown }>(request);
-            const action = body.request as Record<string, unknown> | undefined;
-
-            if (
-                action?.action === "settings" &&
-                app.runners.require(second).createdBy !== user.id
-            ) {
-                throw new HttpError(
-                    403,
-                    "Only the person who linked this computer can change its settings.",
-                );
-            }
-
-            if (
-                !(action?.action === "revoke" && typeof action.session === "string") &&
-                !(action?.action === "remove-folder" && typeof action.folder === "string") &&
-                !(
-                    action?.action === "settings" &&
-                    typeof action.code === "string" &&
-                    /^\d{6}$/.test(action.code) &&
-                    typeof action.change === "object" &&
-                    action.change !== null &&
-                    !Array.isArray(action.change)
-                )
-            ) {
-                throw new HttpError(400, "Invalid runner request.");
-            }
-
-            app.runners.require(second);
-            await app.runners.link(second).action(action as never);
-
-            return json(
-                response,
-                200,
-                app.runners.list(user).find((runner) => runner.id === second),
             );
         }
 

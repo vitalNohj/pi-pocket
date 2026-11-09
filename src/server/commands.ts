@@ -532,14 +532,6 @@ export class Commands {
 
         const runnerPermission = randomUUID();
 
-        await app.runners
-            .link(runner)
-            .confirm(
-                { kind: "new", person: user.name, folder: cwd, session: runnerPermission },
-                signal,
-                user.id,
-            );
-
         const initial = this.#defaultModel();
         const now = Date.now();
         const label = title ?? `${basename(cwd) || cwd} on ${app.runners.name(runner)}`;
@@ -2286,16 +2278,6 @@ export class Commands {
 
         if (runner !== undefined && cwd !== undefined && cwd !== (current?.cwd ?? app.cwdOf(id))) {
             await app.approveFolder(user, cwd, "move", undefined, runner);
-            await app.runners.link(runner).confirm(
-                {
-                    kind: "move",
-                    person: user.name,
-                    folder: app.runnerScope(id, cwd).folder,
-                    session: app.runnerScope(id).id,
-                },
-                undefined,
-                user.id,
-            );
         }
 
         // Moving to another folder here asks as a new session there would.
@@ -3217,16 +3199,6 @@ export class Commands {
         // Approve the source folder before git or copies use it. The worktree is this new permission's own folder.
         if (runner !== undefined) {
             await this.#app.approveFolder(user, destination.cwd, "fork", signal, runner);
-            await this.#app.runners.link(runner).confirm(
-                {
-                    kind: "fork",
-                    person: user.name,
-                    folder: destination.cwd,
-                    session: runnerPermission,
-                },
-                signal,
-                user.id,
-            );
         } else {
             await this.#app.approveFolder(user, destination.cwd, "fork", signal);
         }

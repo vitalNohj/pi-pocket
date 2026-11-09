@@ -16,7 +16,8 @@ import {
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner, type SessionAnswer, type SessionQuestion } from "../src/runner/runner.ts";
+import { Runner } from "../src/runner/runner.ts";
+import type { FolderRequestView } from "../src/server/folder-requests.ts";
 import { ChatDoc, FolderFavoritesDoc } from "../src/server/docs.ts";
 import { normalizeRemote } from "../src/server/repo.ts";
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
@@ -34,6 +35,7 @@ import {
     until,
     work,
     addPerson,
+    answerRequests,
 } from "./helpers.ts";
 
 /** What the model got in its newest request, as text. */
@@ -50,15 +52,36 @@ let server: Server;
 let port: number;
 
 /** A linked computer: its runner, id, and folder. */
-type Computer = { runner: Runner; id: string; folder: string; settings: { confirm?: boolean } };
+type Computer = { runner: Runner; id: string; folder: string };
 
-const asked: SessionQuestion[] = [];
-let answer: (question: SessionQuestion) => Promise<SessionAnswer> = () =>
-    Promise.resolve({ allow: true });
+/**
+ * The folders the server asked about (`folder-requests.ts`), and how the owner answers: yes, unless a test says
+ * otherwise. The runner asks nobody; the owner's approval time is 0 (never asked) unless `asking` sets one.
+ */
+const asked: FolderRequestView[] = [];
+let answer: (request: FolderRequestView) => boolean | undefined = () => true;
+
+let stopAnswering: () => void = () => {};
+
+/** Ask the owner for each new folder (approval time 1 day, no approval kept), for one test. */
+async function asking<T>(run: () => Promise<T>): Promise<T> {
+    const me = owner(app);
+
+    for (const each of app.folderApprovals.list(me)) {
+        app.folderApprovals.revoke(me, each.id);
+    }
+
+    app.config.updateUser(me.id, { approvalDays: 1 });
+
+    try {
+        return await run();
+    } finally {
+        app.config.updateUser(me.id, { approvalDays: 0 });
+    }
+}
 
 async function link(name: string): Promise<Computer> {
     const folder = join(root, name.toLowerCase());
-    const settings: { confirm?: boolean } = {};
 
     mkdirSync(folder, { recursive: true });
     const { code } = app.runners.makeCode(name, owner(app).id);
@@ -69,12 +92,6 @@ async function link(name: string): Promise<Computer> {
         cwd: folder,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => settings,
-        ask: (question) => {
-            asked.push(question);
-
-            return answer(question);
-        },
     });
 
     runner.start();
@@ -83,7 +100,7 @@ async function link(name: string): Promise<Computer> {
         `${name} to connect`,
     );
 
-    return { runner, id: linked.id, folder, settings };
+    return { runner, id: linked.id, folder };
 }
 
 let laptop: Computer;
@@ -130,9 +147,11 @@ before(async () => {
     port = (server.address() as AddressInfo).port;
     laptop = await link("Laptop");
     desk = await link("Desk");
+    stopAnswering = answerRequests(app, (request) => answer(request), asked);
 });
 
 after(async () => {
+    stopAnswering();
     await laptop?.runner.stop();
     await desk?.runner.stop();
     await app?.close();
@@ -274,21 +293,23 @@ describe("a copy with a place", () => {
         assert.ok((await activity(id)).some((line) => line.includes("to run on This server in")));
     });
 
-    it("goes to another computer: asked there, with the remote extensions, and Pi is told", async () => {
+    it("goes to another computer: approved on the server, with the remote extensions, and Pi is told", async () => {
         const { id, reply } = await talked();
 
         asked.length = 0;
-        const copy = await app.commands.fork(id, owner(app), {
-            entryId: reply,
-            place: { runner: laptop.id, cwd: laptop.folder },
-        });
+        const copy = await asking(() =>
+            app.commands.fork(id, owner(app), {
+                entryId: reply,
+                place: { runner: laptop.id, cwd: laptop.folder },
+            }),
+        );
 
         assert.equal(app.runnerOf(copy.id), laptop.id);
         assert.equal(app.sessionMeta(copy.id)?.runner, laptop.id);
         assert.equal(app.sessionMeta(copy.id)?.cwd, laptop.folder);
         assert.deepEqual(
-            asked.map((each) => [each.kind, each.folder]),
-            [["fork", laptop.folder]],
+            asked.map((each) => [each.kind, each.computer]),
+            [["fork", laptop.id]],
         );
         assert.deepEqual((await app.agentState(copy.id))?.extensions, [...REMOTE_EXTENSIONS]);
 
@@ -411,22 +432,27 @@ describe("a copy with a place", () => {
         const count = () => app.sessions(owner(app)).length;
         const before = count();
 
-        answer = () => Promise.resolve({ allow: false, reason: "Not now, said the laptop." });
+        answer = () => false;
 
         try {
-            await assert.rejects(
-                app.commands.fork(id, owner(app), { entryId: reply, place: { runner: laptop.id } }),
-                /Not now, said the laptop/,
-            );
-            await assert.rejects(
-                app.commands.resend(id, owner(app), {
-                    entryId: prompt,
-                    place: { runner: laptop.id },
-                }),
-                /Not now, said the laptop/,
-            );
+            await asking(async () => {
+                await assert.rejects(
+                    app.commands.fork(id, owner(app), {
+                        entryId: reply,
+                        place: { runner: laptop.id },
+                    }),
+                    /Cancelled/,
+                );
+                await assert.rejects(
+                    app.commands.resend(id, owner(app), {
+                        entryId: prompt,
+                        place: { runner: laptop.id },
+                    }),
+                    /Cancelled/,
+                );
+            });
         } finally {
-            answer = () => Promise.resolve({ allow: true });
+            answer = () => true;
         }
 
         // Linked, but its runner never started.
@@ -452,35 +478,38 @@ describe("a copy with a place", () => {
         for (const kind of ["fork", "resend"] as const) {
             const before = app.sessions(owner(app)).length;
             const controller = new AbortController();
-            let late!: (answer: SessionAnswer) => void;
 
             asked.length = 0;
-            answer = () =>
-                new Promise((resolve) => {
-                    late = resolve;
-                });
+            answer = () => undefined;
 
             try {
-                const request = {
-                    entryId: kind === "fork" ? reply : prompt,
-                    place: { runner: laptop.id },
-                };
-                const result =
-                    kind === "fork"
-                        ? app.commands.fork(id, owner(app), request, controller.signal)
-                        : app.commands.resend(id, owner(app), request, controller.signal);
-                const rejected = assert.rejects(result, { status: 409, message: "Cancelled." });
+                await asking(async () => {
+                    const request = {
+                        entryId: kind === "fork" ? reply : prompt,
+                        place: { runner: laptop.id },
+                    };
+                    const result =
+                        kind === "fork"
+                            ? app.commands.fork(id, owner(app), request, controller.signal)
+                            : app.commands.resend(id, owner(app), request, controller.signal);
+                    const rejected = assert.rejects(result, { status: 409 });
 
-                await until(() => asked.length === 1, "the copy question");
-                controller.abort();
-                await rejected;
-                await until(() => asked[0]!.signal.aborted, "the copy question to be withdrawn");
-                late({ allow: true });
-                await new Promise((resolve) => setTimeout(resolve, 50));
-                assert.equal(app.sessions(owner(app)).length, before, "no cancelled copy was made");
+                    await until(() => asked.length === 1, "the copy request");
+                    controller.abort();
+                    await rejected;
+                    await until(
+                        () => app.folderRequests.list(owner(app)).length === 0,
+                        "the copy request to end",
+                    );
+                    assert.equal(
+                        app.sessions(owner(app)).length,
+                        before,
+                        "no cancelled copy was made",
+                    );
+                });
             } finally {
                 controller.abort();
-                answer = () => Promise.resolve({ allow: true });
+                answer = () => true;
             }
         }
     });

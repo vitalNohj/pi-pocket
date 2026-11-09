@@ -80,8 +80,6 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50, 100],
-        settings: () => ({ confirm: false, folders: [there] }),
-        ask: () => Promise.resolve({ allow: true }),
     });
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the design computer to connect");

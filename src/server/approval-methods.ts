@@ -8,7 +8,7 @@
  *
  * Without a proof, a runner still asks at the computer, as before.
  */
-import { authenticatorLink, checkCode, newSecret, type TotpState } from "../runner/totp.ts";
+import { authenticatorLink, checkCode, newSecret, type TotpState } from "./totp.ts";
 import type { Person } from "./access.ts";
 import { HttpError } from "./errors.ts";
 

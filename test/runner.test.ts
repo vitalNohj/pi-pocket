@@ -2,18 +2,14 @@
 // real WebSocket, the runner, and the real pi-env daemon, all on this machine. Pi Durable's own conformance suite checks
 // that it acts as `NodeExecutionEnv` does; the rest checks linking, keys, and what survives a drop.
 import assert from "node:assert/strict";
-import { linkInProcess, newIdentity, openLink, publicOf } from "../src/runner/secure-link.ts";
-import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { promisify } from "node:util";
+import { linkInProcess, newIdentity, publicOf } from "../src/runner/secure-link.ts";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { createServer, type Server } from "node:http";
 import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { Duplex } from "node:stream";
-import { createInterface } from "node:readline";
-import { homedir, tmpdir } from "node:os";
-import { join, parse } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
@@ -25,19 +21,7 @@ import {
     realFolder,
     sameFolder,
 } from "../src/runner/folders.ts";
-import {
-    LINK_PATH,
-    LINK_PROTOCOL,
-    LINK_SUBPROTOCOL,
-    parseControl,
-} from "../src/runner/protocol.ts";
-import {
-    Runner,
-    type RunnerOptions,
-    type RunnerSettings,
-    type SessionQuestion,
-    RunnerStopped,
-} from "../src/runner/runner.ts";
+import { Runner, type RunnerOptions, RunnerStopped } from "../src/runner/runner.ts";
 import { checkTools, toolsStatus } from "../src/runner/tools.ts";
 import { ConfigStore } from "../src/server/config.ts";
 import { readableEntries, Runners } from "../src/server/runners.ts";
@@ -87,8 +71,6 @@ function startRunner(
         cwd: root,
         log: (line) => lines.push(line),
         retryMs: [50, 100, 200],
-        // The person at the computer allows each session (`sessionEnv`).
-        ask: async () => ({ allow: true }),
         ...more,
     };
     const runner = new Runner(options);
@@ -100,11 +82,11 @@ function startRunner(
 }
 
 /**
- * The environment of a session in `cwd` on computer `id`, approved there first as a new session is: each request names
- * the session, and its runner refuses one without a valid session permission.
+ * The environment of a session in `cwd` on computer `id`: each request names the session and its folder, and its runner
+ * keeps the request inside that folder (`request-gate.ts`). The server decided who may use it.
  */
 async function sessionEnv(setup: Setup, id: string, cwd: string, session = randomUUID()) {
-    await setup.runners.link(id).confirm({ kind: "new", person: "Owner", folder: cwd, session });
+    await setup.runners.link(id).whenOnline();
 
     return setup.runners.env(id, cwd, { id: session, folder: cwd, person: "Owner" });
 }
@@ -553,7 +535,6 @@ describe("runner link", () => {
             const opened = runner.opened;
             const session = { id: randomUUID(), folder: root, person: "Owner" };
 
-            await link.confirm({ kind: "new", person: "Owner", folder: root, session: session.id });
             await link.openNetwork("localhost", (echo.address() as AddressInfo).port, far, {
                 first: [Buffer.from("first ")],
                 session,
@@ -575,14 +556,14 @@ describe("runner link", () => {
                 link.openNetwork("127.0.0.1", closedPort, socketPair()[1], { session }),
                 (error: Error) => /refused/i.test(error.message),
             );
-            // A stream that names no approved session is refused before it connects.
+            // A stream that names no session is refused before it connects.
             await assert.rejects(
                 link.openNetwork(
                     "localhost",
                     (echo.address() as AddressInfo).port,
                     socketPair()[1],
                 ),
-                /not approved on Net/,
+                /named no session/,
             );
             assert.equal(runner.opened, opened + 1);
 
@@ -604,56 +585,30 @@ describe("runner link", () => {
         }
     });
 
-    it("tells the server its downloads folder, once it is set", async () => {
+    it("gets its settings from the server at once, and again after a drop", async () => {
         const setup = await serve();
-        const settings: RunnerSettings = {};
-        const { runner, id } = startRunner(setup, "Folder", [], { settings: () => settings });
+        const { runner, id } = startRunner(setup, "Folder");
 
         try {
             await until(() => runner.connected, "the runner to connect");
-            assert.equal(setup.runners.link(id).downloads, undefined);
+            assert.deepEqual(runner.settings, { network: true });
 
-            // A new setting reaches the server with the next hello.
-            settings.downloads = join(root, "My Downloads");
+            setup.config.setComputerSettings(id, { downloads: join(root, "My Downloads") });
+            setup.runners.link(id).sendSettings();
+            await until(
+                () => runner.settings.downloads === join(root, "My Downloads"),
+                "the folder to reach the runner",
+            );
+            assert.equal(setup.runners.link(id).downloads, join(root, "My Downloads"));
+
+            setup.config.setComputerSettings(id, { network: false });
             runner.drop();
             await until(
-                () => setup.runners.link(id).downloads === join(root, "My Downloads"),
-                "the folder in the hello",
+                () => runner.connected && !runner.settings.network,
+                "the settings again after the drop",
             );
         } finally {
             await runner.stop();
-            await close(setup);
-        }
-    });
-
-    it("an older runner, without network streams, is told to update", async () => {
-        const setup = await serve();
-
-        try {
-            const { code } = setup.runners.makeCode("Old", "owner");
-            const linked = linkInProcess((request) => setup.runners.redeem(request), code);
-            const old = await openLink(
-                `${setup.address.replace("http", "ws")}${LINK_PATH}`,
-                LINK_SUBPROTOCOL,
-                linked,
-            );
-
-            old.send(
-                JSON.stringify({
-                    type: "hello",
-                    protocol: LINK_PROTOCOL,
-                    session: null,
-                    received: 0,
-                    version: "0.27.0",
-                }),
-            );
-            await until(() => setup.runners.list()[0]?.online === true, "the old runner to link");
-            await assert.rejects(
-                setup.runners.link(linked.id).openNetwork("localhost", 80, socketPair()[1]),
-                /Old runs an older Pi Pocket runner.*update its runner/,
-            );
-            old.terminate();
-        } finally {
             await close(setup);
         }
     });
@@ -753,362 +708,6 @@ describe("allowed folders", () => {
         assert.equal(await realFolder(missing), missing);
         assert.equal(await sameFolder(alias, folder), true);
         assert.equal(await sameFolder(missing, missing), true);
-    });
-
-    it("asks for folder permission in a new folder, session permission in a saved one, and none with stop asking", async () => {
-        const setup = await serve();
-        const parent = mkdtempSync(join(root, "allowed-"));
-        const child = join(parent, "child");
-        const sibling = `${parent}-sibling`;
-        const settings: RunnerSettings = { folders: [parent] };
-        const asked: SessionQuestion[] = [];
-        let allow = false;
-        const { runner, id } = startRunner(setup, "Folders", [], {
-            settings: () => settings,
-            saveSettings: (change) => {
-                Object.assign(settings, change);
-            },
-            ask: async (question) => {
-                asked.push(question);
-
-                return allow ? { allow: true } : { allow: false, reason: "Not this folder." };
-            },
-        });
-
-        try {
-            await until(() => runner.connected, "the runner to connect");
-            const link = setup.runners.link(id);
-
-            // A saved folder (or one below it) asks for session permission, and saves nothing new.
-            allow = true;
-            await link.confirm({ kind: "new", person: "Owner", folder: child, session: "one" });
-            assert.equal(asked.length, 1);
-            assert.equal(asked[0]!.permission, "session");
-            assert.equal(asked[0]!.session, "one");
-            assert.deepEqual(settings.folders, [parent]);
-            assert.equal(settings.sessions?.[0]?.approvedBy, "computer");
-
-            // A folder without permission asks for it; Deny saves nothing.
-            allow = false;
-            await assert.rejects(
-                link.confirm({ kind: "new", person: "Owner", folder: sibling, session: "two" }),
-                /Not this folder/,
-            );
-            assert.equal(asked[1]!.permission, "folder");
-            assert.equal(asked[1]!.broad, false);
-            assert.deepEqual(settings.folders, [parent]);
-
-            // Removing the folder applies to the next question, without reconnecting.
-            settings.folders = [];
-            await assert.rejects(
-                link.confirm({ kind: "new", person: "Owner", folder: child, session: "three" }),
-                /Not this folder/,
-            );
-            assert.equal(asked[2]!.permission, "folder");
-
-            // Stop asking: a saved folder approves without a question; a folder without permission still asks.
-            settings.confirm = false;
-            settings.folders = [parent];
-            await link.confirm({ kind: "new", person: "Owner", folder: child, session: "four" });
-            assert.equal(asked.length, 3);
-            assert.equal(
-                settings.sessions?.find((each) => each.id === "four")?.approvedBy,
-                "automatic",
-            );
-            await assert.rejects(
-                link.confirm({ kind: "new", person: "Owner", folder: sibling, session: "five" }),
-                /Not this folder/,
-            );
-            assert.equal(asked.length, 4);
-            assert.equal(asked[3]!.permission, "folder");
-        } finally {
-            await runner.stop();
-            await close(setup);
-        }
-    });
-
-    it("saves Allow answers, including concurrent answers, but not broad folders or cancelled questions", async () => {
-        const setup = await serve();
-        const first = mkdtempSync(join(root, "first-"));
-        const second = mkdtempSync(join(root, "second-"));
-        const settings: RunnerSettings = {};
-        const asked: SessionQuestion[] = [];
-        let paused = false;
-        let late: ((answer: { allow: boolean }) => void) | undefined;
-        const { runner, id } = startRunner(setup, "Saving", [], {
-            settings: () => settings,
-            saveSettings: (change) => {
-                Object.assign(settings, change);
-            },
-            ask: async (question) => {
-                asked.push(question);
-
-                return paused
-                    ? new Promise((resolve) => {
-                          late = resolve;
-                      })
-                    : { allow: true };
-            },
-        });
-
-        try {
-            await until(() => runner.connected, "the runner to connect");
-            const link = setup.runners.link(id);
-
-            await Promise.all(
-                [first, second].map((folder) =>
-                    link.confirm({ kind: "new", person: "Owner", folder }),
-                ),
-            );
-            assert.deepEqual([...(settings.folders ?? [])].sort(), [first, second].sort());
-            await link.confirm({ kind: "fork", person: "Owner", folder: first });
-            assert.equal(asked.length, 3, "a saved folder asks for session permission");
-            assert.equal(asked[2]!.permission, "session");
-            assert.equal(settings.folders!.length, 2, "and does not duplicate the entry");
-
-            for (const folder of [homedir(), parse(homedir()).root]) {
-                await link.confirm({ kind: "new", person: "Owner", folder });
-                assert.equal(asked.at(-1)!.broad, true);
-            }
-
-            assert.equal(settings.folders!.length, 2, "broad Allow saves nothing");
-
-            // A broad folder found in the list is ignored: it asks for folder permission again.
-            settings.folders = [...settings.folders!, homedir()];
-            await link.confirm({
-                kind: "new",
-                person: "Owner",
-                folder: join(homedir(), "x-missing"),
-            });
-            assert.equal(asked.at(-1)!.permission, "folder");
-            settings.folders = settings.folders.filter((folder) => folder !== homedir());
-            settings.folders = [];
-            paused = true;
-            const controller = new AbortController();
-            const pending = link.confirm(
-                { kind: "move", person: "Owner", folder: first },
-                controller.signal,
-            );
-            const rejected = assert.rejects(pending, /Cancelled/);
-
-            await until(() => late !== undefined, "the move question");
-            assert.equal(asked.at(-1)!.kind, "move");
-            controller.abort();
-            await rejected;
-            await until(() => asked.at(-1)!.signal.aborted, "the question to be withdrawn");
-            late!({ allow: true });
-            await new Promise((resolve) => setTimeout(resolve, 30));
-            assert.deepEqual(settings.folders, []);
-        } finally {
-            await runner.stop();
-            await close(setup);
-        }
-    });
-
-    it("parses kind move and asks older runners with a compatible new-session message", async () => {
-        const setup = await serve();
-        const { code } = setup.runners.makeCode("Old", "owner");
-        const linked = linkInProcess((request) => setup.runners.redeem(request), code);
-        const old = await openLink(
-            `${setup.address.replace("http", "ws")}${LINK_PATH}`,
-            LINK_SUBPROTOCOL,
-            linked,
-        );
-        const question = {
-            type: "confirm",
-            id: "question",
-            kind: "move",
-            person: "Owner",
-            folder: root,
-        };
-
-        assert.deepEqual(parseControl(JSON.stringify(question)), question);
-        old.on("message", (data, binary) => {
-            if (binary) {
-                return;
-            }
-
-            const message = JSON.parse(data.toString());
-
-            if (message.type === "confirm") {
-                // The older parser accepts only new and fork. Extra fields are ignored.
-                assert.equal(message.kind, "new");
-                assert.equal(message.move, true);
-                old.send(JSON.stringify({ type: "confirmed", id: message.id, allow: true }));
-            }
-        });
-
-        try {
-            old.send(
-                JSON.stringify({
-                    type: "hello",
-                    protocol: LINK_PROTOCOL,
-                    session: null,
-                    received: 0,
-                    version: "0.27.0",
-                }),
-            );
-            await until(() => setup.runners.list()[0]?.online === true, "the old runner to link");
-            await setup.runners
-                .link(linked.id)
-                .confirm({ kind: "move", person: "Owner", folder: root });
-        } finally {
-            old.terminate();
-            await close(setup);
-        }
-    });
-
-    it("the terminal runner saves stdio Allow before ending a question, and sees CLI removals without restarting", async () => {
-        const setup = await serve();
-        const folder = mkdtempSync(join(root, "stdio-"));
-        const file = join(folder, "link.json");
-        const childFolder = join(folder, "child");
-        const { code } = setup.runners.makeCode("Terminal", "owner");
-        const linked = linkInProcess((request) => setup.runners.redeem(request), code);
-        const launcher = fileURLToPath(new URL("../bin/pi-pocket.js", import.meta.url));
-
-        mkdirSync(childFolder);
-        writeFileSync(file, JSON.stringify({ server: setup.address, ...linked }));
-        const proc = spawn(
-            process.execPath,
-            [launcher, "runner", "start", "--confirm-via", "stdio", "--config", file],
-            {
-                cwd: root,
-                stdio: ["pipe", "pipe", "pipe"],
-            },
-        );
-        const stopped = new Promise<void>((resolve) => proc.once("close", () => resolve()));
-        const questions: {
-            id: number;
-            kind: SessionQuestion["kind"];
-            broad: boolean;
-            folder: string;
-            person: string;
-            permission: SessionQuestion["permission"];
-        }[] = [];
-        const savedAtEnd: string[][] = [];
-        let errors = "";
-
-        proc.stderr.on("data", (chunk: Buffer) => {
-            errors += chunk.toString();
-        });
-        createInterface({ input: proc.stdout }).on("line", (line) => {
-            if (line.startsWith("PI-POCKET-CONFIRM ")) {
-                questions.push(JSON.parse(line.slice("PI-POCKET-CONFIRM ".length)));
-            } else if (line.startsWith("PI-POCKET-CONFIRM-END ")) {
-                savedAtEnd.push(JSON.parse(readFileSync(file, "utf8")).settings?.folders ?? []);
-            }
-        });
-        const answer = (allow: boolean) =>
-            proc.stdin.write(`${JSON.stringify({ id: questions.at(-1)!.id, allow })}\n`);
-
-        try {
-            await until(
-                () => setup.runners.list()[0]?.online === true,
-                `the CLI runner to connect (${errors})`,
-            );
-            const link = setup.runners.link(linked.id);
-            const move = link.confirm({ kind: "move", person: "Owner", folder });
-
-            await until(() => questions.length === 1, "the move question on stdout");
-            assert.partialDeepStrictEqual(questions[0], {
-                kind: "move",
-                broad: false,
-                folder: await realFolder(folder),
-                person: "Owner",
-            });
-            answer(true);
-            await move;
-            await until(() => savedAtEnd.length === 1, "the question end after saving");
-            assert.deepEqual(savedAtEnd[0], [await realFolder(folder)]);
-            const session = link.confirm({ kind: "new", person: "Owner", folder: childFolder });
-
-            await until(() => questions.length === 2, "the session question for a saved folder");
-            // Pi Pocket can answer it too (its server sends grants), so it waits the longer time.
-            assert.partialDeepStrictEqual(questions[1], {
-                permission: "session",
-                expired: false,
-                totp: true,
-                expiresInMs: 300_000,
-            });
-            answer(true);
-            await session;
-            await promisify(execFile)(process.execPath, [
-                launcher,
-                "runner",
-                "folders",
-                "remove",
-                folder,
-                "--config",
-                file,
-            ]);
-            const denied = assert.rejects(
-                link.confirm({ kind: "new", person: "Owner", folder: childFolder }),
-                /denied/,
-            );
-
-            await until(() => questions.length === 3, "the new question after removal");
-            assert.equal(questions[2]!.permission, "folder");
-            answer(false);
-            await denied;
-            const broad = link.confirm({
-                kind: "new",
-                person: "Owner",
-                folder: parse(homedir()).root,
-            });
-
-            await until(() => questions.length === 4, "the broad question");
-            assert.equal(questions[3]!.broad, true);
-            answer(true);
-            await broad;
-            assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).settings.folders, []);
-        } finally {
-            proc.kill("SIGTERM");
-            await stopped;
-            await close(setup);
-        }
-    });
-
-    it("lists and removes folders through the CLI with an explicit config, without touching running sessions", async () => {
-        const folder = mkdtempSync(join(root, "cli-"));
-        const file = join(folder, "link.json");
-        const allowed = join(folder, "allowed ");
-        const run = (args: string[]) =>
-            promisify(execFile)(process.execPath, [
-                fileURLToPath(new URL("../bin/pi-pocket.js", import.meta.url)),
-                "runner",
-                ...args,
-                "--config",
-                file,
-            ]);
-
-        mkdirSync(allowed);
-        writeFileSync(
-            file,
-            JSON.stringify({
-                server: "https://example.com",
-                id: "id",
-                name: "Computer",
-                key: "secret",
-                serverKey: newIdentity().publicKey,
-                settings: { confirm: true, folders: [allowed] },
-            }),
-        );
-        assert.deepEqual(JSON.parse((await run(["folders", "--json"])).stdout), [allowed]);
-        assert.equal((await run(["folders"])).stdout, `${allowed}\n`);
-        await run(["folders", "remove", allowed]);
-        assert.deepEqual(JSON.parse((await run(["folders", "--json"])).stdout), []);
-        assert.equal((await run(["folders"])).stdout.trim(), "No saved folders yet.");
-        assert.equal(JSON.parse(readFileSync(file, "utf8")).settings.confirm, true);
-        await assert.rejects(
-            run(["folders", "remove", allowed]),
-            (error: Error & { code?: number }) =>
-                error.code === 1 && error.message.includes("No allowed folder matches"),
-        );
-        await assert.rejects(
-            run(["service"]),
-            (error: Error & { code?: number }) => error.code === 1,
-        );
     });
 });
 

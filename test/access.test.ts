@@ -17,7 +17,7 @@ import {
     type StoredAuthenticator,
 } from "../src/server/approval-methods.ts";
 import { HttpError } from "../src/server/errors.ts";
-import { STEP_MS, totp } from "../src/runner/totp.ts";
+import { STEP_MS, totp } from "../src/server/totp.ts";
 
 const owner: Person = { id: "owner", role: "owner" };
 const guest: Person = { id: "guest", role: "guest" };

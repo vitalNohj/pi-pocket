@@ -15,12 +15,7 @@ import {
     fauxToolCall,
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
-import {
-    Runner,
-    type RunnerOptions,
-    type SessionAnswer,
-    type SessionQuestion,
-} from "../src/runner/runner.ts";
+import { Runner, type RunnerOptions } from "../src/runner/runner.ts";
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
 import { AgentDoc } from "@earendil-works/pi-durable";
 import { SubagentsDoc } from "../src/server/docs.ts";
@@ -41,8 +36,10 @@ import {
     say,
     scriptedModel,
     until,
+    answerRequests,
     approveComputer,
 } from "./helpers.ts";
+import type { FolderRequestView } from "../src/server/folder-requests.ts";
 
 /** The remote computer's folder: the server's own sessions work in `work`, never here. */
 const there = join(root, "there");
@@ -102,13 +99,36 @@ const route: FauxResponseStep = (context) => {
     return fauxAssistantMessage([fauxText("ok")]);
 };
 
-/** The runner's settings, as its link file would hold them. */
-const runnerSettings: { confirm?: boolean } = {};
+/**
+ * The folders the server asked about (`folder-requests.ts`), and how the owner answers: yes, unless a test says
+ * otherwise. The runner asks nobody: the server decides, and the owner's approval time is 0 (never asked) unless a test
+ * sets one.
+ */
+const asked: FolderRequestView[] = [];
+let answer: (request: FolderRequestView) => boolean | undefined = () => true;
 
-/** What the computer was asked, and how its person answers: yes, unless a test says otherwise. */
-const asked: SessionQuestion[] = [];
-let answer: (question: SessionQuestion) => Promise<SessionAnswer> = () =>
-    Promise.resolve({ allow: true });
+let stopAnswering: () => void = () => {};
+
+/** Ask the owner for each new folder on the computer (approval time 1 day, no approval kept), for one test. */
+async function asking<T>(run: () => Promise<T>): Promise<T> {
+    const me = owner(app);
+    const kept = app.folderApprovals
+        .list(me)
+        .filter((each) => each.computer === runnerId)
+        .map((each) => each.id);
+
+    for (const id of kept) {
+        app.folderApprovals.revoke(me, id);
+    }
+
+    app.config.updateUser(me.id, { approvalDays: 1 });
+
+    try {
+        return await run();
+    } finally {
+        app.config.updateUser(me.id, { approvalDays: 0 });
+    }
+}
 
 /** The newest tool result's text in a conversation. */
 async function lastToolText(id: number): Promise<string> {
@@ -147,20 +167,15 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => runnerSettings,
-        // The person at the computer: asked before each session, answering as `answer` says.
-        ask: (question) => {
-            asked.push(question);
-
-            return answer(question);
-        },
     };
     runner = new Runner(runnerOptions);
+    stopAnswering = answerRequests(app, (request) => answer(request), asked);
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
 });
 
 after(async () => {
+    stopAnswering();
     await runner?.stop();
     await app?.close();
     server?.closeAllConnections();
@@ -330,98 +345,103 @@ describe("a session on another computer", () => {
         assert.equal(app.runnerOf(fork.id), runnerId);
     });
 
-    it("asks the computer first, and does not start a session its person denies", async () => {
+    it("asks the server first, and does not start a session the owner denies", async () => {
         asked.length = 0;
-        answer = () =>
-            Promise.resolve({ allow: false, reason: "The person at this computer denied it." });
+        answer = () => false;
 
         try {
-            const before = app.sessions(owner(app)).length;
+            await asking(async () => {
+                const before = app.sessions(owner(app)).length;
 
-            await assert.rejects(
-                app.commands.createSession(owner(app), { cwd: there, runner: runnerId }),
-                /denied it/,
-            );
-            await assert.rejects(app.commands.fork(id as never, owner(app), {}), /denied it/);
-            assert.equal(app.sessions(owner(app)).length, before, "no session was made");
-            assert.deepEqual(
-                asked.map((each) => [each.kind, each.person, each.folder]),
-                [
-                    ["new", "Owner", there],
-                    ["fork", "Owner", there],
-                ],
-            );
+                await assert.rejects(
+                    app.commands.createSession(owner(app), { cwd: there, runner: runnerId }),
+                    /Cancelled/,
+                );
+                await assert.rejects(app.commands.fork(id as never, owner(app), {}), /Cancelled/);
+                assert.equal(app.sessions(owner(app)).length, before, "no session was made");
+                assert.deepEqual(
+                    asked.map((each) => [each.kind, each.name, each.computer]),
+                    [
+                        ["new", "Owner", runnerId],
+                        ["fork", "Owner", runnerId],
+                    ],
+                );
+            });
         } finally {
-            answer = () => Promise.resolve({ allow: true });
+            answer = () => true;
         }
     });
 
-    it("cancels new sessions and whole-session forks, even when their person allows them late", async () => {
+    it("cancels new sessions and whole-session forks waiting for an approval", async () => {
         for (const kind of ["new", "fork"] as const) {
             const before = app.sessions(owner(app)).length;
             const controller = new AbortController();
-            let late!: (answer: SessionAnswer) => void;
 
             asked.length = 0;
-            answer = () =>
-                new Promise((resolve) => {
-                    late = resolve;
-                });
+            answer = () => undefined;
 
             try {
-                const result =
-                    kind === "new"
-                        ? app.commands.createSession(
-                              owner(app),
-                              { cwd: there, runner: runnerId },
-                              { signal: controller.signal },
-                          )
-                        : app.commands.fork(id as never, owner(app), {}, controller.signal);
-                const rejected = assert.rejects(result, { status: 409, message: "Cancelled." });
+                await asking(async () => {
+                    const result =
+                        kind === "new"
+                            ? app.commands.createSession(
+                                  owner(app),
+                                  { cwd: there, runner: runnerId },
+                                  { signal: controller.signal },
+                              )
+                            : app.commands.fork(id as never, owner(app), {}, controller.signal);
+                    const rejected = assert.rejects(result, { status: 409 });
 
-                await until(() => asked.length === 1, "the session question");
-                controller.abort();
-                await rejected;
-                await until(() => asked[0]!.signal.aborted, "the runner question to be withdrawn");
-                assert.equal(asked[0]!.signal.reason, "Withdrawn by the server.");
-                late({ allow: true });
-                await new Promise((resolve) => setTimeout(resolve, 50));
-                assert.equal(
-                    app.sessions(owner(app)).length,
-                    before,
-                    "no cancelled session was made",
-                );
+                    await until(() => asked.length === 1, "the folder request");
+                    controller.abort();
+                    await rejected;
+                    await until(
+                        () => app.folderRequests.list(owner(app)).length === 0,
+                        "the request to end",
+                    );
+                    assert.equal(
+                        app.sessions(owner(app)).length,
+                        before,
+                        "no cancelled session was made",
+                    );
+                });
             } finally {
                 controller.abort();
-                answer = () => Promise.resolve({ allow: true });
+                answer = () => true;
             }
         }
     });
 
-    it("still starts a session when its person allows it immediately", async () => {
+    it("starts a session once the owner allows it, and keeps the approval for the next", async () => {
         asked.length = 0;
-        const before = app.sessions(owner(app)).length;
-        const created = await app.commands.createSession(owner(app), {
-            cwd: there,
-            runner: runnerId,
-        });
+        await asking(async () => {
+            const before = app.sessions(owner(app)).length;
+            const created = await app.commands.createSession(owner(app), {
+                cwd: there,
+                runner: runnerId,
+            });
 
-        assert.equal(asked.length, 1);
-        assert.equal(app.runnerOf(created.id), runnerId);
-        assert.equal(app.sessions(owner(app)).length, before + 1);
+            assert.equal(asked.length, 1);
+            assert.equal(app.runnerOf(created.id), runnerId);
+            assert.equal(app.sessions(owner(app)).length, before + 1);
+
+            await app.commands.createSession(owner(app), { cwd: there, runner: runnerId });
+            assert.equal(asked.length, 1, "the approval covers the next session");
+        });
     });
 
-    it("starts sessions without asking when its person turned asking off", async () => {
+    it("starts sessions without asking when the owner's approval time is never", async () => {
         asked.length = 0;
-        answer = () => Promise.reject(new Error("must not be asked"));
+
+        answer = () => {
+            throw new Error("must not be asked");
+        };
 
         try {
-            runnerSettings.confirm = false;
             await app.commands.createSession(owner(app), { cwd: there, runner: runnerId });
             assert.equal(asked.length, 0);
         } finally {
-            runnerSettings.confirm = true;
-            answer = () => Promise.resolve({ allow: true });
+            answer = () => true;
         }
     });
 
@@ -429,35 +449,47 @@ describe("a session on another computer", () => {
         const folder = join(root, "move-destination");
 
         mkdirSync(folder, { recursive: true });
-        const session = (
-            await app.commands.createSession(owner(app), { cwd: there, runner: runnerId })
-        ).id;
+        // A guest given the computer's folders, asked for each new one (the owner's one approval covers it all).
+        const { user: mover } = await addPerson(app, "Mover", "guest");
 
-        asked.length = 0;
-        await app.commands.configure(session as never, owner(app), { cwd: there });
-        assert.equal(asked.length, 0, "the same folder is not a move");
-        await assert.rejects(
-            app.commands.configure(session as never, owner(app), { cwd: join(folder, "missing") }),
-            /is not a folder on Laptop/,
-        );
-        assert.equal(asked.length, 0, "invalid folders do not ask");
-        answer = () => Promise.resolve({ allow: false, reason: "Move denied here." });
+        app.config.setRunnerUsers(runnerId, [mover.id]);
+        app.config.setGivenFolders(runnerId, mover.id, [root]);
 
         try {
+            const session = (
+                await app.commands.createSession(mover, { cwd: there, runner: runnerId })
+            ).id;
+
+            app.config.updateUser(mover.id, { approvalDays: 1 });
+            asked.length = 0;
+
+            const moves = () => asked.filter((each) => each.kind === "move");
+
+            // Steering asks too, once its approval is gone: only moves count here.
+            await app.commands.configure(session as never, mover, { cwd: there });
+            assert.equal(moves().length, 0, "the same folder is not a move");
             await assert.rejects(
-                app.commands.configure(session as never, owner(app), { cwd: folder }),
-                /Move denied here/,
+                app.commands.configure(session as never, mover, { cwd: join(folder, "missing") }),
+                /is not a folder on Laptop/,
+            );
+            assert.equal(moves().length, 0, "invalid folders do not ask");
+            answer = (request) => request.kind !== "move";
+            await assert.rejects(
+                app.commands.configure(session as never, mover, { cwd: folder }),
+                /owner did not allow/,
             );
             assert.equal(app.cwdOf(session as never), there, "a denied move keeps the old folder");
             assert.deepEqual(
-                asked.map((each) => [each.kind, each.person, each.folder]),
-                [["move", owner(app).name, folder]],
+                moves().map((each) => [each.kind, each.name, each.computer]),
+                [["move", "Mover", runnerId]],
             );
-            answer = () => Promise.resolve({ allow: true });
-            await app.commands.configure(session as never, owner(app), { cwd: folder });
+            answer = () => true;
+            await app.commands.configure(session as never, mover, { cwd: folder });
             assert.equal(app.cwdOf(session as never), folder);
         } finally {
-            answer = () => Promise.resolve({ allow: true });
+            answer = () => true;
+            app.config.setRunnerUsers(runnerId, []);
+            app.removeUser(owner(app), mover.id);
         }
     });
 
@@ -627,21 +659,23 @@ describe("a session on another computer", () => {
             /missing-team-folder is not a folder on Laptop/,
         );
         assert.equal(asked.length, 0, "an invalid folder never asks");
-        answer = () => Promise.resolve({ allow: false, reason: "Team start denied." });
+        answer = () => false;
 
         try {
-            await assert.rejects(
-                app.linkedSessions.start(
-                    id as never,
-                    { cwd: otherFolder, message: "hello" },
-                    crypto.randomUUID(),
-                ),
-                /Team start denied/,
-            );
-            assert.equal(asked.length, 1, "the computer was asked");
+            await asking(async () => {
+                await assert.rejects(
+                    app.linkedSessions.start(
+                        id as never,
+                        { cwd: otherFolder, message: "hello" },
+                        crypto.randomUUID(),
+                    ),
+                    /Cancelled/,
+                );
+            });
+            assert.equal(asked.length, 1, "the server asked");
             assert.equal(app.sessions(owner(app)).length, before, "no linked session was made");
         } finally {
-            answer = () => Promise.resolve({ allow: true });
+            answer = () => true;
         }
     });
 
@@ -685,7 +719,7 @@ describe("a session on another computer", () => {
                 app.linkedSessions.start(shared.id, { message: "hello" }, crypto.randomUUID()),
                 /invited to one session and cannot start new ones/,
             );
-            assert.equal(asked.length, 0, "an ungranted person cannot ask the computer");
+            assert.equal(asked.length, 0, "an ungranted person cannot ask for the computer");
             assert.equal(app.sessions(owner(app)).length, before);
         } finally {
             app.removeUser(owner(app), other.id);

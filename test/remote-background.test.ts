@@ -77,7 +77,6 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50, 100, 200],
-        ask: () => Promise.resolve({ allow: true }),
     };
     runner = new Runner(options);
     runner.start();
@@ -362,7 +361,7 @@ test("task files are limited to their session's permission folder", async () => 
     assert.equal(denied.ok, false);
 
     if (!denied.ok) {
-        assert.match(denied.error.message, /outside the session's approved folder/);
+        assert.match(denied.error.message, /outside the session's folder/);
     }
 
     const parent = await app

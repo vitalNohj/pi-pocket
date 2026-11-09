@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import type { User } from "../src/server/config.ts";
 import { createHandler } from "../src/server/http.ts";
-import { STEP_MS, totp } from "../src/runner/totp.ts";
+import { STEP_MS, totp } from "../src/server/totp.ts";
 
 let app: App;
 let server: Server;

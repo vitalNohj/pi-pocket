@@ -9,6 +9,7 @@ import { fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi
 import { type ConversationId, UsageDoc } from "@earendil-works/pi-durable";
 import type { Attachment } from "../src/server/commands.ts";
 import type { User } from "../src/server/config.ts";
+import type { FolderRequestView } from "../src/server/folder-requests.ts";
 import type { LimitTuning } from "../src/server/limit-gate.ts";
 import type { Client } from "../src/server/room.ts";
 
@@ -150,6 +151,40 @@ export const owner = (app: App) => app.config.users.find((user) => user.role ===
  * Approve linked computer `runner` for the owner (`folder-approvals.ts`), as their one code after linking would: for
  * tests of something else than approvals, which then start sessions there without waiting.
  */
+/**
+ * Answer folder requests (`folder-requests.ts`) as they come, in the owner's name: `answer` says yes (true), no
+ * (false), or leaves it waiting (undefined). Each request is kept in `asked`. Returns a stop function.
+ */
+export function answerRequests(
+    app: App,
+    answer: (request: FolderRequestView) => boolean | undefined,
+    asked: FolderRequestView[] = [],
+): () => void {
+    const seen = new Set<string>();
+    const timer = setInterval(() => {
+        for (const request of app.folderRequests.list(owner(app))) {
+            if (seen.has(request.id)) {
+                continue;
+            }
+
+            seen.add(request.id);
+            asked.push(request);
+
+            const yes = answer(request);
+
+            if (yes === true) {
+                void app.folderRequests
+                    .approve(owner(app), request.id, { method: "owner" })
+                    .catch(() => {});
+            } else if (yes === false) {
+                app.folderRequests.deny(owner(app), request.id);
+            }
+        }
+    }, 10);
+
+    return () => clearInterval(timer);
+}
+
 export function approveComputer(app: App, runner: string): void {
     app.folderApprovals.add(
         owner(app).id,

@@ -143,6 +143,11 @@ export interface StoredRunner {
     tools?: { git: boolean; gh: boolean; github: boolean };
     /** New sessions on it start shared with its people (`access.ts` `initialShares`). Absent: with no one. */
     shareNew?: true;
+    /**
+     * What its runner does for sessions, sent to it at each connection and on change (`runner-settings`): `network`
+     * false, its sessions' browsers do not use its network; `downloads`, an absolute folder there for their downloads.
+     */
+    settings?: { network?: false; downloads?: string };
 }
 
 /**
@@ -233,8 +238,11 @@ interface PocketConfig {
     folderApprovals?: StoredApproval[];
 }
 
-/** The parts of `StoredServer` and `StoredRunner` the owner can change. */
-export type ComputerSettings = { shareNew?: boolean };
+/**
+ * The parts of `StoredServer` and `StoredRunner` the owner can change. `network` and `downloads` are a runner's alone;
+ * `downloads` null puts its downloads back in its temporary folder.
+ */
+export type ComputerSettings = { shareNew?: boolean; network?: boolean; downloads?: string | null };
 
 /** The hours a run waits for a model's limit to clear, until the owner says otherwise. */
 export const DEFAULT_LIMIT_WAIT_HOURS = 6;
@@ -990,6 +998,27 @@ export class ConfigStore {
 
         if (runner !== undefined) {
             apply(runner);
+
+            const settings = { ...runner.settings };
+
+            if (change.network === false) {
+                settings.network = false;
+            } else if (change.network === true) {
+                delete settings.network;
+            }
+
+            if (typeof change.downloads === "string") {
+                settings.downloads = change.downloads;
+            } else if (change.downloads === null) {
+                delete settings.downloads;
+            }
+
+            if (Object.keys(settings).length === 0) {
+                delete runner.settings;
+            } else {
+                runner.settings = settings;
+            }
+
             this.save();
         }
     }

@@ -1,6 +1,7 @@
 // Runners (`src/server/runners.ts`): this server and other computers of the owner's that run sessions' tools. Link one
 // with a one-time code, see which are online, start a session on one, remove one, and choose for each (this server
-// too) who may use it, its saved folders, and whether new sessions start shared (`src/server/access.ts`).
+// too) who may use it, the folders each person may use, and whether new sessions start shared (`src/server/access.ts`).
+// A runner trusts its server after the link: its settings are kept here and sent to it.
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
@@ -242,179 +243,46 @@ function Tools({ runner }) {
     </div>`;
 }
 
-/** One setting change: one code. Cancel leaves the control where it was. */
-function CodeModal({ runner, change, onDone }) {
-    const [code, setCode] = useState("");
-    const [error, setError] = useState("");
-    const [busy, setBusy] = useState(false);
+/**
+ * What a runner does for its sessions, kept here and sent to it at once (`runner-settings`): whether their browsers use
+ * its network, and where their downloads go there. Plain HTTP was chosen on that computer when it was linked.
+ */
+function RunnerSettings({ runner }) {
+    const mine = runner.createdBy === store.state.me?.id || store.state.me?.role === "owner";
 
-    const submit = async (event) => {
-        event.preventDefault();
-        setBusy(true);
-        setError("");
+    if (runner.network === undefined) {
+        return null;
+    }
 
-        try {
-            await api(`runners/${encodeURIComponent(runner.id)}/permissions`, {
-                request: { action: "settings", code, change },
-            });
-            onDone();
-        } catch (failure) {
-            setError(failure.message);
-            setCode("");
-        } finally {
-            setBusy(false);
+    const changeDownloads = () => {
+        const typed = prompt(
+            "Downloads folder there, absolute; empty for its temporary folder",
+            runner.downloads ?? "",
+        );
+
+        if (typed !== null) {
+            void attempt(() =>
+                api(`runners/${encodeURIComponent(runner.id)}/settings`, {
+                    downloads: typed.trim() === "" ? null : typed.trim(),
+                }),
+            );
         }
     };
 
-    return html`<div class="overlay runner-wait-overlay runner-code-modal">
-        <section class="runner-wait" role="dialog" aria-modal="true" aria-labelledby="runner-code-title">
-            <h2 id="runner-code-title">Enter the code from your authenticator for ${runner.name}</h2>
-            <form onSubmit=${submit}>
-                <input
-                    type="text"
-                    inputmode="numeric"
-                    autocomplete="one-time-code"
-                    pattern="[0-9]{6}"
-                    maxlength="6"
-                    autofocus
-                    aria-label="6-digit code"
-                    value=${code}
-                    onInput=${(event) => setCode(event.currentTarget.value.replace(/\D/g, ""))}
-                />
-                ${error && html`<p class="runner-code-error" role="alert">${error}</p>`}
-                <div class="row">
-                    <button type="button" class="button ghost" onClick=${onDone}>Cancel</button>
-                    <button class="button primary" disabled=${busy || code.length !== 6}>Confirm</button>
-                </div>
-            </form>
-        </section>
-    </div>`;
-}
-
-const APPROVED_BY = {
-    computer: "approved at the computer",
-    automatic: "approved without a question",
-    totp: "approved with a code",
-    owner: "approved by the owner from Pi Pocket",
-};
-
-/** When an approved session's permission expires, as its row says it. */
-function expiry(session) {
-    if (session.inUse) {
-        return "in use";
-    }
-
-    return session.expiresAt === null
-        ? "does not expire"
-        : `expires ${new Date(session.expiresAt).toLocaleString()}`;
-}
-
-/** Settings, saved folders, and approved sessions, from this runner only. */
-function Permissions({ runner }) {
-    const [change, setChange] = useState(null);
-    const state = runner.approvals;
-
-    if (!state) {
-        return runner.online
-            ? html`<p class="muted small">Update the runner on ${runner.name} to manage approvals here.</p>`
-            : null;
-    }
-
-    const mine = runner.createdBy === store.state.me?.id;
-    const active = state.totp && mine && runner.online;
-    const ask = (next) => active && setChange(next);
-    const action = (request) =>
-        attempt(() => api(`runners/${encodeURIComponent(runner.id)}/permissions`, { request }));
-    const settings = state.settings;
-    const toggle = (
-        key,
-        label,
-        on,
-    ) => html`<div class=${`setting wrap ${active ? "" : "disabled"}`}>
-        <div class="grow small">${label}</div>
-        <${Switch}
-            on=${on}
-            disabled=${!active}
-            label=${`${label}: ${on ? "on" : "off"}`}
-            onChange=${() => ask({ [key]: !on })}
+    return html`<div class="group">
+        <div class="group-title">Browsers</div>
+        <${Rule}
+            runner=${runner}
+            name="network"
+            label="Share its network with browsers"
+            hint="On: sessions' browsers reach what this computer reaches, such as its local servers."
+            on=${runner.network}
         />
-    </div>`;
-
-    return html`<div class="runner-permissions">
-        <div class="muted small">
-            ${
-                state.totp
-                    ? "Authenticator set up"
-                    : html`No authenticator set up. Set it up on this computer: <code>pi-pocket runner totp setup</code>`
-            }
+        <div class=${`setting wrap ${mine ? "" : "disabled"}`}>
+            <div class="grow small">Downloads: <code>${runner.downloads ?? "temporary folder"}</code></div>
+            <button class="button small ghost" disabled=${!mine} onClick=${changeDownloads}>Change</button>
         </div>
-        ${!state.totp && html`<div class="muted small">Set up an authenticator for this runner to change its settings.</div>`}
-        ${toggle("stopAsking", "Stop asking on new sessions", settings.stopAsking)}
-        <label class=${`setting wrap ${active ? "" : "disabled"}`}>
-            <span class="grow small">Session expiry with a code</span>
-            <select
-                disabled=${!active}
-                value=${settings.totpDays === null ? "never" : String(settings.totpDays)}
-                onChange=${(event) => {
-                    const value = event.currentTarget.value;
-
-                    event.currentTarget.value =
-                        settings.totpDays === null ? "never" : String(settings.totpDays);
-                    ask({ totpDays: value === "never" ? null : Number(value) });
-                }}
-            >
-                <option value="1">1 day</option>
-                <option value="7">7 days</option>
-                <option value="14">14 days</option>
-                <option value="30">30 days</option>
-                <option value="never">No expiry</option>
-            </select>
-        </label>
-        ${toggle("allowHttp", "Allow plain HTTP", settings.allowHttp)}
-        ${toggle("network", "Share the network with browsers", settings.network)}
-        <div class=${`setting wrap ${active ? "" : "disabled"}`}>
-            <div class="grow small">Downloads: <code>${settings.downloads ?? "temporary folder"}</code></div>
-            <button
-                class="button small ghost"
-                disabled=${!active}
-                onClick=${() => {
-                    const typed = prompt(
-                        "Downloads folder, absolute; empty for the temporary folder",
-                        settings.downloads ?? "",
-                    );
-
-                    if (typed !== null) {
-                        ask({ downloads: typed.trim() === "" ? null : typed.trim() });
-                    }
-                }}
-            >
-                Change
-            </button>
-        </div>
-        <div class="group-title">Saved folders</div>
-        ${state.folders.length === 0 && html`<div class="muted small">No saved folders.</div>`}
-        ${state.folders.map(
-            (folder) => html`<div class="runner-permission-row">
-                <code>${folder}</code>
-                <button class="button small ghost" onClick=${() => action({ action: "remove-folder", folder })}>Remove</button>
-            </div>`,
-        )}
-        <div class="group-title">Approved sessions</div>
-        ${state.sessions.length === 0 && html`<div class="muted small">No approved sessions.</div>`}
-        ${state.sessions.map(
-            (session) => html`<div class="runner-permission-row">
-                <div class="small">
-                    <code>${session.folder}</code><br />
-                    ${session.person}, ${APPROVED_BY[session.approvedBy] ?? session.approvedBy}; ${expiry(session)}
-                </div>
-                <button class="button small ghost" onClick=${() => action({ action: "revoke", session: session.id })}>Revoke</button>
-            </div>`,
-        )}
-        ${
-            state.sessions.length > 0 &&
-            html`<button class="button small ghost" onClick=${() => confirm(`Revoke all sessions on ${runner.name}?`) && action({ action: "revoke", session: "all" })}>Revoke all</button>`
-        }
-        ${change && html`<${CodeModal} runner=${runner} change=${change} onDone=${() => setChange(null)} />`}
+        ${runner.allowHttp && html`<div class="muted small">Plain HTTP to this server is allowed there.</div>`}
     </div>`;
 }
 
@@ -511,7 +379,7 @@ function ChoosePeople({ runner, note }) {
 
 /** One on/off rule of a computer kept on the server (`POST /api/runners/:id/settings`), for its linker and the owner. */
 function Rule({ runner, name, label, hint, on }) {
-    const mine = runner.createdBy === store.state.me?.id;
+    const mine = runner.createdBy === store.state.me?.id || store.state.me?.role === "owner";
     const change = () =>
         attempt(() => api(`runners/${encodeURIComponent(runner.id)}/settings`, { [name]: !on }));
 
@@ -687,7 +555,7 @@ function ComputerRow({ runner }) {
                     on=${runner.shareNew === true}
                 />
             </div>
-            <${Permissions} runner=${runner} />
+            <${RunnerSettings} runner=${runner} />
         </div>
         <div class="person-actions">
             <button

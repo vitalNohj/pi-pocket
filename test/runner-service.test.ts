@@ -1,4 +1,4 @@
-// Runner autostart (`src/runner/service.ts`): systemd, Task Scheduler, launchd, and the shared authenticator guard.
+// Runner autostart (`src/runner/service.ts`): systemd, Task Scheduler, and launchd.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -13,8 +13,6 @@ import {
     LAUNCH_AGENT,
     launchAgentLog,
     launchAgentPath,
-    NEEDS_TOTP,
-    SERVICE_NEEDS_TOTP,
     serviceExitCode,
     serviceHelp,
     serviceMenu,
@@ -32,7 +30,7 @@ const root = mkdtempSync(join(tmpdir(), "pi-pocket-service-test-"));
 
 after(() => rmSync(root, { recursive: true, force: true }));
 
-/** A link file without an authenticator. */
+/** A link file. */
 function linkFile(): string {
     const file = join(root, `runner-${Math.random().toString(36).slice(2)}.json`);
 
@@ -65,14 +63,14 @@ describe("the runner service", () => {
             launcher: "/opt/pi pocket/bin/pi-pocket.js",
             file: "/home/me/.pi-pocket/runner.json",
             path: "/usr/bin:/bin",
-            noRestart: [STOPPED_BY_SERVER, SERVICE_NEEDS_TOTP],
+            noRestart: [STOPPED_BY_SERVER],
         });
 
         assert.match(
             unit,
             /^ExecStart="\/usr\/bin\/node" "\/opt\/pi pocket\/bin\/pi-pocket.js" runner start --service --config "\/home\/me\/.pi-pocket\/runner.json"$/m,
         );
-        assert.match(unit, /^RestartPreventExitStatus=3 4$/m);
+        assert.match(unit, /^RestartPreventExitStatus=3$/m);
         assert.match(unit, /^Environment="PATH=\/usr\/bin:\/bin"$/m);
         assert.equal(
             unitPath({ XDG_CONFIG_HOME: "/x" }),
@@ -188,24 +186,6 @@ describe("the runner service", () => {
     });
 
     for (const platform of ["linux", "win32", "darwin"] as const) {
-        it(`refuses to install without an authenticator on ${platform}, before any system changes`, () => {
-            assert.throws(
-                () =>
-                    installService(
-                        {
-                            node: process.execPath,
-                            launcher,
-                            file: linkFile(),
-                            path: process.env.PATH ?? "",
-                            home: root,
-                            authenticator: false,
-                        },
-                        platform,
-                    ),
-                { message: NEEDS_TOTP },
-            );
-        });
-
         it(`refuses an npx-cache install on ${platform}`, () => {
             assert.throws(
                 () =>
@@ -216,7 +196,6 @@ describe("the runner service", () => {
                             file: linkFile(),
                             path: process.env.PATH ?? "",
                             home: root,
-                            authenticator: true,
                         },
                         platform,
                     ),
@@ -225,7 +204,7 @@ describe("the runner service", () => {
         });
 
         it(`uses the correct permanent-stop exit codes on ${platform}`, () => {
-            for (const code of [STOPPED_BY_SERVER, SERVICE_NEEDS_TOTP]) {
+            for (const code of [STOPPED_BY_SERVER]) {
                 assert.equal(
                     serviceExitCode(code, true, platform),
                     platform === "darwin" ? 0 : code,
@@ -261,24 +240,12 @@ describe("the runner service", () => {
         assert.match(serviceHelp("darwin"), /Logs: ~\/Library\/Logs\/pi-pocket-runner\.log/);
     });
 
-    it("refuses to start as a service without an authenticator, with how to set one up", () => {
-        const result = runner("start", "--service", "--config", linkFile());
+    it("the runner has no authenticator, settings, folders, or sessions commands: the server decides", () => {
+        for (const command of ["totp", "settings", "folders", "sessions"]) {
+            const result = runner(command, "--config", linkFile());
 
-        assert.equal(result.status, serviceExitCode(SERVICE_NEEDS_TOTP, true), result.stderr);
-        assert.match(result.stderr, /authenticator/);
-        assert.match(result.stderr, /pi-pocket runner totp setup/);
+            assert.equal(result.status, 1, `${command}: ${result.stdout}${result.stderr}`);
+            assert.match(result.stderr, /Unknown command/);
+        }
     });
-
-    it(
-        "refuses to install the service without an authenticator",
-        {
-            skip: !canService(),
-        },
-        () => {
-            const result = runner("service", "--config", linkFile());
-
-            assert.equal(result.status, 1, result.stdout + result.stderr);
-            assert.match(result.stdout + result.stderr, /pi-pocket runner totp setup/);
-        },
-    );
 });

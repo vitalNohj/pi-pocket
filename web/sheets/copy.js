@@ -6,7 +6,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { chooseFolder, copyDraft, modelOf, updateDraft, useCopyDraft } from "../copy-draft.js";
 import { shortPath } from "../folder-paths.js";
-import { waitOnComputer } from "../runner-wait.js";
 import {
     actions,
     api,
@@ -371,9 +370,8 @@ export function startCopy(run, notice, draft) {
     copying = true;
 
     return attempt(async () => {
-        const created = await (draft?.runner
-            ? waitOnComputer(draft.runner, draft.cwd, "fork", run)
-            : run(undefined));
+        // A new folder waits for its approval in Pi Pocket (`folder-requests.js`), here as on a runner.
+        const created = await run(undefined);
 
         if (!created) {
             return;

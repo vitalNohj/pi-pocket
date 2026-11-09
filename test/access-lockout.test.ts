@@ -4,7 +4,7 @@ import { type App, cleanUp, fakeTab, openApp, owner, scriptedModel } from "./hel
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { User } from "../src/server/config.ts";
-import { STEP_MS, totp } from "../src/runner/totp.ts";
+import { STEP_MS, totp } from "../src/server/totp.ts";
 
 let app: App;
 let alex: User;

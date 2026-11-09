@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonical } from "./request-gate.ts";
 import { folderContains } from "./folders.ts";
-import type { TaskRequest, TaskResult } from "./protocol.ts";
+import type { SessionScope, TaskRequest, TaskResult } from "./protocol.ts";
 
 export type TaskInput = {
     command: string;
@@ -46,13 +46,13 @@ type Host = {
 export class Tasks {
     readonly #hosts = new Map<string, Host>();
     readonly #starts = new Map<string, Promise<TaskResult>>();
-    readonly #authorize: (permission: string, cwd?: string) => Promise<() => void>;
+    readonly #authorize: (scope: SessionScope, cwd?: string) => Promise<() => void>;
     readonly #log: (line: string) => void;
     #stopping = false;
     #warned = false;
 
     constructor(
-        authorize: (permission: string, cwd?: string) => Promise<() => void>,
+        authorize: (scope: SessionScope, cwd?: string) => Promise<() => void>,
         log: (line: string) => void,
     ) {
         this.#authorize = authorize;
@@ -89,8 +89,17 @@ export class Tasks {
     }
 
     async #request(request: TaskRequest): Promise<TaskResult> {
+        // The server names the session and its folder; a task starts only in that folder (`request-gate.ts`). A
+        // message from the link may lack it, whatever its type says.
+        if (
+            (request.scope as TaskRequest["scope"] | undefined) === undefined ||
+            request.scope.id !== request.permission
+        ) {
+            throw new Error("The server named no session for this background task.");
+        }
+
         const finish = await this.#authorize(
-            request.permission,
+            request.scope,
             request.op === "start" ? request.cwd : undefined,
         );
         let held = false;

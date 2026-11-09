@@ -190,5 +190,5 @@ export function unsafe(server: string, transport: Extract<Transport, { ok: false
 
 /** Why the runner will not use plain HTTP to `server`, and what to do: for its log, `link`, and the desktop app. */
 export function refusal(server: string, transport: Extract<Transport, { ok: false }>): string {
-    return `${unsafe(server, transport)}\nUse an https:// address or Tailscale. To allow plain HTTP to this server anyway, run: pi-pocket runner settings http allow`;
+    return `${unsafe(server, transport)}\nUse an https:// address or Tailscale. To allow plain HTTP to this server anyway, link with: pi-pocket runner link <server> <code> --allow-http`;
 }

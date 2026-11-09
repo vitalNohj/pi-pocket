@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { WebSocket as Raw, WebSocketServer } from "ws";
-import { LINK_PATH, LINK_SUBPROTOCOL, CLOSE } from "../src/runner/protocol.ts";
+import { CLOSE, LINK_PATH, LINK_PROTOCOL, LINK_SUBPROTOCOL } from "../src/runner/protocol.ts";
 import { Runner, RunnerStopped } from "../src/runner/runner.ts";
 import {
     checkLinkAnswer,
@@ -204,7 +204,7 @@ describe("each connection", () => {
             link.send(
                 JSON.stringify({
                     type: "hello",
-                    protocol: 1,
+                    protocol: LINK_PROTOCOL,
                     session: null,
                     received: 0,
                     version: "secret-version-text",
@@ -304,7 +304,7 @@ describe("each connection", () => {
         const url = `${setup.address.replace("http", "ws")}${LINK_PATH}`;
         const hello = JSON.stringify({
             type: "hello",
-            protocol: 1,
+            protocol: LINK_PROTOCOL,
             session: null,
             received: 0,
             version: "test",
@@ -367,7 +367,7 @@ describe("each connection", () => {
             old.send(
                 JSON.stringify({
                     type: "hello",
-                    protocol: 1,
+                    protocol: LINK_PROTOCOL,
                     session: null,
                     received: 0,
                     version: "t",

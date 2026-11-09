@@ -12,7 +12,7 @@ import { after, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Activity, activityLine, type ActivityState } from "../src/runner/activity.ts";
 import { realFolder } from "../src/runner/folders.ts";
-import { Runner, type RunnerSettings } from "../src/runner/runner.ts";
+import { Runner } from "../src/runner/runner.ts";
 import { ConfigStore } from "../src/server/config.ts";
 import { Runners } from "../src/server/runners.ts";
 
@@ -150,18 +150,12 @@ describe("a runner's activity", () => {
         const real = await realFolder(work);
         const seen: ActivityState[] = [];
         const last = (): ActivityState | undefined => seen.at(-1);
-        const settings: RunnerSettings = {};
         const runner = new Runner({
             link: { server: `http://127.0.0.1:${port}`, ...linked },
             version: "test",
             cwd: root,
             log: () => {},
             retryMs: [50, 100, 200],
-            settings: () => settings,
-            saveSettings: (change) => {
-                Object.assign(settings, change);
-            },
-            ask: () => Promise.resolve({ allow: true }),
             activity: (state) => seen.push(state),
             activityTiming: { riseMs: 100, holdMs: 300 },
         });
@@ -169,10 +163,6 @@ describe("a runner's activity", () => {
         try {
             runner.start();
             await until(() => runner.connected, "the runner to connect");
-
-            const link = runners.link(linked.id);
-
-            await link.confirm({ kind: "new", person: "Owner", folder: work, session: "s" });
 
             // The folder picker lists folders without a session: no work.
             await runners.folders(linked.id, work, false);

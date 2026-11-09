@@ -131,8 +131,6 @@ before(async () => {
         cwd: remoteHome,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => ({ confirm: false }),
-        ask: () => Promise.resolve({ allow: true }),
     };
     runner = new Runner(runnerOptions);
     runner.start();

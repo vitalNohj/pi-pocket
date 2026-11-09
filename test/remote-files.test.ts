@@ -125,8 +125,6 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50],
-        settings: () => ({ confirm: false, folders: [there] }),
-        ask: () => Promise.resolve({ allow: false }),
     });
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the image runner to connect");
@@ -177,10 +175,7 @@ describe("files from a session's computer", () => {
             { content: "small", assets: [{ name: "secret.png", path: "escape.png" }] },
         ]) {
             await call("artifact", { id: "not-allowed", title: "Not allowed", ...args });
-            assert.match(
-                await lastResult(),
-                /outside the session's approved folder|symbolic link|symlink/i,
-            );
+            assert.match(await lastResult(), /outside the session's folder|symbolic link|symlink/i);
         }
     });
 

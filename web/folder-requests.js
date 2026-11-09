@@ -1,6 +1,7 @@
-// New folders on this server waiting for an approval (`src/server/folder-requests.ts`), from `folder-requests` events.
-// The person who asked approves with a code from their own authenticator, or cancels; the owner allows or denies
-// anyone's from the app. Each tab gets only what its person may see: their own requests, and the owner every one.
+// Folders waiting for an approval, on this server or a runner (`src/server/folder-requests.ts`), from
+// `folder-requests` events. The person who asked approves with a code from their own authenticator, or cancels; the
+// owner allows or denies anyone's from the app. An approval lasts as long as the person's approval time (Menu → Your
+// name). Each tab gets only what its person may see: their own requests, and the owner every one.
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, store } from "./store.js";
 import { html, Spinner } from "./ui.js";
@@ -10,7 +11,13 @@ const KIND_TEXT = {
     fork: "a copy of a session",
     move: "moving a session",
     linked: "a session an agent starts",
+    steer: "steering a shared session",
 };
+
+/** Where a request is: its folder, on which computer; the whole computer for the owner on a runner. */
+function where(request) {
+    return request.whole ? `all of ${request.computerName}` : request.folder;
+}
 
 /** Seconds left on a request, at least 0. */
 function secondsLeft(request) {
@@ -62,15 +69,19 @@ function MyRequest({ request }) {
         aria-modal="true"
         aria-labelledby="folder-request-title"
     >
-        <h2 id="folder-request-title">New folder</h2>
+        <h2 id="folder-request-title">Approve ${request.computerName}</h2>
         <p>
             ${
                 request.code
-                    ? "Enter a code from your authenticator to start here, or wait for the owner to allow it."
-                    : "Wait for the owner to allow it. To approve folders yourself, link an authenticator in Menu → Your name."
+                    ? request.whole
+                        ? "Enter a code from your authenticator to use this computer."
+                        : "Enter a code from your authenticator, or wait for the owner to allow it."
+                    : "Wait for the owner to allow it. To approve yourself, link an authenticator in Menu → Your name."
             }
         </p>
-        <p class="runner-wait-folder">Folder: <bdi dir="ltr">${request.folder}</bdi></p>
+        <p class="runner-wait-folder">
+            ${request.whole ? "Computer" : "Folder"}: <bdi dir="ltr">${where(request)}</bdi>
+        </p>
         ${
             request.code &&
             html`<form class="runner-code" onSubmit=${send}>
@@ -106,45 +117,11 @@ function OwnerCard({ request }) {
 
     return html`<div class="folder-request" role="alert">
         <div class="small">
-            <strong>${request.name}</strong> asks for ${KIND_TEXT[request.kind] ?? "a session"} in
-            ${" "}<code>${request.folder}</code>
+            <strong>${request.name}</strong> asks for ${KIND_TEXT[request.kind] ?? "a session"} on
+            ${" "}${request.computerName} in <code>${where(request)}</code>
         </div>
         <div class="muted small">
-            ${
-                request.saved
-                    ? "A saved folder covers it."
-                    : request.broad
-                      ? "Too broad to save: they will be asked again next time."
-                      : "Allowing saves the folder for this server."
-            }
-            ${" "}${secondsLeft(request)} s left.
-        </div>
-        <div class="row">
-            <button class="button small ghost" onClick=${() => answer({ deny: true })}>Deny</button>
-            <button class="button small primary" onClick=${() => answer({ approve: true })}>Allow</button>
-        </div>
-    </div>`;
-}
-
-/** Someone else's question on a runner, for the owner: Allow or Deny, which the server tells the runner. */
-function RunnerCard({ runner, question }) {
-    const answer = (body) =>
-        attempt(() =>
-            api(`runners/${encodeURIComponent(runner.id)}/approval`, { id: question.id, ...body }),
-        );
-    const what = question.expired
-        ? "to continue a session"
-        : question.permission === "session"
-          ? "a session"
-          : "a session in a new folder";
-
-    return html`<div class="folder-request" role="alert">
-        <div class="small">
-            <strong>${question.name ?? "Someone"}</strong> asks for ${what} on ${runner.name} in
-            ${" "}<code>${question.folder}</code>
-        </div>
-        <div class="muted small">
-            ${question.broad ? "Too broad to save: allowing lets this session in only." : `${runner.name} can approve it too.`}
+            Allowing lasts for their approval time. ${secondsLeft(request)} s left.
         </div>
         <div class="row">
             <button class="button small ghost" onClick=${() => answer({ deny: true })}>Deny</button>
@@ -154,22 +131,16 @@ function RunnerCard({ runner, question }) {
 }
 
 /**
- * Every folder request this tab may see: mine as a dialog, others' (the owner's to answer) as cards, with others'
- * questions on runners that take the owner's answer. A person's own runner question shows where they wait for it
- * (`runner-wait.js`).
+ * Every folder request this tab may see, on this server and on runners: mine as a dialog, others' (the owner's to
+ * answer) as cards.
  */
 export function FolderRequests() {
-    const { folderRequests, me, runners } = store.state;
+    const { folderRequests, me } = store.state;
     const requests = folderRequests ?? [];
-    const runnerQuestions = (runners ?? []).flatMap((runner) =>
-        (runner.questions ?? [])
-            .filter((question) => question.approve && question.asker !== me?.id)
-            .map((question) => ({ runner, question })),
-    );
 
     useTick(requests.length > 0);
 
-    if (!me || (requests.length === 0 && runnerQuestions.length === 0)) {
+    if (!me || requests.length === 0) {
         return null;
     }
 
@@ -177,13 +148,9 @@ export function FolderRequests() {
     const others = requests.filter((each) => each.person !== me.id);
 
     return html`${
-        (others.length > 0 || runnerQuestions.length > 0) &&
+        others.length > 0 &&
         html`<div class="folder-requests">
             ${others.map((request) => html`<${OwnerCard} key=${request.id} request=${request} />`)}
-            ${runnerQuestions.map(
-                ({ runner, question }) =>
-                    html`<${RunnerCard} key=${question.id} runner=${runner} question=${question} />`,
-            )}
         </div>`
     }
     ${

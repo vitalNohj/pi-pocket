@@ -20,7 +20,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
-import { STEP_MS, totp } from "../src/runner/totp.ts";
+import { STEP_MS, totp } from "../src/server/totp.ts";
 import type { User } from "../src/server/config.ts";
 import { FOLDER_REQUEST_MS, type FolderRequestView } from "../src/server/folder-requests.ts";
 import { createHandler } from "../src/server/http.ts";

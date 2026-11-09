@@ -13,7 +13,7 @@ import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { WebSocketServer } from "ws";
 import { Runner } from "../src/runner/runner.ts";
-import type { RunnerOptions, RunnerSettings } from "../src/runner/runner.ts";
+import type { RunnerOptions } from "../src/runner/runner.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
 import {
     type App,
@@ -53,7 +53,6 @@ const reached: string[] = [];
 let runner: Runner;
 let runnerOptions: RunnerOptions;
 let runnerId: string;
-const settings: RunnerSettings = {};
 /** Each browser tool result, in order. */
 const results: string[] = [];
 
@@ -208,8 +207,6 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => settings,
-        ask: () => Promise.resolve({ allow: true }),
     };
     runner = new Runner(runnerOptions);
     runner.start();
@@ -308,27 +305,20 @@ describe("the browser of a session on another computer", () => {
     it("downloads to the folder the computer's runner settings name", real, async () => {
         const chosen = join(root, "chosen downloads");
 
-        // The setting reaches the server with the runner's next hello.
-        settings.downloads = chosen;
+        // The setting is kept on the server, and its runner gets it at once (`runner-settings`).
+        app.config.setComputerSettings(runnerId, { downloads: chosen });
+        app.runners.link(runnerId).sendSettings();
 
         try {
-            runner.drop();
-            await until(
-                () => app.runners.link(runnerId).downloads === chosen,
-                "the runner's folder",
-            );
+            await until(() => runner.settings.downloads === chosen, "the runner's folder");
             const done = await download(id, { action: "navigate", url: `${page()}/report.bin` });
             const file = join(chosen, app.runnerScope(id as never).id, "report.bin");
 
             assert.ok(done.includes(`Downloaded ${file} (68 KB).`), done);
             assert.deepEqual(readFileSync(file), REPORT);
         } finally {
-            delete settings.downloads;
-            runner.drop();
-            await until(
-                () => app.runners.link(runnerId).downloads === undefined && runner.connected,
-                "the default folder again",
-            );
+            app.config.setComputerSettings(runnerId, { downloads: null });
+            app.runners.link(runnerId).sendSettings();
         }
     });
 
@@ -389,7 +379,9 @@ describe("the browser of a session on another computer", () => {
     });
 
     it("fails when the computer does not share its network", real, async () => {
-        settings.network = false;
+        app.config.setComputerSettings(runnerId, { network: false });
+        app.runners.link(runnerId).sendSettings();
+        await until(() => !runner.settings.network, "the runner to stop sharing its network");
 
         try {
             const count = reached.length;
@@ -398,7 +390,9 @@ describe("the browser of a session on another computer", () => {
             assert.match(result, /Laptop does not share its network/);
             assert.equal(reached.length, count, "nothing reached the site");
         } finally {
-            delete settings.network;
+            app.config.setComputerSettings(runnerId, { network: true });
+            app.runners.link(runnerId).sendSettings();
+            await until(() => runner.settings.network, "the runner to share its network again");
         }
     });
 
