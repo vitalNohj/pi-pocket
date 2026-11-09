@@ -1,7 +1,7 @@
 // Session permission, its expiry, and authenticator codes (`src/runner/approvals.ts`, `request-gate.ts`, `totp.ts`):
 // the server's `Runners`, a real WebSocket, the runner, and the real pi-env daemon, all on this machine.
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -15,6 +15,14 @@ import { createInterface } from "node:readline";
 import { after, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/chord/context";
 import { realFolder } from "../src/runner/folders.ts";
+
+/** A test session's permission id: a fixed UUID per name, as the runner takes only ids the server makes. */
+const sid = (name: string) => {
+    const hash = createHash("sha256").update(`test-${name}`).digest("hex");
+
+    return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+};
+
 import { LINK_PROTOCOL } from "../src/runner/protocol.ts";
 import {
     Runner,
@@ -275,7 +283,7 @@ describe("the link under load and after a failed save", () => {
             writeFileSync(join(work, "big.txt"), "x".repeat(8 * 1024 * 1024));
 
             const env = setup.runners.env(computer.id, work, {
-                id: "load",
+                id: sid("load"),
                 folder: work,
                 person: "Owner",
             });
@@ -341,7 +349,7 @@ describe("the link under load and after a failed save", () => {
 
         try {
             const env = setup.runners.env(computer.id, work, {
-                id: "drop",
+                id: sid("drop"),
                 folder: work,
                 person: "Owner",
             });
@@ -381,7 +389,7 @@ describe("session permission on the runner", () => {
         const work = folder("nocwd");
 
         try {
-            const scope = { id: "nocwd", folder: work, person: "Owner" };
+            const scope = { id: sid("nocwd"), folder: work, person: "Owner" };
             const link = setup.runners.link(computer.id);
             let output = "";
 
@@ -440,7 +448,7 @@ describe("session permission on the runner", () => {
             // A session the computer never approved: it asks; Deny fails the request.
             computer.answer = { allow: false };
             const stranger = setup.runners.env(computer.id, work, {
-                id: "stranger",
+                id: sid("stranger"),
                 folder: work,
                 person: "Owner",
             });
@@ -465,10 +473,10 @@ describe("session permission on the runner", () => {
             writeFileSync(join(other, "other.txt"), "other");
             await setup.runners
                 .link(computer.id)
-                .confirm({ kind: "new", person: "Owner", folder: work, session: "one" });
+                .confirm({ kind: "new", person: "Owner", folder: work, session: sid("one") });
 
             const env = setup.runners.env(computer.id, work, {
-                id: "one",
+                id: sid("one"),
                 folder: work,
                 person: "Owner",
             });
@@ -498,10 +506,10 @@ describe("session permission on the runner", () => {
             // Another session's temporary folder is not its own.
             await setup.runners
                 .link(computer.id)
-                .confirm({ kind: "new", person: "Owner", folder: other, session: "two" });
+                .confirm({ kind: "new", person: "Owner", folder: other, session: sid("two") });
 
             const second = setup.runners.env(computer.id, other, {
-                id: "two",
+                id: sid("two"),
                 folder: other,
                 person: "Owner",
             });
@@ -539,14 +547,14 @@ describe("session permission on the runner", () => {
         computer.settings.downloads = downloads;
 
         try {
-            for (const session of ["mine", "theirs"]) {
+            for (const session of [sid("mine"), sid("theirs")]) {
                 await setup.runners
                     .link(computer.id)
                     .confirm({ kind: "new", person: "Owner", folder: work, session });
             }
 
             const env = setup.runners.env(computer.id, work, {
-                id: "mine",
+                id: sid("mine"),
                 folder: work,
                 person: "Owner",
             });
@@ -557,19 +565,31 @@ describe("session permission on the runner", () => {
                 return (await env.writeFile(path, "x", context)).ok;
             };
 
-            assert.ok(await write(join(temp, "pi-pocket-downloads", "mine", "a.txt")));
-            assert.ok(await write(join(temp, "pi-pocket-uploads", "mine", "a.txt")));
-            assert.ok(await write(join(downloads, "mine", "a.txt")));
-            assert.equal(await write(join(temp, "pi-pocket-downloads", "theirs", "a.txt")), false);
-            assert.equal(await write(join(temp, "pi-pocket-uploads", "theirs", "a.txt")), false);
-            assert.equal(await write(join(downloads, "theirs", "a.txt")), false);
+            assert.ok(await write(join(temp, "pi-pocket-downloads", sid("mine"), "a.txt")));
+            assert.ok(await write(join(temp, "pi-pocket-uploads", sid("mine"), "a.txt")));
+            assert.ok(await write(join(downloads, sid("mine"), "a.txt")));
+            assert.equal(
+                await write(join(temp, "pi-pocket-downloads", sid("theirs"), "a.txt")),
+                false,
+            );
+            assert.equal(
+                await write(join(temp, "pi-pocket-uploads", sid("theirs"), "a.txt")),
+                false,
+            );
+            assert.equal(await write(join(downloads, sid("theirs"), "a.txt")), false);
             // The chosen folder itself, and what else is in it, belong to no session.
             assert.equal(await write(join(downloads, "a.txt")), false);
         } finally {
             await computer.runner.stop();
             await close(setup);
-            rmSync(join(tmpdir(), "pi-pocket-downloads", "mine"), { recursive: true, force: true });
-            rmSync(join(tmpdir(), "pi-pocket-uploads", "mine"), { recursive: true, force: true });
+            rmSync(join(tmpdir(), "pi-pocket-downloads", sid("mine")), {
+                recursive: true,
+                force: true,
+            });
+            rmSync(join(tmpdir(), "pi-pocket-uploads", sid("mine")), {
+                recursive: true,
+                force: true,
+            });
         }
     });
 
@@ -626,11 +646,11 @@ describe("session permission on the runner", () => {
         const link = setup.runners.link(computer.id);
 
         try {
-            await link.confirm({ kind: "new", person: "Owner", folder: work, session: "s" });
+            await link.confirm({ kind: "new", person: "Owner", folder: work, session: sid("s") });
             assert.equal(computer.asked.length, 1);
 
             const env = setup.runners.env(computer.id, work, {
-                id: "s",
+                id: sid("s"),
                 folder: work,
                 person: "Owner",
             });
@@ -688,10 +708,10 @@ describe("session permission on the runner", () => {
         computer.settings.totp = { secret: base32(Buffer.from("reconnect approval!!")) };
 
         try {
-            await link.confirm({ kind: "new", person: "Owner", folder: work, session: "s" });
+            await link.confirm({ kind: "new", person: "Owner", folder: work, session: sid("s") });
             const approvedAt = computer.settings.sessions![0]!.approvedAt;
             const env = setup.runners.env(computer.id, work, {
-                id: "s",
+                id: sid("s"),
                 folder: work,
                 person: "Owner",
             });
@@ -751,7 +771,7 @@ describe("session permission on the runner", () => {
                     kind: "new",
                     person: "Owner",
                     folder: work,
-                    session: "new",
+                    session: sid("new"),
                 });
                 let settled = false;
 
@@ -770,7 +790,8 @@ describe("session permission on the runner", () => {
                 assert.equal(link.online, false, "the computer answered while still offline");
                 assert.equal(settled, false, "the server still waits for its confirm answer");
                 assert.equal(
-                    computer.settings.sessions?.some((session) => session.id === "new") ?? false,
+                    computer.settings.sessions?.some((session) => session.id === sid("new")) ??
+                        false,
                     allow,
                 );
                 await until(() => link.online, "the confirm link to reconnect");
@@ -803,11 +824,11 @@ describe("session permission on the runner", () => {
                 kind: "new",
                 person: "Owner",
                 folder: homedir(),
-                session: "home",
+                session: sid("home"),
             });
             assert.equal(computer.asked[0]!.broad, true);
             assert.deepEqual(computer.settings.folders ?? [], []);
-            assert.equal(computer.settings.sessions?.[0]?.id, "home");
+            assert.equal(computer.settings.sessions?.[0]?.id, sid("home"));
 
             computer.settings.folders = [homedir()];
             computer.settings.confirm = false;
@@ -815,7 +836,7 @@ describe("session permission on the runner", () => {
                 kind: "new",
                 person: "Owner",
                 folder: join(homedir(), "pi-pocket-missing"),
-                session: "below",
+                session: sid("below"),
             });
             assert.equal(
                 computer.asked.length,
@@ -840,17 +861,20 @@ describe("session permission on the runner", () => {
         const link = setup.runners.link(computer.id);
 
         try {
-            for (const session of ["a", "b", "c"]) {
+            for (const session of [sid("a"), sid("b"), sid("c")]) {
                 await link.confirm({ kind: "new", person: "Owner", folder: work, session });
             }
 
-            await link.action({ action: "revoke", session: "a" });
-            assert.deepEqual(link.state?.sessions.map((each) => each.id).sort(), ["b", "c"]);
+            await link.action({ action: "revoke", session: sid("a") });
+            assert.deepEqual(link.state?.sessions.map((each) => each.id).sort(), [
+                sid("b"),
+                sid("c"),
+            ]);
 
             // The revoked session's next request asks again.
             computer.answer = { allow: false };
             const env = setup.runners.env(computer.id, work, {
-                id: "a",
+                id: sid("a"),
                 folder: work,
                 person: "Owner",
             });
@@ -889,7 +913,7 @@ describe("authenticator codes from Pi Pocket", () => {
                 kind: "new",
                 person: "Owner",
                 folder: work,
-                session: "t1",
+                session: sid("t1"),
             });
 
             await until(() => link.questions.size === 1, "the question on the server");
@@ -914,7 +938,7 @@ describe("authenticator codes from Pi Pocket", () => {
             await started;
             assert.deepEqual(computer.settings.folders, [await realFolder(work)]);
 
-            const approved = computer.settings.sessions?.find((each) => each.id === "t1");
+            const approved = computer.settings.sessions?.find((each) => each.id === sid("t1"));
 
             assert.equal(approved?.approvedBy, "totp");
             assert.equal(approved?.ttlMs, 7 * 86_400_000, "7 days by default");
@@ -924,7 +948,7 @@ describe("authenticator codes from Pi Pocket", () => {
                 kind: "new",
                 person: "Owner",
                 folder: work,
-                session: "t2",
+                session: sid("t2"),
             });
 
             await until(() => link.questions.size === 1, "the session question");
