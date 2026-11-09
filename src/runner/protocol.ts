@@ -79,7 +79,22 @@ export type ApprovalNeeded = {
     totp: boolean;
 };
 export type ApprovalEnded = { type: "approval-ended"; id: string };
+/** Server to a runner without grants: a code for the runner's own authenticator, which only the runner checks. */
 export type ApprovalCode = { type: "approval-code"; id: string; code: string };
+/**
+ * Server to a runner that takes grants (`Hello.grants`, `Welcome.grants`): the answer to its question `id`. The server
+ * checked the proof: the asking person's own authenticator code (`totp`), or the owner from the app (`owner`). The
+ * runner trusts its server after the link, so it takes the answer as it takes one from the person at the computer.
+ * `by` names who approved, for the computer's log.
+ */
+export type ApprovalGrant = {
+    type: "approval-grant";
+    id: string;
+    allow: boolean;
+    method?: "totp" | "owner";
+    by?: string;
+    reason?: string;
+};
 export type CodeResult = { type: "code-result"; id: string; allow: boolean; reason?: string };
 export type StateMessage = { type: "runner-state"; state: ApprovalState };
 export type ActionMessage = { type: "runner-action"; id: string; request: RunnerAction };
@@ -132,6 +147,8 @@ export type Hello = {
     approvals?: boolean;
     /** The runner understands `Withdraw`: a session question can be cancelled by the server. */
     withdraws?: boolean;
+    /** The runner takes the server's answers to its questions (`ApprovalGrant`). Absent: codes are relayed to it. */
+    grants?: boolean;
     /** Background tasks belong to this runner process, not its tool daemon. */
     tasks?: true;
     tools?: RunnerTools;
@@ -178,6 +195,8 @@ export type Welcome = {
     graceMs: number;
     /** Requests carry SESSION_FIELD, and net-open carries its session scope. */
     approvals?: boolean;
+    /** The server answers the runner's questions with `ApprovalGrant` (the runner said `grants`). */
+    grants?: boolean;
 };
 
 /** Either side: bytes of the other side's stream received so far, so the other side can drop them. */
@@ -230,6 +249,7 @@ export type ControlMessage =
     | ApprovalNeeded
     | ApprovalEnded
     | ApprovalCode
+    | ApprovalGrant
     | CodeResult
     | StateMessage
     | ActionMessage
@@ -277,6 +297,16 @@ export function parseControl(text: string): ControlMessage | undefined {
         case "approval-code":
             return typeof message.id === "string" && typeof message.code === "string"
                 ? (message as ApprovalCode)
+                : undefined;
+        case "approval-grant":
+            return typeof message.id === "string" &&
+                typeof message.allow === "boolean" &&
+                (message.allow
+                    ? message.method === "totp" || message.method === "owner"
+                    : message.method === undefined) &&
+                (message.by === undefined || typeof message.by === "string") &&
+                (message.reason === undefined || typeof message.reason === "string")
+                ? (message as ApprovalGrant)
                 : undefined;
         case "code-result":
             return typeof message.id === "string" && typeof message.allow === "boolean"

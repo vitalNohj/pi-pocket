@@ -1018,11 +1018,12 @@ describe("allowed folders", () => {
             const session = link.confirm({ kind: "new", person: "Owner", folder: childFolder });
 
             await until(() => questions.length === 2, "the session question for a saved folder");
+            // Pi Pocket can answer it too (its server sends grants), so it waits the longer time.
             assert.partialDeepStrictEqual(questions[1], {
                 permission: "session",
                 expired: false,
-                totp: false,
-                expiresInMs: 120_000,
+                totp: true,
+                expiresInMs: 300_000,
             });
             answer(true);
             await session;

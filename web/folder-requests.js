@@ -126,14 +126,50 @@ function OwnerCard({ request }) {
     </div>`;
 }
 
-/** Every folder request this tab may see: mine as a dialog, others' (the owner's to answer) as cards. */
+/** Someone else's question on a runner, for the owner: Allow or Deny, which the server tells the runner. */
+function RunnerCard({ runner, question }) {
+    const answer = (body) =>
+        attempt(() =>
+            api(`runners/${encodeURIComponent(runner.id)}/approval`, { id: question.id, ...body }),
+        );
+    const what = question.expired
+        ? "to continue a session"
+        : question.permission === "session"
+          ? "a session"
+          : "a session in a new folder";
+
+    return html`<div class="folder-request" role="alert">
+        <div class="small">
+            <strong>${question.name ?? "Someone"}</strong> asks for ${what} on ${runner.name} in
+            ${" "}<code>${question.folder}</code>
+        </div>
+        <div class="muted small">
+            ${question.broad ? "Too broad to save: allowing lets this session in only." : `${runner.name} can approve it too.`}
+        </div>
+        <div class="row">
+            <button class="button small ghost" onClick=${() => answer({ deny: true })}>Deny</button>
+            <button class="button small primary" onClick=${() => answer({ approve: true })}>Allow</button>
+        </div>
+    </div>`;
+}
+
+/**
+ * Every folder request this tab may see: mine as a dialog, others' (the owner's to answer) as cards, with others'
+ * questions on runners that take the owner's answer. A person's own runner question shows where they wait for it
+ * (`runner-wait.js`).
+ */
 export function FolderRequests() {
-    const { folderRequests, me } = store.state;
+    const { folderRequests, me, runners } = store.state;
     const requests = folderRequests ?? [];
+    const runnerQuestions = (runners ?? []).flatMap((runner) =>
+        (runner.questions ?? [])
+            .filter((question) => question.approve && question.asker !== me?.id)
+            .map((question) => ({ runner, question })),
+    );
 
     useTick(requests.length > 0);
 
-    if (!me || requests.length === 0) {
+    if (!me || (requests.length === 0 && runnerQuestions.length === 0)) {
         return null;
     }
 
@@ -141,9 +177,13 @@ export function FolderRequests() {
     const others = requests.filter((each) => each.person !== me.id);
 
     return html`${
-        others.length > 0 &&
+        (others.length > 0 || runnerQuestions.length > 0) &&
         html`<div class="folder-requests">
             ${others.map((request) => html`<${OwnerCard} key=${request.id} request=${request} />`)}
+            ${runnerQuestions.map(
+                ({ runner, question }) =>
+                    html`<${RunnerCard} key=${question.id} runner=${runner} question=${question} />`,
+            )}
         </div>`
     }
     ${

@@ -288,6 +288,7 @@ const APPROVED_BY = {
     computer: "approved at the computer",
     automatic: "approved without a question",
     totp: "approved with a code",
+    owner: "approved by the owner from Pi Pocket",
 };
 
 /** When an approved session's permission expires, as its row says it. */

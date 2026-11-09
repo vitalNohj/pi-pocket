@@ -25,19 +25,16 @@ function questionFor(runner, folder) {
     return questions.findLast((question) => question.folder === folder) ?? questions.at(-1);
 }
 
-/** A 6-digit authenticator code for one runner question. It is sent once and never kept here. */
+/**
+ * A 6-digit authenticator code for one runner question: the asker's own (the server checks it), or on an older runner
+ * the computer's own. The server says which questions take one from this person (`code`). Sent once, never kept here.
+ */
 export function ApprovalCode({ runner, question }) {
     const [code, setCode] = useState("");
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
 
-    // Owners see all computers; other people receive only the computers they may use.
-    const permitted =
-        store.state.me?.role === "owner"
-            ? runner?.createdBy === store.state.me.id
-            : store.state.runners.some((each) => each.id === runner?.id);
-
-    if (!question?.totp || !permitted) {
+    if (!question?.code || !runner) {
         return null;
     }
 
@@ -78,6 +75,23 @@ export function ApprovalCode({ runner, question }) {
     </form>`;
 }
 
+/** How this person can get the question approved: at the computer, with their own code, or by the owner. */
+function approvalHelp(computer, question) {
+    const ways = [`approve it on ${computer.name}`];
+
+    if (question?.code) {
+        ways.push("enter a code from your authenticator");
+    }
+
+    if (question?.asker !== undefined && store.state.me?.role !== "owner" && computer.grants) {
+        ways.push("ask the owner to allow it in Pi Pocket");
+    }
+
+    const last = ways.pop();
+
+    return `${computer.name} needs an approval: ${ways.length > 0 ? `${ways.join(", ")}, or ${last}` : last}.`;
+}
+
 /** The text and code field of a question on `computer`. */
 function Approval({ computer, folder, question, since, cancel }) {
     const limit = question?.totp ? 300_000 : 120_000;
@@ -91,9 +105,7 @@ function Approval({ computer, folder, question, since, cancel }) {
         aria-describedby="runner-wait-help"
     >
         <h2 id="runner-wait-title">Waiting for ${computer.name}</h2>
-        <p id="runner-wait-help">
-            ${`${computer.name} needs your approval: approve it there${question?.totp ? ", or enter the code from your authenticator" : ""}.`}
-        </p>
+        <p id="runner-wait-help">${approvalHelp(computer, question)}</p>
         <p class="runner-wait-folder">Folder: <bdi dir="ltr">${folder}</bdi></p>
         <${ApprovalCode} runner=${computer} question=${question} />
         <p class="runner-wait-countdown">

@@ -779,7 +779,12 @@ function sessionRows(link: Link) {
     });
 }
 
-const HOW = { computer: "at this computer", automatic: "without a question", totp: "with a code" };
+const HOW = {
+    computer: "at this computer",
+    automatic: "without a question",
+    totp: "with a code",
+    owner: "by the owner, from Pi Pocket",
+};
 
 function sessionLine(row: ReturnType<typeof sessionRows>[number]): string {
     const until =

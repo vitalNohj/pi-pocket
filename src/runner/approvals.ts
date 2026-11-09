@@ -5,7 +5,11 @@ import { broadFolder, coveredFolder, realFolder } from "./folders.ts";
 import { checkCode } from "./totp.ts";
 import type { RunnerSettings } from "./runner.ts";
 
-export type ApprovalMethod = "computer" | "automatic" | "totp";
+/**
+ * How a session was approved here: at the computer, without a question (saved folder, asking off), with a code (this
+ * runner's own authenticator, or the asking person's, checked by the server), or by the server's owner from the app.
+ */
+export type ApprovalMethod = "computer" | "automatic" | "totp" | "owner";
 export type SessionPermission = {
     id: string;
     folder: string;
@@ -90,8 +94,9 @@ export class Approvals {
                 approvedBy: method,
                 approvedAt: now,
                 idleAt: now,
+                // A code or the owner's word lasts the authenticator's days; one at the computer, the computer's time.
                 ttlMs:
-                    method === "totp"
+                    method === "totp" || method === "owner"
                         ? days === null
                             ? null
                             : days * 86_400_000

@@ -729,6 +729,63 @@ describe("authenticator codes from Pi Pocket", () => {
         }
     });
 
+    it("a runner with nobody at it takes the server's answer: the owner's, or the asker's own code", async () => {
+        const setup = await serve();
+        const computer = await start(setup, { ask: undefined });
+        const link = setup.runners.link(computer.id);
+        const work = folder("granted");
+
+        try {
+            assert.equal(link.grants, true);
+
+            // No terminal and no authenticator there: it waits for Pi Pocket's answer instead of refusing.
+            const allowed = link.confirm(
+                { kind: "new", person: "Guest", folder: work, session: "g1" },
+                undefined,
+                "guest-id",
+            );
+
+            await until(() => link.questions.size === 1, "the question on the server");
+            const question = [...link.questions.values()][0]!;
+
+            assert.equal(question.totp, true, "a code can answer it");
+            assert.equal(link.asker(question.id), "guest-id");
+            link.grant(question.id, { allow: true, method: "owner", by: "Owner" });
+            await allowed;
+
+            const approved = computer.settings.sessions?.find((each) => each.id === "g1");
+
+            assert.equal(approved?.approvedBy, "owner");
+            assert.equal(approved?.ttlMs, 7 * 86_400_000, "as long as a code's approval");
+            assert.deepEqual(computer.settings.folders, [await realFolder(work)]);
+            assert.ok(computer.lines.some((line) => /by the owner, from Pi Pocket/.test(line)));
+
+            // A denial ends the question with its reason; nothing is saved.
+            const other = folder("denied");
+            const denied = link.confirm(
+                { kind: "new", person: "Guest", folder: other, session: "g2" },
+                undefined,
+                "guest-id",
+            );
+
+            await until(() => link.questions.size === 1, "the second question");
+            link.grant([...link.questions.values()][0]!.id, {
+                allow: false,
+                reason: "The owner did not allow it.",
+            });
+            await assert.rejects(denied, { status: 403, message: "The owner did not allow it." });
+            assert.equal(computer.settings.folders?.length, 1);
+
+            // A question that is gone takes no answer.
+            assert.throws(() => link.grant("gone", { allow: true, method: "owner" }), {
+                status: 404,
+            });
+        } finally {
+            await computer.runner.stop();
+            await close(setup);
+        }
+    });
+
     it("without an authenticator, settings change only on the computer", async () => {
         const setup = await serve();
         const computer = await start(setup);
@@ -869,6 +926,10 @@ describe("an older server", () => {
             assert.ok(
                 !got.some((each) => each.type === "approval-needed"),
                 "nothing new is sent to it",
+            );
+            assert.ok(
+                got.some((each) => each.type === "hello" && each.grants === true),
+                "the runner offers to take the server's answers",
             );
 
             // Expired: an older server cannot show a new question, so its requests fail until it asks again.

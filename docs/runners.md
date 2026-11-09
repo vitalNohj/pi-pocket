@@ -48,7 +48,7 @@ The runner runs while its terminal or a program that runs the runner, such as th
 
 ### A computer nobody sits at (Linux)
 
-`pi-pocket runner service` keeps the runner running as a systemd user service (`pi-pocket-runner.service`), for a computer such as a build server. With nobody at that computer, nobody can answer the question before a session or a folder. A code from an authenticator app, typed in Pi Pocket, is then the only way to approve one. So the service needs an authenticator on that computer: set it up first with `pi-pocket runner totp setup` in a terminal there. Without one, `pi-pocket runner service` refuses and says how to set it up, and the service itself refuses to start and is not restarted. Saved folders alone are not enough: a folder outside them could never be approved.
+`pi-pocket runner service` keeps the runner running as a systemd user service (`pi-pocket-runner.service`), for a computer such as a build server. With nobody at that computer, nobody can answer the question before a session or a folder there: Pi Pocket answers it ([Approving from Pi Pocket](#approving-from-pi-pocket)). The service still needs an authenticator on that computer, for settings changes from Pi Pocket and for an older server, which approves only with the computer's own codes: set it up first with `pi-pocket runner totp setup` in a terminal there. Without one, `pi-pocket runner service` refuses and says how to set it up, and the service itself refuses to start and is not restarted. Saved folders alone are not enough: a folder outside them could never be approved.
 
 The service uses the Node.js, Pi Pocket, link file, and `PATH` of the shell that installed it. Install Pi Pocket with npm first (`npm install -g pi-pocket`): a copy in the npx cache is refused, because npm can clear it. Its log is in `journalctl --user -u pi-pocket-runner.service`. To keep it running while you are logged out, run `loginctl enable-linger $USER`. `pi-pocket runner service remove` stops and removes it.
 
@@ -111,21 +111,31 @@ This is not a sandbox. A command still runs as you, and it can read and change f
 
 ### Waiting for an answer
 
-If nobody answers within 2 minutes (5 minutes with an authenticator), the session does not start, or the waiting request fails. While the computer asks, the page shows a waiting dialog with the computer, folder, and time left. A quick answer skips the dialog. **Cancel** stops the request and withdraws the question on a runner that supports cancellation; no session starts. Older runners can keep their question open, but their late answer does not start the cancelled session.
+If nobody answers within 2 minutes (5 minutes when Pi Pocket can answer too), the session does not start, or the waiting request fails. While the computer asks, the page shows a waiting dialog with the computer, folder, and time left. A quick answer skips the dialog. **Cancel** stops the request and withdraws the question on a runner that supports cancellation; no session starts. Older runners can keep their question open, but their late answer does not start the cancelled session.
+
+## Approving from Pi Pocket
+
+After the link, a runner trusts its server: the server already sends it every tool call. So a runner that is up to date takes the server's answer to its questions, as it takes one from the person at the computer. Two answers count:
+
+- **The person's own code.** The person who asked enters a code from their own authenticator, which they link to their account in Pi Pocket (Menu → their name). The server checks it. A code from anyone else's authenticator, the computer's own included, does not count for them.
+- **The owner.** The owner sees each person's question as a card in Pi Pocket (and a notice, and a push under **Folder requests**), and taps **Allow** or **Deny**.
+
+An approved folder is saved on the computer, as when the person there answers. A session approved this way lasts as long as one approved with a code (**Session expiry with a code**). Each person sees only their own questions; the linker and the owner see every question on the computer. A runner with nobody at it (a service, or the desktop app closed) waits for Pi Pocket's answer instead of refusing at once.
+
+A runner or server from before this works as before: the code in the waiting dialog is the computer's own authenticator's, relayed for the runner to check.
 
 ## Authenticator codes
 
-With an authenticator app (TOTP), you can approve sessions and folders, and change runner settings, from Pi Pocket without going to the computer. It is off by default. Each computer has its own.
+A computer can have its own authenticator app (TOTP) too. Its codes change runner settings from Pi Pocket without going to the computer, and approve sessions there when its server is too old to approve them itself. It is off by default. Each computer has its own.
 
 Set it up on the computer: run `pi-pocket runner totp setup`, or choose **Authenticator** in the runner's **Settings** menu. The runner shows a QR code and an `otpauth://` link. Scan it with your authenticator app, then enter the code it shows. The runner saves the secret only when that code is right. Programs that run the runner can use `pi-pocket runner totp setup --json`: it prints `{ "secret", "link" }`, then reads one code per line on stdin and answers each with `{ "ok" }`.
 
 With an authenticator set up:
 
-- The waiting dialog in Pi Pocket has a field for the code from your authenticator. A right code approves the session, and saves the folder when the question was for folder permission. A wrong or used code shows "That code is wrong or used. Try the next one.", and the question stays.
-- In **Runners**, each change to a setting asks for a code. One code makes one change.
-- The linker and the people the owner chose can use a code to approve a session. Only the linker changes settings.
+- In **Runners**, each change to a setting asks for a code. One code makes one change. Only the linker changes settings.
+- With an older server, the waiting dialog in Pi Pocket has a field for the computer's code. A right code approves the session, and saves the folder when the question was for folder permission. A wrong or used code shows "That code is wrong or used. Try the next one.", and the question stays.
 
-A code works once. Codes are 6 digits and change every 30 seconds; the code before and after the current one also work. After 5 wrong codes in 10 minutes, codes are refused for 10 minutes. Only the runner checks codes. The secret stays in the link file on the computer; the server never stores a code.
+A code works once. Codes are 6 digits and change every 30 seconds; the code before and after the current one also work. After 5 wrong codes in 10 minutes, codes are refused for 10 minutes. Only the runner checks the computer's codes. Its secret stays in the link file on the computer; the server never stores a code.
 
 Turning the authenticator off needs a code too: `pi-pocket runner totp off <code>`, or the runner's **Settings** menu.
 
@@ -138,10 +148,10 @@ A program that runs the runner, such as the desktop app, starts it with `pi-pock
 - `permission`: `folder` (Allow saves the folder) or `session` (Allow approves this session).
 - `expired`: true when an approved session's permission expired and it wants to continue.
 - `session`: the id of the session's permission, as `pi-pocket runner sessions` lists it.
-- `totp`: true when an authenticator is set up, so the question can also be answered in Pi Pocket.
+- `totp`: true when the question can also be answered in Pi Pocket: the computer has an authenticator, or its server approves from the app.
 - `expiresInMs`: how long the question waits for an answer.
 
-The program answers with a JSON line on stdin: `{ "id": <id>, "allow": true }`. A `PI-POCKET-CONFIRM-END {"id":<id>}` line says the question no longer stands: it was answered (here or with a code in Pi Pocket), withdrawn, or timed out. The runner saves the folder and the session before that line.
+The program answers with a JSON line on stdin: `{ "id": <id>, "allow": true }`. A `PI-POCKET-CONFIRM-END {"id":<id>}` line says the question no longer stands: it was answered (here or in Pi Pocket), withdrawn, or timed out. The runner saves the folder and the session before that line.
 
 The runner also says when sessions work on the computer, for a tray icon, keeping the computer awake, or a warning on quit. It writes a line `PI-POCKET-ACTIVITY` and a JSON object, `{ "working": true, "folders": ["/Users/me/project"] }`, each time the state changes. The first line comes when work starts, so a program that saw none can take the runner as idle.
 

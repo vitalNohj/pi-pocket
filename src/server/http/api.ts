@@ -801,26 +801,34 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === "approval" &&
             method === "POST"
         ) {
-            // Answering a question about a new session there: whoever may start sessions there.
-            if (!app.policy.mayStart(user, second)) {
-                throw new HttpError(403, "You cannot use this computer.");
-            }
+            // Answering a computer's question about a session there (`app.answerRunnerQuestion`): its asker with their
+            // own code, the owner from the app, and who manages it withdraws. Whoever may not see it gets a 404.
+            app.runners.require(second);
 
-            const body = await readJson<{ id?: unknown; code?: unknown; withdraw?: unknown }>(
-                request,
-            );
+            const body = await readJson<{
+                id?: unknown;
+                code?: unknown;
+                approve?: unknown;
+                deny?: unknown;
+                withdraw?: unknown;
+            } | null>(request);
 
-            if (typeof body.id !== "string") {
+            if (typeof body?.id !== "string") {
                 throw new HttpError(400, "id is required");
             }
 
-            if (body.withdraw === true) {
-                app.runners.link(second).withdraw(body.id);
-            } else if (typeof body.code === "string" && /^\d{6}$/.test(body.code)) {
-                await app.runners.link(second).approveCode(body.id, body.code);
-            } else {
-                throw new HttpError(400, "Enter the 6-digit code from your authenticator.");
-            }
+            await app.answerRunnerQuestion(
+                user,
+                second,
+                body.id,
+                body.withdraw === true
+                    ? { withdraw: true }
+                    : body.deny === true
+                      ? { deny: true }
+                      : body.approve === true
+                        ? { approve: true }
+                        : { code: sixDigits(body.code) },
+            );
 
             return json(response, 200, { ok: true });
         }

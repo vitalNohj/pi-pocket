@@ -534,6 +534,7 @@ export class Commands {
             .confirm(
                 { kind: "new", person: user.name, folder: cwd, session: runnerPermission },
                 signal,
+                user.id,
             );
 
         const initial = this.#defaultModel();
@@ -2234,12 +2235,16 @@ export class Commands {
                   : await app.runners.checkFolder(runner, request.cwd);
 
         if (runner !== undefined && cwd !== undefined && cwd !== (current?.cwd ?? app.cwdOf(id))) {
-            await app.runners.link(runner).confirm({
-                kind: "move",
-                person: user.name,
-                folder: app.runnerScope(id, cwd).folder,
-                session: app.runnerScope(id).id,
-            });
+            await app.runners.link(runner).confirm(
+                {
+                    kind: "move",
+                    person: user.name,
+                    folder: app.runnerScope(id, cwd).folder,
+                    session: app.runnerScope(id).id,
+                },
+                undefined,
+                user.id,
+            );
         }
 
         // Moving to another folder here asks as a new session there would.
@@ -3168,6 +3173,7 @@ export class Commands {
                     session: runnerPermission,
                 },
                 signal,
+                user.id,
             );
         } else {
             await this.#app.approveFolder(user, destination.cwd, "fork", signal);

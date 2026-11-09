@@ -621,6 +621,24 @@ export class PocketApp {
             onChange: () => this.#runnersChanged(),
             mayList: (id, user) => this.policy.mayStart(user, id),
             mayManage: (id, user) => this.policy.mayManage(user, id),
+            askerOf: (id, permission) => this.#runnerAsker(id, permission),
+            hasCode: (person) => this.authenticators.linked(person),
+            // The owner hears of someone's question on a runner, as of a new folder here, and answers it from the app.
+            onQuestion: (id, question, asker) => {
+                const person = asker === undefined ? undefined : this.config.userById(asker);
+
+                if (person !== undefined) {
+                    this.alerts.folderRequest(
+                        {
+                            id: question.id,
+                            person: person.id,
+                            name: person.name,
+                            folder: question.folder,
+                        },
+                        this.runners.name(id),
+                    );
+                }
+            },
         });
         this.cacheKeeper = new CacheKeeper({
             log: (line) => this.#log(line),
@@ -2833,6 +2851,94 @@ export class PocketApp {
         }
 
         await this.folderRequests.ask(user, real, kind, decision.saved, signal);
+    }
+
+    /**
+     * Who started the session holding permission `permission` on computer `id`: a runner asks again when that permission
+     * expires, for that person. A session from before people were recorded is the owner's.
+     */
+    #runnerAsker(id: string, permission: string): string | undefined {
+        const meta = Object.values(this.#sessions).find(
+            (each) => each.runner === id && each.runnerPermission === permission,
+        );
+
+        if (meta === undefined) {
+            return undefined;
+        }
+
+        return meta.createdBy ?? this.config.users.find((each) => each.role === "owner")?.id;
+    }
+
+    /**
+     * Answer computer `runner`'s question `id` from the app. The person who asked approves with their own authenticator
+     * code; the owner approves or denies anyone's; the asker or a manager of the computer withdraws it. The server checks
+     * the proof and tells the runner, which trusts it after the link (`ApprovalGrant`). A runner too old for that takes a
+     * code for its own authenticator, relayed, from those who manage it, as before.
+     */
+    async answerRunnerQuestion(
+        user: User,
+        runner: string,
+        id: string,
+        answer: { code: string } | { approve: true } | { deny: true } | { withdraw: true },
+    ): Promise<void> {
+        const link = this.runners.link(runner);
+        const asker = link.asker(id);
+        const mine = asker !== undefined && asker === user.id;
+        const manages = this.policy.mayManage(user, runner);
+        const gone = () =>
+            new HttpError(404, "That question is gone: it was answered, cancelled, or too old.");
+
+        // Someone who may not see the question learns nothing of it.
+        if (!link.questions.has(id) || (!mine && !manages)) {
+            throw gone();
+        }
+
+        if ("withdraw" in answer) {
+            link.withdraw(id);
+
+            return;
+        }
+
+        // A runner too old for the server's answers checks codes with its own authenticator, as before.
+        if (!link.grants) {
+            if (!("code" in answer)) {
+                throw new HttpError(
+                    409,
+                    `Update Pi Pocket's runner on ${link.name} to approve from the app. Until then, approve it there, or with a code from its own authenticator.`,
+                );
+            }
+
+            await link.approveCode(id, answer.code);
+
+            return;
+        }
+
+        const requester = asker === undefined ? undefined : this.config.userById(asker);
+
+        if ("deny" in answer) {
+            if (user.role !== "owner") {
+                throw new HttpError(403, "Only the owner can deny this.");
+            }
+
+            link.grant(id, { allow: false, by: user.name, reason: "The owner did not allow it." });
+
+            return;
+        }
+
+        if (requester === undefined) {
+            throw new HttpError(
+                409,
+                `Approve it on ${link.name}: Pi Pocket does not know who asked.`,
+            );
+        }
+
+        const method = await this.approvalMethods.verify(
+            user,
+            requester,
+            "code" in answer ? { method: "totp", code: answer.code } : { method: "owner" },
+        );
+
+        link.grant(id, { allow: true, method, by: user.name });
     }
 
     /** Each person's tabs hear their own folder requests; the owner's hear every one. */

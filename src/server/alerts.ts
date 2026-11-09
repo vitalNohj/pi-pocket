@@ -135,10 +135,14 @@ export class Alerts {
     }
 
     /**
-     * Someone asks to start a session in a new folder on this server (`folder-requests.ts`): the owner hears at once, in
-     * their open tabs (where they allow or deny it) and as a push. Not for the owner's own requests: they need none here.
+     * Someone asks to start a session in a new folder (`folder-requests.ts` on this server, or a runner's question that
+     * the owner can answer from the app): the owner hears at once, in their open tabs (where they allow or deny it) and
+     * as a push. Not for the owner's own requests. `where` names the computer for a runner's.
      */
-    folderRequest(request: FolderRequestView): void {
+    folderRequest(
+        request: Pick<FolderRequestView, "id" | "person" | "name" | "folder">,
+        where?: string,
+    ): void {
         const app = this.#app;
         const owner = app.config.users.find((each) => each.role === "owner");
 
@@ -146,7 +150,7 @@ export class Alerts {
             return;
         }
 
-        const body = `${request.name} asks to start a session in ${request.folder}.`;
+        const body = `${request.name} asks to start a session in ${request.folder}${where === undefined ? "" : ` on ${where}`}.`;
         const store = app.pushStore;
 
         if (!(store?.prefs(owner.id) ?? DEFAULT_PREFS).folders) {

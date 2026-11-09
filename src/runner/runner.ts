@@ -29,6 +29,7 @@ import { RequestGate, sessionScope } from "./request-gate.ts";
 import { Tasks } from "./tasks.ts";
 import type { RunnerTools, TaskRequest, TaskResult } from "./protocol.ts";
 import {
+    type ApprovalGrant,
     CLOSE,
     type Confirm,
     type ControlMessage,
@@ -104,6 +105,10 @@ export type SessionQuestion = {
     permission: "folder" | "session";
     expired: boolean;
     session: string;
+    /**
+     * Pi Pocket can answer it too: with a code from this computer's authenticator, or (a server that sends grants) a
+     * person's own code or the owner's word. It then waits longer, for someone to open an authenticator.
+     */
     totp: boolean;
     expiresInMs: number;
     person: string;
@@ -310,6 +315,11 @@ export class Runner {
     readonly #activity: Activity;
     /** Approvals and folders of a runner without `saveSettings` (tests, and programs that keep no file). */
     #unsaved: RunnerSettings = {};
+    /**
+     * The server answers this runner's questions (`Welcome.grants`): the asking person's own code or the owner, which
+     * the server checks. This runner trusts its server after the link, as it trusts the tool calls it sends.
+     */
+    #grants = false;
     #stateTimer: NodeJS.Timeout | undefined;
     #lastState = "";
     #attempt = 0;
@@ -707,6 +717,8 @@ export class Runner {
                     asks: true,
                     approvals: true,
                     withdraws: true,
+                    // And takes the server's answers to its questions (`approval-grant`).
+                    grants: true,
                     tasks: true,
                     tools,
                     // And opens network streams (`net-open`), or refuses them as its settings say.
@@ -827,6 +839,7 @@ export class Runner {
         if (message?.type === "welcome" && !welcomed) {
             this.#attempt = 0;
             session.gate.scoped = message.approvals === true;
+            this.#grants = message.grants === true;
             // Runners shows this computer's settings, folders, and sessions as soon as it is welcomed.
             this.#lastState = "";
             queueMicrotask(() => void this.#state());
@@ -898,6 +911,8 @@ export class Runner {
             this.#questions.get(message.id)?.abort(WITHDRAWN);
         } else if (message?.type === "approval-code") {
             void this.#code(message.id, message.code);
+        } else if (message?.type === "approval-grant") {
+            this.#grant(message);
         } else if (message?.type === "task" && welcomed) {
             void this.#task(ws, message);
         } else if (message?.type === "runner-action") {
@@ -980,6 +995,30 @@ export class Runner {
         }
     }
 
+    /**
+     * The server's answer to a question that waits here (`ApprovalGrant`): it checked the asking person's own code, or the
+     * owner answered from the app. Taken only from a server that said it sends them, for a question still open.
+     */
+    #grant(message: ApprovalGrant): void {
+        const pending = this.#pending.get(message.id);
+
+        if (!this.#grants || pending === undefined || pending.stop.signal.aborted) {
+            return;
+        }
+
+        if (message.allow && message.method !== undefined) {
+            this.#log(
+                `${message.by ?? "Pi Pocket"} approved it from Pi Pocket${message.method === "totp" ? " with a code from their authenticator" : ""}.`,
+            );
+            pending.resolve({ allow: true, method: message.method });
+        } else {
+            pending.resolve({
+                allow: false,
+                reason: message.reason ?? `${message.by ?? "Pi Pocket"} did not allow it.`,
+            });
+        }
+    }
+
     /** The server's question before a session starts, moves, or is copied here. */
     async #answer(ws: WebSocket, question: Confirm): Promise<void> {
         const scope: SessionScope = {
@@ -1049,7 +1088,8 @@ export class Runner {
         const stop = new AbortController();
         const abort = () => stop.abort();
         const ws = this.#socket;
-        const totp = this.#settings().totp !== undefined;
+        // A code can answer: this runner's own authenticator, or the server's grants (people's own codes, the owner).
+        const totp = this.#settings().totp !== undefined || this.#grants;
         const timer = setTimeout(abort, totp ? ASK_TOTP_MS : ASK_MS);
 
         let resolveAnswer: (answer: Approval) => void = () => {};
@@ -1110,7 +1150,7 @@ export class Runner {
                 } else if (this.#options.ask === undefined && !totp) {
                     answer = {
                         allow: false,
-                        reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal. Run it in a terminal or a program that runs the runner, such as the desktop app, or set up an authenticator there.`,
+                        reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal, and its server is too old to approve from the app. Update Pi Pocket, run the runner in a terminal or a program such as the desktop app, or set up an authenticator there.`,
                     };
                 } else {
                     const question: SessionQuestion = {
@@ -1198,7 +1238,7 @@ export class Runner {
 
                 if (answer.method !== "automatic") {
                     this.#log(
-                        `Allowed ${what} for ${scope.person} in ${folder}${answer.method === "totp" ? " (with a code from the authenticator)" : ""}.`,
+                        `Allowed ${what} for ${scope.person} in ${folder}${answer.method === "totp" ? " (with a code from an authenticator)" : answer.method === "owner" ? " (by the owner, from Pi Pocket)" : ""}.`,
                     );
                 }
 
