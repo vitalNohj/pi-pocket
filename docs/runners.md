@@ -234,11 +234,13 @@ The risk: pages in the browser of a session on a computer can reach that compute
 
 The person who linked a computer and the people the owner chose in Menu → **Runners** can start sessions on it, including forks. Their sessions run as the computer's user, with the same access to its files and commands. The linker alone changes its settings, its approvals, and who may use it. Sharing does not change this rule.
 
-By default, a session on a linked computer is private to its creator. Other people cannot see it in their session list, open it, prompt it, or fork it. This includes other server owners. These access rules also protect a private session's forks and subagents.
+By default, a session on a linked computer is private to its creator. Other people cannot see it in their session list, open it, prompt it, or fork it. The owner, who controls the server, sees every session. These access rules also protect a private session's forks and subagents.
 
-The owner can turn on **Let others use these sessions** in Menu → **Runners** (`sharedRunnerSessions` in the server's `config.json`). These sessions then follow the usual sharing rules. People who can see a session can prompt it, and its commands run on the linked computer for them too. Turning sharing off closes those sessions in everyone else's tabs at once.
+The session's starter, or the owner, shares it one person at a time, with people who may use its computer. People it is shared with can prompt it, and its commands run on the linked computer for them too. Taking someone off the share list closes the session in their tabs at once.
 
-This setting applies to the whole server. A switch for each session (who can see it, who can prompt it, and whether tool calls need the linker's approval when someone else requested them) was considered. It was left out to keep sharing simple: Runners already holds the settings for all linked computers, so one setting there covers them.
+**Share new sessions with these people** (off by default), under each computer in Menu → **Runners**, starts every new session there shared with the people chosen for it. It changes no session that already exists.
+
+This server follows the same rules, as **This server** in Menu → **Runners** (`src/server/access.ts` holds the one policy for both).
 
 ## When the computer is offline
 

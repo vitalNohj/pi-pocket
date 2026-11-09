@@ -19,7 +19,8 @@ import {
     parseCookies,
     quickTunnelHost,
 } from "../auth.ts";
-import type { User } from "../config.ts";
+import { THIS_SERVER } from "../access.ts";
+import type { ComputerSettings, User } from "../config.ts";
 import { MAX_AVATAR, readAvatar } from "../avatars.ts";
 import { HttpError } from "../errors.ts";
 import { isLocalRequest, withReveal } from "../local-browser.ts";
@@ -706,6 +707,18 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, runners);
         }
 
+        // This server's record (`ServerView`): its people, saved folders, and rules, for those who manage it.
+        if (
+            first === "runners" &&
+            second === THIS_SERVER &&
+            third === undefined &&
+            method === "GET"
+        ) {
+            app.policy.requireManage(user, THIS_SERVER);
+
+            return json(response, 200, app.thisServer(user));
+        }
+
         if (first === "runners" && second === "locks" && third === undefined && method === "GET") {
             requireOwner(user);
 
@@ -747,6 +760,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
             method === "DELETE"
         ) {
             requireOwner(user);
+
+            if (second === THIS_SERVER) {
+                throw new HttpError(400, "This server cannot be removed.");
+            }
+
             app.runners.remove(second);
 
             return json(response, 200, { ok: true });
@@ -784,7 +802,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // Who may use a computer: its linker's and the owner's to choose (`access.ts` `mayManage`).
         if (first === "runners" && second !== undefined && third === "users" && method === "POST") {
-            app.runners.require(second);
+            if (second !== THIS_SERVER) {
+                app.runners.require(second);
+            }
+
             app.policy.requireManage(user, second);
 
             const body = await readJson<{ users?: unknown } | null>(request);
@@ -793,15 +814,96 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 throw new HttpError(400, "users must be a list of person ids.");
             }
 
-            app.config.setRunnerUsers(second, body.users);
+            if (second === THIS_SERVER) {
+                app.config.setServerUsers(body.users);
+            } else {
+                app.config.setRunnerUsers(second, body.users);
+            }
+
             // Someone no longer chosen leaves its sessions at once, and every list is sent again.
             app.accessChanged();
 
             return json(
                 response,
                 200,
-                app.runners.list(user).find((runner) => runner.id === second),
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
             );
+        }
+
+        /**
+         * A computer's rules kept here: "Default sharing" (`shareNew`) for any computer, and "Stop asking" for this
+         * server (a runner keeps its own on that computer). Its linker's and the owner's; this server's owner needs no
+         * code for its own server, as for its other settings.
+         */
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === "settings" &&
+            method === "POST"
+        ) {
+            if (second !== THIS_SERVER) {
+                app.runners.require(second);
+            }
+
+            app.policy.requireManage(user, second);
+
+            const body = await readJson<{ stopAsking?: unknown; shareNew?: unknown } | null>(
+                request,
+            );
+            const change: ComputerSettings = {};
+
+            for (const key of ["stopAsking", "shareNew"] as const) {
+                const value = body?.[key];
+
+                if (value === undefined) {
+                    continue;
+                }
+
+                if (typeof value !== "boolean") {
+                    throw new HttpError(400, `${key} must be true or false.`);
+                }
+
+                if (key === "stopAsking" && second !== THIS_SERVER) {
+                    throw new HttpError(
+                        400,
+                        "A runner keeps Stop asking on its computer: change it in its approvals.",
+                    );
+                }
+
+                change[key] = value;
+            }
+
+            app.config.setComputerSettings(second === THIS_SERVER ? undefined : second, change);
+            // "Stop asking" changes who needs an approval; every list is sent again.
+            app.accessChanged();
+
+            return json(
+                response,
+                200,
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
+            );
+        }
+
+        // Forget one of this server's saved folders: a session there asks again.
+        if (
+            first === "runners" &&
+            second === THIS_SERVER &&
+            third === "folders" &&
+            method === "DELETE"
+        ) {
+            app.policy.requireManage(user, THIS_SERVER);
+
+            if (!app.config.removeServerFolder(url.searchParams.get("folder") ?? "")) {
+                throw new HttpError(404, "That folder is not saved.");
+            }
+
+            app.accessChanged();
+
+            return json(response, 200, app.thisServer(user));
         }
 
         if (

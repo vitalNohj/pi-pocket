@@ -1,6 +1,6 @@
-// Runners (`src/server/runners.ts`): other computers of the owner's that run sessions' tools. Link one with a
-// one-time code, see which are online, start a session on one, remove one, and choose whether others may use those
-// sessions. The owner's alone.
+// Runners (`src/server/runners.ts`): this server and other computers of the owner's that run sessions' tools. Link one
+// with a one-time code, see which are online, start a session on one, remove one, and choose for each (this server
+// too) who may use it, its saved folders, and whether new sessions start shared (`src/server/access.ts`).
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
@@ -410,15 +410,19 @@ function Permissions({ runner }) {
     </div>`;
 }
 
-/** The people this computer's linker grants access to, from the same list as the People sheet. */
-function RunnerPeople({ runner }) {
+/**
+ * The people a computer's linker chooses (`access.ts`): they may use it, and viewers among them only see. The same list
+ * as the People sheet, for this server and runners alike; people invited to one session keep only that session.
+ */
+function ChoosePeople({ runner, note }) {
     const people = store.state.users.filter(
-        (person) => person.role !== "owner" && person.role !== "viewer" && !person.sessions,
+        (person) => person.role !== "owner" && !person.sessions,
     );
     const [choosing, setChoosing] = useState(false);
     const [selected, setSelected] = useState([]);
     const [busy, setBusy] = useState(false);
     const mine = runner.createdBy === store.state.me?.id;
+    const roleOf = (id) => store.state.users.find((person) => person.id === id)?.role;
 
     const choose = () => {
         setSelected((runner.users ?? []).map((person) => person.id));
@@ -441,7 +445,15 @@ function RunnerPeople({ runner }) {
         <div class="group-title">People</div>
         <div class="row wrap">
             <span class="small">
-                ${runner.users?.map((person) => person.name).join(", ") || "No people chosen"}
+                ${
+                    runner.users
+                        ?.map((person) =>
+                            roleOf(person.id) === "viewer"
+                                ? `${person.name} (view only)`
+                                : person.name,
+                        )
+                        .join(", ") || "No people chosen"
+                }
             </span>
             ${
                 mine &&
@@ -454,7 +466,7 @@ function RunnerPeople({ runner }) {
         ${
             choosing &&
             html`<div role="group" aria-label=${`People who may use ${runner.name}`}>
-                ${people.length === 0 && html`<p class="muted small">No other people who can steer.</p>`}
+                ${people.length === 0 && html`<p class="muted small">No one else yet. Invite people in the People sheet.</p>`}
                 ${people.map(
                     (person) => html`<label class="check" key=${person.id}>
                         <input
@@ -468,7 +480,7 @@ function RunnerPeople({ runner }) {
                                         : selected.filter((id) => id !== person.id),
                                 )}
                         />
-                        ${person.name}
+                        ${person.name}${person.role === "viewer" ? html` <span class="muted small">(view only)</span>` : ""}
                     </label>`,
                 )}
                 <div class="row">
@@ -485,9 +497,83 @@ function RunnerPeople({ runner }) {
                 </div>
             </div>`
         }
-        <p class="muted small">
-            They can start sessions on this computer. Their sessions run as this computer's user, like yours.
-        </p>
+        <p class="muted small">${note}</p>
+    </div>`;
+}
+
+/** One on/off rule of a computer kept on the server (`POST /api/runners/:id/settings`), for its linker and the owner. */
+function Rule({ runner, name, label, hint, on }) {
+    const mine = runner.createdBy === store.state.me?.id;
+    const change = () =>
+        attempt(() => api(`runners/${encodeURIComponent(runner.id)}/settings`, { [name]: !on }));
+
+    return html`<div class=${`setting wrap ${mine ? "" : "disabled"}`}>
+        <div class="grow">
+            <div class="small">${label}</div>
+            <div class="muted small">${hint}</div>
+        </div>
+        <${Switch} on=${on} disabled=${!mine} label=${`${label}: ${on ? "on" : "off"}`} onChange=${change} />
+    </div>`;
+}
+
+const SHARE_HINT =
+    "Off: a new session is private to whoever started it, until they share it. On: it starts shared with the people chosen here.";
+
+/**
+ * This server, as a computer (`access.ts` `THIS_SERVER`): the owner is its linker, and it cannot be removed. The owner
+ * chooses who may use it, its saved folders, and its rules, as for a runner.
+ */
+function ServerRow({ server }) {
+    const forget = (folder) =>
+        attempt(() =>
+            api(`runners/this-server/folders?folder=${encodeURIComponent(folder)}`, undefined, {
+                method: "DELETE",
+            }),
+        );
+
+    return html`<div class="person-row runner-row this-server">
+        <span class="runner-dot on" aria-hidden="true"></span>
+        <div class="person-main">
+            <div class="runner-title">${server.name}</div>
+            <div class="muted small">Pi Pocket itself · always here, and cannot be removed</div>
+            <${ChoosePeople}
+                runner=${server}
+                note="They can see their own sessions and the ones shared with them, and those who steer can start sessions here. Sessions run as this server's user, like yours."
+            />
+            <div class="group">
+                <div class="group-title">Folder approval</div>
+                <${Rule}
+                    runner=${server}
+                    name="stopAsking"
+                    label="Stop asking for saved folders"
+                    hint="On: a session in a saved folder starts at once. Any other folder still needs a code from the person's authenticator, or your approval. You never need one here."
+                    on=${server.stopAsking}
+                />
+                <div class="group-title">Saved folders</div>
+                ${server.folders.length === 0 && html`<div class="muted small">No saved folders. A folder is saved when its first session is approved.</div>`}
+                ${server.folders.map(
+                    (folder) => html`<div class="runner-permission-row" key=${folder}>
+                        <code>${folder}</code>
+                        <button class="button small ghost" onClick=${() => forget(folder)}>Remove</button>
+                    </div>`,
+                )}
+            </div>
+            <div class="group">
+                <div class="group-title">Sharing</div>
+                <${Rule}
+                    runner=${server}
+                    name="shareNew"
+                    label="Share new sessions with these people"
+                    hint=${SHARE_HINT}
+                    on=${server.shareNew}
+                />
+            </div>
+        </div>
+        <div class="person-actions">
+            <button class="button small" onClick=${() => openSheet({ type: "cwd", mode: "new" })}>
+                New session
+            </button>
+        </div>
     </div>`;
 }
 
@@ -512,7 +598,20 @@ function ComputerRow({ runner }) {
                 ${[status(runner), system(runner)].filter(Boolean).join(" · ")}
             </div>
             <${Tools} runner=${runner} />
-            <${RunnerPeople} runner=${runner} />
+            <${ChoosePeople}
+                runner=${runner}
+                note="They can start sessions on this computer. Their sessions run as this computer's user, like yours."
+            />
+            <div class="group">
+                <div class="group-title">Sharing</div>
+                <${Rule}
+                    runner=${runner}
+                    name="shareNew"
+                    label="Share new sessions with these people"
+                    hint=${SHARE_HINT}
+                    on=${runner.shareNew === true}
+                />
+            </div>
             <${Permissions} runner=${runner} />
         </div>
         <div class="person-actions">
@@ -525,34 +624,6 @@ function ComputerRow({ runner }) {
                 New session
             </button>
             <button class="button small ghost" onClick=${remove}>Remove</button>
-        </div>
-    </div>`;
-}
-
-/**
- * Who may use sessions on linked computers (`sharedRunnerSessions`): each its creator's alone (the default), or the
- * usual sharing rules. Starting one stays with the linker and granted people either way.
- */
-function SharedSessions() {
-    const shared = store.state.server?.sharedRunnerSessions === true;
-    const change = () => attempt(() => api("settings", { sharedRunnerSessions: !shared }));
-
-    return html`<div class="group">
-        <div class="group-title">Sharing</div>
-        <div class="setting wrap">
-            <div class="grow">
-                <div class="small">Let others use these sessions</div>
-                <div class="muted small">
-                    Off: only the person who started a session can see or prompt it. On: sessions on linked
-                    computers are shared like any other, and their commands run on that computer for whoever
-                    prompts them.
-                </div>
-            </div>
-            <${Switch}
-                on=${shared}
-                label=${`Let others use these sessions: ${shared ? "on" : "off"}`}
-                onChange=${change}
-            />
         </div>
     </div>`;
 }
@@ -571,13 +642,15 @@ export function runnersHint() {
 }
 
 export function ComputersSheet() {
-    const { runners } = store.state;
+    const { runners, thisServer } = store.state;
     const [loaded, setLoaded] = useState(false);
     const [linking, setLinking] = useState(false);
 
     useEffect(() => {
         attempt(async () => {
-            store.set({ runners: await api("runners") });
+            const [list, server] = await Promise.all([api("runners"), api("runners/this-server")]);
+
+            store.set({ runners: list, thisServer: server });
             setLoaded(true);
         });
     }, []);
@@ -586,11 +659,12 @@ export function ComputersSheet() {
         <p class="muted small">
             Run a session's tools on another of your computers: its files and commands are used there, while Pi,
             your models, and the history stay on this server. The computer connects out to this server, so it
-            needs no open port. You and the people you choose can start sessions on computers you link.
+            needs no open port. On each computer, this server too, only the people you choose get in.
         </p>
         ${
-            runners.length > 0 &&
+            (thisServer || runners.length > 0) &&
             html`<div class="sheet-list">
+                ${thisServer && html`<${ServerRow} server=${thisServer} />`}
                 ${runners.map((runner) => html`<${ComputerRow} key=${runner.id} runner=${runner} />`)}
             </div>`
         }
@@ -609,6 +683,5 @@ export function ComputersSheet() {
                   </button>`
         }
         <${LinkLocks} />
-        <${SharedSessions} />
     <//>`;
 }

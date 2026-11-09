@@ -280,6 +280,21 @@ export type SubagentEntry = ReturnType<typeof subagentView> & {
 /** Where a subagent is. Waiting for an approval comes before working: it is working, held up. */
 export type SubagentState = "waiting" | "working" | "failed" | "stopped" | "done";
 
+/**
+ * This server in the Runners sheet (`thisServer`), as those who manage it see it: the people the owner chose, its saved
+ * folders, and its rules. It cannot be unlinked or removed.
+ */
+export type ServerView = {
+    id: typeof THIS_SERVER;
+    name: string;
+    /** Its linker: the owner. */
+    createdBy: string;
+    users: { id: string; name: string; role: User["role"] }[];
+    folders: string[];
+    stopAsking: boolean;
+    shareNew: boolean;
+};
+
 export function subagentState(entry: SubagentEntry): SubagentState {
     if (entry.waiting === true) {
         return "waiting";
@@ -1932,6 +1947,12 @@ export class PocketApp {
         for (const client of this.#clients) {
             // An empty list also clears computers this person can no longer use.
             client.send("runners", this.runners.list(client.user));
+
+            const server = this.thisServer(client.user);
+
+            if (server !== undefined) {
+                client.send("this-server", server);
+            }
         }
 
         const online = new Set(list.filter((runner) => runner.online).map((runner) => runner.id));
@@ -2745,6 +2766,32 @@ export class PocketApp {
     }
 
     /**
+     * This server as the Runners sheet shows it (`access.ts` `THIS_SERVER`), to those who manage it: the owner, its
+     * linker. Undefined for anyone else, who learns nothing of its people and folders.
+     */
+    thisServer(user: User): ServerView | undefined {
+        if (!this.policy.mayManage(user, THIS_SERVER)) {
+            return undefined;
+        }
+
+        const server = this.config.server;
+
+        return {
+            id: THIS_SERVER,
+            name: "This server",
+            createdBy: this.config.users.find((each) => each.role === "owner")?.id ?? "",
+            users: (server.users ?? []).flatMap((id) => {
+                const person = this.config.userById(id);
+
+                return person === undefined ? [] : [{ id, name: person.name, role: person.role }];
+            }),
+            folders: server.folders ?? [],
+            stopAsking: server.stopAsking === true,
+            shareNew: server.shareNew === true,
+        };
+    }
+
+    /**
      * May `user` browse this server's folders, to choose one for a new session (`access.ts` `mayBrowse`): whoever the
      * owner chose for this server, and steers. A session's own folder, in its Files panel, follows the session instead.
      */
@@ -3051,8 +3098,10 @@ export class PocketApp {
         const folderFavorites = await this.folderFavorites.list(user);
         const runnerFavorites = await this.folderFavorites.runners(user);
         const runners = this.runners.list(user);
+        const thisServer = this.thisServer(user);
 
         return {
+            ...(thisServer === undefined ? {} : { thisServer }),
             user: {
                 id: user.id,
                 name: user.name,
