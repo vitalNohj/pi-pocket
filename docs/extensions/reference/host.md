@@ -92,13 +92,17 @@ modelInfo(spec: string): {
     name: string;
     thinkingLevels: ModelThinkingLevel[];
     contextWindow?: number;
-    cost?: { input: number; output: number };
+    cost?: {
+        input: number;
+        output: number;
+        tiers?: { inputTokensAbove: number; input: number; output: number }[];
+    };
 } | undefined;
 ```
 
 Since 0.16.0 · Stable
 
-Local metadata for one exact `provider/modelId`, including a known model without configured auth. Since 0.20.0 it can also give `contextWindow` (tokens) and `cost` (dollars per million input and output tokens); `cost` is left out when the catalog has no price (an unknown or free model), and `contextWindow` can be 0 when unknown, so check for both. A bare id or unknown pair returns `undefined`. It does not contact a provider, report sign-in details, or list models. Use it to describe the source model or a model already chosen by the owner. It does not authorize its use; starts still check the current model policy and availability.
+Local metadata for one exact `provider/modelId`, including a known model without configured auth. Since 0.20.0 it can also give `contextWindow` (tokens) and `cost` (dollars per million input and output tokens); `cost` is left out when the catalog has no price (an unknown or free model), and `contextWindow` can be 0 when unknown, so check for both. Since 0.29.0 `cost` can also give `tiers`: the input and output price for a prompt of more than `inputTokensAbove` input tokens, lowest first, each only when it is not free. A bare id or unknown pair returns `undefined`. It does not contact a provider, report sign-in details, or list models. Use it to describe the source model or a model already chosen by the owner. It does not authorize its use; starts still check the current model policy and availability.
 
 ### `subagentModels`
 

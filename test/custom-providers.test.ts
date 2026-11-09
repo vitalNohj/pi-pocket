@@ -16,6 +16,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { HttpError } from "../src/server/errors.ts";
+import { modelInfo } from "../src/server/models.ts";
 import {
     DEFAULT_TIERS,
     idFor,
@@ -36,6 +37,8 @@ let baseUrl: string;
 let seenAuth: string | undefined;
 /** What the last chat request asked the endpoint for. */
 let chatBody: Record<string, unknown> | undefined;
+/** The tokens the fake endpoint says each chat answer used. */
+let chatUsage = { prompt: 1000, cached: 0, completion: 500 };
 let server: ReturnType<typeof createServer>;
 
 before(async () => {
@@ -62,9 +65,10 @@ before(async () => {
                         chunk({
                             choices: [],
                             usage: {
-                                prompt_tokens: 1000,
-                                completion_tokens: 500,
-                                total_tokens: 1500,
+                                prompt_tokens: chatUsage.prompt,
+                                completion_tokens: chatUsage.completion,
+                                total_tokens: chatUsage.prompt + chatUsage.completion,
+                                prompt_tokens_details: { cached_tokens: chatUsage.cached },
                             },
                         }) +
                         "data: [DONE]\n\n",
@@ -958,6 +962,32 @@ test("a model's context window, maximum output, and price go into models.json, a
         models: [{ id: "big", cost: { input: 0.5, output: 1.5, tiers: [tier] } }, "default"],
     });
     assert.deepEqual(app.models.getModel("priced", "big")?.cost.tiers, [tier]);
+
+    // A request goes by the tier when its input, cached input too, is over the tier's tokens: 150,000 new and 60,000
+    // cached is 210,000, so $1 and $3 a million, and the cache rate the tier gives (0). Under it, the base rates.
+    const ask = async () =>
+        (
+            await app.models.completeSimple(app.models.getModel("priced", "big")!, {
+                messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+            })
+        ).usage.cost.total;
+
+    // An agent choosing a model learns the tier's price too.
+    assert.deepEqual(modelInfo(app.models, "priced/big")?.cost, {
+        input: 0.5,
+        output: 1.5,
+        tiers: [{ inputTokensAbove: 200000, input: 1, output: 3 }],
+    });
+
+    try {
+        chatUsage = { prompt: 210000, cached: 60000, completion: 1000 };
+        assert.equal(await ask(), (150000 * 1 + 1000 * 3) / 1e6);
+        chatUsage = { prompt: 190000, cached: 60000, completion: 1000 };
+        assert.equal(await ask(), (130000 * 0.5 + 1000 * 1.5) / 1e6);
+    } finally {
+        chatUsage = { prompt: 1000, cached: 0, completion: 500 };
+    }
+
     await app.customProviders.update("priced", {
         models: [{ id: "big", cost: { input: 0.5, output: 1.5, tiers: [] } }, "default"],
     });

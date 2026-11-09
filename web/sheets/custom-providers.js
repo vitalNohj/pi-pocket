@@ -201,8 +201,8 @@ function ModelLimits({ id, panelId, limits, problem, onChange }) {
         </div>
         <p class="muted small">
             In tokens. Empty uses Pi's default (128k and 16k). The context meter and compaction go by
-            the context window. Each request asks for up to the max output, so keep it at or below
-            what the endpoint allows.
+            the context window. Requests ask for up to the max output, so keep it at or below what
+            the endpoint allows.
         </p>
         <span class="label">Price in dollars per million tokens</span>
         <p class="muted small">A dot before the cents and no thousands marks: 0.15, 3, 1250.</p>
@@ -244,9 +244,10 @@ function ModelLimits({ id, panelId, limits, problem, onChange }) {
             </div>`
         }
         <p class="muted small">
-            Pi counts what each message costs from the tokens the endpoint reports, and spend limits
-            use it; an endpoint that reports none costs nothing, and OpenRouter's own billed cost
-            replaces the price when it sends one. Empty: the model costs nothing.
+            Pi counts what each message costs from the price and the tokens the endpoint reports,
+            and spend limits use it; an endpoint that reports no tokens costs nothing. Empty: no
+            price, so 0 — unless OpenRouter reports its billed cost in full, which then counts
+            instead of the price.
         </p>
         ${problem && html`<p class="warn small" role="alert">${problem}</p>`}
     </div>`;
@@ -321,6 +322,9 @@ export function EndpointForm({ editing, onDone, onCancel }) {
     const limitsOf = (id) => limitsChanges(capsOf(id), start.get(id));
 
     const toggleOpen = (panel) => setOpen(open === panel ? null : panel);
+    // The list is of the endpoint and key it was found with: another one needs Find models again. Chosen models keep
+    // what they show.
+    const forgetList = () => setListed(null);
 
     const setCap = (id, patch) =>
         setCaps((was) => new Map(was).set(id, { ...capsOf(id), ...patch }));
@@ -498,7 +502,10 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                     inputmode="url"
                     autocomplete="off"
                     placeholder="http://localhost:1234/v1"
-                    onInput=${(event) => setBaseUrl(event.currentTarget.value)}
+                    onInput=${(event) => {
+                        setBaseUrl(event.currentTarget.value);
+                        forgetList();
+                    }}
                 />
             </label>
             <label class="field">
@@ -511,14 +518,20 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                     value=${apiKey}
                     disabled=${noKey}
                     placeholder=${noKey ? "No key" : "sk-…"}
-                    onInput=${(event) => setApiKey(event.currentTarget.value)}
+                    onInput=${(event) => {
+                        setApiKey(event.currentTarget.value);
+                        forgetList();
+                    }}
                 />
             </label>
             <label class="check">
                 <input
                     type="checkbox"
                     checked=${noKey}
-                    onChange=${(event) => setNoKey(event.currentTarget.checked)}
+                    onChange=${(event) => {
+                        setNoKey(event.currentTarget.checked);
+                        forgetList();
+                    }}
                 />
                 No key (a local server)
             </label>

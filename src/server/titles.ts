@@ -18,6 +18,8 @@ const context = BACKGROUND_CONTEXT;
 /** First messages this long or longer get a written title; shorter ones are a title already. */
 const LONG_WORDS = 9;
 const MAX_TITLE = 60;
+/** The most output tokens a title request asks for: room for a reasoning model to think first. */
+const TITLE_TOKENS = 1024;
 /**
  * More words than this is no title but prose, such as a model thinking aloud. The model is asked for 3 to 6 words, but
  * some languages put spaces between syllables (Vietnamese), and some models are wordy.
@@ -130,8 +132,15 @@ export async function writeTitle(
                     },
                 ],
             },
-            // A title is never worth a wait for a limit.
-            noWait({ maxTokens: 1024, cacheRetention: "none", sessionId }),
+            // A title is never worth a wait for a limit. Within the model's maximum output: an endpoint can refuse more.
+            noWait({
+                maxTokens: Math.min(
+                    TITLE_TOKENS,
+                    model.maxTokens > 0 ? model.maxTokens : TITLE_TOKENS,
+                ),
+                cacheRetention: "none",
+                sessionId,
+            }),
         );
         const title = cleanTitle(
             reply.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),

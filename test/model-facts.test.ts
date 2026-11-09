@@ -34,3 +34,23 @@ test("unknown facts are left out, and a model that cannot be used now says why",
         "- a/b: thinks up to low, $0.075 in/$0.3 out per 1M",
     );
 });
+
+test("a price that rises for long prompts says the highest tier's rates, also when the base price is 0", () => {
+    const tiers = [
+        { inputTokensAbove: 1_000_000, input: 10, output: 40 },
+        { inputTokensAbove: 200_000, input: 6, output: 22.5 },
+    ];
+
+    assert.equal(
+        modelLine("a/b", { thinkingLevels: ["off"], cost: { input: 3, output: 15, tiers } }, false),
+        "- a/b: no thinking, $3 in/$15 out per 1M ($10/$40 over 1M in)",
+    );
+    assert.equal(
+        modelLine(
+            "a/b",
+            { thinkingLevels: ["off"], cost: { input: 0, output: 0, tiers: [tiers[1]!] } },
+            false,
+        ),
+        "- a/b: no thinking, $0 in/$0 out per 1M ($6/$22.5 over 200k in)",
+    );
+});

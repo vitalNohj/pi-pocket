@@ -5,18 +5,25 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 type Info = {
     thinkingLevels: ModelThinkingLevel[];
     contextWindow?: number;
-    cost?: { input: number; output: number };
+    cost?: {
+        input: number;
+        output: number;
+        tiers?: { inputTokensAbove: number; input: number; output: number }[];
+    };
 };
 
 /** A price without trailing zeros: 3, 0.3, 0.25. */
 const price = (dollars: number) => String(Number(dollars.toFixed(dollars < 0.1 ? 3 : 2)));
 
-/** "200k ctx", "1M ctx". */
-function window(tokens: number): string {
-    return tokens >= 995_000
-        ? `${String(Number((tokens / 1_000_000).toFixed(1)))}M ctx`
-        : `${String(Math.max(1, Math.round(tokens / 1000)))}k ctx`;
+/** "200k", "1M". */
+function tokens(count: number): string {
+    return count >= 995_000
+        ? `${String(Number((count / 1_000_000).toFixed(1)))}M`
+        : `${String(Math.max(1, Math.round(count / 1000)))}k`;
 }
+
+/** "200k ctx", "1M ctx". */
+const window = (count: number): string => `${tokens(count)} ctx`;
 
 /**
  * One line for a listed model: whether and how far it thinks, its context window, and its price per million input and
@@ -44,7 +51,19 @@ export function modelLine(
         }
 
         if (info.cost !== undefined) {
-            facts.push(`$${price(info.cost.input)} in/$${price(info.cost.output)} out per 1M`);
+            facts.push(
+                [
+                    `$${price(info.cost.input)} in/$${price(info.cost.output)} out per 1M`,
+                    // A long prompt costs more: from the highest tier, the most it costs.
+                    ...(info.cost.tiers ?? [])
+                        .toSorted((a, b) => a.inputTokensAbove - b.inputTokensAbove)
+                        .slice(-1)
+                        .map(
+                            (tier) =>
+                                ` ($${price(tier.input)}/$${price(tier.output)} over ${tokens(tier.inputTokensAbove)} in)`,
+                        ),
+                ].join(""),
+            );
         }
     }
 

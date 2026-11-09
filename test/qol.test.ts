@@ -430,11 +430,17 @@ test("a reply that is no title leaves the first message's", async () => {
         return complete.apply(app.models, args);
     } as typeof complete;
 
+    const faux = app.models.getModel("faux", "faux-1")!;
+    const maxTokens = faux.maxTokens;
+
     try {
-        for (const text of [
-            "please think aloud, then tidy up the release script's tags",
-            "please go on and on, then tidy up the release script's tags",
-        ]) {
+        for (const [text, most, asked] of [
+            ["please think aloud, then tidy up the release script's tags", maxTokens, 1024],
+            // Never more than the model's maximum output: an endpoint can refuse more.
+            ["please go on and on, then tidy up the release script's tags", 512, 512],
+        ] as const) {
+            faux.maxTokens = most;
+
             const id = await newSession(app, folder);
 
             await say(app, id, text);
@@ -451,8 +457,10 @@ test("a reply that is no title leaves the first message's", async () => {
             );
             assert.equal(typeof options?.sessionId, "string");
             assert.equal(options?.cacheRetention, "none");
+            assert.equal(options?.maxTokens, asked);
         }
     } finally {
+        faux.maxTokens = maxTokens;
         app.models.completeSimple = complete;
         letGo();
     }

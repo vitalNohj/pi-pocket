@@ -123,11 +123,20 @@ export function modelInfo(models: ModelRuntime, spec: string) {
               name: model.name,
               thinkingLevels: capabilities(model).levels as ModelThinkingLevel[],
               contextWindow: model.contextWindow,
-              // Dollars per million tokens; left out when the catalog has no price.
-              ...(model.cost.input > 0 || model.cost.output > 0
-                  ? { cost: { input: model.cost.input, output: model.cost.output } }
-                  : {}),
+              // Dollars per million tokens, with the prices for long prompts; left out when the catalog has no price.
+              ...(costInfo(model.cost) === undefined ? {} : { cost: costInfo(model.cost) }),
           };
+}
+
+/** A model's input and output price, with its tiers that are not free: undefined when it costs nothing. */
+function costInfo(cost: Model<Api>["cost"]) {
+    const tiers = (cost.tiers ?? [])
+        .filter((tier) => tier.input > 0 || tier.output > 0)
+        .map(({ inputTokensAbove, input, output }) => ({ inputTokensAbove, input, output }));
+
+    return cost.input > 0 || cost.output > 0 || tiers.length > 0
+        ? { input: cost.input, output: cost.output, ...(tiers.length === 0 ? {} : { tiers }) }
+        : undefined;
 }
 
 /** Whether `spec` (`provider/id`, or an id alone) names the model `ref`. */

@@ -409,7 +409,11 @@ export interface PocketHost {
               name: string;
               thinkingLevels: ModelThinkingLevel[];
               contextWindow?: number;
-              cost?: { input: number; output: number };
+              cost?: {
+                  input: number;
+                  output: number;
+                  tiers?: { inputTokensAbove: number; input: number; output: number }[];
+              };
           }
         | undefined;
     /** Pi's configured extra skill paths, from its settings. */
