@@ -70,8 +70,15 @@ function LinkSteps({ made, onDone }) {
             </li>
         </ol>
         <p class="muted small">
-            ${`The code works once and expires in ${minutes} minutes. ${made.name} shows as online here when it connects. Before a session starts there, it asks the person at ${made.name}.`}
+            ${`The code works once and expires in ${minutes} minutes. ${made.name} shows as online here when it connects.`}
         </p>
+        ${
+            made.fingerprint &&
+            html`<p class="muted small">
+                This server's key, which ${made.name} keeps to know this server: <code>${made.fingerprint}</code>.
+                <code>pi-pocket runner status</code> there shows the same.
+            </p>`
+        }
         <div class="row">
             <button class="button" onClick=${onDone}>Done</button>
         </div>
@@ -580,6 +587,15 @@ function ServerRow({ server }) {
 
 /** One linked computer: its state, and what can be done with it. */
 function ComputerRow({ runner }) {
+    const [again, setAgain] = useState(null);
+    // A computer linked before the secure link: a code for it links its runner again, with the same sessions.
+    const relink = () =>
+        attempt(async () =>
+            setAgain({
+                ...(await api("runners/code", { runner: runner.id })),
+                name: runner.name,
+            }),
+        );
     const remove = () =>
         confirm(
             `Remove ${runner.name}? Its runner disconnects and its sessions stop working. You can link it again later.`,
@@ -598,6 +614,15 @@ function ComputerRow({ runner }) {
             <div class="muted small">
                 ${[status(runner), system(runner)].filter(Boolean).join(" · ")}
             </div>
+            ${
+                runner.relink &&
+                html`<div class="runner-relink small" role="alert">
+                    Linked by an older runner: link it again to connect. It keeps its sessions and people.
+                    <button class="button small" onClick=${relink}>Link again</button>
+                </div>`
+            }
+            ${again && html`<${LinkSteps} made=${again} onDone=${() => setAgain(null)} />`}
+            ${runner.fingerprint && html`<div class="muted small">Key: <code>${runner.fingerprint}</code></div>`}
             <${Tools} runner=${runner} />
             <${ChoosePeople}
                 runner=${runner}

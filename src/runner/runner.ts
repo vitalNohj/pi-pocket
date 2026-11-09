@@ -13,8 +13,14 @@ import { connect as connectTcp, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { localDaemon } from "@earendil-works/pi-env";
-import WebSocket from "ws";
+import { WebSocket as RawWebSocket } from "ws";
+import { CLOSE_IDENTITY, RunnerLinkSocket } from "./secure-link.ts";
 import { checkTransport, refusal, type Transport } from "./transport.ts";
+
+/** The link to the server, sealed with the link's keys (`secure-link.ts`). */
+type WebSocket = RunnerLinkSocket;
+const WebSocket = { OPEN: RawWebSocket.OPEN } as const;
+
 import { checkTools } from "./tools.ts";
 import { broadFolder, coveredFolder, realFolder } from "./folders.ts";
 import {
@@ -73,7 +79,10 @@ export type RunnerLinkFile = {
     server: string;
     id: string;
     name: string;
+    /** This computer's own private key for the link (`secure-link.ts`), PKCS#8 DER, base64url. Never sent. */
     key: string;
+    /** The server's public key, pinned when this computer linked: a server without its private key is refused. */
+    serverKey: string;
     /** The person's choices for this link (`pi-pocket runner settings`); absent: the defaults. */
     settings?: RunnerSettings;
 };
@@ -649,11 +658,16 @@ export class Runner {
         }
 
         const link = this.#options.link;
-        const ws = new WebSocket(this.#url, LINK_SUBPROTOCOL, {
-            headers: { authorization: `Bearer ${link.key}` },
-            maxPayload: MAX_MESSAGE,
-            handshakeTimeout: 15_000,
-        });
+        // Sealed with this computer's key and the server's pinned one (`secure-link.ts`): a server that cannot prove
+        // its key is not this computer's server, and the runner stops.
+        const ws = new RunnerLinkSocket(
+            new RawWebSocket(this.#url, LINK_SUBPROTOCOL, {
+                maxPayload: MAX_MESSAGE + 64,
+                handshakeTimeout: 15_000,
+            }),
+            link,
+            () => {},
+        );
 
         this.#socket = ws;
 
@@ -794,6 +808,14 @@ export class Runner {
             }
 
             const why = reason.toString("utf8");
+
+            if (code === CLOSE_IDENTITY) {
+                this.#fail(
+                    `${link.server} did not prove it is the server this computer linked to. Someone may be in the middle. If you replaced the server's data folder, link this computer again with a new code from Menu > Runners.`,
+                );
+
+                return;
+            }
 
             if (code === CLOSE.removed) {
                 this.#fail(

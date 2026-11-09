@@ -2,6 +2,7 @@
 // real WebSocket, the runner, and the real pi-env daemon, all on this machine. Pi Durable's own conformance suite checks
 // that it acts as `NodeExecutionEnv` does; the rest checks linking, keys, and what survives a drop.
 import assert from "node:assert/strict";
+import { linkInProcess, newIdentity, openLink, publicOf } from "../src/runner/secure-link.ts";
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
@@ -24,7 +25,6 @@ import {
     realFolder,
     sameFolder,
 } from "../src/runner/folders.ts";
-import WebSocket from "ws";
 import {
     LINK_PATH,
     LINK_PROTOCOL,
@@ -80,7 +80,7 @@ function startRunner(
     more: Partial<RunnerOptions> = {},
 ): { runner: Runner; id: string } {
     const { code } = setup.runners.makeCode(name, "owner");
-    const linked = setup.runners.redeem(code);
+    const linked = linkInProcess((request) => setup.runners.redeem(request), code);
     const options: RunnerOptions = {
         link: { server: setup.address, ...linked },
         version: "test",
@@ -631,16 +631,13 @@ describe("runner link", () => {
 
         try {
             const { code } = setup.runners.makeCode("Old", "owner");
-            const linked = setup.runners.redeem(code);
-            const old = new WebSocket(
+            const linked = linkInProcess((request) => setup.runners.redeem(request), code);
+            const old = await openLink(
                 `${setup.address.replace("http", "ws")}${LINK_PATH}`,
                 LINK_SUBPROTOCOL,
-                {
-                    headers: { authorization: `Bearer ${linked.key}` },
-                },
+                linked,
             );
 
-            await new Promise((resolve) => old.once("open", resolve));
             old.send(
                 JSON.stringify({
                     type: "hello",
@@ -669,17 +666,24 @@ describe("runner link", () => {
 
             assert.match(code, /^[2-9A-Z]{4}-[2-9A-Z]{4}-[2-9A-Z]{4}$/);
 
-            const linked = setup.runners.redeem(code.toLowerCase());
+            const linked = linkInProcess(
+                (request) => setup.runners.redeem(request),
+                code.toLowerCase(),
+            );
 
             assert.throws(() => setup.runners.makeCode("Server box ", "owner"), /already/);
 
-            assert.throws(() => setup.runners.redeem(code), /wrong, already used, or expired/);
-            assert.equal(setup.config.runnerByKey(linked.key)?.name, "Server box");
-            assert.equal(setup.config.runnerByKey("nope"), undefined);
+            assert.throws(
+                () => linkInProcess((request) => setup.runners.redeem(request), code),
+                /wrong, already used, or expired/,
+            );
+            // The server keeps the runner's public key; its private key stays on the computer.
+            assert.equal(setup.config.runnerById(linked.id)?.publicKey, publicOf(linked.key));
             assert.ok(!JSON.stringify(setup.config.runners).includes(linked.key));
 
+            // Another key for the same computer does not prove it.
             const wrong = new Runner({
-                link: { server: setup.address, ...linked, key: "wrong" },
+                link: { server: setup.address, ...linked, key: newIdentity().privateKey },
                 version: "test",
                 cwd: root,
                 retryMs: [50],
@@ -899,13 +903,11 @@ describe("allowed folders", () => {
     it("parses kind move and asks older runners with a compatible new-session message", async () => {
         const setup = await serve();
         const { code } = setup.runners.makeCode("Old", "owner");
-        const linked = setup.runners.redeem(code);
-        const old = new WebSocket(
+        const linked = linkInProcess((request) => setup.runners.redeem(request), code);
+        const old = await openLink(
             `${setup.address.replace("http", "ws")}${LINK_PATH}`,
             LINK_SUBPROTOCOL,
-            {
-                headers: { authorization: `Bearer ${linked.key}` },
-            },
+            linked,
         );
         const question = {
             type: "confirm",
@@ -932,7 +934,6 @@ describe("allowed folders", () => {
         });
 
         try {
-            await new Promise((resolve) => old.once("open", resolve));
             old.send(
                 JSON.stringify({
                     type: "hello",
@@ -958,7 +959,7 @@ describe("allowed folders", () => {
         const file = join(folder, "link.json");
         const childFolder = join(folder, "child");
         const { code } = setup.runners.makeCode("Terminal", "owner");
-        const linked = setup.runners.redeem(code);
+        const linked = linkInProcess((request) => setup.runners.redeem(request), code);
         const launcher = fileURLToPath(new URL("../bin/pi-pocket.js", import.meta.url));
 
         mkdirSync(childFolder);
@@ -1084,6 +1085,7 @@ describe("allowed folders", () => {
                 id: "id",
                 name: "Computer",
                 key: "secret",
+                serverKey: newIdentity().publicKey,
                 settings: { confirm: true, folders: [allowed] },
             }),
         );

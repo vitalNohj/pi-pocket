@@ -1,6 +1,7 @@
 // "This server" in the Runners sheet: the server as a computer (`access.ts` `THIS_SERVER`), with the owner as its
 // linker. The owner chooses its people, its rules, and its saved folders over the same routes as a runner's; it cannot be
 // removed, and nobody else learns of its people or folders, also not from live updates.
+import { newIdentity } from "../src/runner/secure-link.ts";
 import {
     type App,
     cleanUp,
@@ -73,7 +74,7 @@ before(async () => {
     alex = person("Alex", "guest");
     vera = person("Vera", "viewer");
     sam = person("Sam", "guest", ["1"]);
-    runnerId = app.config.addRunner("Laptop", owner(app).id).runner.id;
+    runnerId = app.config.addRunner("Laptop", owner(app).id, newIdentity().publicKey).id;
     mkdirSync(project, { recursive: true });
     server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),

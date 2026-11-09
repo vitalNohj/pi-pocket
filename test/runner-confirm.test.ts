@@ -1,5 +1,12 @@
 // Withdrawing session questions, over the real runner link, including a runner from before `withdraws`.
 import assert from "node:assert/strict";
+import {
+    linkInProcess,
+    openLink,
+    newIdentity,
+    ServerLinkSocket,
+    type LinkSocket,
+} from "../src/runner/secure-link.ts";
 import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -43,19 +50,17 @@ for (const withdraws of [true, false]) {
         const runners = new Runners({ config: new ConfigStore(root), log: () => {} });
         const server = createServer();
         const got: ControlMessage[] = [];
-        let ws: WebSocket | undefined;
+        let ws: LinkSocket | undefined;
 
         server.on("upgrade", (request, socket, head) => runners.upgrade(request, socket, head));
         await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 
         try {
             const { code } = runners.makeCode("Laptop", "owner");
-            const linked = runners.redeem(code);
+            const linked = linkInProcess((request) => runners.redeem(request), code);
             const port = (server.address() as AddressInfo).port;
 
-            ws = new WebSocket(`ws://127.0.0.1:${port}${LINK_PATH}`, LINK_SUBPROTOCOL, {
-                headers: { authorization: `Bearer ${linked.key}` },
-            });
+            ws = await openLink(`ws://127.0.0.1:${port}${LINK_PATH}`, LINK_SUBPROTOCOL, linked);
             const peer = ws;
 
             peer.on("message", (data, binary) => {
@@ -67,7 +72,6 @@ for (const withdraws of [true, false]) {
                     }
                 }
             });
-            await new Promise<void>((resolve) => peer.once("open", resolve));
             peer.send(
                 JSON.stringify({
                     type: "hello",
@@ -144,11 +148,20 @@ it("withdraw aborts the runner's ask, logs cancellation, and sends no confirmed 
     const got: ControlMessage[] = [];
     const lines: string[] = [];
     const asked: SessionQuestion[] = [];
-    let peer: WebSocket | undefined;
+    let peer: ServerLinkSocket | undefined;
     let late: ((answer: SessionAnswer) => void) | undefined;
     let runner: Runner | undefined;
+    // A server of its own, with its own key, that the runner pinned (`secure-link.ts`).
+    const serverIdentity = newIdentity();
+    const runnerIdentity = newIdentity();
 
-    sockets.on("connection", (ws) => {
+    sockets.on("connection", (raw) => {
+        const ws = new ServerLinkSocket(raw, {
+            identity: serverIdentity,
+            runnerKey: (id) => (id === "test" ? runnerIdentity.publicKey : undefined),
+            unknown: 4001,
+        });
+
         peer = ws;
         ws.on("message", (data, binary) => {
             if (binary) {
@@ -180,7 +193,13 @@ it("withdraw aborts the runner's ask, logs cancellation, and sends no confirmed 
         const port = (server.address() as AddressInfo).port;
 
         runner = new Runner({
-            link: { server: `http://127.0.0.1:${port}`, id: "test", name: "Laptop", key: "test" },
+            link: {
+                server: `http://127.0.0.1:${port}`,
+                id: "test",
+                name: "Laptop",
+                key: runnerIdentity.privateKey,
+                serverKey: serverIdentity.publicKey,
+            },
             version: "test",
             log: (line) => lines.push(line),
             ask: (question) => {
