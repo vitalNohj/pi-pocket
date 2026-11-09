@@ -10,6 +10,7 @@ import { isAbsolute, join, posix, resolve, sep, win32 } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "./access.ts";
 import type { PocketApp } from "./app.ts";
 import {
     type Branches,
@@ -43,6 +44,30 @@ const REMOTE_HEAD_TIMEOUT_MS = 10_000;
 const REMOTE_HEADS_KEPT = 256;
 
 /** A failure to reach a session's computer, as people read it; anything else as it is. */
+/**
+ * The real path of `path`, a folder that may not exist yet: its nearest existing parent resolved (a link there leads
+ * where it leads), with the rest kept as written.
+ */
+function realInside(path: string): string {
+    let existing = path;
+    const rest: string[] = [];
+
+    for (;;) {
+        try {
+            return join(realpathSync(existing), ...rest);
+        } catch {
+            const parent = resolve(existing, "..");
+
+            if (parent === existing) {
+                return path;
+            }
+
+            rest.unshift(existing.slice(parent.length).replace(/^[\\/]+/, ""));
+            existing = parent;
+        }
+    }
+}
+
 function unreachable(error: unknown): never {
     throw error instanceof Unreachable ? new HttpError(409, describe(error)) : error;
 }
@@ -396,6 +421,14 @@ export class Workspace {
         }
 
         const absolute = resolve(expanded);
+
+        // Someone given folders makes new ones inside them only (`access.ts` `mayUseFolder`).
+        if (!this.#app.policy.mayUseFolder(user, THIS_SERVER, realInside(absolute))) {
+            throw new HttpError(
+                403,
+                "The owner has not given you this folder. Make new folders inside the ones you were given.",
+            );
+        }
 
         try {
             mkdirSync(absolute, { recursive: true });

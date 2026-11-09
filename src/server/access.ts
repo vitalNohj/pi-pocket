@@ -25,10 +25,8 @@ export type Computer = {
     linker: string;
     /** The people the linker chose: they may use it. Viewers among them only see. */
     chosen: readonly string[];
-    /** Whether a saved folder covers `folder` (a missing or broad saved folder covers nothing). */
-    covers(folder: string): Promise<boolean>;
-    /** "Stop asking": a saved folder needs no approval. */
-    stopAsking: boolean;
+    /** The folders the owner gave `person` here (real paths); each covers the folders in it. The owner needs none. */
+    given(person: string): readonly string[];
     /** Share new sessions with its chosen people. Off unless the linker turns it on. */
     shareNew: boolean;
 };
@@ -55,14 +53,37 @@ export interface AccessFacts {
     computer(id: string): Computer | undefined;
     /** The facts of the top session of `id`, whichever session of its tree `id` names. */
     session(id: string): SessionFacts | undefined;
+    /** How many days `person`'s approvals last unused; 0: they are never asked (`config.ts` `approvalDays`). */
+    approvalDays(person: string): number;
+    /**
+     * Whether `person` has a live approval (`folder-approvals.ts`) of `folder` on `computer` (a whole-computer one covers every
+     * folder), or of shared session `session`; using it starts its clock again.
+     */
+    approved(
+        person: string,
+        target: { computer: string } & ({ folder: string } | { session: string }),
+    ): boolean;
 }
 
 /**
- * May this person start a session in this folder: at once, after an approval, or not at all. An approval of a folder no
- * saved folder covers also saves it (unless it is too broad); `saved` says which question to ask.
+ * May this person work in this folder: at once, after an approval, or not at all. `whole`: the approval covers the
+ * whole computer (the owner, on a runner); else this folder alone.
  */
 export type FolderDecision =
-    { kind: "allow" } | { kind: "ask"; saved: boolean } | { kind: "refuse" };
+    { kind: "allow" } | { kind: "ask"; whole: boolean } | { kind: "refuse"; reason: string };
+
+/** Whether `folder` is `given` or inside it, with either separator (a runner may run Windows). */
+export function inFolder(folder: string, given: string): boolean {
+    const base = given.replace(/[\\/]+$/, "");
+
+    return (
+        folder === given ||
+        base === "" ||
+        folder === base ||
+        folder.startsWith(`${base}/`) ||
+        folder.startsWith(`${base}\\`)
+    );
+}
 
 export class AccessPolicy {
     readonly #facts: AccessFacts;
@@ -74,6 +95,11 @@ export class AccessPolicy {
     /** The current record of `person`, so a stale copy grants nothing it no longer has. */
     #current(person: Pick<Person, "id">): Person | undefined {
         return this.#facts.person(person.id);
+    }
+
+    /** The facts of session `id`'s top session, whichever session of its tree `id` names. */
+    session(id: string): SessionFacts | undefined {
+        return this.#facts.session(id);
     }
 
     /** Who started session `facts`: older sessions, with no starter, are the owner's. */
@@ -194,24 +220,97 @@ export class AccessPolicy {
     }
 
     /**
-     * May `person` start a session in `folder` on computer `id` (a real path there). Refused when they may not start
-     * sessions there. The owner needs no approval on this server, which they control. Elsewhere a folder a saved folder
-     * covers needs none while "Stop asking" is on; any other folder asks: the person's own code, the owner from the
-     * app, or the person at the computer.
+     * The folders `person` may work in on computer `id`: those the owner gave them there; undefined for the owner, who
+     * may use every folder. Empty for who may not start sessions there.
      */
-    async folder(person: Pick<Person, "id">, id: string, folder: string): Promise<FolderDecision> {
-        if (!this.mayStart(person, id)) {
-            return { kind: "refuse" };
+    givenFolders(person: Pick<Person, "id">, id: string): readonly string[] | undefined {
+        const current = this.#current(person);
+
+        if (current?.role === "owner") {
+            return undefined;
         }
 
-        if (id === THIS_SERVER && this.#current(person)?.role === "owner") {
+        return current !== undefined && this.mayStart(current, id)
+            ? (this.#facts.computer(id)?.given(current.id) ?? [])
+            : [];
+    }
+
+    /** May `person` work in `folder` on computer `id` at all (a real path there): the owner anywhere, others where given. */
+    mayUseFolder(person: Pick<Person, "id">, id: string, folder: string): boolean {
+        const given = this.givenFolders(person, id);
+
+        return given === undefined
+            ? this.mayStart(person, id)
+            : given.some((each) => inFolder(folder, each));
+    }
+
+    /**
+     * May `person` start a session in `folder` on computer `id` (a real path there), or copy or move one there.
+     * Refused unless they may start sessions there and the owner gave them the folder (or one it is in). The owner needs
+     * no approval on this server, which they control, and a person whose approval time is "never" needs none. Anyone
+     * else needs a live approval: of this folder, or for the owner on a runner of the whole computer.
+     */
+    folder(person: Pick<Person, "id">, id: string, folder: string): FolderDecision {
+        const current = this.#current(person);
+
+        if (current === undefined || !this.mayStart(current, id)) {
+            return {
+                kind: "refuse",
+                reason: this.#startRefusal(current, id),
+            };
+        }
+
+        if (!this.mayUseFolder(current, id, folder)) {
+            return {
+                kind: "refuse",
+                reason: "The owner has not given you this folder. Ask them to add it for you.",
+            };
+        }
+
+        const owner = current.role === "owner";
+
+        if ((owner && id === THIS_SERVER) || this.#facts.approvalDays(current.id) === 0) {
             return { kind: "allow" };
         }
 
-        const computer = this.#facts.computer(id)!;
-        const saved = await computer.covers(folder);
+        return this.#facts.approved(current.id, { computer: id, folder })
+            ? { kind: "allow" }
+            : { kind: "ask", whole: owner };
+    }
 
-        return saved && computer.stopAsking ? { kind: "allow" } : { kind: "ask", saved };
+    /**
+     * May `person` send to session `id`'s agent now: they steer it (`maySteer`), and their approval for it is live. Their
+     * own session needs a live approval of its folder (what started it); a session shared with them, of that session (an
+     * approval the share made, or a later code). The owner is never asked on this server; on a runner, their approval of
+     * the computer counts. Viewers never send. "ask": a code would let them.
+     */
+    steer(person: Pick<Person, "id">, id: string, folder: string): "allow" | "ask" {
+        const current = this.#current(person);
+        const facts = this.#facts.session(id);
+
+        if (current === undefined || facts === undefined || !this.maySteer(current, id)) {
+            return "ask";
+        }
+
+        if (
+            facts.pip !== undefined ||
+            (current.role === "owner" && facts.computer === THIS_SERVER) ||
+            this.#facts.approvalDays(current.id) === 0 ||
+            current.sessions !== undefined
+        ) {
+            return "allow";
+        }
+
+        const mine = this.starter(facts) === current.id;
+
+        return this.#facts.approved(
+            current.id,
+            mine || current.role === "owner"
+                ? { computer: facts.computer, folder }
+                : { computer: facts.computer, session: facts.id },
+        )
+            ? "allow"
+            : "ask";
     }
 
     // Sessions.
@@ -307,18 +406,29 @@ export class AccessPolicy {
             return;
         }
 
-        const current = this.#current(person);
+        throw new HttpError(403, this.#startRefusal(this.#current(person), id));
+    }
 
-        throw new HttpError(
-            403,
-            current?.sessions !== undefined
-                ? "You were invited to one session and cannot start new ones."
-                : current?.role === "viewer" && this.mayUse(current, id)
-                  ? "You can view sessions but not start them. Ask the owner for steering rights."
-                  : id === THIS_SERVER
-                    ? "The owner has not chosen you for this server yet."
-                    : "Only the person who linked this computer or the people they chose can start sessions on it.",
-        );
+    #startRefusal(current: Person | undefined, id: string): string {
+        return current?.sessions !== undefined
+            ? "You were invited to one session and cannot start new ones."
+            : current?.role === "viewer" && this.mayUse(current, id)
+              ? "You can view sessions but not start them. Ask the owner for steering rights."
+              : id === THIS_SERVER
+                ? "The owner has not chosen you for this server yet."
+                : "The owner has not chosen you for this computer yet.";
+    }
+
+    /** Refuse `folder` on computer `id` to who may not work in it (`mayUseFolder`). */
+    requireFolder(person: Pick<Person, "id">, id: string, folder: string): void {
+        this.requireStart(person, id);
+
+        if (!this.mayUseFolder(person, id, folder)) {
+            throw new HttpError(
+                403,
+                "The owner has not given you this folder. Ask them to add it for you.",
+            );
+        }
     }
 
     /** Refuse who may not browse computer `id`'s folders (`mayBrowse`): the same people who may start sessions there. */

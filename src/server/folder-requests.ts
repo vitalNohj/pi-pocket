@@ -1,14 +1,12 @@
 /**
- * Approvals of new folders on this server (`access.ts` `folder` said "ask"): a person who wants a session in a folder no
- * saved folder covers waits here until it is approved, denied, withdrawn, or too old. Two ways approve one
- * (`approval-methods.ts`): the person's own authenticator code, or the owner from the app. An approved folder is saved
- * for this server (unless it is too broad: a root, the home folder, or above it), so the next session there asks only
- * while "Stop asking" is off.
+ * Requests for an approval (`access.ts` said "ask"): a person who wants to work in a folder, or to steer a session shared
+ * with them, without a live approval (`folder-approvals.ts`) waits here until it is approved, denied, withdrawn, or too old.
+ * Two ways approve one (`approval-methods.ts`): the person's own authenticator code, or the owner from the app. The
+ * caller keeps the approval that answers it.
  *
  * Requests live in memory: a restart ends them, and the person asks again. Nothing here is a document.
  */
 import { randomUUID } from "node:crypto";
-import { broadFolder } from "../runner/folders.ts";
 import type { Person } from "./access.ts";
 import type { ApprovalMethods, MethodId, Proof } from "./approval-methods.ts";
 import { HttpError } from "./errors.ts";
@@ -16,27 +14,41 @@ import { HttpError } from "./errors.ts";
 /** How long a request waits for an answer, as a runner's question with a code does. */
 export const FOLDER_REQUEST_MS = 300_000;
 
-/** What the session is: a new one, a copy, a move of one, or one an agent links. */
-export type FolderRequestKind = "new" | "fork" | "move" | "linked";
+/**
+ * What it is for: a new session, a copy, a move of one, one an agent links, or sending to a session (their own, whose
+ * folder's approval ended, or one shared with them).
+ */
+export type FolderRequestKind = "new" | "fork" | "move" | "linked" | "steer";
+
+/** What a request asks for, and where. */
+export type FolderQuestion = {
+    /** `THIS_SERVER` or a runner's id. */
+    computer: string;
+    /** The computer's name, for people. */
+    computerName: string;
+    folder: string;
+    kind: FolderRequestKind;
+    /** The approval covers the whole computer (the owner, on a runner), not this folder alone. */
+    whole?: boolean;
+    /** A shared session's id: the approval is for steering it. */
+    session?: string;
+};
 
 /** A request as people see it: the requester theirs, the owner every one. */
-export type FolderRequestView = {
+export type FolderRequestView = FolderQuestion & {
     id: string;
     person: string;
     name: string;
-    folder: string;
-    kind: FolderRequestKind;
-    /** A saved folder covers it: approving starts the session, and saves nothing. */
-    saved: boolean;
-    /** Approving does not save it: too broad to save. */
-    broad: boolean;
     /** The requester has an authenticator linked, so they can approve with a code. */
     code: boolean;
     expiresAt: number;
 };
 
+/** Who answered a request, and how. */
+export type FolderAnswer = { method: MethodId; by: string };
+
 type Pending = FolderRequestView & {
-    resolve: (method: MethodId) => void;
+    resolve: (answer: FolderAnswer) => void;
     reject: (error: Error) => void;
 };
 
@@ -46,10 +58,6 @@ export type FolderRequestOptions = {
     person: (id: string) => (Person & { name: string }) | undefined;
     /** Whether `person` has an authenticator linked now. */
     hasCode: (person: string) => boolean;
-    /** This server's home folder, for the broad-folder rule. */
-    home: string;
-    /** Save an approved folder for this server. */
-    save: (folder: string) => void;
     /** The requests changed: tell each person's tabs theirs, and the owner all. */
     changed: () => void;
     /** A new request: the owner hears of it (a notice, a push). */
@@ -81,16 +89,14 @@ export class FolderRequests {
     }
 
     /**
-     * Wait for an approval of `folder` (a real path here) for `person`. Resolves with how it was approved; rejects when
-     * it is denied, withdrawn (also by `signal`), or too old. An approved folder is saved, unless saved already or broad.
+     * Wait for an approval of `question` for `person`. Resolves with who approved it and how; rejects when it is denied,
+     * withdrawn (also by `signal`), or too old.
      */
     async ask(
         person: Pick<Person, "id">,
-        folder: string,
-        kind: FolderRequestKind,
-        saved: boolean,
+        question: FolderQuestion,
         signal?: AbortSignal,
-    ): Promise<MethodId> {
+    ): Promise<FolderAnswer> {
         const current = this.#options.person(person.id);
 
         if (current === undefined) {
@@ -100,19 +106,15 @@ export class FolderRequests {
         signal?.throwIfAborted();
 
         const id = randomUUID();
-        const broad = broadFolder(folder, this.#options.home);
         let timer: NodeJS.Timeout | undefined;
         let abort: (() => void) | undefined;
 
-        const method = await new Promise<MethodId>((resolve, reject) => {
+        return new Promise<FolderAnswer>((resolve, reject) => {
             const request: Pending = {
+                ...question,
                 id,
                 person: current.id,
                 name: current.name,
-                folder,
-                kind,
-                saved,
-                broad,
                 code: this.#options.hasCode(current.id),
                 expiresAt: this.#now() + FOLDER_REQUEST_MS,
                 resolve,
@@ -125,7 +127,7 @@ export class FolderRequests {
                     reject(
                         new HttpError(
                             409,
-                            "Nobody approved the folder in time. Try again, and enter a code from your authenticator or ask the owner.",
+                            "Nobody approved it in time. Try again, and enter a code from your authenticator or ask the owner.",
                         ),
                     ),
                 FOLDER_REQUEST_MS,
@@ -148,12 +150,6 @@ export class FolderRequests {
             this.#pending.delete(id);
             this.#options.changed();
         });
-
-        if (!saved && !broad) {
-            this.#options.save(folder);
-        }
-
-        return method;
     }
 
     /**
@@ -174,7 +170,7 @@ export class FolderRequests {
         const method = await this.#options.methods.verify(current, requester, proof);
 
         // Answered by someone else while the code was checked: nothing more to do.
-        this.#pending.get(id)?.resolve(method);
+        this.#pending.get(id)?.resolve({ method, by: current.id });
     }
 
     /** The owner denies request `id`; its requester withdraws it. */
@@ -193,13 +189,13 @@ export class FolderRequests {
     }
 
     /**
-     * End the requests of people who may no longer start sessions here (`mayStart`: removed, no longer chosen, made a
-     * viewer): nobody can approve them into a session now.
+     * End the requests `keep` refuses (a person removed, no longer chosen, made a viewer, or no longer given the folder):
+     * nobody can approve them now.
      */
-    prune(mayStart: (person: string) => boolean): void {
+    prune(keep: (request: FolderRequestView) => boolean): void {
         for (const request of [...this.#pending.values()]) {
-            if (!mayStart(request.person)) {
-                request.reject(new HttpError(403, "You can no longer start sessions here."));
+            if (!keep(request)) {
+                request.reject(new HttpError(403, "You can no longer work there."));
             }
         }
     }

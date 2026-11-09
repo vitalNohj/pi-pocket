@@ -64,6 +64,42 @@ export interface User {
      * leaves the server: nothing that sends a person's record to a browser may include it.
      */
     authenticator?: StoredAuthenticator;
+    /**
+     * How many days an approval of this person's lasts once unused (`folder-approvals.ts`), on every computer; 0: they are never
+     * asked. Absent: `DEFAULT_APPROVAL_DAYS` for their role.
+     */
+    approvalDays?: number;
+}
+
+/** The approval times on offer, in days; 0 is "never ask". */
+export const APPROVAL_DAYS = [1, 7, 14, 30, 0] as const;
+
+/** A person's approval time until the owner sets one: the owner 30 days, anyone else 7. */
+export function approvalDays(user: Pick<User, "role" | "approvalDays">): number {
+    return user.approvalDays ?? (user.role === "owner" ? 30 : 7);
+}
+
+/**
+ * One approval, kept on the server (`folder-approvals.ts`): a person may use a folder on a computer (or the whole computer, for
+ * the owner on a runner), or steer a session shared with them. It lasts while it is used: it ends once unused for the
+ * person's approval time.
+ */
+export interface StoredApproval {
+    id: string;
+    person: string;
+    /** `THIS_SERVER` or a runner's id. */
+    computer: string;
+    /** A real folder on that computer; `*` is the whole computer. Absent for a session approval. */
+    folder?: string;
+    /** A shared session's top id, for a session approval. */
+    session?: string;
+    /** How it was approved: the person's own code, or the owner from the app. */
+    method: "totp" | "owner";
+    /** Who approved it, by id. */
+    by: string;
+    approvedAt: number;
+    /** When it was last used; its clock starts here. */
+    usedAt: number;
 }
 
 /** An invite not yet used, kept by its code's sha256 (the code itself is only shown to whoever made it). */
@@ -94,6 +130,8 @@ export interface StoredRunner {
     createdBy: string;
     /** People the owner granted access to start sessions on this computer. */
     users?: string[];
+    /** The folders the owner gave each chosen person here, by person id (`access.ts`). The owner needs none. */
+    given?: Record<string, string[]>;
     /** When it last connected. */
     lastSeen?: number;
     /**
@@ -115,10 +153,8 @@ export interface StoredRunner {
 export interface StoredServer {
     /** The people the owner chose: they may use this server. Viewers among them only see. */
     users?: string[];
-    /** Saved folders (real paths here): with "Stop asking" on, a session in one needs no approval. */
-    folders?: string[];
-    /** "Stop asking": a saved folder needs no approval. */
-    stopAsking?: true;
+    /** The folders the owner gave each chosen person (real paths here), by person id (`access.ts`). */
+    given?: Record<string, string[]>;
     /** New sessions here start shared with its people. */
     shareNew?: true;
 }
@@ -191,12 +227,14 @@ interface PocketConfig {
     serverIdentity?: Identity;
     /** Wrong link codes (`link-limits.ts`): each address's lockouts toward a ban, and the banned addresses. */
     runnerLinkLimits?: StoredLinkLimits;
-    /** This server as a computer: its people, saved folders, and rules (`access.ts`). */
+    /** This server as a computer: its people, their folders, and rules (`access.ts`). */
     server?: StoredServer;
+    /** Approvals of folders and shared sessions, on every computer (`folder-approvals.ts`). */
+    folderApprovals?: StoredApproval[];
 }
 
-/** The parts of `StoredServer` and `StoredRunner` the owner or a linker can change. */
-export type ComputerSettings = { stopAsking?: boolean; shareNew?: boolean };
+/** The parts of `StoredServer` and `StoredRunner` the owner can change. */
+export type ComputerSettings = { shareNew?: boolean };
 
 /** The hours a run waits for a model's limit to clear, until the owner says otherwise. */
 export const DEFAULT_LIMIT_WAIT_HOURS = 6;
@@ -635,7 +673,17 @@ export class ConfigStore {
     updateUser(
         id: string,
         patch: Partial<
-            Pick<User, "name" | "lastSeen" | "role" | "sessions" | "tunnel" | "budget" | "avatar">
+            Pick<
+                User,
+                | "name"
+                | "lastSeen"
+                | "role"
+                | "sessions"
+                | "tunnel"
+                | "budget"
+                | "avatar"
+                | "approvalDays"
+            >
         >,
     ): void {
         const user = this.userById(id);
@@ -669,6 +717,10 @@ export class ConfigStore {
 
         if (user.avatar === undefined) {
             delete user.avatar;
+        }
+
+        if (user.approvalDays === undefined) {
+            delete user.approvalDays;
         }
 
         this.save();
@@ -706,6 +758,14 @@ export class ConfigStore {
             this.#config.invites = this.#config.invites?.filter(
                 (invite) => invite.createdBy !== id,
             );
+            // Nothing they were given or approved outlives them.
+            this.#config.folderApprovals = this.#config.folderApprovals?.filter(
+                (each) => each.person !== id,
+            );
+
+            for (const computer of [this.#config.server, ...(this.#config.runners ?? [])]) {
+                delete computer?.given?.[id];
+            }
         }
 
         this.save();
@@ -870,47 +930,34 @@ export class ConfigStore {
         });
     }
 
-    /** Save a folder (a real path here), so it needs no approval while "Stop asking" is on. */
-    saveServerFolder(folder: string): void {
-        this.#changeServer((server) => {
-            server.folders = [...new Set([...(server.folders ?? []), folder])];
-        });
-    }
-
-    removeServerFolder(folder: string): boolean {
-        const before = this.#config.server?.folders ?? [];
-
-        if (!before.includes(folder)) {
-            return false;
-        }
-
-        this.#changeServer((server) => {
-            server.folders = before.filter((each) => each !== folder);
-        });
-
-        return true;
-    }
-
     /**
-     * Change this server's rules (`id` undefined), or a runner's `shareNew`: a runner keeps its other rules, like
-     * "Stop asking", on that computer, so `stopAsking` is ignored for one.
+     * The folders the owner gave `person` on computer `id` (undefined: this server), real paths there. A folder given
+     * covers the folders in it.
      */
-    setComputerSettings(id: string | undefined, change: ComputerSettings): void {
-        const apply = (
-            target: { stopAsking?: true; shareNew?: true },
-            keys: readonly (keyof ComputerSettings)[],
-        ): void => {
-            for (const key of keys) {
-                if (change[key] === true) {
-                    target[key] = true;
-                } else if (change[key] === false) {
-                    delete target[key];
-                }
+    givenFolders(id: string | undefined, person: string): readonly string[] {
+        const computer = id === undefined ? this.#config.server : this.runnerById(id);
+
+        return computer?.given?.[person] ?? [];
+    }
+
+    /** Set the folders given to `person` on computer `id` (undefined: this server); an empty list takes them all. */
+    setGivenFolders(id: string | undefined, person: string, folders: readonly string[]): void {
+        const apply = (target: { given?: Record<string, string[]> }): void => {
+            const unique = [...new Set(folders)];
+
+            if (unique.length === 0) {
+                delete target.given?.[person];
+            } else {
+                target.given = { ...target.given, [person]: unique };
+            }
+
+            if (target.given !== undefined && Object.keys(target.given).length === 0) {
+                delete target.given;
             }
         };
 
         if (id === undefined) {
-            this.#changeServer((server) => apply(server, ["stopAsking", "shareNew"]));
+            this.#changeServer(apply);
 
             return;
         }
@@ -918,9 +965,48 @@ export class ConfigStore {
         const runner = this.runnerById(id);
 
         if (runner !== undefined) {
-            apply(runner, ["shareNew"]);
+            apply(runner);
             this.save();
         }
+    }
+
+    /** Change a computer's rules (`id` undefined: this server). */
+    setComputerSettings(id: string | undefined, change: ComputerSettings): void {
+        const apply = (target: { shareNew?: true }): void => {
+            if (change.shareNew === true) {
+                target.shareNew = true;
+            } else if (change.shareNew === false) {
+                delete target.shareNew;
+            }
+        };
+
+        if (id === undefined) {
+            this.#changeServer(apply);
+
+            return;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            apply(runner);
+            this.save();
+        }
+    }
+
+    /** Every approval kept (`folder-approvals.ts` reads and changes them through `setFolderApprovals`). */
+    get folderApprovals(): readonly StoredApproval[] {
+        return this.#config.folderApprovals ?? [];
+    }
+
+    setFolderApprovals(approvals: StoredApproval[]): void {
+        if (approvals.length === 0) {
+            delete this.#config.folderApprovals;
+        } else {
+            this.#config.folderApprovals = approvals;
+        }
+
+        this.save();
     }
 
     #changeServer(change: (server: StoredServer) => void): void {
@@ -928,10 +1014,8 @@ export class ConfigStore {
 
         change(server);
 
-        for (const key of ["users", "folders"] as const) {
-            if (server[key]?.length === 0) {
-                delete server[key];
-            }
+        if (server.users?.length === 0) {
+            delete server.users;
         }
 
         if (Object.keys(server).length === 0) {

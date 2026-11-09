@@ -701,6 +701,11 @@ describe("runner link", () => {
 
             runner.start();
             await until(() => runner.connected, "the runner to connect");
+            // The runner is connected before the server has read its hello: under load, wait for what it told.
+            await until(
+                () => setup.runners.list()[0]?.version !== undefined,
+                "the server to know the runner",
+            );
 
             const listed = setup.runners.list()[0]!;
 

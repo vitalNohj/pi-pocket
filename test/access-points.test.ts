@@ -119,10 +119,14 @@ before(async () => {
     invited = person("Invited", "guest", [String(shared)]);
     stranger = person("Stranger", "guest");
     app.config.setServerUsers([guest.id, viewer.id]);
-    // The folders here need no approval: who may start a session is what these tests check, not which folders need one
-    // (`folder-requests.test.ts`).
-    app.config.saveServerFolder(realpathSync(root));
-    app.config.setComputerSettings(undefined, { stopAsking: true });
+
+    // The folders here are given, and need no approval: who may start a session is what these tests check, not which
+    // folders need one (`folder-requests.test.ts`).
+    for (const each of [guest, viewer]) {
+        app.config.setGivenFolders(undefined, each.id, [realpathSync(root)]);
+        app.config.updateUser(each.id, { approvalDays: 0 });
+    }
+
     app.accessChanged();
     await app.commands.shareSession(shared, owner(app), [guest.id, viewer.id]);
 });

@@ -527,6 +527,9 @@ export class Commands {
 
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
 
+        // The server decides (`access.ts` `folder`): a folder given to them, approved by their code or the owner.
+        await app.approveFolder(user, cwd, "new", signal, runner);
+
         const runnerPermission = randomUUID();
 
         await app.runners
@@ -2282,6 +2285,7 @@ export class Commands {
                   : await app.runners.checkFolder(runner, request.cwd);
 
         if (runner !== undefined && cwd !== undefined && cwd !== (current?.cwd ?? app.cwdOf(id))) {
+            await app.approveFolder(user, cwd, "move", undefined, runner);
             await app.runners.link(runner).confirm(
                 {
                     kind: "move",
@@ -3212,6 +3216,7 @@ export class Commands {
 
         // Approve the source folder before git or copies use it. The worktree is this new permission's own folder.
         if (runner !== undefined) {
+            await this.#app.approveFolder(user, destination.cwd, "fork", signal, runner);
             await this.#app.runners.link(runner).confirm(
                 {
                     kind: "fork",

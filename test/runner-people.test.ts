@@ -10,6 +10,7 @@ import {
     root,
     scriptedModel,
     until,
+    approveComputer,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -94,6 +95,8 @@ before(async () => {
     const linked = linkInProcess((request) => app.runners.redeem(request), code);
 
     runnerId = linked.id;
+
+    approveComputer(app, runnerId);
     otherRunnerId = app.config.addRunner(
         "Another computer",
         owner(app).id,
@@ -130,6 +133,10 @@ before(async () => {
     assert.ok(settings.folders?.includes(there));
     // Saved folders skip questions only with the computer's existing Stop asking setting.
     settings.confirm = false;
+    // The server's own rules (`access.ts`): the guest may work in the test folders there, and is not asked for a code.
+    // What the runner itself asks is what these tests check.
+    app.config.setGivenFolders(runnerId, guest.id, [root]);
+    app.config.updateUser(guest.id, { approvalDays: 0 });
 });
 
 after(async () => {
@@ -188,7 +195,7 @@ describe("people granted a computer", () => {
         });
 
         assert.equal(granted.status, 200);
-        assert.deepEqual(granted.body.users, [{ id: guest.id, name: guest.name }]);
+        assert.deepEqual(granted.body.users, [{ id: guest.id, name: guest.name, role: "guest" }]);
         assert.deepEqual(app.config.runnerById(runnerId)?.users, [guest.id]);
         assert.deepEqual(new ConfigStore(app.dataDir).runnerById(runnerId)?.users, [guest.id]);
         assert.equal(app.policy.mayStart(guest, runnerId), true);
@@ -293,7 +300,7 @@ describe("people granted a computer", () => {
 
         assert.equal(all.body.length, 2);
         assert.deepEqual(all.body.find((runner) => runner.id === runnerId)?.users, [
-            { id: guest.id, name: guest.name },
+            { id: guest.id, name: guest.name, role: "guest" },
         ]);
         await app.folderFavorites.set(guest, { runner: runnerId, path: there, starred: true });
         assert.deepEqual((await app.folderFavorites.runners(guest))[runnerId], [there]);

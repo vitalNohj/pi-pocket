@@ -140,7 +140,8 @@ export class Alerts {
      * as a push. Not for the owner's own requests. `where` names the computer for a runner's.
      */
     folderRequest(
-        request: Pick<FolderRequestView, "id" | "person" | "name" | "folder">,
+        request: Pick<FolderRequestView, "id" | "person" | "name" | "folder"> &
+            Partial<Pick<FolderRequestView, "kind" | "session">>,
         where?: string,
     ): void {
         const app = this.#app;
@@ -150,7 +151,11 @@ export class Alerts {
             return;
         }
 
-        const body = `${request.name} asks to start a session in ${request.folder}${where === undefined ? "" : ` on ${where}`}.`;
+        const place = `${request.folder}${where === undefined ? "" : ` on ${where}`}`;
+        const body =
+            request.kind === "steer"
+                ? `${request.name} asks to go on working in ${place}.`
+                : `${request.name} asks to start a session in ${place}.`;
         const store = app.pushStore;
 
         if (!(store?.prefs(owner.id) ?? DEFAULT_PREFS).folders) {

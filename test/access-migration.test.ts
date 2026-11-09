@@ -132,10 +132,10 @@ test("once chosen, a guest sees the sessions they started, and the owner's only 
         assert.equal(app.canSee(person(viewer), ownersSession), true);
         assert.equal(app.policy.maySteer(person(viewer), String(ownersSession)), false);
 
-        // A guest's new session here is private too: sharing is off by default. (A saved folder with "Stop asking" on: no
+        // A guest's new session here is private too: sharing is off by default. (A given folder, and "never" ask: no
         // approval to wait for.)
-        app.config.saveServerFolder(realpathSync(work));
-        app.config.setComputerSettings(undefined, { stopAsking: true });
+        app.config.setGivenFolders(undefined, guest.id, [realpathSync(work)]);
+        app.config.updateUser(guest.id, { approvalDays: 0 });
 
         const { id } = await app.commands.createSession(person(guest), { cwd: work });
 

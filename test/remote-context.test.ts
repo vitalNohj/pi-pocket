@@ -33,6 +33,7 @@ import {
     say,
     scriptedModel,
     until,
+    approveComputer,
 } from "./helpers.ts";
 
 /** The other computer: its home folder, and a project in a repository there. */
@@ -122,6 +123,8 @@ before(async () => {
     const linked = linkInProcess((request) => app.runners.redeem(request), code);
 
     runnerId = linked.id;
+
+    approveComputer(app, runnerId);
     runnerOptions = {
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",

@@ -80,13 +80,17 @@ export function scriptedModel(route: FauxResponseStep = echo) {
 }
 
 /** Open the app on `dataDir` with the scripted model. Opening the same folder again is a restart; `now` moves its clock. */
-export function openApp(
+/**
+ * Open the app for a test. The owner is never asked for an approval (`config.ts` `approvalDays` 0), so tests of
+ * something else start sessions on runners without waiting; tests of approvals set the time they need.
+ */
+export async function openApp(
     model: ReturnType<typeof scriptedModel>,
     dataDir = join(root, "data"),
     now?: () => number,
     limits?: Partial<LimitTuning>,
 ): Promise<App> {
-    return PocketApp.open({
+    const app = await PocketApp.open({
         dataDir,
         defaultCwd: work,
         supervised: false,
@@ -96,6 +100,13 @@ export function openApp(
         ...(now === undefined ? {} : { now }),
         ...(limits === undefined ? {} : { limits }),
     });
+    const first = app.config.users.find((each) => each.role === "owner");
+
+    if (first !== undefined && first.approvalDays === undefined) {
+        app.config.updateUser(first.id, { approvalDays: 0 });
+    }
+
+    return app;
 }
 
 /** Wait until `check` holds, polling. */
@@ -136,9 +147,22 @@ export async function recordCost(app: App, id: ConversationId, dollars: number):
 export const owner = (app: App) => app.config.users.find((user) => user.role === "owner")!;
 
 /**
+ * Approve linked computer `runner` for the owner (`folder-approvals.ts`), as their one code after linking would: for
+ * tests of something else than approvals, which then start sessions there without waiting.
+ */
+export function approveComputer(app: App, runner: string): void {
+    app.folderApprovals.add(
+        owner(app).id,
+        { computer: runner, folder: "*" },
+        "totp",
+        owner(app).id,
+    );
+}
+
+/**
  * Add a person with what everyone with access to the whole server had before the access policy (`access.ts`): chosen
  * for this server, with every session here shared with them, the ones there are now and the ones started later, and no
- * approval for a folder in the test folder (saved, with "Stop asking" on). A person invited to `sessions` gets only
+ * approval for a folder in the test folder (given to them, with "never" ask). A person invited to `sessions` gets only
  * those, as `addUser` gives. For tests of something else than who may see what; the policy's own tests choose, share,
  * and approve by hand.
  */
@@ -155,8 +179,9 @@ export async function addPerson(
     }
 
     app.config.setServerUsers([...(app.config.server.users ?? []), added.user.id]);
-    app.config.setComputerSettings(undefined, { shareNew: true, stopAsking: true });
-    app.config.saveServerFolder(realpathSync(root));
+    app.config.setComputerSettings(undefined, { shareNew: true });
+    app.config.setGivenFolders(undefined, added.user.id, [realpathSync(root)]);
+    app.config.updateUser(added.user.id, { approvalDays: 0 });
     await app.harness.commit(async (tx) => {
         for (const meta of Object.values((await tx.doc(SessionsDoc)).items)) {
             if (meta.pip === undefined && meta.runner === undefined) {

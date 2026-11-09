@@ -41,6 +41,7 @@ import {
     say,
     scriptedModel,
     until,
+    approveComputer,
 } from "./helpers.ts";
 
 /** The remote computer's folder: the server's own sessions work in `work`, never here. */
@@ -138,6 +139,8 @@ before(async () => {
     const linked = linkInProcess((request) => app.runners.redeem(request), code);
 
     runnerId = linked.id;
+
+    approveComputer(app, runnerId);
     runnerOptions = {
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",
@@ -274,11 +277,11 @@ describe("a session on another computer", () => {
             assert.throws(() => app.requireSee(person, id as never), /not shared with you/);
             await assert.rejects(
                 app.commands.createSession(person, { cwd: there, runner: runnerId }),
-                /Only the person who linked this computer/,
+                /not chosen you for this computer/,
             );
             await assert.rejects(
                 app.commands.fork(id as never, person, {}),
-                /not shared|Only the person/,
+                /not shared|not chosen you/,
             );
         }
 

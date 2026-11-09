@@ -90,7 +90,7 @@ after(async () => {
     cleanUp();
 });
 
-test("the owner sees this server as a computer they linked, with nobody chosen and asking on", async () => {
+test("the owner sees this server as a computer they linked, with nobody chosen and nothing given", async () => {
     const shown = await call<ServerView>(owner(app), `runners/${THIS_SERVER}`);
 
     assert.equal(shown.status, 200);
@@ -99,8 +99,7 @@ test("the owner sees this server as a computer they linked, with nobody chosen a
         name: "This server",
         createdBy: owner(app).id,
         users: [],
-        folders: [],
-        stopAsking: false,
+        given: {},
         shareNew: false,
     });
     assert.deepEqual((await app.hello(owner(app))).thisServer, shown.body);
@@ -150,30 +149,26 @@ test("a chosen guest cannot choose people or change its rules", async () => {
         403,
     );
     assert.equal(
-        (await call(alex, `runners/${THIS_SERVER}/settings`, { stopAsking: true })).status,
+        (await call(alex, `runners/${THIS_SERVER}/settings`, { shareNew: true })).status,
         403,
     );
     assert.equal(
         (
-            await call(
-                alex,
-                `runners/${THIS_SERVER}/folders?folder=${encodeURIComponent(project)}`,
-                undefined,
-                "DELETE",
-            )
+            await call(alex, `runners/${THIS_SERVER}/given`, {
+                person: alex.id,
+                folders: [project],
+            })
         ).status,
         403,
     );
 });
 
-test("the owner turns its rules on and off: Stop asking and default sharing", async () => {
+test("the owner turns default sharing on and off", async () => {
     const on = await call<ServerView>(owner(app), `runners/${THIS_SERVER}/settings`, {
-        stopAsking: true,
         shareNew: true,
     });
 
     assert.equal(on.status, 200);
-    assert.equal(on.body.stopAsking, true);
     assert.equal(on.body.shareNew, true);
     assert.deepEqual(app.policy.initialShares(THIS_SERVER, owner(app).id), [alex.id, vera.id]);
 
@@ -181,16 +176,15 @@ test("the owner turns its rules on and off: Stop asking and default sharing", as
         shareNew: false,
     });
 
-    assert.equal(off.body.stopAsking, true, "a rule left out stays");
     assert.equal(off.body.shareNew, false);
     assert.deepEqual(app.policy.initialShares(THIS_SERVER, owner(app).id), []);
     assert.equal(
-        (await call(owner(app), `runners/${THIS_SERVER}/settings`, { stopAsking: "yes" })).status,
+        (await call(owner(app), `runners/${THIS_SERVER}/settings`, { shareNew: "yes" })).status,
         400,
     );
 });
 
-test("a runner's default sharing is set here too, but its Stop asking stays on that computer", async () => {
+test("a runner's default sharing is set here too", async () => {
     const on = await call<{ shareNew?: true }>(owner(app), `runners/${runnerId}/settings`, {
         shareNew: true,
     });
@@ -198,58 +192,34 @@ test("a runner's default sharing is set here too, but its Stop asking stays on t
     assert.equal(on.status, 200);
     assert.equal(on.body.shareNew, true);
     assert.equal(app.config.runnerById(runnerId)?.shareNew, true);
-
-    const refused = await call<{ error: string }>(owner(app), `runners/${runnerId}/settings`, {
-        stopAsking: true,
-    });
-
-    assert.equal(refused.status, 400);
-    assert.match(refused.body.error, /keeps Stop asking on its computer/);
     assert.equal(
         (await call(owner(app), "runners/nobody/settings", { shareNew: true })).status,
         404,
     );
 });
 
-test("a saved folder needs no approval while Stop asking is on; removing it asks again", async () => {
+test("the owner gives a chosen person folders; only those and the folders in them may be used", async () => {
     const real = realpathSync(project);
 
-    assert.deepEqual(await app.policy.folder(alex, THIS_SERVER, real), {
-        kind: "ask",
-        saved: false,
-    });
-    app.config.saveServerFolder(real);
-    assert.deepEqual((await call<ServerView>(owner(app), `runners/${THIS_SERVER}`)).body.folders, [
-        real,
-    ]);
-    assert.deepEqual(await app.policy.folder(alex, THIS_SERVER, join(real, "inner")), {
-        kind: "allow",
+    assert.equal(app.policy.folder(alex, THIS_SERVER, real).kind, "refuse", "nothing given yet");
+
+    const given = await call<ServerView>(owner(app), `runners/${THIS_SERVER}/given`, {
+        person: alex.id,
+        folders: [project],
     });
 
-    const removed = await call<ServerView>(
-        owner(app),
-        `runners/${THIS_SERVER}/folders?folder=${encodeURIComponent(real)}`,
-        undefined,
-        "DELETE",
-    );
+    assert.equal(given.status, 200);
+    assert.deepEqual(given.body.given[alex.id], [real]);
+    assert.equal(app.policy.folder(alex, THIS_SERVER, join(real, "inner")).kind, "ask");
+    assert.equal(app.policy.folder(alex, THIS_SERVER, root).kind, "refuse");
 
-    assert.equal(removed.status, 200);
-    assert.deepEqual(removed.body.folders, []);
-    assert.deepEqual(await app.policy.folder(alex, THIS_SERVER, real), {
-        kind: "ask",
-        saved: false,
+    const taken = await call<ServerView>(owner(app), `runners/${THIS_SERVER}/given`, {
+        person: alex.id,
+        folders: [],
     });
-    assert.equal(
-        (
-            await call(
-                owner(app),
-                `runners/${THIS_SERVER}/folders?folder=${encodeURIComponent(real)}`,
-                undefined,
-                "DELETE",
-            )
-        ).status,
-        404,
-    );
+
+    assert.deepEqual(taken.body.given[alex.id], []);
+    assert.equal(app.policy.folder(alex, THIS_SERVER, real).kind, "refuse");
 });
 
 test("a change reaches the owner's tabs live, and never anyone else's", async () => {

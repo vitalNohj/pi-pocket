@@ -528,17 +528,82 @@ const SHARE_HINT =
     "Off: a new session is private to whoever started it, until they share it. On: it starts shared with the people chosen here.";
 
 /**
+ * The folders the owner gave each chosen person on a computer (`access.ts`): each covers the folders in it. A person
+ * given none may not start sessions there. Only the owner sees and changes them.
+ */
+function GivenFolders({ computer }) {
+    const given = computer.given ?? {};
+    const people = (computer.users ?? []).filter((person) => person.role !== "viewer");
+    const [adding, setAdding] = useState({});
+
+    if (store.state.me?.role !== "owner" || people.length === 0) {
+        return null;
+    }
+
+    const save = (person, folders) =>
+        attempt(() => api(`runners/${encodeURIComponent(computer.id)}/given`, { person, folders }));
+
+    return html`<div class="group">
+        <div class="group-title">Folders</div>
+        <div class="muted small">
+            Each person works only in the folders you give them here, and the folders inside them.
+        </div>
+        ${people.map((person) => {
+            const folders = given[person.id] ?? [];
+            const draft = adding[person.id] ?? "";
+
+            const add = () => {
+                const folder = draft.trim();
+
+                if (folder !== "") {
+                    void save(person.id, [...folders, folder]).then(() =>
+                        setAdding({ ...adding, [person.id]: "" }),
+                    );
+                }
+            };
+
+            return html`<div class="given-folders" key=${person.id}>
+                <div class="small"><strong>${person.name}</strong></div>
+                ${folders.length === 0 && html`<div class="muted small">No folders yet.</div>`}
+                ${folders.map(
+                    (folder) => html`<div class="runner-permission-row" key=${folder}>
+                        <code>${folder}</code>
+                        <button
+                            class="button small ghost"
+                            onClick=${() =>
+                                save(
+                                    person.id,
+                                    folders.filter((each) => each !== folder),
+                                )}
+                        >
+                            Remove
+                        </button>
+                    </div>`,
+                )}
+                <div class="row">
+                    <input
+                        type="text"
+                        placeholder="Add a folder, as ~/projects/app"
+                        aria-label=${`Add a folder for ${person.name}`}
+                        value=${draft}
+                        onInput=${(event) =>
+                            setAdding({ ...adding, [person.id]: event.currentTarget.value })}
+                        onKeyDown=${(event) => event.key === "Enter" && add()}
+                    />
+                    <button class="button small" disabled=${draft.trim() === ""} onClick=${add}>
+                        Add
+                    </button>
+                </div>
+            </div>`;
+        })}
+    </div>`;
+}
+
+/**
  * This server, as a computer (`access.ts` `THIS_SERVER`): the owner is its linker, and it cannot be removed. The owner
- * chooses who may use it, its saved folders, and its rules, as for a runner.
+ * chooses who may use it, the folders each person may use, and its rules, as for a runner.
  */
 function ServerRow({ server }) {
-    const forget = (folder) =>
-        attempt(() =>
-            api(`runners/this-server/folders?folder=${encodeURIComponent(folder)}`, undefined, {
-                method: "DELETE",
-            }),
-        );
-
     return html`<div class="person-row runner-row this-server">
         <span class="runner-dot on" aria-hidden="true"></span>
         <div class="person-main">
@@ -548,24 +613,7 @@ function ServerRow({ server }) {
                 runner=${server}
                 note="They can see their own sessions and the ones shared with them, and those who steer can start sessions here. Sessions run as this server's user, like yours."
             />
-            <div class="group">
-                <div class="group-title">Folder approval</div>
-                <${Rule}
-                    runner=${server}
-                    name="stopAsking"
-                    label="Stop asking for saved folders"
-                    hint="On: a session in a saved folder starts at once. Any other folder still needs a code from the person's authenticator, or your approval. You never need one here."
-                    on=${server.stopAsking}
-                />
-                <div class="group-title">Saved folders</div>
-                ${server.folders.length === 0 && html`<div class="muted small">No saved folders. A folder is saved when its first session is approved.</div>`}
-                ${server.folders.map(
-                    (folder) => html`<div class="runner-permission-row" key=${folder}>
-                        <code>${folder}</code>
-                        <button class="button small ghost" onClick=${() => forget(folder)}>Remove</button>
-                    </div>`,
-                )}
-            </div>
+            <${GivenFolders} computer=${server} />
             <div class="group">
                 <div class="group-title">Sharing</div>
                 <${Rule}
@@ -628,6 +676,7 @@ function ComputerRow({ runner }) {
                 runner=${runner}
                 note="They can start sessions on this computer. Their sessions run as this computer's user, like yours."
             />
+            <${GivenFolders} computer=${runner} />
             <div class="group">
                 <div class="group-title">Sharing</div>
                 <${Rule}

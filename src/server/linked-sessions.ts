@@ -803,6 +803,7 @@ export class LinkedSessions implements LinkedSessionsApi {
                   : randomUUID();
 
         if (runner !== undefined && !sameFolder) {
+            await app.approveFolder(user, cwd, "linked", undefined, runner);
             await app.runners
                 .link(runner)
                 .confirm(

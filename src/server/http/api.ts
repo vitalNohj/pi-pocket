@@ -2,7 +2,7 @@
  * `/api`: the routes the web app calls. Each needs a signed-in person, and each but a GET needs the `X-Pocket` header,
  * which a form on another site cannot send. A conversation's routes are in `conversation-routes.ts`.
  */
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
@@ -19,7 +19,7 @@ import {
     parseCookies,
     quickTunnelHost,
 } from "../auth.ts";
-import { THIS_SERVER } from "../access.ts";
+import { inFolder, THIS_SERVER } from "../access.ts";
 import type { ComputerSettings, User } from "../config.ts";
 import { MAX_AVATAR, readAvatar } from "../avatars.ts";
 import { HttpError } from "../errors.ts";
@@ -52,6 +52,63 @@ function lanAddresses(): string[] {
 }
 
 /** A 6-digit code from a request body, or a 400 that says what to enter. */
+/** A folder's real path here, or the path as given when it cannot be read. */
+function realpathOrSelf(path: string): string {
+    try {
+        return realpathSync(path);
+    } catch {
+        return path;
+    }
+}
+
+/** A folder listing as the picker reads it (`GET /api/fs`, `/api/runners/:id/fs`). */
+type Listing = {
+    path: string;
+    parent: string | null;
+    home: string;
+    roots?: string[];
+    dirs: { name: string; path: string }[];
+};
+
+/**
+ * The picker's listing for someone given folders who asked for a place outside them: the folders given, and no way up.
+ */
+function givenListing(given: readonly string[]): Listing & { given: string[] } {
+    return {
+        path: "",
+        parent: null,
+        home: given[0] ?? "",
+        roots: [],
+        dirs: given.map((path) => ({ name: path, path })),
+        given: [...given],
+    };
+}
+
+/**
+ * Keep someone given folders inside them: no way up out of a given folder, no other top folders, and the given ones
+ * named so the picker can offer them. `given` undefined: the owner, who goes anywhere.
+ */
+function scopeListing<T extends Listing>(
+    listing: T,
+    given: readonly string[] | undefined,
+): T & { given?: string[] } {
+    if (given === undefined) {
+        return listing;
+    }
+
+    const top = given.some(
+        (each) => listing.path === each.replace(/[\\/]+$/, "") || listing.path === each,
+    );
+
+    return {
+        ...listing,
+        parent: top ? null : listing.parent,
+        home: given[0] ?? listing.home,
+        roots: [],
+        given: [...given],
+    };
+}
+
 function sixDigits(value: unknown): string {
     if (typeof value !== "string" || !/^\d{6}$/.test(value)) {
         throw new HttpError(400, "Enter the 6-digit code from your authenticator.");
@@ -274,6 +331,33 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         if (first === "me" && second === "avatar" && method === "DELETE") {
             app.setAvatar(user, undefined);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // Approvals of folders and shared sessions (`folder-approvals.ts`): each person's own, and the owner's every one.
+        if (first === "approvals" && second === undefined && method === "GET") {
+            return json(response, 200, app.folderApprovals.list(user));
+        }
+
+        if (first === "approvals" && second !== undefined && method === "DELETE") {
+            app.folderApprovals.revoke(user, second);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // How long a person's approvals last once unused, on every computer (`config.ts` `approvalDays`): the owner's.
+        if (
+            first === "users" &&
+            second !== undefined &&
+            third === "approval-days" &&
+            method === "POST"
+        ) {
+            requireOwner(user);
+
+            const body = await readJson<{ days?: unknown } | null>(request);
+
+            app.setApprovalDays(second, body?.days);
 
             return json(response, 200, { ok: true });
         }
@@ -886,34 +970,18 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             app.policy.requireManage(user, second);
 
-            const body = await readJson<{ stopAsking?: unknown; shareNew?: unknown } | null>(
-                request,
-            );
+            const body = await readJson<{ shareNew?: unknown } | null>(request);
             const change: ComputerSettings = {};
 
-            for (const key of ["stopAsking", "shareNew"] as const) {
-                const value = body?.[key];
-
-                if (value === undefined) {
-                    continue;
+            if (body?.shareNew !== undefined) {
+                if (typeof body.shareNew !== "boolean") {
+                    throw new HttpError(400, "shareNew must be true or false.");
                 }
 
-                if (typeof value !== "boolean") {
-                    throw new HttpError(400, `${key} must be true or false.`);
-                }
-
-                if (key === "stopAsking" && second !== THIS_SERVER) {
-                    throw new HttpError(
-                        400,
-                        "A runner keeps Stop asking on its computer: change it in its approvals.",
-                    );
-                }
-
-                change[key] = value;
+                change.shareNew = body.shareNew;
             }
 
             app.config.setComputerSettings(second === THIS_SERVER ? undefined : second, change);
-            // "Stop asking" changes who needs an approval; every list is sent again.
             app.accessChanged();
 
             return json(
@@ -925,22 +993,27 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
-        // Forget one of this server's saved folders: a session there asks again.
-        if (
-            first === "runners" &&
-            second === THIS_SERVER &&
-            third === "folders" &&
-            method === "DELETE"
-        ) {
-            app.policy.requireManage(user, THIS_SERVER);
+        // The folders the owner gives one chosen person on a computer (`access.ts`): the whole list, replaced.
+        if (first === "runners" && second !== undefined && third === "given" && method === "POST") {
+            const body = await readJson<{ person?: unknown; folders?: unknown } | null>(request);
 
-            if (!app.config.removeServerFolder(url.searchParams.get("folder") ?? "")) {
-                throw new HttpError(404, "That folder is not saved.");
+            if (
+                typeof body?.person !== "string" ||
+                !Array.isArray(body.folders) ||
+                !body.folders.every((each) => typeof each === "string")
+            ) {
+                throw new HttpError(400, "Send person and folders, a list of paths.");
             }
 
-            app.accessChanged();
+            await app.giveFolders(user, second, body.person, body.folders as string[]);
 
-            return json(response, 200, app.thisServer(user));
+            return json(
+                response,
+                200,
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
+            );
         }
 
         if (
@@ -995,14 +1068,26 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 throw new HttpError(403, "You cannot use this computer.");
             }
 
+            const given = app.policy.givenFolders(user, second);
+            const requested = url.searchParams.get("path") ?? "~";
+            // Someone given folders browses inside them only: anywhere else, the picker lists the folders given.
+            const listing =
+                given === undefined || given.some((each) => inFolder(requested, each))
+                    ? await app.runners.folders(
+                          second,
+                          requested,
+                          url.searchParams.get("hidden") === "1",
+                      )
+                    : undefined;
+
             return json(response, 200, {
-                ...(await app.runners.folders(
-                    second,
-                    url.searchParams.get("path") ?? "~",
-                    url.searchParams.get("hidden") === "1",
-                )),
+                ...(listing === undefined
+                    ? givenListing(given ?? [])
+                    : scopeListing(listing, given)),
                 // The folders of this person's newest sessions on that computer.
-                recent: app.recentFolders(user, second),
+                recent: app
+                    .recentFolders(user, second)
+                    .filter((each) => app.policy.mayUseFolder(user, second, each)),
             });
         }
 
@@ -1105,7 +1190,21 @@ export function createApi(options: HttpOptions, auth: Auth) {
         if (first === "fs" && method === "GET") {
             app.requireBrowse(user);
 
-            const requested = url.searchParams.get("path") || "~";
+            const given = app.policy.givenFolders(user, THIS_SERVER);
+            const asked = url.searchParams.get("path") || "~";
+            const requested = given !== undefined && asked === "~" ? (given[0] ?? asked) : asked;
+            const real = realpathOrSelf(app.workspace.checkDirectory(requested));
+
+            // Someone given folders browses inside them only: anywhere else, the picker lists the folders given.
+            if (given !== undefined && !given.some((each) => inFolder(real, each))) {
+                return json(response, 200, {
+                    ...givenListing(given),
+                    recent: app
+                        .recentFolders(user, undefined)
+                        .filter((each) => app.policy.mayUseFolder(user, THIS_SERVER, each)),
+                });
+            }
+
             const path = app.workspace.checkDirectory(requested);
             const showHidden = url.searchParams.get("hidden") === "1";
             const dirs: { name: string; path: string }[] = [];
@@ -1145,15 +1244,22 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             dirs.sort((a, b) => a.name.localeCompare(b.name));
             // The folders of this person's newest sessions here: another computer's folders are not on this one.
-            const recent = app.recentFolders(user, undefined);
+            const recent = app
+                .recentFolders(user, undefined)
+                .filter((each) => app.policy.mayUseFolder(user, THIS_SERVER, each));
 
             return json(response, 200, {
-                path,
-                parent: parentFolder(path),
-                home: homedir(),
-                // This machine's top folders: `/`, or each Windows drive, as places to start from.
-                roots: await machineRoots(),
-                dirs: dirs.slice(0, 1000),
+                ...scopeListing(
+                    {
+                        path,
+                        parent: parentFolder(path),
+                        home: homedir(),
+                        // This machine's top folders: `/`, or each Windows drive, as places to start from.
+                        roots: await machineRoots(),
+                        dirs: dirs.slice(0, 1000),
+                    },
+                    given === undefined ? undefined : given.map(realpathOrSelf),
+                ),
                 recent,
             });
         }

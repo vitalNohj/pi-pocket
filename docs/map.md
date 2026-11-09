@@ -55,7 +55,8 @@ A module split into parts keeps its name for the part others import, with the re
 | `config.ts`, `auth.ts` | People and settings; cookies, tokens, invites                                                                                                              |
 | `access.ts`            | `AccessPolicy`, the one access policy for this server and runners: who may use a computer, start in a folder there, and see, steer, or share a session     |
 | `approval-methods.ts`  | How a person approves a new folder: each person's own authenticator (`Authenticators`, kept with their account, lockouts), and the owner from the app      |
-| `folder-requests.ts`   | New folders on this server waiting for an approval (`FolderRequests`, in memory): their code or the owner's Allow; an approved folder is saved             |
+| `folder-requests.ts`   | Requests for an approval of a folder or a shared session, on any computer (`FolderRequests`, in memory): the person's code, or the owner's Allow           |
+| `folder-approvals.ts`  | Approvals kept on the server (`FolderApprovals`, in `config.json`): per person and folder, whole computer, or shared session; end once unused a while      |
 | `avatars.ts`           | People's profile pictures: files in `avatars/` of the data folder (PNG, JPEG, WebP, GIF, up to 512 KB), checked by their bytes                             |
 | `requests.ts`          | Request ids, which say whose each message to Pi is (`u:` a person's own, `p:` sent for a person)                                                           |
 | `collab.ts`            | Chat, activity lines (`addActivity`), reactions, pins, notes, typing, take turns                                                                           |

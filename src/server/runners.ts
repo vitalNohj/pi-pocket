@@ -160,7 +160,9 @@ export type RunnerView = {
     tools?: Hello["tools"];
     createdBy: string;
     /** Granted people, visible only in the owner's list. */
-    users?: { id: string; name: string }[];
+    users?: { id: string; name: string; role: "owner" | "guest" | "viewer" }[];
+    /** The folders given to each granted person there, by person id; only in the owner's list. */
+    given?: Record<string, string[]>;
     approvals?: ApprovalState;
     /** New sessions there start shared with its people. */
     shareNew?: true;
@@ -1560,8 +1562,16 @@ export class Runners {
                               users: (runner.users ?? []).flatMap((id) => {
                                   const person = this.#config.userById(id);
 
-                                  return person === undefined ? [] : [{ id, name: person.name }];
+                                  return person === undefined
+                                      ? []
+                                      : [{ id, name: person.name, role: person.role }];
                               }),
+                              given: Object.fromEntries(
+                                  (runner.users ?? []).map((id) => [
+                                      id,
+                                      [...this.#config.givenFolders(runner.id, id)],
+                                  ]),
+                              ),
                           }
                         : {}),
                     // The computer's approvals (every session's folder and person, its settings) are its

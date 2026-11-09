@@ -6,8 +6,9 @@
  * What people ask of Pi lives in `commands.ts`, the people's side of a session in `collab.ts`, push notifications in
  * `alerts.ts`, provider sign-ins in `providers.ts`, and each conversation's shared live view in `room.ts`.
  */
+import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, posix, win32 } from "node:path";
+import { isAbsolute, join, posix, resolve as resolvePath, win32 } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
@@ -55,7 +56,14 @@ import { Commands } from "./commands.ts";
 import { ExtensionSessions } from "./extension-sessions.ts";
 import { LinkedSessions } from "./linked-sessions.ts";
 import { removeAvatar, saveAvatar } from "./avatars.ts";
-import { APP_ROOT, ConfigStore, modulesWith, type User } from "./config.ts";
+import {
+    APP_ROOT,
+    APPROVAL_DAYS,
+    approvalDays,
+    ConfigStore,
+    modulesWith,
+    type User,
+} from "./config.ts";
 import {
     ArtifactAssetDoc,
     ArtifactBodyDoc,
@@ -160,8 +168,9 @@ import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.ts";
 import { AccessPolicy, THIS_SERVER } from "./access.ts";
-import { coveredFolder, realFolder } from "../runner/folders.ts";
+import { realFolder } from "../runner/folders.ts";
 import { FolderRequests, type FolderRequestKind } from "./folder-requests.ts";
+import { FolderApprovals, WHOLE_COMPUTER } from "./folder-approvals.ts";
 import {
     changedThere,
     type FolderScan,
@@ -291,8 +300,8 @@ export type ServerView = {
     /** Its linker: the owner. */
     createdBy: string;
     users: { id: string; name: string; role: User["role"] }[];
-    folders: string[];
-    stopAsking: boolean;
+    /** The folders given to each chosen person here, by person id. */
+    given: Record<string, string[]>;
     shareNew: boolean;
 };
 
@@ -406,6 +415,8 @@ export class PocketApp {
     readonly policy: AccessPolicy;
     /** New folders on this server waiting for an approval (`folder-requests.ts`). */
     readonly folderRequests: FolderRequests;
+    /** Approvals of folders and shared sessions, for every computer (`folder-approvals.ts`). */
+    readonly folderApprovals: FolderApprovals;
     /** Other computers that run sessions' tools (`runners.ts`): their links, keys, and environments. */
     readonly runners: Runners;
     /** Push subscriptions and their keys; undefined until the server opened. */
@@ -599,18 +610,21 @@ export class PocketApp {
             locked: (lockout) => this.alerts.lockout(lockout),
         });
         this.approvalMethods = new ApprovalMethods(this.authenticators);
+        this.folderApprovals = new FolderApprovals(this.config, {
+            now: () => this.now(),
+            changed: () => this.#approvalsChanged(),
+        });
         this.policy = this.#makePolicy();
         this.folderRequests = new FolderRequests({
             methods: this.approvalMethods,
             person: (id) => this.config.userById(id),
             hasCode: (id) => this.authenticators.linked(id),
-            home: this.#home,
-            save: (folder) => {
-                this.config.saveServerFolder(folder);
-                this.runners.changed();
-            },
             changed: () => this.#folderRequestsChanged(),
-            asked: (request) => this.alerts.folderRequest(request),
+            asked: (request) =>
+                this.alerts.folderRequest(
+                    request,
+                    request.computer === THIS_SERVER ? undefined : request.computerName,
+                ),
             now: () => this.now(),
         });
         this.#lockFile = join(options.dataDir, "harness.lock");
@@ -2750,8 +2764,7 @@ export class PocketApp {
                         id,
                         linker: config.users.find((each) => each.role === "owner")?.id ?? "",
                         chosen: server.users ?? [],
-                        covers: (folder) => coveredFolder(folder, server.folders ?? [], this.#home),
-                        stopAsking: server.stopAsking === true,
+                        given: (person) => config.givenFolders(undefined, person),
                         shareNew: server.shareNew === true,
                     };
                 }
@@ -2762,26 +2775,20 @@ export class PocketApp {
                     return undefined;
                 }
 
-                // The runner decides its own folders when it is asked; here only what it last reported.
-                const state = this.runners.approvalState(id);
-
                 return {
                     id,
                     linker: runner.createdBy,
                     chosen: runner.users ?? [],
-                    covers: (folder) =>
-                        Promise.resolve(
-                            (state?.folders ?? []).some(
-                                (saved) =>
-                                    folder === saved ||
-                                    folder.startsWith(`${saved}/`) ||
-                                    folder.startsWith(`${saved}\\`),
-                            ),
-                        ),
-                    stopAsking: state?.settings.stopAsking === true,
+                    given: (person) => config.givenFolders(id, person),
                     shareNew: runner.shareNew === true,
                 };
             },
+            approvalDays: (person) => {
+                const user = this.config.userById(person);
+
+                return user === undefined ? 1 : approvalDays(user);
+            },
+            approved: (person, target) => this.folderApprovals.use(person, target),
             session: (id) => {
                 const root = String(this.rootOf(Number(id) as unknown as ConversationId));
                 const meta = this.#sessions[root];
@@ -2819,38 +2826,191 @@ export class PocketApp {
 
                 return person === undefined ? [] : [{ id, name: person.name, role: person.role }];
             }),
-            folders: server.folders ?? [],
-            stopAsking: server.stopAsking === true,
+            given: Object.fromEntries(
+                (server.users ?? []).map((id) => [
+                    id,
+                    [...this.config.givenFolders(undefined, id)],
+                ]),
+            ),
             shareNew: server.shareNew === true,
         };
     }
 
     /**
-     * Before `user` starts a session in `folder` on this server (a new one, a copy, a move, a linked one): go on at once
-     * when the policy allows it, refuse who may not start here, or wait for an approval (`folder-requests.ts`): their own
-     * authenticator code, or the owner from the app. `signal` withdraws the request.
+     * Before `user` works in `folder` on computer `computer` (undefined: this server) — a new session, a copy, a move, a
+     * linked one: go on at once when the policy allows it, refuse a folder they were not given, or wait for an approval
+     * (`folder-requests.ts`): their own authenticator code, or the owner from the app. The approval is kept
+     * (`folder-approvals.ts`) for this folder, or the whole computer for the owner on a runner. `signal` withdraws the
+     * request. `folder` is a real path there: on this server it is resolved here, so a symlink changed later cannot
+     * widen it; a runner's is checked there (`runners.ts` `checkFolder`).
      */
     async approveFolder(
         user: User,
         folder: string,
         kind: FolderRequestKind,
         signal?: AbortSignal,
+        computer: string = THIS_SERVER,
     ): Promise<void> {
-        // A permission keeps the real folder: a symlink changed later cannot widen it.
-        const real = await realFolder(folder);
-        const decision = await this.policy.folder(user, THIS_SERVER, real);
+        const real = computer === THIS_SERVER ? await realFolder(folder) : folder;
+        const decision = this.policy.folder(user, computer, real);
 
         if (decision.kind === "allow") {
             return;
         }
 
         if (decision.kind === "refuse") {
-            this.policy.requireStart(user, THIS_SERVER);
-
-            throw new HttpError(403, "You cannot start sessions here.");
+            throw new HttpError(403, decision.reason);
         }
 
-        await this.folderRequests.ask(user, real, kind, decision.saved, signal);
+        const answer = await this.folderRequests.ask(
+            user,
+            {
+                computer,
+                computerName: this.#computerName(computer),
+                folder: real,
+                kind,
+                ...(decision.whole ? { whole: true } : {}),
+            },
+            signal,
+        );
+
+        this.folderApprovals.add(
+            user.id,
+            { computer, folder: decision.whole ? WHOLE_COMPUTER : real },
+            answer.method,
+            answer.by,
+        );
+    }
+
+    /**
+     * The owner gives `person` these folders on computer `id` (`THIS_SERVER` or a runner): the whole list, replacing
+     * the last. A person must be chosen there first. Folders here are resolved to real paths; a runner's must be
+     * folders there. Approvals of folders no longer given end.
+     */
+    async giveFolders(
+        owner: User,
+        id: string,
+        person: string,
+        folders: readonly string[],
+    ): Promise<void> {
+        if (id !== THIS_SERVER) {
+            this.runners.require(id);
+        }
+
+        if (owner.role !== "owner") {
+            throw new HttpError(403, "Only the owner gives folders.");
+        }
+
+        const target = this.config.userById(person);
+
+        if (target === undefined || !this.policy.mayStart(target, id)) {
+            throw new HttpError(400, "Choose them for this computer first.");
+        }
+
+        const real = await Promise.all(
+            folders
+                .map((each) => each.trim())
+                .filter((each) => each !== "")
+                .map(async (each) => {
+                    if (id !== THIS_SERVER) {
+                        return this.runners.checkFolder(id, each);
+                    }
+
+                    const path = resolvePath(this.#home, each.replace(/^~(?=\/|$)/, this.#home));
+                    const found = await realpath(path).catch(() => undefined);
+
+                    if (found === undefined || !(await stat(found)).isDirectory()) {
+                        throw new HttpError(400, `${each} is not a folder here.`);
+                    }
+
+                    return found;
+                }),
+        );
+
+        this.config.setGivenFolders(id === THIS_SERVER ? undefined : id, person, real);
+        this.accessChanged();
+        this.runners.changed();
+    }
+
+    /** The owner sets how long `person`'s approvals last once unused (`APPROVAL_DAYS`); null: their role's default. */
+    setApprovalDays(person: string, days: unknown): void {
+        const target = this.config.userById(person);
+
+        if (target === undefined) {
+            throw new HttpError(404, "No such person");
+        }
+
+        if (days !== null && !(APPROVAL_DAYS as readonly unknown[]).includes(days)) {
+            throw new HttpError(400, `days must be one of ${APPROVAL_DAYS.join(", ")}, or null.`);
+        }
+
+        this.config.updateUser(person, {
+            approvalDays: days === null ? undefined : (days as number),
+        });
+        // A shorter time ends approvals unused for longer at once.
+        this.folderApprovals.prune(() => true);
+        this.#peopleChanged();
+        this.#approvalsChanged();
+    }
+
+    #computerName(computer: string): string {
+        return computer === THIS_SERVER ? "this server" : this.runners.name(computer);
+    }
+
+    /**
+     * The folder a session's approval is of: where it came from, not its own worktree (kept in the data folder, or under
+     * the runner's), which no one was given.
+     */
+    #approvalFolder(id: ConversationId): string {
+        const meta = this.#sessions[String(this.rootOf(id))];
+
+        return meta?.worktree?.source ?? meta?.cwd ?? this.cwdOf(id);
+    }
+
+    /**
+     * Before `user` sends to session `id` (`requireDriver`): their approval for it must be live (`access.ts` `steer`).
+     * Without one they wait for an approval, as for a new folder: of its folder for their own session, of the session
+     * for one shared with them.
+     */
+    async #requireApproval(id: ConversationId, user: User): Promise<void> {
+        const facts = this.policy.session(String(id));
+
+        if (facts === undefined) {
+            return;
+        }
+
+        const folder = this.#approvalFolder(id);
+
+        if (this.policy.steer(user, String(id), folder) === "allow") {
+            return;
+        }
+
+        const mine = this.policy.starter(facts) === user.id || user.role === "owner";
+        const whole = user.role === "owner";
+        const answer = await this.folderRequests.ask(user, {
+            computer: facts.computer,
+            computerName: this.#computerName(facts.computer),
+            folder,
+            kind: "steer",
+            ...(whole ? { whole: true } : {}),
+            ...(mine ? {} : { session: facts.id }),
+        });
+
+        this.folderApprovals.add(
+            user.id,
+            mine
+                ? { computer: facts.computer, folder: whole ? WHOLE_COMPUTER : folder }
+                : { computer: facts.computer, session: facts.id },
+            answer.method,
+            answer.by,
+        );
+    }
+
+    /** Each person's tabs hear their own approvals; the owner's hear every one. */
+    #approvalsChanged(): void {
+        for (const client of this.#clients) {
+            client.send("folder-approvals", this.folderApprovals.list(client.user));
+        }
     }
 
     /**
@@ -3004,6 +3164,8 @@ export class PocketApp {
         const turns = await this.harness.snapshot(TurnsDoc, this.rootOf(id), context);
 
         if (turns?.on !== true || turns.driver === user.id) {
+            await this.#requireApproval(id, user);
+
             return;
         }
 
@@ -3260,6 +3422,7 @@ export class PocketApp {
         return {
             ...(thisServer === undefined ? {} : { thisServer }),
             folderRequests: this.folderRequests.list(user),
+            folderApprovals: this.folderApprovals.list(user),
             user: {
                 id: user.id,
                 name: user.name,
@@ -3925,8 +4088,25 @@ export class PocketApp {
      * again, made for its person (`#scheduleSessions`). The policy reads the live records, so nothing else is kept.
      */
     accessChanged(): void {
-        // A folder request of someone who may no longer start sessions here ends: nobody can approve it into one.
-        this.folderRequests.prune((person) => this.policy.mayStart({ id: person }, THIS_SERVER));
+        // A request or an approval of someone who may no longer work there ends: no longer chosen, made a viewer, or no
+        // longer given the folder. A shared session's approval goes with the share.
+        const stands = (person: string, computer: string, folder?: string, session?: string) =>
+            session !== undefined
+                ? this.policy.maySteer({ id: person }, session)
+                : folder === undefined || folder === WHOLE_COMPUTER
+                  ? this.policy.mayStart({ id: person }, computer)
+                  : this.policy.mayUseFolder({ id: person }, computer, folder);
+
+        this.folderRequests.prune((request) =>
+            request.kind === "steer"
+                ? this.policy.maySteer({ id: request.person }, request.session ?? "") ||
+                  (request.session === undefined &&
+                      stands(request.person, request.computer, request.folder))
+                : stands(request.person, request.computer, request.folder),
+        );
+        this.folderApprovals.prune((approval) =>
+            stands(approval.person, approval.computer, approval.folder, approval.session),
+        );
 
         // Someone chosen, or no longer, for this server: their tabs learn whether to offer New.
         for (const user of this.config.users) {
@@ -3992,7 +4172,7 @@ export class PocketApp {
     #forget(userId: string): void {
         this.config.removeUser(userId);
         this.#startsHere.delete(userId);
-        this.folderRequests.prune((person) => person !== userId);
+        this.folderRequests.prune((request) => request.person !== userId);
         this.runners.changed();
         removeAvatar(this.dataDir, userId);
         this.pushStore?.removeUser(userId);
