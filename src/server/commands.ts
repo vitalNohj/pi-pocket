@@ -6,7 +6,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { basename, extname, join, sep } from "node:path";
 import { type Context, copyJson } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -703,6 +704,8 @@ export class Commands {
         let session: PiSession;
         let cwd: string;
         let runnerPermission: string | undefined;
+        // The companion files beside a Pi file on a linked computer, by suffix: their bytes, read before it opens.
+        const fetched = new Map<string, Uint8Array>();
 
         if (runner !== undefined) {
             app.requireSteer(user);
@@ -753,7 +756,13 @@ export class Commands {
                 user.id,
             );
             const opened = await link.piSessions(
-                { op: "open", path, session: runnerPermission, person: user.name },
+                {
+                    op: "open",
+                    path,
+                    session: runnerPermission,
+                    person: user.name,
+                    companions: app.piSessions.companionSuffixes(),
+                },
                 signal,
             );
 
@@ -783,6 +792,32 @@ export class Commands {
                 }
 
                 throw error;
+            }
+
+            // Each companion the computer found and allowed, copied here: extensions read it as they do one beside a
+            // Pi file on this server. One that cannot be read stays behind; the session still opens.
+            for (const file of opened.companions ?? []) {
+                const suffix = app.piSessions
+                    .companionSuffixes()
+                    .find((each) => file === `${opened.path}${each}`);
+
+                if (suffix === undefined) {
+                    continue;
+                }
+
+                const bytes = await env.readBinaryFile(
+                    file,
+                    signal === undefined ? context : withAbortSignal(signal, context),
+                );
+
+                if (!bytes.ok) {
+                    app.log(
+                        `Pi session companion ${suffix} on ${app.runners.name(runner)}: ${bytes.error.message}`,
+                    );
+                    continue;
+                }
+
+                fetched.set(suffix, bytes.value);
             }
 
             signal?.throwIfAborted();
@@ -836,16 +871,48 @@ export class Commands {
             },
             context,
         );
-        // What extensions keep beside Pi's file comes along, before the person opens the session. A file on another
-        // computer has none here: its companions stay there, and this server looks for nothing beside that path.
+        // What extensions keep beside Pi's file comes along, before the person opens the session: from beside the file
+        // here, or the copies of those beside it on the linked computer.
         const notes =
             runner === undefined
                 ? await app.piSessions.carryCompanions(path, conversation.id, copies, context)
-                : [];
+                : await this.#carryFetched(path, conversation.id, copies, fetched);
 
         void this.recordRepo(conversation.id, cwd);
 
         return { id: conversation.id, ...(notes.length === 0 ? {} : { notes }) };
+    }
+
+    /**
+     * Give companions the files fetched from beside a Pi file on a linked computer: as copies in a private folder here,
+     * removed once they are done, so an extension reads them as it reads one beside a Pi file on this server.
+     */
+    async #carryFetched(
+        path: string,
+        id: ConversationId,
+        copies: ReadonlyMap<EntryId, string>,
+        fetched: ReadonlyMap<string, Uint8Array>,
+    ): Promise<string[]> {
+        if (fetched.size === 0) {
+            return [];
+        }
+
+        const folder = await mkdtemp(join(tmpdir(), "pi-pocket-companions-"));
+
+        try {
+            const there = new Map<string, string>();
+
+            for (const [suffix, bytes] of fetched) {
+                const copy = join(folder, `session.jsonl${suffix}`);
+
+                await writeFile(copy, bytes, { mode: 0o600 });
+                there.set(suffix, copy);
+            }
+
+            return await this.#app.piSessions.carryCompanions(path, id, copies, context, there);
+        } finally {
+            await rm(folder, { recursive: true, force: true }).catch(() => {});
+        }
     }
 
     /**

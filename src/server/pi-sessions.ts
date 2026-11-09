@@ -26,6 +26,7 @@ import {
     type Tx,
     UserEntry,
 } from "@earendil-works/pi-durable";
+import { COMPANION_SUFFIX } from "../runner/protocol.ts";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import { FROM_PI_ENTRY, type FromPiData } from "./entry-format.ts";
@@ -154,7 +155,6 @@ export type PiSessionContinued = {
 
 /** How long a companion's `continued` may take before the session opens without it. */
 const COMPANION_TIMEOUT_MS = 60_000;
-const COMPANION_SUFFIX = /^\.[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** Local Pi files are the owner's. A runner controls access to its own Pi files. */
 export class PiSessions {
@@ -190,10 +190,27 @@ export class PiSessions {
         };
     }
 
-    /** The registered companions whose file is beside `path`, each with that file. */
-    async #companionsOf(path: string): Promise<{ companion: PiSessionCompanion; file: string }[]> {
+    /** The registered companions' suffixes: what a linked computer is asked to allow beside a Pi file it opens. */
+    companionSuffixes(): string[] {
+        return [...new Set(this.#companions.map(({ companion }) => companion.suffix))];
+    }
+
+    /**
+     * The registered companions whose file is beside `path`, each with that file. `there`: the files beside it on
+     * this server, by default; for a Pi file on a linked computer, copies of those found there.
+     */
+    async #companionsOf(
+        path: string,
+        there?: ReadonlyMap<string, string>,
+    ): Promise<{ companion: PiSessionCompanion; file: string }[]> {
         const found = await Promise.all(
             this.#companions.map(async ({ companion }) => {
+                if (there !== undefined) {
+                    const file = there.get(companion.suffix);
+
+                    return file === undefined ? [] : [{ companion, file }];
+                }
+
                 const file = `${path}${companion.suffix}`;
                 const info = await stat(file).catch(() => undefined);
 
@@ -220,8 +237,9 @@ export class PiSessions {
         conversationId: ConversationId,
         copies: ReadonlyMap<EntryId, string>,
         context: Context,
+        there?: ReadonlyMap<string, string>,
     ): Promise<string[]> {
-        const found = await this.#companionsOf(path);
+        const found = await this.#companionsOf(path, there);
 
         if (found.length === 0) {
             return [];

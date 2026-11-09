@@ -116,6 +116,7 @@ before(async () => {
         "Code preview",
         "Withdraw preview",
         "Continue history",
+        "Companion history",
         "Expiry history",
     ]) {
         files.set(name, save(name));
@@ -397,6 +398,65 @@ test("continue asks the new-session question, imports history on the runner, and
         "a replacement permission does not inherit the extra file",
     );
     assert.equal(readFileSync(source.path, "utf8"), whole);
+});
+
+test("continue brings the companion files beside a Pi file on the computer to the extensions that keep them", async () => {
+    const source = file("Companion history");
+    const beside = `${source.path}.acp.json`;
+    const other = `${source.path}.unregistered.json`;
+    const seen: { companion: string; text: string; piFile: string; entries: number }[] = [];
+
+    writeFileSync(beside, '{"blocks":[{"blockId":"b1"}]}');
+    writeFileSync(other, "not asked for");
+
+    const unregister = app.piSessions.registerCompanion({
+        suffix: ".acp.json",
+        label: "Compression state",
+        continued(input) {
+            seen.push({
+                companion: input.companion,
+                text: readFileSync(input.companion, "utf8"),
+                piFile: input.piFile,
+                entries: input.entries.length,
+            });
+
+            return "Imported compression from Pi: 1 blocks.";
+        },
+    });
+
+    try {
+        const result = await request<{ id: ConversationId; notes?: string[] }>("/continue", {
+            path: source.path,
+            runner: runnerId,
+        });
+
+        assert.equal(result.status, 200, JSON.stringify(result.body));
+        assert.deepEqual(result.body.notes, ["Imported compression from Pi: 1 blocks."]);
+        assert.equal(seen.length, 1);
+        assert.equal(seen[0]!.text, '{"blocks":[{"blockId":"b1"}]}');
+        assert.equal(seen[0]!.piFile, source.path);
+        assert.ok(seen[0]!.entries > 0, "the companion gets the new session's context");
+        assert.notEqual(seen[0]!.companion, beside, "a copy here, not the computer's path");
+        assert.equal(
+            readFileSync(beside, "utf8"),
+            '{"blocks":[{"blockId":"b1"}]}',
+            "the computer's file is unchanged",
+        );
+        assert.throws(() => readFileSync(seen[0]!.companion), "the copy is removed after");
+
+        // The session may read the companion it was given, and not a file beside it no extension asked for.
+        const meta = app.sessionMeta(result.body.id)!;
+        const env = app.runners.env(runnerId, project, {
+            id: meta.runnerPermission!,
+            folder: project,
+            person: "Owner",
+        });
+
+        assert.equal((await env.readTextFile(beside, context)).ok, true);
+        assert.equal((await env.readTextFile(other, context)).ok, false);
+    } finally {
+        unregister();
+    }
 });
 
 test("open refuses an unapproved session and a session whose real folder does not contain the Pi cwd", async () => {
