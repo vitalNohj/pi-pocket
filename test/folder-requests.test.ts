@@ -304,6 +304,15 @@ test("an approval ends once unused for the person's time, and each use starts th
         (await call(owner(app), `users/${alex.id}/approval-days`, { days: 3 })).status,
         400,
     );
+
+    // People shows each time to the owner, and a person their own; nobody else's.
+    const seen = (viewer: User, person: User) =>
+        app.people(viewer).find((each) => each.id === person.id)?.approvalDays;
+
+    assert.equal(seen(owner(app), alex), 0);
+    assert.equal(seen(owner(app), gale), 7);
+    assert.equal(seen(alex, alex), 0);
+    assert.equal(seen(alex, gale), undefined);
 });
 
 test("each person sees and revokes their own approvals; the owner sees and revokes every one", async () => {

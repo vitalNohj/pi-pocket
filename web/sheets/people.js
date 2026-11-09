@@ -15,6 +15,7 @@ import {
     store,
 } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, timeAgo } from "../ui.js";
+import { ApprovalsList, ApprovalTime } from "./approvals.js";
 
 const ROLE_TEXT = {
     guest: "Can steer Pi, which can run commands on this machine",
@@ -380,6 +381,12 @@ function PeopleList() {
                         ${person.sessions ? ` · only ${person.sessions.map(sessionTitle).join(", ")}` : ""} · ${lastSeen(person)}
                         ${person.authenticator ? " · authenticator linked" : ""}
                     </div>
+                    ${
+                        owner &&
+                        person.role !== "viewer" &&
+                        person.approvalDays !== undefined &&
+                        html`<${ApprovalTime} person=${person} />`
+                    }
                 </div>
                 ${
                     owner &&
@@ -464,6 +471,7 @@ export function PeopleSheet() {
             </button>`
         }
         <${PeopleList} />
+        ${store.state.me?.role === "owner" && html`<${ApprovalsList} />`}
         <button
             class="button ghost wide sheet-footer"
             onClick=${() => openSheet({ type: "notifications" })}
