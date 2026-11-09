@@ -482,6 +482,73 @@ describe("sharing and invites", () => {
         );
         assert.equal((await call(viewer, "invite", { role: "viewer" })).status, 403);
     });
+
+    it("shows a session's starter whom it is shared with, and whom it can be: the people chosen for its computer", async () => {
+        const { body } = await call<{ id: number }>(guest, "sessions", { cwd: work });
+
+        await call(guest, `sessions/${body.id}/share`, { people: [viewer.id] });
+
+        const answer = await call<{
+            sharedWith: string[];
+            people: { id: string; name: string; role: string }[];
+            computer: string;
+        }>(guest, `sessions/${body.id}/share`);
+
+        assert.equal(answer.status, 200);
+        assert.deepEqual(answer.body.sharedWith, [viewer.id]);
+        // Not the owner nor the starter, who have it anyway; not who nobody chose, nor who was invited to one session.
+        assert.deepEqual(
+            answer.body.people.map((each) => each.id),
+            [viewer.id],
+        );
+        assert.equal(answer.body.computer, "This server");
+        assert.equal((await call(owner(app), `sessions/${body.id}/share`)).status, 200);
+    });
+
+    it("hides whom a session is shared with from who may not share it", async () => {
+        // Seen but not theirs: refused. Not seen: not there.
+        assert.equal((await call(viewer, `sessions/${shared}/share`)).status, 403);
+        assert.equal((await call(guest, `sessions/${shared}/share`)).status, 403);
+        assert.equal((await call(stranger, `sessions/${shared}/share`)).status, 404);
+        assert.equal((await call(guest, `sessions/${hidden}/share`)).status, 404);
+    });
+});
+
+/** What the newest hello a tab got said of starting sessions on this server. */
+const startsIn = (tab: ReturnType<typeof fakeTab>) =>
+    (tab.last("hello")?.user as { mayStart?: boolean } | undefined)?.mayStart;
+
+describe("starting sessions, as the app is told", () => {
+    it("tells a chosen guest they may start sessions, and their open tab learns when the owner stops choosing them", async () => {
+        const tab = fakeTab(undefined, guest);
+
+        await app.attach(tab.client);
+
+        try {
+            assert.equal(startsIn(tab), true);
+            app.config.setServerUsers([viewer.id]);
+            app.accessChanged();
+            await until(() => startsIn(tab) === false, "a hello that says no");
+        } finally {
+            app.config.setServerUsers([guest.id, viewer.id]);
+            app.accessChanged();
+            app.detach(tab.client);
+        }
+    });
+
+    it("tells someone nobody chose, a viewer, and a person invited to one session that they may not", async () => {
+        for (const user of [stranger, viewer, invited]) {
+            const tab = fakeTab(undefined, user);
+
+            await app.attach(tab.client);
+
+            try {
+                assert.equal(startsIn(tab), false, user.name);
+            } finally {
+                app.detach(tab.client);
+            }
+        }
+    });
 });
 
 describe("linked sessions", () => {

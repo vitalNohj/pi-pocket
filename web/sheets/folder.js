@@ -8,6 +8,7 @@ import {
     actions,
     api,
     attempt,
+    canStart,
     canSteer,
     closeSheet,
     navigate,
@@ -347,8 +348,7 @@ export function CwdSheet({
     };
 
     // Each person keeps favorites on the computers they may use.
-    const mayStar =
-        canSteer() && !scoped() && (!runner || runners.some((each) => each.id === runner));
+    const mayStar = canStart() && (!runner || runners.some((each) => each.id === runner));
     const starred = target !== null && favorites.includes(target);
 
     /** Star or unstar a folder. The list changes when the server says it did, on every device. */

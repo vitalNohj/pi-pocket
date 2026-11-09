@@ -6,6 +6,7 @@ import { updateDraft } from "../copy-draft.js";
 import {
     actions,
     attempt,
+    canStart,
     canSteer,
     closeSheet,
     notify,
@@ -132,7 +133,7 @@ export function MessageSheet({ entryId }) {
     }
 
     // Copies are new sessions: who may start one may make one.
-    const canBranch = canSteer() && !scoped() && view.conversation?.kind === "session";
+    const canBranch = canStart() && view.conversation?.kind === "session";
 
     if (entry.kind === "assistant") {
         return html`<${ReplySheet} entry=${entry} canBranch=${canBranch} />`;

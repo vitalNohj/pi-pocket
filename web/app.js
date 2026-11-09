@@ -58,6 +58,7 @@ import { SubagentsBoard } from "./subagents-board.js";
 import {
     actions,
     attempt,
+    canStart,
     canSteer,
     dismiss,
     filesShown,
@@ -784,7 +785,7 @@ addEventListener("keydown", (event) => {
             return;
         }
 
-        if (event.code === "KeyN" && canSteer() && !scoped()) {
+        if (event.code === "KeyN" && canStart()) {
             event.preventDefault();
             openSheet({ type: "cwd", mode: "new" });
 

@@ -11,6 +11,7 @@ import {
     actions,
     api,
     attempt,
+    canStart,
     canSteer,
     closeSheet,
     navigate,
@@ -413,7 +414,7 @@ export function ForkSessionSheet({ id }) {
     const session = store.state.sessions.find((each) => each.id === id);
     const draft = usePlace(id, `session:${id}`);
     const [busy, setBusy] = useState(false);
-    const starts = canSteer() && !scoped();
+    const starts = canStart();
 
     const go = () => {
         if (busy || !starts) {

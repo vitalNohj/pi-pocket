@@ -3265,6 +3265,8 @@ export class PocketApp {
                 name: user.name,
                 role: user.role,
                 ...(user.sessions === undefined ? {} : { sessions: user.sessions.map(Number) }),
+                // May they start sessions on this server (`access.ts` `mayStart`): the app offers New only then.
+                mayStart: this.#mayStartHere(user),
             },
             users: this.people(user),
             models,
@@ -3926,6 +3928,16 @@ export class PocketApp {
         // A folder request of someone who may no longer start sessions here ends: nobody can approve it into one.
         this.folderRequests.prune((person) => this.policy.mayStart({ id: person }, THIS_SERVER));
 
+        // Someone chosen, or no longer, for this server: their tabs learn whether to offer New.
+        for (const user of this.config.users) {
+            if (
+                this.#startsHere.has(user.id) &&
+                this.#startsHere.get(user.id) !== this.policy.mayStart(user, THIS_SERVER)
+            ) {
+                void this.#refreshUser(user.id);
+            }
+        }
+
         for (const client of [...this.#clients]) {
             if (
                 client.conversationId !== undefined &&
@@ -3979,6 +3991,7 @@ export class PocketApp {
 
     #forget(userId: string): void {
         this.config.removeUser(userId);
+        this.#startsHere.delete(userId);
         this.folderRequests.prune((person) => person !== userId);
         this.runners.changed();
         removeAvatar(this.dataDir, userId);
@@ -4009,6 +4022,17 @@ export class PocketApp {
         client.conversationId = undefined;
         client.send("missing", { conversationId: id, message });
         this.#leaveRoom(client, id);
+    }
+
+    /** What each person's last hello said of starting sessions here, to send a new one when it changes. */
+    readonly #startsHere = new Map<string, boolean>();
+
+    #mayStartHere(user: User): boolean {
+        const may = this.policy.mayStart(user, THIS_SERVER);
+
+        this.#startsHere.set(user.id, may);
+
+        return may;
     }
 
     /** Someone's rights changed: their tabs get a fresh hello and session list. */

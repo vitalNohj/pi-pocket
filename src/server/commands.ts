@@ -951,6 +951,53 @@ export class Commands {
     }
 
     /**
+     * Whom session `id` is shared with, and whom it can be: everyone who may use its computer, but the owner and its
+     * starter, who have it anyway. Its starter's and the owner's to see (`access.ts` `mayShare`); to anyone else who
+     * sees it, 403; to whom it is hidden, 404.
+     */
+    sharing(
+        id: ConversationId,
+        user: User,
+    ): {
+        sharedWith: string[];
+        people: { id: string; name: string; role: User["role"] }[];
+        computer: string;
+    } {
+        const app = this.#app;
+        const root = app.rootOf(id);
+        const meta = app.sessionMeta(root);
+
+        app.requireSee(user, root);
+
+        if (meta === undefined) {
+            throw new HttpError(404, "Not a session");
+        }
+
+        if (!app.policy.mayShare(user, String(root))) {
+            throw new HttpError(
+                403,
+                "Only the person who started this session or the owner can share it.",
+            );
+        }
+
+        const computer = meta.runner ?? THIS_SERVER;
+        const starter = app.policy.starter({ id: String(root), computer, ...meta });
+
+        return {
+            sharedWith: meta.sharedWith ?? [],
+            people: app.config.users
+                .filter(
+                    (person) =>
+                        person.role !== "owner" &&
+                        person.id !== starter &&
+                        app.policy.mayUse(person, computer),
+                )
+                .map((person) => ({ id: person.id, name: person.name, role: person.role })),
+            computer: computer === THIS_SERVER ? "This server" : app.runners.name(computer),
+        };
+    }
+
+    /**
      * Share session `id` with exactly `people` (person ids), one at a time: its starter and the owner may (`access.ts`
      * `mayShare`). Each must be able to use the session's computer; owners see every session anyway, and the starter
      * has it, so neither is kept. Someone taken off leaves it at once (`app.accessChanged`).

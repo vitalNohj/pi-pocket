@@ -8,7 +8,7 @@ const STUBS: Record<string, string> = {
     "../copy-draft.js": `export const chooseFolder = () => {}; export const copyDraft = () => {}; export const modelOf = () => {}; export const updateDraft = () => {}; export const useCopyDraft = () => {};`,
     "../folder-paths.js": `export const shortPath = () => {};`,
     "../runner-wait.js": `export const waitOnComputer = () => {};`,
-    "../store.js": `export const actions = {}; export const api = () => {}; export const attempt = () => {}; export const canSteer = () => {}; export const closeSheet = () => {}; export const navigate = () => {}; export const notify = () => {}; export const openSheet = () => {}; export const scoped = () => {}; export const store = {};`,
+    "../store.js": `export const actions = {}; export const api = () => {}; export const attempt = () => {}; export const canStart = () => true; export const canSteer = () => {}; export const closeSheet = () => {}; export const navigate = () => {}; export const notify = () => {}; export const openSheet = () => {}; export const scoped = () => {}; export const store = {};`,
     "../ui.js": `export const html = () => {}; export const Icon = () => {}; export const Sheet = () => {}; export const Switch = () => {};`,
 };
 const hooks = registerHooks({

@@ -5,6 +5,7 @@ import {
     actions,
     api,
     attempt,
+    canStart,
     canSteer,
     closeSheet,
     collab,
@@ -453,7 +454,7 @@ function PeopleList() {
 }
 
 export function PeopleSheet() {
-    const canInvite = canSteer() && !scoped();
+    const canInvite = canStart();
 
     return html`<${Sheet} title="People" onClose=${closeSheet}>
         ${

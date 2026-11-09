@@ -648,6 +648,12 @@ export function canToggleTurns() {
 /** People invited to one session cannot start sessions or invite others. */
 export const scoped = () => Array.isArray(store.state.me?.sessions);
 
+/**
+ * May this person start sessions on this server, fork, and invite: the server says (`mayStart`, the access policy), as
+ * the owner chose them for it; a server from before it, by role.
+ */
+export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStart !== false;
+
 /** The notices that announce chat messages, here or a mention elsewhere, by id: their session's. Reading its chat takes them down. */
 const chatNotices = new Map();
 

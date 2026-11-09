@@ -1027,6 +1027,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
+        // Whom a session is shared with, and whom it can be: its starter's and the owner's to see (`access.ts` `mayShare`).
+        if (first === "sessions" && second !== undefined && third === "share" && method === "GET") {
+            return json(response, 200, app.commands.sharing(conversationId(second), user));
+        }
+
         // Whom a session is shared with: its starter's and the owner's to change (`access.ts` `mayShare`).
         if (
             first === "sessions" &&
