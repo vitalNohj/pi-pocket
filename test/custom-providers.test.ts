@@ -34,11 +34,45 @@ const readModels = () => JSON.parse(readFileSync(modelsFile, "utf8"));
 let app: Awaited<ReturnType<typeof openApp>>;
 let baseUrl: string;
 let seenAuth: string | undefined;
+/** What the last chat request asked the endpoint for. */
+let chatBody: Record<string, unknown> | undefined;
 let server: ReturnType<typeof createServer>;
 
 before(async () => {
     server = createServer((request, response) => {
         seenAuth = request.headers.authorization;
+
+        // A chat answer, streamed as OpenAI does, that used 1,000 input and 500 output tokens.
+        if (request.url === "/v1/chat/completions") {
+            let text = "";
+
+            request.on("data", (chunk: Buffer) => (text += chunk.toString()));
+            request.on("end", () => {
+                chatBody = JSON.parse(text);
+                response.setHeader("content-type", "text/event-stream");
+
+                const chunk = (body: object) =>
+                    `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: chatBody?.model, ...body })}\n\n`;
+
+                response.end(
+                    chunk({
+                        choices: [{ index: 0, delta: { role: "assistant", content: "hi" } }],
+                    }) +
+                        chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) +
+                        chunk({
+                            choices: [],
+                            usage: {
+                                prompt_tokens: 1000,
+                                completion_tokens: 500,
+                                total_tokens: 1500,
+                            },
+                        }) +
+                        "data: [DONE]\n\n",
+                );
+            });
+
+            return;
+        }
 
         if (request.url === "/v1/models") {
             response.setHeader("content-type", "application/json");
@@ -153,7 +187,7 @@ test("adding one makes Pi's folder and models.json, keeps the key in auth.json, 
     assert.equal(seenAuth, "Bearer sk-moved");
     await app.customProviders.update("home-llm", { baseUrl, apiKey: "sk-secret" });
 
-    // A refused move keeps the sign-in it had.
+    // A refused move keeps the sign-in it had (refused before Pi's own check: half a token is no whole number).
     await assert.rejects(
         app.customProviders.update("home-llm", {
             baseUrl: moved,
@@ -272,7 +306,7 @@ test("a hand-made file with comments, or one Pi refuses, is left alone", async (
     );
     assert.equal(readFileSync(modelsFile, "utf8"), refused);
 
-    // Nor does a model that Pi would refuse (a context window of half a token) change the file.
+    // Nor does a model that Pi Pocket refuses before Pi would (a context window of half a token) change the file.
     const empty = '{"providers":{}}';
 
     writeFileSync(modelsFile, empty);
@@ -621,6 +655,120 @@ test("discovery reads context windows, maximum outputs, and prices where the lis
             { id: "router/free", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
         ],
     );
+
+    const one = (entry: Record<string, unknown>) =>
+        parseModelList({ data: [{ id: "m", ...entry }] })[0]!;
+
+    // The smallest window and output the list says; one that is no whole number does not count.
+    assert.deepEqual(
+        one({
+            max_model_len: 262144,
+            context_length: 131072,
+            top_provider: { context_length: 65536.5, max_completion_tokens: 8192 },
+            max_output_length: 4096,
+        }),
+        { id: "m", contextWindow: 131072, maxTokens: 4096 },
+    );
+    assert.deepEqual(one({ context_length: 1.5, metadata: { context_length: 32768 } }), {
+        id: "m",
+        contextWindow: 32768,
+    });
+
+    // OpenRouter's prices for a long prompt are tiers, as Pi's own OpenRouter provider makes them: a rate a tier
+    // does not give is the base one, and one by the time of day is left out.
+    assert.deepEqual(
+        one({
+            pricing: {
+                prompt: "0.000003",
+                completion: "0.000015",
+                input_cache_read: "0.0000003",
+                overrides: [
+                    { min_prompt_tokens: 200000, prompt: "0.000006", completion: "0.0000225" },
+                    { utc_start: "00:00", utc_end: "06:00", prompt: "0.000001" },
+                    { min_prompt_tokens: 100000, prompt: "0.000004" },
+                ],
+            },
+        }).cost,
+        {
+            input: 3,
+            output: 15,
+            cacheRead: 0.3,
+            cacheWrite: 0,
+            tiers: [
+                { inputTokensAbove: 100000, input: 4, output: 15, cacheRead: 0.3, cacheWrite: 0 },
+                { inputTokensAbove: 200000, input: 6, output: 22.5, cacheRead: 0.3, cacheWrite: 0 },
+            ],
+        },
+    );
+
+    // nano-gpt: dollars per million, its cache and long-prompt rates per thousand; what it can do as true or false.
+    assert.deepEqual(
+        one({
+            context_length: 1048576,
+            max_output_tokens: 65536,
+            capabilities: { vision: true, reasoning: true, tool_calling: true, pdf_upload: false },
+            pricing: {
+                prompt: 1.25,
+                completion: 10,
+                cacheReadInputPer1kTokens: 0.000125,
+                inputPer1kTokensAbove200k: 0.0025,
+                outputPer1kTokensAbove200k: 0.015,
+                highContextThresholdTokens: 200000,
+                currency: "USD",
+                unit: "per_million_tokens",
+            },
+        }),
+        {
+            id: "m",
+            contextWindow: 1048576,
+            maxTokens: 65536,
+            images: true,
+            reasoning: true,
+            cost: {
+                input: 1.25,
+                output: 10,
+                cacheRead: 0.125,
+                cacheWrite: 0,
+                tiers: [
+                    {
+                        inputTokensAbove: 200000,
+                        input: 2.5,
+                        output: 15,
+                        cacheRead: 0.125,
+                        cacheWrite: 0,
+                    },
+                ],
+            },
+        },
+    );
+    // Another currency is no price in dollars.
+    assert.equal(
+        one({ pricing: { prompt: 1, completion: 2, unit: "per_million_tokens", currency: "EUR" } })
+            .cost,
+        undefined,
+    );
+
+    // DeepInfra: its window and price (per million) under metadata; its max_tokens is the window, not the output.
+    assert.deepEqual(
+        one({
+            metadata: {
+                context_length: 262144,
+                max_tokens: 262144,
+                pricing: { input_tokens: 0.2, output_tokens: 0.4, cache_read_tokens: 0.02 },
+            },
+        }),
+        {
+            id: "m",
+            contextWindow: 262144,
+            cost: { input: 0.2, output: 0.4, cacheRead: 0.02, cacheWrite: 0 },
+        },
+    );
+
+    // Numbers without their unit (Chutes) could be per token or per million: no price.
+    assert.deepEqual(one({ max_model_len: 262144, pricing: { prompt: 0.039, completion: 1.25 } }), {
+        id: "m",
+        contextWindow: 262144,
+    });
 });
 
 test("prices: input and output dollars per million tokens, the cache ones 0 when not given", () => {
@@ -636,6 +784,53 @@ test("prices: input and output dollars per million tokens, the cache ones 0 when
     assert.throws(() => priceOf("m", { input: "3", output: 1 }), /from 0/);
     assert.throws(() => priceOf("m", "free"), /input and output/);
 
+    // Tiers: in order of their token counts, a rate one leaves out the base one; an empty list is no tiers.
+    assert.deepEqual(
+        priceOf("m", {
+            input: 3,
+            output: 15,
+            tiers: [
+                { inputTokensAbove: 200000, input: 6, output: 22.5 },
+                { inputTokensAbove: 100000, input: 4, output: 18, cacheRead: 0.4 },
+            ],
+        }),
+        {
+            input: 3,
+            output: 15,
+            cacheRead: 0,
+            cacheWrite: 0,
+            tiers: [
+                { inputTokensAbove: 100000, input: 4, output: 18, cacheRead: 0.4, cacheWrite: 0 },
+                { inputTokensAbove: 200000, input: 6, output: 22.5, cacheRead: 0, cacheWrite: 0 },
+            ],
+        },
+    );
+    assert.deepEqual(priceOf("m", { input: 1, output: 2, tiers: [] }), {
+        input: 1,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        tiers: [],
+    });
+    assert.throws(
+        () => priceOf("m", { input: 1, output: 2, tiers: [{ inputTokensAbove: 0.5 }] }),
+        /whole number of tokens/,
+    );
+    assert.throws(
+        () =>
+            priceOf("m", {
+                input: 1,
+                output: 2,
+                tiers: [{ inputTokensAbove: 5 }, { inputTokensAbove: 5 }],
+            }),
+        /same number of tokens/,
+    );
+    assert.throws(
+        () => priceOf("m", { input: 1, output: 2, tiers: [{ inputTokensAbove: 5, input: -1 }] }),
+        /from 0/,
+    );
+    assert.throws(() => priceOf("m", { input: 1, output: 2, tiers: "many" }), /list/);
+
     // Read back as Pi reads an entry: none without both input and output.
     assert.equal(priceOfEntry({ id: "m" }), null);
     assert.equal(priceOfEntry({ id: "m", cost: { input: 1 } }), null);
@@ -645,6 +840,13 @@ test("prices: input and output dollars per million tokens, the cache ones 0 when
             cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0, tiers: [] },
         }),
         { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 },
+    );
+    const tier = { inputTokensAbove: 5, input: 2, output: 4, cacheRead: 0, cacheWrite: 0 };
+
+    assert.deepEqual(
+        priceOfEntry({ id: "m", cost: { input: 1, output: 2, tiers: [tier, { input: 1 }] } }),
+        { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, tiers: [tier] },
+        "a tier Pi would refuse is not shown",
     );
 });
 
@@ -677,6 +879,17 @@ test("a model's context window, maximum output, and price go into models.json, a
     assert.equal(model?.maxTokens, 32768);
     assert.deepEqual(model?.cost, price);
     assert.equal(app.models.getModel("priced", "default")?.contextWindow, 128000);
+
+    // A request asks for the maximum output, and its answer costs what the price says: 1,000 input and 500 output
+    // tokens at $0.50 and $1.50 a million.
+    const answer = await app.models.completeSimple(model!, {
+        messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
+    });
+
+    assert.equal(answer.stopReason, "stop", answer.errorMessage ?? "");
+    assert.equal(chatBody?.max_completion_tokens ?? chatBody?.max_tokens, 32768);
+    assert.equal(answer.usage.cost.total, 0.0005 + 0.00075);
+
     assert.deepEqual(
         app.customProviders
             .list()
@@ -737,5 +950,89 @@ test("a model's context window, maximum output, and price go into models.json, a
         app.customProviders.update("priced", { models: [{ id: "big", cost: { output: 1 } }] }),
         /input and output/,
     );
+
+    // Discovered tiers are saved; an empty list takes them out.
+    const tier = { inputTokensAbove: 200000, input: 1, output: 3, cacheRead: 0, cacheWrite: 0 };
+
+    await app.customProviders.update("priced", {
+        models: [{ id: "big", cost: { input: 0.5, output: 1.5, tiers: [tier] } }, "default"],
+    });
+    assert.deepEqual(app.models.getModel("priced", "big")?.cost.tiers, [tier]);
+    await app.customProviders.update("priced", {
+        models: [{ id: "big", cost: { input: 0.5, output: 1.5, tiers: [] } }, "default"],
+    });
+    assert.equal(readModels().providers.priced.models[0].cost.tiers, undefined);
     await app.customProviders.remove("priced");
+});
+
+test("a hand-made modelOverrides entry: the form shows what Pi uses, and what it sets leaves the override", async () => {
+    await app.customProviders.create({
+        name: "Over",
+        baseUrl,
+        noKey: true,
+        models: [{ id: "m", contextWindow: 65536, cost: { input: 1, output: 2 } }, { id: "other" }],
+    });
+
+    const config = readModels();
+
+    config.providers.over.modelOverrides = {
+        m: {
+            contextWindow: 32768,
+            maxTokens: 4096,
+            input: ["text", "image"],
+            cost: { output: 5 },
+            headers: { "x-mine": "1" },
+        },
+        other: { name: "Other one" },
+    };
+    writeFileSync(modelsFile, JSON.stringify(config));
+    await app.models.refresh({ allowNetwork: false });
+
+    const shown = () => app.customProviders.list().find((each) => each.id === "over")!.models[0];
+
+    assert.equal(app.models.getModel("over", "m")?.contextWindow, 32768);
+    assert.deepEqual(
+        { ...shown(), thinking: undefined },
+        {
+            id: "m",
+            images: true,
+            thinking: undefined,
+            contextWindow: 32768,
+            maxTokens: 4096,
+            cost: { input: 1, output: 5, cacheRead: 0, cacheWrite: 0 },
+        },
+    );
+
+    // Saving the window and price: the override keeps only what the form did not set.
+    await app.customProviders.update("over", {
+        models: [{ id: "m", contextWindow: 131072, cost: { input: 1, output: 3 } }, "other"],
+    });
+    assert.deepEqual(readModels().providers.over.modelOverrides, {
+        m: { maxTokens: 4096, input: ["text", "image"], headers: { "x-mine": "1" } },
+        other: { name: "Other one" },
+    });
+    assert.equal(app.models.getModel("over", "m")?.contextWindow, 131072);
+    assert.equal(app.models.getModel("over", "m")?.cost.output, 3);
+
+    // Setting the rest leaves the fields that the form does not set.
+    await app.customProviders.update("over", {
+        models: [{ id: "m", maxTokens: 8192, images: false, thinking: null }, { id: "other" }],
+    });
+    assert.deepEqual(readModels().providers.over.modelOverrides, {
+        m: { headers: { "x-mine": "1" } },
+        other: { name: "Other one" },
+    });
+    assert.deepEqual(app.models.getModel("over", "m")?.input, ["text"]);
+
+    // An override left empty goes, and modelOverrides with it.
+    const again = readModels();
+
+    again.providers.over.modelOverrides = { m: { contextWindow: 1000 } };
+    writeFileSync(modelsFile, JSON.stringify(again));
+    await app.customProviders.update("over", {
+        models: [{ id: "m", contextWindow: null }, "other"],
+    });
+    assert.equal(readModels().providers.over.modelOverrides, undefined);
+    assert.equal(app.models.getModel("over", "m")?.contextWindow, 128000);
+    await app.customProviders.remove("over");
 });

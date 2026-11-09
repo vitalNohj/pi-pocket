@@ -8,7 +8,8 @@
  * (which Pi reads) or one that Pi refuses is left alone, with a message, so a hand-made file never loses anything.
  * Fields it does not manage (headers, compat, a model's other metadata) are kept as they are. Of a model's metadata, the
  * form sets only image input (`input`), thinking (`reasoning` and `thinkingLevelMap`), its context window and maximum
- * output (`contextWindow`, `maxTokens`), and its price (`cost`, whose hand-made `tiers` stay).
+ * output (`contextWindow`, `maxTokens`), and its price (`cost`, with its `tiers`). A hand-made `modelOverrides` entry
+ * would win over these in Pi: the form shows what Pi uses, and a field it sets leaves the override.
  */
 import {
     chmodSync,
@@ -42,6 +43,8 @@ const DISCOVER_BYTES = 5_000_000;
 /** The most tokens a context window or output may have, and the most dollars per million tokens. */
 const MAX_TOKENS = 1_000_000_000;
 const MAX_PRICE = 1_000_000;
+/** The most price tiers a model may have. */
+const MAX_PRICE_TIERS = 16;
 
 /** Pi's thinking levels, in order: a model's `thinkingLevelMap` names what each one sends. */
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -61,12 +64,25 @@ export const DEFAULT_TIERS: ThinkingTier[] = (
 
 const MAX_TIER_VALUE = 64;
 
-/** A model's price in dollars per million tokens: Pi's `cost`, without its tiers. */
-export interface ModelPrice {
+/** What a model costs in dollars per million tokens, for each kind of token. */
+export interface PriceRates {
     input: number;
     output: number;
     cacheRead: number;
     cacheWrite: number;
+}
+
+/** Pi's price tier: the rates for a whole request whose input is more than `inputTokensAbove` tokens. */
+export interface PriceTier extends PriceRates {
+    inputTokensAbove: number;
+}
+
+/**
+ * A model's price: Pi's `cost`. Its tiers are in order of their token counts, each count once. In a change, tiers left
+ * out keep the ones the model has, and an empty list takes them out.
+ */
+export interface ModelPrice extends PriceRates {
+    tiers?: PriceTier[];
 }
 
 export interface CustomModel {
@@ -227,7 +243,13 @@ function tokensOf(id: string, value: unknown, name: string): number | null | und
     return value;
 }
 
-/** A price as asked for: dollars per million tokens, input and output given and the cache ones 0 when not; or null. */
+const RATES = ["input", "output", "cacheRead", "cacheWrite"] as const;
+
+/**
+ * A price as asked for, or null: dollars per million tokens, input and output given and the cache ones 0 when not. Its
+ * tiers, when given, are each a token count (1 or more, whole, each once) and its rates; a rate a tier leaves out is the
+ * price's own, as OpenRouter's are.
+ */
 export function priceOf(id: string, value: unknown): ModelPrice | null {
     if (value === null) {
         return null;
@@ -239,9 +261,7 @@ export function priceOf(id: string, value: unknown): ModelPrice | null {
         throw new HttpError(400, `${id}: a price needs its input and output dollars.`);
     }
 
-    const rate = (field: keyof ModelPrice): number => {
-        const each = given[field] ?? 0;
-
+    const rate = (each: unknown): number => {
         if (typeof each !== "number" || !Number.isFinite(each) || each < 0 || each > MAX_PRICE) {
             throw new HttpError(
                 400,
@@ -252,15 +272,54 @@ export function priceOf(id: string, value: unknown): ModelPrice | null {
         return each;
     };
 
-    return {
-        input: rate("input"),
-        output: rate("output"),
-        cacheRead: rate("cacheRead"),
-        cacheWrite: rate("cacheWrite"),
-    };
+    const base = Object.fromEntries(
+        RATES.map((field) => [field, rate(given[field] ?? 0)]),
+    ) as unknown as PriceRates;
+
+    if (given.tiers === undefined) {
+        return base;
+    }
+
+    if (!Array.isArray(given.tiers) || given.tiers.length > MAX_PRICE_TIERS) {
+        throw new HttpError(
+            400,
+            `${id}: price tiers are a list of at most ${String(MAX_PRICE_TIERS)}.`,
+        );
+    }
+
+    const tiers = (given.tiers as (Json | null)[]).map((tier): PriceTier => {
+        const above = tier?.inputTokensAbove;
+
+        if (
+            typeof above !== "number" ||
+            !Number.isSafeInteger(above) ||
+            above < 1 ||
+            above > MAX_TOKENS
+        ) {
+            throw new HttpError(
+                400,
+                `${id}: a price tier starts above a whole number of tokens, from 1 to ${MAX_TOKENS.toLocaleString("en-US")}.`,
+            );
+        }
+
+        return {
+            inputTokensAbove: above,
+            ...(Object.fromEntries(
+                RATES.map((field) => [field, rate(tier?.[field] ?? base[field])]),
+            ) as unknown as PriceRates),
+        };
+    });
+
+    if (new Set(tiers.map((tier) => tier.inputTokensAbove)).size !== tiers.length) {
+        throw new HttpError(400, `${id}: two price tiers start at the same number of tokens.`);
+    }
+
+    return { ...base, tiers: tiers.sort((a, b) => a.inputTokensAbove - b.inputTokensAbove) };
 }
 
-/** A model entry's price as Pi reads it, without its tiers; null when it has none (Pi then counts it free). */
+/**
+ * A model entry's price as Pi reads it, with the tiers that are whole: null when it has none (Pi then counts it free).
+ */
 export function priceOfEntry(model: Json): ModelPrice | null {
     const cost = model.cost as Json | null | undefined;
 
@@ -268,14 +327,110 @@ export function priceOfEntry(model: Json): ModelPrice | null {
         return null;
     }
 
-    const rate = (value: unknown) => (typeof value === "number" ? value : 0);
+    const rates = (from: Json): PriceRates => ({
+        input: typeof from.input === "number" ? from.input : 0,
+        output: typeof from.output === "number" ? from.output : 0,
+        cacheRead: typeof from.cacheRead === "number" ? from.cacheRead : 0,
+        cacheWrite: typeof from.cacheWrite === "number" ? from.cacheWrite : 0,
+    });
+    const tiers = (Array.isArray(cost.tiers) ? (cost.tiers as (Json | null)[]) : [])
+        .filter(
+            (tier): tier is Json =>
+                typeof tier?.inputTokensAbove === "number" &&
+                RATES.every((field) => typeof tier[field] === "number"),
+        )
+        .map((tier) => ({ inputTokensAbove: tier.inputTokensAbove as number, ...rates(tier) }));
+
+    return { ...rates(cost), ...(tiers.length === 0 ? {} : { tiers }) };
+}
+
+/**
+ * A model's entry as Pi uses it: with the fields that the form shows taken from the provider's `modelOverrides` entry
+ * for it, as Pi takes them (`applyModelOverride`). A price in an override is over the model's price, or over a price
+ * of 0 when it has none.
+ */
+export function withOverride(model: Json, override: unknown): Json {
+    if (typeof override !== "object" || override === null || Array.isArray(override)) {
+        return model;
+    }
+
+    const over = override as Json;
+    const map = (value: unknown) =>
+        (typeof value === "object" && value !== null ? value : {}) as Json;
+    const cost = map(model.cost);
+    const costOver = over.cost === undefined ? undefined : map(over.cost);
 
     return {
-        input: cost.input,
-        output: cost.output,
-        cacheRead: rate(cost.cacheRead),
-        cacheWrite: rate(cost.cacheWrite),
+        ...model,
+        ...(over.input === undefined ? {} : { input: over.input }),
+        ...(over.reasoning === undefined ? {} : { reasoning: over.reasoning }),
+        ...(over.thinkingLevelMap === undefined
+            ? {}
+            : {
+                  thinkingLevelMap: {
+                      ...map(model.thinkingLevelMap),
+                      ...map(over.thinkingLevelMap),
+                  },
+              }),
+        ...(over.contextWindow === undefined ? {} : { contextWindow: over.contextWindow }),
+        ...(over.maxTokens === undefined ? {} : { maxTokens: over.maxTokens }),
+        ...(costOver === undefined
+            ? {}
+            : {
+                  cost: {
+                      ...Object.fromEntries(
+                          RATES.map((field) => [field, costOver[field] ?? cost[field] ?? 0]),
+                      ),
+                      ...((costOver.tiers ?? cost.tiers) === undefined
+                          ? {}
+                          : { tiers: costOver.tiers ?? cost.tiers }),
+                  },
+              }),
     };
+}
+
+/**
+ * Takes out of a model's `modelOverrides` entry each field that the form has just set, so that what the form saved is
+ * what Pi uses; other fields stay. An entry left empty goes. Gives the entry, or undefined when none is left.
+ */
+function clearOverride(override: Json, model: CustomModel): Json | undefined {
+    const over = { ...override };
+
+    for (const field of ["contextWindow", "maxTokens"] as const) {
+        if (model[field] !== undefined) {
+            delete over[field];
+        }
+    }
+
+    if (model.images !== undefined) {
+        delete over.input;
+    }
+
+    if (model.thinking !== undefined) {
+        delete over.reasoning;
+        delete over.thinkingLevelMap;
+    }
+
+    if (model.cost !== undefined && typeof over.cost === "object" && over.cost !== null) {
+        const cost = { ...(over.cost as Json) };
+
+        for (const field of RATES) {
+            delete cost[field];
+        }
+
+        // A price without tiers keeps the tiers there are, wherever they are.
+        if (model.cost === null || model.cost.tiers !== undefined) {
+            delete cost.tiers;
+        }
+
+        if (Object.keys(cost).length === 0) {
+            delete over.cost;
+        } else {
+            over.cost = cost;
+        }
+    }
+
+    return Object.keys(over).length === 0 ? undefined : over;
 }
 
 /** A model's thinking levels as asked for: null (it does not think), or each of Pi's levels at most once. */
@@ -358,7 +513,7 @@ export function tiersOfEntry(model: Json): ThinkingTier[] | null {
 
 /**
  * Sets what the form changes in a model's entry: image input, thinking, context window, maximum output, and price.
- * Other fields stay as they are, and so do the price tiers of a hand-made price.
+ * Other fields stay as they are, and so do the price tiers of a price given without them.
  */
 function applyForm(entry: Json, model: CustomModel): Json {
     for (const field of ["contextWindow", "maxTokens"] as const) {
@@ -372,9 +527,10 @@ function applyForm(entry: Json, model: CustomModel): Json {
     if (model.cost === null) {
         delete entry.cost;
     } else if (model.cost !== undefined) {
-        const tiers = (entry.cost as Json | null | undefined)?.tiers;
+        const { tiers: given, ...rates } = model.cost;
+        const tiers = given ?? (entry.cost as Json | null | undefined)?.tiers;
 
-        entry.cost = { ...model.cost, ...(Array.isArray(tiers) ? { tiers } : {}) };
+        entry.cost = { ...rates, ...(Array.isArray(tiers) && tiers.length > 0 ? { tiers } : {}) };
     }
 
     if (model.images === true) {
@@ -431,11 +587,14 @@ export function idFor(name: string, taken: (id: string) => boolean): string {
 }
 
 /**
- * The ids of an endpoint's models, from an OpenAI `/models` answer, and what the list says of each: its context window
- * (vLLM's `max_model_len`, OpenRouter's `context_length`, Groq's `context_window`), its maximum output (OpenRouter's
- * `top_provider.max_completion_tokens`, Groq's `max_completion_tokens`), its price (OpenRouter's `pricing`), and what it
- * can do: OpenRouter's `architecture.input_modalities` and `supported_parameters`, or a `capabilities` list (`vision`,
- * `thinking`).
+ * The ids of an endpoint's models, from an OpenAI `/models` answer, and what the list says of each, where it says it:
+ * - its context window: the smallest of vLLM's `max_model_len`, `context_length` (OpenRouter, Chutes), Groq's
+ *   `context_window`, OpenRouter's `top_provider.context_length`, and DeepInfra's `metadata.context_length`;
+ * - its maximum output: the smallest of OpenRouter's `top_provider.max_completion_tokens`, Groq's
+ *   `max_completion_tokens`, nano-gpt's `max_output_tokens`, and Chutes' `max_output_length`;
+ * - its price (`listedPrice`);
+ * - what it can do: OpenRouter's `architecture.input_modalities` and `supported_parameters`, or `capabilities`
+ *   (`vision`, `thinking`, `reasoning`), as a list or as each true or false.
  */
 export function parseModelList(body: unknown): ListedModel[] {
     const list = (body as Json | null)?.data;
@@ -451,21 +610,34 @@ export function parseModelList(body: unknown): ListedModel[] {
 
         if (typeof id === "string" && id !== "" && id.length <= MAX_ID) {
             const top = (entry?.top_provider ?? null) as Json | null;
-            const window = tokenCount(
+            const metadata = (entry?.metadata ?? null) as Json | null;
+            // The smallest: one too small only compacts early, and one too large breaks requests.
+            const window = smallestCount(
                 entry?.max_model_len,
                 entry?.context_length,
                 entry?.context_window,
                 top?.context_length,
+                metadata?.context_length,
             );
-            const most = tokenCount(top?.max_completion_tokens, entry?.max_completion_tokens);
-            const cost = listedPrice(entry?.pricing);
+            const most = smallestCount(
+                top?.max_completion_tokens,
+                entry?.max_completion_tokens,
+                entry?.max_output_tokens,
+                entry?.max_output_length,
+            );
+            const cost = listedPrice(entry ?? {});
             const said = (value: unknown): string[] =>
                 Array.isArray(value)
                     ? value.filter((each): each is string => typeof each === "string")
                     : [];
             const modalities = said((entry?.architecture as Json | null)?.input_modalities);
             const parameters = said(entry?.supported_parameters);
-            const capabilities = said(entry?.capabilities);
+            // A list of what it can do, or each of them true or false (nano-gpt).
+            const can = entry?.capabilities;
+            const capabilities =
+                typeof can === "object" && can !== null && !Array.isArray(can)
+                    ? Object.entries(can).flatMap(([name, on]) => (on === true ? [name] : []))
+                    : said(can);
             const images = modalities.includes("image") || capabilities.includes("vision");
             const reasoning =
                 parameters.includes("reasoning") ||
@@ -487,50 +659,133 @@ export function parseModelList(body: unknown): ListedModel[] {
     return [...models.values()].sort((a, b) => a.id.localeCompare(b.id)).slice(0, MAX_MODELS);
 }
 
-/** The first of a model list's token counts that is one: 1 or more, whole. */
-function tokenCount(...values: unknown[]): number | undefined {
-    const found = values.find(
-        (value): value is number => typeof value === "number" && value >= 1 && value <= MAX_TOKENS,
+/** The smallest of a model list's token counts that are one: whole, from 1 to the most there may be. */
+function smallestCount(...values: unknown[]): number | undefined {
+    const counts = values.filter(
+        (value): value is number =>
+            typeof value === "number" &&
+            Number.isSafeInteger(value) &&
+            value >= 1 &&
+            value <= MAX_TOKENS,
     );
 
-    return found === undefined ? undefined : Math.floor(found);
+    return counts.length === 0 ? undefined : Math.min(...counts);
 }
 
+/** Dollars per million tokens as Pi keeps them (3, not 2.9999999999999996); none below 0 or past the most. */
+function dollars(value: number): number | undefined {
+    const rounded = Number(value.toPrecision(12));
+
+    return Number.isFinite(rounded) && rounded >= 0 && rounded <= MAX_PRICE ? rounded : undefined;
+}
+
+/** A price with its tiers: in order of their token counts, each count once, at most as many as a price may have. */
+function withTiers(base: PriceRates, tiers: PriceTier[]): ModelPrice {
+    const unique = [...new Map(tiers.map((tier) => [tier.inputTokensAbove, tier])).values()]
+        .sort((a, b) => a.inputTokensAbove - b.inputTokensAbove)
+        .slice(0, MAX_PRICE_TIERS);
+
+    return unique.length === 0 ? base : { ...base, tiers: unique };
+}
+
+/** A token count a price tier starts above: whole, from 1 to the most there may be. */
+const isThreshold = (value: unknown): value is number =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= MAX_TOKENS;
+
 /**
- * OpenRouter's `pricing` as Pi's price: it gives dollars per token, as text, where Pi has dollars per million tokens.
- * None when it lacks the input or output price, or gives one below 0 (its router models say -1).
+ * What a model list says a model costs, as Pi's price in dollars per million tokens, from a list that says its unit:
+ * - OpenRouter's `pricing`: dollars per token, as text; its `overrides` for long prompts become Pi's tiers, as Pi's own
+ *   OpenRouter provider makes them (`openRouterCost`): a time-of-day one is left out, and a rate one leaves out is the
+ *   base one.
+ * - `pricing` as numbers with `unit: "per_million_tokens"` (nano-gpt): its cache rates are per thousand tokens, and so
+ *   are its rates past `highContextThresholdTokens`, which become a tier.
+ * - DeepInfra's `metadata.pricing`: `input_tokens`, `output_tokens`, and `cache_read_tokens`, per million.
+ * None when the list does not say the input and output price, gives one below 0 (OpenRouter's router models say -1), or
+ * gives numbers without their unit (Chutes): they could be per token or per million.
  */
-function listedPrice(value: unknown): ModelPrice | undefined {
-    const pricing = (typeof value === "object" ? value : null) as Json | null;
+function listedPrice(entry: Json): ModelPrice | undefined {
+    const object = (value: unknown) =>
+        (typeof value === "object" && value !== null && !Array.isArray(value) ? value : {}) as Json;
+    const pricing = object(entry.pricing);
+    const number = (value: unknown, scale: number) =>
+        typeof value === "number" ? dollars(value * scale) : undefined;
+    const price = (input?: number, output?: number, cacheRead?: number, cacheWrite?: number) =>
+        input === undefined || output === undefined
+            ? undefined
+            : { input, output, cacheRead: cacheRead ?? 0, cacheWrite: cacheWrite ?? 0 };
 
-    const perMillion = (field: unknown): number | undefined => {
-        const each =
-            typeof field === "string" && field.trim() !== ""
-                ? Number(field)
-                : typeof field === "number"
-                  ? field
-                  : Number.NaN;
-        // 0.000003 dollars a token is 3 a million, not 2.9999999999999996.
-        const dollars = Number((each * 1_000_000).toPrecision(12));
+    if (typeof pricing.prompt === "string" || typeof pricing.completion === "string") {
+        const perToken = (value: unknown) =>
+            typeof value === "string" && value.trim() !== ""
+                ? dollars(Number(value) * 1_000_000)
+                : undefined;
+        const base = price(
+            perToken(pricing.prompt),
+            perToken(pricing.completion),
+            perToken(pricing.input_cache_read),
+            perToken(pricing.input_cache_write),
+        );
 
-        return Number.isFinite(dollars) && dollars >= 0 && dollars <= MAX_PRICE
-            ? dollars
-            : undefined;
-    };
+        if (base === undefined) {
+            return undefined;
+        }
 
-    const input = perMillion(pricing?.prompt);
-    const output = perMillion(pricing?.completion);
+        const overrides = Array.isArray(pricing.overrides) ? pricing.overrides : [];
+        const tiers = overrides.map(object).flatMap((override): PriceTier[] =>
+            !isThreshold(override.min_prompt_tokens) ||
+            override.utc_start !== undefined ||
+            override.utc_end !== undefined ||
+            override.utc_days !== undefined
+                ? []
+                : [
+                      {
+                          inputTokensAbove: override.min_prompt_tokens,
+                          input: perToken(override.prompt) ?? base.input,
+                          output: perToken(override.completion) ?? base.output,
+                          cacheRead: perToken(override.input_cache_read) ?? base.cacheRead,
+                          cacheWrite: perToken(override.input_cache_write) ?? base.cacheWrite,
+                      },
+                  ],
+        );
 
-    if (input === undefined || output === undefined) {
-        return undefined;
+        return withTiers(base, tiers);
     }
 
-    return {
-        input,
-        output,
-        cacheRead: perMillion(pricing?.input_cache_read) ?? 0,
-        cacheWrite: perMillion(pricing?.input_cache_write) ?? 0,
-    };
+    if (pricing.unit === "per_million_tokens") {
+        const base =
+            pricing.currency === undefined || pricing.currency === "USD"
+                ? price(
+                      number(pricing.prompt, 1),
+                      number(pricing.completion, 1),
+                      number(pricing.cacheReadInputPer1kTokens, 1000),
+                      number(pricing.cacheWriteInputPer1kTokens, 1000),
+                  )
+                : undefined;
+        // Its rates for a long prompt: per thousand tokens, past `highContextThresholdTokens` (whatever the names say).
+        const above = pricing.highContextThresholdTokens;
+
+        return base === undefined || !isThreshold(above)
+            ? base
+            : withTiers(base, [
+                  {
+                      inputTokensAbove: above,
+                      input: number(pricing.inputPer1kTokensAbove200k, 1000) ?? base.input,
+                      output: number(pricing.outputPer1kTokensAbove200k, 1000) ?? base.output,
+                      cacheRead:
+                          number(pricing.cacheReadInputPer1kTokensAbove200k, 1000) ??
+                          base.cacheRead,
+                      cacheWrite: base.cacheWrite,
+                  },
+              ]);
+    }
+
+    const deepInfra = object(object(entry.metadata).pricing);
+
+    return price(
+        number(deepInfra.input_tokens, 1),
+        number(deepInfra.output_tokens, 1),
+        number(deepInfra.cache_read_tokens, 1),
+    );
 }
 
 export class CustomProviders {
@@ -559,23 +814,31 @@ export class CustomProviders {
 
         return Object.entries(providers)
             .filter(([id, entry]) => this.#manages(id, entry))
-            .map(([id, entry]) => ({
-                id,
-                name: typeof entry.name === "string" ? entry.name : id,
-                baseUrl: entry.baseUrl as string,
-                models: (Array.isArray(entry.models) ? (entry.models as (Json | null)[]) : [])
-                    .filter((model): model is Json => typeof model?.id === "string")
-                    .map((model) => ({
-                        id: model.id as string,
-                        images: Array.isArray(model.input) && model.input.includes("image"),
-                        thinking: tiersOfEntry(model),
-                        contextWindow:
-                            typeof model.contextWindow === "number" ? model.contextWindow : null,
-                        maxTokens: typeof model.maxTokens === "number" ? model.maxTokens : null,
-                        cost: priceOfEntry(model),
-                    })),
-                key: this.#keyOf(id, entry),
-            }))
+            .map(([id, entry]) => {
+                const overrides = (entry.modelOverrides ?? {}) as Record<string, unknown>;
+
+                return {
+                    id,
+                    name: typeof entry.name === "string" ? entry.name : id,
+                    baseUrl: entry.baseUrl as string,
+                    models: (Array.isArray(entry.models) ? (entry.models as (Json | null)[]) : [])
+                        .filter((model): model is Json => typeof model?.id === "string")
+                        // What Pi uses: a hand-made override wins over the model's own fields.
+                        .map((model) => withOverride(model, overrides[model.id as string]))
+                        .map((model) => ({
+                            id: model.id as string,
+                            images: Array.isArray(model.input) && model.input.includes("image"),
+                            thinking: tiersOfEntry(model),
+                            contextWindow:
+                                typeof model.contextWindow === "number"
+                                    ? model.contextWindow
+                                    : null,
+                            maxTokens: typeof model.maxTokens === "number" ? model.maxTokens : null,
+                            cost: priceOfEntry(model),
+                        })),
+                    key: this.#keyOf(id, entry),
+                };
+            })
             .sort((a, b) => a.name.localeCompare(b.name));
     }
 
@@ -666,11 +929,44 @@ export class CustomProviders {
                     ]),
                 );
 
-                entry.models = modelsOf(input.models).map((model) => {
+                const asked = modelsOf(input.models);
+
+                entry.models = asked.map((model) => {
                     const kept = before.get(model.id);
 
                     return kept === undefined ? entryOf(model) : applyForm({ ...kept }, model);
                 });
+
+                // A hand-made override of a field the form set would win over it: that field goes.
+                const overrides = entry.modelOverrides;
+
+                if (
+                    typeof overrides === "object" &&
+                    overrides !== null &&
+                    !Array.isArray(overrides)
+                ) {
+                    const left = { ...(overrides as Json) };
+
+                    for (const model of asked) {
+                        const was = left[model.id];
+
+                        if (typeof was === "object" && was !== null && !Array.isArray(was)) {
+                            const over = clearOverride(was as Json, model);
+
+                            if (over === undefined) {
+                                delete left[model.id];
+                            } else {
+                                left[model.id] = over;
+                            }
+                        }
+                    }
+
+                    if (Object.keys(left).length === 0) {
+                        delete entry.modelOverrides;
+                    } else {
+                        entry.modelOverrides = left;
+                    }
+                }
             }
 
             if (key === NO_KEY) {
