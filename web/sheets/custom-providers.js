@@ -3,7 +3,17 @@
 // each endpoint's own row edits or removes it. Each chosen model says whether it sees images, the
 // thinking levels it has, its context window and maximum output, and its price. The server keeps
 // each in Pi's models.json, and its key in Pi's sign-ins.
-import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "preact/hooks";
+import {
+    dollars,
+    fillLimits,
+    limitsChanges,
+    limitsSet,
+    limitsText,
+    PRICES,
+    priceFrom,
+    tokensFrom,
+} from "../model-limits.js";
 import { api, attempt, notify, store } from "../store.js";
 import { formatTokens, html, Icon, MODEL_SEARCH_AT } from "../ui.js";
 
@@ -41,13 +51,18 @@ function tierSummary(thinking) {
  * A model's thinking levels: each is one of Pi's levels and the value sent to the endpoint for it (its
  * `reasoning_effort`), which a model may name its own way. Levels can be added, removed, and changed.
  */
-function ThinkingLevels({ id, thinking, onChange }) {
+function ThinkingLevels({ id, panelId, thinking, onChange }) {
     const used = new Set((thinking ?? []).map((tier) => tier.level));
     const free = LEVELS.filter(([level]) => !used.has(level));
     const set = (index, patch) =>
         onChange(order(thinking.map((tier, at) => (at === index ? { ...tier, ...patch } : tier))));
 
-    return html`<div class="model-thinking" role="group" aria-label=${`Thinking levels of ${id}`}>
+    return html`<div
+        class="model-thinking"
+        id=${panelId}
+        role="group"
+        aria-label=${`Thinking levels of ${id}`}
+    >
         <label class="check model-thinking-on">
             <input
                 type="checkbox"
@@ -128,118 +143,65 @@ function ThinkingLevels({ id, thinking, onChange }) {
 const tiersReady = (thinking) =>
     thinking === null || thinking.every((tier) => tier.level === "off" || tier.value.trim() !== "");
 
-/** The parts of a model's price, in dollars per million tokens, with their names in the form. */
-const PRICES = [
-    ["input", "Input"],
-    ["output", "Output"],
-    ["cacheRead", "Cache read"],
-    ["cacheWrite", "Cache write"],
-];
-/** The most tokens and dollars the server takes. */
-const MAX_TOKENS = 1_000_000_000;
-const MAX_PRICE = 1_000_000;
-
-/** A number as its field shows it: empty when there is none. */
-const shown = (value) => (typeof value === "number" ? String(value) : "");
-
-/** What a model's fields start with: its context window, maximum output, and price, as text. */
-const limitsText = (model) => ({
-    contextWindow: shown(model?.contextWindow),
-    maxTokens: shown(model?.maxTokens),
-    cost: Object.fromEntries(PRICES.map(([part]) => [part, shown(model?.cost?.[part])])),
-});
-
-/** A count of tokens from its field: null when empty (Pi's default), NaN when it is not one. */
-function tokensFrom(text) {
-    const value = Number(text.trim());
-
-    if (text.trim() === "") {
-        return null;
-    }
-
-    return Number.isSafeInteger(value) && value >= 1 && value <= MAX_TOKENS ? value : Number.NaN;
-}
-
-/** A price from its fields: null when all are empty (the model costs nothing); a cache part left empty is 0. */
-const priceFrom = (cost) =>
-    PRICES.every(([part]) => cost[part].trim() === "")
-        ? null
-        : Object.fromEntries(
-              PRICES.map(([part]) => [part, cost[part].trim() === "" ? 0 : Number(cost[part])]),
-          );
-
-/** What is wrong with a model's context window, maximum output, or price; empty when nothing is. */
-function limitsProblem({ contextWindow, maxTokens, cost }) {
-    if (Number.isNaN(tokensFrom(contextWindow))) {
-        return "The context window is a whole number of tokens.";
-    }
-
-    if (Number.isNaN(tokensFrom(maxTokens))) {
-        return "The maximum output is a whole number of tokens.";
-    }
-
-    const price = priceFrom(cost);
-
-    if (price === null) {
-        return "";
-    }
-
-    if (cost.input.trim() === "" || cost.output.trim() === "") {
-        return "A price needs its input and output dollars.";
-    }
-
-    return Object.values(price).every((each) => each >= 0 && each <= MAX_PRICE)
-        ? ""
-        : "A price is 0 or more dollars per million tokens.";
-}
-
-/** A price as its button shows it: 3, 0.15, 0.075. */
-const dollars = (value) => String(Number(value.toFixed(value < 0.1 ? 3 : 2)));
-
-/** Whether any of a model's context, output, or price fields has something in it. */
-const limitsSet = ({ contextWindow, maxTokens, cost }) =>
-    [contextWindow, maxTokens, ...Object.values(cost)].some((each) => each.trim() !== "");
+/** Whether two models' limit fields say the same. */
+const sameLimits = (one, other) =>
+    ["contextWindow", "maxTokens", "cost", "tiers"].every(
+        (field) => JSON.stringify(one[field]) === JSON.stringify(other[field]),
+    );
 
 /** What a model's Context and price button says: what is set, or that nothing is. */
 function limitsSummary(limits) {
     const window = tokensFrom(limits.contextWindow);
-    const price = limitsProblem(limits) === "" ? priceFrom(limits.cost) : null;
+    const { price } = priceFrom(limits);
     const parts = [
         ...(window > 0 ? [`${formatTokens(window)} context`] : []),
-        ...(price === null ? [] : [`$${dollars(price.input)}/$${dollars(price.output)}`]),
+        ...(price ? [`$${dollars(price.input)}/$${dollars(price.output)}`] : []),
     ];
 
     return parts.length === 0 ? "Context & price" : parts.join(" · ");
 }
 
+/** A price tier's rates as a line: $6 in, $22.5 out, and its cache rates when it has any. */
+const tierRates = (tier) =>
+    [
+        `$${dollars(tier.input)} in`,
+        `$${dollars(tier.output)} out`,
+        ...(tier.cacheRead > 0 ? [`$${dollars(tier.cacheRead)} cache read`] : []),
+        ...(tier.cacheWrite > 0 ? [`$${dollars(tier.cacheWrite)} cache write`] : []),
+    ].join(", ");
+
 /**
- * A model's context window and maximum output, in tokens, and its price, in dollars per million tokens. An empty token
- * field is Pi's default; an empty price is no price, so the model costs nothing.
+ * A model's context window and maximum output, in tokens, and its price, in dollars per million tokens, with the
+ * prices discovery found for long prompts. An empty token field is Pi's default; an empty price is no price, so the
+ * model costs nothing. `problem` is what keeps it from saving.
  */
-function ModelLimits({ id, limits, onChange }) {
-    const problem = limitsProblem(limits);
+function ModelLimits({ id, panelId, limits, problem, onChange }) {
     const tokens = (field, label, fallback) => html`<label class="field">
         <span class="label">${label}</span>
         <input
-            type="number"
             inputmode="numeric"
-            min="1"
-            step="1"
             autocomplete="off"
+            spellcheck="false"
             value=${limits[field]}
             placeholder=${fallback}
             onInput=${(event) => onChange({ [field]: event.currentTarget.value })}
         />
     </label>`;
 
-    return html`<div class="model-limits" role="group" aria-label=${`Context and price of ${id}`}>
+    return html`<div
+        class="model-limits"
+        id=${panelId}
+        role="group"
+        aria-label=${`Context and price of ${id}`}
+    >
         <div class="model-limits-grid">
             ${tokens("contextWindow", "Context window", "128000")}
             ${tokens("maxTokens", "Max output", "16384")}
         </div>
         <p class="muted small">
             In tokens. Empty uses Pi's default (128k and 16k). The context meter and compaction go by
-            the context window.
+            the context window. Each request asks for up to the max output, so keep it at or below
+            what the endpoint allows.
         </p>
         <span class="label">Price in dollars per million tokens</span>
         <div class="model-limits-grid">
@@ -247,11 +209,9 @@ function ModelLimits({ id, limits, onChange }) {
                 ([part, label]) => html`<label class="field" key=${part}>
                     <span class="label">${label}</span>
                     <input
-                        type="number"
                         inputmode="decimal"
-                        min="0"
-                        step="any"
                         autocomplete="off"
+                        spellcheck="false"
                         value=${limits.cost[part]}
                         placeholder=${part === "input" || part === "output" ? "" : "0"}
                         onInput=${(event) =>
@@ -262,9 +222,29 @@ function ModelLimits({ id, limits, onChange }) {
                 </label>`,
             )}
         </div>
+        ${
+            limits.tiers.length > 0 &&
+            html`<div class="model-limits-tiers">
+                <span class="label">Long prompts</span>
+                <ul class="small">
+                    ${limits.tiers.map(
+                        (tier) =>
+                            html`<li key=${tier.inputTokensAbove}>
+                                Over ${formatTokens(tier.inputTokensAbove)} tokens:
+                                ${tierRates(tier)}
+                            </li>`,
+                    )}
+                </ul>
+                <button class="button small ghost" onClick=${() => onChange({ tiers: [] })}>
+                    <${Icon} name="close" size=${14} />
+                    Remove long-prompt prices
+                </button>
+            </div>`
+        }
         <p class="muted small">
-            Pi counts what each message costs, and spend limits use it. Empty: the model costs
-            nothing.
+            Pi counts what each message costs from the tokens the endpoint reports, and spend limits
+            use it; an endpoint that reports none costs nothing, and OpenRouter's own billed cost
+            replaces the price when it sends one. Empty: the model costs nothing.
         </p>
         ${problem && html`<p class="warn small" role="alert">${problem}</p>`}
     </div>`;
@@ -296,8 +276,13 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                 ]),
             ),
     );
+    // What each saved model's limit fields started with, by id: a save sends only those that changed.
+    const [start] = useState(
+        () => new Map((editing?.models ?? []).map((model) => [model.id, limitsText(model)])),
+    );
     // The panel open under a model: its thinking levels, or its context and price.
     const [open, setOpen] = useState(null);
+    const panelIds = useId();
     const [listed, setListed] = useState(null);
     const [typed, setTyped] = useState("");
     const [query, setQuery] = useState("");
@@ -326,6 +311,9 @@ export function EndpointForm({ editing, onDone, onCancel }) {
         );
     };
 
+    /** What a save sends of a model's limits, and what keeps it from saving (empty when nothing does). */
+    const limitsOf = (id) => limitsChanges(capsOf(id), start.get(id));
+
     const toggleOpen = (panel) => setOpen(open === panel ? null : panel);
 
     const setCap = (id, patch) =>
@@ -348,6 +336,26 @@ export function EndpointForm({ editing, onDone, onCancel }) {
             });
 
             setListed(answer.models);
+
+            // A model already here gets what the list says of its limits in the fields that are empty.
+            const fill = (models) =>
+                [...models].flatMap(([id, model]) => {
+                    const said = answer.models.find((each) => each.id === id);
+                    const limits = said && fillLimits(model, said);
+
+                    return limits && !sameLimits(limits, model)
+                        ? [[id, { ...model, ...limits }]]
+                        : [];
+                });
+            const filled = fill(caps).length;
+
+            if (filled > 0) {
+                setCaps((was) => new Map([...was, ...fill(was)]));
+                notify(
+                    "info",
+                    `Filled empty context and price fields of ${String(filled)} saved ${filled === 1 ? "model" : "models"} from the list.`,
+                );
+            }
 
             if (answer.models.length === 0) {
                 setProblem("The endpoint lists no models. Add model IDs by hand.");
@@ -376,7 +384,7 @@ export function EndpointForm({ editing, onDone, onCancel }) {
         setProblem("");
 
         const models = chosen.map((id) => {
-            const { images, thinking, contextWindow, maxTokens, cost } = capsOf(id);
+            const { images, thinking } = capsOf(id);
 
             return {
                 id,
@@ -385,9 +393,7 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                     thinking === null
                         ? null
                         : thinking.map((tier) => ({ ...tier, value: tier.value.trim() })),
-                contextWindow: tokensFrom(contextWindow),
-                maxTokens: tokensFrom(maxTokens),
-                cost: priceFrom(cost),
+                ...limitsOf(id).changes,
             };
         });
         const body = {
@@ -424,7 +430,7 @@ export function EndpointForm({ editing, onDone, onCancel }) {
         name.trim() !== "" &&
         baseUrl.trim() !== "" &&
         (noKey || apiKey.trim() !== "" || editing !== undefined) &&
-        chosen.every((id) => tiersReady(capsOf(id).thinking) && limitsProblem(capsOf(id)) === "") &&
+        chosen.every((id) => tiersReady(capsOf(id).thinking) && limitsOf(id).problem === "") &&
         busy === "";
     const keepsKey = editing && editing.key !== "none" && editing.key !== "missing";
     const findLabel =
@@ -514,13 +520,13 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                         role="group"
                         aria-label="Models to add"
                     >
-                        ${matching.map((id) => {
+                        ${matching.map((id, index) => {
                             const on = chosen.includes(id);
                             const model = capsOf(id);
                             const { images, thinking } = model;
                             const thinkingPanel = `thinking ${id}`;
                             const limitsPanel = `limits ${id}`;
-                            const limitsBad = limitsProblem(model) !== "";
+                            const limitsProblem = limitsOf(id).problem;
 
                             return html`<div
                                 class=${`custom-endpoint-model ${on ? "chosen" : ""}`}
@@ -553,6 +559,7 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                                             <button
                                                 class=${`button small model-thinking-button ${thinking === null ? "" : "on"}`}
                                                 aria-expanded=${open === thinkingPanel ? "true" : "false"}
+                                                aria-controls=${`${panelIds}-thinking-${String(index)}`}
                                                 onClick=${() => toggleOpen(thinkingPanel)}
                                             >
                                                 ${tierSummary(thinking)}
@@ -562,8 +569,9 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                                                 />
                                             </button>
                                             <button
-                                                class=${`button small model-thinking-button ${limitsBad ? "bad" : limitsSet(model) ? "on" : ""}`}
+                                                class=${`button small model-thinking-button ${limitsProblem ? "bad" : limitsSet(model) ? "on" : ""}`}
                                                 aria-expanded=${open === limitsPanel ? "true" : "false"}
+                                                aria-controls=${`${panelIds}-limits-${String(index)}`}
                                                 onClick=${() => toggleOpen(limitsPanel)}
                                             >
                                                 ${limitsSummary(model)}
@@ -580,6 +588,7 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                                     open === thinkingPanel &&
                                     html`<${ThinkingLevels}
                                         id=${id}
+                                        panelId=${`${panelIds}-thinking-${String(index)}`}
                                         thinking=${thinking}
                                         onChange=${(next) => setCap(id, { thinking: next })}
                                     />`
@@ -589,7 +598,9 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                                     open === limitsPanel &&
                                     html`<${ModelLimits}
                                         id=${id}
+                                        panelId=${`${panelIds}-limits-${String(index)}`}
                                         limits=${model}
+                                        problem=${limitsProblem}
                                         onChange=${(patch) => setCap(id, patch)}
                                     />`
                                 }
