@@ -332,7 +332,9 @@ export function parseControl(text: string): ControlMessage | undefined {
                 typeof message.expired === "boolean" &&
                 typeof message.broad === "boolean" &&
                 typeof message.totp === "boolean" &&
-                ["session", "pi-preview"].includes(message.kind as string) &&
+                // LIVE ONLY, temporary: runners from before 76d48961 send no `kind` (a session question).
+                (message.kind === undefined ||
+                    ["session", "pi-preview"].includes(message.kind as string)) &&
                 (message.title === undefined || bounded(message.title, 80))
                 ? (message as ApprovalNeeded)
                 : undefined;
