@@ -22,8 +22,21 @@ const tokensText = (value) => (typeof value === "number" ? String(value) : "");
 const plainNumber = (value, digits) =>
     value.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: digits });
 
-/** Dollars as their field shows them: empty when there are none. */
-const dollarsText = (value) => (typeof value === "number" ? plainNumber(value, 12) : "");
+/**
+ * A number as the fewest digits that read back as it, without an exponent: 0.0000001, not 1e-7. A price is at most a
+ * million dollars, so only small numbers have one.
+ */
+function exactNumber(value) {
+    const text = String(value);
+    const small = /^(-?)(\d)(?:\.(\d+))?e-(\d+)$/.exec(text);
+
+    return small === null
+        ? text
+        : `${small[1]}0.${"0".repeat(Number(small[4]) - 1)}${small[2]}${small[3] ?? ""}`;
+}
+
+/** Dollars as their field shows them, exactly: empty when there are none. */
+export const dollarsText = (value) => (typeof value === "number" ? exactNumber(value) : "");
 
 /** What a model's fields start with: its context window, maximum output, price, and price tiers, as text. */
 export const limitsText = (model) => ({

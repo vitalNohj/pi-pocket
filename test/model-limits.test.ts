@@ -5,7 +5,16 @@ import { test } from "node:test";
 // @ts-expect-error: a browser module, without types.
 import * as limits from "../web/model-limits.js";
 
-const { dollars, fillLimits, limitsChanges, limitsSet, limitsText, tokensFrom } = limits;
+const {
+    dollars,
+    dollarsFrom,
+    dollarsText,
+    fillLimits,
+    limitsChanges,
+    limitsSet,
+    limitsText,
+    tokensFrom,
+} = limits;
 
 const tier = { inputTokensAbove: 200000, input: 6, output: 22.5, cacheRead: 0.6, cacheWrite: 0 };
 const saved = {
@@ -23,6 +32,21 @@ test("a field shows its number as typed, a tiny price without an exponent", () =
         tiers: [tier],
     });
     assert.equal(limitsText({ cost: { input: 1e-7, output: 0.0000025 } }).cost.input, "0.0000001");
+
+    // Every digit, so a price that is not edited reads back as the same number.
+    for (const [value, text] of [
+        [4e-13, "0.0000000000004"],
+        [1.25e-7, "0.000000125"],
+        [0.123456789012345, "0.123456789012345"],
+        [1 / 3, "0.3333333333333333"],
+        [1000000, "1000000"],
+        [0, "0"],
+    ] as const) {
+        assert.equal(dollarsText(value), text);
+        assert.equal(dollarsFrom(text), value);
+    }
+
+    assert.equal(dollarsText(undefined), "");
     assert.deepEqual(limitsText(undefined), {
         contextWindow: "",
         maxTokens: "",

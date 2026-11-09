@@ -6,6 +6,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
     dollars,
+    dollarsText,
     fillLimits,
     limitsChanges,
     limitsSet,
@@ -161,13 +162,13 @@ function limitsSummary(limits) {
     return parts.length === 0 ? "Context & price" : parts.join(" · ");
 }
 
-/** A price tier's rates as a line: $6 in, $22.5 out, and its cache rates when it has any. */
+/** A price tier's rates as a line, exactly as Pi uses them: $6 in, $22.5 out, and its cache rates when it has any. */
 const tierRates = (tier) =>
     [
-        `$${dollars(tier.input)} in`,
-        `$${dollars(tier.output)} out`,
-        ...(tier.cacheRead > 0 ? [`$${dollars(tier.cacheRead)} cache read`] : []),
-        ...(tier.cacheWrite > 0 ? [`$${dollars(tier.cacheWrite)} cache write`] : []),
+        `$${dollarsText(tier.input)} in`,
+        `$${dollarsText(tier.output)} out`,
+        ...(tier.cacheRead > 0 ? [`$${dollarsText(tier.cacheRead)} cache read`] : []),
+        ...(tier.cacheWrite > 0 ? [`$${dollarsText(tier.cacheWrite)} cache write`] : []),
     ].join(", ");
 
 /**
@@ -204,6 +205,7 @@ function ModelLimits({ id, panelId, limits, problem, onChange }) {
             what the endpoint allows.
         </p>
         <span class="label">Price in dollars per million tokens</span>
+        <p class="muted small">A dot before the cents and no thousands marks: 0.15, 3, 1250.</p>
         <div class="model-limits-grid">
             ${PRICES.map(
                 ([part, label]) => html`<label class="field" key=${part}>
@@ -230,7 +232,7 @@ function ModelLimits({ id, panelId, limits, problem, onChange }) {
                     ${limits.tiers.map(
                         (tier) =>
                             html`<li key=${tier.inputTokensAbove}>
-                                Over ${formatTokens(tier.inputTokensAbove)} tokens:
+                                Over ${tier.inputTokensAbove.toLocaleString("en-US")} tokens:
                                 ${tierRates(tier)}
                             </li>`,
                     )}
@@ -289,6 +291,10 @@ export function EndpointForm({ editing, onDone, onCancel }) {
     const [busy, setBusy] = useState("");
     const [problem, setProblem] = useState("");
     const first = useRef(null);
+    // The form as last drawn: an answer from the endpoint, which comes later, goes by what the form is now.
+    const latest = useRef(null);
+
+    latest.current = { baseUrl, apiKey, noKey, caps, chosen };
 
     // The form opens under its row: the name is the first thing to fill in.
     useLayoutEffect(() => {
@@ -318,12 +324,31 @@ export function EndpointForm({ editing, onDone, onCancel }) {
 
     const setCap = (id, patch) =>
         setCaps((was) => new Map(was).set(id, { ...capsOf(id), ...patch }));
-    const toggle = (id, on) =>
+    /** Models just chosen keep what they show now, so a later Find again fills only their empty fields. */
+    const keepCaps = (ids) =>
+        setCaps((was) => {
+            const next = new Map(was);
+
+            for (const id of ids.filter((each) => !next.has(each))) {
+                next.set(id, capsOf(id));
+            }
+
+            return next.size === was.size ? was : next;
+        });
+
+    const toggle = (id, on) => {
+        if (on) {
+            keepCaps([id]);
+        }
+
         setChosen((was) =>
             on ? [...was.filter((each) => each !== id), id] : was.filter((each) => each !== id),
         );
+    };
 
     const discover = async () => {
+        const asked = { baseUrl, apiKey, noKey };
+
         setBusy("discover");
         setProblem("");
 
@@ -334,26 +359,33 @@ export function EndpointForm({ editing, onDone, onCancel }) {
                 // No key asks with none, not with the saved key.
                 ...(editing && !noKey ? { id: editing.id } : {}),
             });
+            const now = latest.current;
+
+            // The endpoint or its key changed while it answered: its list is of another one.
+            if (Object.entries(asked).some(([field, value]) => now[field] !== value)) {
+                return;
+            }
 
             setListed(answer.models);
 
-            // A model already here gets what the list says of its limits in the fields that are empty.
+            // A chosen model gets what the list says of its limits in the fields that are empty.
             const fill = (models) =>
                 [...models].flatMap(([id, model]) => {
-                    const said = answer.models.find((each) => each.id === id);
+                    const said =
+                        now.chosen.includes(id) && answer.models.find((each) => each.id === id);
                     const limits = said && fillLimits(model, said);
 
                     return limits && !sameLimits(limits, model)
                         ? [[id, { ...model, ...limits }]]
                         : [];
                 });
-            const filled = fill(caps).length;
+            const filled = fill(now.caps).length;
 
             if (filled > 0) {
                 setCaps((was) => new Map([...was, ...fill(was)]));
                 notify(
                     "info",
-                    `Filled empty context and price fields of ${String(filled)} saved ${filled === 1 ? "model" : "models"} from the list.`,
+                    `Filled empty context and price fields of ${String(filled)} ${filled === 1 ? "model" : "models"} from the list.`,
                 );
             }
 
@@ -374,6 +406,7 @@ export function EndpointForm({ editing, onDone, onCancel }) {
             .filter(Boolean);
 
         if (ids.length > 0) {
+            keepCaps(ids);
             setChosen((was) => [...was, ...ids.filter((id) => !was.includes(id))]);
             setTyped("");
         }
