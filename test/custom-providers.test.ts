@@ -962,6 +962,31 @@ test("a model's context window, maximum output, and price go into models.json, a
         models: [{ id: "big", cost: { input: 0.5, output: 1.5, tiers: [] } }, "default"],
     });
     assert.equal(readModels().providers.priced.models[0].cost.tiers, undefined);
+
+    // A hand-made tier that Pi takes but the form would not (it starts at 0 tokens) stays when the price changes
+    // without tiers; sent back, it is refused by its number.
+    const handMade = readModels();
+    const odd = { inputTokensAbove: 0, input: 2, output: 4, cacheRead: 0, cacheWrite: 0 };
+
+    handMade.providers.priced.models[0].cost.tiers = [tier, odd];
+    writeFileSync(modelsFile, JSON.stringify(handMade));
+    await app.models.refresh({ allowNetwork: false });
+    await app.customProviders.update("priced", {
+        models: [{ id: "big", cost: { input: 0.75, output: 1.5 } }, "default"],
+    });
+    assert.deepEqual(readModels().providers.priced.models[0].cost, {
+        input: 0.75,
+        output: 1.5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        tiers: [tier, odd],
+    });
+    await assert.rejects(
+        app.customProviders.update("priced", {
+            models: [{ id: "big", cost: { input: 1, output: 2, tiers: [tier, odd] } }, "default"],
+        }),
+        /big: price tier 2 starts above a whole number of tokens/,
+    );
     await app.customProviders.remove("priced");
 });
 

@@ -106,7 +106,8 @@ const sameTiers = (one, other) => JSON.stringify(one) === JSON.stringify(other);
 /**
  * What a save sends of a model's limits, and what is wrong with them. A saved model (`start`, the text its fields
  * started with) sends only the fields that changed, the price as one, so a hand-made value the form cannot show stays
- * as it is; a new model sends all. A field sent empty is null: Pi's default, or no price.
+ * as it is; a new model sends all. A field sent empty is null: Pi's default, or no price. A saved model's price is sent
+ * without its tiers when they did not change, so the server keeps them as they are.
  */
 export function limitsChanges(limits, start) {
     const changes = {};
@@ -139,7 +140,13 @@ export function limitsChanges(limits, start) {
             return { problem };
         }
 
-        changes.cost = price;
+        if (price && start !== undefined && sameTiers(limits.tiers, start.tiers)) {
+            const { tiers: _kept, ...rates } = price;
+
+            changes.cost = rates;
+        } else {
+            changes.cost = price;
+        }
     }
 
     return { changes, problem: "" };

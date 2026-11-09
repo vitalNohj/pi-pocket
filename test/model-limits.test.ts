@@ -180,6 +180,17 @@ test("removing the long-prompt prices sends the price without them", () => {
     });
 });
 
+test("a changed price of a saved model leaves its tiers to the server, which keeps them as they are", () => {
+    const start = limitsText(saved);
+
+    assert.deepEqual(
+        limitsChanges({ ...start, cost: { ...start.cost, input: "4" } }, start).changes,
+        {
+            cost: { input: 4, output: 15, cacheRead: 0.3, cacheWrite: 0 },
+        },
+    );
+});
+
 test("Find again fills the empty fields only, and a price only when none is set", () => {
     const said = {
         id: "m",

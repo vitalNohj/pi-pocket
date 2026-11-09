@@ -287,8 +287,9 @@ export function priceOf(id: string, value: unknown): ModelPrice | null {
         );
     }
 
-    const tiers = (given.tiers as (Json | null)[]).map((tier): PriceTier => {
+    const tiers = (given.tiers as (Json | null)[]).map((tier, index): PriceTier => {
         const above = tier?.inputTokensAbove;
+        const which = `${id}: price tier ${String(index + 1)}`;
 
         if (
             typeof above !== "number" ||
@@ -298,16 +299,23 @@ export function priceOf(id: string, value: unknown): ModelPrice | null {
         ) {
             throw new HttpError(
                 400,
-                `${id}: a price tier starts above a whole number of tokens, from 1 to ${MAX_TOKENS.toLocaleString("en-US")}.`,
+                `${which} starts above a whole number of tokens, from 1 to ${MAX_TOKENS.toLocaleString("en-US")}.`,
             );
         }
 
-        return {
-            inputTokensAbove: above,
-            ...(Object.fromEntries(
-                RATES.map((field) => [field, rate(tier?.[field] ?? base[field])]),
-            ) as unknown as PriceRates),
-        };
+        try {
+            return {
+                inputTokensAbove: above,
+                ...(Object.fromEntries(
+                    RATES.map((field) => [field, rate(tier?.[field] ?? base[field])]),
+                ) as unknown as PriceRates),
+            };
+        } catch {
+            throw new HttpError(
+                400,
+                `${which}: a price is dollars per million tokens, from 0 to ${MAX_PRICE.toLocaleString("en-US")}.`,
+            );
+        }
     });
 
     if (new Set(tiers.map((tier) => tier.inputTokensAbove)).size !== tiers.length) {
