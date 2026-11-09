@@ -22066,6 +22066,27 @@ pre.gallery-code {
     padding: 0 0 1rem;
 }
 
+/* Your authenticator in the name sheet: its state, or the steps to link or remove it. */
+.my-authenticator {
+    padding-top: 1rem;
+}
+
+.authenticator-link {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.authenticator-link .qr {
+    width: min(60vw, 200px);
+}
+
+/* The key to type by hand: long, so it may wrap anywhere. */
+.authenticator-secret {
+    overflow-wrap: anywhere;
+    user-select: all;
+}
+
 /* All artifacts: a row for each, in the session's own group (it shares `.running`'s frame), with its current version. */
 .overview-group {
     border: 1px solid var(--hair);

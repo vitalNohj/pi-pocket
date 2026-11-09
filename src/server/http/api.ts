@@ -50,6 +50,78 @@ function lanAddresses(): string[] {
         .map((net) => net!.address);
 }
 
+/** A 6-digit code from a request body, or a 400 that says what to enter. */
+function sixDigits(value: unknown): string {
+    if (typeof value !== "string" || !/^\d{6}$/.test(value)) {
+        throw new HttpError(400, "Enter the 6-digit code from your authenticator.");
+    }
+
+    return value;
+}
+
+/**
+ * `/api/me/authenticator[/action]`: a person's own authenticator app. Anyone signed in links one to their own account,
+ * viewers too; its secret is shown once, while linking, and never again.
+ *
+ * - GET: whether one is linked, and until when wrong codes locked it out.
+ * - POST `begin`: a new secret, its `otpauth:` link, and that link as a QR code; replaces one not yet confirmed.
+ * - POST `confirm` `{ code }`: the first code links it.
+ * - POST `remove` `{ code }`: one of its codes removes it; one not yet confirmed needs none.
+ */
+async function authenticatorRoute(
+    { app, request, user }: ApiRequest,
+    action: string | undefined,
+    method: string,
+): Promise<unknown> {
+    const status = () => {
+        const until = app.authenticators.lockedUntil(user.id);
+
+        return {
+            linked: app.authenticators.linked(user.id),
+            ...(until === undefined ? {} : { lockedUntil: until }),
+        };
+    };
+
+    if (action === undefined && method === "GET") {
+        return status();
+    }
+
+    if (method !== "POST") {
+        throw new HttpError(404, "Not found");
+    }
+
+    if (action === "begin") {
+        const { secret, link } = app.authenticators.begin(user.id, user.name);
+        const svg = await QRCode.toString(link, {
+            type: "svg",
+            margin: 1,
+            color: { dark: "#000000", light: "#ffffff" },
+        });
+
+        return { secret, link, svg };
+    }
+
+    const body = await readJson<{ code?: unknown } | null>(request);
+
+    if (action === "confirm") {
+        app.authenticators.confirm(user.id, sixDigits(body?.code));
+
+        return status();
+    }
+
+    if (action === "remove") {
+        app.authenticators.remove(
+            user.id,
+            user,
+            body?.code === undefined ? undefined : sixDigits(body.code),
+        );
+
+        return status();
+    }
+
+    throw new HttpError(404, "Not found");
+}
+
 /** The `/api` routes. Each HTTP handler makes its own, and its event streams live as long as it does. */
 export function createApi(options: HttpOptions, auth: Auth) {
     const { app } = options;
@@ -169,7 +241,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return poll(request, response, url, user);
         }
 
-        if (first === "me" && method === "GET") {
+        if (first === "me" && second === undefined && method === "GET") {
             return json(
                 response,
                 200,
@@ -203,6 +275,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
             app.setAvatar(user, undefined);
 
             return json(response, 200, { ok: true });
+        }
+
+        // Each person's own authenticator app (`approval-methods.ts`): they approve their new folders with its codes.
+        if (first === "me" && second === "authenticator") {
+            return json(response, 200, await authenticatorRoute(route, third, method));
         }
 
         // A picture of anyone this person may see in the people list.
@@ -251,6 +328,24 @@ export function createApi(options: HttpOptions, auth: Auth) {
             app.removeUser(user, second);
 
             return json(response, 200, { ok: true });
+        }
+
+        // The owner removes someone's authenticator, for a lost phone: they link a new one from their account.
+        if (
+            first === "users" &&
+            second !== undefined &&
+            third === "authenticator" &&
+            method === "DELETE"
+        ) {
+            requireOwner(user);
+
+            if (app.config.userById(second) === undefined) {
+                throw new HttpError(404, "No such person.");
+            }
+
+            app.authenticators.remove(second, user);
+
+            return json(response, 200, app.people(user));
         }
 
         if (first === "users" && second !== undefined && third === undefined && method === "POST") {

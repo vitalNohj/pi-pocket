@@ -37,7 +37,12 @@ test("keeps a person's authenticator with their account, and never in what brows
     const shown = JSON.stringify([await app.hello(alex), await app.hello(owner(app))]);
 
     assert.equal(shown.includes(secret), false);
-    assert.equal(shown.includes("authenticator"), false);
+    // The owner learns that one is linked (to remove it for a lost phone); others learn nothing of it.
+    assert.equal(JSON.stringify(await app.hello(alex)).includes("authenticator"), false);
+    assert.equal(
+        (await app.hello(owner(app))).users.find((each) => each.id === alex.id)?.authenticator,
+        true,
+    );
 });
 
 test("tells the owner when a guest's codes lock out, and not the guest", async () => {

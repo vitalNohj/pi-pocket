@@ -377,6 +377,7 @@ function PeopleList() {
                     <div class="muted small">
                         ${person.role === "owner" ? "owner" : person.role === "viewer" ? "view only" : "can steer"}
                         ${person.sessions ? ` · only ${person.sessions.map(sessionTitle).join(", ")}` : ""} · ${lastSeen(person)}
+                        ${person.authenticator ? " · authenticator linked" : ""}
                     </div>
                 </div>
                 ${
@@ -402,6 +403,30 @@ function PeopleList() {
                                 onClick=${() => change(person, { sessions: null })}
                             >
                                 All sessions
+                            </button>`
+                        }
+                        ${
+                            person.authenticator &&
+                            html`<button
+                                class="button small ghost"
+                                title="For a lost phone: they can link a new one from their account"
+                                onClick=${() =>
+                                    confirm(
+                                        `Remove ${person.name}'s authenticator? They link a new one to approve folders again.`,
+                                    ) &&
+                                    attempt(async () =>
+                                        store.set({
+                                            users: await api(
+                                                `users/${person.id}/authenticator`,
+                                                undefined,
+                                                {
+                                                    method: "DELETE",
+                                                },
+                                            ),
+                                        }),
+                                    )}
+                            >
+                                Remove authenticator
                             </button>`
                         }
                         <button

@@ -2634,6 +2634,10 @@ export class PocketApp {
                 ...(each.sessions === undefined || scope !== undefined
                     ? {}
                     : { sessions: each.sessions.map(Number) }),
+                // For the owner, who can remove it (a lost phone): that one is linked, never what it holds.
+                ...(viewer.role === "owner" && each.authenticator?.confirmedAt !== undefined
+                    ? { authenticator: true }
+                    : {}),
             }));
     }
 
