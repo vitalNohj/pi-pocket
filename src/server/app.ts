@@ -160,7 +160,8 @@ import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.ts";
 import { AccessPolicy, THIS_SERVER } from "./access.ts";
-import { coveredFolder } from "../runner/folders.ts";
+import { coveredFolder, realFolder } from "../runner/folders.ts";
+import { FolderRequests, type FolderRequestKind } from "./folder-requests.ts";
 import {
     changedThere,
     type FolderScan,
@@ -403,6 +404,8 @@ export class PocketApp {
     readonly approvalMethods: ApprovalMethods;
     /** Who may use which computer, folder, and session (`access.ts`): every access check asks it. */
     readonly policy: AccessPolicy;
+    /** New folders on this server waiting for an approval (`folder-requests.ts`). */
+    readonly folderRequests: FolderRequests;
     /** Other computers that run sessions' tools (`runners.ts`): their links, keys, and environments. */
     readonly runners: Runners;
     /** Push subscriptions and their keys; undefined until the server opened. */
@@ -597,6 +600,19 @@ export class PocketApp {
         });
         this.approvalMethods = new ApprovalMethods(this.authenticators);
         this.policy = this.#makePolicy();
+        this.folderRequests = new FolderRequests({
+            methods: this.approvalMethods,
+            person: (id) => this.config.userById(id),
+            hasCode: (id) => this.authenticators.linked(id),
+            home: this.#home,
+            save: (folder) => {
+                this.config.saveServerFolder(folder);
+                this.runners.changed();
+            },
+            changed: () => this.#folderRequestsChanged(),
+            asked: (request) => this.alerts.folderRequest(request),
+            now: () => this.now(),
+        });
         this.#lockFile = join(options.dataDir, "harness.lock");
         this.#log = options.log ?? ((line) => console.log(line));
         this.runners = new Runners({
@@ -2792,6 +2808,41 @@ export class PocketApp {
     }
 
     /**
+     * Before `user` starts a session in `folder` on this server (a new one, a copy, a move, a linked one): go on at once
+     * when the policy allows it, refuse who may not start here, or wait for an approval (`folder-requests.ts`): their own
+     * authenticator code, or the owner from the app. `signal` withdraws the request.
+     */
+    async approveFolder(
+        user: User,
+        folder: string,
+        kind: FolderRequestKind,
+        signal?: AbortSignal,
+    ): Promise<void> {
+        // A permission keeps the real folder: a symlink changed later cannot widen it.
+        const real = await realFolder(folder);
+        const decision = await this.policy.folder(user, THIS_SERVER, real);
+
+        if (decision.kind === "allow") {
+            return;
+        }
+
+        if (decision.kind === "refuse") {
+            this.policy.requireStart(user, THIS_SERVER);
+
+            throw new HttpError(403, "You cannot start sessions here.");
+        }
+
+        await this.folderRequests.ask(user, real, kind, decision.saved, signal);
+    }
+
+    /** Each person's tabs hear their own folder requests; the owner's hear every one. */
+    #folderRequestsChanged(): void {
+        for (const client of this.#clients) {
+            client.send("folder-requests", this.folderRequests.list(client.user));
+        }
+    }
+
+    /**
      * May `user` browse this server's folders, to choose one for a new session (`access.ts` `mayBrowse`): whoever the
      * owner chose for this server, and steers. A session's own folder, in its Files panel, follows the session instead.
      */
@@ -3102,6 +3153,7 @@ export class PocketApp {
 
         return {
             ...(thisServer === undefined ? {} : { thisServer }),
+            folderRequests: this.folderRequests.list(user),
             user: {
                 id: user.id,
                 name: user.name,
@@ -3765,6 +3817,9 @@ export class PocketApp {
      * again, made for its person (`#scheduleSessions`). The policy reads the live records, so nothing else is kept.
      */
     accessChanged(): void {
+        // A folder request of someone who may no longer start sessions here ends: nobody can approve it into one.
+        this.folderRequests.prune((person) => this.policy.mayStart({ id: person }, THIS_SERVER));
+
         for (const client of [...this.#clients]) {
             if (
                 client.conversationId !== undefined &&
@@ -3818,6 +3873,7 @@ export class PocketApp {
 
     #forget(userId: string): void {
         this.config.removeUser(userId);
+        this.folderRequests.prune((person) => person !== userId);
         this.runners.changed();
         removeAvatar(this.dataDir, userId);
         this.pushStore?.removeUser(userId);

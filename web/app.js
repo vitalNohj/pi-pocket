@@ -8,6 +8,7 @@ import { browserAvailable, setBrowserOpen, toggleBrowser } from "./browser.js";
 import { PeopleButton, PeoplePanel } from "./chat.js";
 import { Composer, openingByAlt, shortModel, StatusLine } from "./composer.js";
 import { SessionApproval } from "./runner-wait.js";
+import { FolderRequests } from "./folder-requests.js";
 import { useChanges } from "./diff.js";
 import {
     FilesButton,
@@ -641,6 +642,7 @@ function App() {
         <${Sheets} />
         <${QuoteReplyButton} />
         <${LauncherHost} />
+        <${FolderRequests} />
         <${Notices} />
     </div>`;
 }

@@ -16,7 +16,7 @@ import {
     work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -119,6 +119,10 @@ before(async () => {
     invited = person("Invited", "guest", [String(shared)]);
     stranger = person("Stranger", "guest");
     app.config.setServerUsers([guest.id, viewer.id]);
+    // The folders here need no approval: who may start a session is what these tests check, not which folders need one
+    // (`folder-requests.test.ts`).
+    app.config.saveServerFolder(realpathSync(root));
+    app.config.setComputerSettings(undefined, { stopAsking: true });
     app.accessChanged();
     await app.commands.shareSession(shared, owner(app), [guest.id, viewer.id]);
 });

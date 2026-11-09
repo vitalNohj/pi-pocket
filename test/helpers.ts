@@ -1,6 +1,6 @@
 // What the server tests share: an isolated Pi install and data folder, a scripted model, and small helpers. Import
 // this before anything from src/: it points Pi's config at a temporary folder first.
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -24,9 +24,11 @@ mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 /** The folder test sessions work in. */
 export const work = join(root, "work");
 mkdirSync(work);
-/** The home folder the app finds `~/.agents/skills` in, for the same isolation. */
-export const home = join(root, "home");
-mkdirSync(home);
+/**
+ * The home folder the app finds `~/.agents/skills` in, for the same isolation. Beside `root`, not in it: a folder above
+ * home is too broad to save (`broadFolder`), and `addPerson` saves `root`.
+ */
+export const home = mkdtempSync(join(tmpdir(), "pi-pocket-test-home-"));
 
 const { PocketApp } = await import("../src/server/app.ts");
 const { SessionsDoc } = await import("../src/server/docs.ts");
@@ -135,9 +137,10 @@ export const owner = (app: App) => app.config.users.find((user) => user.role ===
 
 /**
  * Add a person with what everyone with access to the whole server had before the access policy (`access.ts`): chosen
- * for this server, with every session here shared with them, the ones there are now and the ones started later. A
- * person invited to `sessions` gets only those, as `addUser` gives. For tests of something else than who may see what;
- * the policy's own tests choose and share by hand.
+ * for this server, with every session here shared with them, the ones there are now and the ones started later, and no
+ * approval for a folder in the test folder (saved, with "Stop asking" on). A person invited to `sessions` gets only
+ * those, as `addUser` gives. For tests of something else than who may see what; the policy's own tests choose, share,
+ * and approve by hand.
  */
 export async function addPerson(
     app: App,
@@ -152,7 +155,8 @@ export async function addPerson(
     }
 
     app.config.setServerUsers([...(app.config.server.users ?? []), added.user.id]);
-    app.config.setComputerSettings(undefined, { shareNew: true });
+    app.config.setComputerSettings(undefined, { shareNew: true, stopAsking: true });
+    app.config.saveServerFolder(realpathSync(root));
     await app.harness.commit(async (tx) => {
         for (const meta of Object.values((await tx.doc(SessionsDoc)).items)) {
             if (meta.pip === undefined && meta.runner === undefined) {
@@ -252,9 +256,11 @@ export function fakeTab(id: ConversationId | undefined, user: User, protocol = 2
 export function cleanUp(): void {
     // A browser's helper processes can still write to its profile here for a moment after it closes: retry, and a
     // folder that stays only warns, so a slow exit does not fail the file.
-    try {
-        rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    } catch (error) {
-        console.warn(`Could not remove ${root}: ${(error as Error).message}`);
+    for (const folder of [root, home]) {
+        try {
+            rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        } catch (error) {
+            console.warn(`Could not remove ${folder}: ${(error as Error).message}`);
+        }
     }
 }

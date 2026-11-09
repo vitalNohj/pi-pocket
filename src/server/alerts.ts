@@ -13,6 +13,7 @@ import { entryText, projectEntry, snippet } from "./projection.ts";
 import { span, type WaitView } from "./limit-gate.ts";
 import { DEFAULT_PREFS, type EmbedderMessage, type PushMessage, type PushPrefs } from "./push.ts";
 import type { Lockout } from "./approval-methods.ts";
+import type { FolderRequestView } from "./folder-requests.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -118,6 +119,45 @@ export class Alerts {
             body,
             url: "/",
             tag: `lockout-${lockout.person}`,
+        } satisfies PushMessage;
+
+        app.notifyEmbedders(owner.id, { ...message, urgency: "high" });
+
+        // Push services want a real contact; Apple rejects placeholders. A tunnel's https address will do.
+        const subject = app.access?.url?.startsWith("https://") ? app.access.url : undefined;
+
+        void store
+            ?.notify(owner.id, message, {
+                urgency: "high",
+                ...(subject === undefined ? {} : { subject }),
+            })
+            .catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
+    }
+
+    /**
+     * Someone asks to start a session in a new folder on this server (`folder-requests.ts`): the owner hears at once, in
+     * their open tabs (where they allow or deny it) and as a push. Not for the owner's own requests: they need none here.
+     */
+    folderRequest(request: FolderRequestView): void {
+        const app = this.#app;
+        const owner = app.config.users.find((each) => each.role === "owner");
+
+        if (owner === undefined || owner.id === request.person) {
+            return;
+        }
+
+        const body = `${request.name} asks to start a session in ${request.folder}.`;
+        const store = app.pushStore;
+
+        if (!(store?.prefs(owner.id) ?? DEFAULT_PREFS).folders) {
+            return;
+        }
+
+        const message = {
+            title: "New folder",
+            body,
+            url: "/",
+            tag: `folder-${request.id}`,
         } satisfies PushMessage;
 
         app.notifyEmbedders(owner.id, { ...message, urgency: "high" });

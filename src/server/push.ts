@@ -29,6 +29,8 @@ export type PushPrefs = {
     limit: boolean;
     /** The owner's alone: someone's authenticator codes were locked out after too many wrong ones. */
     security: boolean;
+    /** The owner's alone: someone asks to start a session in a new folder on this server (`folder-requests.ts`). */
+    folders: boolean;
 };
 export const DEFAULT_PREFS: PushPrefs = Object.freeze({
     done: true,
@@ -37,6 +39,7 @@ export const DEFAULT_PREFS: PushPrefs = Object.freeze({
     mention: true,
     limit: true,
     security: true,
+    folders: true,
 });
 export type StoredSubscription = PushSubscriptionJson & {
     userId: string;

@@ -628,6 +628,13 @@ export class Commands {
         }
 
         const folder = await app.resolveCwd(requested);
+
+        // A folder here needs an approval unless the policy says it does not (`access.ts` `folder`). A workspace URI is
+        // the owner's alone, who needs none.
+        if (!remote) {
+            await app.approveFolder(user, folder, "new", signal);
+        }
+
         const now = Date.now();
 
         return this.#inPlace(
@@ -2235,6 +2242,16 @@ export class Commands {
             });
         }
 
+        // Moving to another folder here asks as a new session there would.
+        if (
+            runner === undefined &&
+            cwd !== undefined &&
+            app.workspaceScheme(cwd) === undefined &&
+            cwd !== (current?.cwd ?? app.cwdOf(id))
+        ) {
+            await app.approveFolder(user, cwd, "move");
+        }
+
         const change = {
             ...(request.model === undefined
                 ? {}
@@ -3152,6 +3169,8 @@ export class Commands {
                 },
                 signal,
             );
+        } else {
+            await this.#app.approveFolder(user, destination.cwd, "fork", signal);
         }
 
         return this.#inPlace(

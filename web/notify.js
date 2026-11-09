@@ -131,6 +131,12 @@ const KINDS = [
         "when too many wrong authenticator codes lock someone's codes out",
         "owner",
     ],
+    [
+        "folders",
+        "Folder requests",
+        "when someone asks to start a session in a new folder here",
+        "owner",
+    ],
 ];
 
 export function NotificationsSheet() {

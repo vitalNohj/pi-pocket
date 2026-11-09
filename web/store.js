@@ -272,6 +272,8 @@ export const store = {
         runners: [],
         /** This server's own record in the Runners sheet, for the owner alone (`this-server` events); else null. */
         thisServer: null,
+        /** New folders waiting for an approval (`folder-requests.js`): mine, and for the owner every one. */
+        folderRequests: [],
         models: [],
         /** This tab's shared model refresh state and last result (`model-refresh.js`). */
         modelRefresh: { loading: false, result: null, error: null },
@@ -1917,6 +1919,7 @@ const handlers = {
             // Linked computers: the owner's; an older server sends none.
             runners: kept(state.runners, Array.isArray(data.runners) ? data.runners : []),
             thisServer: kept(state.thisServer, data.thisServer ?? null),
+            folderRequests: kept(state.folderRequests, data.folderRequests ?? []),
             models: kept(state.models, data.models),
             guard: kept(state.guard, data.guard),
             server: keptServer(state.server, data.server, asked),
@@ -1986,6 +1989,8 @@ const handlers = {
     runners: (runners) => store.set({ runners }),
     // This server's people, saved folders, or rules changed (`sheets/computers.js`): the owner's alone.
     "this-server": (thisServer) => store.set({ thisServer }),
+    // New folders waiting for an approval came or went (`folder-requests.js`).
+    "folder-requests": (folderRequests) => store.set({ folderRequests }),
     // Pi's lessons changed somewhere: a Memory sheet or menu that shows them fetches them again (`sheets/memory.js`).
     memory: () => store.set((state) => ({ memoryRev: (state.memoryRev ?? 0) + 1 })),
     // Not this person's to see (any more), or gone: nothing of it stays in this tab, kept or shown.

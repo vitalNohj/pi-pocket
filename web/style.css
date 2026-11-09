@@ -7239,6 +7239,34 @@ div.group-head {
     animation: fade var(--t-fade) var(--ease-almost);
 }
 
+/* Others' requests for new folders, for the owner to allow or deny: cards at the bottom, above sheets, under notices. */
+.folder-requests {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(env(safe-area-inset-bottom) + 0.8rem);
+    z-index: 65;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: min(calc(100vw - 20px), 440px);
+}
+
+.folder-request {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    border-radius: var(--r-card);
+    background: var(--panel);
+    box-shadow: var(--pop);
+    overflow-wrap: anywhere;
+}
+
+.folder-request .row {
+    justify-content: flex-end;
+}
+
 /* Waiting for a linked computer, above the still-open folder or copy sheet on phones and desktops. */
 .overlay.runner-wait-overlay {
     z-index: 70;

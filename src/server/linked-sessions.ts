@@ -811,6 +811,11 @@ export class LinkedSessions implements LinkedSessionsApi {
             });
         }
 
+        // Another folder here asks its starter, as a session they start there would: an agent gets no more.
+        if (runner === undefined && !sameFolder && app.workspaceScheme(cwd) === undefined) {
+            await app.approveFolder(user, cwd, "linked");
+        }
+
         const now = Date.now();
 
         return app.harness.commit(async (tx) => {

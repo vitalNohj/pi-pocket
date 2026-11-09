@@ -707,6 +707,31 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, runners);
         }
 
+        /**
+         * Answer a request for a new folder on this server (`folder-requests.ts`): its requester with their own code, or
+         * withdraws it; the owner approves or denies it from the app. Anyone else learns nothing of it (404).
+         */
+        if (first === "folder-requests" && second !== undefined && method === "POST") {
+            const body = await readJson<{
+                code?: unknown;
+                approve?: unknown;
+                deny?: unknown;
+            } | null>(request);
+
+            if (body?.deny === true) {
+                app.folderRequests.deny(user, second);
+            } else if (body?.approve === true) {
+                await app.folderRequests.approve(user, second, { method: "owner" });
+            } else {
+                await app.folderRequests.approve(user, second, {
+                    method: "totp",
+                    code: sixDigits(body?.code),
+                });
+            }
+
+            return json(response, 200, { ok: true });
+        }
+
         // This server's record (`ServerView`): its people, saved folders, and rules, for those who manage it.
         if (
             first === "runners" &&
