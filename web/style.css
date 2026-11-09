@@ -7267,6 +7267,11 @@ div.group-head {
     justify-content: flex-end;
 }
 
+/* A computer's key: one long word, broken anywhere so it stays inside its card on a phone. */
+.runner-key code {
+    word-break: break-all;
+}
+
 /* Waiting for a linked computer, above the still-open folder or copy sheet on phones and desktops. */
 .overlay.runner-wait-overlay {
     z-index: 70;

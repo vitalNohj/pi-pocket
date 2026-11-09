@@ -538,7 +538,7 @@ function ComputerRow({ runner }) {
                 </div>`
             }
             ${again && html`<${LinkSteps} made=${again} onDone=${() => setAgain(null)} />`}
-            ${runner.fingerprint && html`<div class="muted small">Key: <code>${runner.fingerprint}</code></div>`}
+            ${runner.fingerprint && html`<div class="muted small runner-key">Key: <code>${runner.fingerprint}</code></div>`}
             <${Tools} runner=${runner} />
             <${ChoosePeople}
                 runner=${runner}

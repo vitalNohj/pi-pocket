@@ -100,10 +100,10 @@ function scopeListing<T extends Listing>(
         (each) => listing.path === each.replace(/[\\/]+$/, "") || listing.path === each,
     );
 
+    // `home` stays the computer's own, so paths read as they are (`~/projects/app`, not `~/app`).
     return {
         ...listing,
         parent: top ? null : listing.parent,
-        home: given[0] ?? listing.home,
         roots: [],
         given: [...given],
     };
