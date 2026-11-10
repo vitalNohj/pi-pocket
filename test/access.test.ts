@@ -420,6 +420,22 @@ describe("who may share a session", () => {
         );
     });
 
+    it("lets a task's maker and who is in charge of its session manage it, and refuses the owner on someone else's runner", () => {
+        const { policy } = world();
+
+        // Its maker, wherever it is.
+        assert.equal(policy.mayManageTask(guest, guest.id, "20"), true);
+        // Who is in charge of the session's computer: the owner here, the linker on their runner.
+        assert.equal(policy.mayManageTask(owner, guest.id, "10"), true);
+        assert.equal(policy.mayManageTask(linker, guest.id, "20"), true);
+        // Not the owner on a runner someone else linked, nor anyone else.
+        assert.equal(policy.mayManageTask(owner, guest.id, "20"), false);
+        assert.equal(policy.mayManageTask(stranger, guest.id, "10"), false);
+        assert.equal(policy.mayManageTask(viewer, guest.id, "11"), false);
+        // A PiP is its person's alone.
+        assert.equal(policy.mayManageTask(owner, guest.id, "40"), false);
+    });
+
     it("lets people who steer here invite to every session, and refuses viewers and invited people", () => {
         const { policy } = world();
 

@@ -364,6 +364,11 @@ export class Hooks {
         return this.#app.loader.extensionNames().includes(TRIGGERS_EXTENSION);
     }
 
+    /** Its maker, or who is in charge of its session's computer and may see the session. */
+    #mayManage(user: User, hook: Pick<Hook, "by" | "target">): boolean {
+        return this.#app.policy.mayManageTask(user, hook.by, String(hook.target));
+    }
+
     async #all(): Promise<Hook[]> {
         return Object.values((await this.#app.harness.snapshot(HooksDoc, context))?.items ?? {});
     }
@@ -377,10 +382,13 @@ export class Hooks {
             : { ...rest, path: `/hook/${hook.id}/${secret}` };
     }
 
-    /** The hooks a person may see and remove: their own; the owner's sees every one. Newest first. */
+    /**
+     * The hooks a person may see and remove: their own, and those of the sessions they are in charge of and may see
+     * (`access.ts` `mayManageTask`). Newest first.
+     */
     async list(user: User): Promise<HookView[]> {
         return (await this.#all())
-            .filter((hook) => user.role === "owner" || hook.by === user.id)
+            .filter((hook) => this.#mayManage(user, hook))
             .sort((a, b) => b.createdAt - a.createdAt)
             .map((hook) => this.view(hook));
     }
@@ -460,7 +468,7 @@ export class Hooks {
         }
 
         const mine = (item: Hook | undefined): item is Hook =>
-            item !== undefined && (user.role === "owner" || item.by === user.id);
+            item !== undefined && this.#mayManage(user, item);
         const before = (await this.#app.harness.snapshot(HooksDoc, context))?.items;
         const found = before !== undefined && Object.hasOwn(before, id) ? before[id] : undefined;
 
@@ -497,7 +505,7 @@ export class Hooks {
             // Own keys only: an id like `__proto__` names no hook.
             const item = Object.hasOwn(items, id) ? items[id] : undefined;
 
-            if (item === undefined || (user.role !== "owner" && item.by !== user.id)) {
+            if (item === undefined || !this.#mayManage(user, item)) {
                 throw new HttpError(404, "No such webhook");
             }
 
@@ -509,13 +517,13 @@ export class Hooks {
         return this.view(hook);
     }
 
-    /** Remove a hook: posts to it get 404 from now on. Its maker or the owner may. */
+    /** Remove a hook: posts to it get 404 from now on. Its maker, or who is in charge of its session, may. */
     async remove(user: User, id: string): Promise<Hook> {
         return this.#app.harness.commit(async (tx) => {
             const doc = await tx.doc(HooksDoc);
             const hook = Object.hasOwn(doc.items, id) ? doc.items[id] : undefined;
 
-            if (hook === undefined || (user.role !== "owner" && hook.by !== user.id)) {
+            if (hook === undefined || !this.#mayManage(user, hook)) {
                 throw new HttpError(404, "No such webhook");
             }
 

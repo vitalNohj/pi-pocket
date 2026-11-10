@@ -4,6 +4,7 @@
 import {
     type App,
     cleanUp,
+    context,
     newSession,
     openApp,
     owner,
@@ -17,6 +18,8 @@ import { type ClientRequest, createServer, request as httpRequest, type Server }
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { newIdentity } from "../src/runner/secure-link.ts";
+import { HooksDoc, RepoWatchesDoc, SessionsDoc } from "../src/server/docs.ts";
 import { defang } from "../src/server/fence.ts";
 import { LEFT_OUT, screen } from "../src/server/hooks.ts";
 import { createHandler } from "../src/server/http.ts";
@@ -502,6 +505,68 @@ test("a post that does not go gives its place in the hour back", async () => {
     assert.equal((await post()).status, 202);
     await until(async () => !app.isBusy(id) && (await messages(id)).length === 1, "Pi to answer");
     await app.commands.removeHook(owner(app), hook.id);
+});
+
+test("the owner sees, changes, and removes no hook or watch of a session on a computer they are not in charge of", async () => {
+    // Gina linked her own computer; a session of hers there has a hook and a repository watch.
+    const gina = app.config.addUser("Gina", "guest").user;
+    const ginas = app.config.addRunner("Gina's laptop", gina.id, newIdentity().publicKey).id;
+    const hers = await newSession(app);
+
+    await app.harness.commit(async (tx) => {
+        const meta = (await tx.doc(SessionsDoc)).items[String(hers)]!;
+
+        meta.runner = ginas;
+        meta.createdBy = gina.id;
+        (await tx.doc(HooksDoc)).items["gina-hook"] = {
+            id: "gina-hook",
+            secret: "gina-secret-value",
+            name: "Gina deploys",
+            instructions: "Deploy",
+            target: Number(hers),
+            by: gina.id,
+            createdAt: Date.now(),
+            count: 0,
+        };
+    }, context);
+    const watch = { id: "gina-watch" };
+
+    await app.harness.commit(async (tx) => {
+        (await tx.doc(RepoWatchesDoc)).items[watch.id] = {
+            id: watch.id,
+            repo: "acme/app",
+            events: ["issues"],
+            instructions: "Look",
+            branch: "main",
+            target: Number(hers),
+            by: gina.id,
+            byPi: false,
+            createdAt: Date.now(),
+            since: new Date().toISOString(),
+            taskId: "gina-watch-task" as never,
+        } as never;
+    }, context);
+    assert.equal(app.canSee(owner(app), hers), false, "the owner sees nothing on Gina's computer");
+
+    try {
+        const listed = await app.commands.hooks(owner(app));
+
+        assert.ok(!listed.hooks.some((each) => each.id === "gina-hook"), "no hook of hers");
+        assert.ok(!listed.repoWatches.some((each) => each.id === watch.id), "no watch of hers");
+        assert.doesNotMatch(JSON.stringify(listed), /gina-secret-value/);
+        await assert.rejects(app.hooks.rotate(owner(app), "gina-hook"), /No such webhook/);
+        await assert.rejects(app.hooks.remove(owner(app), "gina-hook"), /No such webhook/);
+        await assert.rejects(app.repoWatches.remove(owner(app), watch.id), /no repository watch/);
+
+        // Gina sees and manages her own.
+        assert.ok((await app.commands.hooks(gina)).hooks.some((each) => each.id === "gina-hook"));
+        assert.ok(
+            (await app.commands.hooks(gina)).repoWatches.some((each) => each.id === watch.id),
+        );
+    } finally {
+        await app.repoWatches.remove(gina, watch.id);
+        await app.hooks.remove(gina, "gina-hook");
+    }
 });
 
 test("ids from addresses name only real hooks", async () => {

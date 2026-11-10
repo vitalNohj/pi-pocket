@@ -236,6 +236,11 @@ export class RepoWatches {
         return this.#app.loader.extensionNames().includes(TRIGGERS_EXTENSION);
     }
 
+    /** Its person, or who is in charge of its session's computer and may see the session. */
+    #mayManage(user: User, watch: Pick<RepoWatch, "by" | "target">): boolean {
+        return this.#app.policy.mayManageTask(user, watch.by, String(watch.target));
+    }
+
     async #all(): Promise<RepoWatch[]> {
         return Object.values(
             (await this.#app.harness.snapshot(RepoWatchesDoc, context))?.items ?? {},
@@ -262,10 +267,13 @@ export class RepoWatches {
         return rest;
     }
 
-    /** The watches a person may see and remove: their own; the owner's sees every one. Newest first. */
+    /**
+     * The watches a person may see and remove: their own, and those of the sessions they are in charge of and may see
+     * (`access.ts` `mayManageTask`). Newest first.
+     */
     async list(user: User): Promise<RepoWatchView[]> {
         return (await this.#all())
-            .filter((watch) => user.role === "owner" || watch.by === user.id)
+            .filter((watch) => this.#mayManage(user, watch))
             .sort((a, b) => b.createdAt - a.createdAt)
             .map((watch) => this.view(watch));
     }
@@ -394,11 +402,11 @@ export class RepoWatches {
         return this.view(watch);
     }
 
-    /** Remove a watch: it looks no more. Its person or the owner may. Returns it. */
+    /** Remove a watch: it looks no more. Its person, or who is in charge of its session, may. Returns it. */
     async remove(user: User, id: string): Promise<RepoWatchView> {
         const watch = (await this.#all()).find((each) => each.id === id.trim());
 
-        if (watch === undefined || (user.role !== "owner" && watch.by !== user.id)) {
+        if (watch === undefined || !this.#mayManage(user, watch)) {
             throw new HttpError(404, `There is no repository watch ${id}.`);
         }
 
@@ -420,7 +428,7 @@ export class RepoWatches {
             const doc = await tx.doc(RepoWatchesDoc);
             const item = Object.values(doc.items).find((each) => each.id === id.trim());
 
-            if (item === undefined || (user.role !== "owner" && item.by !== user.id)) {
+            if (item === undefined || !this.#mayManage(user, item)) {
                 throw new HttpError(404, `There is no repository watch ${id}.`);
             }
 

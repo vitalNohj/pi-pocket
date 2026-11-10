@@ -390,6 +390,31 @@ export class AccessPolicy {
         );
     }
 
+    /**
+     * May `person` see and manage a task (a webhook, a watch) that `by` made for session `target`: its maker, and who is
+     * in charge of the session's computer while they may see it. Never a task on someone's PiP, or on a computer they
+     * are not in charge of: its address and secret stay with the people it is for.
+     */
+    mayManageTask(person: Pick<Person, "id">, by: string, target: string): boolean {
+        const current = this.#current(person);
+
+        if (current === undefined) {
+            return false;
+        }
+
+        if (by === current.id) {
+            return true;
+        }
+
+        const facts = this.#facts.session(target);
+
+        return (
+            facts !== undefined &&
+            this.maySee(current, target) &&
+            this.inCharge(current, facts.computer)
+        );
+    }
+
     /** May `person` steer session `id`: send to its agent, run its tools. They may see it, and are no viewer. */
     maySteer(person: Pick<Person, "id">, id: string): boolean {
         return this.maySee(person, id) && this.#current(person)?.role !== "viewer";
