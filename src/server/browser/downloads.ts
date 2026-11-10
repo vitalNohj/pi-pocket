@@ -12,6 +12,7 @@
  */
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { chmod, copyFile, link, lstat, mkdir, rm, stat, unlink } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
@@ -66,12 +67,38 @@ type Tracked = {
 
 /** A file name a page suggested, safe to use in any folder: no separators, no `..`, nothing Windows refuses. */
 export function safeName(suggested: string): string {
-    const name = suggested
+    const cleaned = suggested
         .replace(/[\u0000-\u001f\u007f/\\<>:"|?*]/g, "_")
-        .replace(/^[\s.]+|[\s.]+$/g, "")
-        .slice(0, 200);
+        .replace(/^[\s.]+|[\s.]+$/g, "");
+    const name = fitBytes(cleaned, NAME_BYTES).replace(/[\s.]+$/g, "");
 
     return name === "" || /^\.+$/.test(name) ? "download" : name;
+}
+
+/** A file name's limit is in bytes (255 on most file systems): this leaves room for " (99)". */
+const NAME_BYTES = 200;
+
+/** `name` in at most `bytes` UTF-8 bytes, whole characters only, keeping a short extension. */
+function fitBytes(name: string, bytes: number): string {
+    const size = (text: string) => Buffer.byteLength(text, "utf8");
+
+    if (size(name) <= bytes) {
+        return name;
+    }
+
+    const dot = name.lastIndexOf(".");
+    const extension = dot > 0 && size(name.slice(dot)) <= 16 ? name.slice(dot) : "";
+    let stem = "";
+
+    for (const character of name.slice(0, name.length - extension.length)) {
+        if (size(stem + character + extension) > bytes) {
+            break;
+        }
+
+        stem += character;
+    }
+
+    return stem + extension;
 }
 
 /** `name`, then "name (2).ext", "name (3).ext", … */
@@ -195,13 +222,41 @@ export async function copyToComputer(
     file: string,
     name: string,
 ): Promise<string> {
-    const { env, separator } = computer;
+    const { separator } = computer;
     const folder = [
         ...(computer.folder === undefined
             ? [computer.tmpdir.replace(/[\\/]+$/, ""), "pi-pocket-downloads"]
             : [computer.folder.replace(/(?<=.)[\\/]+$/, "")]),
         computer.session,
     ].join(separator);
+    // One copy at a time into a folder: a free name is picked and taken before the next one looks.
+    const previous = copying.get(folder) ?? Promise.resolve();
+    const copy = previous.catch(() => {}).then(() => copyInto(computer, folder, file, name));
+    const settled = copy.then(
+        () => {},
+        () => {},
+    );
+
+    copying.set(folder, settled);
+    void settled.then(() => {
+        if (copying.get(folder) === settled) {
+            copying.delete(folder);
+        }
+    });
+
+    return copy;
+}
+
+/** Copies to each computer folder, in turn (`copyToComputer`). */
+const copying = new Map<string, Promise<void>>();
+
+async function copyInto(
+    computer: Computer,
+    folder: string,
+    file: string,
+    name: string,
+): Promise<string> {
+    const { env, separator } = computer;
 
     const check = <T>(result: { ok: true; value: T } | { ok: false; error: Error }): T => {
         if (!result.ok) {
@@ -213,17 +268,22 @@ export async function copyToComputer(
 
     check(await env.createDir(folder, { recursive: true }, BACKGROUND));
 
-    let target = "";
+    let n = 1;
 
-    for (let n = 1; target === ""; n++) {
-        const candidate = `${folder}${separator}${numbered(name, n)}`;
+    const free = async (): Promise<string> => {
+        for (; ; n++) {
+            const candidate = `${folder}${separator}${numbered(name, n)}`;
 
-        if (!check(await env.exists(candidate, BACKGROUND))) {
-            target = candidate;
+            if (!check(await env.exists(candidate, BACKGROUND))) {
+                return candidate;
+            }
         }
-    }
+    };
 
-    const part = `${folder}${separator}.${numbered(name, 1)}.${Date.now().toString(36)}.part`;
+    let target = await free();
+
+    // Short, whatever the name: the name's own bytes plus this would pass the file system's limit.
+    const part = `${folder}${separator}.pi-pocket-${randomUUID()}.part`;
 
     try {
         let first = true;
@@ -239,6 +299,12 @@ export async function copyToComputer(
 
         if (first) {
             check(await env.writeFile(part, "", BACKGROUND));
+        }
+
+        // Another program may have made a file of that name during the copy: rename replaces, so take the next free
+        // one. pi-env has no rename that refuses to replace; this leaves only the moment between check and rename.
+        if (check(await env.exists(target, BACKGROUND))) {
+            target = await free();
         }
 
         check(await env.renameFile(part, target, BACKGROUND));
@@ -296,8 +362,13 @@ export class Downloads {
 
         list.push(download);
 
+        // Past the limit, the oldest one already reported as ended goes: never one still going or not yet reported.
         if (list.length > KEEP) {
-            list.splice(0, list.findIndex((each) => each.reported === "ended") + 1 || 1);
+            const old = list.findIndex((each) => each.reported === "ended");
+
+            if (old !== -1) {
+                list.splice(old, 1);
+            }
         }
 
         this.#lists.set(conversationId, list);

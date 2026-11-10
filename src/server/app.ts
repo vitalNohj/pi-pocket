@@ -2875,7 +2875,8 @@ export class PocketApp {
         const all: SubagentEntry[] = [];
 
         for (const [id, list] of this.#subagentsBySession()) {
-            if (user?.sessions !== undefined && !user.sessions.includes(id)) {
+            // Whom the session is shown to: invited to others, a private session on another computer, PiP.
+            if (user !== undefined && !this.canSee(user, Number(id) as ConversationId)) {
                 continue;
             }
 
@@ -3124,9 +3125,7 @@ export class PocketApp {
                     board ??= this.subagents();
                     this.#sendBoard(
                         client,
-                        scope === undefined
-                            ? board
-                            : board.filter((entry) => scope.includes(String(entry.id))),
+                        scope === undefined && !personal ? board : this.subagents(client.user),
                     );
                 }
             }

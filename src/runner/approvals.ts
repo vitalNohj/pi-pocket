@@ -58,7 +58,8 @@ export class Approvals {
     }
 
     async valid(named: SessionScope | string): Promise<SessionPermission | undefined> {
-        await this.#writes;
+        // A failed save is reported where it was made; checks read what the file holds.
+        await this.#writes.catch(() => {});
         const scope =
             typeof named === "string"
                 ? (this.#read().sessions ?? []).find((entry) => entry.id === named)
@@ -162,7 +163,7 @@ export class Approvals {
     }
 
     async state(): Promise<ApprovalState> {
-        await this.#writes;
+        await this.#writes.catch(() => {});
         const settings = this.#read();
         const folders: string[] = [];
 
@@ -227,8 +228,12 @@ export class Approvals {
                     settings.totpDays = value as number | null;
                 } else if (
                     key === "downloads" &&
-                    (value === null || (typeof value === "string" && isAbsolute(value)))
+                    (value === null ||
+                        (typeof value === "string" &&
+                            isAbsolute(value) &&
+                            !broadFolder(value, homedir())))
                 ) {
+                    // Each session gets \`<folder>/<id>\`: never the home folder, a root, or a folder that holds home.
                     settings.downloads = value ?? undefined;
                 } else {
                     throw new Error(`Invalid runner setting: ${key}`);
