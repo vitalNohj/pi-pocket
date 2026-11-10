@@ -378,10 +378,13 @@ export class AccessPolicy {
             return true;
         }
 
-        // A removed computer's sessions run nowhere: the owner (`inChargeOf`) and their starter still see them, to read
-        // and archive them.
+        // A removed computer's sessions run nowhere: their starter and the people they were shared with still see them,
+        // to read and archive them. Nobody else: unlinking a computer shows no one its private sessions.
         if (this.#facts.computer(facts.computer) === undefined) {
-            return current.role === "owner" || this.starter(facts) === current.id;
+            return (
+                this.starter(facts) === current.id ||
+                facts.sharedWith?.includes(current.id) === true
+            );
         }
 
         return (

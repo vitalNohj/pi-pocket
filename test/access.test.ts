@@ -249,6 +249,25 @@ describe("may this person see and steer this session", () => {
         }
     });
 
+    it("shows a removed computer's sessions only to their starter and the people they were shared with", () => {
+        // The runner is unlinked: its sessions stay, and run nowhere.
+        const { policy } = world(
+            [computer(THIS_SERVER)],
+            [
+                { id: "20", computer: "runner", createdBy: guest.id },
+                { id: "21", computer: "runner", createdBy: linker.id, sharedWith: [viewer.id] },
+            ],
+        );
+
+        assert.equal(policy.maySee(guest, "20"), true, "its starter");
+        assert.equal(policy.maySee(viewer, "21"), true, "shared with them");
+        assert.equal(policy.maySee(linker, "21"), true, "its starter, the linker");
+        // Unlinking shows no one else a private session: not the owner, who saw nothing there before.
+        assert.equal(policy.maySee(owner, "20"), false);
+        assert.equal(policy.maySee(owner, "21"), false);
+        assert.equal(policy.maySee(stranger, "20"), false);
+    });
+
     it("lets who is in charge see every session on their computer", () => {
         const { policy } = world();
 
