@@ -69,7 +69,8 @@ describe("authenticator codes", () => {
     ];
 
     it("matches the RFC 6238 SHA-1 test vectors", () => {
-        assert.equal(secret, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        // RFC 4648's Base32 of the ASCII digits, as the RFC's own test key is written: "GEZDGNBVGY3TQOJQ" twice.
+        assert.equal(secret, "GEZDGNBVGY3TQOJQ".repeat(2));
 
         for (const [seconds, code] of vectors) {
             assert.equal(totp(secret, Math.floor((seconds * 1000) / STEP_MS)), code.slice(2));

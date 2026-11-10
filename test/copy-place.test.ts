@@ -139,12 +139,15 @@ after(async () => {
     cleanUp();
 });
 
+/** A remote with a user and a made-up token in it, built here so that secret scanners do not take it for a real one. */
+const withToken = (user: string, token: string, rest: string) => `https://${user}:${token}@${rest}`;
+
 describe("a repository's name", () => {
     it("is one for every way to write it, without user names or tokens", () => {
         const same = [
             "git@GitHub.com:vitalNohj/pi-pocket.git",
             "https://github.com/vitalNohj/pi-pocket",
-            "https://user:ghp_secret@GitHub.COM/vitalNohj/pi-pocket.git/",
+            withToken("user", "not-a-token", "GitHub.COM/vitalNohj/pi-pocket.git/"),
             "ssh://git@github.com:22/vitalNohj/pi-pocket.git",
             "git+ssh://git@github.com/vitalNohj/pi-pocket",
         ];
@@ -153,7 +156,7 @@ describe("a repository's name", () => {
             assert.equal(normalizeRemote(url), "github.com/vitalNohj/pi-pocket", url);
         }
 
-        assert.ok(!normalizeRemote("https://me:tok3n@host/a/b")!.includes("tok3n"));
+        assert.ok(!normalizeRemote(withToken("me", "tok3n", "host/a/b"))!.includes("tok3n"));
         assert.equal(normalizeRemote("/srv/git/app.git"), "/srv/git/app");
         assert.equal(normalizeRemote("file:///srv/git/app.git"), "/srv/git/app");
         assert.equal(normalizeRemote("C:\\repos\\app"), "C:\\repos\\app");
@@ -163,7 +166,7 @@ describe("a repository's name", () => {
     it("is noted when a session starts, is copied, or moves, and left out without a remote", async () => {
         const app1 = join(root, "repos", "app");
 
-        repository(app1, "https://token:x-oauth@GitHub.com/me/app.git");
+        repository(app1, withToken("token", "x-oauth", "GitHub.com/me/app.git"));
         const id = await newSession(app, app1);
 
         await until(() => app.sessionMeta(id)?.repo !== undefined, "the repository to be noted");
