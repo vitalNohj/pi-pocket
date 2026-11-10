@@ -1249,7 +1249,7 @@ export class Runners {
             .filter((runner) => user === undefined || this.#mayList(runner.id, user))
             .map((runner) => {
                 const link = this.#links.get(runner.id);
-                // Its people and approvals are the business of those who manage it: its linker and the owner.
+                // Its people, folders, and settings are the business of who is in charge of it: its linker.
                 const manages = user === undefined || this.#mayManage(runner.id, user);
 
                 return {

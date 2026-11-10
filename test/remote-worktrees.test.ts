@@ -22,7 +22,6 @@ import {
     say,
     scriptedModel,
     until,
-    approveComputer,
 } from "./helpers.ts";
 
 const repo = join(root, "computer-repo");
@@ -85,7 +84,6 @@ before(async () => {
 
     runnerId = linked.id;
 
-    approveComputer(app, runnerId);
     runner = new Runner({
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",

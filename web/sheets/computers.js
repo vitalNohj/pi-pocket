@@ -3,7 +3,7 @@
 // too) who may use it, the folders each person may use, and whether new sessions start shared (`src/server/access.ts`).
 // A runner trusts its server after the link: its settings are kept here and sent to it.
 import { useEffect, useState } from "preact/hooks";
-import { api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
+import { api, attempt, canLink, closeSheet, notify, openSheet, store } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
 
 /** What a computer is doing now, in a few words. */
@@ -167,6 +167,13 @@ function LinkLocks() {
     </div>`;
 }
 
+/** Whether I am in charge of a computer: its linker, or for this server the owner (`access.ts` `inCharge`). */
+function inCharge(computer) {
+    return computer.id === "this-server"
+        ? store.state.me?.role === "owner"
+        : computer.createdBy === store.state.me?.id;
+}
+
 /** Link a computer: name it, get a one-time code, and run the runner there with this address and code. */
 function LinkComputer({ onDone }) {
     const [name, setName] = useState("");
@@ -248,7 +255,7 @@ function Tools({ runner }) {
  * its network, and where their downloads go there. Plain HTTP was chosen on that computer when it was linked.
  */
 function RunnerSettings({ runner }) {
-    const mine = runner.createdBy === store.state.me?.id || store.state.me?.role === "owner";
+    const mine = inCharge(runner);
 
     if (runner.network === undefined) {
         return null;
@@ -297,8 +304,13 @@ function ChoosePeople({ runner, note }) {
     const [choosing, setChoosing] = useState(false);
     const [selected, setSelected] = useState([]);
     const [busy, setBusy] = useState(false);
-    const mine = runner.createdBy === store.state.me?.id;
+    const mine = inCharge(runner);
     const roleOf = (id) => store.state.users.find((person) => person.id === id)?.role;
+
+    // Who may use it is the business of who is in charge: nobody else gets its list.
+    if (!mine) {
+        return null;
+    }
 
     const choose = () => {
         setSelected((runner.users ?? []).map((person) => person.id));
@@ -379,7 +391,7 @@ function ChoosePeople({ runner, note }) {
 
 /** One on/off rule of a computer kept on the server (`POST /api/runners/:id/settings`), for its linker and the owner. */
 function Rule({ runner, name, label, hint, on }) {
-    const mine = runner.createdBy === store.state.me?.id || store.state.me?.role === "owner";
+    const mine = inCharge(runner);
     const change = () =>
         attempt(() => api(`runners/${encodeURIComponent(runner.id)}/settings`, { [name]: !on }));
 
@@ -396,15 +408,16 @@ const SHARE_HINT =
     "Off: a new session is private to whoever started it, until they share it. On: it starts shared with the people chosen here.";
 
 /**
- * The folders the owner gave each chosen person on a computer (`access.ts`): each covers the folders in it. A person
- * given none may not start sessions there. Only the owner sees and changes them.
+ * The folders given to each chosen person on a computer (`access.ts`): each covers the folders in it. A person given
+ * none may not start sessions there. Only who is in charge (the owner here, a runner's linker there) sees and changes
+ * them.
  */
 function GivenFolders({ computer }) {
     const given = computer.given ?? {};
     const people = (computer.users ?? []).filter((person) => person.role !== "viewer");
     const [adding, setAdding] = useState({});
 
-    if (store.state.me?.role !== "owner" || people.length === 0) {
+    if (!inCharge(computer) || people.length === 0) {
         return null;
     }
 
@@ -545,16 +558,19 @@ function ComputerRow({ runner }) {
                 note="They can start sessions on this computer. Their sessions run as this computer's user, like yours."
             />
             <${GivenFolders} computer=${runner} />
-            <div class="group">
-                <div class="group-title">Sharing</div>
-                <${Rule}
-                    runner=${runner}
-                    name="shareNew"
-                    label="Share new sessions with these people"
-                    hint=${SHARE_HINT}
-                    on=${runner.shareNew === true}
-                />
-            </div>
+            ${
+                inCharge(runner) &&
+                html`<div class="group">
+                    <div class="group-title">Sharing</div>
+                    <${Rule}
+                        runner=${runner}
+                        name="shareNew"
+                        label="Share new sessions with these people"
+                        hint=${SHARE_HINT}
+                        on=${runner.shareNew === true}
+                    />
+                </div>`
+            }
             <${RunnerSettings} runner=${runner} />
         </div>
         <div class="person-actions">
@@ -566,7 +582,12 @@ function ComputerRow({ runner }) {
             >
                 New session
             </button>
-            <button class="button small ghost" onClick=${remove}>Remove</button>
+            ${
+                (runner.createdBy === store.state.me?.id || store.state.me?.role === "owner") &&
+                html`<button class="button small ghost" onClick=${remove}>
+                    ${runner.createdBy === store.state.me?.id ? "Remove" : "Unlink"}
+                </button>`
+            }
         </div>
     </div>`;
 }
@@ -591,7 +612,12 @@ export function ComputersSheet() {
 
     useEffect(() => {
         attempt(async () => {
-            const [list, server] = await Promise.all([api("runners"), api("runners/this-server")]);
+            // This server's record is the owner's business alone (who is in charge of it).
+            const owner = store.state.me?.role === "owner";
+            const [list, server] = await Promise.all([
+                api("runners"),
+                owner ? api("runners/this-server") : null,
+            ]);
 
             store.set({ runners: list, thisServer: server });
             setLoaded(true);
@@ -619,12 +645,13 @@ export function ComputersSheet() {
             html`<p class="muted small runner-none">No computers linked yet.</p>`
         }
         ${
-            linking
+            canLink() &&
+            (linking
                 ? html`<${LinkComputer} onDone=${() => setLinking(false)} />`
                 : html`<button class="button primary wide" onClick=${() => setLinking(true)}>
                       <${Icon} name="plus" size=${16} /> Link a computer
-                  </button>`
+                  </button>`)
         }
-        <${LinkLocks} />
+        ${store.state.me?.role === "owner" && html`<${LinkLocks} />`}
     <//>`;
 }

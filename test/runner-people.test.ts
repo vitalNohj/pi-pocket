@@ -7,10 +7,11 @@ import {
     fakeTab,
     openApp,
     owner,
+    answerRequests,
+    linkAuthenticator,
     root,
     scriptedModel,
     until,
-    approveComputer,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -92,7 +93,6 @@ before(async () => {
 
     runnerId = linked.id;
 
-    approveComputer(app, runnerId);
     otherRunnerId = app.config.addRunner(
         "Another computer",
         owner(app).id,
@@ -124,11 +124,13 @@ describe("people granted a computer", () => {
     it("refuses an ungranted guest's sessions, list, and folders", async () => {
         for (const response of [
             await request(guest, "sessions", { runner: runnerId, cwd: there }),
-            await request(guest, "runners"),
             await request(guest, `runners/${runnerId}/fs`),
         ]) {
             assert.equal(response.status, 403);
         }
+
+        // The list of computers holds none for them.
+        assert.deepEqual((await request(guest, "runners")).body, []);
 
         assert.equal(app.policy.mayStart(guest, runnerId), false);
         assert.equal(app.policy.mayStart(owner(app), "missing"), false);
@@ -163,8 +165,9 @@ describe("people granted a computer", () => {
         assert.deepEqual(app.config.runnerById(runnerId)?.users, [guest.id]);
         assert.deepEqual(new ConfigStore(app.dataDir).runnerById(runnerId)?.users, [guest.id]);
         assert.equal(app.policy.mayStart(guest, runnerId), true);
-        // Owners may do everything (`access.ts`).
-        assert.equal(app.policy.mayStart(otherOwner, runnerId), true);
+        // The owner linked it, so the owner is in charge; another owner record is no one special there.
+        assert.equal(app.policy.mayStart(owner(app), runnerId), true);
+        assert.equal(app.policy.mayStart(otherOwner, runnerId), false);
         assert.equal(app.policy.mayStart(stranger, runnerId), false);
         assert.deepEqual(
             (tab.last("runners") as unknown as RunnerView[]).map((runner) => runner.id),
@@ -174,10 +177,12 @@ describe("people granted a computer", () => {
     });
 
     it("starts in a folder given to the guest, with nobody asked at the computer", async () => {
+        // The owner, in charge of the computer they linked, allows it from the app.
+        const stop = answerRequests(app, () => true);
         const created = await request<{ id: ConversationId }>(guest, "sessions", {
             runner: runnerId,
             cwd: there,
-        });
+        }).finally(stop);
 
         assert.equal(created.status, 200);
         id = created.body.id;
@@ -351,12 +356,15 @@ describe("people granted a computer", () => {
             false,
             "even a stale guest object fails",
         );
-        assert.deepEqual(tab.last("runners"), []);
+        // A chosen viewer still sees the computer, and its sessions shared with them, but starts and browses nothing.
+        assert.deepEqual(
+            (tab.last("runners") as unknown as RunnerView[]).map((each) => each.id),
+            [runnerId],
+        );
         assert.deepEqual(await app.folderFavorites.runners(guest), {});
 
         for (const response of [
             await request(guest, "sessions", { runner: runnerId, cwd: there }),
-            await request(guest, "runners"),
             await request(guest, `runners/${runnerId}/fs`),
         ]) {
             assert.equal(response.status, 403);
@@ -364,11 +372,16 @@ describe("people granted a computer", () => {
 
         const viewer = app.config.userById(guest.id)!;
 
-        assert.equal((await app.hello(viewer)).runners, undefined);
+        // They still see the computer in their list, as one chosen for it.
+        assert.deepEqual(
+            (await app.hello(viewer)).runners?.map((each) => each.id),
+            [runnerId],
+        );
         await assert.rejects(
             app.workspace.remoteFile(viewer, id, outside),
             (error: unknown) => error instanceof HttpError && error.status === 404,
         );
+        linkAuthenticator(app, guest);
         app.setAccess(owner(app), guest.id, { role: "guest" });
         assert.equal(app.policy.mayStart(guest, runnerId), true);
     });
@@ -379,7 +392,7 @@ describe("people granted a computer", () => {
         assert.deepEqual(tab.last("runners"), []);
         assert.equal((await request(guest, `runners/${runnerId}/fs`)).status, 403);
         await request(owner(app), `runners/${runnerId}/users`, { users: [guest.id] });
-        app.removeUser(owner(app), guest.id);
+        await app.removeUser(owner(app), guest.id);
         assert.equal(app.policy.mayStart(guest, runnerId), false);
         assert.deepEqual(app.runners.stored(runnerId)?.users, [guest.id]);
         assert.equal((await request(guest, "runners")).status, 401);

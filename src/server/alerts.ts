@@ -135,49 +135,67 @@ export class Alerts {
     }
 
     /**
-     * Someone asks to start a session in a new folder (`folder-requests.ts` on this server, or a runner's question that
-     * the owner can answer from the app): the owner hears at once, in their open tabs (where they allow or deny it) and
-     * as a push. Not for the owner's own requests. `where` names the computer for a runner's.
+     * Someone asks for a session's approval (`folder-requests.ts`): to start one, or to renew a locked one. Who is in
+     * charge of its computer (`inCharge`: the owner here, a runner's linker there) hears at once, in their open tabs
+     * (where they allow or deny it) and as a push. Not for their own requests. `where` names a runner.
      */
     folderRequest(
         request: Pick<FolderRequestView, "id" | "person" | "name" | "folder"> &
-            Partial<Pick<FolderRequestView, "kind" | "session">>,
+            Partial<Pick<FolderRequestView, "kind" | "title">>,
+        inCharge: string,
         where?: string,
     ): void {
-        const app = this.#app;
-        const owner = app.config.users.find((each) => each.role === "owner");
-
-        if (owner === undefined || owner.id === request.person) {
+        if (inCharge === request.person) {
             return;
         }
 
         const place = `${request.folder}${where === undefined ? "" : ` on ${where}`}`;
-        const body =
-            request.kind === "steer"
-                ? `${request.name} asks to go on working in ${place}.`
-                : request.kind === "task"
-                  ? `${request.name} asks to set up a task that runs on its own in ${place}.`
-                  : `${request.name} asks to start a session in ${place}.`;
+
+        this.#pushFolders(inCharge, {
+            title: request.kind === "renew" ? "Renew a session" : "New session",
+            body:
+                request.kind === "renew"
+                    ? `${request.name} asks to go on in “${request.title ?? "a session"}” (${place}).`
+                    : `${request.name} asks to start a session in ${place}.`,
+            url: "/",
+            tag: `folder-${request.id}`,
+        });
+    }
+
+    /**
+     * Session `title`'s approval ended while its tasks run on ("Tasks expire with the session"): its starter and who is in
+     * charge hear each day of its week of grace, until it is renewed or its tasks pause. `days` are left.
+     */
+    tasksEnding(people: readonly string[], session: string, title: string, days: number): void {
+        for (const person of new Set(people)) {
+            this.#pushFolders(person, {
+                title: "Renew a session",
+                body:
+                    days > 0
+                        ? `“${title}” needs renewing: its tasks pause in ${days} day${days === 1 ? "" : "s"}.`
+                        : `“${title}” was not renewed: its tasks paused until it is.`,
+                url: `/s/${session}`,
+                tag: `tasks-${session}`,
+            });
+        }
+    }
+
+    /** A push to `person` for approvals, while they allow them (`folders` pref), and to their embedding apps. */
+    #pushFolders(person: string, message: Omit<PushMessage, "approval">): void {
+        const app = this.#app;
         const store = app.pushStore;
 
-        if (!(store?.prefs(owner.id) ?? DEFAULT_PREFS).folders) {
+        if (!(store?.prefs(person) ?? DEFAULT_PREFS).folders) {
             return;
         }
 
-        const message = {
-            title: "New folder",
-            body,
-            url: "/",
-            tag: `folder-${request.id}`,
-        } satisfies PushMessage;
-
-        app.notifyEmbedders(owner.id, { ...message, urgency: "high" });
+        app.notifyEmbedders(person, { ...message, urgency: "high" });
 
         // Push services want a real contact; Apple rejects placeholders. A tunnel's https address will do.
         const subject = app.access?.url?.startsWith("https://") ? app.access.url : undefined;
 
         void store
-            ?.notify(owner.id, message, {
+            ?.notify(person, message, {
                 urgency: "high",
                 ...(subject === undefined ? {} : { subject }),
             })

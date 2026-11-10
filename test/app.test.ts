@@ -12,6 +12,7 @@ import {
     root,
     say as sayTo,
     scriptedModel,
+    linkAuthenticator,
     newSession as startSession,
     until,
     work,
@@ -860,6 +861,12 @@ test("viewers read and chat but never steer; people invited to one session see o
         // The owner widens Sam's access and makes Vee a guest.
         app.setAccess(owner(), scoped.id, { sessions: null });
         assert.equal(app.config.userById(scoped.id)?.sessions, undefined);
+        // Steering needs Vee's own authenticator first.
+        assert.throws(() => app.setAccess(owner(), viewer.id, { role: "guest" }), {
+            status: 409,
+            message: /must link an authenticator first/,
+        });
+        linkAuthenticator(app, viewer);
         app.setAccess(owner(), viewer.id, { role: "guest" });
         assert.equal(app.config.userById(viewer.id)?.role, "guest");
         assert.throws(() => app.setAccess(viewer, scoped.id, { role: "viewer" }), /owner/);
@@ -2341,7 +2348,7 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
         copyFileSync(app.config.file, join(copy, "config.json"));
         const again = new Auth(new ConfigStore(copy));
 
-        assert.deepEqual(again.invite(week.code), { role: "guest" });
+        assert.deepEqual(again.invite(week.code), { role: "viewer" });
         assert.ok(!readFileSync(app.config.file, "utf8").includes(week.code));
 
         // Only whoever made it ends it.
@@ -2394,7 +2401,8 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
             mock.timers.tick(59 * MINUTE);
             const inTime = auth.redeem(hour.code, "In Time");
 
-            assert.equal(inTime?.user.role, "guest");
+            // Every invite starts its person as a viewer.
+            assert.equal(inTime?.user.role, "viewer");
             app.config.removeUser(inTime!.user.id);
             mock.timers.tick(2 * MINUTE);
             assert.equal(auth.redeem(late.code, "Too Late"), undefined);
@@ -2416,7 +2424,7 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
 
         app.config.rotateOwnerToken();
         assert.equal(auth.invite(mine.code), undefined);
-        assert.deepEqual(auth.invite(theirs.code), { role: "guest" });
+        assert.deepEqual(auth.invite(theirs.code), { role: "viewer" });
     } finally {
         app.config.removeUser(guest.user.id);
         server.closeAllConnections();
@@ -2792,7 +2800,7 @@ test("access holds: a refused tab hears nothing, narrowed access evicts, removal
 
         // Removing Vee closes her tab.
         await app.attach(veeTab.client);
-        app.removeUser(owner(), vee.id);
+        await app.removeUser(owner(), vee.id);
         assert.equal(closed, 1);
         assert.ok(veeTab.events.some((each) => each.event === "closing"));
     } finally {

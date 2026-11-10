@@ -2,6 +2,7 @@
 // the owner chooses them, the owner's sessions working as before, and each session private, also with the old global
 // switch that shared every runner session on.
 import {
+    answerRequests,
     type App,
     cleanUp,
     context,
@@ -132,12 +133,11 @@ test("once chosen, a guest sees the sessions they started, and the owner's only 
         assert.equal(app.canSee(person(viewer), ownersSession), true);
         assert.equal(app.policy.maySteer(person(viewer), String(ownersSession)), false);
 
-        // A guest's new session here is private too: sharing is off by default. (A given folder, and "never" ask: no
-        // approval to wait for.)
+        // A guest's new session here is private too: sharing is off by default. (A given folder, allowed by the owner.)
         app.config.setGivenFolders(undefined, guest.id, [realpathSync(work)]);
-        app.config.updateUser(guest.id, { approvalDays: 0 });
 
-        const { id } = await app.commands.createSession(person(guest), { cwd: work });
+        const stop = answerRequests(app, () => true);
+        const { id } = await app.commands.createSession(person(guest), { cwd: work }).finally(stop);
 
         assert.equal(app.canSee(person(viewer), id), false);
     } finally {

@@ -15,7 +15,7 @@ import {
     store,
 } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, timeAgo } from "../ui.js";
-import { ApprovalsList, ApprovalTime } from "./approvals.js";
+import { ApprovalsList, ApprovalTime, TasksExpire } from "./approvals.js";
 
 const ROLE_TEXT = {
     guest: "Can steer Pi, which can run commands on this machine",
@@ -380,6 +380,7 @@ function PeopleList() {
                         ${person.role === "owner" ? "owner" : person.role === "viewer" ? "view only" : "can steer"}
                         ${person.sessions ? ` · only ${person.sessions.map(sessionTitle).join(", ")}` : ""} · ${lastSeen(person)}
                         ${person.authenticator ? " · authenticator linked" : ""}
+                        ${person.linksRunners ? " · links runners" : ""}
                     </div>
                     ${
                         owner &&
@@ -396,10 +397,27 @@ function PeopleList() {
                             collab() &&
                             html`<button
                                 class="button small"
-                                title="Change what they can do"
+                                title=${person.role === "viewer" && !person.hasCode ? "They link an authenticator first, under their name" : "Change what they can do"}
                                 onClick=${() => change(person, { role: person.role === "viewer" ? "guest" : "viewer" })}
                             >
                                 ${person.role === "viewer" ? "Let steer" : "View only"}
+                            </button>`
+                        }
+                        ${
+                            person.role === "guest" &&
+                            !person.sessions &&
+                            html`<button
+                                class="button small"
+                                aria-pressed=${person.linksRunners === true}
+                                title="Let them link computers of their own as runners, which they are in charge of"
+                                onClick=${() =>
+                                    attempt(() =>
+                                        api(`users/${person.id}/links-runners`, {
+                                            on: person.linksRunners !== true,
+                                        }),
+                                    )}
+                            >
+                                ${person.linksRunners ? "Stop linking runners" : "May link runners"}
                             </button>`
                         }
                         ${
@@ -471,7 +489,7 @@ export function PeopleSheet() {
             </button>`
         }
         <${PeopleList} />
-        ${store.state.me?.role === "owner" && html`<${ApprovalsList} />`}
+        ${store.state.me?.role === "owner" && html`<${ApprovalsList} /><${TasksExpire} />`}
         <button
             class="button ghost wide sheet-footer"
             onClick=${() => openSheet({ type: "notifications" })}

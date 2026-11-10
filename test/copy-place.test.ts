@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { Runner } from "../src/runner/runner.ts";
+import type { User } from "../src/server/config.ts";
 import type { FolderRequestView } from "../src/server/folder-requests.ts";
 import { ChatDoc, FolderFavoritesDoc } from "../src/server/docs.ts";
 import { normalizeRemote } from "../src/server/repo.ts";
@@ -63,20 +64,29 @@ let answer: (request: FolderRequestView) => boolean | undefined = () => true;
 
 let stopAnswering: () => void = () => {};
 
-/** Ask the owner for each new folder (approval time 1 day, no approval kept), for one test. */
-async function asking<T>(run: () => Promise<T>): Promise<T> {
-    const me = owner(app);
+/**
+ * A guest who sees every session here and is chosen for both computers, with their folders given: a copy they send to
+ * the other computer needs an approval, which the owner, in charge of both, allows (or not) from the app.
+ */
+async function asking<T>(run: (guest: User) => Promise<T>): Promise<T> {
+    const { user: guest } = await addPerson(app, "Gale", "guest");
 
-    for (const each of app.folderApprovals.list(me)) {
-        app.folderApprovals.revoke(me, each.id);
+    // Their requests wait for the owner's answer: an approval time, not "never".
+    app.config.updateUser(guest.id, { approvalDays: 7 });
+
+    for (const computer of [laptop, desk]) {
+        app.config.setRunnerUsers(computer.id, [guest.id]);
+        app.config.setGivenFolders(computer.id, guest.id, [root]);
     }
 
-    app.config.updateUser(me.id, { approvalDays: 1 });
-
     try {
-        return await run();
+        return await run(guest);
     } finally {
-        app.config.updateUser(me.id, { approvalDays: 0 });
+        for (const computer of [laptop, desk]) {
+            app.config.setRunnerUsers(computer.id, []);
+        }
+
+        await app.removeUser(owner(app), guest.id);
     }
 }
 
@@ -297,8 +307,8 @@ describe("a copy with a place", () => {
         const { id, reply } = await talked();
 
         asked.length = 0;
-        const copy = await asking(() =>
-            app.commands.fork(id, owner(app), {
+        const copy = await asking((guest) =>
+            app.commands.fork(id, guest, {
                 entryId: reply,
                 place: { runner: laptop.id, cwd: laptop.folder },
             }),
@@ -309,7 +319,7 @@ describe("a copy with a place", () => {
         assert.equal(app.sessionMeta(copy.id)?.cwd, laptop.folder);
         assert.deepEqual(
             asked.map((each) => [each.kind, each.computer]),
-            [["fork", laptop.id]],
+            [["new", laptop.id]],
         );
         assert.deepEqual((await app.agentState(copy.id))?.extensions, [...REMOTE_EXTENSIONS]);
 
@@ -435,20 +445,20 @@ describe("a copy with a place", () => {
         answer = () => false;
 
         try {
-            await asking(async () => {
+            await asking(async (guest) => {
                 await assert.rejects(
-                    app.commands.fork(id, owner(app), {
+                    app.commands.fork(id, guest, {
                         entryId: reply,
-                        place: { runner: laptop.id },
+                        place: { runner: laptop.id, cwd: laptop.folder },
                     }),
-                    /Cancelled/,
+                    /was not allowed/,
                 );
                 await assert.rejects(
-                    app.commands.resend(id, owner(app), {
+                    app.commands.resend(id, guest, {
                         entryId: prompt,
-                        place: { runner: laptop.id },
+                        place: { runner: laptop.id, cwd: laptop.folder },
                     }),
-                    /Cancelled/,
+                    /was not allowed/,
                 );
             });
         } finally {
@@ -483,15 +493,15 @@ describe("a copy with a place", () => {
             answer = () => undefined;
 
             try {
-                await asking(async () => {
+                await asking(async (guest) => {
                     const request = {
                         entryId: kind === "fork" ? reply : prompt,
-                        place: { runner: laptop.id },
+                        place: { runner: laptop.id, cwd: laptop.folder },
                     };
                     const result =
                         kind === "fork"
-                            ? app.commands.fork(id, owner(app), request, controller.signal)
-                            : app.commands.resend(id, owner(app), request, controller.signal);
+                            ? app.commands.fork(id, guest, request, controller.signal)
+                            : app.commands.resend(id, guest, request, controller.signal);
                     const rejected = assert.rejects(result, { status: 409 });
 
                     await until(() => asked.length === 1, "the copy request");

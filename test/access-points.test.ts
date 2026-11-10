@@ -3,6 +3,8 @@
 // people the owner chose for this server, a person invited to one session, and someone nobody chose.
 import {
     type App,
+    answerRequests,
+    approveSession,
     cleanUp,
     context,
     fakeTab,
@@ -101,6 +103,8 @@ const everSent = (tab: ReturnType<typeof fakeTab>, id: ConversationId) =>
             (each.data as { conversationId?: unknown })?.conversationId === Number(id),
     );
 
+let stopAnswering: () => void = () => {};
+
 before(async () => {
     mkdirSync(elsewhere, { recursive: true });
     writeFileSync(join(work, "inside.txt"), "Inside the session folder.\n");
@@ -120,18 +124,21 @@ before(async () => {
     stranger = person("Stranger", "guest");
     app.config.setServerUsers([guest.id, viewer.id]);
 
-    // The folders here are given, and need no approval: who may start a session is what these tests check, not which
-    // folders need one (`folder-requests.test.ts`).
+    // The folders here are given, and the owner allows every new session at once: who may start a session is what these
+    // tests check, not approvals (`folder-requests.test.ts`).
     for (const each of [guest, viewer]) {
         app.config.setGivenFolders(undefined, each.id, [realpathSync(root)]);
         app.config.updateUser(each.id, { approvalDays: 0 });
     }
 
+    stopAnswering = answerRequests(app, () => true);
     app.accessChanged();
     await app.commands.shareSession(shared, owner(app), [guest.id, viewer.id]);
+    approveSession(app, shared, guest);
 });
 
 after(async () => {
+    stopAnswering();
     await app?.close();
     server?.closeAllConnections();
     await new Promise((resolve) => server?.close(resolve));

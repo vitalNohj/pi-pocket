@@ -78,16 +78,17 @@ If your server uses a build that is not on npm, set `PI_POCKET_RUNNER_PACKAGE` o
 
 After the link, the runner trusts its server: the server already sends it every tool call, so a check on the computer would not stop a server that was broken into. Pi Pocket decides, with the same rules for linked computers and for **This server** (`src/server/access.ts`):
 
-- **The computer.** The owner chooses the people who may use it, in Menu → **Runners** → **Choose people**. Nobody else can see its sessions, browse it, or start anything there.
-- **Folders.** The owner gives each chosen person their folders on it, under **Folders** on the computer's card. A given folder covers the folders inside it. Any other folder is refused: the folder picker shows only the given folders, and a person cannot ask for others. The owner may use every folder.
-- **Approvals.** A person approves a folder with a code from their own authenticator, which they link to their account (Menu → their name). One code approves one folder on one computer, for that person only. The owner can also tap **Allow** on the person's request in Pi Pocket. The owner approves a whole linked computer with one code. On this server, the owner is never asked.
-- **Time.** An approval ends when the person has not used it for their approval time: 7 days by default, and 30 days for the owner. The owner sets each person's time in **People**: 1, 7, 14, or 30 days, or **Never ask**. Using the folder starts the clock again.
-- **Shared sessions.** Sharing a session lets a person steer it. If they have not used it for their approval time, their next message asks for their code again. Viewers are never asked.
-- **A person without an authenticator** links one first. Only a person whose time is **Never ask** skips codes.
+- **In charge.** The person who linked a computer is in charge of it; the owner is in charge of **This server**. The owner links runners, and may let a guest link their own (**May link runners** in **People**). The owner can unlink any runner, but sees no folders or sessions on a runner someone else linked unless that person chooses them.
+- **The computer.** Who is in charge chooses the people who may use it, in Menu → **Runners** → **Choose people**. Nobody else can see its sessions, browse it, or start anything there.
+- **Folders.** Who is in charge gives each chosen person their folders on it, under **Folders** on the computer's card. A given folder covers the folders inside it. Any other folder is refused: the folder picker shows only the given folders, and a person cannot ask for others.
+- **Approvals.** Each session has one approval. A person starting a session on a computer they are not in charge of approves it with a code from their own authenticator, which they link to their account (Menu → their name), or waits for **Allow** from who is in charge, in Pi Pocket. Nothing is asked on the computer. Who is in charge is never asked on their own computer.
+- **Time.** The approval lasts for the approval time of whoever used the session last, counted from that use: 7 days by default. The owner sets each person's time in **People**: 1, 7, 14, or 30 days, or never ends.
+- **Locked.** When the approval ends, the session is locked: new messages, settings, and task changes wait until its starter's code, or **Allow** from who is in charge, renews it. Stopping work never waits.
+- **Viewers** read sessions they may see and use the people chat; they never need a code. Steering takes an authenticator and **Let steer** from the owner.
 
-Approvals belong to the person, on all their devices. Each person sees their own in Pi Pocket and can revoke them; the owner sees and revokes everyone's. Removing a person, taking them off a computer, or taking back a folder ends the approvals that depended on it.
+Each person sees the approvals of the sessions they started, and who is in charge sees every one on their computers, with **Revoke** and **Renew**. Removing a person, taking them off a computer, or taking back a folder hands their sessions and tasks there to who is in charge; nothing stops.
 
-A session started with a valid approval runs to its end, with its subagents and linked sessions. An ended approval only stops new starts and new messages. A linked session or a copy in another folder needs that folder's approval, as a new session does.
+Work under way runs to its end, with its subagents and linked sessions; an ended approval only stops what comes next. A copy, a move, or a linked session on the same computer inherits its source's approval. Tasks that run on their own follow their session's approval only when the owner turns on **Tasks expire with the session** (then they run for 7 more days, with reminders, and pause).
 
 ### What a session can reach on the computer
 
@@ -188,11 +189,11 @@ The risk: pages in the browser of a session on a computer can reach that compute
 
 ## Sharing
 
-The people the owner chose in Menu → **Runners** can start sessions on it, in their given folders, including forks. Their sessions run as the computer's user, with the same access to its files and commands. The owner alone changes its settings and who may use it. Sharing does not change this rule.
+The people chosen in Menu → **Runners** can start sessions on it, in their given folders, including forks. Their sessions run as the computer's user, with the same access to its files and commands. Who is in charge of it alone changes its settings and who may use it. Sharing does not change this rule.
 
-By default, a session on a linked computer is private to its creator. Other people cannot see it in their session list, open it, prompt it, or fork it. The owner, who controls the server, sees every session. These access rules also protect a private session's forks and subagents.
+By default, a session on a linked computer is private to its creator. Other people cannot see it in their session list, open it, prompt it, or fork it. Who is in charge of the computer sees every session on it. These access rules also protect a private session's forks and subagents.
 
-The session's starter, or the owner, shares it one person at a time, with people who may use its computer. People it is shared with can prompt it, and its commands run on the linked computer for them too. Taking someone off the share list closes the session in their tabs at once.
+The session's starter, or who is in charge, shares it one person at a time, with people who may use its computer. People it is shared with can prompt it, and its commands run on the linked computer for them too. Taking someone off the share list closes the session in their tabs at once.
 
 **Share new sessions with these people** (off by default), under each computer in Menu → **Runners**, starts every new session there shared with the people chosen for it. It changes no session that already exists.
 

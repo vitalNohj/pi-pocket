@@ -139,6 +139,11 @@ export class Auth {
         const lasts = grant.role === "owner" ? INVITE_MINUTES[0] : minutes;
         const expiresAt = Date.now() + lasts * 60_000;
 
+        // Every invite but an owner's starts its person as a viewer: steering comes once they link an authenticator.
+        if (grant.role !== "owner") {
+            grant = { ...grant, role: "viewer" };
+        }
+
         this.#config.addInvite(code, { ...grant, expiresAt, createdBy: by.id });
 
         return { code, expiresAt, minutes: lasts };
@@ -172,7 +177,10 @@ export class Auth {
      * Spend an invite on a new device: a user with the invite's role and scope, and its own token. An owner invite makes
      * no one new: the device gets the owner and the owner's token. Either way the invite is gone, used or not.
      */
-    redeem(code: string, name: string): { user: User; token: string } | undefined {
+    redeem(
+        code: string,
+        name: string,
+    ): { user: User; token: string; invitedBy?: string } | undefined {
         const invite = this.#config.invite(code);
 
         if (invite === undefined || !this.#config.removeInvite(code)) {
@@ -197,11 +205,13 @@ export class Auth {
         }
 
         const clean = name.replace(/\s+/g, " ").trim().slice(0, 40) || "Guest";
-
-        return this.#config.addUser(
+        const added = this.#config.addUser(
             clean,
             invite.role,
             invite.session === undefined ? undefined : [invite.session],
         );
+
+        // An invite to every session: the app shares the inviter's sessions with them (`app.ts` `welcome`).
+        return invite.session === undefined ? { ...added, invitedBy: creator.id } : added;
     }
 }

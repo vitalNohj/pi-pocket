@@ -212,7 +212,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return { role: "owner" };
         }
 
-        const role = body.role === "viewer" ? "viewer" : "guest";
+        // Every invite starts as a viewer: steering comes later, once they link an authenticator, from who is in charge.
+        const role = "viewer";
 
         if (body.session === undefined || body.session === null) {
             if (!app.policy.mayInvite(user)) {
@@ -335,13 +336,57 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
-        // Approvals of folders and shared sessions (`folder-approvals.ts`): each person's own, and the owner's every one.
-        if (first === "approvals" && second === undefined && method === "GET") {
-            return json(response, 200, app.folderApprovals.list(user));
+        // Session approvals (`folder-approvals.ts`): of the sessions a person started, and on computers they are in charge
+        // of. DELETE revokes one (the session locks); POST renews it: Allow by who is in charge, or the starter's code.
+        if (first === "session-approvals" && second === undefined && method === "GET") {
+            return json(response, 200, app.sessionApprovals(user));
         }
 
-        if (first === "approvals" && second !== undefined && method === "DELETE") {
-            app.folderApprovals.revoke(user, second);
+        if (first === "session-approvals" && second !== undefined && method === "DELETE") {
+            app.revokeApproval(user, conversationId(second));
+
+            return json(response, 200, { ok: true });
+        }
+
+        if (first === "session-approvals" && second !== undefined && method === "POST") {
+            const body = await readJson<{ code?: unknown } | null>(request);
+
+            await app.renewApproval(
+                user,
+                conversationId(second),
+                body?.code === undefined ? undefined : sixDigits(body.code),
+            );
+
+            return json(response, 200, { ok: true });
+        }
+
+        // The owner lets a guest link computers of their own, or takes it back.
+        if (
+            first === "users" &&
+            second !== undefined &&
+            third === "links-runners" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ on?: unknown } | null>(request);
+
+            if (typeof body?.on !== "boolean") {
+                throw new HttpError(400, "on must be true or false.");
+            }
+
+            app.setLinksRunners(user, second, body.on);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // The owner turns "Tasks expire with the session" on or off.
+        if (first === "tasks-expire" && second === undefined && method === "POST") {
+            const body = await readJson<{ on?: unknown } | null>(request);
+
+            if (typeof body?.on !== "boolean") {
+                throw new HttpError(400, "on must be true or false.");
+            }
+
+            app.setTasksExpire(user, body.on);
 
             return json(response, 200, { ok: true });
         }
@@ -410,7 +455,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "users" && second !== undefined && third === "remove" && method === "POST") {
-            app.removeUser(user, second);
+            await app.removeUser(user, second);
 
             return json(response, 200, { ok: true });
         }
@@ -780,15 +825,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, await app.commands.continuePiSession(user, body.path));
         }
 
-        // Owners see every computer; other people see only the computers they may use.
+        // The computers a person may use; the owner also sees every runner, to unlink one.
         if (first === "runners" && second === undefined && method === "GET") {
-            const runners = app.runners.list(user);
-
-            if (runners.length === 0) {
-                requireOwner(user);
-            }
-
-            return json(response, 200, runners);
+            return json(response, 200, app.runners.list(user));
         }
 
         /**
@@ -850,10 +889,19 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // Who may link computers: the owner, and the guests the owner lets (`access.ts` `mayLink`). Linking one again is
+        // its linker's.
         if (first === "runners" && second === "code" && method === "POST") {
-            requireOwner(user);
+            if (!app.policy.mayLink(user)) {
+                throw new HttpError(403, "The owner has not let you link computers.");
+            }
 
             const body = await readJson<{ name?: unknown; runner?: unknown }>(request);
+
+            if (typeof body.runner === "string") {
+                app.runners.require(body.runner);
+                app.policy.requireManage(user, body.runner);
+            }
 
             return json(
                 response,
@@ -872,13 +920,13 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === undefined &&
             method === "DELETE"
         ) {
-            requireOwner(user);
-
             if (second === THIS_SERVER) {
                 throw new HttpError(400, "This server cannot be removed.");
             }
 
-            app.runners.remove(second);
+            app.runners.require(second);
+            app.policy.requireUnlink(user, second);
+            await app.unlinkRunner(second);
 
             return json(response, 200, { ok: true });
         }
@@ -897,14 +945,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 throw new HttpError(400, "users must be a list of person ids.");
             }
 
-            if (second === THIS_SERVER) {
-                app.config.setServerUsers(body.users);
-            } else {
-                app.config.setRunnerUsers(second, body.users);
-            }
-
-            // Someone no longer chosen leaves its sessions at once, and every list is sent again.
-            app.accessChanged();
+            await app.choosePeople(second, body.users);
 
             return json(
                 response,

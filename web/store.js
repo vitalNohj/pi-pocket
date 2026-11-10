@@ -656,6 +656,9 @@ export const scoped = () => Array.isArray(store.state.me?.sessions);
  */
 export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStart !== false;
 
+/** May this person link computers of their own as runners: the owner, and the guests the owner lets (`mayLink`). */
+export const canLink = () => store.state.me?.mayLink === true;
+
 /** The notices that announce chat messages, here or a mention elsewhere, by id: their session's. Reading its chat takes them down. */
 const chatNotices = new Map();
 
@@ -1927,6 +1930,7 @@ const handlers = {
             // Linked computers: the owner's; an older server sends none.
             runners: kept(state.runners, Array.isArray(data.runners) ? data.runners : []),
             thisServer: kept(state.thisServer, data.thisServer ?? null),
+            tasksExpire: data.tasksExpire === true,
             folderRequests: kept(state.folderRequests, data.folderRequests ?? []),
             folderApprovals: kept(state.folderApprovals, data.folderApprovals ?? []),
             models: kept(state.models, data.models),

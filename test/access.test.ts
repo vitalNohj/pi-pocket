@@ -1,5 +1,8 @@
 // The access policy (`access.ts`) and the approval methods (`approval-methods.ts`), rule by rule: for each, a person it
 // lets in, and a person it refuses. Plain facts, no app: the check points that use the policy have their own tests.
+//
+// "In charge" of a computer: the owner of this server, the linker of a runner. The owner is no one special on a runner
+// someone else linked.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
@@ -23,9 +26,8 @@ const owner: Person = { id: "owner", role: "owner" };
 const guest: Person = { id: "guest", role: "guest" };
 const viewer: Person = { id: "viewer", role: "viewer" };
 const stranger: Person = { id: "stranger", role: "guest" };
-const linker: Person = { id: "linker", role: "guest" };
+const linker: Person = { id: "linker", role: "guest", linksRunners: true };
 const invited: Person = { id: "invited", role: "guest", sessions: ["30"] };
-const invitedViewer: Person = { id: "invited-viewer", role: "viewer", sessions: ["30"] };
 
 function computer(id: string, patch: Partial<Computer> = {}): Computer {
     return {
@@ -39,9 +41,6 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
     };
 }
 
-/** Approvals, as `folder-approvals.ts` keeps them: `person|computer|folder` or `person|computer|session:id`. */
-type Approved = Set<string>;
-
 function world(
     computers: Computer[] = [computer(THIS_SERVER), computer("runner")],
     sessions: SessionFacts[] = [
@@ -49,13 +48,13 @@ function world(
         { id: "11", computer: THIS_SERVER, createdBy: stranger.id, sharedWith: [guest.id] },
         { id: "12", computer: THIS_SERVER },
         { id: "20", computer: "runner", createdBy: guest.id },
+        { id: "21", computer: "runner", createdBy: linker.id },
         { id: "30", computer: THIS_SERVER, createdBy: owner.id },
         { id: "40", computer: THIS_SERVER, pip: guest.id },
     ],
-    people: Person[] = [owner, guest, viewer, stranger, linker, invited, invitedViewer],
-    approved: Approved = new Set(),
-    days: Record<string, number> = {},
-): { policy: AccessPolicy; people: Map<string, Person> } {
+    people: Person[] = [owner, guest, viewer, stranger, linker, invited],
+    approved: Set<string> = new Set(),
+): { policy: AccessPolicy; people: Map<string, Person>; approved: Set<string> } {
     const byId = new Map(people.map((each) => [each.id, each]));
     // Subagents name their top session: 101 is a subagent of 10, 201 of 20.
     const parents = new Map([
@@ -67,39 +66,64 @@ function world(
         person: (id) => byId.get(id),
         computer: (id) => computers.find((each) => each.id === id),
         session: (id) => sessions.find((each) => each.id === (parents.get(id) ?? id)),
-        approvalDays: (person) => days[person] ?? 7,
-        approved: (person, target) =>
-            "folder" in target
-                ? approved.has(`${person}|${target.computer}|${target.folder}`) ||
-                  approved.has(`${person}|${target.computer}|*`)
-                : approved.has(`${person}|${target.computer}|session:${target.session}`),
+        approved: (id) => approved.has(id),
     };
 
-    return { policy: new AccessPolicy(facts), people: byId };
+    return { policy: new AccessPolicy(facts), people: byId, approved };
 }
 
-describe("may this person use this computer", () => {
-    it("lets the owner, the linker, and chosen people use a computer", () => {
+describe("who is in charge of a computer", () => {
+    it("puts the owner in charge of this server, and a runner's linker in charge of it", () => {
         const { policy } = world();
 
+        assert.equal(policy.inCharge(owner, THIS_SERVER), true);
+        assert.equal(policy.inCharge(linker, "runner"), true);
+        assert.equal(policy.inChargeOf("20"), linker.id);
+        assert.equal(policy.inChargeOf("10"), owner.id);
+    });
+
+    it("puts no one else in charge: not the owner of someone else's runner, nor a chosen guest", () => {
+        const { policy } = world();
+
+        assert.equal(policy.inCharge(owner, "runner"), false);
+        assert.equal(policy.inCharge(guest, THIS_SERVER), false);
+        assert.equal(policy.inCharge(guest, "runner"), false);
+        assert.equal(policy.inCharge(linker, THIS_SERVER), false);
+    });
+});
+
+describe("may this person use this computer", () => {
+    it("lets who is in charge and the people they chose use a computer", () => {
+        const { policy } = world();
+
+        assert.equal(policy.mayUse(owner, THIS_SERVER), true);
+        assert.equal(policy.mayUse(linker, "runner"), true);
+
         for (const id of [THIS_SERVER, "runner"]) {
-            assert.equal(policy.mayUse(owner, id), true);
             assert.equal(policy.mayUse(guest, id), true);
             assert.equal(policy.mayUse(viewer, id), true);
         }
-
-        assert.equal(policy.mayUse(linker, "runner"), true);
     });
 
-    it("refuses someone not chosen, someone removed, and a computer that is gone", () => {
+    it("refuses someone not chosen, the owner on a runner they were not chosen for, and a gone computer", () => {
         const { policy } = world();
 
         assert.equal(policy.mayUse(stranger, THIS_SERVER), false);
         assert.equal(policy.mayUse(stranger, "runner"), false);
-        // The linker of a runner is not chosen for this server.
+        assert.equal(policy.mayUse(owner, "runner"), false);
         assert.equal(policy.mayUse(linker, THIS_SERVER), false);
         assert.equal(policy.mayUse({ id: "removed" }, THIS_SERVER), false);
         assert.equal(policy.mayUse(owner, "unlinked"), false);
+    });
+
+    it("lets the owner use someone else's runner once its linker chose them", () => {
+        const { policy } = world([
+            computer(THIS_SERVER),
+            computer("runner", { chosen: [owner.id] }),
+        ]);
+
+        assert.equal(policy.mayUse(owner, "runner"), true);
+        assert.equal(policy.inCharge(owner, "runner"), false);
     });
 
     it("refuses a person invited to one session, also when they are chosen", () => {
@@ -122,143 +146,96 @@ describe("may this person use this computer", () => {
         const { policy } = world();
 
         assert.equal(policy.mayStart(guest, THIS_SERVER), true);
-        assert.equal(policy.mayStart(guest, "runner"), true);
         assert.equal(policy.mayStart(viewer, THIS_SERVER), false);
-        assert.equal(policy.mayStart(viewer, "runner"), false);
-        assert.equal(policy.mayStart(stranger, THIS_SERVER), false);
-        assert.throws(() => policy.requireStart(viewer, THIS_SERVER), { status: 403 });
-        assert.throws(
-            () => policy.requireStart(stranger, THIS_SERVER),
-            (error: HttpError) => error.status === 403 && /not chosen you/.test(error.message),
-        );
+        assert.throws(() => policy.requireStart(viewer, THIS_SERVER), {
+            status: 403,
+            message: /view sessions but not start them/,
+        });
+        assert.throws(() => policy.requireStart(stranger, "runner"), {
+            message: /person who linked this computer has not chosen you/,
+        });
     });
 
-    it("lets the owner and the linker manage a computer, and refuses chosen people", () => {
+    it("lets who is in charge manage a computer, and refuses chosen people and the owner of a runner", () => {
         const { policy } = world();
 
         assert.equal(policy.mayManage(owner, THIS_SERVER), true);
-        assert.equal(policy.mayManage(owner, "runner"), true);
         assert.equal(policy.mayManage(linker, "runner"), true);
         assert.equal(policy.mayManage(guest, THIS_SERVER), false);
-        assert.equal(policy.mayManage(guest, "runner"), false);
-        assert.throws(() => policy.requireManage(guest, "runner"), { status: 403 });
+        assert.equal(policy.mayManage(owner, "runner"), false);
+        assert.throws(() => policy.requireManage(owner, "runner"), { status: 403 });
     });
 
-    it("refuses a linker who became a viewer the right to manage their computer", () => {
-        const { policy, people } = world();
+    it("lets the linker and the owner unlink a runner, and refuses chosen people and this server", () => {
+        const { policy } = world();
 
-        people.set(linker.id, { ...linker, role: "viewer" });
-        assert.equal(policy.mayManage(linker, "runner"), false);
+        assert.equal(policy.mayUnlink(linker, "runner"), true);
+        assert.equal(policy.mayUnlink(owner, "runner"), true);
+        assert.equal(policy.mayUnlink(guest, "runner"), false);
+        assert.equal(policy.mayUnlink(owner, THIS_SERVER), false);
     });
 
-    it("lets only the owner link computers", () => {
+    it("lets the owner and the guests the owner lets link computers, and refuses anyone else", () => {
         const { policy } = world();
 
         assert.equal(policy.mayLink(owner), true);
+        assert.equal(policy.mayLink(linker), true);
         assert.equal(policy.mayLink(guest), false);
-        assert.equal(policy.mayLink(linker), false);
+        assert.equal(policy.mayLink(viewer), false);
+        const invitedLinker: Person = { ...invited, id: "invited-linker", linksRunners: true };
+
+        assert.equal(
+            world(undefined, undefined, [invitedLinker]).policy.mayLink(invitedLinker),
+            false,
+        );
     });
 });
 
 describe("may this person use this folder", () => {
-    it("lets the owner use any folder on this server at once", () => {
+    it("lets who is in charge use any folder at once", () => {
         const { policy } = world();
 
         assert.deepEqual(policy.folder(owner, THIS_SERVER, "/anywhere"), { kind: "allow" });
+        assert.deepEqual(policy.folder(linker, "runner", "/anywhere"), { kind: "allow" });
+        assert.equal(policy.givenFolders(owner, THIS_SERVER), undefined);
     });
 
-    it("asks the owner once for a whole runner, then lets them into every folder there", () => {
-        assert.deepEqual(world().policy.folder(owner, "runner", "/anywhere"), {
-            kind: "ask",
-            whole: true,
-        });
-
-        const { policy } = world(undefined, undefined, undefined, new Set(["owner|runner|*"]));
-
-        assert.deepEqual(policy.folder(owner, "runner", "/anywhere"), { kind: "allow" });
-        assert.deepEqual(policy.folder(owner, "runner", "/elsewhere"), { kind: "allow" });
-    });
-
-    it("asks a chosen guest for a folder given to them, or one inside it, until approved", () => {
-        const asked = world().policy;
-
-        for (const folder of ["/given", "/given/app", "/given/app/deep"]) {
-            assert.deepEqual(asked.folder(guest, THIS_SERVER, folder), {
-                kind: "ask",
-                whole: false,
-            });
-        }
-
-        const { policy } = world(
-            undefined,
-            undefined,
-            undefined,
-            new Set([`guest|${THIS_SERVER}|/given/app`]),
-        );
-
-        assert.deepEqual(policy.folder(guest, THIS_SERVER, "/given/app"), { kind: "allow" });
-        // Each folder needs its own approval, also one beside it in the same given folder.
-        assert.deepEqual(policy.folder(guest, THIS_SERVER, "/given/other"), {
-            kind: "ask",
-            whole: false,
-        });
-        // An approval on this server does not count on a runner.
-        assert.deepEqual(policy.folder(guest, "runner", "/given/app"), {
-            kind: "ask",
-            whole: false,
-        });
-    });
-
-    it("refuses a guest a folder not given to them, also one beside or above a given folder", () => {
+    it("asks a chosen guest for a folder given to them, or one inside it", () => {
         const { policy } = world();
 
-        for (const folder of ["/", "/other", "/givenx", "/giv"]) {
+        for (const folder of ["/given", "/given/app", "/given\\win"]) {
+            assert.deepEqual(policy.folder(guest, THIS_SERVER, folder), { kind: "ask" }, folder);
+        }
+    });
+
+    it("refuses a guest a folder not given, also one beside or above a given folder", () => {
+        const { policy } = world();
+
+        for (const folder of ["/", "/give", "/given-other", "/other"]) {
             assert.equal(policy.folder(guest, THIS_SERVER, folder).kind, "refuse", folder);
         }
 
-        assert.match(
-            (policy.folder(guest, THIS_SERVER, "/other") as { reason: string }).reason,
-            /not given you this folder/,
-        );
-    });
-
-    it("never asks a person whose approval time is never, but still keeps them to their folders", () => {
-        const { policy } = world(undefined, undefined, undefined, undefined, { guest: 0 });
-
-        assert.deepEqual(policy.folder(guest, THIS_SERVER, "/given/app"), { kind: "allow" });
-        assert.equal(policy.folder(guest, THIS_SERVER, "/other").kind, "refuse");
+        assert.throws(() => policy.requireFolder(guest, "runner", "/other"), {
+            message: /person who linked this computer has not given you this folder/,
+        });
     });
 
     it("refuses a folder to someone not chosen, a viewer, and someone invited to one session", () => {
-        const { policy } = world([computer(THIS_SERVER, { given: () => ["/given"] })]);
+        const { policy } = world();
 
         for (const person of [stranger, viewer, invited]) {
             assert.equal(policy.folder(person, THIS_SERVER, "/given").kind, "refuse", person.id);
         }
-
-        assert.match(
-            (policy.folder(stranger, THIS_SERVER, "/given") as { reason: string }).reason,
-            /not chosen you for this server/,
-        );
     });
 
-    it("names the folders a person may use: the owner every one, others theirs, strangers none", () => {
+    it("names the folders a person may use: who is in charge every one, others theirs, strangers none", () => {
         const { policy } = world();
 
-        assert.equal(policy.givenFolders(owner, "runner"), undefined);
-        assert.deepEqual(policy.givenFolders(guest, THIS_SERVER), ["/given"]);
+        assert.equal(policy.givenFolders(linker, "runner"), undefined);
+        assert.deepEqual(policy.givenFolders(guest, "runner"), ["/given"]);
         assert.deepEqual(policy.givenFolders(stranger, THIS_SERVER), []);
-        assert.equal(policy.mayUseFolder(guest, THIS_SERVER, "C:\\given"), false);
-    });
-
-    it("lets chosen people who steer browse folders, and refuses viewers and strangers", () => {
-        const { policy } = world();
-
-        assert.equal(policy.mayBrowse(owner, THIS_SERVER), true);
         assert.equal(policy.mayBrowse(guest, THIS_SERVER), true);
         assert.equal(policy.mayBrowse(viewer, THIS_SERVER), false);
-        assert.equal(policy.mayBrowse(stranger, THIS_SERVER), false);
-        assert.equal(policy.mayBrowse(stranger, "runner"), false);
     });
 });
 
@@ -272,195 +249,176 @@ describe("may this person see and steer this session", () => {
         }
     });
 
-    it("refuses a session someone else started that is not shared, on the server and on a runner", () => {
-        const { policy } = world([
-            computer(THIS_SERVER, { chosen: [guest.id, viewer.id, stranger.id] }),
-            computer("runner", { chosen: [guest.id, viewer.id, stranger.id] }),
-        ]);
-
-        // Chosen for both computers, yet the sessions are the guest's alone.
-        for (const id of ["10", "101", "20", "201"]) {
-            assert.equal(policy.maySee(stranger, id), false, id);
-            assert.equal(policy.maySteer(stranger, id), false, id);
-        }
-
-        assert.throws(() => policy.requireSee(stranger, "10"), { status: 404 });
-    });
-
-    it("lets a person see a session shared with them, and refuses it once they are not chosen", () => {
+    it("lets who is in charge see every session on their computer", () => {
         const { policy } = world();
 
+        for (const id of ["10", "11", "12", "30"]) {
+            assert.equal(policy.maySee(owner, id), true, id);
+        }
+
+        assert.equal(policy.maySee(linker, "20"), true);
+        assert.equal(policy.maySee(linker, "21"), true);
+    });
+
+    it("refuses the owner a session on someone else's runner, unless shared with them", () => {
+        const shared: SessionFacts[] = [
+            { id: "20", computer: "runner", createdBy: guest.id },
+            { id: "22", computer: "runner", createdBy: guest.id, sharedWith: [owner.id] },
+        ];
+        const { policy } = world(undefined, shared);
+
+        assert.equal(policy.maySee(owner, "20"), false);
+        assert.equal(policy.maySee(owner, "22"), true);
+    });
+
+    it("refuses a session someone else started that is not shared", () => {
+        const { policy } = world();
+
+        assert.equal(policy.maySee(guest, "30"), false);
+        assert.equal(policy.maySee(guest, "21"), false);
+        assert.equal(policy.maySee(stranger, "10"), false);
+    });
+
+    it("lets a person see a session shared with them, and their own only while they may use its computer", () => {
+        const { policy } = world([computer(THIS_SERVER, { chosen: [viewer.id] })]);
+
         assert.equal(policy.maySee(guest, "11"), true);
-        assert.equal(policy.maySteer(guest, "11"), true);
-
-        // Shared with the guest, but the guest is no longer chosen for this server.
-        const unchosen = world([computer(THIS_SERVER, { chosen: [] })]).policy;
-
-        assert.equal(unchosen.maySee(guest, "11"), false);
+        assert.equal(policy.maySee(guest, "10"), false);
     });
 
     it("gives older sessions, with no starter, to the owner", () => {
         const { policy } = world();
-        const facts: SessionFacts = { id: "12", computer: THIS_SERVER };
 
-        assert.equal(policy.starter(facts), owner.id);
-        assert.equal(policy.maySee(owner, "12"), true);
+        assert.equal(policy.starter({ id: "12", computer: THIS_SERVER }), owner.id);
         assert.equal(policy.maySee(guest, "12"), false);
     });
 
-    it("lets the owner see and steer every session, and refuses them someone's PiP", () => {
+    it("keeps a PiP its person's alone, the owner's too", () => {
         const { policy } = world();
 
-        for (const id of ["10", "11", "12", "20", "30"]) {
-            assert.equal(policy.maySteer(owner, id), true, id);
-        }
-
-        assert.equal(policy.maySee(owner, "40"), false);
         assert.equal(policy.maySee(guest, "40"), true);
+        assert.equal(policy.maySee(owner, "40"), false);
     });
 
     it("lets a person invited to one session into it alone", () => {
         const { policy } = world();
 
         assert.equal(policy.maySee(invited, "30"), true);
-        assert.equal(policy.maySteer(invited, "30"), true);
         assert.equal(policy.maySee(invited, "10"), false);
-        assert.equal(policy.maySee(invited, "12"), false);
     });
 
-    it("lets a viewer see what they may see, and refuses them steering", () => {
-        const { policy } = world(
-            [computer(THIS_SERVER), computer("runner")],
-            [
-                { id: "50", computer: THIS_SERVER, createdBy: guest.id, sharedWith: [viewer.id] },
-                {
-                    id: "30",
-                    computer: THIS_SERVER,
-                    createdBy: owner.id,
-                },
-            ],
-        );
+    it("lets a viewer see what is shared with them, and refuses them steering", () => {
+        const sessions: SessionFacts[] = [
+            { id: "50", computer: THIS_SERVER, createdBy: owner.id, sharedWith: [viewer.id] },
+        ];
+        const { policy } = world(undefined, sessions);
 
         assert.equal(policy.maySee(viewer, "50"), true);
         assert.equal(policy.maySteer(viewer, "50"), false);
         assert.throws(() => policy.requireSteer(viewer, "50"), { status: 403 });
-        assert.equal(policy.maySee(invitedViewer, "30"), true);
-        assert.equal(policy.maySteer(invitedViewer, "30"), false);
     });
 
     it("refuses a session that does not exist, and a person who does not", () => {
         const { policy } = world();
 
-        assert.equal(policy.maySee(owner, "999"), false);
+        assert.equal(policy.maySee(owner, "99"), false);
         assert.equal(policy.maySee({ id: "removed" }, "10"), false);
-        assert.throws(() => policy.requireSteer(owner, "999"), { status: 404 });
+        assert.throws(() => policy.requireSee(stranger, "10"), { status: 404 });
     });
 });
 
 describe("may this person send to a session now", () => {
-    it("lets the owner send on this server at once, and asks for a runner until it is approved", () => {
-        assert.equal(world().policy.steer(owner, "10", "/anywhere"), "allow");
-        assert.equal(world().policy.steer(owner, "20", "/given"), "ask");
-        assert.equal(
-            world(undefined, undefined, undefined, new Set(["owner|runner|*"])).policy.steer(
-                owner,
-                "20",
-                "/given",
-            ),
-            "allow",
-        );
+    it("lets who is in charge send at once, approved or not", () => {
+        const { policy } = world();
+
+        assert.equal(policy.steer(owner, "10"), "allow");
+        assert.equal(policy.steer(linker, "20"), "allow");
     });
 
-    it("lets a starter send while their folder's approval lasts, and asks once it ended", () => {
-        assert.equal(world().policy.steer(guest, "10", "/given/app"), "ask");
+    it("lets anyone who steers it send while its approval is live, and locks it once it ended", () => {
+        const { policy, approved } = world();
 
-        const { policy } = world(
-            undefined,
-            undefined,
-            undefined,
-            new Set([`guest|${THIS_SERVER}|/given/app`]),
-        );
-
-        assert.equal(policy.steer(guest, "10", "/given/app"), "allow");
-        // A subagent goes by its top session.
-        assert.equal(policy.steer(guest, "101", "/given/app"), "allow");
+        assert.equal(policy.steer(guest, "10"), "locked");
+        assert.equal(policy.steer(guest, "11"), "locked");
+        approved.add("10");
+        approved.add("11");
+        assert.equal(policy.steer(guest, "10"), "allow");
+        assert.equal(policy.steer(guest, "101"), "allow");
+        assert.equal(policy.steer(guest, "11"), "allow");
+        approved.delete("10");
+        assert.equal(policy.steer(guest, "10"), "locked");
     });
 
-    it("asks for a shared session's own approval, not a folder's", () => {
-        const folderOnly = world(
-            undefined,
-            undefined,
-            undefined,
-            new Set([`guest|${THIS_SERVER}|/given/app`]),
-        ).policy;
+    it("never locks a PiP, nor a session someone was invited to", () => {
+        const { policy } = world();
 
-        assert.equal(folderOnly.steer(guest, "11", "/given/app"), "ask");
-
-        const { policy } = world(
-            undefined,
-            undefined,
-            undefined,
-            new Set([`guest|${THIS_SERVER}|session:11`]),
-        );
-
-        assert.equal(policy.steer(guest, "11", "/given/app"), "allow");
+        assert.equal(policy.steer(guest, "40"), "allow");
+        assert.equal(policy.steer(invited, "30"), "allow");
     });
 
-    it("never asks whose time is never, a PiP's person, or someone invited to one session", () => {
-        assert.equal(
-            world(undefined, undefined, undefined, undefined, { guest: 0 }).policy.steer(
-                guest,
-                "11",
-                "/x",
-            ),
-            "allow",
-        );
-        assert.equal(world().policy.steer(guest, "40", "/x"), "allow");
-        assert.equal(world().policy.steer(invited, "30", "/x"), "allow");
+    it("locks a viewer and someone the session is not shared with, approved or not", () => {
+        const { policy, approved } = world();
+
+        approved.add("10");
+        assert.equal(policy.steer(viewer, "10"), "locked");
+        assert.equal(policy.steer(stranger, "10"), "locked");
     });
 
-    it("refuses a viewer and someone the session is not shared with, approved or not", () => {
-        const { policy } = world(
-            undefined,
-            undefined,
-            undefined,
-            new Set([`viewer|${THIS_SERVER}|session:11`, `stranger|${THIS_SERVER}|session:10`]),
-        );
+    it("lets the starter renew with their code, and who is in charge without one", () => {
+        const { policy } = world();
 
-        assert.equal(policy.steer(viewer, "11", "/x"), "ask");
-        assert.equal(policy.steer(stranger, "10", "/x"), "ask");
+        assert.equal(policy.mayRenewWithCode(guest, "10"), true);
+        assert.equal(policy.mayRenewFree(owner, "10"), true);
+        assert.equal(policy.mayRenewFree(linker, "20"), true);
+    });
+
+    it("refuses a renewal from someone it is shared with, a viewer, and the owner of someone else's runner", () => {
+        const { policy } = world();
+
+        assert.equal(policy.mayRenewWithCode(guest, "11"), false);
+        assert.equal(policy.mayRenewFree(guest, "11"), false);
+        assert.equal(policy.mayRenewWithCode(viewer, "10"), false);
+        assert.equal(policy.mayRenewFree(owner, "20"), false);
     });
 });
 
 describe("who may share a session", () => {
-    it("lets the owner and the starter share it", () => {
+    it("lets who is in charge and the starter share it", () => {
         const { policy } = world();
 
         assert.equal(policy.mayShare(owner, "10"), true);
         assert.equal(policy.mayShare(guest, "10"), true);
-        assert.equal(policy.mayShare(owner, "12"), true);
+        assert.equal(policy.mayShare(linker, "20"), true);
     });
 
-    it("refuses someone it is shared with, a stranger, a starter no longer chosen, and any PiP", () => {
+    it("refuses someone it is shared with, a stranger, the owner on someone else's runner, and any PiP", () => {
         const { policy } = world();
 
         assert.equal(policy.mayShare(guest, "11"), false);
         assert.equal(policy.mayShare(stranger, "10"), false);
+        assert.equal(policy.mayShare(owner, "20"), false);
         assert.equal(policy.mayShare(guest, "40"), false);
-        assert.equal(policy.mayShare(owner, "40"), false);
-
-        const unchosen = world([computer(THIS_SERVER, { chosen: [] })]).policy;
-
-        assert.equal(unchosen.mayShare(guest, "10"), false);
     });
 
     it("shares new sessions with no one unless the computer shares them with its people", () => {
         assert.deepEqual(world().policy.initialShares(THIS_SERVER, guest.id), []);
+        assert.deepEqual(
+            world([computer(THIS_SERVER, { shareNew: true })]).policy.initialShares(
+                THIS_SERVER,
+                guest.id,
+            ),
+            [viewer.id],
+        );
+    });
 
-        const sharing = world([computer(THIS_SERVER, { shareNew: true })]).policy;
+    it("lets people who steer here invite to every session, and refuses viewers and invited people", () => {
+        const { policy } = world();
 
-        assert.deepEqual(sharing.initialShares(THIS_SERVER, guest.id), [viewer.id]);
-        assert.deepEqual(sharing.initialShares("gone", guest.id), []);
+        assert.equal(policy.mayInvite(owner), true);
+        assert.equal(policy.mayInvite(guest), true);
+        assert.equal(policy.mayInvite(viewer), false);
+        assert.equal(policy.mayInvite(invited), false);
+        assert.equal(policy.mayInvite(stranger), false);
     });
 });
 
@@ -627,12 +585,15 @@ describe("approval methods", () => {
         assert.deepEqual(lockouts, []);
     });
 
-    it("lets the owner approve anyone's request from the app, and refuses anyone else", async () => {
+    it("lets who is in charge allow a request from the app, and refuses anyone else", async () => {
         const methods = new ApprovalMethods(authenticators().auth);
 
-        assert.equal(await methods.verify(owner, guest, { method: "owner" }), "owner");
+        assert.equal(await methods.verify(owner, guest, { method: "owner" }, true), "owner");
+        assert.equal(await methods.verify(linker, guest, { method: "owner" }, true), "owner");
         await assert.rejects(methods.verify(guest, guest, { method: "owner" }), { status: 403 });
-        await assert.rejects(methods.verify(linker, guest, { method: "owner" }), { status: 403 });
+        await assert.rejects(methods.verify(owner, guest, { method: "owner" }, false), {
+            status: 403,
+        });
     });
 
     it("refuses a method it does not know", async () => {

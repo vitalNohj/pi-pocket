@@ -62,7 +62,6 @@ import {
     approvalDays,
     ConfigStore,
     modulesWith,
-    type StoredApproval,
     type User,
 } from "./config.ts";
 import {
@@ -80,14 +79,18 @@ import {
     DecisionsDoc,
     type FolderFavorites as FolderFavoritesValue,
     FolderFavoritesDoc,
+    HooksDoc,
     MemoryDoc,
+    RepoWatchesDoc,
     RunFailureDoc,
     type SessionMeta,
     SessionsDoc,
     SpendDoc,
     type SubagentRecord,
+    ScheduleDoc,
     SubagentsDoc,
     TurnsDoc,
+    WatchDoc,
 } from "./docs.ts";
 import { describe, HttpError } from "./errors.ts";
 import { ExtensionCommands } from "./extension-commands.ts";
@@ -170,8 +173,8 @@ import { Workspace } from "./workspace.ts";
 import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.ts";
 import { AccessPolicy, THIS_SERVER } from "./access.ts";
 import { realFolder } from "../runner/folders.ts";
-import { FolderRequests, type FolderRequestKind } from "./folder-requests.ts";
-import { type ApprovalTarget, FolderApprovals, WHOLE_COMPUTER } from "./folder-approvals.ts";
+import { FolderRequests } from "./folder-requests.ts";
+import { type ApprovalView, DAY_MS, FolderApprovals } from "./folder-approvals.ts";
 import {
     changedThere,
     type FolderScan,
@@ -327,6 +330,9 @@ const BOARD_FINISHED = 24;
 
 /** How long a read of Pi's settings serves skills and trust before it is read again. */
 const SETTINGS_STALE_MS = 30_000;
+
+/** With "Tasks expire with the session" on: how long a session's tasks run on after its approval ends. */
+const TASK_GRACE_MS = 7 * 86_400_000;
 
 /** A session's subagents as the board gets them: all but its oldest finished ones past `BOARD_FINISHED`. */
 function forBoard(entries: readonly SubagentEntry[]): SubagentEntry[] {
@@ -620,10 +626,14 @@ export class PocketApp {
             methods: this.approvalMethods,
             person: (id) => this.config.userById(id),
             hasCode: (id) => this.authenticators.linked(id),
+            inCharge: (person, computer) => this.policy.inCharge(person, computer),
             changed: () => this.#folderRequestsChanged(),
             asked: (request) =>
                 this.alerts.folderRequest(
                     request,
+                    request.session === undefined
+                        ? (this.config.runnerById(request.computer)?.createdBy ?? this.#ownerId())
+                        : this.policy.inChargeOf(request.session),
                     request.computer === THIS_SERVER ? undefined : request.computerName,
                 ),
             now: () => this.now(),
@@ -634,7 +644,8 @@ export class PocketApp {
             config: this.config,
             log: (line) => this.#log(line),
             onChange: () => this.#runnersChanged(),
-            mayList: (id, user) => this.policy.mayStart(user, id),
+            // Who may use it; the owner sees every runner, to unlink one (no folders or sessions unless chosen).
+            mayList: (id, user) => user.role === "owner" || this.policy.mayUse(user, id),
             mayManage: (id, user) => this.policy.mayManage(user, id),
         });
         this.cacheKeeper = new CacheKeeper({
@@ -2690,9 +2701,17 @@ export class PocketApp {
                 ...(viewer.role === "owner" && each.authenticator?.confirmedAt !== undefined
                     ? { authenticator: true }
                     : {}),
-                // How long their approvals last once unused (0: never asked), for the owner who sets it and for themselves.
+                // How long a session's approval lasts after they used it (0: never ends), for the owner and themselves.
                 ...(viewer.role === "owner" || viewer.id === each.id
                     ? { approvalDays: approvalDays(each) }
+                    : {}),
+                // Whether they have an authenticator linked (steering needs one), and may link computers.
+                ...((viewer.role === "owner" || viewer.id === each.id) &&
+                each.authenticator?.confirmedAt !== undefined
+                    ? { hasCode: true }
+                    : {}),
+                ...(each.linksRunners === true && (viewer.role === "owner" || viewer.id === each.id)
+                    ? { linksRunners: true }
                     : {}),
             }));
     }
@@ -2737,10 +2756,11 @@ export class PocketApp {
      */
     #makePolicy(): AccessPolicy {
         const config = this.config;
+        const ownerId = () => this.#ownerId();
 
         return new AccessPolicy({
             get ownerId() {
-                return config.users.find((each) => each.role === "owner")?.id ?? "";
+                return ownerId();
             },
             person: (id) => this.config.userById(id),
             computer: (id) => {
@@ -2770,12 +2790,7 @@ export class PocketApp {
                     shareNew: runner.shareNew === true,
                 };
             },
-            approvalDays: (person) => {
-                const user = this.config.userById(person);
-
-                return user === undefined ? 1 : approvalDays(user);
-            },
-            approved: (person, target) => this.folderApprovals.use(person, target),
+            approved: (id) => this.folderApprovals.live(id),
             session: (id) => {
                 const root = String(this.rootOf(Number(id) as unknown as ConversationId));
                 const meta = this.#sessions[root];
@@ -2824,25 +2839,32 @@ export class PocketApp {
     }
 
     /**
-     * Before `user` works in `folder` on computer `computer` (undefined: this server) — a new session, a copy, a move, a
-     * linked one: go on at once when the policy allows it, refuse a folder they were not given, or wait for an approval
-     * (`folder-requests.ts`): their own authenticator code, or the owner from the app. The approval is kept
-     * (`folder-approvals.ts`) for this folder, or the whole computer for the owner on a runner. `signal` withdraws the
-     * request. `folder` is a real path there: on this server it is resolved here, so a symlink changed later cannot
-     * widen it; a runner's is checked there (`runners.ts` `checkFolder`).
+     * Before `user` starts a new session in `folder` on computer `computer` (undefined: this server): go on at once when
+     * they are in charge of it, refuse a folder they were not given, or wait for an approval (`folder-requests.ts`):
+     * their own authenticator code, or Allow by who is in charge. Returns what keeps the approval for the new session
+     * once it has an id (nothing to keep for who is in charge). `folder` is a real path there: on this server it is
+     * resolved here, so a symlink changed later cannot widen it; a runner's is checked there (`runners.ts` `checkFolder`).
      */
-    async approveFolder(
+    async approveStart(
         user: User,
         folder: string,
-        kind: FolderRequestKind,
         signal?: AbortSignal,
         computer: string = THIS_SERVER,
-    ): Promise<void> {
+    ): Promise<(session: ConversationId, folder: string) => void> {
         const real = computer === THIS_SERVER ? await realFolder(folder) : folder;
         const decision = this.policy.folder(user, computer, real);
 
+        // Who is in charge is not asked, but their session still gets an approval, on their clock: people it is shared
+        // with use it while it is live.
         if (decision.kind === "allow") {
-            return;
+            return (session, cwd) =>
+                void this.folderApprovals.approve(
+                    String(session),
+                    { computer, folder: cwd },
+                    "owner",
+                    user.id,
+                    user,
+                );
         }
 
         if (decision.kind === "refuse") {
@@ -2855,27 +2877,77 @@ export class PocketApp {
                 computer,
                 computerName: this.#computerName(computer),
                 folder: real,
-                kind,
-                ...(decision.whole ? { whole: true } : {}),
+                kind: "new",
             },
             signal,
         );
 
-        this.folderApprovals.add(
-            user.id,
-            { computer, folder: decision.whole ? WHOLE_COMPUTER : real },
-            answer.method,
-            answer.by,
-        );
+        return (session, cwd) =>
+            void this.folderApprovals.approve(
+                String(session),
+                { computer, folder: cwd },
+                answer.method,
+                answer.by,
+                user,
+            );
     }
 
     /**
-     * The owner gives `person` these folders on computer `id` (`THIS_SERVER` or a runner): the whole list, replacing
-     * the last. A person must be chosen there first. Folders here are resolved to real paths; a runner's must be
-     * folders there. Approvals of folders no longer given end.
+     * A copy, a move, or a linked session that `user` makes from session `from` into `folder` on computer `computer`: it
+     * needs the folder given to them (or who is in charge), and inherits `from`'s live approval, used by them. A locked
+     * source is renewed first (`#renew`). Returns what keeps the approval for the new session.
+     */
+    async approveFrom(
+        user: User,
+        from: ConversationId,
+        folder: string,
+        runner?: string,
+        signal?: AbortSignal,
+    ): Promise<(session: ConversationId, folder: string) => void> {
+        const computer = runner ?? THIS_SERVER;
+        const real = computer === THIS_SERVER ? await realFolder(folder) : folder;
+
+        this.policy.requireFolder(user, computer, real);
+
+        const root = String(this.rootOf(from));
+        const sameComputer = (this.policy.session(root)?.computer ?? THIS_SERVER) === computer;
+
+        // From another computer, it starts as a new session there would.
+        if (!sameComputer) {
+            return this.approveStart(user, real, signal, computer);
+        }
+
+        await this.#requireApproval(from, user);
+
+        const inCharge = this.policy.inCharge(user, computer);
+
+        // The copy inherits the source's approval; who is in charge gives one on their own clock when it has none.
+        return (session, cwd) =>
+            this.folderApprovals.get(root) === undefined
+                ? inCharge
+                    ? void this.folderApprovals.approve(
+                          String(this.rootOf(session)),
+                          { computer, folder: cwd },
+                          "owner",
+                          user.id,
+                          user,
+                      )
+                    : undefined
+                : void this.folderApprovals.inherit(
+                      root,
+                      String(this.rootOf(session)),
+                      { computer, folder: cwd },
+                      user,
+                  );
+    }
+
+    /**
+     * The owner, or who is in charge of runner `id`, gives `person` these folders on computer `id` (`THIS_SERVER` or a
+     * runner): the whole list, replacing the last. A person must be chosen there first. Folders here are resolved to real
+     * paths; a runner's must be folders there. Sessions in folders no longer given move to who is in charge.
      */
     async giveFolders(
-        owner: User,
+        by: User,
         id: string,
         person: string,
         folders: readonly string[],
@@ -2884,9 +2956,7 @@ export class PocketApp {
             this.runners.require(id);
         }
 
-        if (owner.role !== "owner") {
-            throw new HttpError(403, "Only the owner gives folders.");
-        }
+        this.policy.requireManage(by, id);
 
         const target = this.config.userById(person);
 
@@ -2915,11 +2985,12 @@ export class PocketApp {
         );
 
         this.config.setGivenFolders(id === THIS_SERVER ? undefined : id, person, real);
+        await this.handOver(person, id);
         this.accessChanged();
         this.runners.changed();
     }
 
-    /** The owner sets how long `person`'s approvals last once unused (`APPROVAL_DAYS`); null: their role's default. */
+    /** The owner sets how long a session's approval lasts after `person` last used it (`APPROVAL_DAYS`); null: 7 days. */
     setApprovalDays(person: string, days: unknown): void {
         const target = this.config.userById(person);
 
@@ -2934,10 +3005,13 @@ export class PocketApp {
         this.config.updateUser(person, {
             approvalDays: days === null ? undefined : (days as number),
         });
-        // A shorter time ends approvals unused for longer at once.
-        this.folderApprovals.prune(() => true);
         this.#peopleChanged();
         this.#approvalsChanged();
+    }
+
+    /** The owner's id. */
+    #ownerId(): string {
+        return this.config.users.find((each) => each.role === "owner")?.id ?? "";
     }
 
     #computerName(computer: string): string {
@@ -2955,152 +3029,307 @@ export class PocketApp {
     }
 
     /**
-     * Before `user` sends to session `id` (`requireDriver`): their approval for it must be live (`access.ts` `steer`).
-     * Without one they wait for an approval, as for a new folder: of its folder for their own session, of the session
-     * for one shared with them.
+     * Before `user` sends to session `id`, changes its settings, or edits its tasks (`requireDriver`): its approval must
+     * be live (`access.ts` `steer`), and their use resets its clock. A locked session waits for a renewal (`#renew`).
      */
     async #requireApproval(id: ConversationId, user: User): Promise<void> {
-        const facts = this.policy.session(String(id));
+        const root = String(this.rootOf(id));
+        const facts = this.policy.session(root);
+
+        if (facts === undefined || facts.pip !== undefined) {
+            return;
+        }
+
+        if (this.policy.steer(user, root) === "allow") {
+            // Any use resets its clock to the user's time. Who is in charge renews it just by using it.
+            if (
+                !this.folderApprovals.use(root, user) &&
+                this.policy.inCharge(user, facts.computer)
+            ) {
+                this.folderApprovals.approve(
+                    root,
+                    { computer: facts.computer, folder: this.#approvalFolder(id) },
+                    "owner",
+                    user.id,
+                    user,
+                );
+            }
+
+            return;
+        }
+
+        await this.#renew(id, user);
+    }
+
+    /**
+     * Renew locked session `id`'s approval for `user`: its starter with their own code, or Allow by who is in charge of
+     * its computer. Anyone else who shares it asks, and only who is in charge can allow it.
+     */
+    async #renew(id: ConversationId, user: User, signal?: AbortSignal): Promise<void> {
+        const root = String(this.rootOf(id));
+        const facts = this.policy.session(root);
 
         if (facts === undefined) {
             return;
         }
 
-        const folder = this.#approvalFolder(id);
+        const answer = await this.folderRequests.ask(
+            user,
+            {
+                computer: facts.computer,
+                computerName: this.#computerName(facts.computer),
+                folder: this.#approvalFolder(id),
+                kind: "renew",
+                session: root,
+                title: this.sessionMeta(this.rootOf(id))?.title ?? "New session",
+            },
+            signal,
+            this.policy.mayRenewWithCode(user, root),
+        );
 
-        if (this.policy.steer(user, String(id), folder) === "allow") {
-            return;
-        }
-
-        const mine = this.policy.starter(facts) === user.id || user.role === "owner";
-        const whole = user.role === "owner";
-        const answer = await this.folderRequests.ask(user, {
-            computer: facts.computer,
-            computerName: this.#computerName(facts.computer),
-            folder,
-            kind: "steer",
-            ...(whole ? { whole: true } : {}),
-            ...(mine ? {} : { session: facts.id }),
-        });
-
-        this.folderApprovals.add(
-            user.id,
-            mine
-                ? { computer: facts.computer, folder: whole ? WHOLE_COMPUTER : folder }
-                : { computer: facts.computer, session: facts.id },
+        this.folderApprovals.approve(
+            root,
+            { computer: facts.computer, folder: this.#approvalFolder(id) },
             answer.method,
             answer.by,
+            user,
         );
     }
 
     /**
-     * Approve recurring task `task` (`schedule:<task>`, `hook:<id>`, `rwatch:<id>`, `watch:<task>`) that `user` sets up
-     * in session `id`, before it is made or changed (`label` names it in the approvals list). It keeps its approval while
-     * it exists, for it runs when nobody is there. A live approval of the session's folder (or of the session, for one
-     * shared with them) gives it, unless `fresh`: changed instructions, a folder, or a computer need a new code. The
-     * owner on this server, and anyone never asked, need none. Throws (403, or a refused request) when not allowed.
+     * Who is in charge renews session `id` from its row (Allow, no code), or its starter with `code`: no one has to be
+     * waiting on it.
      */
-    async approveTask(
-        user: User,
-        id: ConversationId,
-        task: string,
-        label: string,
-        fresh = false,
-    ): Promise<void> {
-        const facts = this.policy.session(String(id));
+    renewApproval(user: User, id: ConversationId, code?: string): Promise<void> | void {
+        const root = String(this.rootOf(id));
+        const facts = this.policy.session(root);
+
+        this.requireSee(user, id);
 
         if (facts === undefined) {
-            return;
+            throw new HttpError(404, "This session is not shared with you.");
         }
 
-        this.policy.requireSteer(user, String(id));
+        const target = { computer: facts.computer, folder: this.#approvalFolder(id) };
 
-        const mine = this.policy.starter(facts) === user.id || user.role === "owner";
-        const folder = this.#approvalFolder(id);
-        const target = mine
-            ? { computer: facts.computer, folder }
-            : { computer: facts.computer, session: facts.id };
-        const free =
-            facts.pip !== undefined ||
-            (user.role === "owner" && facts.computer === THIS_SERVER) ||
-            approvalDays(user) === 0 ||
-            user.sessions !== undefined;
-        const live = fresh || free ? undefined : this.#liveApproval(user, target);
-
-        if (free) {
-            this.folderApprovals.addTask(user.id, target, task, label, "owner", user.id);
+        if (this.policy.mayRenewFree(user, root)) {
+            this.folderApprovals.approve(root, target, "owner", user.id, user);
 
             return;
         }
 
-        if (live !== undefined) {
-            this.folderApprovals.addTask(user.id, target, task, label, live.method, live.by);
-
-            return;
+        if (code === undefined || !this.policy.mayRenewWithCode(user, root)) {
+            throw new HttpError(
+                403,
+                `Only its starter, with their own code, or whoever is in charge of ${this.#computerName(facts.computer)} can renew it.`,
+            );
         }
 
-        const whole = user.role === "owner";
-        const answer = await this.folderRequests.ask(user, {
-            computer: facts.computer,
-            computerName: this.#computerName(facts.computer),
-            folder,
-            kind: "task",
-            ...(whole ? { whole: true } : {}),
-            ...(mine ? {} : { session: facts.id }),
-        });
-
-        this.folderApprovals.addTask(user.id, target, task, label, answer.method, answer.by);
+        return this.approvalMethods
+            .verify(user, user, { method: "totp", code })
+            .then(
+                (method) => void this.folderApprovals.approve(root, target, method, user.id, user),
+            );
     }
 
-    /** `user`'s live approval for `target`, or the owner's of the whole computer on a runner. */
-    #liveApproval(user: User, target: ApprovalTarget): StoredApproval | undefined {
-        return (
-            this.folderApprovals.find(user.id, target) ??
-            (user.role === "owner" && "folder" in target
-                ? this.folderApprovals.find(user.id, {
-                      computer: target.computer,
-                      folder: WHOLE_COMPUTER,
-                  })
-                : undefined)
+    /** `user` revokes session `id`'s approval: its starter, or who is in charge. The session locks until renewed. */
+    revokeApproval(user: User, id: ConversationId): void {
+        const root = String(this.rootOf(id));
+        const facts = this.policy.session(root);
+
+        this.folderApprovals.revoke(
+            root,
+            facts !== undefined &&
+                this.policy.maySee(user, root) &&
+                (this.policy.starter(facts) === user.id || this.policy.mayRenewFree(user, root)),
         );
     }
 
     /**
-     * May recurring task `task` run now as `user` in session `id`: its approval stands (not revoked), and its person may
-     * still steer there and work in its folder (the owner's rules, checked at each run).
+     * May session `id`'s tasks (webhooks, schedules, watches) run now. "Tasks expire with the session" off (the default):
+     * they run for good once set up. On: while its approval is live, or the 7 days of grace after it ended (with a
+     * reminder each day to its starter and who is in charge), then they pause until someone renews it. Who is in charge
+     * of its computer, and a PiP, never need one.
      */
-    taskMayRun(task: string, user: User, id: ConversationId): boolean {
-        const approval = this.folderApprovals.task(task);
-        const facts = this.policy.session(String(id));
+    tasksMayRun(id: ConversationId): boolean {
+        const root = String(this.rootOf(id));
+        const facts = this.policy.session(root);
 
-        return (
-            approval !== undefined &&
-            approval.person === user.id &&
-            facts !== undefined &&
-            this.policy.maySteer(user, String(id)) &&
-            (facts.pip !== undefined ||
-                this.policy.mayUseFolder(user, facts.computer, this.#approvalFolder(id)))
+        if (facts === undefined) {
+            return false;
+        }
+
+        const starter = this.policy.starter(facts);
+
+        if (
+            this.config.server.tasksExpire !== true ||
+            facts.pip !== undefined ||
+            this.policy.inCharge({ id: starter }, facts.computer)
+        ) {
+            return true;
+        }
+
+        const approval = this.folderApprovals.get(root);
+        const ended = approval === undefined ? undefined : this.folderApprovals.expiresAt(approval);
+
+        if (approval === undefined || ended === undefined) {
+            return false;
+        }
+
+        if (ended === null || ended > this.now()) {
+            return true;
+        }
+
+        const left = Math.ceil((ended + TASK_GRACE_MS - this.now()) / DAY_MS);
+
+        // Once a day: who is in charge and its starter hear how long its tasks have.
+        if (approval.reminded === undefined || this.now() - approval.reminded >= DAY_MS) {
+            this.folderApprovals.reminded(root, this.now());
+            this.alerts.tasksEnding(
+                [starter, this.policy.inChargeOf(root)],
+                root,
+                this.sessionMeta(this.rootOf(id))?.title ?? "New session",
+                Math.max(0, left),
+            );
+        }
+
+        return left > 0;
+    }
+
+    /** The owner turns "Tasks expire with the session" on or off. */
+    setTasksExpire(user: User, on: boolean): void {
+        if (user.role !== "owner") {
+            throw new HttpError(403, "Only the owner can change this.");
+        }
+
+        this.config.setTasksExpire(on);
+        this.#peopleChanged();
+    }
+
+    /** The approvals `user` may list: of sessions they started, and on computers they are in charge of. */
+    sessionApprovals(user: User): ApprovalView[] {
+        return this.folderApprovals.list(
+            (approval) => {
+                const facts = this.policy.session(approval.session);
+
+                return (
+                    facts !== undefined &&
+                    this.policy.maySee(user, approval.session) &&
+                    (this.policy.starter(facts) === user.id ||
+                        this.policy.inCharge(user, facts.computer))
+                );
+            },
+            (session) => this.#sessions[session]?.title ?? "New session",
         );
     }
 
-    /** Each person's tabs hear their own approvals; the owner's hear every one. */
+    /**
+     * `person` leaves computer `computer` (undefined: every one): removed, no longer chosen there, or no longer given a
+     * folder. Their sessions there that they may no longer use move to who is in charge of it, with their tasks; nothing
+     * stops.
+     */
+    async handOver(person: string, computer?: string): Promise<void> {
+        const moved: { id: string; to: string }[] = [];
+
+        await this.harness.commit(async (tx) => {
+            const sessions = await tx.doc(SessionsDoc);
+
+            for (const [id, meta] of Object.entries(sessions.items)) {
+                const where = meta.runner ?? THIS_SERVER;
+
+                if (
+                    meta.createdBy !== person ||
+                    meta.pip !== undefined ||
+                    (computer !== undefined && where !== computer)
+                ) {
+                    continue;
+                }
+
+                const stays =
+                    this.config.userById(person) !== undefined &&
+                    this.policy.mayUseFolder(
+                        { id: person },
+                        where,
+                        meta.worktree?.source ?? meta.cwd,
+                    );
+
+                if (stays) {
+                    continue;
+                }
+
+                const to = this.policy.inChargeOf(id);
+
+                meta.createdBy = to;
+                meta.sharedWith = meta.sharedWith?.filter((each) => each !== to && each !== person);
+                moved.push({ id, to });
+            }
+        }, context);
+
+        for (const { id, to } of moved) {
+            await this.taskOwnerChanged(id as unknown as ConversationId, person, to);
+        }
+    }
+
+    /**
+     * Session `id`'s tasks that `from` set up now run for `to` (`handOver`): its webhooks, repository watches, PR watch,
+     * and schedules keep running, as theirs.
+     */
+    async taskOwnerChanged(id: ConversationId, from: string, to: string): Promise<void> {
+        const tree = new Set(this.conversationsOf(id).map(Number));
+
+        const swap = (item: { by?: string; requestedBy?: string }): void => {
+            if (item.by === from) {
+                item.by = to;
+            }
+
+            if (item.requestedBy === from) {
+                item.requestedBy = to;
+            }
+        };
+
+        await this.harness.commit(async (tx) => {
+            for (const hook of Object.values((await tx.doc(HooksDoc)).items)) {
+                if (tree.has(hook.target)) {
+                    swap(hook);
+                }
+            }
+
+            for (const watch of Object.values((await tx.doc(RepoWatchesDoc)).items)) {
+                if (tree.has(watch.target)) {
+                    swap(watch);
+                }
+            }
+
+            for (const each of tree) {
+                const conversation = each as unknown as ConversationId;
+                const watch = (await tx.doc(WatchDoc, conversation)).watch;
+
+                if (watch !== undefined) {
+                    swap(watch);
+                }
+
+                for (const schedule of Object.values(
+                    (await tx.doc(ScheduleDoc, conversation)).items,
+                )) {
+                    swap(schedule);
+                }
+            }
+        }, context);
+    }
+
+    /** Each person's tabs hear the approvals they may list. */
     #approvalsChanged(): void {
         for (const client of this.#clients) {
-            client.send("folder-approvals", this.folderApprovals.list(client.user));
+            client.send("folder-approvals", this.sessionApprovals(client.user));
         }
     }
 
-    /**
-     * Who started the session holding permission `permission` on computer `id`: a runner asks again when that permission
-     * expires, for that person. A session from before people were recorded is the owner's.
-     */
-    /** Each person's tabs hear their own folder requests; the owner's hear every one. */
+    /** Each person's tabs hear their own requests, and those on computers they are in charge of. */
     #folderRequestsChanged(): void {
         for (const client of this.#clients) {
             client.send("folder-requests", this.folderRequests.list(client.user));
         }
     }
-
     /**
      * May `user` browse this server's folders, to choose one for a new session (`access.ts` `mayBrowse`): whoever the
      * owner chose for this server, and steers. A session's own folder, in its Files panel, follows the session instead.
@@ -3152,20 +3381,20 @@ export class PocketApp {
     }
 
     /**
-     * While take turns is on, only the driver sends to Pi or changes its settings. `task`: a recurring task's run, which
-     * needs its own approval (`taskMayRun`) in place of a live one of its person.
+     * While take turns is on, only the driver sends to Pi or changes its settings. And the session's approval must be
+     * live (`#requireApproval`), or renewed now. `task`: one of its tasks runs (`tasksMayRun` decides), not a person.
      */
-    async requireDriver(id: ConversationId, user: User, task?: string): Promise<void> {
+    async requireDriver(id: ConversationId, user: User, task?: boolean): Promise<void> {
         this.requireSteer(user, id);
         const turns = await this.harness.snapshot(TurnsDoc, this.rootOf(id), context);
 
         if (turns?.on !== true || turns.driver === user.id) {
-            if (task === undefined) {
+            if (task !== true) {
                 await this.#requireApproval(id, user);
-            } else if (!this.taskMayRun(task, user, id)) {
+            } else if (!this.tasksMayRun(id)) {
                 throw new HttpError(
                     403,
-                    "This task's approval was revoked, or its person may no longer work here.",
+                    "This session's approval ended, so its tasks are paused until someone renews it.",
                 );
             }
 
@@ -3425,7 +3654,7 @@ export class PocketApp {
         return {
             ...(thisServer === undefined ? {} : { thisServer }),
             folderRequests: this.folderRequests.list(user),
-            folderApprovals: this.folderApprovals.list(user),
+            folderApprovals: this.sessionApprovals(user),
             user: {
                 id: user.id,
                 name: user.name,
@@ -3433,7 +3662,13 @@ export class PocketApp {
                 ...(user.sessions === undefined ? {} : { sessions: user.sessions.map(Number) }),
                 // May they start sessions on this server (`access.ts` `mayStart`): the app offers New only then.
                 mayStart: this.#mayStartHere(user),
+                // May they link computers of their own (`access.ts` `mayLink`): the Runners sheet offers it.
+                mayLink: this.policy.mayLink(user),
             },
+            // "Tasks expire with the session", for the owner's switch (`tasksMayRun`).
+            ...(user.role === "owner" && this.config.server.tasksExpire === true
+                ? { tasksExpire: true }
+                : {}),
             users: this.people(user),
             models,
             guard,
@@ -4063,6 +4298,18 @@ export class PocketApp {
                 throw new HttpError(400, "role must be guest or viewer");
             }
 
+            // Steering needs their own authenticator: it proves it is them when a session needs an approval.
+            if (
+                patch.role === "guest" &&
+                target.role === "viewer" &&
+                !this.authenticators.linked(target.id)
+            ) {
+                throw new HttpError(
+                    409,
+                    `${target.name} must link an authenticator first: in Pi Pocket, under their name.`,
+                );
+            }
+
             change.role = patch.role;
         }
 
@@ -4091,25 +4338,18 @@ export class PocketApp {
      * again, made for its person (`#scheduleSessions`). The policy reads the live records, so nothing else is kept.
      */
     accessChanged(): void {
-        // A request or an approval of someone who may no longer work there ends: no longer chosen, made a viewer, or no
-        // longer given the folder. A shared session's approval goes with the share.
-        const stands = (person: string, computer: string, folder?: string, session?: string) =>
-            session !== undefined
-                ? this.policy.maySteer({ id: person }, session)
-                : folder === undefined || folder === WHOLE_COMPUTER
-                  ? this.policy.mayStart({ id: person }, computer)
-                  : this.policy.mayUseFolder({ id: person }, computer, folder);
-
+        // A request of someone who may no longer work there ends: no longer chosen, made a viewer, or no longer given the
+        // folder. A session's approval stays with the session (`handOver` gives it to who is in charge).
         this.folderRequests.prune((request) =>
-            request.kind === "steer"
-                ? this.policy.maySteer({ id: request.person }, request.session ?? "") ||
-                  (request.session === undefined &&
-                      stands(request.person, request.computer, request.folder))
-                : stands(request.person, request.computer, request.folder),
+            request.kind === "renew"
+                ? this.policy.maySteer({ id: request.person }, request.session ?? "")
+                : this.policy.mayUseFolder(
+                      { id: request.person },
+                      request.computer,
+                      request.folder,
+                  ),
         );
-        this.folderApprovals.prune((approval) =>
-            stands(approval.person, approval.computer, approval.folder, approval.session),
-        );
+        this.#approvalsChanged();
 
         // Someone chosen, or no longer, for this server: their tabs learn whether to offer New.
         for (const user of this.config.users) {
@@ -4141,7 +4381,7 @@ export class PocketApp {
         this.#scheduleSessions();
     }
 
-    removeUser(owner: User, userId: string): void {
+    async removeUser(owner: User, userId: string): Promise<void> {
         if (owner.role !== "owner") {
             throw new HttpError(403, "Only the owner can do that");
         }
@@ -4150,7 +4390,89 @@ export class PocketApp {
             throw new HttpError(400, "The owner cannot be removed");
         }
 
-        this.#forget(userId);
+        await this.#forget(userId);
+    }
+
+    /**
+     * Who is in charge of computer `id` chooses its people: the whole list. Who is no longer chosen leaves its sessions
+     * at once; their sessions there, and their tasks, move to who is in charge (`handOver`).
+     */
+    async choosePeople(id: string, users: string[]): Promise<void> {
+        const before =
+            id === THIS_SERVER
+                ? (this.config.server.users ?? [])
+                : (this.config.runnerById(id)?.users ?? []);
+
+        if (id === THIS_SERVER) {
+            this.config.setServerUsers(users);
+        } else {
+            this.config.setRunnerUsers(id, users);
+        }
+
+        for (const person of before.filter((each) => !users.includes(each))) {
+            await this.handOver(person, id);
+        }
+
+        this.accessChanged();
+    }
+
+    /**
+     * Unlink runner `id` (its linker, or the owner): its link ends. Its sessions stay, as before, and run nowhere until
+     * it is linked again.
+     */
+    async unlinkRunner(id: string): Promise<void> {
+        this.runners.remove(id);
+        this.accessChanged();
+    }
+
+    /**
+     * Someone joined with `inviter`'s invite to every session: they see the sessions `inviter` started, and those shared
+     * with everyone chosen on their computer, as they are now. Sessions started later are not theirs to see unless shared.
+     */
+    async welcome(person: string, inviter: string): Promise<void> {
+        await this.harness.commit(async (tx) => {
+            const sessions = await tx.doc(SessionsDoc);
+
+            for (const meta of Object.values(sessions.items)) {
+                if (meta.pip !== undefined) {
+                    continue;
+                }
+
+                const computer = meta.runner ?? THIS_SERVER;
+                const chosen =
+                    computer === THIS_SERVER
+                        ? (this.config.server.users ?? [])
+                        : (this.config.runnerById(computer)?.users ?? []);
+                const starter = meta.createdBy ?? this.#ownerId();
+                const everyone =
+                    chosen.length > 0 &&
+                    chosen.every(
+                        (each) => each === starter || meta.sharedWith?.includes(each) === true,
+                    );
+
+                if (starter === inviter || everyone) {
+                    meta.sharedWith = [...new Set([...(meta.sharedWith ?? []), person])];
+                }
+            }
+        }, context);
+        this.accessChanged();
+    }
+
+    /** The owner lets guest `person` link computers of their own, or takes that back. */
+    setLinksRunners(owner: User, person: string, on: boolean): void {
+        if (owner.role !== "owner") {
+            throw new HttpError(403, "Only the owner can do that");
+        }
+
+        const target = this.config.userById(person);
+
+        if (target === undefined || target.role === "owner") {
+            throw new HttpError(404, "No such person");
+        }
+
+        this.config.updateUser(person, { linksRunners: on ? true : undefined });
+        this.#peopleChanged();
+        this.runners.changed();
     }
 
     /**
@@ -4167,13 +4489,22 @@ export class PocketApp {
 
         for (const user of [...this.config.users]) {
             if (user.role !== "owner" && user.tunnel !== undefined && user.tunnel !== current) {
-                this.#forget(user.id);
+                void this.#forget(user.id);
             }
         }
     }
 
-    #forget(userId: string): void {
+    async #forget(userId: string): Promise<void> {
+        // The computers they linked go to the owner; their sessions and tasks, to who is in charge of each computer.
         this.config.removeUser(userId);
+
+        for (const runner of this.config.runners) {
+            if (runner.createdBy === userId) {
+                this.config.setRunnerLinker(runner.id, this.#ownerId());
+            }
+        }
+
+        await this.handOver(userId);
         this.#startsHere.delete(userId);
         this.folderRequests.prune((request) => request.person !== userId);
         this.runners.changed();

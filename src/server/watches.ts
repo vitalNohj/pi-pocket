@@ -518,17 +518,6 @@ export class Watches {
         );
         const number = found.number;
         const now = app.now();
-        // One watch per session: its approval is the session's (`app.ts` `approveTask`), kept while it watches.
-        const task = `watch:${String(id)}`;
-        const before = await this.get(id);
-        const same =
-            before !== undefined &&
-            ((request.key !== undefined && before.key === request.key) ||
-                (before.status === "watching" && before.repo === repo && before.number === number));
-
-        if (!same && before?.status !== "watching") {
-            await app.approveTask(person, id, task, `Watch of PR #${number} in ${repo}`);
-        }
 
         return app.harness.commit(async (tx) => {
             const doc = await tx.doc(WatchDoc, id);
@@ -604,7 +593,6 @@ export class Watches {
                 delete doc.watch;
             }
         }, context);
-        this.#app.folderApprovals.dropTask(`watch:${String(id)}`);
 
         return watch;
     }
@@ -957,13 +945,8 @@ export class Watches {
 
         const person = app.config.userById(watch.by);
 
-        if (person === undefined || !app.taskMayRun(`watch:${String(id)}`, person, id)) {
-            return this.#end(
-                runtime,
-                "failed",
-                context,
-                "its person can no longer steer here, or its approval was revoked",
-            );
+        if (person === undefined || person.role === "viewer" || !app.canSee(person, id)) {
+            return this.#end(runtime, "failed", context, "its person can no longer steer here");
         }
 
         const key = clientKey(`watch-${String(runtime.taskId)}-${watch.sent}`);
@@ -1011,7 +994,7 @@ export class Watches {
                     { text: state.text, requestId: key },
                     WATCH_VIA,
                     undefined,
-                    `watch:${String(id)}`,
+                    true,
                 );
             } catch (error) {
                 // Someone else's turn, a spend limit, no model: it may pass. The look runs again, and finds the same.
@@ -1127,7 +1110,6 @@ export class Watches {
             }
 
             item.status = status;
-            app.folderApprovals.dropTask(`watch:${String(id)}`);
 
             if (why !== undefined) {
                 item.note = why;

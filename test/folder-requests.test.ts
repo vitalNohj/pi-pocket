@@ -1,8 +1,9 @@
-// Approvals on this server (`folder-requests.ts`, `folder-approvals.ts`): a chosen person's session in a folder the owner
-// gave them waits for their own authenticator code or the owner's approval, which is then kept for that folder until
-// unused for the person's approval time. The owner needs none here; a folder not given, or someone not chosen, is
-// refused before anything waits. Sending to a session needs the approval to be live too. Each person's tabs hear only
-// their own requests; the owner's hear every one.
+// Session approvals on this server (`folder-requests.ts`, `folder-approvals.ts`): a chosen person's new session in a
+// folder the owner gave them waits for their own authenticator code or the owner's Allow, kept for that session. It lasts
+// its last user's approval time after their last use; then the session is locked until its starter's code or the
+// owner's Allow renews it. The owner needs none here; a folder not given, or someone not chosen, is refused before
+// anything waits. Copies, moves, and linked sessions inherit. Each person's tabs hear only their own requests; the
+// owner's hear every one.
 import {
     type App,
     cleanUp,
@@ -20,6 +21,8 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
+import type { ConversationId } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "../src/server/access.ts";
 import { STEP_MS, totp } from "../src/server/totp.ts";
 import type { User } from "../src/server/config.ts";
 import { FOLDER_REQUEST_MS, type FolderRequestView } from "../src/server/folder-requests.ts";
@@ -90,18 +93,22 @@ function nextCode(secret: string): string {
     return totp(secret, Math.floor(clock / STEP_MS));
 }
 
-/** `user`'s request to send to a session, once it is there. */
-async function steering(user: User): Promise<FolderRequestView> {
+/** `user`'s request to renew a locked session, once it is there. */
+async function renewing(user: User): Promise<FolderRequestView> {
     let found: FolderRequestView | undefined;
 
     await until(() => {
-        found = app.folderRequests.list(user).find((each) => each.kind === "steer");
+        found = app.folderRequests
+            .list(user)
+            .find((each) => each.kind === "renew" && each.person === user.id);
 
         return found !== undefined;
-    }, `${user.name}'s request to send`);
+    }, `${user.name}'s request to renew`);
 
     return found!;
 }
+
+const DAY = 86_400_000;
 
 /** The request `user` waits on, once it is there. */
 async function pending(user: User, folder: string): Promise<FolderRequestView> {
@@ -159,7 +166,13 @@ test("the owner starts a session in any folder here without an approval", async 
 
     assert.equal(app.cwdOf(id), folder);
     assert.deepEqual(app.folderRequests.list(owner(app)), []);
-    assert.deepEqual(app.config.folderApprovals, []);
+    // Nobody was asked, but the session has an approval on the owner's clock, for the people it is shared with.
+    assert.deepEqual(
+        app.config.folderApprovals
+            .filter((each) => each.session === String(id))
+            .map((each) => [each.method, each.by]),
+        [["owner", owner(app).id]],
+    );
 });
 
 test("someone not chosen for this server is refused before anything waits", async () => {
@@ -169,8 +182,7 @@ test("someone not chosen for this server is refused before anything waits", asyn
         app.commands.createSession(stranger, { cwd: folder }),
         /not chosen you for this server/,
     );
-    assert.deepEqual(app.folderRequests.list(owner(app)), []);
-    await assert.rejects(app.approveFolder(vera, folder, "new"), /view sessions but not start/);
+    await assert.rejects(app.approveStart(vera, folder), /view sessions but not start/);
     assert.deepEqual(app.folderRequests.list(owner(app)), []);
 });
 
@@ -219,7 +231,7 @@ test("a folder not given is refused before anything waits, and the picker stays 
     assert.equal(ownerView.body.given, undefined);
 });
 
-test("a chosen person approves a folder with their own code, and the approval is kept for it", async () => {
+test("a chosen person starts a session with their own code, and the approval is that session's", async () => {
     const folder = newFolder();
     const started = app.commands.createSession(alex, { cwd: folder });
     const request = await pending(alex, folder);
@@ -230,7 +242,7 @@ test("a chosen person approves a folder with their own code, and the approval is
     assert.equal(request.computer, "this-server");
     assert.equal(request.expiresAt, clock + FOLDER_REQUEST_MS);
 
-    // A wrong code, someone else's request, and another person's code: none of them approve it.
+    // A wrong code, and another person's call: none of them approve it.
     assert.equal(
         (await call(alex, `folder-requests/${request.id}`, { code: "000000" })).status,
         400,
@@ -240,219 +252,158 @@ test("a chosen person approves a folder with their own code, and the approval is
         404,
     );
     assert.equal(
-        (await call(gale, `folder-requests/${request.id}`, { approve: true })).status,
-        404,
+        (await call(alex, `folder-requests/${request.id}`, { code: nextCode(alexSecret) })).status,
+        200,
     );
-    assert.equal(app.folderRequests.list(alex).length, 1);
 
-    const approved = await call(alex, `folder-requests/${request.id}`, {
+    const { id } = await started;
+    const approval = app.folderApprovals.get(String(id));
+
+    assert.equal(approval?.method, "totp");
+    assert.equal(approval?.folder, folder);
+    assert.equal(approval?.lastUser, alex.id);
+
+    // Each new session is its own: the next one in the same folder asks again.
+    const next = assert.rejects(app.commands.createSession(alex, { cwd: folder }), /Cancelled/);
+    const again = await pending(alex, folder);
+
+    app.folderRequests.deny(alex, again.id);
+    await next;
+});
+
+test("an approval lasts its last user's time after their last use, and each use resets it", async () => {
+    const folder = newFolder();
+    const started = app.commands.createSession(alex, { cwd: folder });
+
+    await app.folderRequests.approve(owner(app), (await pending(alex, folder)).id, {
+        method: "owner",
+    });
+
+    const { id } = await started;
+    const session = String(id);
+
+    // Alex's time: 7 days, the default.
+    assert.equal(app.folderApprovals.expiresAt(app.folderApprovals.get(session)!), clock + 7 * DAY);
+
+    clock += 6 * DAY;
+    assert.equal(app.folderApprovals.use(session, alex), true);
+    clock += 6 * DAY;
+    assert.equal(app.folderApprovals.live(session), true, "used a day before it ended");
+
+    // Gale uses it (shared with her): her time, 1 day, counts from now.
+    app.config.updateUser(gale.id, { approvalDays: 1 });
+    assert.equal(app.folderApprovals.use(session, gale), true);
+    clock += DAY + 1;
+    assert.equal(app.folderApprovals.live(session), false);
+    assert.equal(app.folderApprovals.use(session, alex), false, "locked: no use resets it");
+});
+
+test("a locked session waits for a renewal: its starter's code, or the owner's Allow, and stopping stays free", async () => {
+    const folder = newFolder();
+    const started = app.commands.createSession(alex, { cwd: folder });
+
+    await app.folderRequests.approve(alex, (await pending(alex, folder)).id, {
+        method: "totp",
         code: nextCode(alexSecret),
     });
 
-    assert.equal(approved.status, 200);
-
     const { id } = await started;
 
-    assert.equal(app.cwdOf(id), folder);
-    assert.deepEqual(
-        app.folderApprovals.list(alex).map((each) => [each.folder, each.method, each.by]),
-        [[folder, "totp", alex.id]],
+    await app.commands.shareSession(id, alex, [gale.id]);
+    clock += 8 * DAY;
+
+    // Locked: a send waits for a renewal.
+    const sending = app.requireDriver(id, alex);
+    const renew = await renewing(alex);
+
+    assert.equal(renew.kind, "renew");
+    assert.equal(renew.session, String(id));
+    assert.equal(renew.code, true);
+    await app.folderRequests.approve(alex, renew.id, {
+        method: "totp",
+        code: nextCode(alexSecret),
+    });
+    await sending;
+    assert.equal(app.folderApprovals.live(String(id)), true);
+
+    // Someone it is shared with cannot renew with a code: only the owner can allow it.
+    clock += 8 * DAY;
+
+    const galeSends = app.requireDriver(id, gale);
+    const hers = await renewing(gale);
+
+    assert.equal(hers.code, false);
+    await assert.rejects(
+        app.folderRequests.approve(gale, hers.id, { method: "totp", code: "123456" }),
+        /Only whoever is in charge/,
     );
-    assert.deepEqual(app.folderRequests.list(alex), []);
+    assert.ok(app.folderRequests.list(owner(app)).some((each) => each.id === hers.id));
+    await app.folderRequests.approve(owner(app), hers.id, { method: "owner" });
+    await galeSends;
+    assert.equal(app.folderApprovals.get(String(id))?.method, "owner");
 
-    // While it lasts, the next session there starts at once; a folder inside it is another folder, and asks.
-    assert.ok(await app.commands.createSession(alex, { cwd: folder }));
-    mkdirSync(join(folder, "inner"));
-
-    const inner = assert.rejects(
-        app.commands.createSession(alex, { cwd: join(folder, "inner") }),
-        /owner did not allow/,
-    );
-
-    app.folderRequests.deny(owner(app), (await pending(alex, join(folder, "inner"))).id);
-    await inner;
+    // Stopping work never needs an approval.
+    clock += 8 * DAY;
+    await app.commands.abort(id, alex);
 });
 
-test("an approval ends once unused for the person's time, and each use starts the clock again", async () => {
+test("the owner renews or revokes a session's approval from the list; its starter revokes their own", async () => {
     const folder = newFolder();
-    const day = 86_400_000;
+    const started = app.commands.createSession(alex, { cwd: folder });
 
-    app.folderApprovals.add(alex.id, { computer: "this-server", folder }, "owner", owner(app).id);
+    await app.folderRequests.approve(owner(app), (await pending(alex, folder)).id, {
+        method: "owner",
+    });
 
-    // Used on day 6: the 7 days start again from there.
-    clock += 6 * day;
-    assert.ok(await app.commands.createSession(alex, { cwd: folder }));
-    clock += 6 * day;
-    assert.ok(await app.commands.createSession(alex, { cwd: folder }));
+    const { id } = await started;
+    const session = String(id);
 
-    // Unused for more than 7 days: it ends, and asks again.
-    clock += 8 * day;
-
-    const asked = assert.rejects(app.commands.createSession(alex, { cwd: folder }), /Cancelled/);
-
-    app.folderRequests.deny(alex, (await pending(alex, folder)).id);
-    await asked;
-
-    // The owner sets Alex's time to never: no more asking, but still only in given folders.
+    // Alex lists their own; Gale, who did not start it, does not.
+    assert.deepEqual(
+        (await call<{ session: string }[]>(alex, "session-approvals")).body.map(
+            (each) => each.session,
+        ),
+        [session],
+    );
+    assert.deepEqual((await call<unknown[]>(gale, "session-approvals")).body, []);
     assert.equal(
-        (await call(owner(app), `users/${alex.id}/approval-days`, { days: 0 })).status,
+        (await call(owner(app), "session-approvals")).body instanceof Array &&
+            (await call<{ session: string }[]>(owner(app), "session-approvals")).body.some(
+                (each) => each.session === session,
+            ),
+        true,
+    );
+
+    // Gale cannot revoke it; Alex can.
+    const revoke = (user: User) =>
+        fetch(`${address}/api/session-approvals/${session}`, {
+            method: "DELETE",
+            headers: {
+                authorization: `Bearer ${tokens.get(user.id) ?? app.config.ownerToken}`,
+                "X-Pocket": "1",
+            },
+        });
+
+    assert.equal((await revoke(gale)).status, 404);
+    assert.equal((await revoke(alex)).status, 200);
+    assert.equal(app.folderApprovals.live(session), false);
+
+    // The owner renews it with Allow, no code; Gale cannot.
+    assert.equal((await call(gale, `session-approvals/${session}`, {})).status, 404);
+    assert.equal((await call(owner(app), `session-approvals/${session}`, {})).status, 200);
+    assert.equal(app.folderApprovals.live(session), true);
+
+    // Its starter renews with their own code.
+    await revoke(alex);
+    assert.equal((await call(alex, `session-approvals/${session}`, {})).status, 403);
+    assert.equal(
+        (await call(alex, `session-approvals/${session}`, { code: nextCode(alexSecret) })).status,
         200,
     );
-    assert.ok(await app.commands.createSession(alex, { cwd: folder }));
-    assert.equal((await call(alex, `users/${alex.id}/approval-days`, { days: 0 })).status, 403);
-    assert.equal(
-        (await call(owner(app), `users/${alex.id}/approval-days`, { days: 3 })).status,
-        400,
-    );
-
-    // People shows each time to the owner, and a person their own; nobody else's.
-    const seen = (viewer: User, person: User) =>
-        app.people(viewer).find((each) => each.id === person.id)?.approvalDays;
-
-    assert.equal(seen(owner(app), alex), 0);
-    assert.equal(seen(owner(app), gale), 7);
-    assert.equal(seen(alex, alex), 0);
-    assert.equal(seen(alex, gale), undefined);
+    assert.equal(app.folderApprovals.get(session)?.method, "totp");
 });
 
-test("each person sees and revokes their own approvals; the owner sees and revokes every one", async () => {
-    const folder = newFolder();
-    const alexs = app.folderApprovals.add(
-        alex.id,
-        { computer: "this-server", folder },
-        "totp",
-        alex.id,
-    );
-    const gales = app.folderApprovals.add(
-        gale.id,
-        { computer: "this-server", folder },
-        "owner",
-        owner(app).id,
-    );
-    const ids = (body: unknown) => (body as { id: string }[]).map((each) => each.id).sort();
-
-    assert.deepEqual(ids((await call(alex, "approvals")).body), [alexs.id]);
-    assert.deepEqual(ids((await call(owner(app), "approvals")).body), [alexs.id, gales.id].sort());
-
-    const revoke = async (user: User, id: string) =>
-        (
-            await fetch(`${address}/api/approvals/${id}`, {
-                method: "DELETE",
-                headers: {
-                    authorization: `Bearer ${tokens.get(user.id) ?? app.config.ownerToken}`,
-                    "X-Pocket": "1",
-                },
-            })
-        ).status;
-
-    assert.equal(await revoke(alex, gales.id), 404, "not Alex's to revoke, nor to know of");
-    assert.equal(await revoke(alex, alexs.id), 200);
-    assert.equal(await revoke(owner(app), gales.id), 200);
-    assert.deepEqual(app.config.folderApprovals, []);
-});
-
-test("taking a folder back, or the person off this server, ends their approvals there", async () => {
-    const folder = newFolder();
-
-    app.folderApprovals.add(alex.id, { computer: "this-server", folder }, "totp", alex.id);
-    await app.giveFolders(owner(app), "this-server", alex.id, [join(root, "outside")]);
-    assert.deepEqual(app.folderApprovals.list(alex), []);
-    await app.giveFolders(owner(app), "this-server", alex.id, [given]);
-
-    app.folderApprovals.add(gale.id, { computer: "this-server", folder }, "totp", gale.id);
-
-    try {
-        app.config.setServerUsers([alex.id, vera.id]);
-        app.accessChanged();
-        assert.deepEqual(app.folderApprovals.list(gale), []);
-    } finally {
-        app.config.setServerUsers([alex.id, gale.id, vera.id]);
-    }
-
-    // Only the owner gives folders, only to chosen people, and only real folders.
-    assert.equal(
-        (await call(alex, "runners/this-server/given", { person: alex.id, folders: [given] }))
-            .status,
-        403,
-    );
-    assert.equal(
-        (
-            await call(owner(app), "runners/this-server/given", {
-                person: stranger.id,
-                folders: [given],
-            })
-        ).status,
-        400,
-    );
-    assert.equal(
-        (
-            await call(owner(app), "runners/this-server/given", {
-                person: alex.id,
-                folders: [join(root, "missing")],
-            })
-        ).status,
-        400,
-    );
-});
-
-test("sending to a session needs a live approval: of the folder for one's own, of the session for a shared one", async () => {
-    const folder = newFolder();
-
-    app.folderApprovals.add(alex.id, { computer: "this-server", folder }, "totp", alex.id);
-
-    const { id } = await app.commands.createSession(alex, { cwd: folder });
-
-    await app.commands.configure(id, alex, {
-        model: { provider: "faux", modelId: "faux-1" },
-        thinkingLevel: "off",
-    });
-    await app.commands.shareSession(id, alex, [gale.id]);
-
-    // Alex's own session: the folder's approval lets them send.
-    const sent = await app.commands.submit(id, alex, {
-        text: "hi",
-        requestId: crypto.randomUUID(),
-    });
-
-    await (await app.harness.submission(sent.submissionId, context))!.wait(context);
-
-    // Gale sees the shared session, but must approve it before sending; the owner may approve it for them.
-    const sending = app.commands.submit(id, gale, {
-        text: "me too",
-        requestId: crypto.randomUUID(),
-    });
-    const steer = await steering(gale);
-
-    assert.equal(steer.session, String(id));
-    await app.folderRequests.approve(owner(app), steer.id, { method: "owner" });
-
-    const theirs = await sending;
-
-    await (await app.harness.submission(theirs.submissionId, context))!.wait(context);
-    assert.ok(app.folderApprovals.list(gale).some((each) => each.session === String(id)));
-
-    // Alex's approval ends: their next message waits for a code.
-    app.config.setFolderApprovals(
-        app.config.folderApprovals.filter((each) => each.person !== alex.id),
-    );
-
-    const later = assert.rejects(
-        app.commands.submit(id, alex, { text: "again", requestId: crypto.randomUUID() }),
-        /Cancelled/,
-    );
-    const again = await steering(alex);
-
-    assert.equal(again.folder, folder);
-    assert.equal(again.session, undefined);
-    app.folderRequests.deny(alex, again.id);
-    await later;
-
-    // Unshared, Gale's approval of the session ends with it.
-    await app.commands.shareSession(id, alex, []);
-    assert.deepEqual(app.folderApprovals.list(gale), []);
-});
-
-test("the owner approves or denies a guest's new folder from the app", async () => {
+test("the owner approves or denies a guest's new session from the app", async () => {
     const folder = newFolder();
     const started = app.commands.createSession(gale, { cwd: folder });
     const request = await pending(gale, folder);
@@ -460,25 +411,19 @@ test("the owner approves or denies a guest's new folder from the app", async () 
     // Gale has no authenticator: only the owner can let them in, and a code is no use.
     assert.equal(request.code, false);
     assert.equal(
-        (await call(gale, `folder-requests/${request.id}`, { code: "123456" })).status,
-        400,
-    );
-    assert.equal(
         (await call(gale, `folder-requests/${request.id}`, { approve: true })).status,
         403,
     );
-    assert.ok(app.folderRequests.list(owner(app)).some((each) => each.id === request.id));
     assert.equal(
         (await call(owner(app), `folder-requests/${request.id}`, { approve: true })).status,
         200,
     );
-    assert.equal(app.cwdOf((await started).id), folder);
-    assert.equal(app.folderApprovals.list(gale)[0]?.method, "owner");
+    assert.equal(app.folderApprovals.get(String((await started).id))?.method, "owner");
 
     const other = newFolder();
     const denied = assert.rejects(
         app.commands.createSession(gale, { cwd: other }),
-        /owner did not allow this folder/,
+        /was not allowed/,
     );
     const second = await pending(gale, other);
 
@@ -487,10 +432,6 @@ test("the owner approves or denies a guest's new folder from the app", async () 
         200,
     );
     await denied;
-    assert.deepEqual(
-        app.folderApprovals.list(gale).map((each) => each.folder),
-        [folder],
-    );
 });
 
 test("a request ends when its person cancels, the caller gives up, or nobody answers in time", async () => {
@@ -525,10 +466,7 @@ test("a request nobody answers ends after its time", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
 
     const folder = newFolder();
-    const rejected = assert.rejects(
-        app.approveFolder(alex, folder, "new"),
-        /Nobody approved it in time/,
-    );
+    const rejected = assert.rejects(app.approveStart(alex, folder), /Nobody approved it in time/);
 
     // `until` polls with the timers mocked here: wait on the event loop instead.
     for (let turn = 0; app.folderRequests.list(alex).length === 0; turn++) {
@@ -543,43 +481,34 @@ test("a request nobody answers ends after its time", async (t) => {
     assert.deepEqual(app.folderRequests.list(owner(app)), []);
 });
 
-test("copies, moves, and linked sessions to a new folder ask as a new session does", async () => {
+test("copies, moves, and linked sessions inherit the session's approval, in folders given to them", async () => {
     const source = newFolder();
+    const started = app.commands.createSession(alex, { cwd: source });
 
-    app.folderApprovals.add(alex.id, { computer: "this-server", folder: source }, "totp", alex.id);
-
-    const { id } = await app.commands.createSession(alex, { cwd: source });
-
-    // A move to another folder asks; denied, the session stays where it was.
-    const target = newFolder();
-    const moving = assert.rejects(
-        app.commands.configure(id, alex, { cwd: target }),
-        /owner did not allow this folder/,
-    );
-    const move = await pending(alex, target);
-
-    assert.equal(move.kind, "move");
-    app.folderRequests.deny(owner(app), move.id);
-    await moving;
-    assert.equal(app.cwdOf(id), source);
-
-    // Approved, it moves.
-    const moved = app.commands.configure(id, alex, { cwd: target });
-
-    await app.folderRequests.approve(owner(app), (await pending(alex, target)).id, {
+    await app.folderRequests.approve(owner(app), (await pending(alex, source)).id, {
         method: "owner",
     });
-    await moved;
-    assert.equal(app.cwdOf(id), target);
 
-    // A copy in the same folder, now approved, needs nothing more.
+    const { id } = await started;
+
+    // A move to another given folder asks nothing; one not given is refused.
+    const target = newFolder();
+
+    await app.commands.configure(id, alex, { cwd: target });
+    assert.equal(app.cwdOf(id), target);
+    assert.equal(app.folderApprovals.get(String(id))?.folder, target);
+    await assert.rejects(
+        app.commands.configure(id, alex, { cwd: realpathSync(root) }),
+        /not given you this folder/,
+    );
+
+    // A copy inherits the approval.
     const copy = await app.commands.fork(id, alex, {});
 
-    assert.equal(app.cwdOf(copy.id), target);
+    assert.equal(app.folderApprovals.live(String(copy.id)), true);
     assert.deepEqual(app.folderRequests.list(owner(app)), []);
 
-    // A linked session the agent starts for Alex in another folder asks Alex, as their own session there would: the
-    // agent gets no more than the person it works for.
+    // A linked session the agent starts in another given folder inherits too: the agent gets no more than its person.
     await app.commands.configure(id, alex, {
         model: { provider: "faux", modelId: "faux-1" },
         thinkingLevel: "off",
@@ -593,39 +522,75 @@ test("copies, moves, and linked sessions to a new folder ask as a new session do
     await (await app.harness.submission(submissionId, context))!.wait(context);
 
     const elsewhere = newFolder();
-    const linking = app.linkedSessions.start(
+    const { session } = await app.linkedSessions.start(
         id,
         { message: "Work over there", cwd: elsewhere },
         crypto.randomUUID(),
     );
-    const linked = await pending(alex, elsewhere);
 
-    assert.equal(linked.kind, "linked");
-    assert.equal(linked.person, alex.id);
-    await app.folderRequests.approve(alex, linked.id, {
-        method: "totp",
-        code: nextCode(alexSecret),
-    });
-    assert.equal(app.cwdOf((await linking).session), elsewhere);
+    assert.equal(app.cwdOf(session), elsewhere);
+    assert.equal(app.folderApprovals.live(String(session)), true);
+    assert.deepEqual(app.folderRequests.list(owner(app)), []);
+
+    // A locked source is renewed before its copy is made.
+    clock += 8 * DAY;
+
+    const copying = app.commands.fork(id, alex, {});
+    const renew = await renewing(alex);
+
+    await app.folderRequests.approve(owner(app), renew.id, { method: "owner" });
+    assert.equal(app.folderApprovals.live(String((await copying).id)), true);
 });
 
-test("a person removed from this server loses their waiting requests", async () => {
+test("a person removed from this server loses their waiting requests, and their sessions go to the owner", async () => {
     const folder = newFolder();
+    const started = app.commands.createSession(gale, { cwd: folder });
+
+    await app.folderRequests.approve(owner(app), (await pending(gale, folder)).id, {
+        method: "owner",
+    });
+
+    const { id } = await started;
     const waiting = assert.rejects(
-        app.commands.createSession(gale, { cwd: folder }),
+        app.commands.createSession(gale, { cwd: newFolder() }),
         /can no longer work there/,
     );
 
-    await pending(gale, folder);
+    await until(() => app.folderRequests.list(gale).length === 1, "Gale's second request");
 
     try {
-        app.config.setServerUsers([alex.id, vera.id]);
-        app.accessChanged();
+        await app.choosePeople(THIS_SERVER, [alex.id, vera.id]);
         await waiting;
         assert.deepEqual(app.folderRequests.list(owner(app)), []);
+        assert.equal(
+            app.sessionMeta(id)?.createdBy,
+            owner(app).id,
+            "her session is the owner's now",
+        );
+        assert.equal(app.canSee(gale, id), false);
     } finally {
         app.config.setServerUsers([alex.id, gale.id, vera.id]);
     }
+});
+
+test("taking a folder back moves sessions there to the owner, and leaves the others", async () => {
+    const kept = newFolder();
+    const taken = newFolder();
+    const ids: ConversationId[] = [];
+
+    for (const folder of [kept, taken]) {
+        const started = app.commands.createSession(alex, { cwd: folder });
+
+        await app.folderRequests.approve(owner(app), (await pending(alex, folder)).id, {
+            method: "owner",
+        });
+        ids.push((await started).id);
+    }
+
+    app.config.setGivenFolders(undefined, alex.id, [kept]);
+    await app.handOver(alex.id, THIS_SERVER);
+    assert.equal(app.sessionMeta(ids[0]!)?.createdBy, alex.id);
+    assert.equal(app.sessionMeta(ids[1]!)?.createdBy, owner(app).id);
 });
 
 test("each person's tabs hear only their own requests, and the owner's every one", async () => {

@@ -429,27 +429,17 @@ export class Hooks {
             count: 0,
         };
 
-        // It runs when nobody is there: it keeps its own approval while it exists (`app.ts` `approveTask`).
-        await app.approveTask(user, target, `hook:${hook.id}`, `Webhook “${name}”`);
+        await app.harness.commit(async (tx) => {
+            const doc = await tx.doc(HooksDoc);
 
-        try {
-            await app.harness.commit(async (tx) => {
-                const doc = await tx.doc(HooksDoc);
+            if (
+                Object.values(doc.items).filter((each) => each.by === user.id).length >= MAX_HOOKS
+            ) {
+                throw new HttpError(409, `A person can have ${MAX_HOOKS} webhooks at most.`);
+            }
 
-                if (
-                    Object.values(doc.items).filter((each) => each.by === user.id).length >=
-                    MAX_HOOKS
-                ) {
-                    throw new HttpError(409, `A person can have ${MAX_HOOKS} webhooks at most.`);
-                }
-
-                doc.items[hook.id] = hook;
-            }, context);
-        } catch (error) {
-            app.folderApprovals.dropTask(`hook:${hook.id}`);
-
-            throw error;
-        }
+            doc.items[hook.id] = hook;
+        }, context);
 
         return this.view(hook);
     }
@@ -463,24 +453,6 @@ export class Hooks {
 
         if (text.length > MAX_INSTRUCTIONS) {
             throw new HttpError(413, `Instructions are limited to ${MAX_INSTRUCTIONS} characters.`);
-        }
-
-        const found = (await this.#all()).find((each) => each.id === id);
-
-        if (found === undefined || (user.role !== "owner" && found.by !== user.id)) {
-            throw new HttpError(404, "No such webhook");
-        }
-
-        // New instructions are new work for Pi: its person approves them again, as for a new task. The owner's edit needs
-        // none, and the hook stays its person's, on the approval it has.
-        if (text !== found.instructions && user.id === found.by) {
-            await this.#app.approveTask(
-                user,
-                found.target as unknown as ConversationId,
-                `hook:${id}`,
-                `Webhook “${found.name}”`,
-                true,
-            );
         }
 
         const hook = await this.#app.harness.commit(async (tx) => {
@@ -522,7 +494,7 @@ export class Hooks {
 
     /** Remove a hook: posts to it get 404 from now on. Its maker or the owner may. */
     async remove(user: User, id: string): Promise<Hook> {
-        const removed = await this.#app.harness.commit(async (tx) => {
+        return this.#app.harness.commit(async (tx) => {
             const doc = await tx.doc(HooksDoc);
             const hook = Object.hasOwn(doc.items, id) ? doc.items[id] : undefined;
 
@@ -534,10 +506,6 @@ export class Hooks {
 
             return { ...hook };
         }, context);
-
-        this.#app.folderApprovals.dropTask(`hook:${id}`);
-
-        return removed;
     }
 
     /**
@@ -639,11 +607,11 @@ export class Hooks {
         if (
             person === undefined ||
             meta === undefined ||
-            !app.taskMayRun(`hook:${hook.id}`, person, target)
+            !app.policy.maySteer(person, String(target))
         ) {
             throw new HttpError(
                 410,
-                "This webhook's session is gone, its person cannot reach it, or its approval was revoked.",
+                "This webhook's session is gone, or its person cannot reach it.",
             );
         }
 
@@ -705,7 +673,7 @@ export class Hooks {
                 { text, requestId: key },
                 `webhook ${label(hook.name)}`,
                 undefined,
-                `hook:${hook.id}`,
+                true,
             );
         } catch (error) {
             // A post that did not go gives its place in the hour back.

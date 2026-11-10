@@ -65,48 +65,45 @@ export interface User {
      */
     authenticator?: StoredAuthenticator;
     /**
-     * How many days an approval of this person's lasts once unused (`folder-approvals.ts`), on every computer; 0: they are never
-     * asked. Absent: `DEFAULT_APPROVAL_DAYS` for their role.
+     * How many days a session's approval lasts once this person last used it (`folder-approvals.ts`); 0: never ends.
+     * Absent: 7 days.
      */
     approvalDays?: number;
+    /** The owner let this guest link computers of their own (`access.ts` `mayLink`). */
+    linksRunners?: true;
 }
 
-/** The approval times on offer, in days; 0 is "never ask". */
+/** The approval times on offer, in days; 0 is "never ends". */
 export const APPROVAL_DAYS = [1, 7, 14, 30, 0] as const;
 
-/** A person's approval time until the owner sets one: the owner 30 days, anyone else 7. */
-export function approvalDays(user: Pick<User, "role" | "approvalDays">): number {
-    return user.approvalDays ?? (user.role === "owner" ? 30 : 7);
+/** A person's approval time until the owner sets one: 7 days, the owner's too. */
+export function approvalDays(user: Pick<User, "approvalDays">): number {
+    return user.approvalDays ?? 7;
 }
 
 /**
- * One approval, kept on the server (`folder-approvals.ts`): a person may use a folder on a computer (or the whole computer, for
- * the owner on a runner), or steer a session shared with them. It lasts while it is used: it ends once unused for the
- * person's approval time.
+ * A session's approval, kept on the server (`folder-approvals.ts`): someone proved it was them before work there (their
+ * own code, or the Allow of who is in charge of its computer). It lasts while the session is used: each use resets its
+ * clock to the approval time of who used it, and it ends once unused that long.
  */
 export interface StoredApproval {
-    id: string;
-    person: string;
+    /** The session's top id. */
+    session: string;
     /** `THIS_SERVER` or a runner's id. */
     computer: string;
-    /** A real folder on that computer; `*` is the whole computer. Absent for a session approval. */
-    folder?: string;
-    /** A shared session's top id, for a session approval. */
-    session?: string;
-    /** How it was approved: the person's own code, or the owner from the app. */
+    /** The session's folder there, for the lists. */
+    folder: string;
+    /** How it was approved last: a code, or who is in charge from the app. */
     method: "totp" | "owner";
-    /** Who approved it, by id. */
+    /** Who approved it last, by id. */
     by: string;
     approvedAt: number;
     /** When it was last used; its clock starts here. */
     usedAt: number;
-    /**
-     * A recurring task's own approval (`folder-approvals.ts` `addTask`): `schedule:<task>`, `hook:<id>`,
-     * `rwatch:<id>`, or `watch:<task>`. It lasts while the task exists, and covers that task's runs alone.
-     */
-    task?: string;
-    /** What the task is, for the approvals list. */
-    label?: string;
+    /** Who used it last: their approval time sets how long it lasts from `usedAt`. */
+    lastUser: string;
+    /** When it ended, while tasks still run on it in their week of grace (`app.ts` `taskMayRun`). */
+    reminded?: number;
 }
 
 /** An invite not yet used, kept by its code's sha256 (the code itself is only shown to whoever made it). */
@@ -169,6 +166,11 @@ export interface StoredServer {
     given?: Record<string, string[]>;
     /** New sessions here start shared with its people. */
     shareNew?: true;
+    /**
+     * Tasks that run on their own (webhooks, schedules, watches) stop with their session's approval: a week after it
+     * ends, with reminders, until someone renews it. Off (absent): they run for good once set up.
+     */
+    tasksExpire?: true;
 }
 
 /** A one-time code that links a computer, not yet used: kept by its sha256, for a few minutes. */
@@ -698,6 +700,7 @@ export class ConfigStore {
                 | "budget"
                 | "avatar"
                 | "approvalDays"
+                | "linksRunners"
             >
         >,
     ): void {
@@ -738,6 +741,10 @@ export class ConfigStore {
             delete user.approvalDays;
         }
 
+        if (user.linksRunners !== true) {
+            delete user.linksRunners;
+        }
+
         this.save();
     }
 
@@ -773,11 +780,8 @@ export class ConfigStore {
             this.#config.invites = this.#config.invites?.filter(
                 (invite) => invite.createdBy !== id,
             );
-            // Nothing they were given or approved outlives them.
-            this.#config.folderApprovals = this.#config.folderApprovals?.filter(
-                (each) => each.person !== id,
-            );
 
+            // Nothing they were given outlives them; their sessions and tasks move to who is in charge (`app.ts`).
             for (const computer of [this.#config.server, ...(this.#config.runners ?? [])]) {
                 delete computer?.given?.[id];
             }
@@ -924,6 +928,17 @@ export class ConfigStore {
     }
 
     /** Grant access to existing people with access to the whole server, never to owners. */
+    /** Runner `id`'s linker left: `linker` (the owner) is in charge of it now. */
+    setRunnerLinker(id: string, linker: string): void {
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            runner.createdBy = linker;
+            runner.users = runner.users?.filter((each) => each !== linker);
+            this.save();
+        }
+    }
+
     setRunnerUsers(id: string, users: string[]): void {
         const runner = this.runnerById(id);
 
@@ -986,6 +1001,17 @@ export class ConfigStore {
     }
 
     /** Change a computer's rules (`id` undefined: this server). */
+    /** The owner turns "Tasks expire with the session" on or off (`app.ts` `tasksMayRun`). */
+    setTasksExpire(on: boolean): void {
+        this.#changeServer((server) => {
+            if (on) {
+                server.tasksExpire = true;
+            } else {
+                delete server.tasksExpire;
+            }
+        });
+    }
+
     setComputerSettings(id: string | undefined, change: ComputerSettings): void {
         const apply = (target: { shareNew?: true }): void => {
             if (change.shareNew === true) {

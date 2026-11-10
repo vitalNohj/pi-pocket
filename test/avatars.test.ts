@@ -100,6 +100,6 @@ test("removing a person removes their picture", async () => {
     const file = join(app.dataDir, "avatars", gone.user.id);
 
     assert.equal(existsSync(file), true);
-    app.removeUser(app.config.userById(app.config.users[0]!.id)!, gone.user.id);
+    await app.removeUser(app.config.userById(app.config.users[0]!.id)!, gone.user.id);
     assert.equal(existsSync(file), false);
 });

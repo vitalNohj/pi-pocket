@@ -1,8 +1,8 @@
 /**
- * Requests for an approval (`access.ts` said "ask"): a person who wants to work in a folder, or to steer a session shared
- * with them, without a live approval (`folder-approvals.ts`) waits here until it is approved, denied, withdrawn, or too old.
- * Two ways approve one (`approval-methods.ts`): the person's own authenticator code, or the owner from the app. The
- * caller keeps the approval that answers it.
+ * Requests for a session's approval (`folder-approvals.ts`): a person who wants to start a session on a computer they are
+ * not in charge of, or to renew a locked session's approval, waits here until it is approved, denied, withdrawn, or too
+ * old. Two ways approve one (`approval-methods.ts`): the requester's own authenticator code, or Allow in the app by who
+ * is in charge of the computer (the owner here, a runner's linker there). The caller keeps the approval that answers it.
  *
  * Requests live in memory: a restart ends them, and the person asks again. Nothing here is a document.
  */
@@ -11,14 +11,11 @@ import type { Person } from "./access.ts";
 import type { ApprovalMethods, MethodId, Proof } from "./approval-methods.ts";
 import { HttpError } from "./errors.ts";
 
-/** How long a request waits for an answer, as a runner's question with a code does. */
+/** How long a request waits for an answer. */
 export const FOLDER_REQUEST_MS = 300_000;
 
-/**
- * What it is for: a new session, a copy, a move of one, one an agent links, or sending to a session (their own, whose
- * folder's approval ended, or one shared with them).
- */
-export type FolderRequestKind = "new" | "fork" | "move" | "linked" | "steer" | "task";
+/** What it is for: a new session, or renewing a locked one's approval (`renew`). */
+export type FolderRequestKind = "new" | "renew";
 
 /** What a request asks for, and where. */
 export type FolderQuestion = {
@@ -28,18 +25,18 @@ export type FolderQuestion = {
     computerName: string;
     folder: string;
     kind: FolderRequestKind;
-    /** The approval covers the whole computer (the owner, on a runner), not this folder alone. */
-    whole?: boolean;
-    /** A shared session's id: the approval is for steering it. */
+    /** The session whose approval it renews (`renew`). */
     session?: string;
+    /** Its title, for people. */
+    title?: string;
 };
 
-/** A request as people see it: the requester theirs, the owner every one. */
+/** A request as people see it: the requester theirs, who is in charge every one on their computer. */
 export type FolderRequestView = FolderQuestion & {
     id: string;
     person: string;
     name: string;
-    /** The requester has an authenticator linked, so they can approve with a code. */
+    /** The requester may answer it with a code: they have an authenticator linked, and may renew with it. */
     code: boolean;
     expiresAt: number;
 };
@@ -58,9 +55,11 @@ export type FolderRequestOptions = {
     person: (id: string) => (Person & { name: string }) | undefined;
     /** Whether `person` has an authenticator linked now. */
     hasCode: (person: string) => boolean;
-    /** The requests changed: tell each person's tabs theirs, and the owner all. */
+    /** Whether `person` is in charge of computer `computer` (`access.ts` `inCharge`): they see and allow its requests. */
+    inCharge: (person: Pick<Person, "id">, computer: string) => boolean;
+    /** The requests changed: tell each person's tabs what they see. */
     changed: () => void;
-    /** A new request: the owner hears of it (a notice, a push). */
+    /** A new request: who is in charge of its computer hears of it (a notice, a push). */
     asked: (request: FolderRequestView) => void;
     now?: () => number;
 };
@@ -75,7 +74,7 @@ export class FolderRequests {
         this.#now = options.now ?? (() => Date.now());
     }
 
-    /** The requests `person` sees: the owner every one; anyone else their own. */
+    /** The requests `person` sees: their own, and every one on a computer they are in charge of. */
     list(person: Pick<Person, "id">): FolderRequestView[] {
         const current = this.#options.person(person.id);
 
@@ -84,18 +83,24 @@ export class FolderRequests {
         }
 
         return [...this.#pending.values()]
-            .filter((each) => current.role === "owner" || each.person === current.id)
+            .filter((each) => this.#sees(current, each))
             .map(({ resolve: _resolve, reject: _reject, ...view }) => view);
+    }
+
+    #sees(person: Pick<Person, "id">, request: FolderRequestView): boolean {
+        return request.person === person.id || this.#options.inCharge(person, request.computer);
     }
 
     /**
      * Wait for an approval of `question` for `person`. Resolves with who approved it and how; rejects when it is denied,
-     * withdrawn (also by `signal`), or too old.
+     * withdrawn (also by `signal`), or too old. `code`: the requester may answer with their own code (false for someone
+     * who may not renew this session themselves: only who is in charge can).
      */
     async ask(
         person: Pick<Person, "id">,
         question: FolderQuestion,
         signal?: AbortSignal,
+        code = true,
     ): Promise<FolderAnswer> {
         const current = this.#options.person(person.id);
 
@@ -104,6 +109,30 @@ export class FolderRequests {
         }
 
         signal?.throwIfAborted();
+
+        // One standing request per person and session: asking again joins it.
+        const standing =
+            question.session === undefined
+                ? undefined
+                : [...this.#pending.values()].find(
+                      (each) => each.person === current.id && each.session === question.session,
+                  );
+
+        if (standing !== undefined) {
+            return new Promise<FolderAnswer>((resolve, reject) => {
+                const { resolve: first, reject: firstReject } = standing;
+
+                standing.resolve = (answer) => {
+                    first(answer);
+                    resolve(answer);
+                };
+
+                standing.reject = (error) => {
+                    firstReject(error);
+                    reject(error);
+                };
+            });
+        }
 
         const id = randomUUID();
         let timer: NodeJS.Timeout | undefined;
@@ -115,7 +144,7 @@ export class FolderRequests {
                 id,
                 person: current.id,
                 name: current.name,
-                code: this.#options.hasCode(current.id),
+                code: code && this.#options.hasCode(current.id),
                 expiresAt: this.#now() + FOLDER_REQUEST_MS,
                 resolve,
                 reject,
@@ -124,16 +153,18 @@ export class FolderRequests {
             this.#pending.set(id, request);
             timer = setTimeout(
                 () =>
-                    reject(
+                    request.reject(
                         new HttpError(
                             409,
-                            "Nobody approved it in time. Try again, and enter a code from your authenticator or ask the owner.",
+                            request.code
+                                ? "Nobody approved it in time. Try again, and enter a code from your authenticator."
+                                : `Nobody approved it in time. Ask whoever is in charge of ${question.computerName} to allow it.`,
                         ),
                     ),
                 FOLDER_REQUEST_MS,
             );
             timer.unref?.();
-            abort = () => reject(new HttpError(409, "Cancelled."));
+            abort = () => request.reject(new HttpError(409, "Cancelled."));
             signal?.addEventListener("abort", abort, { once: true });
             this.#options.changed();
 
@@ -153,8 +184,8 @@ export class FolderRequests {
     }
 
     /**
-     * `approver` approves request `id` with `proof`: their own code for their own request, or the owner from the app.
-     * Someone who may not see the request learns nothing of it (404).
+     * `approver` approves request `id` with `proof`: their own code for their own request, or Allow by who is in charge
+     * of its computer. Someone who may not see the request learns nothing of it (404).
      */
     async approve(approver: Pick<Person, "id">, id: string, proof: Proof): Promise<void> {
         const request = this.#visible(approver, id);
@@ -167,31 +198,42 @@ export class FolderRequests {
             return;
         }
 
-        const method = await this.#options.methods.verify(current, requester, proof);
+        if (proof.method === "totp" && !request.code) {
+            throw new HttpError(
+                403,
+                `Only whoever is in charge of ${request.computerName} can renew this session.`,
+            );
+        }
+
+        const method = await this.#options.methods.verify(
+            current,
+            requester,
+            proof,
+            this.#options.inCharge(current, request.computer),
+        );
 
         // Answered by someone else while the code was checked: nothing more to do.
         this.#pending.get(id)?.resolve({ method, by: current.id });
     }
 
-    /** The owner denies request `id`; its requester withdraws it. */
+    /** Who is in charge denies request `id`; its requester withdraws it. */
     deny(person: Pick<Person, "id">, id: string): void {
         const request = this.#visible(person, id);
-        const current = this.#options.person(person.id)!;
+        const mine = person.id === request.person;
 
         request.reject(
             new HttpError(
-                current.id === request.person ? 409 : 403,
-                current.id === request.person
+                mine ? 409 : 403,
+                mine
                     ? "Cancelled."
-                    : "The owner did not allow this folder.",
+                    : request.kind === "renew"
+                      ? "It was not renewed."
+                      : "This folder was not allowed.",
             ),
         );
     }
 
-    /**
-     * End the requests `keep` refuses (a person removed, no longer chosen, made a viewer, or no longer given the folder):
-     * nobody can approve them now.
-     */
+    /** End the requests `keep` refuses (a person removed, no longer chosen, or no longer given the folder). */
     prune(keep: (request: FolderRequestView) => boolean): void {
         for (const request of [...this.#pending.values()]) {
             if (!keep(request)) {
@@ -204,11 +246,7 @@ export class FolderRequests {
         const current = this.#options.person(person.id);
         const request = this.#pending.get(id);
 
-        if (
-            current === undefined ||
-            request === undefined ||
-            (current.role !== "owner" && request.person !== current.id)
-        ) {
+        if (current === undefined || request === undefined || !this.#sees(current, request)) {
             throw new HttpError(
                 404,
                 "That request is gone: it was answered, cancelled, or too old.",

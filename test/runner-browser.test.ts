@@ -28,7 +28,6 @@ import {
     say,
     scriptedModel,
     until,
-    approveComputer,
 } from "./helpers.ts";
 
 const chromium = findBrowser();
@@ -196,7 +195,6 @@ before(async () => {
 
     runnerId = linked.id;
 
-    approveComputer(app, runnerId);
     // The daemon takes its temporary folder from its environment, as on a person's computer.
     const tmp = process.env.TMPDIR;
 

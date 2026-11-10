@@ -296,7 +296,7 @@ describe("a session's folder on another computer", () => {
             );
             assert.equal((await get(`/api/c/${id}/file?path=picture.png`, token)).status, 200);
         } finally {
-            app.removeUser(owner(app), guest.id);
+            await app.removeUser(owner(app), guest.id);
         }
     });
 

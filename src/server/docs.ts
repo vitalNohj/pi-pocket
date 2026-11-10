@@ -515,11 +515,6 @@ export const PlanDoc = defineDoc<{ on: boolean; by?: string; at?: number }>({
 export type Schedule = {
     /** Short and stable: what people and Pi use to cancel it. */
     id: string;
-    /**
-     * Its own approval (`folder-approvals.ts` `addTask`), of the person it works for, kept while it exists: each run
-     * needs it. Absent: Pi's own, or one made before approvals, which runs on its person's rules alone.
-     */
-    approval?: string;
     /** What was asked for, as shown in the list. */
     text: string;
     /** What Pi gets: the text marked as scheduled, with who set it when several people use this server. */

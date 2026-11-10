@@ -11,6 +11,7 @@ import type { Attachment } from "../src/server/commands.ts";
 import type { User } from "../src/server/config.ts";
 import type { FolderRequestView } from "../src/server/folder-requests.ts";
 import type { LimitTuning } from "../src/server/limit-gate.ts";
+import { STEP_MS, totp } from "../src/server/totp.ts";
 import type { Client } from "../src/server/room.ts";
 
 export const context = BACKGROUND_CONTEXT;
@@ -110,6 +111,41 @@ export async function openApp(
     return app;
 }
 
+/**
+ * For tests of something else than approvals: once `addPerson` added someone, a request of anyone whose approval time is
+ * "never" (as `addPerson` sets) is allowed by the owner at once, as if they tapped Allow.
+ */
+const allowing = new WeakSet<App>();
+
+function allowNeverAsked(app: App): void {
+    if (allowing.has(app)) {
+        return;
+    }
+
+    allowing.add(app);
+
+    const ask = app.folderRequests.ask.bind(app.folderRequests);
+
+    app.folderRequests.ask = (person, question, signal, code) => {
+        const asked = ask(person, question, signal, code);
+        const current = app.config.userById(person.id);
+
+        if (current?.approvalDays === 0 && current.role !== "owner") {
+            const request = app.folderRequests
+                .list(owner(app))
+                .findLast((each) => each.person === person.id);
+
+            if (request !== undefined) {
+                void app.folderRequests
+                    .approve(owner(app), request.id, { method: "owner" })
+                    .catch(() => {});
+            }
+        }
+
+        return asked;
+    };
+}
+
 /** Wait until `check` holds, polling. */
 export async function until(
     check: () => Promise<boolean> | boolean,
@@ -148,10 +184,6 @@ export async function recordCost(app: App, id: ConversationId, dollars: number):
 export const owner = (app: App) => app.config.users.find((user) => user.role === "owner")!;
 
 /**
- * Approve linked computer `runner` for the owner (`folder-approvals.ts`), as their one code after linking would: for
- * tests of something else than approvals, which then start sessions there without waiting.
- */
-/**
  * Answer folder requests (`folder-requests.ts`) as they come, in the owner's name: `answer` says yes (true), no
  * (false), or leaves it waiting (undefined). Each request is kept in `asked`. Returns a stop function.
  */
@@ -185,19 +217,43 @@ export function answerRequests(
     return () => clearInterval(timer);
 }
 
-export function approveComputer(app: App, runner: string): void {
-    app.folderApprovals.add(
+/**
+ * Approve session `id` (`folder-approvals.ts`) as who is in charge would with Allow: for tests of something else than
+ * approvals, where a person who is not in charge then steers it. It never ends: its last user's time is "never".
+ */
+export function approveSession(
+    app: App,
+    id: ConversationId,
+    user: Pick<User, "id"> = owner(app),
+): void {
+    const root = String(app.rootOf(id));
+
+    app.folderApprovals.approve(
+        root,
+        { computer: app.runnerOf(id) ?? "this-server", folder: app.cwdOf(id) },
+        "owner",
         owner(app).id,
-        { computer: runner, folder: "*" },
-        "totp",
-        owner(app).id,
+        user,
     );
 }
 
 /**
+ * Link an authenticator to `person`'s account, as they would under their name (`approval-methods.ts`): steering needs
+ * one. Returns its secret, for codes.
+ */
+export function linkAuthenticator(app: App, person: Pick<User, "id" | "name">): string {
+    const { secret } = app.authenticators.begin(person.id, person.name);
+
+    app.authenticators.confirm(person.id, totp(secret, Math.floor(app.now() / STEP_MS)));
+
+    return secret;
+}
+
+/**
  * Add a person with what everyone with access to the whole server had before the access policy (`access.ts`): chosen
- * for this server, with every session here shared with them, the ones there are now and the ones started later, and no
- * approval for a folder in the test folder (given to them, with "never" ask). A person invited to `sessions` gets only
+ * for this server, with every session here shared with them, the ones there are now and the ones started later, the test
+ * folder given to them, and approvals that never end once used by them (approval time "never"): every session here gets
+ * a live approval as they use it (`approveSession` for one that has none). A person invited to `sessions` gets only
  * those, as `addUser` gives. For tests of something else than who may see what; the policy's own tests choose, share,
  * and approve by hand.
  */
@@ -217,13 +273,25 @@ export async function addPerson(
     app.config.setComputerSettings(undefined, { shareNew: true });
     app.config.setGivenFolders(undefined, added.user.id, [realpathSync(root)]);
     app.config.updateUser(added.user.id, { approvalDays: 0 });
+    allowNeverAsked(app);
+
+    const shared: string[] = [];
+
     await app.harness.commit(async (tx) => {
-        for (const meta of Object.values((await tx.doc(SessionsDoc)).items)) {
+        for (const [id, meta] of Object.entries((await tx.doc(SessionsDoc)).items)) {
             if (meta.pip === undefined && meta.runner === undefined) {
                 meta.sharedWith = [...new Set([...(meta.sharedWith ?? []), added.user.id])];
+                shared.push(id);
             }
         }
     }, context);
+
+    // Each session here gets an approval that never ends while they use it: their time is "never".
+    for (const id of shared) {
+        if (!app.folderApprovals.live(id)) {
+            approveSession(app, Number(id) as unknown as ConversationId, added.user);
+        }
+    }
 
     return added;
 }

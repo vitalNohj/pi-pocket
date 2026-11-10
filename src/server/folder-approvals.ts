@@ -1,28 +1,31 @@
 /**
- * Approvals kept on the server, for every computer: a person may work in a folder on a computer, or steer a session
- * shared with them. A person approves with their own authenticator code, or the owner approves from the app
- * (`approval-methods.ts`, `folder-requests.ts`). An approval lasts while it is used: it ends once unused for the
- * person's approval time (`config.ts` `approvalDays`), and each use starts that clock again.
+ * Session approvals, kept on the server for every computer. Before someone works in a session on a computer they are not
+ * in charge of, someone proves it is them: its starter with their own authenticator code, or who is in charge of the
+ * computer with Allow in the app (`approval-methods.ts`, `folder-requests.ts`). The proof belongs to the session.
  *
- * What a person may do at all is the policy's (`access.ts`): an approval only proves, for a while, that it is them.
+ * It lasts while the session is used. Each use resets its clock to the approval time of the person who used it
+ * (`config.ts` `approvalDays`), and it ends once unused that long. An ended approval locks the session: sending, its
+ * settings, and its tasks wait until it is renewed. Stopping work never needs it.
+ *
+ * What a person may do at all is the policy's (`access.ts`): an approval only proves, for a while, that someone is there.
  */
-import { randomUUID } from "node:crypto";
 import { approvalDays, type StoredApproval, type User } from "./config.ts";
 import { HttpError } from "./errors.ts";
 
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
 
-/** The least time between two saved uses of one approval. */
+/** The least time between two saved uses of one approval by the same person. */
 const USE_STEP_MS = 60_000;
 
-/** The folder of an approval that covers a whole computer: the owner's, on a runner. */
-export const WHOLE_COMPUTER = "*";
-
-/** What an approval is for: a folder (or `WHOLE_COMPUTER`) on a computer, or a shared session there. */
-export type ApprovalTarget = { computer: string } & ({ folder: string } | { session: string });
-
-/** An approval as people see it, with when it ends unless used again. */
-export type ApprovalView = StoredApproval & { name: string; expiresAt: number | null };
+/** An approval as people see it: when it ends unless used again (null: never), and whether it has. */
+export type ApprovalView = StoredApproval & {
+    expiresAt: number | null;
+    ended: boolean;
+    /** The session's title, for the lists. */
+    title: string;
+    /** Who used it last, by name. */
+    name: string;
+};
 
 export interface FolderApprovalStore {
     readonly folderApprovals: readonly StoredApproval[];
@@ -44,192 +47,166 @@ export class FolderApprovals {
         this.#changed = options.changed ?? (() => {});
     }
 
+    /** Session `session`'s approval, live or ended; undefined when it never had one (or it was revoked). */
+    get(session: string): StoredApproval | undefined {
+        return this.#store.folderApprovals.find((each) => each.session === session);
+    }
+
     /**
-     * When `approval` ends unless used again; null: never (its person is never asked, or a task's, which lasts while its
-     * task does). Undefined: its person is gone.
+     * When `approval` ends unless used again: its last user's approval time after its last use; null for never. A last
+     * user who is gone counts as the default time.
      */
-    #expiresAt(approval: StoredApproval): number | null | undefined {
-        const person = this.#store.userById(approval.person);
-
-        if (person === undefined) {
-            return undefined;
-        }
-
-        if (approval.task !== undefined) {
-            return null;
-        }
-
-        const days = approvalDays(person);
+    expiresAt(approval: StoredApproval): number | null {
+        const user = this.#store.userById(approval.lastUser);
+        const days = approvalDays(user ?? {});
 
         return days === 0 ? null : approval.usedAt + days * DAY_MS;
     }
 
-    #live(approval: StoredApproval): boolean {
-        const expiresAt = this.#expiresAt(approval);
+    /** Whether session `session`'s approval is live. */
+    live(session: string): boolean {
+        const approval = this.get(session);
 
-        return expiresAt !== undefined && (expiresAt === null || expiresAt > this.#now());
+        return approval !== undefined && this.#live(approval);
     }
 
-    #matches(approval: StoredApproval, person: string, target: ApprovalTarget): boolean {
-        return (
-            approval.task === undefined &&
-            approval.person === person &&
-            approval.computer === target.computer &&
-            ("folder" in target
-                ? approval.session === undefined &&
-                  (approval.folder === target.folder || approval.folder === WHOLE_COMPUTER)
-                : approval.session === target.session)
-        );
+    #live(approval: StoredApproval): boolean {
+        const expiresAt = this.expiresAt(approval);
+
+        return expiresAt === null || expiresAt > this.#now();
     }
 
     /**
-     * Whether `person` has a live approval for `target`; using it starts its clock again. A whole-computer approval
-     * covers every folder there.
+     * `user` uses session `session`: true while its approval is live, and its clock starts again at their approval time.
+     * False: it ended (or never was), and the session is locked.
      */
-    use(person: string, target: ApprovalTarget): boolean {
-        const found = this.#store.folderApprovals.find(
-            (each) => this.#matches(each, person, target) && this.#live(each),
-        );
+    use(session: string, user: Pick<User, "id">): boolean {
+        const found = this.get(session);
 
-        if (found === undefined) {
+        if (found === undefined || !this.#live(found)) {
             return false;
         }
 
-        // Each message uses it: the clock moves at most once a minute, so sending is not a config write each time.
-        if (this.#now() - found.usedAt >= USE_STEP_MS) {
-            this.#save((list) =>
-                list.map((each) =>
-                    each.id === found.id ? { ...each, usedAt: this.#now() } : each,
-                ),
-            );
+        // Each message uses it: the clock moves at most once a minute for one person, so sending is not a write each time.
+        if (found.lastUser !== user.id || this.#now() - found.usedAt >= USE_STEP_MS) {
+            this.#replace(session, { ...found, usedAt: this.#now(), lastUser: user.id });
         }
 
         return true;
     }
 
-    /** Whether `person` has a live approval for `target`, without using it. */
-    has(person: string, target: ApprovalTarget): boolean {
-        return this.find(person, target) !== undefined;
-    }
-
-    /** `person`'s live approval for `target`, without using it. */
-    find(person: string, target: ApprovalTarget): StoredApproval | undefined {
-        return this.#store.folderApprovals.find(
-            (each) => this.#matches(each, person, target) && this.#live(each),
-        );
-    }
-
     /**
-     * Keep an approval for recurring task `task` (`schedule:<task>`, `hook:<id>`, ...): `person`'s, of `target`, as
-     * `method` and `by` gave it. It does not end while unused, for the task runs when nobody is there; it covers the
-     * task's runs alone, never a session someone starts. Revoking it stops the task's runs.
+     * Approve session `session` (on `computer`, in `folder`), or renew its approval: `method` by `by`, for `user`, who
+     * uses it first. A renewal ends any week of grace (`reminded`).
      */
-    addTask(
-        person: string,
-        target: ApprovalTarget,
-        task: string,
-        label: string,
+    approve(
+        session: string,
+        target: { computer: string; folder: string },
         method: StoredApproval["method"],
         by: string,
-    ): void {
-        const now = this.#now();
-        const approval: StoredApproval = {
-            id: randomUUID(),
-            person,
-            computer: target.computer,
-            ...("folder" in target ? { folder: target.folder } : { session: target.session }),
-            method,
-            by,
-            approvedAt: now,
-            usedAt: now,
-            task,
-            label,
-        };
-
-        this.#save((list) => [...list.filter((each) => each.task !== task), approval]);
-    }
-
-    /** Task `task`'s approval, while its person is here; undefined when there is none (revoked, or never given). */
-    task(task: string): StoredApproval | undefined {
-        return this.#store.folderApprovals.find((each) => each.task === task && this.#live(each));
-    }
-
-    /** Task `task` is gone: its approval goes with it. */
-    dropTask(task: string): void {
-        if (this.#store.folderApprovals.some((each) => each.task === task)) {
-            this.#save((list) => list.filter((each) => each.task !== task));
-        }
-    }
-
-    /** Keep a new approval of `target` for `person`, in place of an older one for the same. */
-    add(
-        person: string,
-        target: ApprovalTarget,
-        method: StoredApproval["method"],
-        by: string,
+        user: Pick<User, "id">,
     ): StoredApproval {
         const now = this.#now();
         const approval: StoredApproval = {
-            id: randomUUID(),
-            person,
+            session,
             computer: target.computer,
-            ...("folder" in target ? { folder: target.folder } : { session: target.session }),
+            folder: target.folder,
             method,
             by,
             approvedAt: now,
             usedAt: now,
+            lastUser: user.id,
         };
 
-        this.#save((list) => [
-            ...list.filter(
-                (each) =>
-                    !(
-                        each.person === person &&
-                        each.computer === target.computer &&
-                        each.folder === approval.folder &&
-                        each.session === approval.session
-                    ),
-            ),
-            approval,
-        ]);
+        this.#replace(session, approval);
 
         return approval;
     }
 
-    /** The live approvals `viewer` sees: the owner every one, anyone else their own. Newest first. */
-    list(viewer: Pick<User, "id" | "role">): ApprovalView[] {
+    /**
+     * A copy, a linked session, or a subagent started from session `from` while its approval was live: `to` gets that
+     * approval, used now by `user`, in its own folder. Pi's work from a live run asks no one.
+     */
+    inherit(
+        from: string,
+        to: string,
+        target: { computer: string; folder: string },
+        user: Pick<User, "id">,
+    ): boolean {
+        const parent = this.get(from);
+
+        if (parent === undefined || !this.#live(parent)) {
+            return false;
+        }
+
+        this.approve(to, target, parent.method, parent.by, user);
+
+        return true;
+    }
+
+    /** Session `session`'s approval moved to another folder (a move). */
+    moved(session: string, folder: string): void {
+        const found = this.get(session);
+
+        if (found !== undefined && found.folder !== folder) {
+            this.#replace(session, { ...found, folder });
+        }
+    }
+
+    /** Mark when session `session`'s tasks were last reminded that its approval ended. */
+    reminded(session: string, at: number): void {
+        const found = this.get(session);
+
+        if (found !== undefined) {
+            this.#replace(session, { ...found, reminded: at });
+        }
+    }
+
+    /**
+     * The approvals `viewer` may list (`may`: the sessions they see as starter or as the one in charge), newest use
+     * first, ended ones too, so a locked session shows how to renew it.
+     */
+    list(
+        may: (approval: StoredApproval) => boolean,
+        title: (session: string) => string,
+    ): ApprovalView[] {
         return this.#store.folderApprovals
-            .filter(
-                (each) =>
-                    (viewer.role === "owner" || each.person === viewer.id) && this.#live(each),
-            )
-            .map((each) => ({
-                ...each,
-                name: this.#store.userById(each.person)?.name ?? "Someone",
-                expiresAt: this.#expiresAt(each) ?? null,
-            }))
+            .filter((each) => may(each))
+            .map((each) => {
+                const expiresAt = this.expiresAt(each);
+
+                return {
+                    ...each,
+                    expiresAt,
+                    ended: expiresAt !== null && expiresAt <= this.#now(),
+                    title: title(each.session),
+                    name: this.#store.userById(each.lastUser)?.name ?? "Someone",
+                };
+            })
             .sort((a, b) => b.usedAt - a.usedAt);
     }
 
-    /** `viewer` revokes approval `id`: their own, or anyone's for the owner. Anyone else learns nothing of it (404). */
-    revoke(viewer: Pick<User, "id" | "role">, id: string): void {
-        const found = this.#store.folderApprovals.find((each) => each.id === id);
-
-        if (found === undefined || (viewer.role !== "owner" && found.person !== viewer.id)) {
+    /** Revoke session `session`'s approval, which `may` allows: the session locks until renewed. Else 404. */
+    revoke(session: string, may: boolean): void {
+        if (!may || this.get(session) === undefined) {
             throw new HttpError(404, "That approval is gone.");
         }
 
-        this.#save((list) => list.filter((each) => each.id !== id));
+        this.#save((list) => list.filter((each) => each.session !== session));
     }
 
-    /** Drop the approvals `keep` refuses (a person no longer chosen, a folder no longer given), and the expired ones. */
+    /** Drop the approvals `keep` refuses: of sessions that are gone. */
     prune(keep: (approval: StoredApproval) => boolean): void {
         const list = this.#store.folderApprovals;
-        const kept = list.filter((each) => this.#live(each) && keep(each));
+        const kept = list.filter((each) => keep(each));
 
         if (kept.length !== list.length) {
             this.#save(() => kept);
         }
+    }
+
+    #replace(session: string, approval: StoredApproval): void {
+        this.#save((list) => [...list.filter((each) => each.session !== session), approval]);
     }
 
     #save(change: (list: StoredApproval[]) => StoredApproval[]): void {

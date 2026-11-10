@@ -15,17 +15,27 @@ import type { WebAccess } from "./host.ts";
 /** The id of this server's own computer record, as `SessionMeta.runner` is absent for its sessions. */
 export const THIS_SERVER = "this-server";
 
-/** A person as the policy needs them. */
-export type Person = { id: string; role: Role; sessions?: readonly string[] };
+/**
+ * A person as the policy needs them. `linksRunners`: the owner let this guest link computers of their own.
+ */
+export type Person = {
+    id: string;
+    role: Role;
+    sessions?: readonly string[];
+    linksRunners?: boolean;
+};
 
 /** A computer: this server, or a linked runner. */
 export type Computer = {
     id: string;
-    /** Who linked it; for this server, the owner. Changes its settings and chooses its people. */
+    /**
+     * Who is in charge of it: for this server, the owner; for a runner, who linked it. They choose its people, give
+     * them folders, see every session on it, and are never asked for an approval there.
+     */
     linker: string;
-    /** The people the linker chose: they may use it. Viewers among them only see. */
+    /** The people the one in charge chose: they may use it. Viewers among them only see. */
     chosen: readonly string[];
-    /** The folders the owner gave `person` here (real paths); each covers the folders in it. The owner needs none. */
+    /** The folders the one in charge gave `person` here (real paths); each covers the folders in it. */
     given(person: string): readonly string[];
     /** Share new sessions with its chosen people. Off unless the linker turns it on. */
     shareNew: boolean;
@@ -53,24 +63,13 @@ export interface AccessFacts {
     computer(id: string): Computer | undefined;
     /** The facts of the top session of `id`, whichever session of its tree `id` names. */
     session(id: string): SessionFacts | undefined;
-    /** How many days `person`'s approvals last unused; 0: they are never asked (`config.ts` `approvalDays`). */
-    approvalDays(person: string): number;
-    /**
-     * Whether `person` has a live approval (`folder-approvals.ts`) of `folder` on `computer` (a whole-computer one covers every
-     * folder), or of shared session `session`; using it starts its clock again.
-     */
-    approved(
-        person: string,
-        target: { computer: string } & ({ folder: string } | { session: string }),
-    ): boolean;
+    /** Whether session `id`'s approval (`folder-approvals.ts`) is live: someone used it within their approval time. */
+    approved(id: string): boolean;
 }
 
-/**
- * May this person work in this folder: at once, after an approval, or not at all. `whole`: the approval covers the
- * whole computer (the owner, on a runner); else this folder alone.
- */
+/** May this person work in this folder: at once, after an approval, or not at all. */
 export type FolderDecision =
-    { kind: "allow" } | { kind: "ask"; whole: boolean } | { kind: "refuse"; reason: string };
+    { kind: "allow" } | { kind: "ask" } | { kind: "refuse"; reason: string };
 
 /** Whether `folder` is `given` or inside it, with either separator (a runner may run Windows). */
 export function inFolder(folder: string, given: string): boolean {
@@ -110,8 +109,23 @@ export class AccessPolicy {
     // Computers.
 
     /**
-     * May `person` use computer `id`: see it and the sessions on it they may see. The owner, its linker, and the people
-     * the linker chose. A person invited to one session uses no computer: they see that session only.
+     * Is `person` in charge of computer `id`: the owner of this server, the linker of a runner. On a runner someone else
+     * linked, the owner is no one special: they use it only if its linker chose them.
+     */
+    inCharge(person: Pick<Person, "id">, id: string): boolean {
+        const current = this.#current(person);
+        const computer = this.#facts.computer(id);
+
+        if (current === undefined || computer === undefined || current.sessions !== undefined) {
+            return false;
+        }
+
+        return id === THIS_SERVER ? current.role === "owner" : computer.linker === current.id;
+    }
+
+    /**
+     * May `person` use computer `id`: see it and the sessions on it they may see. Who is in charge of it, and the people
+     * they chose. A person invited to one session uses no computer: they see that session only.
      */
     mayUse(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -121,13 +135,9 @@ export class AccessPolicy {
             return false;
         }
 
-        if (current.role === "owner") {
-            return true;
-        }
-
         return (
-            current.sessions === undefined &&
-            (computer.linker === current.id || computer.chosen.includes(current.id))
+            this.inCharge(current, id) ||
+            (current.sessions === undefined && computer.chosen.includes(current.id))
         );
     }
 
@@ -136,24 +146,29 @@ export class AccessPolicy {
         return this.mayUse(person, id) && this.#current(person)?.role !== "viewer";
     }
 
-    /** May `person` change computer `id`'s settings, people, and saved folders: the owner and its linker. */
+    /** May `person` change computer `id`'s settings, choose its people, and give them folders: who is in charge of it. */
     mayManage(person: Pick<Person, "id">, id: string): boolean {
-        const current = this.#current(person);
-        const computer = this.#facts.computer(id);
+        return this.inCharge(person, id);
+    }
 
+    /** May `person` unlink runner `id`: its linker, and the owner, who decides what links to this server. */
+    mayUnlink(person: Pick<Person, "id">, id: string): boolean {
         return (
-            current !== undefined &&
-            computer !== undefined &&
-            (current.role === "owner" ||
-                (computer.linker === current.id &&
-                    current.role !== "viewer" &&
-                    current.sessions === undefined))
+            id !== THIS_SERVER &&
+            (this.#current(person)?.role === "owner" || this.inCharge(person, id))
         );
     }
 
-    /** Only the owner links computers. */
+    /** May `person` link computers of their own: the owner, and the guests the owner lets. */
     mayLink(person: Pick<Person, "id">): boolean {
-        return this.#current(person)?.role === "owner";
+        const current = this.#current(person);
+
+        return (
+            current !== undefined &&
+            current.sessions === undefined &&
+            (current.role === "owner" ||
+                (current.role === "guest" && current.linksRunners === true))
+        );
     }
 
     /**
@@ -188,14 +203,23 @@ export class AccessPolicy {
     }
 
     /**
-     * May `person` invite someone new: to session `session` alone, who may share it (`mayShare`); to this server, who
-     * may start sessions on it. A new person starts with no access until the owner chooses them, so this asks no more.
+     * May `person` invite someone new: to session `session` alone, who may share it (`mayShare`); to every session, who
+     * steers on this server or a runner they link. Every invite starts as a viewer (`auth.ts`), so it gives no more.
      * An owner invite is the owner's alone; it is a role, not access, and `api.ts` checks it.
      */
     mayInvite(person: Pick<Person, "id">, session?: string): boolean {
-        return session === undefined
-            ? this.mayStart(person, THIS_SERVER)
-            : this.mayShare(person, session);
+        const current = this.#current(person);
+
+        if (session !== undefined) {
+            return this.mayShare(person, session);
+        }
+
+        return (
+            current !== undefined &&
+            current.sessions === undefined &&
+            current.role !== "viewer" &&
+            (current.role === "owner" || this.mayStart(current, THIS_SERVER))
+        );
     }
 
     /**
@@ -220,13 +244,13 @@ export class AccessPolicy {
     }
 
     /**
-     * The folders `person` may work in on computer `id`: those the owner gave them there; undefined for the owner, who
-     * may use every folder. Empty for who may not start sessions there.
+     * The folders `person` may work in on computer `id`: those its one in charge gave them there; undefined for who is
+     * in charge, who may use every folder. Empty for who may not start sessions there.
      */
     givenFolders(person: Pick<Person, "id">, id: string): readonly string[] | undefined {
         const current = this.#current(person);
 
-        if (current?.role === "owner") {
+        if (current !== undefined && this.inCharge(current, id)) {
             return undefined;
         }
 
@@ -235,7 +259,7 @@ export class AccessPolicy {
             : [];
     }
 
-    /** May `person` work in `folder` on computer `id` at all (a real path there): the owner anywhere, others where given. */
+    /** May `person` work in `folder` on computer `id` (a real path there): who is in charge anywhere, others where given. */
     mayUseFolder(person: Pick<Person, "id">, id: string, folder: string): boolean {
         const given = this.givenFolders(person, id);
 
@@ -245,10 +269,9 @@ export class AccessPolicy {
     }
 
     /**
-     * May `person` start a session in `folder` on computer `id` (a real path there), or copy or move one there.
-     * Refused unless they may start sessions there and the owner gave them the folder (or one it is in). The owner needs
-     * no approval on this server, which they control, and a person whose approval time is "never" needs none. Anyone
-     * else needs a live approval: of this folder, or for the owner on a runner of the whole computer.
+     * May `person` start a new session in `folder` on computer `id` (a real path there). Refused unless they may start
+     * sessions there and were given the folder. Who is in charge needs no approval; anyone else proves it is them, with
+     * their own code or the Allow of the one in charge, and that approval belongs to the new session.
      */
     folder(person: Pick<Person, "id">, id: string, folder: string): FolderDecision {
         const current = this.#current(person);
@@ -261,64 +284,68 @@ export class AccessPolicy {
         }
 
         if (!this.mayUseFolder(current, id, folder)) {
-            return {
-                kind: "refuse",
-                reason: "The owner has not given you this folder. Ask them to add it for you.",
-            };
+            return { kind: "refuse", reason: this.#folderRefusal(id) };
         }
 
-        const owner = current.role === "owner";
-
-        if ((owner && id === THIS_SERVER) || this.#facts.approvalDays(current.id) === 0) {
-            return { kind: "allow" };
-        }
-
-        return this.#facts.approved(current.id, { computer: id, folder })
-            ? { kind: "allow" }
-            : { kind: "ask", whole: owner };
+        return this.inCharge(current, id) ? { kind: "allow" } : { kind: "ask" };
     }
 
     /**
-     * May `person` send to session `id`'s agent now: they steer it (`maySteer`), and their approval for it is live. Their
-     * own session needs a live approval of its folder (what started it); a session shared with them, of that session (an
-     * approval the share made, or a later code). The owner is never asked on this server; on a runner, their approval of
-     * the computer counts. Viewers never send. "ask": a code would let them.
+     * May `person` send to session `id`'s agent now: they steer it (`maySteer`), and the session's approval is live, or
+     * they are in charge of its computer (never asked there). "locked": its approval ended; its starter's code or the
+     * Allow of the one in charge renews it. Stopping work needs no approval (`maySteer` alone).
      */
-    steer(person: Pick<Person, "id">, id: string, folder: string): "allow" | "ask" {
+    steer(person: Pick<Person, "id">, id: string): "allow" | "locked" {
         const current = this.#current(person);
         const facts = this.#facts.session(id);
 
         if (current === undefined || facts === undefined || !this.maySteer(current, id)) {
-            return "ask";
+            return "locked";
         }
 
         if (
             facts.pip !== undefined ||
-            (current.role === "owner" && facts.computer === THIS_SERVER) ||
-            this.#facts.approvalDays(current.id) === 0 ||
-            current.sessions !== undefined
+            current.sessions !== undefined ||
+            this.inCharge(current, facts.computer)
         ) {
             return "allow";
         }
 
-        const mine = this.starter(facts) === current.id;
+        return this.#facts.approved(facts.id) ? "allow" : "locked";
+    }
 
-        return this.#facts.approved(
-            current.id,
-            mine || current.role === "owner"
-                ? { computer: facts.computer, folder }
-                : { computer: facts.computer, session: facts.id },
-        )
-            ? "allow"
-            : "ask";
+    /** May `person` renew session `id`'s approval without a code: who is in charge of its computer. */
+    mayRenewFree(person: Pick<Person, "id">, id: string): boolean {
+        const facts = this.#facts.session(id);
+
+        return facts !== undefined && this.inCharge(person, facts.computer);
+    }
+
+    /** May `person` renew session `id`'s approval with their own code: its starter, while they steer it. */
+    mayRenewWithCode(person: Pick<Person, "id">, id: string): boolean {
+        const facts = this.#facts.session(id);
+
+        return (
+            facts !== undefined && this.starter(facts) === person.id && this.maySteer(person, id)
+        );
+    }
+
+    /** Who is in charge of session `id`'s computer: its runner's linker, or the owner. */
+    inChargeOf(id: string): string {
+        const facts = this.#facts.session(id);
+        const computer = facts === undefined ? undefined : this.#facts.computer(facts.computer);
+
+        return facts === undefined || facts.computer === THIS_SERVER || computer === undefined
+            ? this.#facts.ownerId
+            : computer.linker;
     }
 
     // Sessions.
 
     /**
-     * May `person` see session `id` (any session of its tree). A PiP is its person's alone. The owner sees every other
-     * session. A person invited to one session sees that session. Anyone else must be able to use its computer, and
-     * have started it or have it shared with them.
+     * May `person` see session `id` (any session of its tree). A PiP is its person's alone. Who is in charge of its
+     * computer sees every session there. A person invited to one session sees that session. Anyone else sees the ones
+     * they started, while they may use that computer, and the ones shared with them.
      */
     maySee(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -332,17 +359,17 @@ export class AccessPolicy {
             return facts.pip === current.id;
         }
 
-        if (current.role === "owner") {
-            return true;
-        }
-
         if (current.sessions !== undefined) {
             return current.sessions.includes(facts.id);
         }
 
+        if (this.inCharge(current, facts.computer)) {
+            return true;
+        }
+
         return (
-            this.mayUse(current, facts.computer) &&
-            (this.starter(facts) === current.id || facts.sharedWith?.includes(current.id) === true)
+            facts.sharedWith?.includes(current.id) === true ||
+            (this.starter(facts) === current.id && this.mayUse(current, facts.computer))
         );
     }
 
@@ -352,8 +379,8 @@ export class AccessPolicy {
     }
 
     /**
-     * May `person` change whom session `id` is shared with, or invite someone to it alone (an invite shares it too): the
-     * owner, and its starter while they may steer it.
+     * May `person` change whom session `id` is shared with, or invite someone to it alone (an invite shares it too): who
+     * is in charge of its computer, and its starter while they may steer it.
      */
     mayShare(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -364,7 +391,7 @@ export class AccessPolicy {
         }
 
         return (
-            current.role === "owner" ||
+            this.inCharge(current, facts.computer) ||
             (this.starter(facts) === current.id && this.maySteer(current, id))
         );
     }
@@ -416,7 +443,13 @@ export class AccessPolicy {
               ? "You can view sessions but not start them. Ask the owner for steering rights."
               : id === THIS_SERVER
                 ? "The owner has not chosen you for this server yet."
-                : "The owner has not chosen you for this computer yet.";
+                : "The person who linked this computer has not chosen you for it yet.";
+    }
+
+    #folderRefusal(id: string): string {
+        return id === THIS_SERVER
+            ? "The owner has not given you this folder. Ask them to add it for you."
+            : "The person who linked this computer has not given you this folder. Ask them to add it for you.";
     }
 
     /** Refuse `folder` on computer `id` to who may not work in it (`mayUseFolder`). */
@@ -424,10 +457,7 @@ export class AccessPolicy {
         this.requireStart(person, id);
 
         if (!this.mayUseFolder(person, id, folder)) {
-            throw new HttpError(
-                403,
-                "The owner has not given you this folder. Ask them to add it for you.",
-            );
+            throw new HttpError(403, this.#folderRefusal(id));
         }
     }
 
@@ -438,7 +468,18 @@ export class AccessPolicy {
 
     requireManage(person: Pick<Person, "id">, id: string): void {
         if (!this.mayManage(person, id)) {
-            throw new HttpError(403, "Only the owner can change this computer's settings.");
+            throw new HttpError(
+                403,
+                id === THIS_SERVER
+                    ? "Only the owner can change this server's settings."
+                    : "Only the person who linked this computer can change its settings.",
+            );
+        }
+    }
+
+    requireUnlink(person: Pick<Person, "id">, id: string): void {
+        if (!this.mayUnlink(person, id)) {
+            throw new HttpError(403, "Only the owner or who linked this computer can remove it.");
         }
     }
 }

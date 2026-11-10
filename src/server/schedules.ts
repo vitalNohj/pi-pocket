@@ -133,8 +133,9 @@ export class Schedules {
         }
 
         // PiP's conversation while PiP is off would run without PiP's rules: its schedule waits, and goes out once PiP
-        // is back. Its `runs` stays, so a sending this replaces keeps its request id.
-        if (this.#waitsForPip(conversationId)) {
+        // is back. A session whose tasks paused (its approval ended, `app.ts` `tasksMayRun`) waits until it is renewed.
+        // Its `runs` stays, so a sending this replaces keeps its request id.
+        if (this.#waitsForPip(conversationId) || !this.#app.tasksMayRun(conversationId)) {
             return runtime.commit(async (tx) => {
                 const item = (await tx.doc(ScheduleDoc, conversationId)).items[id];
 
@@ -202,14 +203,6 @@ export class Schedules {
 
             return { status: "running", checkpoint: { phase: "wait" } };
         }, context);
-
-        // Done, or stopped: its approval goes with it. Kept while it repeats.
-        if (
-            schedule.approval !== undefined &&
-            (schedule.every === undefined || stopped !== undefined)
-        ) {
-            this.#app.folderApprovals.dropTask(schedule.approval);
-        }
     }
 
     /** Whether a conversation is a PiP whose person cannot have it now (its extension is off). */
@@ -261,14 +254,6 @@ export class Schedules {
                 who,
                 why: `${schedule.by === undefined ? named.name : "they"} can no longer steer here`,
             };
-        }
-
-        // Its own approval, revoked, or its person no longer given the folder: the owner's rules, at each run.
-        if (
-            schedule.approval !== undefined &&
-            !app.taskMayRun(schedule.approval, person, conversationId)
-        ) {
-            return { who, why: "its approval was revoked, or the folder was taken back" };
         }
 
         const why = app.spend.heldBack(conversationId, person.id);
@@ -337,29 +322,6 @@ export class Schedules {
             by === undefined
                 ? `${SCHEDULED_PREFIX}${text}`
                 : app.commands.messageText(by, `${SCHEDULED_PREFIX}${text}`);
-        const replay =
-            request.key === undefined
-                ? undefined
-                : (await this.list(conversationId)).find((item) => item.key === request.key);
-
-        if (replay !== undefined) {
-            return replay;
-        }
-
-        // A repeat runs when nobody is there: it keeps its own approval while it exists (`app.ts` `approveTask`), of
-        // the person it works for. Pi's own, with nobody it works for, belong to the session's work in progress.
-        const forId = by?.id ?? request.requestedBy;
-        const person = forId === undefined ? undefined : app.config.userById(forId);
-        const approval = `schedule:${String(conversationId)}:${randomUUID()}`;
-
-        if (person !== undefined) {
-            await app.approveTask(
-                person,
-                conversationId,
-                approval,
-                `Scheduled “${snippet(text, 60)}”`,
-            );
-        }
 
         return app.harness.commit(async (tx) => {
             const doc = await tx.doc(ScheduleDoc, conversationId);
@@ -369,8 +331,6 @@ export class Schedules {
                     : Object.values(doc.items).find((item) => item.key === request.key);
 
             if (same !== undefined) {
-                app.folderApprovals.dropTask(approval);
-
                 return JSON.parse(JSON.stringify(same)) as Schedule;
             }
 
@@ -406,7 +366,6 @@ export class Schedules {
                 createdAt: app.now(),
                 runs: 0,
                 taskId,
-                ...(person === undefined ? {} : { approval }),
                 ...(request.key === undefined ? {} : { key: request.key }),
             };
 
@@ -432,10 +391,6 @@ export class Schedules {
         await this.#app.harness.commit(async (tx) => {
             delete (await tx.doc(ScheduleDoc, conversationId)).items[scheduleId];
         }, context);
-
-        if (schedule.approval !== undefined) {
-            this.#app.folderApprovals.dropTask(schedule.approval);
-        }
 
         return schedule;
     }

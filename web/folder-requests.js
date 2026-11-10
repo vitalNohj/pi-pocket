@@ -1,23 +1,17 @@
-// Folders waiting for an approval, on this server or a runner (`src/server/folder-requests.ts`), from
-// `folder-requests` events. The person who asked approves with a code from their own authenticator, or cancels; the
-// owner allows or denies anyone's from the app. An approval lasts as long as the person's approval time (Menu → Your
-// name). Each tab gets only what its person may see: their own requests, and the owner every one.
+// Sessions waiting for an approval, on this server or a runner (`src/server/folder-requests.ts`), from
+// `folder-requests` events: a new session, or a locked one to renew. The person who asked approves with a code from
+// their own authenticator (a session's starter only), or cancels; who is in charge of the computer (the owner here, a
+// runner's linker there) allows or denies it from the app. Each tab gets only what its person may see: their own
+// requests, and every one on a computer they are in charge of.
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, store } from "./store.js";
 import { html, Spinner } from "./ui.js";
 
-const KIND_TEXT = {
-    new: "a new session",
-    fork: "a copy of a session",
-    move: "moving a session",
-    linked: "a session an agent starts",
-    steer: "steering a shared session",
-    task: "a task that runs on its own (a schedule, webhook, or watch)",
-};
-
-/** Where a request is: its folder, on which computer; the whole computer for the owner on a runner. */
-function where(request) {
-    return request.whole ? `all of ${request.computerName}` : request.folder;
+/** What a request asks for, for the one who allows it. */
+function asks(request) {
+    return request.kind === "renew"
+        ? html`to go on in <strong>${request.title ?? "a session"}</strong>, whose approval ended`
+        : html`to start a session in <code>${request.folder}</code>`;
 }
 
 /** Seconds left on a request, at least 0. */
@@ -40,7 +34,22 @@ function useTick(active) {
     }, [active]);
 }
 
-/** My own request: the code field (with an authenticator linked), and Cancel. */
+/** Why it waits and what to do, for the one who asked. */
+function myText(request) {
+    const who = `whoever is in charge of ${request.computerName}`;
+
+    if (request.kind === "renew") {
+        return request.code
+            ? `This session's approval ended. Enter a code from your authenticator to go on, or wait for ${who} to allow it.`
+            : `This session's approval ended. Wait for ${who} to allow it: only its starter can renew it with a code.`;
+    }
+
+    return request.code
+        ? `Enter a code from your authenticator to start here, or wait for ${who} to allow it.`
+        : `Wait for ${who} to allow it. To approve yourself, link an authenticator in Menu → Your name.`;
+}
+
+/** My own request: the code field (when a code can answer it), and Cancel. */
 function MyRequest({ request }) {
     const [code, setCode] = useState("");
     const [error, setError] = useState("");
@@ -70,18 +79,13 @@ function MyRequest({ request }) {
         aria-modal="true"
         aria-labelledby="folder-request-title"
     >
-        <h2 id="folder-request-title">Approve ${request.computerName}</h2>
-        <p>
-            ${
-                request.code
-                    ? request.whole
-                        ? "Enter a code from your authenticator to use this computer."
-                        : "Enter a code from your authenticator, or wait for the owner to allow it."
-                    : "Wait for the owner to allow it. To approve yourself, link an authenticator in Menu → Your name."
-            }
-        </p>
+        <h2 id="folder-request-title">
+            ${request.kind === "renew" ? "Renew this session" : `New session on ${request.computerName}`}
+        </h2>
+        <p>${myText(request)}</p>
         <p class="runner-wait-folder">
-            ${request.whole ? "Computer" : "Folder"}: <bdi dir="ltr">${where(request)}</bdi>
+            ${request.kind === "renew" ? request.title : "Folder"}:
+            <bdi dir="ltr">${request.folder}</bdi>
         </p>
         ${
             request.code &&
@@ -111,18 +115,17 @@ function MyRequest({ request }) {
     </section>`;
 }
 
-/** Someone else's request, for the owner: Allow or Deny. */
+/** Someone else's request, for who is in charge: Allow or Deny. */
 function OwnerCard({ request }) {
     const answer = (body) =>
         attempt(() => api(`folder-requests/${encodeURIComponent(request.id)}`, body));
 
     return html`<div class="folder-request" role="alert">
         <div class="small">
-            <strong>${request.name}</strong> asks for ${KIND_TEXT[request.kind] ?? "a session"} on
-            ${" "}${request.computerName} in <code>${where(request)}</code>
+            <strong>${request.name}</strong> asks ${asks(request)} on ${request.computerName}.
         </div>
         <div class="muted small">
-            Allowing lasts for their approval time. ${secondsLeft(request)} s left.
+            Allowing approves this session for their approval time. ${secondsLeft(request)} s left.
         </div>
         <div class="row">
             <button class="button small ghost" onClick=${() => answer({ deny: true })}>Deny</button>
@@ -132,8 +135,8 @@ function OwnerCard({ request }) {
 }
 
 /**
- * Every folder request this tab may see, on this server and on runners: mine as a dialog, others' (the owner's to
- * answer) as cards.
+ * Every request this tab may see, on this server and on runners: mine as a dialog, others' (on a computer I am in
+ * charge of) as cards.
  */
 export function FolderRequests() {
     const { folderRequests, me } = store.state;

@@ -527,8 +527,8 @@ export class Commands {
 
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
 
-        // The server decides (`access.ts` `folder`): a folder given to them, approved by their code or the owner.
-        await app.approveFolder(user, cwd, "new", signal, runner);
+        // The server decides (`access.ts` `folder`): a folder given to them, approved by their code or who is in charge.
+        const keep = await app.approveStart(user, cwd, signal, runner);
 
         const runnerPermission = randomUUID();
 
@@ -573,6 +573,7 @@ export class Commands {
                     context,
                 );
 
+                keep(conversation.id, cwd);
                 void this.recordRepo(conversation.id, place.cwd);
 
                 return { id: conversation.id };
@@ -627,9 +628,7 @@ export class Commands {
 
         // A folder here needs an approval unless the policy says it does not (`access.ts` `folder`). A workspace URI is
         // the owner's alone, who needs none.
-        if (!remote) {
-            await app.approveFolder(user, folder, "new", signal);
-        }
+        const keep = remote ? () => {} : await app.approveStart(user, folder, signal);
 
         const now = Date.now();
 
@@ -677,6 +676,7 @@ export class Commands {
                     context,
                 );
 
+                keep(conversation.id, folder);
                 void this.recordRepo(conversation.id, cwd);
 
                 return { id: conversation.id };
@@ -1188,12 +1188,12 @@ export class Commands {
             beforeSubmit(): Promise<{ user: User; context: Context }>;
             afterSubmit(): void;
         },
-        task?: string,
+        task?: boolean,
     ): Promise<{ submissionId: SubmissionId; requestId: string }> {
         const app = this.#app;
 
         app.requireSee(user, id);
-        // A recurring task's run needs its own approval, not one its person used lately (`app.ts` `approveTask`).
+        // A task's run follows the session's tasks rule (`app.ts` `tasksMayRun`), not a person's use of it.
         await app.requireDriver(id, user, task);
 
         // PiP turned off takes nothing, from its person either: it would run without its rules, and be compacted without
@@ -2278,18 +2278,13 @@ export class Commands {
                   ? await app.resolveCwd(request.cwd)
                   : await app.runners.checkFolder(runner, request.cwd);
 
-        if (runner !== undefined && cwd !== undefined && cwd !== (current?.cwd ?? app.cwdOf(id))) {
-            await app.approveFolder(user, cwd, "move", undefined, runner);
-        }
-
-        // Moving to another folder here asks as a new session there would.
+        // Moving to another folder: one given to them, under the session's own approval (renewed first when locked).
         if (
-            runner === undefined &&
             cwd !== undefined &&
             app.workspaceScheme(cwd) === undefined &&
             cwd !== (current?.cwd ?? app.cwdOf(id))
         ) {
-            await app.approveFolder(user, cwd, "move");
+            await app.approveFrom(user, id, cwd, runner);
         }
 
         const change = {
@@ -2323,6 +2318,7 @@ export class Commands {
                     meta.cwd = cwd;
                 }
             }, context);
+            app.folderApprovals.moved(String(app.rootOf(id)), cwd);
             void this.recordRepo(id, cwd);
         }
 
@@ -3198,26 +3194,28 @@ export class Commands {
         const runner = destination.runner;
         const runnerPermission = runner === undefined ? undefined : randomUUID();
 
-        // Approve the source folder before git or copies use it. The worktree is this new permission's own folder.
-        if (runner !== undefined) {
-            await this.#app.approveFolder(user, destination.cwd, "fork", signal, runner);
-        } else {
-            await this.#app.approveFolder(user, destination.cwd, "fork", signal);
-        }
+        // Approve before git or copies use the folder: the copy inherits this session's approval (renewed first when
+        // locked); on another computer, it starts as a new session there would. The worktree is the copy's own folder.
+        const keep = await this.#app.approveFrom(user, id, destination.cwd, runner, signal);
 
         return this.#inPlace(
             destination.cwd,
             branch.worktree,
             title,
-            (place) =>
-                this.#fork(id, user, {
+            async (place) => {
+                const copy = await this.#fork(id, user, {
                     ...branch,
                     title,
                     sourceTitle,
                     place,
                     destination,
                     runnerPermission,
-                }),
+                });
+
+                keep(copy, destination.cwd);
+
+                return copy;
+            },
             runner === undefined || runnerPermission === undefined
                 ? undefined
                 : {

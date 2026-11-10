@@ -1,12 +1,11 @@
 /**
- * How a person approves a new folder for a session: the methods, and the check of each one's proof. All proofs are
- * checked here, on the server; a linked runner trusts the result it is sent (`runners.ts`), so a new method (passkeys,
+ * How a session's approval is proven (`folder-approvals.ts`): the methods, and the check of each one's proof. All proofs
+ * are checked here, on the server; a linked runner only runs what the server sends it, so a new method (passkeys,
  * later) is one more entry in `ApprovalMethods`, with no change to the policy (`access.ts`) or to runners.
  *
  * - `totp`: the person's own authenticator code, from the app they linked to their account (`Authenticators`).
- * - `owner`: the owner, signed in, approves someone else's request from the app.
- *
- * Without a proof, a runner still asks at the computer, as before.
+ * - `owner`: who is in charge of the computer (the owner here, a runner's linker there), signed in, allows it from the
+ *   app. No code: they are in charge.
  */
 import { authenticatorLink, checkCode, newSecret, type TotpState } from "./totp.ts";
 import type { Person } from "./access.ts";
@@ -20,7 +19,7 @@ export type MethodId = Proof["method"];
 /** One way to approve: whether `approver`, with `proof`, approves a request made by `requester`. */
 export interface ApprovalMethod<P extends Proof = Proof> {
     readonly id: P["method"];
-    verify(approver: Person, requester: Person, proof: P): Promise<boolean>;
+    verify(approver: Person, requester: Person, proof: P, inCharge: boolean): Promise<boolean>;
     /** The error for a refused proof: why, and what to do (a lockout says when to try again). */
     refusal(approver: Person): HttpError;
 }
@@ -182,10 +181,12 @@ export class ApprovalMethods {
                 ),
             refusal: (approver) => authenticators.refusal(approver.id),
         });
+        // Allow in the app: who is in charge of the request's computer (the owner here, a runner's linker there).
         this.#add({
             id: "owner",
-            verify: (approver) => Promise.resolve(approver.role === "owner"),
-            refusal: () => new HttpError(403, "Only the owner can approve this."),
+            verify: (_approver, _requester, _proof, inCharge) => Promise.resolve(inCharge),
+            refusal: () =>
+                new HttpError(403, "Only who is in charge of this computer can allow this."),
         });
     }
 
@@ -193,15 +194,23 @@ export class ApprovalMethods {
         this.#methods.set(method.id, method as unknown as ApprovalMethod);
     }
 
-    /** Throws unless `approver` approves `requester`'s request with `proof`; returns the method that approved it. */
-    async verify(approver: Person, requester: Person, proof: Proof): Promise<MethodId> {
+    /**
+     * Throws unless `approver` approves `requester`'s request with `proof`; returns the method that approved it.
+     * `inCharge`: the approver is in charge of the request's computer.
+     */
+    async verify(
+        approver: Person,
+        requester: Person,
+        proof: Proof,
+        inCharge = false,
+    ): Promise<MethodId> {
         const method = this.#methods.get(proof.method);
 
         if (method === undefined) {
             throw new HttpError(400, "Unknown approval method.");
         }
 
-        if (!(await method.verify(approver, requester, proof))) {
+        if (!(await method.verify(approver, requester, proof, inCharge))) {
             throw method.refusal(approver);
         }
 
