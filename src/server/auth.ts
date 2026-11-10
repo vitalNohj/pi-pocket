@@ -205,9 +205,11 @@ export class Auth {
         }
 
         const clean = name.replace(/\s+/g, " ").trim().slice(0, 40) || "Guest";
+        // Every invite starts its person as a viewer, also one saved before this rule with another role: steering
+        // takes their own authenticator and the owner's Let steer (`app.ts` `setAccess`).
         const added = this.#config.addUser(
             clean,
-            invite.role,
+            "viewer",
             invite.session === undefined ? undefined : [invite.session],
         );
 

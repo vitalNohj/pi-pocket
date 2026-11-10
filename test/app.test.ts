@@ -3275,6 +3275,45 @@ test("access holds: a refused tab hears nothing, narrowed access evicts, removal
     }
 });
 
+test("an invite saved before every invite made viewers still makes a viewer", async () => {
+    const { Auth } = await import("../src/server/auth.ts");
+    const auth = new Auth(app.config);
+    const { randomBytes } = await import("node:crypto");
+
+    // Saved as the older code did: role guest, for every session and for one.
+    const every = randomBytes(18).toString("base64url");
+    const one = randomBytes(18).toString("base64url");
+    const id = await newSession();
+
+    for (const [code, session] of [
+        [every, undefined],
+        [one, String(id)],
+    ] as const) {
+        app.config.addInvite(code, {
+            role: "guest",
+            ...(session === undefined ? {} : { session }),
+            createdBy: owner().id,
+            expiresAt: Date.now() + 60_000,
+        });
+    }
+
+    const joined = [auth.redeem(every, "Old Every"), auth.redeem(one, "Old One")];
+
+    try {
+        for (const each of joined) {
+            assert.equal(each?.user.role, "viewer", `${each?.user.name} joins as a viewer`);
+        }
+
+        assert.deepEqual(joined[1]?.user.sessions, [String(id)], "the scope stays");
+    } finally {
+        for (const each of joined) {
+            if (each !== undefined) {
+                app.config.removeUser(each.user.id);
+            }
+        }
+    }
+});
+
 test("an invite stops working when its creator loses the right to invite", async () => {
     const { Auth } = await import("../src/server/auth.ts");
     const auth = new Auth(app.config);
