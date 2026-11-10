@@ -12,7 +12,7 @@ import {
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -397,7 +397,69 @@ test("only a person who may start sessions on the computer can list, preview, or
     );
     assert.equal(app.policy.mayStart(other, runnerId), false);
     app.config.setRunnerUsers(runnerId, [user.id]);
+    // Chosen, with no folder given: the list is empty, and a preview names nothing of theirs.
+    assert.deepEqual(await statuses(token), [200, 404]);
+    app.config.setGivenFolders(runnerId, user.id, [project]);
     assert.deepEqual(await statuses(token), [200, 200]);
+});
+
+test("a person given one folder sees and previews only Pi's sessions in it, and no one else's continuation", async () => {
+    const elsewhere = save("Elsewhere plan", otherProject);
+    const inside = file("Checkout total");
+    const { user, token } = app.config.addUser("Given one", "guest");
+
+    app.config.setRunnerUsers(runnerId, [
+        ...(app.config.runnerById(runnerId)?.users ?? []),
+        user.id,
+    ]);
+    app.config.setGivenFolders(runnerId, user.id, [project]);
+
+    // The owner continues the session in the given folder, privately: the guest's list must not name it.
+    const continued = await request<{ id: ConversationId }>("/continue", {
+        path: inside.path,
+        runner: runnerId,
+    });
+
+    assert.equal(continued.status, 200, JSON.stringify(continued.body));
+    assert.equal(app.canSee(user, continued.body.id), false);
+
+    try {
+        const mine = await request<{ sessions: PiSessionSummary[] }>(
+            `?${new URLSearchParams({ runner: runnerId })}`,
+            undefined,
+            undefined,
+            token,
+        );
+        const paths = mine.body.sessions.map((each) => each.path);
+
+        assert.equal(mine.status, 200);
+        assert.ok(paths.includes(inside.path), "a session in the given folder is listed");
+        assert.ok(!paths.includes(elsewhere.path), "one outside it is not");
+        assert.equal(
+            mine.body.sessions.find((each) => each.path === inside.path)!.pocket,
+            undefined,
+            "the owner's private continuation is not named",
+        );
+        // The owner, in charge there, sees both, and their own continuation.
+        const all = (await list()).body.sessions;
+
+        assert.ok(all.some((each) => each.path === elsewhere.path));
+        assert.equal(all.find((each) => each.path === inside.path)!.pocket?.id, continued.body.id);
+
+        const previewOf = (path: string) =>
+            request(
+                `/preview?${new URLSearchParams({ path, runner: runnerId })}`,
+                undefined,
+                undefined,
+                token,
+            );
+
+        assert.equal((await previewOf(inside.path)).status, 200);
+        assert.equal((await previewOf(elsewhere.path)).status, 404);
+    } finally {
+        app.config.setGivenFolders(runnerId, user.id, []);
+        rmSync(elsewhere.path);
+    }
 });
 
 test("Pi session control messages reject oversized lists, invalid operations, and non-finite metadata", () => {

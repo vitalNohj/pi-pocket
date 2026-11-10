@@ -23,6 +23,7 @@ import {
     type Tx,
     UserEntry,
 } from "@earendil-works/pi-durable";
+import { inFolder } from "./access.ts";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import { FROM_PI_ENTRY, type FromPiData } from "./entry-format.ts";
@@ -178,12 +179,15 @@ export class PiSessions {
         return list;
     }
 
-    /** The newest session here that continues each of Pi's, by its id. */
-    #continued(runner?: string): Map<string, { id: number; count: number }> {
+    /**
+     * The newest session here that continues each of Pi's, by its id: only sessions `user` may see, so the list names
+     * no one else's private session.
+     */
+    #continued(user: User, runner?: string): Map<string, { id: number; count: number }> {
         const found = new Map<string, { id: number; count: number }>();
 
         // Newest first: the first one seen of each is the one to open.
-        for (const session of this.#app.sessions()) {
+        for (const session of this.#app.sessions(user)) {
             const meta = this.#app.sessionMeta(session.id as unknown as ConversationId);
             const from = meta?.fromPi;
 
@@ -209,10 +213,17 @@ export class PiSessions {
                 .link(runner)
                 .piSessions({ op: "list", person: user.name });
             const needle = query.trim().toLowerCase();
-            const continued = this.#continued(runner);
+            const continued = this.#continued(user, runner);
+            const given = this.#app.policy.givenFolders(user, runner);
 
             return {
+                // Only Pi's sessions in a folder given to this person there: the others' titles and folders are not
+                // theirs to see. The preview and the continuing check the real folder there too.
                 sessions: (result.sessions ?? [])
+                    .filter(
+                        (info) =>
+                            given === undefined || given.some((each) => inFolder(info.cwd, each)),
+                    )
                     .filter(
                         (info) =>
                             needle === "" ||
@@ -242,7 +253,7 @@ export class PiSessions {
         }
 
         this.#requireOwner(user);
-        const continued = this.#continued();
+        const continued = this.#continued(user);
         const needle = query.trim().toLowerCase();
         // Opening the list reads it again; a search narrows the one just read.
         const found = (await this.#find(needle === ""))
@@ -332,6 +343,21 @@ export class PiSessions {
                 );
             }
 
+            // Its last messages only from a folder given to this person, judged where it really is: a link in a
+            // given folder that leads out of it is outside it, as for a new session there.
+            const given = this.#app.policy.givenFolders(user, runner);
+
+            if (given !== undefined) {
+                const real = await this.#app.runners.realPath(runner, info.cwd);
+
+                if (real === undefined || !given.some((each) => inFolder(real, each))) {
+                    throw new HttpError(
+                        404,
+                        `Pi has no such session on ${this.#app.runners.name(runner)}.`,
+                    );
+                }
+            }
+
             const result = await this.#app.runners
                 .link(runner)
                 .piSessions({ op: "preview", path, person: user.name }, signal);
@@ -356,7 +382,7 @@ export class PiSessions {
 
         const info = await this.#listed(user, path);
         const { model, last } = await this.#reading(path, () => readPiTail(path));
-        const pocket = this.#continued().get(info.id);
+        const pocket = this.#continued(user).get(info.id);
         let cwdExists = true;
 
         try {

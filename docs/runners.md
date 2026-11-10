@@ -107,7 +107,7 @@ Choose a computer in **New session**, then **Continue a Pi session…**. This li
 | Preview  | That one session's model and last messages, as in a local preview               | The server: people who may start sessions there          |
 | Continue | That one session file                                                           | The server: a new session in its folder, approved as any |
 
-The title is Pi's name for the session, or the first line of its first message, up to 80 characters. Only people who may start sessions on that computer get the list or a preview. Continue is a new session in the Pi session's folder: that folder must be one given to them, and it is approved as any new session is (their own code, or whoever is in charge of the computer).
+The title is Pi's name for the session, or the first line of its first message, up to 80 characters. Only people who may start sessions on that computer get the list or a preview, and only of Pi's sessions in the folders given to them there; whoever is in charge sees all of them. The list marks a Pi session already continued only when that Pocket session is one they may see. Continue is a new session in the Pi session's folder: that folder must be one given to them, and it is approved as any new session is (their own code, or whoever is in charge of the computer).
 
 The runner looks in `PI_CODING_AGENT_SESSION_DIR`, then Pi's `sessionDir` setting, then Pi's default session folder. The list has at most 300 sessions, newest first, and is cached for 5 seconds. Preview and continue check Pi's list afresh. The runner opens only a Pi file whose folder is in the new session's folder, and lets only that session read that one file for at most 5 minutes, never write it.
 
