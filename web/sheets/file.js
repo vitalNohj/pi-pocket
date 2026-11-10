@@ -112,7 +112,9 @@ export function FileView({ path, line, refresh, onOpen = openFile, onLoad }) {
     const shown = file?.display ?? path;
     const name = shown.replace(/\/$/, "").split("/").pop() || shown;
 
-    return html`<div class="file-viewer">
+    // A passage selected in its text or its rendered Markdown can be quoted in a reply, with the file it came from
+    // (`quote-reply.js`).
+    return html`<div class="file-viewer" data-quote-file=${file?.kind === "text" ? file.path : undefined}>
         <div class="file-tools">
             <span class="muted small mono file-path" title=${file?.path ?? path}>
                 ${shown}

@@ -109,6 +109,7 @@ export const LIMITS = {
     tweakValues: 100,
     pins: 100,
     slides: 1000,
+    selection: 4000,
 };
 const STYLE_KEYS = [
     "color",
@@ -277,6 +278,26 @@ export function checkPageMessage(data) {
             // 0: the page was too big to measure.
             return isCount(data.height, 100_000) ? { type: data.type, height: data.height } : null;
 
+        case "pocket-selection": {
+            // Text selected in the page, with its first and last line's boxes; no text: nothing is selected now.
+            if (!isText(data.text, LIMITS.selection)) {
+                return null;
+            }
+
+            if (data.text === "") {
+                return { type: data.type, text: "" };
+            }
+
+            const box = (rect) =>
+                isRecord(rect) && ["x", "y", "width", "height"].every((key) => isNumber(rect[key]))
+                    ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+                    : null;
+            const rect = box(data.rect);
+            const end = box(data.end);
+
+            return rect && end ? { type: data.type, text: data.text, rect, end } : null;
+        }
+
         case "pocket-deck":
             return isCount(data.slides, LIMITS.slides) &&
                 isCount(data.current, Math.max(data.slides - 1, 0))
@@ -383,6 +404,15 @@ export function checkAppMessage(raw) {
             return isCount(raw.slide, LIMITS.slides)
                 ? { message: { type: raw.type, slide: raw.slide } }
                 : { error: "`slide` is a number from 0" };
+
+        // The artifact viewer's Reply: hear what the person selects in the page, and clear it once quoted.
+        case "pocket-select-watch":
+            return typeof raw.on === "boolean"
+                ? { message: { type: raw.type, on: raw.on } }
+                : { error: "`on` is true or false" };
+
+        case "pocket-select-clear":
+            return { message: { type: raw.type } };
 
         default:
             return { error: "Not a message for a page" };

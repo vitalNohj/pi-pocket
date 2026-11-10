@@ -2667,13 +2667,15 @@ const answered = (key) => (answer) => {
 
 export const actions = {
     /** `inlineFiles`: the files the message mentions with @ go along with it. */
-    submit: (text, attachments, mode, inlineFiles = false, requestId = uid()) =>
+    /** `quotes`: where the message's quotes came from (`quoteSource`), for Pi alone. */
+    submit: (text, attachments, mode, inlineFiles = false, requestId = uid(), quotes = []) =>
         api(`c/${current()}/submit`, {
             text,
             attachments,
             mode,
             requestId,
             ...(inlineFiles ? { inlineFiles } : {}),
+            ...(quotes.length > 0 ? { about: { quotes } } : {}),
         }).then(answered("submissionId")),
     /** Run a command in the session's folder (`!`); `context: false` keeps it from Pi (`!!`). */
     shell: (command, context, requestId = uid()) =>
@@ -3056,12 +3058,16 @@ export const showsPip = (state = store.state) =>
     state.conversationId !== null &&
     (state.conversationId === state.pip?.id || state.view.conversation?.pip === true);
 
-/** Reply to a passage of the conversation shown: on PiP's board, it is PiP's quote. */
-export function quoteReply(text) {
+/**
+ * Reply to a passage of the conversation shown: on PiP's board, it is PiP's quote. `source` says where it came from
+ * when that is not one of Pi's replies (an artifact, a file, an image: `quoteSource` in `quote-reply.js`): the quote
+ * keeps it while it is in the box, and the message tells Pi, unseen by people (`about.quotes`).
+ */
+export function quoteReply(text, source) {
+    const quote = source ? { text, source } : { text };
+
     store.set((state) =>
-        showsPip(state)
-            ? { pipQuote: { text } }
-            : { replyQuotes: [...state.replyQuotes, { text }] },
+        showsPip(state) ? { pipQuote: { text } } : { replyQuotes: [...state.replyQuotes, quote] },
     );
 }
 

@@ -51,6 +51,7 @@ App → page:
 - `{ type: "pocket-tweak-set", values: Record<string, string | number | boolean> }`: for a name that starts with `--`, set that CSS custom property on `:root`; for any name, dispatch `pocket:tweak` on `window` with `{ detail: { name, value } }`.
 - `{ type: "pocket-highlight", targets: Target[] }`: show numbered pins on these elements (the comments). An empty list clears them.
 - `{ type: "pocket-goto", slide: number }`: in a deck, show this slide.
+- `{ type: "pocket-select-watch", on: boolean }` and `{ type: "pocket-select-clear" }`: the artifact viewer's Reply, not Design mode. While on, the page sends `pocket-selection` when the person's text selection changes (never while inspecting or editing text); clear empties the selection once it is quoted. The canvas never turns it on.
 
 Page → app:
 
@@ -58,6 +59,7 @@ Page → app:
 - `{ type: "pocket-text-edited", target: Target, before: string, after: string }` (each up to 2,000 characters).
 - `{ type: "pocket-tweaks", knobs: Knob[] }`: once at start, from the page's manifest (below), and again if it changes.
 - `{ type: "pocket-deck", slides: number, current: number }`: at start in a deck, and when the slide changes.
+- `{ type: "pocket-selection", text: string, rect?, end? }`: the selected text (up to 4,000 characters) and the boxes of its first and last line, in the frame; `text: ""` when nothing is selected. Only while `pocket-select-watch` is on.
 
 `Target` is `{ pid?: string, selector: string, tag: string, text: string (up to 200), html: string (up to 1,000), rect: { x, y, width, height }, styles: Record<string, string> (color, background-color, font-family, font-size, font-weight, line-height, padding, margin, border-radius, gap) }`. `pid` is the element's nearest `data-pid`. `selector` is a short unique CSS selector the bridge computes.
 

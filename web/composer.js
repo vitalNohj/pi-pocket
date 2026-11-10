@@ -116,24 +116,10 @@ function loadPastes(id) {
     }
 }
 
-/** A list of strings kept in the person's storage under `key`: none when it is missing or not one. */
-function loadList(key) {
-    try {
-        const list = JSON.parse(personStorage.get(key) ?? "[]");
-
-        return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
-    } catch {
-        return [];
-    }
-}
-
-function saveList(key, list) {
-    personStorage.set(key, list.length === 0 ? null : JSON.stringify(list));
-}
-
 /**
- * Each conversation's quotes that Reply put in its box, where each one is in the draft (`{ start, end, text }`): kept
- * with it, so that a reload still draws them and keeps each one a piece. A quote typed by hand is plain text.
+ * Each conversation's quotes that Reply put in its box, where each one is in the draft (`{ start, end, text, source? }`,
+ * `source` for a quote from a viewer: `quoteSources`): kept with it, so that a reload still draws them and keeps each
+ * one a piece. A quote typed by hand is plain text.
  */
 function loadPieces(id) {
     try {
@@ -157,12 +143,61 @@ const savePieces = (id, pieces) =>
         `quotes.${id ?? "home"}`,
         pieces.length === 0 ? null : JSON.stringify(pieces),
     );
+
 /**
  * Each conversation's passages that Reply put in strips over its box (Appearance → Quotes in the message box →
  * Separate), in order: kept with its draft, so that a reload keeps them. They go first in the next message.
  */
-const loadStrips = (id) => loadList(`quoteStrips.${id ?? "home"}`);
-const saveStrips = (id, strips) => saveList(`quoteStrips.${id ?? "home"}`, strips);
+function loadStrips(id) {
+    try {
+        const list = JSON.parse(personStorage.get(`quoteStrips.${id ?? "home"}`) ?? "[]");
+
+        // A strip kept before strips had sources is its passage alone.
+        return Array.isArray(list)
+            ? list.flatMap((each) =>
+                  typeof each === "string"
+                      ? [{ text: each }]
+                      : typeof each?.text === "string"
+                        ? [
+                              isRecord(each.source)
+                                  ? { text: each.text, source: each.source }
+                                  : { text: each.text },
+                          ]
+                        : [],
+              )
+            : [];
+    } catch {
+        return [];
+    }
+}
+
+const saveStrips = (id, strips) =>
+    personStorage.set(
+        `quoteStrips.${id ?? "home"}`,
+        strips.length === 0 ? null : JSON.stringify(strips),
+    );
+const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Where the quotes of a message came from, for Pi (`about.quotes`): its strips first, then its pieces, as the message has
+ * them; each with its first words. Quotes from Pi's replies have none, and are left out.
+ */
+export function quoteSources(strips, pieces) {
+    return [...strips, ...pieces].flatMap((quote) =>
+        isRecord(quote.source)
+            ? [
+                  {
+                      ...quote.source,
+                      quote: quote.text
+                          .replace(/^> ?/gm, "")
+                          .replace(/\s+/g, " ")
+                          .trim()
+                          .slice(0, 80),
+                  },
+              ]
+            : [],
+    );
+}
 
 const attachedKey = (id) => `attached.${id ?? "home"}`;
 let attachmentsStopped = false;
@@ -344,7 +379,7 @@ function endSend(id, record, went) {
         const strips = loadStrips(id);
         const sentStrips = record.strips ?? [];
 
-        if (sentStrips.every((strip, index) => strips[index] === strip)) {
+        if (sentStrips.every((strip, index) => strips[index]?.text === strip.text)) {
             saveStrips(id, strips.slice(sentStrips.length));
         }
 
@@ -872,7 +907,12 @@ export function Composer() {
         replying.forEach(dropQuote);
 
         if (quoteStyle === "separate") {
-            const next = [...loadStrips(conversationId), ...replying.map((each) => each.text)];
+            const next = [
+                ...loadStrips(conversationId),
+                ...replying.map((each) =>
+                    each.source ? { text: each.text, source: each.source } : { text: each.text },
+                ),
+            ];
 
             setStrips(next);
             saveStrips(conversationId, next);
@@ -889,7 +929,12 @@ export function Composer() {
 
             words = quoted.text;
             at = quoted.at;
-            added.push({ start: quoted.start, end: quoted.end, text: quoted.block });
+            added.push({
+                start: quoted.start,
+                end: quoted.end,
+                text: quoted.block,
+                ...(each.source ? { source: each.source } : {}),
+            });
         }
 
         // The pieces there move with the edit (`update`), and the new ones join them.
@@ -1194,7 +1239,10 @@ export function Composer() {
             .map((file) => file.attachment);
         const paths = attachments.map((attachment) => attachment.path);
         // The message is its quote strips, its words (its quotes in them), and files, which a reload keeps.
-        const message = withQuotes(strips, full);
+        const message = withQuotes(
+            strips.map((strip) => strip.text),
+            full,
+        );
         const record = beginSend(conversationId, { text, strips, files: paths }, [
             "message",
             message,
@@ -1218,6 +1266,7 @@ export function Composer() {
                     : "followUp",
                 inlineFiles && mentionsFiles,
                 record.requestId,
+                quoteSources(strips, quoted),
             ),
         );
 
@@ -2090,7 +2139,7 @@ export function Composer() {
                                 (strip, index) =>
                                     html`<div class="quote-strip" data-part="quote-strip">
                                         <${Icon} name="reply" size=${13} />
-                                        <span class="quote-strip-text">${strip}</span>
+                                        <span class="quote-strip-text">${strip.text}</span>
                                         <button
                                             type="button"
                                             class="icon-button small"

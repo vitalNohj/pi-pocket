@@ -248,8 +248,16 @@ export async function artifactResponse(
     if (found.meta.type === "markdown") {
         const rendered = await marked.parse(found.content);
         const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(found.meta.title)}</title>${base === undefined ? "" : `<base href="${escapeHtml(base)}">`}<style>${MARKDOWN_STYLE}${markdownTheme(query)}</style></head><body>${rendered}</body></html>`;
+        // In the app's frame, the bridge too: the artifact viewer's Reply hears what is selected in it.
+        const dest = response.req?.headers["sec-fetch-dest"];
 
-        return send(response, 200, html, "text/html; charset=utf-8", headers);
+        return send(
+            response,
+            200,
+            !bridge || dest === "document" || dest === "empty" ? html : withBridge(html),
+            "text/html; charset=utf-8",
+            headers,
+        );
     }
 
     // The bridge's script goes in unless the browser says (in `Sec-Fetch-Dest`, which a page cannot set) that this is a

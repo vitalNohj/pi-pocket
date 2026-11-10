@@ -486,6 +486,11 @@ export function rangeText(range) {
         each.replaceWith("[diagram]");
     }
 
+    // The file viewer's line numbers are not the file's words.
+    for (const each of box.querySelectorAll(".file-line .ln")) {
+        each.remove();
+    }
+
     document.body.append(box);
 
     const text = box.innerText;

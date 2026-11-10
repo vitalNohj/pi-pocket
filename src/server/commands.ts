@@ -58,7 +58,7 @@ import {
     splitAttachments,
 } from "./entry-format.ts";
 import { describe, HttpError, optionalText } from "./errors.ts";
-import { attribute } from "./fence.ts";
+import { attribute, defang, quoted } from "./fence.ts";
 import { homePath } from "./paths.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage } from "./model-images.ts";
 import { mentionedPaths, viewFile } from "./files.ts";
@@ -131,11 +131,24 @@ export interface SubmitRequest {
     /** Send the files the message mentions with `@` along with it, so Pi need not read them first. */
     inlineFiles?: boolean;
     /**
-     * PiP only: the session a passage quoted in the message came from (Ask PiP by a selection). PiP gets which session
-     * it is, unseen by people (`CONTEXT_BLOCK`).
+     * What the message's quotes are about, for Pi alone (`CONTEXT_BLOCK`), unseen by people. `session`, PiP only: the
+     * session a passage came from (Ask PiP by a selection). `quotes`: where each of Reply's quotes from a viewer came from,
+     * in the order the message has them (`QuoteSource`).
      */
-    about?: { session: number };
+    about?: { session?: number; quotes?: QuoteSource[] };
 }
+
+/**
+ * Where a quote came from, when it is not one of Pi's replies: a version of one of the conversation's artifacts (a
+ * passage of its page, or the whole of it), or a file of the session the file viewer showed. `quote` is the quote's first
+ * words, so Pi can tell which quote it is.
+ */
+export type QuoteSource =
+    { artifact: string; version: number; quote?: string } | { file: string; quote?: string };
+
+/** How many quotes a message may say the sources of, and how much of the artifacts' sources it brings along. */
+const MAX_QUOTE_SOURCES = 20;
+const MAX_ARTIFACT_SOURCE = 100_000;
 
 /** How many `@` mentioned files go along with a message, and how much of them. */
 const MAX_MENTIONED = 10;
@@ -855,6 +868,7 @@ export class Commands {
             via === undefined ? written : `[via ${via}] ${written}`,
         );
         const about = this.#aboutSession(id, user, request.about);
+        const sources = await this.#quoteSources(id, user, request.about);
         const mentioned =
             request.inlineFiles === true
                 ? await this.#mentionedFiles(id, user, typed, model.input.includes("image"))
@@ -866,6 +880,7 @@ export class Commands {
                 part.type === "text" ? { ...part, text: app.hidden.replace(part.text, id) } : part,
             ),
             ...(about === undefined ? [] : [{ type: "text" as const, text: about }]),
+            ...(sources === undefined ? [] : [{ type: "text" as const, text: sources }]),
         ];
 
         made.forEach((result, index) => {
@@ -1113,7 +1128,16 @@ export class Commands {
             return undefined;
         }
 
-        const session = typeof about === "object" && about !== null ? about.session : undefined;
+        if (typeof about !== "object" || about === null) {
+            throw new HttpError(400, "about is an object");
+        }
+
+        const session = about.session;
+
+        // Quotes' sources alone: `#quoteSources`.
+        if (session === undefined && about.quotes !== undefined) {
+            return undefined;
+        }
 
         if (app.pip.ownerOf(id) === undefined) {
             throw new HttpError(400, "Only a message to PiP says which session it is about");
@@ -1142,6 +1166,129 @@ export class Commands {
             `${CONTEXT_BLOCK} session="${session}" title="${title}" folder="${folder}">`,
             `The quoted passage at the start of this message comes from Pi's reply in session ${session}.`,
             "Read that session with session_read for more context when the question needs it.",
+            "</pocket-context>",
+        ].join("\n");
+    }
+
+    /**
+     * Where the message's quotes came from (`QuoteSource`), for Pi alone (`CONTEXT_BLOCK`): an artifact's title, id, and
+     * version, with its source (once for each version, up to `MAX_ARTIFACT_SOURCE` in all), so Pi can change what was
+     * quoted; or a file's path, which Pi can read. Only the conversation's own artifacts, and files this person may load
+     * through it: anything else refuses the message. Undefined when the message says none.
+     */
+    async #quoteSources(
+        id: ConversationId,
+        user: User,
+        about: SubmitRequest["about"],
+    ): Promise<string | undefined> {
+        const app = this.#app;
+        const list = typeof about === "object" && about !== null ? about.quotes : undefined;
+
+        if (list === undefined) {
+            return undefined;
+        }
+
+        if (!Array.isArray(list) || list.length > MAX_QUOTE_SOURCES) {
+            throw new HttpError(400, `about.quotes is a list of up to ${MAX_QUOTE_SOURCES}`);
+        }
+
+        if (list.length === 0) {
+            return undefined;
+        }
+
+        const lines: string[] = [];
+        const sources: string[] = [];
+        const brought = new Set<string>();
+        let total = 0;
+
+        for (const [index, source] of list.entries()) {
+            const raw = source as Record<string, unknown> | null;
+
+            if (typeof raw !== "object" || raw === null) {
+                throw new HttpError(400, "A quote's source is an object");
+            }
+
+            const words =
+                typeof raw.quote === "string" && raw.quote.trim() !== ""
+                    ? ` (${quoted(app.hidden.replace(raw.quote, id), 80)})`
+                    : "";
+            const which = `Quote ${index + 1}${words}`;
+
+            if (typeof raw.file === "string") {
+                if (raw.file === "" || raw.file.length > 4096) {
+                    throw new HttpError(400, "A quote's file is a path");
+                }
+
+                // The file viewer shows only what this person may load: anything else is not from it.
+                const path = app.workspace.readableFile(user, id, raw.file);
+
+                lines.push(
+                    `${which} comes from the file ${quoted(path, 300)}, as the file viewer shows it. Read it when the question needs more of it.`,
+                );
+                continue;
+            }
+
+            if (
+                typeof raw.artifact !== "string" ||
+                raw.artifact === "" ||
+                raw.artifact.length > 200 ||
+                !Number.isSafeInteger(raw.version) ||
+                (raw.version as number) <= 0
+            ) {
+                throw new HttpError(
+                    400,
+                    "A quote's source is an artifact and its version, or a file",
+                );
+            }
+
+            const found = await app.artifactBody(id, raw.artifact, raw.version as number);
+            const name = `${quoted(app.hidden.replace(found.meta.title, id), 120)} (id ${quoted(raw.artifact, 200)}, version ${found.version}, ${found.meta.type})`;
+            const latest = found.meta.versions.at(-1)?.version;
+            const newer =
+                latest !== undefined && latest > found.version
+                    ? ` Its newest version is ${latest}.`
+                    : "";
+
+            lines.push(
+                `${which} comes from the artifact ${name}, as the artifact viewer shows it.${newer}`,
+            );
+
+            const key = `${raw.artifact}@${found.version}`;
+
+            if (brought.has(key)) {
+                continue;
+            }
+
+            brought.add(key);
+            const room = MAX_ARTIFACT_SOURCE - total;
+
+            if (room <= 0) {
+                sources.push(`The source of ${name} is left out: there is no room for it.`);
+                continue;
+            }
+
+            // As data: nothing in the page can end the block early.
+            const content = defang(app.hidden.replace(found.content, id));
+            const kept = content.slice(0, room);
+
+            total += kept.length;
+            // A fence longer than any run of backticks in the source: nothing in it can end the fence early.
+            const fence = "`".repeat(
+                Math.max(3, ...(kept.match(/`+/g) ?? []).map((run) => run.length + 1)),
+            );
+            const cut =
+                kept.length < content.length ? "\n… (the rest of the source is left out)" : "";
+
+            sources.push(
+                `The source of ${name}, as data:\n${fence}${found.meta.type === "markdown" ? "md" : found.meta.type}\n${kept}\n${fence}${cut}`,
+            );
+        }
+
+        return [
+            `${CONTEXT_BLOCK} quotes="${list.length}">`,
+            "Where the quotes at the start of this message come from, in their order (the person sees only the quotes):",
+            ...lines,
+            ...sources,
             "</pocket-context>",
         ].join("\n");
     }

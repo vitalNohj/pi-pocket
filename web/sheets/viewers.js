@@ -2,7 +2,16 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useArtifactBridge } from "../artifact-bridge.js";
 import { browserModuleState, openExtPanel } from "../extension-ui.js";
-import { api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
+import { buttons, placePill, QuotePill, replyWith } from "../quote-reply.js";
+import {
+    api,
+    attempt,
+    closeSheet,
+    insertIntoComposer,
+    notify,
+    openSheet,
+    store,
+} from "../store.js";
 import { modeOf, paletteOf, themeVars } from "../theme.js";
 import { copyText, formatBytes, formatWhen, html, Icon, Loader, Sheet, timeAgo } from "../ui.js";
 
@@ -67,17 +76,75 @@ export function ArtifactViewer({ id, version }) {
     const { view, me } = store.state;
     const artifact = view.artifacts.find((each) => each.id === id);
     const frame = useRef(null);
-
-    // What its page may ask: a follow-up in the message box, and its own saved state (`artifact-bridge.js`). Only an HTML
-    // page has the bridge: a Markdown or SVG page has no script of the app's to open the line.
-    useArtifactBridge(frame, {
-        artifact: id,
-        source: `the artifact “${artifact?.title ?? id}”`,
-        enabled: artifact?.type === "html",
-    });
     const [shown, setShown] = useState(version ?? artifact?.versions.at(-1)?.version);
     const [nonce, setNonce] = useState(0);
     const latest = artifact?.versions.at(-1)?.version;
+    // What is selected in the page now, as its inspector says (`pocket-selection`), for the Reply pill over the frame.
+    const [selection, setSelection] = useState(null);
+    const quoting = buttons().reply && artifact !== undefined;
+    const about = { artifact: id, version: shown ?? latest };
+
+    // What its page may ask: a follow-up in the message box, and its own saved state (`artifact-bridge.js`); and what
+    // the person selects in it, for Reply. An HTML or Markdown page has the bridge: an SVG is an image, with no script of
+    // the app's to open the line.
+    const bridge = useArtifactBridge(frame, {
+        artifact: id,
+        source: `the artifact “${artifact?.title ?? id}”`,
+        enabled: artifact?.type === "html" || artifact?.type === "markdown",
+        onReady: () => {
+            setSelection(null);
+            bridge.send({ type: "pocket-select-watch", on: true });
+        },
+        onMessage: (message) => {
+            if (message.type === "pocket-selection") {
+                setSelection(message.text === "" ? null : message);
+            }
+        },
+    });
+
+    // Another version, or a reload: the old page's selection is gone with it.
+    useEffect(() => setSelection(null), [shown, nonce]);
+
+    /** Where the pill goes over the frame, for the page's selection: null when it would leave the frame. */
+    const pill = (() => {
+        const box = frame.current?.getBoundingClientRect();
+
+        if (!selection || !box || !quoting) {
+            return null;
+        }
+
+        const inWindow = (rect) => ({
+            top: box.top + rect.y,
+            bottom: box.top + rect.y + rect.height,
+            left: box.left + rect.x,
+            right: box.left + rect.x + rect.width,
+        });
+        const shownButtons = { reply: true, pip: false };
+        const place = placePill(
+            inWindow(selection.rect),
+            inWindow(selection.end),
+            { top: box.top, bottom: box.bottom },
+            shownButtons,
+        );
+
+        return place && { ...place, shown: shownButtons };
+    })();
+
+    const replySelection = () => {
+        replyWith(selection.text, about, { covered: true });
+        setSelection(null);
+        bridge.send({ type: "pocket-select-clear" });
+    };
+
+    // The whole artifact: its name goes in the box as the quote, and Pi gets its source with the message.
+    const askAbout = () =>
+        replyWith(
+            `${artifactNoun(artifact.type)} “${artifact.title}” (version ${about.version})`,
+            about,
+            {
+                covered: true,
+            },
+        );
     const theme = artifact?.type === "markdown" ? themeQuery() : "";
     const src = `/a/${view.conversation.id}/${encodeURIComponent(id)}/${shown ?? "latest"}${theme}`;
     // A published page is out of the reach of an invite to one session, so only those who see every session publish.
@@ -119,6 +186,16 @@ export function ArtifactViewer({ id, version }) {
                         )}
                 </select>`
             }
+            ${
+                quoting &&
+                html`<button
+                    class="button small"
+                    title=${artifact.type === "svg" ? "Ask Pi about this image" : "Ask Pi about this artifact; or select text in it to quote that"}
+                    onClick=${askAbout}
+                >
+                    <${Icon} name="reply" size=${14} stroke=${2} /> Ask about this
+                </button>`
+            }
             <button class="icon-button" title="Reload" onClick=${() => setNonce(nonce + 1)}>
                 ↻
             </button>
@@ -156,8 +233,13 @@ export function ArtifactViewer({ id, version }) {
             allow="fullscreen; clipboard-write; accelerometer; gyroscope"
             title=${artifact?.title ?? id}
         ></iframe>
+        ${pill && html`<${QuotePill} at=${pill} onReply=${replySelection} />`}
     </div>`;
 }
+
+/** What a quote of a whole artifact calls it. */
+const artifactNoun = (type) =>
+    type === "svg" ? "The image" : type === "markdown" ? "The document" : "The page";
 
 /** How long a new share lasts: until it is ended, a day, a week, or a month. */
 const SHARE_LIFE = [
@@ -334,6 +416,44 @@ export function ArtifactShareSheet({ id, version }) {
     <//>`;
 }
 
+/**
+ * Ask Pi about the image at `src`: an artifact's (an SVG) is quoted by its name, and Pi gets its source with the message;
+ * any other goes in the message box as an attachment, so the model sees it.
+ */
+async function askAboutImage(src, alt) {
+    const url = new URL(src, location.href);
+    const artifact = /^\/a\/(\d+)\/([^/]+)\/(\d+)$/.exec(url.pathname);
+    const { view } = store.state;
+
+    if (artifact && Number(artifact[1]) === view.conversation?.id) {
+        const id = decodeURIComponent(artifact[2]);
+        const version = Number(artifact[3]);
+        const title = view.artifacts.find((each) => each.id === id)?.title ?? alt ?? id;
+
+        closeSheet();
+        replyWith(`The image “${title}” (version ${version})`, { artifact: id, version });
+
+        return;
+    }
+
+    await attempt(async () => {
+        const response = await fetch(url, { credentials: "same-origin" });
+
+        if (!response.ok) {
+            throw new Error(`Could not load the image (${response.status})`);
+        }
+
+        const blob = await response.blob();
+        const type = blob.type || "image/png";
+        const extension = type.split("/")[1]?.replace(/\+.*$/, "") || "png";
+        const named = (alt || "image").replace(/[^\w.-]+/g, "-").slice(0, 60);
+        const name = /\.\w{2,5}$/.test(named) ? named : `${named}.${extension}`;
+
+        // Into the box, as a file pasted there would go: the sheet closes on its way.
+        insertIntoComposer("", [new File([blob], name, { type })]);
+    });
+}
+
 /** An image full screen. Tap anywhere to close; Open shows it in its own tab to zoom, save, or share. */
 export function ImageViewer({ src, alt }) {
     useEffect(() => {
@@ -354,6 +474,12 @@ export function ImageViewer({ src, alt }) {
         <img src=${src} alt=${alt ?? ""} />
         <div class="lightbox-bar" onClick=${(event) => event.stopPropagation()}>
             <span class="lightbox-title">${alt ?? ""}</span>
+            ${
+                buttons().reply &&
+                html`<button class="button small" title="Ask Pi about this image" onClick=${() => askAboutImage(src, alt)}>
+                    <${Icon} name="reply" size=${14} stroke=${2} /> Ask about this
+                </button>`
+            }
             <a class="button small" href=${src} target="_blank" rel="noopener">Open</a>
             <button class="icon-button" onClick=${closeSheet} aria-label="Close">
                 <${Icon} name="close" />

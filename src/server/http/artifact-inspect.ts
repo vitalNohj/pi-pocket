@@ -1315,6 +1315,75 @@ export const ARTIFACT_INSPECT = String.raw`(send, standalone) => {
     };
 
     // ---------------------------------------------------------------------------------------------------------------
+    // Selection: what the person selects in the page, and where, for the app's Reply button over the frame. Only while the
+    // app watches (the artifact viewer does; Design mode does not), and never while inspecting or editing text.
+
+    const SELECT_MAX = 4000;
+    // Kept now, before the page's scripts run, so a page cannot answer for it later.
+    const getSelection = typeof win.getSelection === "function" ? win.getSelection.bind(win) : () => null;
+    const selecting = group();
+    let selectOn = false;
+    let selectTimer = null;
+    let selectSent = "";
+
+    const rectOf = (rect) => ({ x: rect.left, y: rect.top, width: rect.width, height: rect.height });
+
+    const reportSelection = () => {
+        selectTimer = null;
+
+        if (!selectOn) {
+            return;
+        }
+
+        const selection = getSelection();
+        let message = { type: "pocket-selection", text: "" };
+
+        if (selection && !selection.isCollapsed && selection.rangeCount > 0 && !inspectOn && !editOn) {
+            const text = clip(String(selection.toString()).trim(), SELECT_MAX);
+            const rects = Array.from(selection.getRangeAt(0).getClientRects()).filter((rect) => rect.width > 0);
+
+            if (text !== "" && rects.length > 0) {
+                message = { type: "pocket-selection", text, rect: rectOf(rects[0]), end: rectOf(rects[rects.length - 1]) };
+            }
+        }
+
+        const key = JSON.stringify(message);
+
+        if (key !== selectSent) {
+            selectSent = key;
+            send(message);
+        }
+    };
+
+    // Dragging a handle changes the selection all the time: the app hears it once it holds still.
+    const selectionLater = () => {
+        if (selectTimer !== null) {
+            unlater(selectTimer);
+        }
+
+        selectTimer = later(reportSelection, 160);
+    };
+
+    const setSelectWatch = (on) => {
+        selectOn = on;
+        selecting.clear();
+        selectSent = "";
+
+        if (on) {
+            // A selectionchange is fired at the document: the window hears it on its way down.
+            selecting.add("selectionchange", selectionLater, true);
+            selecting.add("scroll", selectionLater, { capture: true, passive: true });
+            selecting.add("resize", selectionLater, { passive: true });
+            selectionLater();
+        }
+    };
+
+    const clearSelection = () => {
+        getSelection()?.removeAllRanges();
+        selectionLater();
+    };
+
+    // ---------------------------------------------------------------------------------------------------------------
     // Watching the page's own markup for a manifest or slides that come, change, or go.
 
     let watcher = null;
@@ -1423,7 +1492,7 @@ export const ARTIFACT_INSPECT = String.raw`(send, standalone) => {
     };
 
     // What the app asked for, so a replaced document (a reply's HTML run again) can be given it again.
-    const desired = { inspect: false, edit: false, targets: [], tweaks: {} };
+    const desired = { inspect: false, edit: false, select: false, targets: [], tweaks: {} };
     // The app may speak before the page is parsed (it says hello as the page starts): what needs the page waits.
     let ready = false;
     let backlog = [];
@@ -1459,6 +1528,13 @@ export const ARTIFACT_INSPECT = String.raw`(send, standalone) => {
                 break;
             case "pocket-goto":
                 goTo(data.slide);
+                break;
+            case "pocket-select-watch":
+                desired.select = data.on === true;
+                setSelectWatch(desired.select);
+                break;
+            case "pocket-select-clear":
+                clearSelection();
                 break;
         }
     };
@@ -1502,7 +1578,7 @@ export const ARTIFACT_INSPECT = String.raw`(send, standalone) => {
             }
 
             if (
-                !["pocket-inspect", "pocket-edit-text", "pocket-tweak-set", "pocket-highlight", "pocket-goto"].includes(data.type)
+                !["pocket-inspect", "pocket-edit-text", "pocket-tweak-set", "pocket-highlight", "pocket-goto", "pocket-select-watch", "pocket-select-clear"].includes(data.type)
             ) {
                 return false;
             }
@@ -1543,6 +1619,7 @@ export const ARTIFACT_INSPECT = String.raw`(send, standalone) => {
             pins = [];
             unwatchLayout();
             unwatchSize();
+            setSelectWatch(false);
             inspectOn = false;
             editOn = false;
             ready = false;
@@ -1552,6 +1629,7 @@ export const ARTIFACT_INSPECT = String.raw`(send, standalone) => {
                 { type: "pocket-highlight", targets: desired.targets },
                 { type: "pocket-inspect", on: desired.inspect },
                 { type: "pocket-edit-text", on: desired.edit },
+                { type: "pocket-select-watch", on: desired.select },
             ];
             install();
             whenParsed();
