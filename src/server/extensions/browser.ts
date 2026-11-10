@@ -9,7 +9,9 @@ import { awaitWithContext } from "@earendil-works/chord/context";
 import { type ImageContent, StringEnum, type TextContent } from "@earendil-works/pi-ai";
 import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { AgentDoc, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
+import { formatSize } from "../browser/downloads.ts";
 import type { BrowserPage, LogEntry, Target } from "../browser/page.ts";
+import { saveScreenshot, screenshotFormat, SCREENSHOT_MAX } from "../browser/screenshots.ts";
 import { displayUrl, normalizeUrl, REMOTE_FILES } from "../browser/urls.ts";
 import { presetOf, viewportFrom } from "../browser/viewport.ts";
 import type { PocketHost } from "../host.ts";
@@ -53,6 +55,7 @@ const MAX_TEXT = 20_000;
 const GUIDE = `The browser tool is a real Chromium on this machine. The people in this conversation see its page live in the Browser panel and can use it too: show and test web work there (local dev servers, HTML files on this machine, any site).
 - Start a dev server in the background with bash first (\`nohup npm run dev > /tmp/dev.log 2>&1 &\`), then navigate to it.
 - snapshot gives refs like [e12] for click, type, select, and hover, valid until the next snapshot. screenshot shows the layout; viewport changes the size. After a change, check console for errors.
+- screenshot with path saves a full-resolution .png, .jpg/.jpeg, or .webp in the session's working folder (16384px and 50 MB limits), while you still see the smaller JPEG. Use ref or selector for one element instead of fullPage.
 - A download's result gives its path. wait with download: true waits for it.`;
 
 /** The guide for a session on another computer: the browser runs on the server, its pages load from the computer. */
@@ -60,6 +63,7 @@ function remoteGuide(computer: string): string {
     return `The browser tool is a real Chromium that runs on the Pi Pocket server, but every page it opens loads through "${computer}": addresses such as localhost:5173 are that computer's. The people in this conversation see its page live in the Browser panel and can use it too.
 - Start a dev server there with bash first (\`nohup npm run dev > /tmp/dev.log 2>&1 &\`), then navigate to it. File paths and file:// URLs do not open: serve the files instead.
 - snapshot gives refs like [e12] for click, type, select, and hover, valid until the next snapshot. screenshot shows the layout; viewport changes the size. After a change, check console for errors.
+- screenshot with path saves a full-resolution .png, .jpg/.jpeg, or .webp on that computer, relative to the session's working folder (16384px and 50 MB limits), while you still see the smaller JPEG. Use ref or selector for one element instead of fullPage.
 - A download goes to that computer; its result gives its path. wait with download: true waits for it.`;
 }
 
@@ -164,7 +168,14 @@ export default function createBrowser(host: PocketHost) {
                 ),
                 fullPage: opt(
                     bool({
-                        description: "screenshot: the whole page, not only what fits the viewport.",
+                        description:
+                            "screenshot: the whole page, not only what fits the viewport; cannot combine with ref or selector.",
+                    }),
+                ),
+                path: opt(
+                    str({
+                        description:
+                            "screenshot: save a full-resolution .png, .jpg/.jpeg, or .webp through the session's file environment (relative to its working folder, on its linked computer if any); creates parent folders. Limited to 16384px on the longer side and 50 MB; the usual smaller JPEG still returns.",
                     }),
                 ),
                 timeoutMs: opt(
@@ -308,7 +319,25 @@ export default function createBrowser(host: PocketHost) {
                     break;
 
                 case "screenshot": {
-                    const shot = await run(page.screenshot({ fullPage: args.fullPage === true }));
+                    const format =
+                        args.path === undefined ? undefined : screenshotFormat(args.path);
+                    const element = args.ref !== undefined || args.selector !== undefined;
+                    const shot = await run(
+                        page.screenshot({
+                            fullPage: args.fullPage === true,
+                            ...(element
+                                ? {
+                                      target: {
+                                          ...(target.ref === undefined ? {} : { ref: target.ref }),
+                                          ...(target.selector === undefined
+                                              ? {}
+                                              : { selector: target.selector }),
+                                      },
+                                  }
+                                : {}),
+                            ...(format === undefined ? {} : { format }),
+                        }),
+                    );
 
                     // Models refuse bigger images once a conversation holds many, so a big page comes back smaller.
                     const smaller =
@@ -318,8 +347,39 @@ export default function createBrowser(host: PocketHost) {
 
                     image = { type: "image", data: shot.data, mimeType: "image/jpeg" };
                     lines.push(
-                        `Screenshot of ${args.fullPage === true ? "the whole page" : "the viewport"}, ${shot.width}×${shot.height} CSS pixels${smaller}.`,
+                        `Screenshot of ${element ? "the element" : args.fullPage === true ? "the whole page" : "the viewport"}, ${shot.width}×${shot.height} CSS pixels${smaller}.`,
                     );
+
+                    if (args.path !== undefined && shot.file !== undefined) {
+                        try {
+                            if (api.env === undefined) {
+                                throw new Error("The session's file environment is not available.");
+                            }
+
+                            const absolute = await saveScreenshot(
+                                api.env,
+                                args.path,
+                                shot.file.bytes,
+                                context,
+                            );
+
+                            lines.push(
+                                `Saved ${absolute} (${shot.file.width}×${shot.file.height} px, ${formatSize(shot.file.bytes.length)}).`,
+                            );
+
+                            if (shot.file.scaled) {
+                                lines.push(
+                                    `Scaled the saved image down to fit ${SCREENSHOT_MAX} px on the longer side.`,
+                                );
+                            }
+                        } catch (error) {
+                            failed = true;
+                            lines.push(
+                                `Could not save screenshot: ${error instanceof Error ? error.message : String(error)}`,
+                            );
+                        }
+                    }
+
                     break;
                 }
 

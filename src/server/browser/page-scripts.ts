@@ -214,7 +214,7 @@ export const LOCATE_SCRIPT = String.raw`(async (target) => {${DEEP}	const clip =
 	const view = window.visualViewport;
 	const scale = view?.scale ?? 1;
 	const kind = el.tagName === "INPUT" ? (el.type || "text") : el.tagName === "TEXTAREA" ? "textarea" : el.tagName.toLowerCase();
-	return { x: (x - (view?.offsetLeft ?? 0)) * scale, y: (y - (view?.offsetTop ?? 0)) * scale, label: describe(el), covered, editable: el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName), kind, password: kind === "password" };
+	return { x: (x - (view?.offsetLeft ?? 0)) * scale, y: (y - (view?.offsetTop ?? 0)) * scale, box: { x: box.left + scrollX, y: box.top + scrollY, width: box.width, height: box.height }, label: describe(el), covered, editable: el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName), kind, password: kind === "password" };
 })`;
 
 /**
