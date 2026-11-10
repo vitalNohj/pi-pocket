@@ -27,6 +27,7 @@ import {
     say,
     scriptedModel,
     until,
+    work,
 } from "./helpers.ts";
 
 const chromium = findBrowser();
@@ -272,6 +273,38 @@ describe("the browser of a session on another computer", () => {
             // The page and its WebSocket: each a connection the runner opened on its computer.
             assert.ok(runner.opened - opened >= 2, `the runner opened ${runner.opened - opened}`);
             assert.ok(reached.includes("/ws"));
+        },
+    );
+
+    it(
+        "saves a screenshot through the session's runner environment, not on the server",
+        real,
+        async (t) => {
+            const request = t.mock.method(app.runners.link(runnerId), "request");
+            const path = "screenshots/page.png";
+            const file = join(there, path);
+            const result = await browse(id, { action: "screenshot", path });
+            const bytes = readFileSync(file);
+
+            assert.ok(result.includes(`Saved ${file} (`), result);
+            assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+            assert.ok(
+                request.mock.calls.some(
+                    ({ arguments: [op, json] }) => op === "write" && json.path === file,
+                ),
+                "the file bytes crossed the real runner link",
+            );
+            assert.equal(
+                existsSync(join(work, path)),
+                false,
+                "no file in the server session folder",
+            );
+            assert.equal(
+                existsSync(join(process.cwd(), path)),
+                false,
+                "no file in the server process folder",
+            );
+            assert.deepEqual(files(serverTmp), [], "no temporary server copy");
         },
     );
 

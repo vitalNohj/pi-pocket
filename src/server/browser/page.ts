@@ -13,6 +13,7 @@ import {
     SELECT_OPTION_SCRIPT,
     SNAPSHOT_SCRIPT,
 } from "./page-scripts.ts";
+import { SCREENSHOT_MAX, type ScreenshotFormat } from "./screenshots.ts";
 import { clamp, presetOf, type Viewport, type ViewportPreset } from "./viewport.ts";
 
 export type BrowserState = {
@@ -1036,6 +1037,8 @@ export class BrowserPage {
         editable?: boolean;
         kind?: string;
         password?: boolean;
+        /** The element's box in document CSS pixels, after scrolling it into view. Points have no box. */
+        box?: { x: number; y: number; width: number; height: number };
     }> {
         if (typeof target.x === "number" && typeof target.y === "number") {
             return {
@@ -1258,33 +1261,37 @@ export class BrowserPage {
     }
 
     /**
-     * A JPEG of the viewport, or of the whole page (up to 8000 CSS pixels tall). The size it reports is in CSS pixels;
-     * the image itself is at most `SHOT_MAX` pixels on its longer side, `scale` image pixels to a CSS pixel (1 unless
-     * that made it smaller).
+     * The usual scaled JPEG preview, optionally with a separate full-resolution file image. The preview of a whole
+     * page still stops at 8000 CSS pixels; the file covers it all, capped at `SCREENSHOT_MAX` device pixels per side.
+     * Neither capture changes device emulation. An element uses the same resolution and scrolling as `click`.
      */
     async screenshot(
-        options: { fullPage?: boolean } = {},
-    ): Promise<{ data: string; width: number; height: number; scale: number }> {
+        options: {
+            fullPage?: boolean;
+            target?: Pick<Target, "ref" | "selector">;
+            format?: ScreenshotFormat;
+        } = {},
+    ): Promise<{
+        data: string;
+        width: number;
+        height: number;
+        scale: number;
+        file?: { bytes: Buffer; width: number; height: number; scaled: boolean };
+    }> {
         this.usedAt = Date.now();
-        const scale = 1 / this.#viewport.scale;
 
-        if (options.fullPage === true) {
-            const metrics = await this.#send("Page.getLayoutMetrics");
-            const size = metrics.cssContentSize ?? metrics.contentSize;
-            const width = Math.ceil(size.width);
-            const height = Math.min(Math.ceil(size.height), 8000);
-            const shot = await this.#send(
-                "Page.captureScreenshot",
-                {
-                    format: "jpeg",
-                    quality: 80,
-                    captureBeyondViewport: true,
-                    clip: { x: 0, y: 0, width, height, scale: scale * fit(width, height) },
-                },
-                60_000,
-            );
+        if (options.fullPage === true && options.target !== undefined) {
+            throw new BrowserError("fullPage or an element, not both");
+        }
 
-            return { data: String(shot.data), width, height, scale: fit(width, height) };
+        const element =
+            options.target === undefined ? undefined : (await this.locate(options.target)).box;
+
+        if (
+            options.target !== undefined &&
+            (element === undefined || element.width <= 0 || element.height <= 0)
+        ) {
+            throw new BrowserError("The element has no visible box.");
         }
 
         const metrics = await this.#send("Page.getLayoutMetrics");
@@ -1295,28 +1302,78 @@ export class BrowserPage {
             clientHeight: this.#viewport.height,
             scale: 1,
         };
-        const zoom = view.scale ?? 1;
+        const size = metrics.cssContentSize ?? metrics.contentSize;
+        const whole = options.fullPage === true;
+        // Chromium rounds clips in CSS pixels before applying device scale. Round an element's bounds outward so
+        // fractional layout coordinates neither cut off its edge nor give the saved file an incorrect reported size.
+        const box =
+            element !== undefined
+                ? {
+                      x: Math.floor(element.x),
+                      y: Math.floor(element.y),
+                      width: Math.ceil(element.x + element.width) - Math.floor(element.x),
+                      height: Math.ceil(element.y + element.height) - Math.floor(element.y),
+                  }
+                : whole
+                  ? { x: 0, y: 0, width: Math.ceil(size.width), height: Math.ceil(size.height) }
+                  : {
+                        x: view.pageX,
+                        y: view.pageY,
+                        width: view.clientWidth,
+                        height: view.clientHeight,
+                    };
+        const zoom = whole || element !== undefined ? 1 : (view.scale ?? 1);
+        const height = whole ? Math.min(box.height, 8000) : box.height;
+        const previewScale = fit(box.width, height);
+        const captureBeyondViewport = whole || element !== undefined;
         const shot = await this.#send(
             "Page.captureScreenshot",
             {
                 format: "jpeg",
                 quality: 80,
-                clip: {
-                    x: view.pageX,
-                    y: view.pageY,
-                    width: view.clientWidth,
-                    height: view.clientHeight,
-                    scale: scale * zoom * fit(view.clientWidth, view.clientHeight),
-                },
+                captureBeyondViewport,
+                clip: { ...box, height, scale: (zoom * previewScale) / this.#viewport.scale },
             },
             60_000,
         );
+        let file: { bytes: Buffer; width: number; height: number; scaled: boolean } | undefined;
+
+        if (options.format !== undefined) {
+            const pixels = this.#viewport.scale;
+            const width = (captureBeyondViewport ? box.width : this.#viewport.width) * pixels;
+            const height = (captureBeyondViewport ? box.height : this.#viewport.height) * pixels;
+            // WebP's format limit is 16383: Chromium otherwise returns an image that cannot be decoded.
+            const max = options.format === "webp" ? SCREENSHOT_MAX - 1 : SCREENSHOT_MAX;
+            const scale = Math.min(1, max / Math.max(width, height));
+            const saved = await this.#send(
+                "Page.captureScreenshot",
+                {
+                    format: options.format,
+                    ...(options.format === "png" ? {} : { quality: 90 }),
+                    captureBeyondViewport,
+                    // An unclipped viewport preserves its exact device size even on mobile pages without a viewport
+                    // tag: their fractional visual-viewport CSS sizes would otherwise be rounded before scaling.
+                    ...(captureBeyondViewport || scale < 1
+                        ? { clip: { ...box, scale: zoom * scale } }
+                        : {}),
+                },
+                60_000,
+            );
+
+            file = {
+                bytes: Buffer.from(String(saved.data), "base64"),
+                width: Math.round(width * scale),
+                height: Math.round(height * scale),
+                scaled: scale < 1,
+            };
+        }
 
         return {
             data: String(shot.data),
-            width: this.#viewport.width,
-            height: this.#viewport.height,
-            scale: fit(view.clientWidth, view.clientHeight),
+            width: whole || element !== undefined ? box.width : this.#viewport.width,
+            height: whole || element !== undefined ? height : this.#viewport.height,
+            scale: previewScale,
+            ...(file === undefined ? {} : { file }),
         };
     }
 

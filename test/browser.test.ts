@@ -11,10 +11,11 @@ import {
     say,
     scriptedModel,
     until,
+    work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -23,6 +24,7 @@ import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi
 import { Browsers } from "../src/server/browser.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
 import { SHOT_MAX } from "../src/server/browser/page.ts";
+import { SCREENSHOT_BYTES, SCREENSHOT_MAX } from "../src/server/browser/screenshots.ts";
 import { normalizeUrl } from "../src/server/browser/urls.ts";
 import { blockedInPlanMode } from "../src/server/extensions/plan.ts";
 
@@ -79,6 +81,12 @@ test("plan mode lets Pi look at pages but not act on them", () => {
             action,
         );
     }
+
+    assert.equal(blockedInPlanMode("browser", { action: "screenshot" }), undefined);
+    assert.match(
+        blockedInPlanMode("browser", { action: "screenshot", path: "shot.png" }) ?? "",
+        /Plan mode is on: The browser's screenshot with a path writes a file/,
+    );
 
     // A data: page is one Pi writes, scripts and all.
     assert.match(
@@ -179,6 +187,148 @@ test(
     },
 );
 
+test("screenshots keep device pixels in files and capture element boxes", real, async () => {
+    const browsers = new Browsers({
+        dataDir: mkdtempSync(join(root, "shots-")),
+        load: async () => undefined,
+        save: () => {},
+    });
+
+    try {
+        const page = await browsers.open(1, { restore: false });
+        const viewport = { width: 1280, height: 1100, scale: 2, mobile: false };
+
+        await page.setViewport(viewport);
+        await page.navigate(`${base}/two`);
+        await page.evaluate("document.body.style.margin = '0'; 1");
+        const dimensions = async (bytes: Buffer, format: string) =>
+            JSON.parse(
+                await page.evaluate(`
+            const bitmap = await createImageBitmap(await (await fetch(${JSON.stringify(`data:image/${format};base64,`)} + ${JSON.stringify(bytes.toString("base64"))})).blob());
+            ({ width: bitmap.width, height: bitmap.height });
+        `),
+            );
+
+        for (const format of ["png", "jpeg", "webp"] as const) {
+            const shot = await page.screenshot({ format });
+
+            assert.ok(shot.file);
+            assert.deepEqual(
+                await dimensions(shot.file.bytes, format),
+                {
+                    width: viewport.width * viewport.scale,
+                    height: viewport.height * viewport.scale,
+                },
+                format,
+            );
+            assert.equal(shot.file.width, viewport.width * viewport.scale);
+            assert.equal(shot.file.height, viewport.height * viewport.scale);
+            assert.equal(shot.file.scaled, false);
+            assert.deepEqual(jpegSize(shot.data), {
+                width: viewport.width,
+                height: viewport.height,
+            });
+            assert.deepEqual(page.viewport, viewport, "capturing does not change emulation");
+        }
+
+        await page.evaluate(
+            `document.body.innerHTML = '<div style="height:2000px"></div><button style="box-sizing:border-box;width:123px;height:67px" id="target">Target</button>'; 1`,
+        );
+        const outline = await page.snapshot();
+        const ref = outline.items.find((item) => item.name === "Target")!.ref;
+
+        for (const target of [{ selector: "#target" }, { ref }]) {
+            const shot = await page.screenshot({ target, format: "png" });
+
+            assert.ok(shot.file);
+            assert.deepEqual(await dimensions(shot.file.bytes, "png"), { width: 246, height: 134 });
+            assert.deepEqual(jpegSize(shot.data), { width: 123, height: 67 });
+            assert.equal(shot.width, 123);
+            assert.equal(shot.height, 67);
+            assert.ok(
+                Number(await page.evaluate("scrollY")) > 0,
+                "the element was scrolled into view",
+            );
+            assert.deepEqual(jpegSize((await page.screenshot({ target })).data), {
+                width: 123,
+                height: 67,
+            });
+            await assert.rejects(
+                page.screenshot({ fullPage: true, target }),
+                /fullPage or an element, not both/,
+            );
+        }
+
+        // Fractional CSS sizes and origins must still report the encoded file's exact pixel size.
+        await page.evaluate(
+            "document.querySelector('#target').style.cssText = 'box-sizing:border-box;width:123.75px;height:67.25px;transform:translate(0.3px,0.2px)'; 1",
+        );
+        const fractional = await page.screenshot({
+            target: { selector: "#target" },
+            format: "png",
+        });
+
+        assert.ok(fractional.file);
+        assert.deepEqual(await dimensions(fractional.file.bytes, "png"), {
+            width: fractional.file.width,
+            height: fractional.file.height,
+        });
+
+        for (const view of [
+            { width: 1280, height: 1100, scale: 1.25, mobile: false },
+            { width: 1280, height: 1100, scale: 1.5, mobile: false },
+            { width: 390, height: 844, scale: 2, mobile: true },
+        ]) {
+            await page.setViewport(view);
+            const shot = await page.screenshot({ format: "png" });
+
+            assert.ok(shot.file);
+            assert.deepEqual(await dimensions(shot.file.bytes, "png"), {
+                width: shot.file.width,
+                height: shot.file.height,
+            });
+            assert.equal(shot.file.width, view.width * view.scale);
+            assert.equal(shot.file.height, view.height * view.scale);
+            const element = await page.screenshot({
+                target: { selector: "#target" },
+                format: "png",
+            });
+
+            assert.ok(element.file);
+            assert.deepEqual(await dimensions(element.file.bytes, "png"), {
+                width: element.file.width,
+                height: element.file.height,
+            });
+        }
+
+        // The file covers the whole page, not only the 8000 CSS pixels kept for the model, and caps pixels by scaling.
+        await page.setViewport({ width: 320, height: 240, scale: 1, mobile: false });
+        await page.evaluate(
+            "document.body.innerHTML = ''; document.body.style.cssText = 'margin:0;height:17000px'; scrollTo(0, 0); 1",
+        );
+        const whole = await page.screenshot({ fullPage: true, format: "png" });
+
+        assert.ok(whole.file?.scaled);
+        assert.equal(whole.file.height, SCREENSHOT_MAX);
+        assert.deepEqual(await dimensions(whole.file.bytes, "png"), {
+            width: whole.file.width,
+            height: whole.file.height,
+        });
+        assert.equal(whole.height, 8000);
+        assert.ok(Math.max(...Object.values(jpegSize(whole.data))) <= SHOT_MAX);
+        const webp = await page.screenshot({ fullPage: true, format: "webp" });
+
+        assert.ok(webp.file?.scaled);
+        assert.equal(webp.file.height, SCREENSHOT_MAX - 1, "WebP's own dimension limit");
+        assert.deepEqual(await dimensions(webp.file.bytes, "webp"), {
+            width: webp.file.width,
+            height: webp.file.height,
+        });
+    } finally {
+        await browsers.closeAll({ final: true });
+    }
+});
+
 test("a command sent while a navigation swaps the page waits for it", real, async () => {
     const browsers = new Browsers({
         dataDir: mkdtempSync(join(root, "swap-")),
@@ -203,6 +353,147 @@ test("a command sent while a navigation swaps the page waits for it", real, asyn
         await browsers.closeAll({ final: true });
     }
 });
+
+test(
+    "the browser tool saves files in the session folder and keeps its JPEG preview",
+    real,
+    async (t) => {
+        const results: { text: string; images: number }[] = [];
+
+        const route: FauxResponseStep = (input) => {
+            const { role, text } = lastText(input as never);
+
+            if (role === "toolResult") {
+                const message = input.messages.at(-1)!;
+
+                results.push({
+                    text,
+                    images: Array.isArray(message.content)
+                        ? message.content.filter((part) => part.type === "image").length
+                        : 0,
+                });
+
+                return fauxAssistantMessage([fauxText("done")]);
+            }
+
+            return text.startsWith("browser ")
+                ? fauxAssistantMessage([fauxToolCall("browser", JSON.parse(text.slice(8)))], {
+                      stopReason: "toolUse",
+                  })
+                : fauxAssistantMessage([fauxText("ok")]);
+        };
+
+        const app = await openApp(scriptedModel(route), join(root, "screenshot-app"));
+
+        try {
+            const id = await newSession(app);
+
+            await loadTools(app, id, "browser");
+            await app.commands.configure(id, owner(app), {
+                model: { provider: "faux", modelId: "faux-vision" },
+            });
+
+            const browse = async (args: Record<string, unknown>) => {
+                const count = results.length;
+
+                await say(app, id, `browser ${JSON.stringify(args)}`);
+                await until(() => results.length > count, "the screenshot tool's result");
+
+                return results.at(-1)!;
+            };
+
+            await browse({ action: "navigate", url: `${base}/two` });
+            const page = app.browsers.page(Number(id))!;
+
+            await page.setViewport({ width: 1280, height: 1100, scale: 2, mobile: false });
+
+            for (const extension of ["png", "jpg", "jpeg", "webp"]) {
+                const path = `shots/viewport.${extension}`;
+                const saved = await browse({ action: "screenshot", path });
+                const bytes = readFileSync(join(work, path));
+
+                assert.ok(
+                    saved.text.includes(`Saved ${join(work, path)} (2560×2200 px, `),
+                    saved.text,
+                );
+                assert.equal(saved.images, 1);
+                assert.equal(
+                    existsSync(join(process.cwd(), path)),
+                    false,
+                    "not relative to the server process",
+                );
+
+                if (extension === "png") {
+                    assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+                    assert.equal(bytes.readUInt32BE(16), 2560);
+                    assert.equal(bytes.readUInt32BE(20), 2200);
+                } else if (extension === "webp") {
+                    assert.equal(bytes.toString("ascii", 0, 4), "RIFF");
+                    assert.equal(bytes.toString("ascii", 8, 12), "WEBP");
+                } else {
+                    assert.deepEqual(jpegSize(bytes.toString("base64")), {
+                        width: 2560,
+                        height: 2200,
+                    });
+                }
+            }
+
+            for (const path of ["shots/wrong.gif", "shots/no-extension"]) {
+                assert.match(
+                    (await browse({ action: "screenshot", path })).text,
+                    /Use \.png, \.jpg\/\.jpeg, or \.webp/,
+                );
+                assert.equal(existsSync(join(work, path)), false);
+            }
+
+            mkdirSync(join(work, "shots/folder.png"));
+            const folder = await browse({ action: "screenshot", path: "shots/folder.png" });
+
+            assert.match(folder.text, /is a folder/);
+            assert.equal(folder.images, 1);
+            assert.match(
+                (await browse({ action: "screenshot", selector: "h1" })).text,
+                /Screenshot of the element/,
+            );
+            assert.match(
+                (await browse({ action: "screenshot", selector: "h1", fullPage: true })).text,
+                /fullPage or an element, not both/,
+            );
+            assert.match(
+                (
+                    await browse({
+                        action: "screenshot",
+                        selector: "h1",
+                        fullPage: true,
+                        path: "shots/refused.png",
+                    })
+                ).text,
+                /fullPage or an element, not both/,
+            );
+            assert.equal(existsSync(join(work, "shots/refused.png")), false);
+
+            // Inject only the large encoded file, rather than forcing Chromium to allocate an enormous noisy page.
+            const preview = await page.screenshot();
+
+            t.mock.method(page, "screenshot", async () => ({
+                ...preview,
+                file: {
+                    bytes: Buffer.alloc(SCREENSHOT_BYTES + 1),
+                    width: 2560,
+                    height: 2200,
+                    scaled: false,
+                },
+            }));
+            const large = await browse({ action: "screenshot", path: "shots/large.png" });
+
+            assert.match(large.text, /exceeds 50 MB: it was not saved/);
+            assert.equal(large.images, 1, "an over-limit file still returns the model's image");
+            assert.equal(existsSync(join(work, "shots/large.png")), false);
+        } finally {
+            await app.close();
+        }
+    },
+);
 
 test(
     "Pi uses the browser tool, and people watch and use the same page in the panel",
