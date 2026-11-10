@@ -369,7 +369,10 @@ describe("the browser of a session on another computer", () => {
 
         assert.ok(port !== undefined);
 
-        for (const auth of ["", "Proxy-Authorization: Basic d3Jvbmc6d3Jvbmc=\r\n"]) {
+        // A wrong user and password ("wrong:wrong"), encoded here so that secret scanners do not take it for a real one.
+        const wrong = Buffer.from("wrong:wrong").toString("base64");
+
+        for (const auth of ["", `Proxy-Authorization: Basic ${wrong}\r\n`]) {
             const answer = await new Promise<string>((done) => {
                 const socket = connect(port, "127.0.0.1", () =>
                     socket.write(`CONNECT localhost:${sitePort} HTTP/1.1\r\n${auth}\r\n`),
