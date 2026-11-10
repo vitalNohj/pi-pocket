@@ -18,9 +18,10 @@ import {
     work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -390,6 +391,40 @@ describe("the Files panel", () => {
             ).status,
             200,
         );
+    });
+
+    it("reads in the folders given to a chosen guest, and not past them: only who is in charge reads what Pi can", async () => {
+        // The guest is given the test folder only. A file in a folder not given: never theirs to read, by any path.
+        const notGiven = mkdtempSync(join(tmpdir(), "pi-pocket-not-given-"));
+        const secret = join(notGiven, "secret.txt");
+
+        writeFileSync(secret, "Not given to the guest.\n");
+        symlinkSync(secret, join(work, "secret-link.txt"));
+
+        try {
+            for (const path of [secret, join(work, "secret-link.txt")]) {
+                const read = await call(guest, `c/${shared}/view?path=${encodeURIComponent(path)}`);
+
+                assert.equal(read.status, 404, path);
+                assert.ok(!JSON.stringify(read.body).includes("Not given"));
+                assert.equal(
+                    (await call(guest, `c/${shared}/download?path=${encodeURIComponent(path)}`))
+                        .status,
+                    404,
+                    path,
+                );
+            }
+
+            // The owner, in charge of this server, reads what Pi can.
+            assert.equal(
+                (await call(owner(app), `c/${shared}/view?path=${encodeURIComponent(secret)}`))
+                    .status,
+                200,
+            );
+        } finally {
+            rmSync(join(work, "secret-link.txt"), { force: true });
+            rmSync(notGiven, { recursive: true, force: true });
+        }
     });
 
     it("is refused on a session not shared, and outside the folder to a person invited to one session", async () => {

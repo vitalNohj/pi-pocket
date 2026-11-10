@@ -307,7 +307,7 @@ export class Workspace {
         this.requireLocal(id);
 
         // A branch changes what the whole folder holds: only who may start sessions on this computer may switch it.
-        if (!this.#app.policy.mayReadComputer(user, String(id))) {
+        if (!this.#app.policy.mayStartThere(user, String(id))) {
             throw new HttpError(
                 403,
                 "Only people who may start sessions on this computer can switch its branch.",
@@ -533,9 +533,9 @@ export class Workspace {
     }
 
     /**
-     * A file a person may load through a conversation. Who may start sessions on this computer reaches the whole machine
-     * through Pi anyway (`access.ts` `mayReadComputer`); anyone else who sees the session gets only files under its
-     * folder or its uploads.
+     * A file a person may load through a conversation. Who is in charge of this computer reads what Pi can; anyone else
+     * who sees the session gets only files under its folder, its uploads, and the folders given to them here
+     * (`access.ts` `readableFolders`), links followed.
      */
     conversationFile(user: User, id: ConversationId, path: string): string {
         const file = this.conversationPath(id, path);
@@ -545,7 +545,9 @@ export class Workspace {
             return this.#uploaded(id, path);
         }
 
-        if (this.#app.policy.mayReadComputer(user, String(id))) {
+        const given = this.#app.policy.readableFolders(user, String(id));
+
+        if (given === undefined) {
             return file;
         }
 
@@ -565,7 +567,7 @@ export class Workspace {
         const uploads = this.#lineage(id).map((each) =>
             join(this.#app.dataDir, "uploads", String(each)),
         );
-        const roots = [cwd, ...uploads]
+        const roots = [cwd, ...uploads, ...given]
             .map(real)
             .filter((root): root is string => root !== undefined);
 
@@ -640,21 +642,19 @@ export class Workspace {
         const cwd = this.#app.cwdOf(id);
         const file = paths.resolve(cwd, expanded);
 
-        // Pi's own read access (`docs/runners.md`): whoever is in charge of that computer, and a person who may start
-        // sessions there in the sessions they started. In another person's session shared with them, they read what
-        // anyone it is shared with may: its folder.
-        if (
-            this.#app.policy.inCharge(user, runner) ||
-            (this.#app.policy.mayStart(user, runner) &&
-                this.#app.sessionMeta(this.#app.rootOf(id))?.createdBy === user.id)
-        ) {
+        const given = this.#app.policy.readableFolders(user, String(id));
+
+        // Pi's own read access (`docs/runners.md`): whoever is in charge of that computer. Anyone else reads the
+        // session's folder and the folders given to them there (`access.ts` `readableFolders`), links followed.
+        if (given === undefined) {
             return { access, file, home };
         }
 
-        // Both at once: each is a round trip.
-        const [target, root] = await Promise.all([
+        // At once: each is a round trip. A given folder that is gone there gives nothing.
+        const [target, root, ...folders] = await Promise.all([
             access.realpath(file),
             access.realpath(cwd),
+            ...given.map((each) => access.realpath(each).catch(() => undefined)),
         ]).catch((error: unknown) => {
             if (error instanceof Unreachable) {
                 throw new HttpError(409, describe(error));
@@ -668,7 +668,10 @@ export class Workspace {
 
         // Nor the computer's own secrets, even in a session in its home folder: its runner link (its key and
         // authenticator) and Pi's sign-ins.
-        if (!inside(root) || runnerSecret(paths, target, home)) {
+        if (
+            ![root, ...folders].some((base) => base !== undefined && inside(base)) ||
+            runnerSecret(paths, target, home)
+        ) {
             throw new HttpError(404, "Not found");
         }
 
@@ -936,7 +939,7 @@ export class Workspace {
         const kind = await revertFile(
             this.#app.cwdOf(id),
             path,
-            !this.#app.policy.mayReadComputer(user, String(id)),
+            this.#app.policy.readableFolders(user, String(id)) !== undefined,
             access,
         ).catch((error: unknown) => {
             throw new HttpError(409, describe(error));
@@ -956,8 +959,8 @@ export class Workspace {
         this.#app.requireSteer(user, id);
         this.requireLocal(id);
 
-        // Who may not start sessions on this computer only sees the files in its folder, here as in `conversationFile`.
-        const onlyHere = !this.#app.policy.mayReadComputer(user, String(id));
+        // Who is not in charge of this computer only sees the changes in the session's folder (`conversationFile`).
+        const onlyHere = this.#app.policy.readableFolders(user, String(id)) !== undefined;
         const key = `${id}:${onlyHere}`;
         const underWay = this.#changesUnderWay.get(key);
 
@@ -1023,7 +1026,7 @@ export class Workspace {
         const access = await this.#access(id);
 
         try {
-            const onlyHere = !this.#app.policy.mayReadComputer(user, String(id));
+            const onlyHere = this.#app.policy.readableFolders(user, String(id)) !== undefined;
 
             return await diffOf(this.#app.cwdOf(id), path, onlyHere, access);
         } catch (error) {

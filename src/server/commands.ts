@@ -2603,7 +2603,7 @@ export class Commands {
 
         // A move picks another folder of the session's computer: only who may start sessions there may, as for a new
         // one. Anyone else sees files in its folder only: moving it would move what they see.
-        if (request.cwd !== undefined && !app.policy.mayReadComputer(user, String(id))) {
+        if (request.cwd !== undefined && !app.policy.mayStartThere(user, String(id))) {
             throw new HttpError(
                 403,
                 app.config.userById(user.id)?.sessions === undefined

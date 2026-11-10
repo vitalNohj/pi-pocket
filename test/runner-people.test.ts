@@ -379,9 +379,9 @@ describe("people granted a computer", () => {
         assert.equal(app.runners.stored(runnerId)?.name, "Laptop");
     });
 
-    it("lets a guest who may start sessions there read outside the session folder, but not someone invited to it", async () => {
-        // Invited to this one session: they steer it, but may not start sessions on its computer, nor read past its
-        // folder there.
+    it("lets a guest read outside the session folder in the folders given to them, but not someone invited to it", async () => {
+        // The guest was given the test folder there, above the session's folder. Invited to this one session: they steer
+        // it, but are given no folder there, so they read only its folder.
         app.setAccess(owner(app), stranger.id, { sessions: [String(id)] });
         assert.equal(app.canSee(stranger, id), true);
         const file = await app.workspace.viewFile(id, guest, outside);
@@ -485,12 +485,28 @@ describe("people granted a computer", () => {
             .finally(stop);
 
         await app.commands.shareSession(ownerSession.id, owner(app), [guest.id]);
-        await assert.rejects(
-            app.workspace.remoteFile(guest, ownerSession.id, outside),
-            (error: unknown) => error instanceof HttpError && error.status === 404,
-        );
-        // Their own session there still reads outside its folder, as Pi does.
-        assert.equal((await app.workspace.remoteFile(guest, own, outside)).file, outside);
+        // Given only `there`: a file above it is not theirs to read, in another's session nor their own, though Pi
+        // there can read it. In the folder given, they read in both.
+        app.config.setGivenFolders(runnerId, guest.id, [there]);
+
+        try {
+            for (const session of [ownerSession.id, own]) {
+                await assert.rejects(
+                    app.workspace.remoteFile(guest, session, outside),
+                    (error: unknown) => error instanceof HttpError && error.status === 404,
+                );
+                assert.equal(
+                    (await app.workspace.remoteFile(guest, session, join(there, "inside.txt")))
+                        .file,
+                    join(there, "inside.txt"),
+                );
+            }
+
+            // Who is in charge of the computer reads what Pi can.
+            assert.equal((await app.workspace.remoteFile(owner(app), own, outside)).file, outside);
+        } finally {
+            app.config.setGivenFolders(runnerId, guest.id, [root]);
+        }
     });
 
     it("ends access when a grant is withdrawn or the person is removed", async () => {

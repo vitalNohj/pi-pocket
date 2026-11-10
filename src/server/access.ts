@@ -223,14 +223,28 @@ export class AccessPolicy {
     }
 
     /**
-     * May `person` read files in session `id`'s computer outside its folder, in its Files panel, mentions, and changes:
-     * who may start sessions on that computer reads what Pi can there. Anyone else who sees the session reads its
-     * folder only.
+     * May `person` start sessions on session `id`'s computer: they may move it to another folder there, switch its
+     * branch, and publish it, as they could start one there.
      */
-    mayReadComputer(person: Pick<Person, "id">, id: string): boolean {
+    mayStartThere(person: Pick<Person, "id">, id: string): boolean {
         const facts = this.#facts.session(id);
 
         return facts !== undefined && this.mayStart(person, facts.computer);
+    }
+
+    /**
+     * The folders `person` may read on session `id`'s computer besides the session's own folder, in its Files panel,
+     * viewer, mentions, attachments, and changes. Undefined: anywhere Pi can, for who is in charge of that computer.
+     * Anyone else: the folders given to them there, or none.
+     */
+    readableFolders(person: Pick<Person, "id">, id: string): readonly string[] | undefined {
+        const facts = this.#facts.session(id);
+
+        if (facts === undefined) {
+            return [];
+        }
+
+        return this.givenFolders(person, facts.computer);
     }
 
     // Folders.

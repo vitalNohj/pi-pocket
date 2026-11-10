@@ -48,13 +48,13 @@ export class Shares {
 
     /**
      * Whether someone may publish, end, and see the addresses of shares of conversation `id`: who steers it and may
-     * start sessions on its computer (`access.ts` `mayReadComputer`). A public page is out of the reach of whatever an
+     * start sessions on its computer (`access.ts` `mayStartThere`). A public page is out of the reach of whatever an
      * invite to one session gave, and so is its address.
      */
     mayManage(user: User, id: ConversationId): boolean {
         const policy = this.#app.policy;
 
-        return policy.maySteer(user, String(id)) && policy.mayReadComputer(user, String(id));
+        return policy.maySteer(user, String(id)) && policy.mayStartThere(user, String(id));
     }
 
     /** Refuse someone who may not publish or end a share of conversation `id` (`mayManage`). */
