@@ -194,6 +194,41 @@ test("too many wrong codes lock it out, and the status says until when", async (
     assert.match(locked.body.error, /Try again in 10 minutes/);
 });
 
+test("removing a guest's authenticator ends their steering until the owner lets them steer again", async () => {
+    const gina = person("Gina", "viewer");
+
+    clock += STEP_MS;
+    await link(gina);
+    app.setAccess(owner(app), gina.id, { role: "guest" });
+    assert.equal(app.config.userById(gina.id)?.role, "guest", "linked: the owner lets her steer");
+
+    // She removes her own with a code: she is a viewer again.
+    clock += STEP_MS;
+    const secret = app.config.userById(gina.id)!.authenticator!.secret;
+
+    assert.equal(
+        (await call(gina, "me/authenticator/remove", { code: codeOf(secret) })).status,
+        200,
+    );
+    assert.equal(app.config.userById(gina.id)?.role, "viewer");
+    assert.throws(
+        () => app.setAccess(owner(app), gina.id, { role: "guest" }),
+        /must link an authenticator first/,
+    );
+
+    // Linked again and let steer; then the owner removes it for a lost phone: a viewer again.
+    clock += STEP_MS;
+    await link(gina);
+    app.setAccess(owner(app), gina.id, { role: "guest" });
+    assert.equal(
+        (await call(owner(app), `users/${gina.id}/authenticator`, undefined, "DELETE")).status,
+        200,
+    );
+    assert.equal(app.config.userById(gina.id)?.role, "viewer");
+    // A viewer's own stays a viewer: nothing else changes.
+    assert.equal(app.config.userById(vera.id)?.role, "viewer");
+});
+
 test("the owner sees who linked one, and removes anyone's; nobody else can", async () => {
     const listed = (await call<{ id: string; authenticator?: true }[]>(owner(app), "users")).body;
 

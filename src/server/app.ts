@@ -4365,6 +4365,25 @@ export class PocketApp {
         this.#scheduleSessions();
     }
 
+    /**
+     * Remove `person`'s authenticator (`by`: themselves with a code, or the owner). Steering needs one (`setAccess`), so a
+     * guest goes back to viewing: their tabs, requests, and lists follow at once, and the owner lets them steer again
+     * once they link a new one.
+     */
+    removeAuthenticator(person: string, by: User, code?: string): void {
+        this.authenticators.remove(person, by, code);
+
+        const target = this.config.userById(person);
+
+        if (target?.role === "guest") {
+            this.config.updateUser(person, { role: "viewer" });
+            void this.#refreshUser(person);
+            this.accessChanged();
+        }
+
+        this.#peopleChanged();
+    }
+
     async removeUser(owner: User, userId: string): Promise<void> {
         if (owner.role !== "owner") {
             throw new HttpError(403, "Only the owner can do that");

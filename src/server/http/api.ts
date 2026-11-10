@@ -168,7 +168,7 @@ async function authenticatorRoute(
     }
 
     if (action === "remove") {
-        app.authenticators.remove(
+        app.removeAuthenticator(
             user.id,
             user,
             body?.code === undefined ? undefined : sixDigits(body.code),
@@ -476,7 +476,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 throw new HttpError(404, "No such person.");
             }
 
-            app.authenticators.remove(second, user);
+            app.removeAuthenticator(second, user);
 
             return json(response, 200, app.people(user));
         }
