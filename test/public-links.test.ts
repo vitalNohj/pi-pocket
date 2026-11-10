@@ -3,6 +3,7 @@
 // refused, links that close, modules that see only their own, and a module turned off. Then Ask someone
 // (`extensions/ask-someone.ts`), from Pi's draft to an answer through its link.
 import {
+    addPerson,
     cleanUp,
     fakeTab,
     lastText,
@@ -108,7 +109,7 @@ export default (_host, web) => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     people.owner = app.config.ownerToken;
-    people.viewer = app.config.addUser("Vic", "viewer").token;
+    people.viewer = (await addPerson(app, "Vic", "viewer")).token;
 
     for (const file of ["linker.ts", "other.ts", "ask-someone.ts"]) {
         await app.setExtensionEnabled(owner(app), file, true);
@@ -471,7 +472,7 @@ test("Ask someone: Pi drafts, a person shares it, a stranger answers once", asyn
     // The notice of the answer goes to who shared it, not to everyone the module is for.
     const tabs = {
         owner: fakeTab(undefined, owner(app)),
-        guest: fakeTab(undefined, app.config.addUser("Gus", "guest").user),
+        guest: fakeTab(undefined, (await addPerson(app, "Gus", "guest")).user),
     };
 
     await app.attach(tabs.owner.client);

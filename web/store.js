@@ -271,6 +271,12 @@ export const store = {
         users: [],
         /** Other computers that run sessions' tools: the owner's, from `GET /api/runners` and `runners` events. */
         runners: [],
+        /** This server's own record in the Runners sheet, for the owner alone (`this-server` events); else null. */
+        thisServer: null,
+        /** New folders waiting for an approval (`folder-requests.js`): mine, and for the owner every one. */
+        folderRequests: [],
+        /** Approvals kept on the server (`folder-approvals.ts`): mine, and for the owner every one. */
+        folderApprovals: [],
         models: [],
         /** This tab's shared model refresh state and last result (`model-refresh.js`). */
         modelRefresh: { loading: false, result: null, error: null },
@@ -642,6 +648,15 @@ export function canToggleTurns() {
 
 /** People invited to one session cannot start sessions or invite others. */
 export const scoped = () => Array.isArray(store.state.me?.sessions);
+
+/**
+ * May this person start sessions on this server, fork, and invite: the server says (`mayStart`, the access policy), as
+ * the owner chose them for it; a server from before it, by role.
+ */
+export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStart !== false;
+
+/** May this person link computers of their own as runners: the owner, and the guests the owner lets (`mayLink`). */
+export const canLink = () => store.state.me?.mayLink === true;
 
 /** The notices that announce chat messages, here or a mention elsewhere, by id: their session's. Reading its chat takes them down. */
 const chatNotices = new Map();
@@ -1869,9 +1884,13 @@ const handlers = {
             me: kept(state.me, data.user),
             users: keptEach(state.users, data.users),
             folderFavorites: kept(state.folderFavorites, data.folderFavorites ?? []),
-            runnerFavorites: kept(state.runnerFavorites, data.runnerFavorites),
+            runnerFavorites: kept(state.runnerFavorites, data.runnerFavorites ?? {}),
             // Linked computers are omitted for people who have access to none.
             runners: kept(state.runners, data.runners ?? []),
+            thisServer: kept(state.thisServer, data.thisServer ?? null),
+            tasksExpire: data.tasksExpire === true,
+            folderRequests: kept(state.folderRequests, data.folderRequests ?? []),
+            folderApprovals: kept(state.folderApprovals, data.folderApprovals ?? []),
             models: kept(state.models, data.models),
             guard: kept(state.guard, data.guard),
             server: keptServer(state.server, data.server, asked),
@@ -1939,6 +1958,12 @@ const handlers = {
     users: (users) => setChanged({ users: keptEach(store.state.users, users) }),
     // The owner's computers came, went, or changed (`sheets/computers.js`).
     runners: (runners) => store.set({ runners }),
+    // This server's people, saved folders, or rules changed (`sheets/computers.js`): the owner's alone.
+    "this-server": (thisServer) => store.set({ thisServer }),
+    // New folders waiting for an approval came or went (`folder-requests.js`).
+    "folder-requests": (folderRequests) => store.set({ folderRequests }),
+    // Approvals kept on the server came, were used, or ended.
+    "folder-approvals": (folderApprovals) => store.set({ folderApprovals }),
     // Pi's lessons changed somewhere: a Memory sheet or menu that shows them fetches them again (`sheets/memory.js`).
     memory: () => store.set((state) => ({ memoryRev: (state.memoryRev ?? 0) + 1 })),
     // Not this person's to see (any more), or gone: nothing of it stays in this tab, kept or shown.

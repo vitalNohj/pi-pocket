@@ -1,4 +1,13 @@
-import { type App, cleanUp, newSession, openApp, root, scriptedModel, until } from "./helpers.ts";
+import {
+    addPerson,
+    type App,
+    cleanUp,
+    newSession,
+    openApp,
+    root,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { mkdtempSync } from "node:fs";
@@ -270,9 +279,9 @@ for (const viewport of ["desktop", "mobile"] as const) {
 
 test("webhook prompt updates enforce ownership and validate the request over HTTP", async () => {
     const id = await newSession(app);
-    const guest = app.config.addUser("Maker", "guest");
-    const other = app.config.addUser("Other", "guest");
-    const viewer = app.config.addUser("Viewer", "viewer");
+    const guest = await addPerson(app, "Maker", "guest");
+    const other = await addPerson(app, "Other", "guest");
+    const viewer = await addPerson(app, "Viewer", "viewer");
     const created = await request(
         "hooks",
         { target: Number(id), name: "Guest deploys", instructions: "Original", signed: true },
@@ -285,9 +294,10 @@ test("webhook prompt updates enforce ownership and validate the request over HTT
         (await request(`hooks/${hook.id}`, { instructions: "Other" }, other.token)).status,
         404,
     );
+    // A viewer makes no hooks: another's is not found for them, as for anyone else.
     assert.equal(
         (await request(`hooks/${hook.id}`, { instructions: "Viewer" }, viewer.token)).status,
-        403,
+        404,
     );
 
     for (const instructions of [undefined, null, 123, {}, []]) {

@@ -3,6 +3,7 @@ import { posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import type { BackgroundTask } from "./docs.ts";
+import type { SessionScope } from "../runner/protocol.ts";
 import type { RunnerEnv } from "./runners.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -14,6 +15,17 @@ export class RemoteBackground {
     constructor(env: RunnerEnv, permission: string) {
         this.env = env;
         this.permission = permission;
+    }
+
+    /** The session these tasks belong to, as the runner checks each task's folder against it. */
+    #scope(): SessionScope {
+        const scope = this.env.scope;
+
+        if (scope === undefined || scope.id !== this.permission) {
+            throw new Error("A background task needs its session's environment on the computer.");
+        }
+
+        return scope;
     }
 
     async dir(): Promise<string> {
@@ -38,8 +50,7 @@ export class RemoteBackground {
         added: Record<string, string>,
         segment: number,
     ): Promise<number> {
-        return this.env.link.taskStart({
-            permission: this.permission,
+        return this.env.link.taskStart(this.#scope(), {
             task: item.id,
             command: item.command,
             cwd: item.cwd,
@@ -57,7 +68,7 @@ export class RemoteBackground {
         const task = marker.slice(marker.lastIndexOf("/") + 1);
         // Its shell ending ends the task, as a group's leader does on a server: what it left running is named and
         // stopped then (`background.ts`, `#left`), while the host stays until it is gone or the runner stops.
-        const tasks = (await this.env.link.taskList(this.permission)).filter(
+        const tasks = (await this.env.link.taskList(this.#scope())).filter(
             (item) =>
                 item.task === task && (!onlyGroup || (item.pid === group && item.ended !== true)),
         );
@@ -77,7 +88,7 @@ export class RemoteBackground {
                 throw new Error("Invalid background task signal.");
             }
 
-            await this.env.link.taskSignal(this.permission, task, signal);
+            await this.env.link.taskSignal(this.#scope(), task, signal);
 
             return [];
         }

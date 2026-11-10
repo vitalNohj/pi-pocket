@@ -11,6 +11,7 @@
  */
 // helpers.ts first: it points Pi's folder at a temporary one before anything from src/ loads.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -452,8 +453,8 @@ async function stage() {
 
     app.config.updateUser(owner(app).id, { name: "Riley" });
     const riley = owner(app);
-    const alex = app.config.addUser("Alex", "guest").user;
-    const sam = app.config.addUser("Sam", "guest").user;
+    const alex = (await addPerson(app, "Alex", "guest")).user;
+    const sam = (await addPerson(app, "Sam", "guest")).user;
 
     // Lancet Guard is off in tests. Turn its module on, make it "on", and make it ask about a push.
     await app.setExtensionEnabled(riley, "guard.ts", true);

@@ -2,6 +2,7 @@
 // version its call made, so an earlier card keeps its version after an update; the store is the artifact tool's, so
 // versions, edits, limits, replays, forks, and who may read a page all work as they do for it.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -542,7 +543,7 @@ test("who may read a card's page: people who see the session, a viewer too, not 
     await say(app, id, "show a calculator");
 
     const invited = app.config.addUser("Ivy", "guest", [String(id)]);
-    const viewer = app.config.addUser("Vee", "viewer");
+    const viewer = await addPerson(app, "Vee", "viewer");
     const elsewhere = app.config.addUser("Sam", "guest", [String(other)]);
 
     try {

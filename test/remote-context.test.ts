@@ -4,6 +4,7 @@
  * pi-env daemon on this machine, with its own home folder, so nothing comes from the server's.
  */
 import assert from "node:assert/strict";
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -118,17 +119,16 @@ before(async () => {
 
     const { port } = server.address() as AddressInfo;
     const { code } = app.runners.makeCode("Laptop", owner(app).id);
-    const linked = app.runners.redeem(code);
+    const linked = linkInProcess((request) => app.runners.redeem(request), code);
 
     runnerId = linked.id;
+
     runnerOptions = {
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",
         cwd: remoteHome,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => ({ confirm: false }),
-        ask: () => Promise.resolve({ allow: true }),
     };
     runner = new Runner(runnerOptions);
     runner.start();

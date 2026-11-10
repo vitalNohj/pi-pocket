@@ -2,6 +2,7 @@
 // and the Nerd Fonts icons, and an owner's theme that names the app's other fonts and turns ligatures on, which a guest
 // chooses and sees, with only those files fetched, preloaded on a reload, and the message box measured again.
 import {
+    addPerson,
     type App,
     cleanUp,
     newSession,
@@ -167,7 +168,7 @@ before(async () => {
     page = await browsers.open(1);
     await page.setViewport(VIEWPORTS.mobile);
     // A guest: the owner made the theme, anyone may choose it.
-    const { token } = app.config.addUser("Guest", "guest");
+    const { token } = await addPerson(app, "Guest", "guest");
 
     await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
     await see(

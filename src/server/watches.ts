@@ -993,6 +993,8 @@ export class Watches {
                     person,
                     { text: state.text, requestId: key },
                     WATCH_VIA,
+                    undefined,
+                    true,
                 );
             } catch (error) {
                 // Someone else's turn, a spend limit, no model: it may pass. The look runs again, and finds the same.

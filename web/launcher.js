@@ -20,6 +20,7 @@ import { openPip, pipAvailable } from "./pip.js";
 import { setArchived, toggleBoard } from "./sessions.js";
 import { branchAvailable, headLabel } from "./sheets/branch.js";
 import { recentLabels } from "./sheets/folder.js";
+import { canShare, sharedHint } from "./sheets/session-share.js";
 import { galleryAvailable } from "./sheets/gallery.js";
 import { memoryAvailable } from "./sheets/memory.js";
 import { piSessionsAvailable } from "./sheets/pi-sessions.js";
@@ -27,6 +28,7 @@ import {
     actions,
     attempt,
     api,
+    canStart as startsHere,
     canSteer,
     canToggleTurns,
     collab,
@@ -133,7 +135,8 @@ function actionItems() {
     const steer = canSteer();
     // While take turns is on, the session's settings are the driver's (as in the menu).
     const driving = !view.turns?.on || view.turns.driver === me?.id;
-    const canStart = steer && !scoped();
+    // As the New button: a person this server has not chosen starts nothing here (`store.js` `canStart`).
+    const canStart = startsHere();
     // The folder a session starts in "here": the one the open session works in. Issue #96, reported by @poncardasm.
     const here = view.agent?.cwd ?? conversation?.cwd ?? null;
     // As the folder picker names them: folders of one name get their parent's too.
@@ -296,6 +299,14 @@ function actionItems() {
                 label: "Rename session",
                 icon: "sparkle",
                 run: () => openSheet({ type: "rename" }),
+            },
+        session &&
+            collab() &&
+            canShare(store.state.sessions.find((each) => each.id === conversation.id)) && {
+                label: "Share session",
+                detail: sharedHint(conversation.id),
+                icon: "users",
+                run: () => openSheet({ type: "session-share", id: conversation.id }),
             },
         session &&
             steer &&

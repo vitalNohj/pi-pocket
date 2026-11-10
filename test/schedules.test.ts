@@ -1,5 +1,6 @@
 // Scheduled messages: reading times as people write them, and durable tasks that send them later, across restarts.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -309,8 +310,8 @@ test("a schedule Pi sets up is the work of whom it worked for, and is cancelled 
     const id = await newSession(app);
 
     await loadTools(app, id, "schedule");
-    const hal = app.config.addUser("Hal", "guest").user;
-    const ida = app.config.addUser("Ida", "guest").user;
+    const hal = (await addPerson(app, "Hal", "guest")).user;
+    const ida = (await addPerson(app, "Ida", "guest")).user;
 
     await say(id, "remind yourself", hal);
     await say(id, "remind yourself", ida);
@@ -345,14 +346,14 @@ test("a schedule Pi sets up is the work of whom it worked for, and is cancelled 
 
 test("people need the right to steer to schedule", async () => {
     const id = await newSession(app);
-    const viewer = app.config.addUser("Vee", "viewer").user;
+    const viewer = (await addPerson(app, "Vee", "viewer")).user;
 
     await assert.rejects(app.commands.schedule(id, viewer, { when: "in 10m x" }), { status: 403 });
 });
 
 test("a schedule is cancelled once its person may not steer anymore or a limit is reached", async () => {
     const id = await newSession(app);
-    const gus = app.config.addUser("Gus", "guest").user;
+    const gus = (await addPerson(app, "Gus", "guest")).user;
 
     await app.commands.schedule(id, gus, { when: "in 10m from Gus", zone: "UTC" });
     await app.commands.schedule(id, owner(app), { when: "in 10m from the owner", zone: "UTC" });

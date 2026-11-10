@@ -101,6 +101,10 @@ export async function join(
             );
         }
 
+        if (redeemed.invitedBy !== undefined) {
+            await app.welcome(redeemed.user.id, redeemed.invitedBy);
+        }
+
         const tunnel = quickTunnelHost(request);
 
         // The owner is never tied to one tunnel.

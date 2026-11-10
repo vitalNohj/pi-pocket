@@ -299,8 +299,7 @@ export class ExtensionCommands {
     ): Promise<CommandReceipt> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         await app.conversation(id);
 
         if (
@@ -469,8 +468,7 @@ export class ExtensionCommands {
     async stop(id: ConversationId, user: User, taskId: number): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const task = Number.isSafeInteger(taskId)
             ? await app.harness.getTask(taskId as TaskId, context)
             : undefined;

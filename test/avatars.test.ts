@@ -1,5 +1,5 @@
 // Profile pictures: set, shown to others by version, refused when not a picture, removed.
-import { cleanUp, newSession, openApp, root, scriptedModel } from "./helpers.ts";
+import { addPerson, cleanUp, newSession, openApp, root, scriptedModel } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -27,7 +27,7 @@ before(async () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     owner = app.config.ownerToken;
-    const added = app.config.addUser("Gale", "guest");
+    const added = await addPerson(app, "Gale", "guest");
 
     guest = { id: added.user.id, token: added.token };
 });
@@ -94,12 +94,12 @@ test("a picture is for people who share a session with its owner, and for people
 });
 
 test("removing a person removes their picture", async () => {
-    const gone = app.config.addUser("Gone", "guest");
+    const gone = await addPerson(app, "Gone", "guest");
 
     assert.equal((await call(gone.token, "/api/me/avatar", "POST", PNG)).status, 200);
     const file = join(app.dataDir, "avatars", gone.user.id);
 
     assert.equal(existsSync(file), true);
-    app.removeUser(app.config.userById(app.config.users[0]!.id)!, gone.user.id);
+    await app.removeUser(app.config.userById(app.config.users[0]!.id)!, gone.user.id);
     assert.equal(existsSync(file), false);
 });

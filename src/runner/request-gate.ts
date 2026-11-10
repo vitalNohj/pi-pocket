@@ -1,20 +1,19 @@
 /**
- * The runner, not the server, authorizes every pi-env request before the daemon sees it (`docs/runners.md`).
+ * The runner keeps each pi-env request inside the session the server names (`docs/runners.md`). After the link, the
+ * runner trusts its server: the server decided who may use which folder (`src/server/access.ts`). This is defense in
+ * depth against a mistake there, not a second judge.
  *
- * A server that negotiated approvals (`welcome.approvals`) names the session of each request in `SESSION_FIELD`, which
- * is removed here. Without a valid session permission, only `hello` and folder listing (`lstat`, `realpath`,
- * `opendir`, and `readdir` and `close` on a listed folder) pass. Every other request needs a valid permission for the
- * session it names, and each path it carries must be in that permission's folder or below it, or in the runner's own
- * folders for attached files and browser downloads. Pi's context files above the folder and its skills there and in
- * the home folder can also be read (`piReads`). An expired permission makes the request wait while the computer
- * asks again.
+ * The server names the session of each request in `SESSION_FIELD`, which is removed here. Without one, only `hello`
+ * and folder listing (`lstat`, `realpath`, `opendir`, and `readdir` and `close` on a listed folder) pass. Every
+ * other request must name a session, and each path it carries must be in that session's folder or below it, or in the
+ * runner's own folders for attached files and browser downloads. Pi's context files above the folder and its skills
+ * there and in the home folder can also be read (`piReads`).
  */
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { folderContains, realFolder } from "./folders.ts";
-import type { Approvals, SessionScope } from "./approvals.ts";
-import { FRAME, frame, readFrame, SESSION_FIELD } from "./protocol.ts";
+import { FRAME, frame, readFrame, SESSION_FIELD, type SessionScope } from "./protocol.ts";
 
 type Request = {
     scope?: SessionScope;
@@ -62,7 +61,7 @@ const KNOWN_OPS = new Set([
     "ptyForeground",
 ]);
 
-/** What works without a session permission: the folder picker's listing. */
+/** What works without a session: the folder picker's listing. */
 const LISTING = new Set(["hello", "lstat", "realpath", "opendir"]);
 
 /** What only reads a file opened with `open`. */
@@ -128,28 +127,6 @@ export async function canonical(path: string): Promise<string> {
 }
 
 /** A session scope as the server sends it; undefined when it is not one. */
-/** One session's requests that wait for their check, and the question that asks for all of them. */
-type Waiting = { requests: Set<Request>; question?: AbortController };
-
-/**
- * A signal that aborts when every request of the session that waits was cancelled, also one that came later. A
- * session's question asks for all of them, so a cancelled one does not end it while another one still waits.
- */
-function whileWaiting(waiting: Waiting): AbortSignal {
-    const question = new AbortController();
-
-    waiting.question = question;
-    cancelled(waiting);
-
-    return question.signal;
-}
-
-function cancelled(waiting: Waiting): void {
-    if ([...waiting.requests].every((request) => request.stop.signal.aborted)) {
-        waiting.question?.abort();
-    }
-}
-
 /**
  * A permission id the server makes: a UUID, or a session number for a session from before UUIDs. It names folders on
  * this computer (`<temp>/pi-pocket-tasks/<id>`, `<downloads>/<id>`), so nothing else is taken: not `.ssh`, not `..`.
@@ -178,14 +155,11 @@ export function sessionScope(value: unknown): SessionScope | undefined {
 }
 
 export type GateOptions = {
-    approvals: Approvals;
-    /** Ask the computer again for a session without a valid permission; true when it was approved. */
-    ask: (scope: SessionScope, signal: AbortSignal) => Promise<boolean>;
     /** Whole frames to the daemon. */
     send: (bytes: Buffer) => void;
     /** Whole frames back to the server, as if the daemon sent them. */
     reply: (bytes: Buffer) => void;
-    /** The runner's own folders for session `id` (its permission): its attached files and browser downloads. */
+    /** The runner's own folders for session `id`: its attached files and browser downloads. */
     shared: (id: string) => Promise<string[]>;
     /** The real temporary folder, where `mkdtemp` may make a folder for a session. */
     tmpdir: () => Promise<string>;
@@ -200,77 +174,47 @@ export class RequestGate {
     readonly #requests = new Map<number, Request>();
     readonly #handles = new Map<number, Handle>();
     readonly #queues = new Map<string, Promise<void>>();
-    /** Each session's requests that wait for their check: its question stands while one of them still waits. */
-    readonly #waiting = new Map<string, Waiting>();
     /** The folders `mkdtemp` made for each session: codemode's work folders and temporary files. */
     readonly #temporary = new Map<string, Set<string>>();
-    /** Exact real files, never folders, bound to this generation of a session's permission. */
-    readonly #extraReads = new Map<string, { approvedAt: number; files: Map<string, number> }>();
+    /** Exact real files, never folders, that a session may read for a short time (`allowRead`), by session id. */
+    readonly #extraReads = new Map<string, Map<string, number>>();
 
     constructor(options: GateOptions) {
         this.#options = options;
     }
 
-    /** Allow one listed Pi file for at most 5 minutes, only with the still-valid session permission. */
+    /**
+     * Let session `session` read one exact file for 5 minutes: a Pi terminal session the server lets it continue, and
+     * the files extensions keep beside it. The server decided that this person may (`src/server/pi-sessions.ts`).
+     */
     async allowRead(session: string, path: string): Promise<void> {
-        const permission = await this.#options.approvals.valid(session);
-
-        if (permission === undefined) {
-            throw new Error(`Session not approved on ${this.#options.name()}`);
-        }
-
         const real = await realpath(path);
-        const previous = this.#extraReads.get(session);
-        const grant =
-            previous?.approvedAt === permission.approvedAt
-                ? previous
-                : { approvedAt: permission.approvedAt, files: new Map<string, number>() };
+        const files = this.#extraReads.get(session) ?? new Map<string, number>();
         const until = Date.now() + 5 * 60_000;
 
-        grant.files.set(real, until);
-        this.#extraReads.set(session, grant);
+        files.set(real, until);
+        this.#extraReads.set(session, files);
         setTimeout(() => {
-            if (grant.files.get(real) === until) {
-                grant.files.delete(real);
+            if (files.get(real) === until) {
+                files.delete(real);
             }
 
-            if (grant.files.size === 0 && this.#extraReads.get(session) === grant) {
+            if (files.size === 0 && this.#extraReads.get(session) === files) {
                 this.#extraReads.delete(session);
             }
         }, 5 * 60_000).unref();
     }
 
-    revokeReads(session: string): void {
-        if (session === "all") {
-            this.#extraReads.clear();
-        } else {
-            this.#extraReads.delete(session);
-        }
-    }
-
-    /** A control request uses the same live permission and canonical path check as an exec request, without asking. */
-    async task(id: string, cwd?: string): Promise<() => void> {
-        const permission = await this.#options.approvals.valid(id);
-
-        if (permission === undefined) {
-            throw new Error(`Session not approved on ${this.#options.name()}`);
-        }
-
+    /** A background task of session `scope`, as the server named it: its folder must be in the session's folder. */
+    async task(scope: SessionScope, cwd?: string): Promise<() => void> {
+        const folder = await realFolder(scope.folder);
         const paths = await this.#paths(cwd === undefined ? {} : { cwd }, undefined);
 
-        if (!(await this.#inside(id, permission.folder, paths))) {
-            throw new Error(
-                `The path is outside the session's approved folder on ${this.#options.name()}`,
-            );
+        if (!(await this.#inside(scope.id, folder, paths))) {
+            throw new Error(`The path is outside the session's folder on ${this.#options.name()}`);
         }
 
-        const used = this.#options.approvals.begin(id);
-        const working = this.#options.working?.(permission.folder);
-
-        return () => {
-            used();
-            working?.();
-        };
+        return this.#options.working?.(folder) ?? (() => {});
     }
 
     /** The daemon stopped, or the runner: what waits is dropped, and use ends. */
@@ -307,7 +251,7 @@ export class RequestGate {
                 if (request.sent) {
                     this.#options.send(frame(FRAME.cancel, id, json));
                 } else {
-                    // Not at the daemon yet: it ends now. Its session's question stays while another request waits.
+                    // Not at the daemon yet: it ends now.
                     this.#refuse(id, request, "The request was cancelled");
                 }
             }
@@ -333,13 +277,8 @@ export class RequestGate {
         delete json[SESSION_FIELD];
         this.#requests.set(id, request);
 
-        // One session's requests wait in order, so a question for it holds them all, and other sessions go on.
+        // One session's requests go in order; other sessions go on.
         const key = request.scope?.id ?? "";
-        const waiting = this.#waiting.get(key) ?? { requests: new Set<Request>() };
-
-        waiting.requests.add(request);
-        this.#waiting.set(key, waiting);
-        request.stop.signal.addEventListener("abort", () => cancelled(waiting), { once: true });
 
         const queued = (this.#queues.get(key) ?? Promise.resolve()).then(async () => {
             try {
@@ -347,17 +286,15 @@ export class RequestGate {
                     throw new Error("The request was cancelled");
                 }
 
-                await this.#authorize(request, json, waiting);
+                await this.#authorize(request, json);
 
                 if (request.stop.signal.aborted) {
                     throw new Error("The request was cancelled");
                 }
 
                 request.sent = true;
-                waiting.requests.delete(request);
                 this.#options.send(frame(type, id, json, payload));
             } catch (error) {
-                waiting.requests.delete(request);
                 this.#refuse(id, request, (error as Error).message);
             }
         });
@@ -366,10 +303,6 @@ export class RequestGate {
         void queued.finally(() => {
             if (this.#queues.get(key) === queued) {
                 this.#queues.delete(key);
-            }
-
-            if (waiting.requests.size === 0 && this.#waiting.get(key) === waiting) {
-                this.#waiting.delete(key);
             }
         });
     }
@@ -383,12 +316,8 @@ export class RequestGate {
         }
     }
 
-    /** Check a request; on success, it counts as use of its session until its result. */
-    async #authorize(
-        request: Request,
-        json: Record<string, unknown>,
-        waiting: Waiting,
-    ): Promise<void> {
+    /** Check a request; on success, it counts as work of its session until its result (`activity.ts`). */
+    async #authorize(request: Request, json: Record<string, unknown>): Promise<void> {
         if (!KNOWN_OPS.has(request.op)) {
             throw new Error(
                 `The runner on ${this.#options.name()} does not know the request "${request.op}"`,
@@ -411,32 +340,18 @@ export class RequestGate {
             return;
         }
 
-        const paths = await this.#paths(json, handle);
         const scope = request.scope;
 
         if (scope === undefined) {
-            throw new Error(`A session permission on ${this.#options.name()} is required`);
+            throw new Error(`A session on ${this.#options.name()} is required`);
         }
 
-        let permission = await this.#options.approvals.valid(scope);
+        const paths = await this.#paths(json, handle);
+        const folder = await realFolder(scope.folder);
 
-        if (permission === undefined && !request.stop.signal.aborted) {
-            this.revokeReads(scope.id);
-
-            // Expired, revoked, or never approved: ask again, and wait.
-            if (await this.#options.ask(scope, whileWaiting(waiting))) {
-                permission = await this.#options.approvals.valid(scope);
-            }
-        }
-
-        if (permission === undefined) {
-            throw new Error(`Session not approved on ${this.#options.name()}`);
-        }
-
-        // A command runs in a folder of its session: with none named, its approved folder (inside by definition),
-        // never the runner's own.
+        // A command runs in a folder of its session: with none named, the session's folder, never the runner's own.
         if ((request.op === "exec" || request.op === "pty") && typeof json.cwd !== "string") {
-            json.cwd = permission.folder;
+            json.cwd = folder;
         }
 
         if (
@@ -465,36 +380,23 @@ export class RequestGate {
             request.op === "open" || (handle?.readOnly === true && READING.has(request.op));
         const home = reading ? await realFolder(homedir()) : "";
         const extra = this.#extraReads.get(scope.id);
-
-        if (extra !== undefined && extra.approvedAt !== permission.approvedAt) {
-            this.revokeReads(scope.id);
-        }
-
         const extraReading =
             reading &&
-            extra?.approvedAt === permission.approvedAt &&
+            extra !== undefined &&
             paths.length > 0 &&
-            paths.every((path) => (extra.files.get(path) ?? 0) > Date.now());
+            paths.every((path) => (extra.get(path) ?? 0) > Date.now());
 
         if (
             !temporary &&
-            !(await this.#inside(scope.id, permission.folder, paths)) &&
-            !(reading && paths.every((path) => piReads(permission.folder, home, path))) &&
+            !(await this.#inside(scope.id, folder, paths)) &&
+            !(reading && paths.every((path) => piReads(folder, home, path))) &&
             !extraReading
         ) {
-            throw new Error(
-                `The path is outside the session's approved folder on ${this.#options.name()}`,
-            );
+            throw new Error(`The path is outside the session's folder on ${this.#options.name()}`);
         }
 
         if (request.op !== "watch") {
-            const used = this.#options.approvals.begin(scope.id);
-            const working = this.#options.working?.(permission.folder);
-
-            request.finish = () => {
-                used();
-                working?.();
-            };
+            request.finish = this.#options.working?.(folder);
         }
     }
 

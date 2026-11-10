@@ -2,10 +2,9 @@
  * `pi-pocket runner service`: keep the runner running as a systemd user service (Linux), a scheduled task
  * (Windows), or a launch agent (macOS).
  *
- * With nobody at the computer, nobody can answer the question before a session or a folder: the only way to approve
- * one is a code from an authenticator (`totp.ts`), typed in Pi Pocket. Installing a service and starting with
- * `--service` both refuse without one. Saved folders alone are not enough: a folder outside them could never be
- * approved. On macOS, permanent stops exit successfully so launchd does not restart them.
+ * The runner asks nobody at the computer: the server approves sessions, with each person's own authenticator code in
+ * Pi Pocket. So a service needs nothing more than the link. On macOS, permanent stops exit successfully so launchd does
+ * not restart them.
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -22,12 +21,6 @@ export const LAUNCH_AGENT = "dev.pi-pocket.runner";
 
 /** The server ended the link for good: starting it again would not help. */
 export const STOPPED_BY_SERVER = 3;
-/** `runner start --service` exits with this when no authenticator is set up. */
-export const SERVICE_NEEDS_TOTP = 4;
-
-/** What a service needs, and how to get it, when this computer has no authenticator. */
-export const NEEDS_TOTP =
-    "A service runs with nobody at this computer, so only a code from an authenticator app, typed in Pi Pocket, can approve its sessions and folders. Set one up first, in a terminal here:\n  pi-pocket runner totp setup\nThen run: pi-pocket runner service";
 
 export const SERVICE_UNAVAILABLE =
     "The service command needs Linux with systemd, Windows, or macOS. Keep the runner open in a terminal, or use the Pi Pocket desktop app.";
@@ -102,11 +95,7 @@ export function serviceExitCode(
     asService: boolean,
     platform: NodeJS.Platform = process.platform,
 ): number {
-    return platform === "darwin" &&
-        asService &&
-        [STOPPED_BY_SERVER, SERVICE_NEEDS_TOTP].includes(code)
-        ? 0
-        : code;
+    return platform === "darwin" && asService && code === STOPPED_BY_SERVER ? 0 : code;
 }
 
 /** The name shown by `runner status`. Keep the Linux name unchanged. */
@@ -135,7 +124,7 @@ export function serviceMenu(platform: NodeJS.Platform = process.platform): {
         : {
               start: `Run at sign-in (${mechanism})`,
               stop: `Stop the ${mechanism}`,
-              detail: "start when you sign in; needs an authenticator",
+              detail: "start when you sign in",
           };
 }
 
@@ -144,8 +133,7 @@ export function serviceHelp(platform: NodeJS.Platform = process.platform): strin
     if (platform === "win32") {
         return `  pi-pocket runner service
     Windows: register the "${TASK}" scheduled task, as your user without
-    admin rights. Starts now and at sign-in. Needs an authenticator (totp setup)
-    first. Approve sessions and folders with its code in Pi Pocket.
+    admin rights. Starts now and at sign-in.
     View task history in Task Scheduler; runner output is not saved.
   pi-pocket runner service remove
     Stop and remove the scheduled task. Keep the saved link.`;
@@ -154,8 +142,7 @@ export function serviceHelp(platform: NodeJS.Platform = process.platform): strin
     if (platform === "darwin") {
         return `  pi-pocket runner service
     macOS: install the ${LAUNCH_AGENT} launch agent. Starts now and at
-    sign-in. Needs an authenticator (totp setup) first. Approve sessions and
-    folders with its code in Pi Pocket.
+    sign-in.
     Logs: ~/Library/Logs/pi-pocket-runner.log
   pi-pocket runner service remove
     Stop and remove the launch agent. Keep the saved link.`;
@@ -163,8 +150,7 @@ export function serviceHelp(platform: NodeJS.Platform = process.platform): strin
 
     return `  pi-pocket runner service
     Linux with systemd: keep the runner running as a user service, for a
-    computer nobody sits at. Needs an authenticator (totp setup) first: with
-    nobody here, only a code from it, typed in Pi Pocket, approves sessions.
+    computer nobody sits at.
   pi-pocket runner service remove
     Stop and remove the service. Keep the saved link.`;
 }
@@ -190,7 +176,7 @@ export function serviceUnit(options: {
         "Wants=network-online.target",
         "",
         "[Service]",
-        // `--service`: no terminal to ask on; it refuses to start without an authenticator.
+        // `--service`: run without a terminal.
         `ExecStart=${quote(options.node)} ${quote(options.launcher)} runner start --service --config ${quote(options.file)}`,
         `Environment=${quote(`PATH=${options.path}`)}`,
         "Restart=on-failure",
@@ -308,7 +294,7 @@ function systemctl(...args: string[]): boolean {
     return spawnSync("systemctl", ["--user", ...args], { stdio: "inherit" }).status === 0;
 }
 
-/** Install only after the shared authenticator and stable-install checks. No platform can bypass them. */
+/** Install only from a stable install: a service started from npx's cache would stop starting. */
 export function installService(
     options: {
         node: string;
@@ -316,14 +302,9 @@ export function installService(
         file: string;
         path: string;
         home: string;
-        authenticator: boolean;
     },
     platform: NodeJS.Platform = process.platform,
 ): string[] {
-    if (!options.authenticator) {
-        throw new Error(NEEDS_TOTP);
-    }
-
     // npx's copy is a cache npm can clear: the service would stop starting.
     if (options.launcher.includes("_npx")) {
         throw new Error(
@@ -331,8 +312,7 @@ export function installService(
         );
     }
 
-    const approval =
-        "  Approve its sessions and folders in Pi Pocket with a code from your authenticator.";
+    const approval = "  Choose who may use it, and which folders, in Pi Pocket: Menu > Runners.";
     const remove = "  To stop and remove it: pi-pocket runner service remove";
 
     if (platform === "win32") {
@@ -395,8 +375,8 @@ export function installService(
             ...options,
             // The service starts in the home folder: a relative path would name another file there.
             file: resolve(options.file),
-            // The server removed this computer or its key is wrong, or no authenticator: starting again would not help.
-            noRestart: [STOPPED_BY_SERVER, SERVICE_NEEDS_TOTP],
+            // The server removed this computer or its key is wrong: starting again would not help.
+            noRestart: [STOPPED_BY_SERVER],
         }),
     );
 

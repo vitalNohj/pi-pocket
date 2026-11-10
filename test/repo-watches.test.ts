@@ -3,6 +3,7 @@
 // fenced, from people who can write to it unless the watch says anyone; PiP starts sessions in a repository's checkout,
 // cloning it when there is none; and nothing reaches a repository gh cannot push to.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -586,7 +587,7 @@ test("a guest cannot set up a repository watch on the owner's PiP", async () => 
     const id = await pip();
     const added = await app.pip.addRepoWatch(id, { repo: "acme/api", events: ["ci"] }, "k-3");
 
-    const guest = app.config.addUser("Gus", "guest").user;
+    const guest = (await addPerson(app, "Gus", "guest")).user;
 
     await assert.rejects(
         app.repoWatches.add(guest, {

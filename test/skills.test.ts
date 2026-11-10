@@ -1,5 +1,6 @@
 // Pi's skills: the places a session finds them, which of a name wins, project trust, and that it matches Pi's CLI.
 import {
+    addPerson,
     type App,
     cleanUp,
     home,
@@ -358,7 +359,7 @@ test("the owner answers through the API, a guest cannot, and Pi has the skills f
 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
-    const guest = app.config.addUser("Guest", "guest");
+    const guest = await addPerson(app, "Guest", "guest");
     const call = (token: string, body?: unknown) =>
         fetch(`http://127.0.0.1:${port}/api/c/${id}/trust`, {
             method: body === undefined ? "GET" : "POST",

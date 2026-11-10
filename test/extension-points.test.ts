@@ -3,6 +3,7 @@
 // `host.ask` asks the person Pi works for on a card whose values reach only the extension, and `host.browser` gives an
 // extension the session's page, with a `fill` for a person's value.
 import {
+    addPerson,
     type App,
     cleanUp,
     lastText,
@@ -477,8 +478,8 @@ test("any tool's result hides the value before it is stored, its details too", a
 });
 
 test("host.roleOf gives a person's role by id, and nothing for an id that is not a person", async () => {
-    const guest = app.config.addUser("Rae", "guest").user;
-    const viewer = app.config.addUser("Vic", "viewer").user;
+    const guest = (await addPerson(app, "Rae", "guest")).user;
+    const viewer = (await addPerson(app, "Vic", "viewer")).user;
 
     const ask = async (id: string) => {
         const { createHandler } = await import("../src/server/http.ts");
@@ -523,7 +524,7 @@ test("host.roleOf gives a person's role by id, and nothing for an id that is not
 test("an ask's card is answered by the person Pi works for, and its values reach only the extension", async () => {
     const id = await newSession(app);
     const me = owner(app);
-    const guest = app.config.addUser("Gus", "guest").user;
+    const guest = (await addPerson(app, "Gus", "guest")).user;
 
     await app.commands.submit(id, me, { text: "please sign in", requestId: crypto.randomUUID() });
     await until(() => app.approvals.forConversation(id).length === 1, "the card");

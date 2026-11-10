@@ -451,8 +451,7 @@ export class Collab {
     ): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const root = app.rootOf(id);
         const room = await app.room(root);
         const action = String(request.action ?? "");

@@ -1,5 +1,6 @@
 // Who may allow a risky call, and what the approval notification lets each person do.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -81,9 +82,9 @@ function ask(id: ConversationId, subject: string) {
 }
 
 test("with approvals that need someone else, a guest cannot allow a call their own message led to", async () => {
-    const alex = app.config.addUser("Alex", "guest").user;
-    const bea = app.config.addUser("Bea", "guest").user;
-    const viewer = app.config.addUser("Vee", "viewer").user;
+    const alex = (await addPerson(app, "Alex", "guest")).user;
+    const bea = (await addPerson(app, "Bea", "guest")).user;
+    const viewer = (await addPerson(app, "Vee", "viewer")).user;
 
     await assert.rejects(app.setApprovalRule(alex, "others"), { status: 403 });
     await assert.rejects(app.setApprovalRule(owner(app), "nobody"), { status: 400 });
@@ -135,8 +136,8 @@ test("with approvals that need someone else, a guest cannot allow a call their o
 });
 
 test("who asked is fixed when the call asks, a subagent works for whoever its parent worked for, and a resend is the sender's", async () => {
-    const alex = app.config.addUser("Alex S", "guest").user;
-    const bea = app.config.addUser("Bea S", "guest").user;
+    const alex = (await addPerson(app, "Alex S", "guest")).user;
+    const bea = (await addPerson(app, "Bea S", "guest")).user;
 
     await app.setApprovalRule(owner(app), "others");
 
@@ -214,8 +215,8 @@ test("who asked is fixed when the call asks, a subagent works for whoever its pa
 });
 
 test("whose work Pi does survives a crash before it was written down, and when nobody is known only the owner may allow", async () => {
-    const alex = app.config.addUser("Alex C", "guest").user;
-    const bea = app.config.addUser("Bea C", "guest").user;
+    const alex = (await addPerson(app, "Alex C", "guest")).user;
+    const bea = (await addPerson(app, "Bea C", "guest")).user;
 
     await app.setApprovalRule(owner(app), "others");
 
@@ -351,7 +352,7 @@ test("an approval notification offers Allow only to people who may allow, and on
     store.subscriptions = (() => [{}]) as never;
 
     try {
-        const alex = app.config.addUser("Alex P", "guest").user;
+        const alex = (await addPerson(app, "Alex P", "guest")).user;
 
         await app.setApprovalRule(owner(app), "others");
         const id = await newSession(app);

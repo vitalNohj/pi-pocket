@@ -4,6 +4,7 @@
 // for. Webhooks turn posts let in by their secret (or GitHub's signature) into one message each, trimmed and fenced,
 // to a session or PiP, and turn away everything else.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -591,7 +592,7 @@ test("a watch waits while someone else drives, or Pi is busy, without counting i
     github = freshGithub();
     github.checks = [failedCheck("test", "7", "boom")];
     const id = await newSession(app);
-    const guest = app.config.addUser("Dee", "guest").user;
+    const guest = (await addPerson(app, "Dee", "guest")).user;
     const real = app.isBusy;
     // Pi is busy from the moment the watch has looked at the PR (the send that follows must wait), busy throughout, or
     // as it is.
@@ -728,7 +729,7 @@ test("starting a watch says what is wrong: no PR, one merged already, PiP, a vie
         /Only sessions can watch/,
     );
 
-    const viewer = app.config.addUser("Vic", "viewer").user;
+    const viewer = (await addPerson(app, "Vic", "viewer")).user;
 
     await assert.rejects(app.commands.watchPr(id, viewer, undefined));
     await assert.rejects(app.watches.start(id, viewer.id), /someone who can steer/);
@@ -876,7 +877,7 @@ test("a GitHub hook is signed: its address alone lets nothing in, and a new secr
     assert.notEqual(moved.path, plain.path);
     assert.equal((await post(plain.path)).status, 404);
     await assert.rejects(
-        app.hooks.rotate(app.config.addUser("Rae", "guest").user, plain.id),
+        app.hooks.rotate((await addPerson(app, "Rae", "guest")).user, plain.id),
         /No such webhook/,
     );
     await until(async () => !app.isBusy(id), "Pi to answer");
@@ -899,7 +900,7 @@ test("webhooks to PiP, and who may make, see, and remove them", async () => {
         /^\[via webhook Alerts\] Something happened[^\n]*\n\n<webhook-payload>\ndisk full on web-1\n<\/webhook-payload>/,
     );
 
-    const guest = app.config.addUser("Gus", "guest").user;
+    const guest = (await addPerson(app, "Gus", "guest")).user;
     const viewer = app.config.users.find((user) => user.role === "viewer")!;
     const session = await newSession(app);
 

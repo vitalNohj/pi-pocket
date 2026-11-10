@@ -8,6 +8,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createHandler } from "../src/server/http.ts";
 import {
+    addPerson,
     cleanUp,
     context,
     fakeTab,
@@ -180,7 +181,7 @@ test("only the owner can start, move, or link a session to a workspace URI", asy
     const remove = app.registerWorkspaceProvider("ssh", provider());
 
     try {
-        const { user } = app.config.addUser("Guest", "guest");
+        const { user } = await addPerson(app, "Guest", "guest");
         const before = app.sessions().length;
 
         await assert.rejects(app.commands.createSession(user, { cwd: uri }), /owner/);
@@ -256,7 +257,7 @@ export default (host, web) => {
         });
 
     try {
-        const guest = app.config.addUser("Guest", "guest");
+        const guest = await addPerson(app, "Guest", "guest");
         const before = app.sessions().length;
 
         assert.equal((await call(guest.token, "steer", work)).status, 403);

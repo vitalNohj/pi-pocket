@@ -69,12 +69,24 @@ export function totp(secret: string, step: number): string {
     return String((digest.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).padStart(6, "0");
 }
 
+/** Wrong codes within `WINDOW_MS` that lock the codes out. */
+export const WRONG_TO_LOCK = 5;
+/** How long each lockout within `LOCK_MEMORY_MS` lasts: 10 minutes, then 30, then an hour for the third and later. */
+export const LOCK_STEPS_MS = [10 * 60_000, 30 * 60_000, 60 * 60_000] as const;
+/** How long a lockout counts toward a longer one: a day, rolling, so midnight does not start it over. */
+export const LOCK_MEMORY_MS = 24 * 60 * 60_000;
+
 export type TotpState = {
     secret: string;
     /** Highest accepted counter: replay, including an older code in the drift window, cannot succeed. */
     lastStep?: number;
     failures?: number[];
     lockedUntil?: number;
+    /**
+     * When each lockout within `LOCK_MEMORY_MS` began. A right code does not clear them: someone guessing would start
+     * again at 10 minutes after each of the person's own codes.
+     */
+    lockouts?: number[];
 };
 
 /** Mutates the caller's local state, which must be saved even for a wrong code. */
@@ -111,8 +123,13 @@ export function checkCode(state: TotpState, code: string, now = Date.now()): boo
 
     state.failures.push(now);
 
-    if (state.failures.length >= 5) {
-        state.lockedUntil = now + WINDOW_MS;
+    if (state.failures.length >= WRONG_TO_LOCK) {
+        const lockouts = (state.lockouts ?? []).filter((at) => at > now - LOCK_MEMORY_MS);
+
+        lockouts.push(now);
+        state.lockouts = lockouts;
+        state.lockedUntil =
+            now + LOCK_STEPS_MS[Math.min(lockouts.length, LOCK_STEPS_MS.length) - 1]!;
         state.failures = [];
     }
 
