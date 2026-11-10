@@ -347,6 +347,37 @@ test("a locked session waits for a renewal: its starter's code, or the owner's A
     await app.commands.abort(id, alex);
 });
 
+test("a person invited to one session waits for its renewal like everyone on it", async () => {
+    const folder = newFolder();
+    const started = app.commands.createSession(alex, { cwd: folder });
+
+    await app.folderRequests.approve(alex, (await pending(alex, folder)).id, {
+        method: "totp",
+        code: nextCode(alexSecret),
+    });
+
+    const { id } = await started;
+    const invited = app.config.addUser("Invited once", "guest", [String(id)]).user;
+
+    // Approved: the invited person sends at once.
+    await app.requireDriver(id, invited);
+
+    // Locked: their send waits, as anyone's, until the owner allows it.
+    clock += 8 * DAY;
+
+    let through = false;
+    const sending = app.requireDriver(id, invited).then(() => (through = true));
+    const theirs = await renewing(invited);
+
+    assert.equal(through, false, "the lock holds them too");
+    assert.equal(theirs.code, false, "only the owner can allow it: they did not start it");
+    await app.folderRequests.approve(owner(app), theirs.id, { method: "owner" });
+    await sending;
+    assert.equal(through, true);
+
+    await app.removeUser(owner(app), invited.id);
+});
+
 test("the owner renews or revokes a session's approval from the list; its starter revokes their own", async () => {
     const folder = newFolder();
     const started = app.commands.createSession(alex, { cwd: folder });

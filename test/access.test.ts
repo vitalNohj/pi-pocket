@@ -349,11 +349,20 @@ describe("may this person send to a session now", () => {
         assert.equal(policy.steer(guest, "10"), "locked");
     });
 
-    it("never locks a PiP, nor a session someone was invited to", () => {
+    it("never locks a PiP", () => {
         const { policy } = world();
 
         assert.equal(policy.steer(guest, "40"), "allow");
+    });
+
+    it("locks a person invited to one session with everyone else, and lets them in while it is approved", () => {
+        const { policy, approved } = world();
+
+        assert.equal(policy.steer(invited, "30"), "locked");
+        approved.add("30");
         assert.equal(policy.steer(invited, "30"), "allow");
+        approved.delete("30");
+        assert.equal(policy.steer(invited, "30"), "locked");
     });
 
     it("locks a viewer and someone the session is not shared with, approved or not", () => {

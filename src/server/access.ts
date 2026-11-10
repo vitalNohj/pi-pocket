@@ -307,7 +307,8 @@ export class AccessPolicy {
     /**
      * May `person` send to session `id`'s agent now: they steer it (`maySteer`), and the session's approval is live, or
      * they are in charge of its computer (never asked there). "locked": its approval ended; its starter's code or the
-     * Allow of the one in charge renews it. Stopping work needs no approval (`maySteer` alone).
+     * Allow of the one in charge renews it. Stopping work needs no approval (`maySteer` alone). The lock is the
+     * session's, for everyone on it: a person invited to this one session is locked out with the rest.
      */
     steer(person: Pick<Person, "id">, id: string): "allow" | "locked" {
         const current = this.#current(person);
@@ -317,11 +318,7 @@ export class AccessPolicy {
             return "locked";
         }
 
-        if (
-            facts.pip !== undefined ||
-            current.sessions !== undefined ||
-            this.inCharge(current, facts.computer)
-        ) {
+        if (facts.pip !== undefined || this.inCharge(current, facts.computer)) {
             return "allow";
         }
 
