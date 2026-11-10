@@ -510,7 +510,7 @@ export class Room {
             this.chat = messages;
 
             if (added.length > 0) {
-                for (const client of this.clients) {
+                for (const client of this.#allowed()) {
                     client.send("chat", { conversationId: this.id, messages: added });
                 }
             }
@@ -521,7 +521,7 @@ export class Room {
         if (kind === NotesDoc.definition.kind) {
             this.notes = { ...((value as Notes | null) ?? { text: "", rev: 0 }) };
 
-            for (const client of this.clients) {
+            for (const client of this.#allowed()) {
                 client.send("notes", { conversationId: this.id, ...this.notes });
             }
 
@@ -651,7 +651,7 @@ export class Room {
         this.#timer = setTimeout(() => {
             this.#timer = undefined;
 
-            for (const client of this.clients) {
+            for (const client of this.#allowed()) {
                 this.push(client, false);
             }
         }, 90);
@@ -742,7 +742,7 @@ export class Room {
     push(client: Client, full: boolean): void {
         const view = this.#view;
 
-        if (view === undefined) {
+        if (view === undefined || !this.#may(client)) {
             return;
         }
 
@@ -1198,11 +1198,24 @@ export class Room {
 
             const json = JSON.stringify(summary);
 
-            for (const client of this.peekers) {
+            for (const client of this.#allowed(this.peekers)) {
                 this.#sendPeek(client, summary, json);
             }
         }, PEEK_MS);
         this.#peekTimer.unref();
+    }
+
+    /**
+     * May this tab's person still see this session (`access.ts` `maySee`). Their access can end between two events,
+     * before `accessChanged` takes the tab out: nothing of the session goes to them meanwhile.
+     */
+    #may(client: Client): boolean {
+        return this.#app.canSee(client.user, this.id);
+    }
+
+    /** The tabs of `clients` (the room's own, by default) whose person may still see this session. */
+    #allowed(clients: ReadonlySet<Client> = this.clients): Client[] {
+        return [...clients].filter((client) => this.#may(client));
     }
 
     /** Send one peeker the tile now, as it starts showing it. */
@@ -1216,7 +1229,7 @@ export class Room {
     }
 
     #sendPeek(client: Client, summary: PeekSummary, json: string): void {
-        if (this.#peekSent.get(client) === json) {
+        if (this.#peekSent.get(client) === json || !this.#may(client)) {
             return;
         }
 
@@ -1350,7 +1363,7 @@ export class Room {
     pushPresence(): void {
         const presence = this.presence();
 
-        for (const client of this.clients) {
+        for (const client of this.#allowed()) {
             client.send("presence", presence);
         }
     }

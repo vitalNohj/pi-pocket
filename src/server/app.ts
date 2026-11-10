@@ -4393,7 +4393,33 @@ export class PocketApp {
             this.config.setRunnerUsers(id, users);
         }
 
-        for (const person of before.filter((each) => !users.includes(each))) {
+        const gone = before.filter((each) => !users.includes(each));
+
+        // Their tabs leave at once, before the hand-over's saves: no event of a session there reaches them meanwhile.
+        this.accessChanged();
+
+        if (gone.length === 0) {
+            return;
+        }
+
+        // Shares on that computer end with it: chosen again later, they see only what is shared with them anew.
+        await this.harness.commit(async (tx) => {
+            for (const meta of Object.values((await tx.doc(SessionsDoc)).items)) {
+                if ((meta.runner ?? THIS_SERVER) !== id || meta.sharedWith === undefined) {
+                    continue;
+                }
+
+                const kept = meta.sharedWith.filter((each) => !gone.includes(each));
+
+                if (kept.length === 0) {
+                    delete meta.sharedWith;
+                } else {
+                    meta.sharedWith = kept;
+                }
+            }
+        }, context);
+
+        for (const person of gone) {
             await this.handOver(person, id);
         }
 
@@ -4482,6 +4508,18 @@ export class PocketApp {
         // The computers they linked go to the owner; their sessions and tasks, to who is in charge of each computer.
         this.config.removeUser(userId);
 
+        // Their open tabs end now, before anything is saved: no event reaches them meanwhile. Reconnecting fails, so
+        // they land on the sign-in screen.
+        for (const client of [...this.#clients]) {
+            if (client.user.id !== userId) {
+                continue;
+            }
+
+            client.send("closing", {});
+            this.detach(client);
+            client.close?.();
+        }
+
         for (const runner of this.config.runners) {
             if (runner.createdBy === userId) {
                 this.config.setRunnerLinker(runner.id, this.#ownerId());
@@ -4494,18 +4532,6 @@ export class PocketApp {
         this.runners.changed();
         removeAvatar(this.dataDir, userId);
         this.pushStore?.removeUser(userId);
-
-        // Their open tabs end now; reconnecting fails, so they land on the sign-in screen.
-        for (const client of [...this.#clients]) {
-            if (client.user.id !== userId) {
-                continue;
-            }
-
-            client.send("closing", {});
-            this.detach(client);
-            client.close?.();
-        }
-
         this.#peopleChanged();
     }
 

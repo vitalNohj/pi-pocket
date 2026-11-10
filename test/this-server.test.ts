@@ -5,6 +5,7 @@ import { newIdentity } from "../src/runner/secure-link.ts";
 import {
     type App,
     cleanUp,
+    context,
     fakeTab,
     openApp,
     owner,
@@ -21,6 +22,7 @@ import { after, before, test } from "node:test";
 import { THIS_SERVER } from "../src/server/access.ts";
 import type { ServerView } from "../src/server/app.ts";
 import type { User } from "../src/server/config.ts";
+import { SessionsDoc } from "../src/server/docs.ts";
 import { createHandler } from "../src/server/http.ts";
 
 let app: App;
@@ -253,4 +255,59 @@ test("someone no longer chosen leaves at once", async () => {
     await call(owner(app), `runners/${THIS_SERVER}/users`, { users: [] });
     assert.equal(app.policy.mayUse(alex, THIS_SERVER), false);
     assert.equal(app.policy.mayUse(vera, THIS_SERVER), false);
+});
+
+test("no longer chosen, a person loses the sessions shared with them there, also when chosen again", async () => {
+    await call(owner(app), `runners/${THIS_SERVER}/users`, { users: [alex.id, vera.id] });
+
+    const { id } = await app.commands.createSession(owner(app), { cwd: project });
+
+    await app.commands.shareSession(id, owner(app), [alex.id, vera.id]);
+    assert.equal(app.canSee(alex, id), true, "shared with a chosen person");
+
+    // Alex is unchosen; Vera stays.
+    await call(owner(app), `runners/${THIS_SERVER}/users`, { users: [vera.id] });
+    assert.equal(app.canSee(alex, id), false, "the share ended with the choice");
+    assert.deepEqual(app.sessionMeta(id)?.sharedWith, [vera.id], "the others keep theirs");
+    assert.equal(app.canSee(vera, id), true);
+
+    // Chosen again: only what is shared with them anew.
+    await call(owner(app), `runners/${THIS_SERVER}/users`, { users: [alex.id, vera.id] });
+    assert.equal(app.canSee(alex, id), false, "the old share does not come back");
+});
+
+test("a tab whose person can no longer see a session gets none of its live events, before it is moved out", async () => {
+    const { id } = await app.commands.createSession(owner(app), { cwd: project });
+
+    await app.commands.shareSession(id, owner(app), [alex.id]);
+
+    const alexTab = fakeTab(id, alex);
+
+    await app.attach(alexTab.client);
+
+    try {
+        await app.collab.postChat(id, owner(app), { text: "before", requestId: "c1" });
+        await until(
+            () => alexTab.events.some((each) => each.event === "chat"),
+            "the shared tab hears the chat",
+        );
+
+        // The share ends in the record, and nothing has told the tabs yet: the room checks each send itself.
+        await app.harness.commit(async (tx) => {
+            delete (await tx.doc(SessionsDoc)).items[String(id)]!.sharedWith;
+        }, context);
+        assert.equal(app.canSee(alex, id), false);
+
+        const heard = alexTab.events.length;
+
+        await app.collab.postChat(id, owner(app), { text: "secret after", requestId: "c2" });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        assert.doesNotMatch(
+            JSON.stringify(alexTab.events.slice(heard)),
+            /secret after/,
+            "nothing of the session reaches them",
+        );
+    } finally {
+        app.detach(alexTab.client);
+    }
 });
