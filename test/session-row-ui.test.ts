@@ -412,6 +412,7 @@ test(
             "Rename",
             "Fork…",
             "Share",
+            "Invite someone",
             "Select",
             "Archive",
         ]) {

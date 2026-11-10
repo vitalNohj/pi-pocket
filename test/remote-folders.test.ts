@@ -3,6 +3,7 @@
 // runner, and never this server's disk. Here the "other computer" is this one, in a git repository of its own; with the
 // runner stopped, the folder is still on this disk, so anything that falls back to it would still answer.
 import assert from "node:assert/strict";
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -12,7 +13,16 @@ import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { Runner } from "../src/runner/runner.ts";
 import { HttpError } from "../src/server/errors.ts";
-import { type App, cleanUp, openApp, owner, root, scriptedModel, until } from "./helpers.ts";
+import {
+    addPerson,
+    type App,
+    cleanUp,
+    openApp,
+    owner,
+    root,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
 
 /** The remote computer's repository, and a file beside it that a guest must not reach. */
 const there = join(root, "there");
@@ -94,7 +104,7 @@ before(async () => {
     port = (server.address() as AddressInfo).port;
 
     const { code } = app.runners.makeCode("Laptop", owner(app).id);
-    const linked = app.runners.redeem(code);
+    const linked = linkInProcess((request) => app.runners.redeem(request), code);
 
     runner = new Runner({
         link: { server: `http://127.0.0.1:${port}`, ...linked },
@@ -102,8 +112,6 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => ({ confirm: false }),
-        ask: () => Promise.resolve({ allow: true }),
     });
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
@@ -257,9 +265,11 @@ describe("a session's folder on another computer", () => {
     });
 
     it("keeps a guest of a shared session to its folder there", async () => {
-        const { user: guest, token } = app.config.addUser("Guest", "guest");
+        const { user: guest, token } = await addPerson(app, "Guest", "guest");
 
-        await app.setSharedRunnerSessions(owner(app), true);
+        // Shared with them, and they may see the computer, but cannot start sessions there: that grants reading what
+        // Pi can there. A person invited to this one session is such a person.
+        app.setAccess(owner(app), guest.id, { sessions: [String(id)] });
 
         try {
             const file = await app.workspace.viewFile(id, guest, "sub/b.txt");
@@ -277,7 +287,7 @@ describe("a session's folder on another computer", () => {
             // The owner reads what Pi can there: the session's folder. Its runner refuses a path outside it.
             assert.match(
                 (await failure(app.workspace.viewFile(id, owner(app), outside))).message,
-                /outside the session's approved folder|is not there/,
+                /outside the session's folder|is not there/,
             );
 
             assert.equal(
@@ -286,7 +296,7 @@ describe("a session's folder on another computer", () => {
             );
             assert.equal((await get(`/api/c/${id}/file?path=picture.png`, token)).status, 200);
         } finally {
-            await app.setSharedRunnerSessions(owner(app), false);
+            await app.removeUser(owner(app), guest.id);
         }
     });
 

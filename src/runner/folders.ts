@@ -49,9 +49,16 @@ export async function realFolder(folder: string): Promise<string> {
     return realpath(folder).catch(() => folder);
 }
 
-/** Missing saved folders do not grant access, including paths through a replaced symlink. */
-export async function coveredFolder(folder: string, folders: readonly string[]): Promise<boolean> {
-    const home = await realFolder(homedir());
+/**
+ * Missing saved folders do not grant access, including paths through a replaced symlink. `home` is this computer's
+ * home folder, for the broad-folder rule; the server passes its own.
+ */
+export async function coveredFolder(
+    folder: string,
+    folders: readonly string[],
+    home?: string,
+): Promise<boolean> {
+    home = await realFolder(home ?? homedir());
 
     for (const saved of folders) {
         try {

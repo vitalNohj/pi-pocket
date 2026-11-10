@@ -1,5 +1,6 @@
 // Plan mode: Pi reads and proposes, anything that changes something is blocked, and approving turns it off.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -212,7 +213,7 @@ test("a session in plan mode is told so, cannot write, still reads, and approvin
 
     await app.commands.approvePlan(id, owner(app));
     assert.equal((await app.harness.snapshot(PlanDoc, id, context))?.on, false);
-    const viewer = app.config.addUser("Vee", "viewer").user;
+    const viewer = (await addPerson(app, "Vee", "viewer")).user;
 
     await assert.rejects(app.commands.setPlan(id, viewer, true), { status: 403 });
 });

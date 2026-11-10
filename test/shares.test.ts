@@ -1,5 +1,6 @@
 // Sharing an artifact to anyone with its address: no sign-in, one version or the newest, for a time or until ended.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -162,8 +163,8 @@ test("a share closes at its time, and when it is ended", async () => {
 
 test("only people who see every session publish or end one, and only for their own sessions", async () => {
     const id = await publish("<p>mine</p>");
-    const guest = app.config.addUser("Guest", "guest").user;
-    const viewer = app.config.addUser("Viewer", "viewer").user;
+    const guest = (await addPerson(app, "Guest", "guest")).user;
+    const viewer = (await addPerson(app, "Viewer", "viewer")).user;
     const scoped = app.config.addUser("Scoped", "guest", [String(id)]).user;
 
     await assert.rejects(app.shares.create(id, scoped, { id: "demo" }), { status: 403 });
@@ -208,8 +209,8 @@ test("a share is asked for without a cookie, and its page is the API's own answe
 test("only people who may publish see a share's address", async () => {
     const id = await publish("<p>listed</p>");
     const share = await app.shares.create(id, owner(app), { id: "demo" });
-    const member = app.config.addUser("Member", "guest").user;
-    const viewer = app.config.addUser("Watcher", "viewer").user;
+    const member = (await addPerson(app, "Member", "guest")).user;
+    const viewer = (await addPerson(app, "Watcher", "viewer")).user;
     const scoped = app.config.addUser("Invited", "guest", [String(id)]);
     const scopedViewer = app.config.addUser("Invited viewer", "viewer", [String(id)]).user;
 
@@ -234,7 +235,7 @@ test("a share is ended only through its own session", async () => {
     const id = await publish("<p>here</p>");
     const other = await publish("<p>there</p>");
     const share = await app.shares.create(id, owner(app), { id: "demo" });
-    const member = app.config.addUser("Ender", "guest").user;
+    const member = (await addPerson(app, "Ender", "guest")).user;
 
     await assert.rejects(app.shares.revoke(member, other, share.token), { status: 404 });
     await assert.rejects(app.shares.revoke(owner(app), other, share.token), { status: 404 });

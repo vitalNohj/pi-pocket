@@ -9,6 +9,7 @@ import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import { type FolderFavorites as Stored, FolderFavoritesDoc } from "./docs.ts";
 import { HttpError } from "./errors.ts";
+import { THIS_SERVER } from "./access.ts";
 
 const MAX_FAVORITES = 100;
 
@@ -38,8 +39,12 @@ export class FolderFavorites {
         this.#app = app;
     }
 
-    /** This server's favorites of `user`. */
+    /** This server's favorites of `user`: none while they may not browse its folders, though they stay kept. */
     async list(user: User): Promise<string[]> {
+        if (!this.#app.policy.mayBrowse(user, THIS_SERVER)) {
+            return [];
+        }
+
         const doc = await this.#app.harness.snapshot(FolderFavoritesDoc, BACKGROUND_CONTEXT);
 
         return [...(doc?.users[user.id] ?? [])];
@@ -56,7 +61,7 @@ export class FolderFavorites {
         const own: RunnerFavorites = {};
 
         for (const [runner, folders] of Object.entries(doc?.runners?.[user.id] ?? {})) {
-            if (this.#app.runners.mayUse(runner, user) && folders.length > 0) {
+            if (this.#app.policy.mayBrowse(user, runner) && folders.length > 0) {
                 own[runner] = [...folders];
             }
         }
@@ -73,13 +78,6 @@ export class FolderFavorites {
         request: { path?: unknown; starred?: unknown; runner?: unknown },
     ): Promise<void> {
         const app = this.#app;
-
-        app.requireSteer(user);
-
-        if (user.sessions !== undefined) {
-            throw new HttpError(403, "You were invited to one session and cannot start new ones.");
-        }
-
         const runner = request.runner ?? undefined;
 
         if (runner !== undefined && (typeof runner !== "string" || runner === "")) {
@@ -88,11 +86,10 @@ export class FolderFavorites {
 
         if (runner !== undefined) {
             app.runners.require(runner);
-
-            if (!app.runners.mayUse(runner, user)) {
-                throw new HttpError(403, "You cannot use this computer.");
-            }
         }
+
+        // A favorite is a folder to start sessions in: who may browse that computer's folders keeps them.
+        app.policy.requireBrowse(user, runner ?? THIS_SERVER);
 
         const path =
             typeof request.path === "string" &&

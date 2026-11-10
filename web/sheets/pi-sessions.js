@@ -4,18 +4,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { actions, attempt, closeSheet, navigate, notify, openSheet, store } from "../store.js";
 import { html, Icon, Loader, Sheet, shortPath, timeAgo } from "../ui.js";
 
-import { waitOnComputer } from "../runner-wait.js";
-
-/** Local sessions are the owner's files; a computer's list is for whoever may use it. */
+/**
+ * Local sessions are the owner's files; a computer's list is for whoever may start sessions there (`mayStart`, sent
+ * with each computer). Any approval a new session needs comes as a folder request (`folder-requests.js`).
+ */
 export const piSessionsAvailable = (runner) =>
     runner
-        ? store.state.runners.some(
-              (each) =>
-                  each.id === runner &&
-                  (store.state.me?.role !== "owner" ||
-                      each.createdBy === store.state.me.id ||
-                      each.users?.some((person) => person.id === store.state.me.id)),
-          )
+        ? store.state.runners.some((each) => each.id === runner && each.mayStart !== false)
         : store.state.me?.role === "owner";
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -175,15 +170,7 @@ export function PiSessionSheet({ path, runner }) {
 
     useEffect(() => {
         const controller = new AbortController();
-        const reading = runner
-            ? waitOnComputer(
-                  runner,
-                  "",
-                  "pi-preview",
-                  (signal) => actions.piSession(path, runner, signal),
-                  controller.signal,
-              )
-            : actions.piSession(path, undefined, controller.signal);
+        const reading = actions.piSession(path, runner, controller.signal);
 
         reading.then(
             (result) => {
@@ -219,9 +206,7 @@ export function PiSessionSheet({ path, runner }) {
 
             try {
                 const result = runner
-                    ? await waitOnComputer(runner, info.cwd, "new", (signal) =>
-                          actions.continuePiSession(path, runner, signal),
-                      )
+                    ? await actions.continuePiSession(path, runner)
                     : await actions.continuePiSession(path);
 
                 if (!result) {

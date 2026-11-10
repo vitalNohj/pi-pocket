@@ -1,5 +1,6 @@
 // Worktrees on a linked computer: the real runner gate, git, copies, tools, forks, and removal on its disk.
 import assert from "node:assert/strict";
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -7,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { Runner, type SessionQuestion } from "../src/runner/runner.ts";
+import { Runner } from "../src/runner/runner.ts";
 import { localAccess, Unreachable } from "../src/server/folder-access.ts";
 import { removeWorktree } from "../src/server/worktrees.ts";
 import {
@@ -31,7 +32,8 @@ let server: Server;
 let runner: Runner;
 let runnerId: string;
 let home: string;
-const questions: SessionQuestion[] = [];
+/** The session permissions made here, whose worktrees the computer keeps: removed after. */
+const permissions = new Set<string>();
 
 before(async () => {
     mkdirSync(repo, { recursive: true });
@@ -75,21 +77,18 @@ before(async () => {
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as AddressInfo;
-    const linked = app.runners.redeem(
+    const linked = linkInProcess(
+        (request) => app.runners.redeem(request),
         app.runners.makeCode("Worktree computer", owner(app).id).code,
     );
 
     runnerId = linked.id;
+
     runner = new Runner({
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",
         cwd: repo,
         log: () => {},
-        ask: async (question) => {
-            questions.push(question);
-
-            return { allow: true };
-        },
     });
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the worktree computer to connect");
@@ -102,8 +101,8 @@ after(async () => {
     server?.closeAllConnections();
     await new Promise<void>((resolve) => server?.close(() => resolve()));
 
-    for (const question of questions) {
-        rmSync(join(home, ".pi-pocket", "worktrees", question.session), {
+    for (const permission of permissions) {
+        rmSync(join(home, ".pi-pocket", "worktrees", permission), {
             recursive: true,
             force: true,
         });
@@ -160,8 +159,7 @@ test("starts and forks in worktrees on the computer, keeps each permission, and 
     assert.equal(app.cwdOf(id), worktree.path);
     assert.equal(worktree.source, repo);
     assert.equal(scope.folder, repo, "the worktree keeps the approved source folder");
-    assert.equal(questions.at(-1)!.session, scope.id);
-    assert.equal(questions.at(-1)!.folder, repo);
+    permissions.add(scope.id);
     assert.equal(
         worktree.path,
         join(home, ".pi-pocket", "worktrees", scope.id, worktree.branch.slice("pocket/".length)),
@@ -186,12 +184,10 @@ test("starts and forks in worktrees on the computer, keeps each permission, and 
     assert.equal(existsSync(join(worktree.path, "ignored")), false);
     assert.equal(existsSync(join(app.dataDir, "worktrees")), false, "no worktree on the server");
 
-    const asks = questions.length;
-
     await say(app, id, "write a file");
     assert.equal(readFileSync(join(worktree.path, "agent.txt"), "utf8"), "in my worktree\n");
     assert.equal(existsSync(join(repo, "agent.txt")), false);
-    assert.equal(questions.length, asks, "tools use the same permission without another question");
+    assert.equal(app.runnerScope(id).id, scope.id, "tools use the same permission");
 
     const { id: fork } = await app.commands.fork(id, owner(app), { worktree: true });
     const forkTree = app.sessionMeta(fork)!.worktree!;
@@ -200,8 +196,7 @@ test("starts and forks in worktrees on the computer, keeps each permission, and 
     assert.equal(app.runnerOf(fork), runnerId);
     assert.notEqual(forkScope.id, scope.id);
     assert.equal(forkScope.folder, worktree.path);
-    assert.equal(questions.at(-1)!.session, forkScope.id);
-    assert.equal(questions.at(-1)!.kind, "fork");
+    permissions.add(forkScope.id);
     assert.equal(forkTree.source, worktree.path);
     assert.equal(
         forkTree.path,

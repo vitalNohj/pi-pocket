@@ -267,15 +267,10 @@ export class PiSessions {
         };
     }
 
+    /** Pi's sessions on a computer are for the people who may start sessions there (`access.ts` `mayStart`). */
     #requireRunner(user: User, runner: string): void {
         this.#app.runners.require(runner);
-
-        if (!this.#app.runners.mayUse(runner, user)) {
-            throw new HttpError(
-                403,
-                "Only the person who linked this computer or the people they chose can use its Pi sessions.",
-            );
-        }
+        this.#app.policy.requireStart(user, runner);
     }
 
     /** What Pi lists of one of its sessions: only a file Pi lists is read, so nothing else can be read through this. */
@@ -339,7 +334,7 @@ export class PiSessions {
 
             const result = await this.#app.runners
                 .link(runner)
-                .piSessions({ op: "preview", path, person: user.name }, signal, user.id);
+                .piSessions({ op: "preview", path, person: user.name }, signal);
             const preview = result.preview;
 
             if (preview === undefined) {

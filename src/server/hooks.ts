@@ -397,8 +397,7 @@ export class Hooks {
             throw new HttpError(409, "Triggers are turned off in Extensions.");
         }
 
-        app.requireSee(user, target);
-        app.requireSteer(user);
+        app.requireSteer(user, target);
 
         if (app.sessionMeta(target) === undefined) {
             throw new HttpError(400, "Webhooks message sessions, or PiP.");
@@ -446,8 +445,6 @@ export class Hooks {
     }
 
     async update(user: User, id: string, instructions: unknown): Promise<HookView> {
-        this.#app.requireSteer(user);
-
         if (typeof instructions !== "string") {
             throw new HttpError(400, "instructions must be a string.");
         }
@@ -466,6 +463,8 @@ export class Hooks {
                 throw new HttpError(404, "No such webhook");
             }
 
+            // The instructions go to Pi in the hook's session: who changes them must steer it now.
+            this.#app.requireSteer(user, item.target as unknown as ConversationId);
             item.instructions = text;
 
             return { ...item };
@@ -607,9 +606,8 @@ export class Hooks {
 
         if (
             person === undefined ||
-            person.role === "viewer" ||
             meta === undefined ||
-            !app.canSee(person, target)
+            !app.policy.maySteer(person, String(target))
         ) {
             throw new HttpError(
                 410,
@@ -674,6 +672,8 @@ export class Hooks {
                 person,
                 { text, requestId: key },
                 `webhook ${label(hook.name)}`,
+                undefined,
+                true,
             );
         } catch (error) {
             // A post that did not go gives its place in the hour back.

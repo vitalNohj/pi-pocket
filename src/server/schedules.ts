@@ -133,8 +133,9 @@ export class Schedules {
         }
 
         // PiP's conversation while PiP is off would run without PiP's rules: its schedule waits, and goes out once PiP
-        // is back. Its `runs` stays, so a sending this replaces keeps its request id.
-        if (this.#waitsForPip(conversationId)) {
+        // is back. A session whose tasks paused (its approval ended, `app.ts` `tasksMayRun`) waits until it is renewed.
+        // Its `runs` stays, so a sending this replaces keeps its request id.
+        if (this.#waitsForPip(conversationId) || !this.#app.tasksMayRun(conversationId)) {
             return runtime.commit(async (tx) => {
                 const item = (await tx.doc(ScheduleDoc, conversationId)).items[id];
 

@@ -1,4 +1,5 @@
 // Real app, runner, and pi-env: task lifetime belongs only to the runner process.
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import {
     type App,
     cleanUp,
@@ -62,7 +63,10 @@ before(async () => {
         }
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const linked = app.runners.redeem(app.runners.makeCode("Task computer", owner(app).id).code);
+    const linked = linkInProcess(
+        (request) => app.runners.redeem(request),
+        app.runners.makeCode("Task computer", owner(app).id).code,
+    );
 
     computer = linked.id;
     options = {
@@ -70,7 +74,6 @@ before(async () => {
         version: "test",
         cwd: there,
         retryMs: [300],
-        ask: () => Promise.resolve({ allow: true }),
     };
     await startRunner();
 });
@@ -193,7 +196,7 @@ async function endedTree(id: ConversationId) {
     await until(async () => (await io.exitCodes(item.id))?.code === 0, "shell exit file");
     await until(
         async () =>
-            (await app.runners.link(computer).taskList(scope.id)).some(
+            (await app.runners.link(computer).taskList(scope)).some(
                 (task) => task.task === item.id && "ended" in task && task.ended === true,
             ),
         "ended task in the runner registry",
@@ -259,7 +262,7 @@ test("a link drop and a real pi-env daemon restart do not stop a task or lose ou
     );
     runner.drop();
     await until(() => !app.runners.link(computer).online, "link offline");
-    const waiting = app.runners.link(computer).taskList(app.runnerScope(id).id);
+    const waiting = app.runners.link(computer).taskList(app.runnerScope(id));
 
     assert.ok((await waiting).some((task) => task.task === item.id && task.pid === item.pid));
     const daemon = runner.daemonPid!;
@@ -277,7 +280,7 @@ test("a link drop and a real pi-env daemon restart do not stop a task or lose ou
     );
     assert.equal(await app.background.alive(id, item), true);
     assert.ok(
-        (await app.runners.link(computer).taskList(app.runnerScope(id).id)).some(
+        (await app.runners.link(computer).taskList(app.runnerScope(id))).some(
             (task) => task.task === item.id && task.pid === item.pid,
         ),
     );
@@ -309,8 +312,7 @@ test("a missing Bash falls back to sh, and task environment is kept", async () =
 
     mkdirSync(bin);
     symlinkSync("/bin/sh", join(bin, "sh"));
-    await app.runners.link(computer).taskStart({
-        permission: scope.id,
+    await app.runners.link(computer).taskStart(scope, {
         task: "fallback",
         command: "printf '%s' \"$TASK_VALUE\"; exit 9",
         cwd: there,
@@ -386,13 +388,13 @@ test("a start interrupted before recording is adopted from the runner task list"
     await app.background.stop(id, item.id);
 });
 
-test("the task gate refuses unapproved permissions and outside or symlinked cwd; permissions isolate signals", async () => {
+test("the task gate refuses an unnamed session and outside or symlinked cwd; sessions isolate signals", async () => {
     const id = await session();
     const other = await session();
     const link = app.runners.link(computer);
-    const permission = app.runnerScope(id).id;
+    const scope = app.runnerScope(id);
+    const permission = scope.id;
     const request = {
-        permission,
         task: "gate-test",
         command: "sleep 30",
         cwd: there,
@@ -401,32 +403,31 @@ test("the task gate refuses unapproved permissions and outside or symlinked cwd;
     };
 
     await assert.rejects(
-        link.taskStart({ ...request, permission: "not-approved" }),
-        /Session not approved/,
-    );
-    await assert.rejects(
-        link.taskStart({ ...request, cwd: root }),
-        /outside the session's approved folder/,
+        link.taskStart(scope, { ...request, cwd: root }),
+        /outside the session's folder/,
     );
     const outside = join(there, "outside-link");
 
     symlinkSync(root, outside);
     await assert.rejects(
-        link.taskStart({ ...request, cwd: outside }),
-        /outside the session's approved folder/,
+        link.taskStart(scope, { ...request, cwd: outside }),
+        /outside the session's folder/,
     );
-    const [pid, duplicate] = await Promise.all([link.taskStart(request), link.taskStart(request)]);
+    const [pid, duplicate] = await Promise.all([
+        link.taskStart(scope, request),
+        link.taskStart(scope, request),
+    ]);
 
     pids.add(pid);
     assert.equal(duplicate, pid);
-    assert.equal(await link.taskStart(request), pid);
+    assert.equal(await link.taskStart(scope, request), pid);
     assert.equal(
-        (await link.taskList(app.runnerScope(other).id)).some((task) => task.task === request.task),
+        (await link.taskList(app.runnerScope(other))).some((task) => task.task === request.task),
         false,
     );
-    await link.taskSignal(app.runnerScope(other).id, request.task, "KILL");
+    await link.taskSignal(app.runnerScope(other), request.task, "KILL");
     assert.equal(living(pid), true);
-    await link.taskSignal(permission, request.task, "KILL");
+    await link.taskSignal(scope, request.task, "KILL");
     await until(() => !living(pid), "own signal");
     const otherScope = app.runnerScope(other);
     const ownDir = await new RemoteBackground(
@@ -439,12 +440,7 @@ test("the task gate refuses unapproved permissions and outside or symlinked cwd;
     ).dir();
 
     symlinkSync(targetDir, ownDir);
-    await assert.rejects(
-        link.taskStart({ ...request, permission: otherScope.id }),
-        /outside its permitted folder/,
-    );
-    await link.action({ action: "revoke", session: permission });
-    await assert.rejects(link.taskStart({ ...request, task: "revoked" }), /Session not approved/);
+    await assert.rejects(link.taskStart(otherScope, request), /outside its permitted folder/);
 });
 
 test("a task whose shell ended counts as ended while what it started still runs, as on a server", async () => {
@@ -460,7 +456,7 @@ test("a task whose shell ended counts as ended while what it started still runs,
     // The process that still runs, by its own id: not the task's shell, which has ended.
     assert.deepEqual((await items(id))[0]?.left, [pid], "what it left is named");
 
-    await app.runners.link(computer).taskSignal(app.runnerScope(id).id, item.id, "KILL");
+    await app.runners.link(computer).taskSignal(app.runnerScope(id), item.id, "KILL");
     await until(() => !living(pid), "the child stopped");
 });
 
@@ -468,7 +464,7 @@ test("signals still reach descendants of an ended task", async () => {
     const id = await session();
     const { item, pid } = await endedTree(id);
 
-    await app.runners.link(computer).taskSignal(app.runnerScope(id).id, item.id, "KILL");
+    await app.runners.link(computer).taskSignal(app.runnerScope(id), item.id, "KILL");
     await until(() => !living(pid), "signalled descendant of an ended task");
 });
 
@@ -504,7 +500,7 @@ test("SIGKILL of a separate runner stops running and ended task groups within 7 
     await until(() => !app.runners.link(computer).online, "runner offline");
     const source = `
         import { Runner } from ${JSON.stringify(new URL("../src/runner/runner.ts", import.meta.url).href)};
-        const runner = new Runner({ ...${JSON.stringify(options)}, ask: async () => ({ allow: true }) });
+        const runner = new Runner(${JSON.stringify(options)});
         process.stdin.resume();
         process.stdin.once("end", () => void runner.stop());
         process.on("SIGTERM", () => void runner.stop());

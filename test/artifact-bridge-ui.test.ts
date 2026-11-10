@@ -3,6 +3,7 @@
 // nothing from a frame inside it, or once it navigates elsewhere (not even before that page's load event, and no answer
 // held back reaches it); one follow-up every 2 seconds; and a notice, not a message, for a viewer.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -603,7 +604,7 @@ test(
 );
 
 test("a viewer gets a notice, not a message", real, async () => {
-    const viewer = app.config.addUser("Vee", "viewer");
+    const viewer = await addPerson(app, "Vee", "viewer");
     // A browser of their own: this one is signed in as the owner.
     const theirs = new Browsers({
         dataDir: mkdtempSync(join(root, "artifact-bridge-viewer-")),

@@ -1,6 +1,16 @@
 // What an artifact's page saves for the person using it (#89): one JSON value per artifact, person, and session, over
 // HTTP as the viewer's bridge asks for it; a schema label, limits, forks, and who may read and save.
-import { type App, cleanUp, context, openApp, owner, say, scriptedModel, work } from "./helpers.ts";
+import {
+    addPerson,
+    type App,
+    cleanUp,
+    context,
+    openApp,
+    owner,
+    say,
+    scriptedModel,
+    work,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { after, before, test } from "node:test";
@@ -72,7 +82,7 @@ async function call(token: string, path: string, body?: unknown) {
 test("a person's state comes back as saved, and each person has their own", async () => {
     const id = await sessionWithArtifact();
     const me = app.config.ownerToken;
-    const other = app.config.addUser("Riley", "guest");
+    const other = await addPerson(app, "Riley", "guest");
     const path = `c/${id}/artifact-state/calc`;
 
     try {
@@ -132,7 +142,7 @@ test("limits: size, schema, saves in a row, and only the session's own artifacts
 test("only people who see the session read or save there, viewers too, each their own", async () => {
     const id = await sessionWithArtifact();
     const other = await sessionWithArtifact();
-    const viewer = app.config.addUser("Vee", "viewer");
+    const viewer = await addPerson(app, "Vee", "viewer");
     const elsewhere = app.config.addUser("Sam", "guest", [String(other)]);
     const path = `c/${id}/artifact-state/calc`;
 

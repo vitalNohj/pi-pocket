@@ -1,6 +1,7 @@
 // Whether sessions work on the computer, for a program that runs the runner (`src/runner/activity.ts`): the smoothing
 // on its own with a clock of its own, then a real runner with the server's `Runners` and the real pi-env daemon.
 import assert from "node:assert/strict";
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -11,7 +12,7 @@ import { after, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Activity, activityLine, type ActivityState } from "../src/runner/activity.ts";
 import { realFolder } from "../src/runner/folders.ts";
-import { Runner, type RunnerSettings } from "../src/runner/runner.ts";
+import { Runner } from "../src/runner/runner.ts";
 import { ConfigStore } from "../src/server/config.ts";
 import { Runners } from "../src/server/runners.ts";
 
@@ -141,7 +142,7 @@ describe("a runner's activity", () => {
 
         const { port } = server.address() as AddressInfo;
         const { code } = runners.makeCode(`Computer ${randomUUID().slice(0, 6)}`, "owner");
-        const linked = runners.redeem(code);
+        const linked = linkInProcess((request) => runners.redeem(request), code);
         const work = join(root, "project");
 
         mkdirSync(work);
@@ -149,18 +150,12 @@ describe("a runner's activity", () => {
         const real = await realFolder(work);
         const seen: ActivityState[] = [];
         const last = (): ActivityState | undefined => seen.at(-1);
-        const settings: RunnerSettings = {};
         const runner = new Runner({
             link: { server: `http://127.0.0.1:${port}`, ...linked },
             version: "test",
             cwd: root,
             log: () => {},
             retryMs: [50, 100, 200],
-            settings: () => settings,
-            saveSettings: (change) => {
-                Object.assign(settings, change);
-            },
-            ask: () => Promise.resolve({ allow: true }),
             activity: (state) => seen.push(state),
             activityTiming: { riseMs: 100, holdMs: 300 },
         });
@@ -168,15 +163,6 @@ describe("a runner's activity", () => {
         try {
             runner.start();
             await until(() => runner.connected, "the runner to connect");
-
-            const link = runners.link(linked.id);
-
-            await link.confirm({
-                kind: "new",
-                person: "Owner",
-                folder: work,
-                session: "7053c1d4-4f9f-48b4-81ea-5b3fccc10fb6",
-            });
 
             // The folder picker lists folders without a session: no work.
             await runners.folders(linked.id, work, false);

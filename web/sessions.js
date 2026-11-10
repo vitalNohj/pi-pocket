@@ -19,6 +19,7 @@ import { sessionForest, unfolded } from "./session-tree.js";
 import {
     actions,
     attempt,
+    canStart,
     canSteer,
     chatReadStored,
     collab,
@@ -1368,7 +1369,7 @@ const ROW_KEYS = [
 function AllSessions({ compact = false }) {
     const { sessions, sessionsLoaded, server, pinned } = store.state;
     const team = teamOf(sessions);
-    const canStart = canSteer() && !scoped();
+    const starts = canStart();
     const [query, setQueryState] = useState(() => (compact ? "" : listKept.query));
     const [tab, setTabState] = useState(() => tabOf(prefs().group));
     const [closed, setClosed] = useState(readClosed);
@@ -2462,7 +2463,7 @@ function AllSessions({ compact = false }) {
             <span class="sessions-name" data-part="session-list-title">Sessions</span>
             <span class="sessions-count">${sessionsLoaded ? count : ""}</span>
             ${
-                canStart &&
+                starts &&
                 html`<button
                     class="new-button"
                     title="New session (Alt+N)"
@@ -2586,7 +2587,7 @@ function AllSessions({ compact = false }) {
                 sessionsLoaded &&
                 shown.length === 0 &&
                 html`<div class="sessions-empty">
-                    ${kept !== null && !needle ? "No sessions match the filters." : archived ? "No archived sessions." : needle ? "No matches." : "No sessions yet. Start one with New."}
+                    ${kept !== null && !needle ? "No sessions match the filters." : archived ? "No archived sessions." : needle ? "No matches." : starts ? "No sessions yet. Start one with New." : "No sessions shared with you yet. The owner shares them, or chooses you for this server in Runners."}
                 </div>`
             }
             ${
@@ -2758,7 +2759,7 @@ function RailTiles() {
  */
 function Rail({ foldable = false, folded = false }) {
     const { sessions, board, me } = store.state;
-    const canStart = canSteer() && !scoped();
+    const starts = canStart();
     // Counted again only when the session list changes, not on each draw of the rail.
     const { busy, agents } = useMemo(
         () => ({
@@ -2825,7 +2826,7 @@ function Rail({ foldable = false, folded = false }) {
         ${!folded && html`<span class="rail-fill"></span>`}
         ${
             folded &&
-            canStart &&
+            starts &&
             html`<button
                 class="rail-button rail-new"
                 data-part="rail-button"
@@ -2891,7 +2892,7 @@ function Rail({ foldable = false, folded = false }) {
                 ? html`<button
                     class="rail-button"
                     data-part="rail-button"
-                    title=${canStart ? "People and invites" : "People"}
+                    title=${starts ? "People and invites" : "People"}
                     aria-label="People"
                     onClick=${() => openSheet({ type: "people" })}
                 >

@@ -278,12 +278,12 @@ export class RepoWatches {
             throw new HttpError(409, "Triggers are turned off in Extensions.");
         }
 
-        if (person.role === "viewer") {
-            throw new HttpError(403, "Viewers cannot set up watches.");
-        }
-
         if (app.sessionMeta(request.target) === undefined || !app.canSee(person, request.target)) {
             throw new HttpError(404, "Watches message sessions this person can reach, or PiP.");
+        }
+
+        if (!app.policy.maySteer(person, String(request.target))) {
+            throw new HttpError(403, "Viewers cannot set up watches.");
         }
 
         const named = parseRepo(request.repo);
@@ -724,7 +724,7 @@ export class RepoWatches {
         const target = watch.target as unknown as ConversationId;
         const person = app.config.userById(watch.by);
 
-        if (person === undefined || person.role === "viewer" || !app.canSee(person, target)) {
+        if (person === undefined || !app.policy.maySteer(person, String(target))) {
             return this.#failed(
                 id,
                 runtime,
@@ -757,6 +757,8 @@ export class RepoWatches {
                     person,
                     { text: state.text, requestId: key },
                     `${REPO_WATCH_VIA} ${watch.repo}`,
+                    undefined,
+                    true,
                 );
             } catch (error) {
                 // A spend limit, someone else's turn, no model: it may pass. The look runs again, and finds the same.

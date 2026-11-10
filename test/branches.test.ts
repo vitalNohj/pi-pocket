@@ -1,5 +1,6 @@
 // A session's git branch: shown in its view as it changes, listed for the branch picker, and switched from the app.
 import {
+    addPerson,
     type App,
     cleanUp,
     fakeTab,
@@ -107,7 +108,7 @@ test("switching waits for git's say, a good name, and the right person", async (
         git(repo, "checkout", "-q", "--", "a.txt");
     }
 
-    const viewer = app.config.addUser("Vee", "viewer").user;
+    const viewer = (await addPerson(app, "Vee", "viewer")).user;
     const invited = app.config.addUser("Ivy", "guest", [String(id)]).user;
 
     await assert.rejects(app.workspace.switchBranch(id, viewer, { name: "old-idea" }), {

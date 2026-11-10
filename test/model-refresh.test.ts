@@ -1,4 +1,5 @@
 import {
+    addPerson,
     type App,
     cleanUp,
     newSession,
@@ -134,7 +135,7 @@ test("the refresh endpoint requires an owner and the CSRF header", async () => {
 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/models/refresh`;
-    const guest = app.config.addUser("Guest", "guest");
+    const guest = await addPerson(app, "Guest", "guest");
     const post = (token: string, csrf = true) =>
         fetch(url, {
             method: "POST",

@@ -85,7 +85,7 @@ function gate(name: string): () => void {
     return open;
 }
 
-const owner = { role: "owner" as const };
+const owner = { id: "owner", role: "owner" as const };
 
 const answer = (webs: ExtensionWebs, module: string) => {
     const found = webs.match(module, "GET", ["v"], owner);

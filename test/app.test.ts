@@ -1,5 +1,6 @@
 // End-to-end tests of the server core with a scripted model: no network, no API keys, no Pi config.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -11,6 +12,7 @@ import {
     root,
     say as sayTo,
     scriptedModel,
+    linkAuthenticator,
     newSession as startSession,
     until,
     work,
@@ -640,7 +642,7 @@ test("everyone signed in gets the desktop's theme colors; only the owner gets it
 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
-    const guest = app.config.addUser("Guest", "guest");
+    const guest = await addPerson(app, "Guest", "guest");
     const call = (token: string, path: string) =>
         fetch(`http://127.0.0.1:${port}/api/${path}`, {
             headers: { authorization: `Bearer ${token}` },
@@ -695,7 +697,7 @@ test("anyone signed in can list extensions; only the owner can change them", asy
 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
-    const guest = app.config.addUser("Guest", "guest");
+    const guest = await addPerson(app, "Guest", "guest");
     const call = (token: string, path: string, body?: unknown) =>
         fetch(`http://127.0.0.1:${port}/api/${path}`, {
             method: body === undefined ? "GET" : "POST",
@@ -731,7 +733,7 @@ test("anyone signed in can list extensions; only the owner can change them", asy
 
 test("people chat beside Pi: presence, one post per request, and the chat survives a reopen", async () => {
     const id = await newSession();
-    const guest = app.config.addUser("Alex", "guest");
+    const guest = await addPerson(app, "Alex", "guest");
 
     type Event = { event: string; data: Record<string, unknown> };
     const tab = (name: string, user: (typeof guest)["user"], events: Event[]) => ({
@@ -813,7 +815,7 @@ test("people chat beside Pi: presence, one post per request, and the chat surviv
 test("viewers read and chat but never steer; people invited to one session see only that session", async () => {
     const id = await newSession();
     const other = await newSession();
-    const viewer = app.config.addUser("Vee", "viewer").user;
+    const viewer = (await addPerson(app, "Vee", "viewer")).user;
     const scoped = app.config.addUser("Sam", "guest", [String(id)]).user;
 
     try {
@@ -822,8 +824,12 @@ test("viewers read and chat but never steer; people invited to one session see o
             /not steer/,
         );
         await assert.rejects(app.commands.abort(id, viewer), /not steer/);
-        await assert.rejects(app.commands.createSession(viewer, { cwd: work }), /not steer/);
-        await assert.rejects(app.answerApproval("nope", true, viewer), /not steer/);
+        await assert.rejects(
+            app.commands.createSession(viewer, { cwd: work }),
+            /view sessions but not start them/,
+        );
+        // An approval that is not there, or not theirs to see, is no answer: a viewer learns nothing from its id.
+        assert.equal(await app.answerApproval("nope", true, viewer), false);
         assert.equal(
             (await app.collab.postChat(id, viewer, { text: "just watching", requestId: "v2" }))
                 .text,
@@ -855,6 +861,12 @@ test("viewers read and chat but never steer; people invited to one session see o
         // The owner widens Sam's access and makes Vee a guest.
         app.setAccess(owner(), scoped.id, { sessions: null });
         assert.equal(app.config.userById(scoped.id)?.sessions, undefined);
+        // Steering needs Vee's own authenticator first.
+        assert.throws(() => app.setAccess(owner(), viewer.id, { role: "guest" }), {
+            status: 409,
+            message: /must link an authenticator first/,
+        });
+        linkAuthenticator(app, viewer);
         app.setAccess(owner(), viewer.id, { role: "guest" });
         assert.equal(app.config.userById(viewer.id)?.role, "guest");
         assert.throws(() => app.setAccess(viewer, scoped.id, { role: "viewer" }), /owner/);
@@ -870,7 +882,7 @@ test("viewers read and chat but never steer; people invited to one session see o
 
 test("take turns: only the driver steers, others ask, the driver hands over", async () => {
     const id = await newSession();
-    const alex = app.config.addUser("Alex", "guest").user;
+    const alex = (await addPerson(app, "Alex", "guest")).user;
     const ownerTab = fakeTab(id, owner());
     const alexTab = fakeTab(id, alex);
 
@@ -1635,7 +1647,7 @@ test("interrupt stops a streaming run and withdraws the queue, then Pi answers t
 
 test("a queued message moves between Queue and Steer, by its sender only", async () => {
     const id = await newSession();
-    const guest = app.config.addUser("Alex", "guest").user;
+    const guest = (await addPerson(app, "Alex", "guest")).user;
     const mode = async () => (await app.harness.snapshot(InboxDoc, id, context))?.items[0]?.mode;
 
     try {
@@ -1664,7 +1676,7 @@ test("a queued message moves between Queue and Steer, by its sender only", async
 
 test("a queued message taken back to edit gives its sender its words and files, and leaves the queue", async () => {
     const id = await newSession();
-    const guest = app.config.addUser("Sam", "guest").user;
+    const guest = (await addPerson(app, "Sam", "guest")).user;
     const path = join(app.workspace.uploadDirectory(id), "lzx-1234abcd-notes (v2).txt");
     const file = { path, name: "notes (v2).txt", mime: "text/plain", size: 3 };
 
@@ -1744,7 +1756,7 @@ async function queued(app: App, id: ConversationId) {
 
 test("an Interrupt of one queued message leaves the 3 others, from 2 people, queued in order", async () => {
     const id = await newSession();
-    const guest = app.config.addUser("Alex", "guest").user;
+    const guest = (await addPerson(app, "Alex", "guest")).user;
     const by = [owner().id, guest.id, guest.id];
 
     try {
@@ -1855,7 +1867,7 @@ test("after a restart, a person still moves their own queued message; to Steer o
     try {
         const first = ownerOf(again);
 
-        alex = again.config.addUser("Alex", "guest").user;
+        alex = (await addPerson(again, "Alex", "guest")).user;
         const id = await startSession(again);
 
         await again.commands.submit(id, first, { text: "stream a long answer", requestId: "rs-1" });
@@ -2039,7 +2051,7 @@ test("a dead holder's lock is taken over; live legacy holders with normal or ren
 test("notes refuse a stale edit, and a mention reaches the person in another session", async () => {
     const id = await newSession();
     const other = await newSession();
-    const alex = app.config.addUser("Alex", "guest").user;
+    const alex = (await addPerson(app, "Alex", "guest")).user;
     const elsewhere = fakeTab(other, alex);
 
     try {
@@ -2204,8 +2216,8 @@ test("the owner signs another device in as the owner: owner only, once, no one n
             },
         });
     const id = await newSession();
-    const guest = app.config.addUser("Gwen", "guest");
-    const viewer = app.config.addUser("Vic", "viewer");
+    const guest = await addPerson(app, "Gwen", "guest");
+    const viewer = await addPerson(app, "Vic", "viewer");
 
     try {
         // Only the owner makes one, and it is never for one session.
@@ -2308,7 +2320,7 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
             minutes: number;
         };
     const live = async (code: string) => (await fetch(`${base}/join/${code}`)).status === 200;
-    const guest = app.config.addUser("Gil", "guest");
+    const guest = await addPerson(app, "Gil", "guest");
     const MINUTE = 60_000;
 
     try {
@@ -2336,7 +2348,7 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
         copyFileSync(app.config.file, join(copy, "config.json"));
         const again = new Auth(new ConfigStore(copy));
 
-        assert.deepEqual(again.invite(week.code), { role: "guest" });
+        assert.deepEqual(again.invite(week.code), { role: "viewer" });
         assert.ok(!readFileSync(app.config.file, "utf8").includes(week.code));
 
         // Only whoever made it ends it.
@@ -2389,7 +2401,8 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
             mock.timers.tick(59 * MINUTE);
             const inTime = auth.redeem(hour.code, "In Time");
 
-            assert.equal(inTime?.user.role, "guest");
+            // Every invite starts its person as a viewer.
+            assert.equal(inTime?.user.role, "viewer");
             app.config.removeUser(inTime!.user.id);
             mock.timers.tick(2 * MINUTE);
             assert.equal(auth.redeem(late.code, "Too Late"), undefined);
@@ -2398,7 +2411,7 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
         }
 
         // Someone removed takes the invites they made along.
-        const leaving = app.config.addUser("Lee", "guest").user;
+        const leaving = (await addPerson(app, "Lee", "guest")).user;
         const left = auth.createInvite(leaving, { role: "viewer" }, 24 * 60);
 
         app.config.removeUser(leaving.id);
@@ -2411,7 +2424,7 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
 
         app.config.rotateOwnerToken();
         assert.equal(auth.invite(mine.code), undefined);
-        assert.deepEqual(auth.invite(theirs.code), { role: "guest" });
+        assert.deepEqual(auth.invite(theirs.code), { role: "viewer" });
     } finally {
         app.config.removeUser(guest.user.id);
         server.closeAllConnections();
@@ -2521,7 +2534,7 @@ test("the web edge: page policy, local redirects, asked account switches, no cro
     const ownerToken = app.config.ownerToken;
     const id = await newSession();
     const other = await newSession();
-    const guest = app.config.addUser("Gus", "guest");
+    const guest = await addPerson(app, "Gus", "guest");
     const scoped = app.config.addUser("Sam", "viewer", [String(id)]);
     const elsewhere = app.config.addUser("Eve", "guest", [String(other)]);
     const cookie = (response: Response) => response.headers.get("set-cookie") ?? "";
@@ -2724,7 +2737,7 @@ test("access holds: a refused tab hears nothing, narrowed access evicts, removal
     const id = await newSession();
     const other = await newSession();
     const sam = app.config.addUser("Sam", "guest", [String(id)]).user;
-    const vee = app.config.addUser("Vee", "viewer").user;
+    const vee = (await addPerson(app, "Vee", "viewer")).user;
     const sneaky = fakeTab(other, sam);
     const samTab = fakeTab(id, sam);
     const veeTab = fakeTab(id, vee);
@@ -2787,7 +2800,7 @@ test("access holds: a refused tab hears nothing, narrowed access evicts, removal
 
         // Removing Vee closes her tab.
         await app.attach(veeTab.client);
-        app.removeUser(owner(), vee.id);
+        await app.removeUser(owner(), vee.id);
         assert.equal(closed, 1);
         assert.ok(veeTab.events.some((each) => each.event === "closing"));
     } finally {
@@ -2803,7 +2816,7 @@ test("access holds: a refused tab hears nothing, narrowed access evicts, removal
 test("an invite stops working when its creator loses the right to invite", async () => {
     const { Auth } = await import("../src/server/auth.ts");
     const auth = new Auth(app.config);
-    const guest = app.config.addUser("Gil", "guest").user;
+    const guest = (await addPerson(app, "Gil", "guest")).user;
 
     try {
         const { code } = auth.createInvite(guest, { role: "guest" });
@@ -2917,7 +2930,7 @@ test("only the owner in a browser on the server's machine may show a path in its
 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
-    const guest = app.config.addUser("Gil", "guest");
+    const guest = await addPerson(app, "Gil", "guest");
     const call = (token: string, body: unknown, headers: Record<string, string> = {}) =>
         fetch(`http://127.0.0.1:${port}/api/c/${id}/reveal`, {
             method: "POST",

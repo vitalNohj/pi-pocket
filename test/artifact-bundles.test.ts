@@ -1,5 +1,6 @@
 // Artifact bundles: immutable bytes, inherited manifests, replay, safe serving, and sandbox access.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -345,7 +346,7 @@ test("every asset is sandboxed and nosniff; scoped capability serves opaque-orig
     );
     assert.equal((await get(root + "/__proto__")).status, 200);
     assert.equal((await get(`/a/${session}/bundle/2/__proto__`)).status, 404);
-    const other = app.config.addUser("Bundle guest", "guest");
+    const other = await addPerson(app, "Bundle guest", "guest");
     const guestPage = await fetch(base + root, {
         headers: { authorization: `Bearer ${other.token}` },
     });

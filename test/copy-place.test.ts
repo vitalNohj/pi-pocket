@@ -3,6 +3,7 @@
 // this machine, each in a folder of its own. Also: each session's repository (`repo.ts`), the folder a copy suggests,
 // and the folder picker's Recent and Favorites per computer.
 import assert from "node:assert/strict";
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -15,7 +16,9 @@ import {
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner, type SessionAnswer, type SessionQuestion } from "../src/runner/runner.ts";
+import { Runner } from "../src/runner/runner.ts";
+import type { User } from "../src/server/config.ts";
+import type { FolderRequestView } from "../src/server/folder-requests.ts";
 import { ChatDoc, FolderFavoritesDoc } from "../src/server/docs.ts";
 import { normalizeRemote } from "../src/server/repo.ts";
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
@@ -32,6 +35,8 @@ import {
     scriptedModel,
     until,
     work,
+    addPerson,
+    answerRequests,
 } from "./helpers.ts";
 
 /** What the model got in its newest request, as text. */
@@ -48,31 +53,55 @@ let server: Server;
 let port: number;
 
 /** A linked computer: its runner, id, and folder. */
-type Computer = { runner: Runner; id: string; folder: string; settings: { confirm?: boolean } };
+type Computer = { runner: Runner; id: string; folder: string };
 
-const asked: SessionQuestion[] = [];
-let answer: (question: SessionQuestion) => Promise<SessionAnswer> = () =>
-    Promise.resolve({ allow: true });
+/**
+ * The folders the server asked about (`folder-requests.ts`), and how the owner answers: yes, unless a test says
+ * otherwise. The runner asks nobody; the owner's approval time is 0 (never asked) unless `asking` sets one.
+ */
+const asked: FolderRequestView[] = [];
+let answer: (request: FolderRequestView) => boolean | undefined = () => true;
+
+let stopAnswering: () => void = () => {};
+
+/**
+ * A guest who sees every session here and is chosen for both computers, with their folders given: a copy they send to
+ * the other computer needs an approval, which the owner, in charge of both, allows (or not) from the app.
+ */
+async function asking<T>(run: (guest: User) => Promise<T>): Promise<T> {
+    const { user: guest } = await addPerson(app, "Gale", "guest");
+
+    // Their requests wait for the owner's answer: an approval time, not "never".
+    app.config.updateUser(guest.id, { approvalDays: 7 });
+
+    for (const computer of [laptop, desk]) {
+        app.config.setRunnerUsers(computer.id, [guest.id]);
+        app.config.setGivenFolders(computer.id, guest.id, [root]);
+    }
+
+    try {
+        return await run(guest);
+    } finally {
+        for (const computer of [laptop, desk]) {
+            app.config.setRunnerUsers(computer.id, []);
+        }
+
+        await app.removeUser(owner(app), guest.id);
+    }
+}
 
 async function link(name: string): Promise<Computer> {
     const folder = join(root, name.toLowerCase());
-    const settings: { confirm?: boolean } = {};
 
     mkdirSync(folder, { recursive: true });
     const { code } = app.runners.makeCode(name, owner(app).id);
-    const linked = app.runners.redeem(code);
+    const linked = linkInProcess((request) => app.runners.redeem(request), code);
     const runner = new Runner({
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",
         cwd: folder,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => settings,
-        ask: (question) => {
-            asked.push(question);
-
-            return answer(question);
-        },
     });
 
     runner.start();
@@ -81,7 +110,7 @@ async function link(name: string): Promise<Computer> {
         `${name} to connect`,
     );
 
-    return { runner, id: linked.id, folder, settings };
+    return { runner, id: linked.id, folder };
 }
 
 let laptop: Computer;
@@ -128,9 +157,11 @@ before(async () => {
     port = (server.address() as AddressInfo).port;
     laptop = await link("Laptop");
     desk = await link("Desk");
+    stopAnswering = answerRequests(app, (request) => answer(request), asked);
 });
 
 after(async () => {
+    stopAnswering();
     await laptop?.runner.stop();
     await desk?.runner.stop();
     await app?.close();
@@ -272,21 +303,23 @@ describe("a copy with a place", () => {
         assert.ok((await activity(id)).some((line) => line.includes("to run on This server in")));
     });
 
-    it("goes to another computer: asked there, with the remote extensions, and Pi is told", async () => {
+    it("goes to another computer: approved on the server, with the remote extensions, and Pi is told", async () => {
         const { id, reply } = await talked();
 
         asked.length = 0;
-        const copy = await app.commands.fork(id, owner(app), {
-            entryId: reply,
-            place: { runner: laptop.id, cwd: laptop.folder },
-        });
+        const copy = await asking((guest) =>
+            app.commands.fork(id, guest, {
+                entryId: reply,
+                place: { runner: laptop.id, cwd: laptop.folder },
+            }),
+        );
 
         assert.equal(app.runnerOf(copy.id), laptop.id);
         assert.equal(app.sessionMeta(copy.id)?.runner, laptop.id);
         assert.equal(app.sessionMeta(copy.id)?.cwd, laptop.folder);
         assert.deepEqual(
-            asked.map((each) => [each.kind, each.folder]),
-            [["fork", laptop.folder]],
+            asked.map((each) => [each.kind, each.computer]),
+            [["new", laptop.id]],
         );
         assert.deepEqual((await app.agentState(copy.id))?.extensions, [...REMOTE_EXTENSIONS]);
 
@@ -388,16 +421,18 @@ describe("a copy with a place", () => {
         );
     });
 
-    it("is the linker's alone on their computer", async () => {
+    it("is refused to someone not chosen for that computer, and to a computer that is gone", async () => {
         const { id, reply } = await talked();
-        const { user: coOwner } = app.config.addUser("Co-owner", "owner");
+        // Chosen for this server and shared the session, but not chosen for the laptop.
+        const { user: guest } = await addPerson(app, "Not chosen", "guest");
 
+        await app.commands.shareSession(id, owner(app), [guest.id]);
         await assert.rejects(
-            app.commands.fork(id, coOwner, { entryId: reply, place: { runner: laptop.id } }),
+            app.commands.fork(id, guest, { entryId: reply, place: { runner: laptop.id } }),
             { status: 403 },
         );
         await assert.rejects(
-            app.commands.fork(id, coOwner, { entryId: reply, place: { runner: "nobody" } }),
+            app.commands.fork(id, owner(app), { entryId: reply, place: { runner: "nobody" } }),
             { status: 403 },
         );
     });
@@ -407,27 +442,32 @@ describe("a copy with a place", () => {
         const count = () => app.sessions(owner(app)).length;
         const before = count();
 
-        answer = () => Promise.resolve({ allow: false, reason: "Not now, said the laptop." });
+        answer = () => false;
 
         try {
-            await assert.rejects(
-                app.commands.fork(id, owner(app), { entryId: reply, place: { runner: laptop.id } }),
-                /Not now, said the laptop/,
-            );
-            await assert.rejects(
-                app.commands.resend(id, owner(app), {
-                    entryId: prompt,
-                    place: { runner: laptop.id },
-                }),
-                /Not now, said the laptop/,
-            );
+            await asking(async (guest) => {
+                await assert.rejects(
+                    app.commands.fork(id, guest, {
+                        entryId: reply,
+                        place: { runner: laptop.id, cwd: laptop.folder },
+                    }),
+                    /was not allowed/,
+                );
+                await assert.rejects(
+                    app.commands.resend(id, guest, {
+                        entryId: prompt,
+                        place: { runner: laptop.id, cwd: laptop.folder },
+                    }),
+                    /was not allowed/,
+                );
+            });
         } finally {
-            answer = () => Promise.resolve({ allow: true });
+            answer = () => true;
         }
 
         // Linked, but its runner never started.
         const { code } = app.runners.makeCode("Shelf", owner(app).id);
-        const shelf = app.runners.redeem(code);
+        const shelf = linkInProcess((request) => app.runners.redeem(request), code);
 
         await assert.rejects(
             app.commands.fork(id, owner(app), { entryId: reply, place: { runner: shelf.id } }),
@@ -448,35 +488,38 @@ describe("a copy with a place", () => {
         for (const kind of ["fork", "resend"] as const) {
             const before = app.sessions(owner(app)).length;
             const controller = new AbortController();
-            let late!: (answer: SessionAnswer) => void;
 
             asked.length = 0;
-            answer = () =>
-                new Promise((resolve) => {
-                    late = resolve;
-                });
+            answer = () => undefined;
 
             try {
-                const request = {
-                    entryId: kind === "fork" ? reply : prompt,
-                    place: { runner: laptop.id },
-                };
-                const result =
-                    kind === "fork"
-                        ? app.commands.fork(id, owner(app), request, controller.signal)
-                        : app.commands.resend(id, owner(app), request, controller.signal);
-                const rejected = assert.rejects(result, { status: 409, message: "Cancelled." });
+                await asking(async (guest) => {
+                    const request = {
+                        entryId: kind === "fork" ? reply : prompt,
+                        place: { runner: laptop.id, cwd: laptop.folder },
+                    };
+                    const result =
+                        kind === "fork"
+                            ? app.commands.fork(id, guest, request, controller.signal)
+                            : app.commands.resend(id, guest, request, controller.signal);
+                    const rejected = assert.rejects(result, { status: 409 });
 
-                await until(() => asked.length === 1, "the copy question");
-                controller.abort();
-                await rejected;
-                await until(() => asked[0]!.signal.aborted, "the copy question to be withdrawn");
-                late({ allow: true });
-                await new Promise((resolve) => setTimeout(resolve, 50));
-                assert.equal(app.sessions(owner(app)).length, before, "no cancelled copy was made");
+                    await until(() => asked.length === 1, "the copy request");
+                    controller.abort();
+                    await rejected;
+                    await until(
+                        () => app.folderRequests.list(owner(app)).length === 0,
+                        "the copy request to end",
+                    );
+                    assert.equal(
+                        app.sessions(owner(app)).length,
+                        before,
+                        "no cancelled copy was made",
+                    );
+                });
             } finally {
                 controller.abort();
-                answer = () => Promise.resolve({ allow: true });
+                answer = () => true;
             }
         }
     });
@@ -606,10 +649,11 @@ describe("the folder picker's places, per computer", () => {
         });
         assert.deepEqual(await app.folderFavorites.runners(me), { [desk.id]: ["C:\\work"] });
 
-        const { user: coOwner } = app.config.addUser("Other owner", "owner");
+        // Someone not chosen for the laptop keeps no favorites there.
+        const { user: guest } = await addPerson(app, "Not chosen there", "guest");
 
         await assert.rejects(
-            app.folderFavorites.set(coOwner, { path: "/x", starred: true, runner: laptop.id }),
+            app.folderFavorites.set(guest, { path: "/x", starred: true, runner: laptop.id }),
             { status: 403 },
         );
         await assert.rejects(
