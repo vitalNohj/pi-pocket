@@ -397,11 +397,15 @@ export class Hooks {
             throw new HttpError(409, "Triggers are turned off in Extensions.");
         }
 
-        app.requireSteer(user, target);
-
         if (app.sessionMeta(target) === undefined) {
+            app.requireSteer(user, target);
+
             throw new HttpError(400, "Webhooks message sessions, or PiP.");
         }
+
+        // A webhook sends Pi instructions in that session: who makes one drives it now, its approval live or renewed
+        // first, as for a schedule (`requireDriver`).
+        await app.requireDriver(target, user);
 
         // One line, without brackets: it is the label of every message the hook sends (`[via webhook <name>]`).
         const name = typeof request.name === "string" ? label(request.name) : "";
@@ -455,15 +459,28 @@ export class Hooks {
             throw new HttpError(413, `Instructions are limited to ${MAX_INSTRUCTIONS} characters.`);
         }
 
+        const mine = (item: Hook | undefined): item is Hook =>
+            item !== undefined && (user.role === "owner" || item.by === user.id);
+        const before = (await this.#app.harness.snapshot(HooksDoc, context))?.items;
+        const found = before !== undefined && Object.hasOwn(before, id) ? before[id] : undefined;
+
+        if (!mine(found)) {
+            throw new HttpError(404, "No such webhook");
+        }
+
+        // The instructions go to Pi in the hook's session: who changes them drives it now, its approval live or
+        // renewed first (`requireDriver`), before the change is saved.
+        await this.#app.requireDriver(found.target as unknown as ConversationId, user);
+
         const hook = await this.#app.harness.commit(async (tx) => {
             const { items } = await tx.doc(HooksDoc);
             const item = Object.hasOwn(items, id) ? items[id] : undefined;
 
-            if (item === undefined || (user.role !== "owner" && item.by !== user.id)) {
+            // Gone, or moved to another session, while the approval was renewed: no change.
+            if (!mine(item) || item.target !== found.target) {
                 throw new HttpError(404, "No such webhook");
             }
 
-            // The instructions go to Pi in the hook's session: who changes them must steer it now.
             this.#app.requireSteer(user, item.target as unknown as ConversationId);
             item.instructions = text;
 

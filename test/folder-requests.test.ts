@@ -347,6 +347,59 @@ test("a locked session waits for a renewal: its starter's code, or the owner's A
     await app.commands.abort(id, alex);
 });
 
+test("in a locked session, making or editing a webhook waits for the renewal", async () => {
+    const folder = newFolder();
+    const started = app.commands.createSession(alex, { cwd: folder });
+
+    await app.folderRequests.approve(alex, (await pending(alex, folder)).id, {
+        method: "totp",
+        code: nextCode(alexSecret),
+    });
+
+    const { id } = await started;
+    // Approved: a webhook is made at once.
+    const hook = await app.hooks.add(alex, id, { name: "Deploys", instructions: "Check it" });
+
+    clock += 8 * DAY;
+
+    // Locked: a new webhook and an edit wait for the renewal; nothing changes before it.
+    let made = false;
+    const making = app.hooks
+        .add(alex, id, { name: "Later", instructions: "Run anything" })
+        .then(() => (made = true));
+    const renew = await renewing(alex);
+
+    assert.equal(made, false, "no webhook while it is locked");
+    assert.equal((await app.hooks.list(alex)).length, 1);
+    await app.folderRequests.approve(alex, renew.id, {
+        method: "totp",
+        code: nextCode(alexSecret),
+    });
+    await making;
+    assert.equal(made, true);
+
+    clock += 8 * DAY;
+
+    let edited = false;
+    const editing = app.hooks
+        .update(alex, hook.id, "Run something else")
+        .then(() => (edited = true));
+    const again = await renewing(alex);
+
+    assert.equal(edited, false);
+    assert.equal(
+        (await app.hooks.list(alex)).find((each) => each.id === hook.id)?.instructions,
+        "Check it",
+        "the instructions stay as they were while it is locked",
+    );
+    await app.folderRequests.approve(owner(app), again.id, { method: "owner" });
+    await editing;
+    assert.equal(
+        (await app.hooks.list(alex)).find((each) => each.id === hook.id)?.instructions,
+        "Run something else",
+    );
+});
+
 test("a person invited to one session waits for its renewal like everyone on it", async () => {
     const folder = newFolder();
     const started = app.commands.createSession(alex, { cwd: folder });
