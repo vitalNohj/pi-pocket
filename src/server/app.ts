@@ -1187,6 +1187,9 @@ export class PocketApp {
         });
 
         this.#unsubscribeCommits = () => commits.detach();
+        // A removal a restart cut short: what is still saved for someone no longer here goes to who is in charge. After
+        // the observer, so what is kept in memory follows.
+        await this.#handOverGone();
         this.#unsubscribeRunEnds = this.linkedSessions.watch();
         this.#unsubscribeApprovals = this.approvals.subscribe((id) => {
             void this.#rooms.get(id)?.then(
@@ -3174,11 +3177,15 @@ export class PocketApp {
 
     /**
      * `person` leaves computer `computer` (undefined: every one): removed, no longer chosen there, or no longer given a
-     * folder. Their sessions there that they may no longer use move to who is in charge of it, with their tasks; nothing
-     * stops.
+     * folder. Their sessions there that they may no longer use move to who is in charge of it, and so does each task they
+     * set up on a session there that they may no longer steer: on their own sessions and on sessions shared with them
+     * alike. One commit moves both, so a restart never leaves a task with someone who left (`#handOverGone` finishes one
+     * that removing a person began). Nothing stops.
      */
     async handOver(person: string, computer?: string): Promise<void> {
-        const moved: { id: string; to: string }[] = [];
+        const gone = this.config.userById(person) === undefined;
+        const on = (where: string) => computer === undefined || where === computer;
+        const moved = new Map<string, string>();
 
         await this.harness.commit(async (tx) => {
             const sessions = await tx.doc(SessionsDoc);
@@ -3186,16 +3193,12 @@ export class PocketApp {
             for (const [id, meta] of Object.entries(sessions.items)) {
                 const where = meta.runner ?? THIS_SERVER;
 
-                if (
-                    meta.createdBy !== person ||
-                    meta.pip !== undefined ||
-                    (computer !== undefined && where !== computer)
-                ) {
+                if (meta.createdBy !== person || meta.pip !== undefined || !on(where)) {
                     continue;
                 }
 
                 const stays =
-                    this.config.userById(person) !== undefined &&
+                    !gone &&
                     this.policy.mayUseFolder(
                         { id: person },
                         where,
@@ -3210,60 +3213,144 @@ export class PocketApp {
 
                 meta.createdBy = to;
                 meta.sharedWith = meta.sharedWith?.filter((each) => each !== to && each !== person);
-                moved.push({ id, to });
+                moved.set(id, to);
+            }
+
+            // Each task on a session there that they may no longer steer: the session is no longer theirs (moved
+            // above, in this same commit), or no longer shared with them.
+            const owner = (target: number): string | undefined => {
+                const root = this.rootOf(target as unknown as ConversationId);
+                const meta = sessions.items[String(root)];
+
+                if (
+                    meta === undefined ||
+                    meta.pip !== undefined ||
+                    !on(meta.runner ?? THIS_SERVER)
+                ) {
+                    return undefined;
+                }
+
+                const steers =
+                    !gone &&
+                    !moved.has(String(root)) &&
+                    (meta.createdBy === person || meta.sharedWith?.includes(person) === true) &&
+                    this.policy.mayUse({ id: person }, meta.runner ?? THIS_SERVER);
+
+                return steers
+                    ? undefined
+                    : (moved.get(String(root)) ?? meta.createdBy ?? this.#ownerId());
+            };
+
+            const swap = (target: number, item: { by?: string; requestedBy?: string }): void => {
+                if (item.by !== person && item.requestedBy !== person) {
+                    return;
+                }
+
+                const to = owner(target);
+
+                if (to === undefined) {
+                    return;
+                }
+
+                if (item.by === person) {
+                    item.by = to;
+                }
+
+                if (item.requestedBy === person) {
+                    item.requestedBy = to;
+                }
+            };
+
+            for (const hook of Object.values((await tx.doc(HooksDoc)).items)) {
+                swap(hook.target, hook);
+            }
+
+            for (const watch of Object.values((await tx.doc(RepoWatchesDoc)).items)) {
+                swap(watch.target, watch);
+            }
+
+            for (const key of Object.keys(sessions.items)) {
+                const root = Number(key) as unknown as ConversationId;
+
+                for (const conversation of this.conversationsOf(root)) {
+                    const watch = (await tx.doc(WatchDoc, conversation)).watch;
+
+                    if (watch !== undefined) {
+                        swap(Number(conversation), watch);
+                    }
+
+                    for (const schedule of Object.values(
+                        (await tx.doc(ScheduleDoc, conversation)).items,
+                    )) {
+                        swap(Number(conversation), schedule);
+                    }
+                }
             }
         }, context);
 
-        for (const { id, to } of moved) {
-            await this.taskOwnerChanged(id as unknown as ConversationId, person, to);
+        // Pi worked for them in a session that is no longer theirs: it now works for who has it, until someone writes.
+        for (const [id, to] of moved) {
+            this.attribution.handedOver(Number(id) as unknown as ConversationId, person, to);
+        }
+
+        if (gone) {
+            this.attribution.forget(person, (id) => this.sessionMeta(this.rootOf(id))?.createdBy);
         }
     }
 
     /**
-     * Session `id`'s tasks that `from` set up now run for `to` (`handOver`): its webhooks, repository watches, PR watch,
-     * and schedules keep running, as theirs.
+     * At startup: hand over what is still saved for people no longer here, whose removal a restart cut short before its
+     * hand-over was saved.
      */
-    async taskOwnerChanged(id: ConversationId, from: string, to: string): Promise<void> {
-        const tree = new Set(this.conversationsOf(id).map(Number));
+    async #handOverGone(): Promise<void> {
+        const known = new Set(this.config.users.map((each) => each.id));
+        const left = new Set<string>();
 
-        const swap = (item: { by?: string; requestedBy?: string }): void => {
-            if (item.by === from) {
-                item.by = to;
+        for (const meta of Object.values(this.#sessions)) {
+            if (
+                meta.pip === undefined &&
+                meta.createdBy !== undefined &&
+                !known.has(meta.createdBy)
+            ) {
+                left.add(meta.createdBy);
             }
+        }
 
-            if (item.requestedBy === from) {
-                item.requestedBy = to;
+        const check = (by: string | undefined): void => {
+            if (by !== undefined && !known.has(by)) {
+                left.add(by);
             }
         };
 
-        await this.harness.commit(async (tx) => {
-            for (const hook of Object.values((await tx.doc(HooksDoc)).items)) {
-                if (tree.has(hook.target)) {
-                    swap(hook);
-                }
-            }
+        const hooks = await this.harness.snapshot(HooksDoc, context);
+        const watches = await this.harness.snapshot(RepoWatchesDoc, context);
 
-            for (const watch of Object.values((await tx.doc(RepoWatchesDoc)).items)) {
-                if (tree.has(watch.target)) {
-                    swap(watch);
-                }
-            }
+        for (const hook of Object.values(hooks?.items ?? {})) {
+            check(hook.by);
+        }
 
-            for (const each of tree) {
-                const conversation = each as unknown as ConversationId;
-                const watch = (await tx.doc(WatchDoc, conversation)).watch;
+        for (const watch of Object.values(watches?.items ?? {})) {
+            check(watch.by);
+        }
 
-                if (watch !== undefined) {
-                    swap(watch);
-                }
+        for (const key of Object.keys(this.#sessions)) {
+            for (const conversation of this.conversationsOf(
+                Number(key) as unknown as ConversationId,
+            )) {
+                check((await this.harness.snapshot(WatchDoc, conversation, context))?.watch?.by);
 
                 for (const schedule of Object.values(
-                    (await tx.doc(ScheduleDoc, conversation)).items,
+                    (await this.harness.snapshot(ScheduleDoc, conversation, context))?.items ?? {},
                 )) {
-                    swap(schedule);
+                    check(schedule.by);
+                    check(schedule.requestedBy);
                 }
             }
-        }, context);
+        }
+
+        for (const person of left) {
+            await this.handOver(person);
+        }
     }
 
     /** Each person's tabs hear the approvals they may list. */

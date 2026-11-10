@@ -86,7 +86,7 @@ After the link, the runner trusts its server: the server already sends it every 
 - **Locked.** When the approval ends, the session is locked: new messages, settings, and task changes wait until its starter's code, or **Allow** from who is in charge, renews it. Stopping work never waits.
 - **Viewers** read sessions they may see and use the people chat; they never need a code. Steering takes an authenticator and **Let steer** from the owner.
 
-Each person sees the approvals of the sessions they started, and who is in charge sees every one on their computers, with **Revoke** and **Renew**. Removing a person, taking them off a computer, or taking back a folder hands their sessions and tasks there to who is in charge; nothing stops.
+Each person sees the approvals of the sessions they started, and who is in charge sees every one on their computers, with **Revoke** and **Renew**. Removing a person, taking them off a computer, or taking back a folder hands their sessions and tasks there to who is in charge (also the tasks they set up on sessions shared with them), in one save that a restart finishes; Pi then works for whoever has the session; nothing stops.
 
 Work under way runs to its end, with its subagents and linked sessions; an ended approval only stops what comes next. A copy, a move, or a linked session on the same computer inherits its source's approval. Tasks that run on their own follow their session's approval only when the owner turns on **Tasks expire with the session** (then they run for 7 more days, with reminders, and pause).
 
