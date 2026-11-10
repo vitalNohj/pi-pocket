@@ -1094,12 +1094,16 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             const given = app.policy.givenFolders(user, second);
             const requested = url.searchParams.get("path") ?? "~";
-            // Someone given folders browses inside them only: anywhere else, the picker lists the folders given.
+            // Someone given folders browses inside them only, judged by the real folder there: a link in a given folder
+            // that leads out of it lists nothing. Anywhere else, the picker lists the folders given.
+            const real =
+                given === undefined ? requested : await app.runners.realPath(second, requested);
             const listing =
-                given === undefined || given.some((each) => inFolder(requested, each))
+                given === undefined ||
+                (real !== undefined && given.some((each) => inFolder(real, each)))
                     ? await app.runners.folders(
                           second,
-                          requested,
+                          real ?? requested,
                           url.searchParams.get("hidden") === "1",
                       )
                     : undefined;

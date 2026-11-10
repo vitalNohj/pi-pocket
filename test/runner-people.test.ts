@@ -14,7 +14,7 @@ import {
     until,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -219,6 +219,70 @@ describe("people granted a computer", () => {
             (await request(guest, `c/${id}/copy-place?runner=${otherRunnerId}`)).status,
             403,
         );
+    });
+
+    it("judges a folder there by where it really is: a link in a given folder that leads out of it is refused", async () => {
+        // Given only `there`; `away` is beside it, outside what was given.
+        const away = join(root, "away-from-there");
+
+        mkdirSync(away, { recursive: true });
+        symlinkSync(join(there, "inner"), join(there, "in-link"));
+        symlinkSync(away, join(there, "out-link"));
+        app.config.setGivenFolders(runnerId, guest.id, [there]);
+        // Who is in charge allows the folder asked for; a refused one is never asked.
+        const asked: { folder: string }[] = [];
+        const stop = answerRequests(app, () => true, asked as never);
+
+        try {
+            // A link that stays inside: the session works in the real folder, and that is the folder asked about.
+            const inside = await request<{ id: ConversationId }>(guest, "sessions", {
+                runner: runnerId,
+                cwd: join(there, "in-link"),
+            });
+
+            assert.equal(inside.status, 200);
+            assert.equal(app.cwdOf(inside.body.id), join(there, "inner"));
+            assert.deepEqual(
+                asked.map((each) => each.folder),
+                [join(there, "inner")],
+            );
+
+            // A link that leads out: refused, as the folder it leads to is.
+            const outsideStart = await request<{ error: string }>(guest, "sessions", {
+                runner: runnerId,
+                cwd: join(there, "out-link"),
+            });
+
+            assert.equal(outsideStart.status, 403);
+            assert.match(outsideStart.body.error, /not given you this folder/);
+            assert.equal(
+                (await request(guest, "sessions", { runner: runnerId, cwd: away })).status,
+                403,
+            );
+
+            // The picker lists inside the link that stays in, and only the given folders for the one that leads out.
+            const listed = await request<{ path: string; dirs: unknown[] }>(
+                guest,
+                `runners/${runnerId}/fs?path=${encodeURIComponent(join(there, "out-link"))}`,
+            );
+
+            assert.equal(listed.status, 200);
+            assert.equal(listed.body.path, "");
+            assert.deepEqual(listed.body.dirs, [{ name: there, path: there }]);
+            assert.equal(
+                (
+                    await request<{ path: string }>(
+                        guest,
+                        `runners/${runnerId}/fs?path=${encodeURIComponent(join(there, "in-link"))}`,
+                    )
+                ).body.path,
+                join(there, "inner"),
+            );
+            assert.equal(asked.length, 1, "a folder that is not given is refused without asking");
+        } finally {
+            stop();
+            app.config.setGivenFolders(runnerId, guest.id, [root]);
+        }
     });
 
     it("browses folders, keeps favorites, and gets only the granted computer in lists and hello", async () => {

@@ -1214,19 +1214,32 @@ export class Runners {
         return { env, path: absolute.value, home: info.home, separator: info.separator };
     }
 
-    /** Check that `path` is a folder on computer `id`; its absolute path. */
+    /**
+     * Check that `path` is a folder on computer `id`; its real path there, links followed. The access policy compares
+     * that path with the folders given (`access.ts` `inFolder`), and the runner keeps a session in the real folder
+     * (`request-gate.ts`): a link in a given folder that leads out of it is outside it here as there.
+     */
     async checkFolder(id: string, path: string): Promise<string> {
         const { env, path: absolute } = await this.#resolve(id, path);
-        const info = await env.fileInfo(absolute, BACKGROUND);
+        const real = await env.canonicalPath(absolute, BACKGROUND);
+        const info = real.ok ? await env.fileInfo(real.value, BACKGROUND) : real;
 
-        if (!info.ok || info.value.kind !== "directory") {
+        if (!real.ok || !info.ok || info.value.kind !== "directory") {
             throw new HttpError(
                 400,
                 `${absolute} is not a folder on ${this.name(id)}${info.ok ? "" : `: ${info.error.message}`}`,
             );
         }
 
-        return absolute;
+        return real.value;
+    }
+
+    /** The real path of `path` on computer `id`, links followed; undefined when it does not exist there. */
+    async realPath(id: string, path: string): Promise<string | undefined> {
+        const { env, path: absolute } = await this.#resolve(id, path);
+        const real = await env.canonicalPath(absolute, BACKGROUND);
+
+        return real.ok ? real.value : undefined;
     }
 
     /** The folders in `path` on computer `id`, for the folder picker, as `GET /api/fs` lists this machine's. */
