@@ -4457,13 +4457,20 @@ export class PocketApp {
     /**
      * Someone joined with `inviter`'s invite to every session: they see the sessions `inviter` started, and those shared
      * with everyone chosen on their computer, as they are now. Sessions started later are not theirs to see unless shared.
+     * Only sessions `inviter` may see: an invite never passes on what its maker could not open.
      */
     async welcome(person: string, inviter: string): Promise<void> {
+        const by = this.config.userById(inviter);
+
+        if (by === undefined) {
+            return;
+        }
+
         await this.harness.commit(async (tx) => {
             const sessions = await tx.doc(SessionsDoc);
 
-            for (const meta of Object.values(sessions.items)) {
-                if (meta.pip !== undefined) {
+            for (const [key, meta] of Object.entries(sessions.items)) {
+                if (meta.pip !== undefined || !this.policy.maySee(by, key)) {
                     continue;
                 }
 

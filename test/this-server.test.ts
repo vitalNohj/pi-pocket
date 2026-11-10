@@ -276,6 +276,42 @@ test("no longer chosen, a person loses the sessions shared with them there, also
     assert.equal(app.canSee(alex, id), false, "the old share does not come back");
 });
 
+test("an invite to every session passes on only the sessions its maker may see", async () => {
+    // Gina linked her own computer and chose Alex there; a session of hers is shared with everyone chosen on it.
+    const gina = person("Gina", "guest");
+    const ginas = app.config.addRunner("Gina's laptop", gina.id, newIdentity().publicKey).id;
+
+    app.config.setRunnerUsers(ginas, [alex.id]);
+    await call(owner(app), `runners/${THIS_SERVER}/users`, { users: [alex.id, vera.id] });
+
+    const { id: local } = await app.commands.createSession(owner(app), { cwd: project });
+    const { id: hers } = await app.commands.createSession(owner(app), { cwd: project });
+
+    await app.commands.shareSession(local, owner(app), [alex.id, vera.id]);
+    // Moved to Gina's computer, hers and shared with Alex: everyone chosen there.
+    await app.harness.commit(async (tx) => {
+        const meta = (await tx.doc(SessionsDoc)).items[String(hers)]!;
+
+        meta.runner = ginas;
+        meta.createdBy = gina.id;
+        meta.sharedWith = [alex.id];
+    }, context);
+    assert.equal(app.canSee(owner(app), hers), false, "the owner sees nothing on Gina's computer");
+
+    // The owner's invite: the server's session shared with everyone here, never Gina's.
+    const fromOwner = person("Olive", "viewer");
+
+    await app.welcome(fromOwner.id, owner(app).id);
+    assert.equal(app.canSee(fromOwner, local), true, "shared with everyone chosen here");
+    assert.equal(app.canSee(fromOwner, hers), false, "not a session the inviter may not see");
+
+    // Alex's invite: Gina's session, which Alex may see.
+    const fromAlex = person("Abe", "viewer");
+
+    await app.welcome(fromAlex.id, alex.id);
+    assert.equal(app.canSee(fromAlex, hers), true, "a session the inviter may see");
+});
+
 test("a tab whose person can no longer see a session gets none of its live events, before it is moved out", async () => {
     const { id } = await app.commands.createSession(owner(app), { cwd: project });
 
