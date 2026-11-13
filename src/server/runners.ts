@@ -48,6 +48,7 @@ import {
     type Hello,
     type RunnerSettingsMessage,
     type SessionScope,
+    type Stop,
     type PiSessionsQuery,
     type PiSessionsResult,
     type TaskRequest,
@@ -457,7 +458,7 @@ export class RunnerLink {
         }
 
         this.#taskRequests.clear();
-        this.#drop(CLOSE.removed, "This computer was removed from the server");
+        this.#drop(CLOSE.removed, "This computer was removed from the server", "removed");
     }
 
     /**
@@ -469,9 +470,12 @@ export class RunnerLink {
         this.#drop(1001, "The server is restarting");
     }
 
-    /** Its computer was linked again: the connection with the old key ends; the new runner connects with its own. */
+    /**
+     * Its computer was linked again: the runner with the old key is sent away for good; the new runner connects with
+     * its own.
+     */
     relinked(): void {
-        this.#drop(1000, "This computer was linked again");
+        this.#drop(1000, "This computer was linked again", "relinked");
     }
 
     /** The live session, after `info` waited for one; lost when its runner started over meanwhile. */
@@ -544,7 +548,7 @@ export class RunnerLink {
     /** A runner connected and said hello: resume its session, or start a new one. */
     attach(socket: WebSocket, hello: Hello): void {
         if (this.#closed) {
-            socket.close(CLOSE.removed, "Removed");
+            sendAway(socket, CLOSE.removed, "Removed", "removed");
 
             return;
         }
@@ -552,7 +556,7 @@ export class RunnerLink {
         if (this.#socket !== undefined && this.#socket !== socket) {
             // The same computer connected again before the old link was noticed gone: the new one wins. The old one's
             // close handler still runs, to stop its pings; it changes nothing else once this is no longer its socket.
-            this.#socket.close(CLOSE.replaced, "Replaced by a newer connection");
+            sendAway(this.#socket, CLOSE.replaced, "Replaced by a newer connection", "replaced");
         }
 
         this.#socket = socket;
@@ -992,13 +996,36 @@ export class RunnerLink {
         }
     }
 
-    #drop(code: number, reason: string): void {
+    /** End the connection. `stop`: its runner is sent away for good (`sendAway`); without it, the runner comes back. */
+    #drop(code: number, reason: string, stop?: Stop): void {
         const socket = this.#socket;
 
-        if (socket !== undefined) {
+        if (socket === undefined) {
+            return;
+        }
+
+        if (stop === undefined) {
             socket.close(code, reason);
+        } else {
+            sendAway(socket, code, reason, stop);
         }
     }
+}
+
+/**
+ * Send a runner away for good. What stops it is `stop`, in a `bye` sealed with the link's keys (`protocol.ts` `Bye`):
+ * only this server can say it. The close code after it is for logs; alone, it stops nothing. `said`: what the runner
+ * shows, when that is more than the close reason.
+ */
+function sendAway(
+    socket: WebSocket,
+    code: number,
+    reason: string,
+    stop: Stop,
+    said = reason,
+): void {
+    socket.send(JSON.stringify({ type: "bye", reason: said, stop } satisfies ControlMessage));
+    socket.close(code, reason);
 }
 
 function toBuffer(data: RawData): Buffer {
@@ -1584,10 +1611,10 @@ export class Runners {
                 const runner = this.#config.runnerById(link.id!);
 
                 if (runner === undefined) {
-                    link.close(CLOSE.removed, "Removed");
+                    sendAway(link, CLOSE.removed, "Removed", "removed");
                 } else if (runner.publicKey !== link.key) {
-                    // Linked again while it proved the old key: as a key that proves nothing.
-                    link.close(CLOSE_IDENTITY, "This computer was linked again");
+                    // Linked again while it proved the old key, which opens nothing now.
+                    sendAway(link, CLOSE_IDENTITY, "This computer was linked again", "relinked");
                 } else {
                     this.#accept(link, runner, link.key);
                 }
@@ -1615,13 +1642,13 @@ export class Runners {
             }
 
             if (hello.protocol !== LINK_PROTOCOL) {
-                socket.send(
-                    JSON.stringify({
-                        type: "bye",
-                        reason: `This server speaks link protocol ${LINK_PROTOCOL}, the runner ${hello.protocol}: update the older one`,
-                    }),
+                sendAway(
+                    socket,
+                    CLOSE.protocol,
+                    "Protocol",
+                    "protocol",
+                    `This server speaks link protocol ${LINK_PROTOCOL}, the runner ${hello.protocol}`,
                 );
-                socket.close(CLOSE.protocol, "Protocol");
 
                 return;
             }
@@ -1630,7 +1657,7 @@ export class Runners {
             const now = this.#config.runnerById(runner.id);
 
             if (now === undefined) {
-                socket.close(CLOSE.removed, "Removed");
+                sendAway(socket, CLOSE.removed, "Removed", "removed");
 
                 return;
             }
@@ -1638,7 +1665,7 @@ export class Runners {
             // Linked again while it was saying hello: linking again ends the connections it finds (`relinked`), and
             // this one was not yet one. The key it proved is the old one, which opens nothing now.
             if (now.publicKey !== key) {
-                socket.close(CLOSE_IDENTITY, "This computer was linked again");
+                sendAway(socket, CLOSE_IDENTITY, "This computer was linked again", "relinked");
 
                 return;
             }
