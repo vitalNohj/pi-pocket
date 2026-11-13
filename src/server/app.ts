@@ -169,7 +169,7 @@ import { Transcripts } from "./transcripts.ts";
 import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.ts";
-import { AccessPolicy, THIS_SERVER } from "./access.ts";
+import { AccessPolicy, inFolder, THIS_SERVER } from "./access.ts";
 import { realFolder } from "../runner/folders.ts";
 import { FolderRequests } from "./folder-requests.ts";
 import { type ApprovalView, DAY_MS, FolderApprovals } from "./folder-approvals.ts";
@@ -2855,6 +2855,10 @@ export class PocketApp {
      * A copy, a move, or a linked session that `user` makes from session `from` into `folder` on computer `computer`: it
      * needs the folder given to them (or who is in charge), and inherits `from`'s live approval, used by them. A locked
      * source is renewed first (`#renew`). Returns what keeps the approval for the new session.
+     *
+     * Staying in `from`'s own worktree counts as the folder that worktree came from (`#worktreeSource`): the worktree is
+     * kept in the data folder, or under the runner's, which nobody is given. Only `from`'s: another session's worktree
+     * is a folder like any other, given or not.
      */
     async approveFrom(
         user: User,
@@ -2865,11 +2869,15 @@ export class PocketApp {
     ): Promise<(session: ConversationId, folder: string) => void> {
         const computer = runner ?? THIS_SERVER;
         const real = computer === THIS_SERVER ? await realFolder(folder) : folder;
-
-        this.policy.requireFolder(user, computer, real);
-
         const root = String(this.rootOf(from));
         const sameComputer = (this.policy.session(root)?.computer ?? THIS_SERVER) === computer;
+        const own = this.cwdOf(from);
+        const source =
+            sameComputer && (inFolder(folder, own) || inFolder(real, own))
+                ? this.#worktreeSource(computer, own)
+                : undefined;
+
+        this.policy.requireFolder(user, computer, source ?? real);
 
         // From another computer, it starts as a new session there would.
         if (!sameComputer) {
@@ -2879,6 +2887,8 @@ export class PocketApp {
         await this.#requireApproval(from, user, signal);
 
         const inCharge = this.policy.inCharge(user, computer);
+        // The approval is of the folder the worktree came from, as the source's own is (`#approvalFolder`).
+        const approved = (cwd: string) => (source !== undefined && cwd === folder ? source : cwd);
 
         // The copy inherits the source's approval; who is in charge gives one on their own clock when it has none.
         return (session, cwd) =>
@@ -2886,7 +2896,7 @@ export class PocketApp {
                 ? inCharge
                     ? void this.folderApprovals.approve(
                           String(this.rootOf(session)),
-                          { computer, folder: cwd },
+                          { computer, folder: approved(cwd) },
                           "owner",
                           user.id,
                           user,
@@ -2895,9 +2905,36 @@ export class PocketApp {
                 : void this.folderApprovals.inherit(
                       root,
                       String(this.rootOf(session)),
-                      { computer, folder: cwd },
+                      { computer, folder: approved(cwd) },
                       user,
                   );
+    }
+
+    /**
+     * The folder the worktree at `folder` on computer `computer` came from, when `folder` is in a session's worktree
+     * there; else undefined. A copy made without a worktree of its own works in its source's, and has no record of it.
+     */
+    #worktreeSource(computer: string, folder: string): string | undefined {
+        for (const meta of Object.values(this.#sessions)) {
+            if (
+                meta.worktree !== undefined &&
+                (meta.runner ?? THIS_SERVER) === computer &&
+                inFolder(folder, meta.worktree.path)
+            ) {
+                return meta.worktree.source;
+            }
+        }
+
+        return undefined;
+    }
+
+    /** The folder session `meta`'s access is judged by: where its worktree came from, its own or the one it works in. */
+    #accessFolder(meta: SessionMeta): string {
+        return (
+            meta.worktree?.source ??
+            this.#worktreeSource(meta.runner ?? THIS_SERVER, meta.cwd) ??
+            meta.cwd
+        );
     }
 
     /**
@@ -2984,7 +3021,7 @@ export class PocketApp {
     #approvalFolder(id: ConversationId): string {
         const meta = this.#sessions[String(this.rootOf(id))];
 
-        return meta?.worktree?.source ?? meta?.cwd ?? this.cwdOf(id);
+        return meta === undefined ? this.cwdOf(id) : this.#accessFolder(meta);
     }
 
     /**
@@ -3212,11 +3249,7 @@ export class PocketApp {
 
                 const stays =
                     !gone &&
-                    this.policy.mayUseFolder(
-                        { id: person },
-                        where,
-                        meta.worktree?.source ?? meta.cwd,
-                    );
+                    this.policy.mayUseFolder({ id: person }, where, this.#accessFolder(meta));
 
                 if (stays) {
                     continue;

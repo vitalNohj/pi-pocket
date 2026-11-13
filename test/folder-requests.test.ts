@@ -18,7 +18,8 @@ import {
     until,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -830,6 +831,88 @@ test("a linked session's report at the end of its run asks nobody, though both a
     );
     assert.deepEqual(app.folderRequests.list(owner(app)), [], "the report asked nobody");
     assert.equal(app.folderApprovals.live(String(id)), false, "and renewed nothing");
+});
+
+test("a session's own worktree counts as the folder it came from: its copies and linked sessions stay in it", async () => {
+    const repo = newFolder();
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+
+    git("init", "-q");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "T");
+    writeFileSync(join(repo, "main.ts"), "export const answer = 1;\n");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+
+    const started = app.commands.createSession(alex, { cwd: repo, worktree: true });
+
+    await app.folderRequests.approve(owner(app), (await pending(alex, repo)).id, {
+        method: "owner",
+    });
+
+    const { id } = await started;
+    const worktree = app.sessionMeta(id)!.worktree!;
+
+    // The worktree is the session's own folder, kept in the data folder: nobody was given that folder.
+    assert.equal(worktree.source, repo);
+    assert.equal(app.policy.mayUseFolder(alex, THIS_SERVER, worktree.path), false);
+
+    // A copy with no place works in the same worktree, as the owner's copy does: it is their own session's folder.
+    const copy = await app.commands.fork(id, alex, {});
+
+    assert.equal(app.cwdOf(copy.id), worktree.path);
+    assert.equal(app.folderApprovals.live(String(copy.id)), true);
+    assert.deepEqual(app.folderRequests.list(owner(app)), [], "the copy asked nobody");
+
+    assert.equal(app.folderApprovals.get(String(copy.id))?.folder, repo, "approved as its source");
+
+    // The copy has no worktree record of its own, and stays its starter's when folders are given again.
+    assert.equal(app.sessionMeta(copy.id)!.worktree, undefined);
+    await app.giveFolders(owner(app), THIS_SERVER, alex.id, [given]);
+    assert.equal(app.sessionMeta(copy.id)!.createdBy, alex.id);
+    assert.equal(app.sessionMeta(id)!.createdBy, alex.id);
+
+    // A linked session the agent starts with no folder works in the same worktree.
+    await app.commands.configure(id, alex, {
+        model: { provider: "faux", modelId: "faux-1" },
+        thinkingLevel: "off",
+    });
+
+    const { submissionId } = await app.commands.submit(id, alex, {
+        text: "hello",
+        requestId: crypto.randomUUID(),
+    });
+
+    await (await app.harness.submission(submissionId, context))!.wait(context);
+
+    const { session } = await app.linkedSessions.start(
+        id,
+        { message: "Work beside me" },
+        crypto.randomUUID(),
+    );
+
+    assert.equal(app.cwdOf(session), worktree.path);
+    assert.equal(app.folderApprovals.live(String(session)), true);
+
+    // Someone it is shared with, given the source folder too, copies it alike.
+    await app.commands.shareSession(id, owner(app), [gale.id]);
+    assert.equal(app.cwdOf((await app.commands.fork(id, gale, {})).id), worktree.path);
+
+    // Not given the source folder, she is refused: the worktree counts as that folder, no more.
+    app.config.setGivenFolders(undefined, gale.id, [newFolder()]);
+    await assert.rejects(app.commands.fork(id, gale, {}), /not given you this folder/);
+
+    // Only the session's own worktree: from another session, it is a folder nobody was given.
+    const other = app.commands.createSession(alex, { cwd: repo });
+
+    await app.folderRequests.approve(owner(app), (await pending(alex, repo)).id, {
+        method: "owner",
+    });
+    await assert.rejects(
+        app.commands.fork((await other).id, alex, { place: { cwd: worktree.path } }),
+        /not given you this folder/,
+    );
+    assert.deepEqual(app.folderRequests.list(owner(app)), [], "nothing asked anyone");
 });
 
 test("a person removed from this server loses their waiting requests, and their sessions go to the owner", async () => {
