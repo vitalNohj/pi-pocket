@@ -224,16 +224,6 @@ export class FolderApprovals {
         }
     }
 
-    /** Drop the approvals `keep` refuses: of sessions that are gone. */
-    prune(keep: (approval: StoredApproval) => boolean): void {
-        const list = this.#store.folderApprovals;
-        const kept = list.filter((each) => keep(each));
-
-        if (kept.length !== list.length) {
-            this.#save(() => kept);
-        }
-    }
-
     #replace(session: string, approval: StoredApproval): void {
         this.#save((list) => [...list.filter((each) => each.session !== session), approval]);
     }
