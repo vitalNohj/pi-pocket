@@ -737,7 +737,7 @@ export class Commands {
             runnerPermission = randomUUID();
             const link = app.runners.link(runner);
             const opened = await link.piSessions(
-                { op: "open", path, session: runnerPermission, folder: cwd, person: user.name },
+                { op: "open", path, session: runnerPermission, folder: cwd },
                 signal,
             );
 

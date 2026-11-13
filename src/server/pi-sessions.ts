@@ -209,9 +209,7 @@ export class PiSessions {
     async list(user: User, query = "", runner?: string): Promise<{ sessions: PiSessionSummary[] }> {
         if (runner !== undefined) {
             this.#requireRunner(user, runner);
-            const result = await this.#app.runners
-                .link(runner)
-                .piSessions({ op: "list", person: user.name });
+            const result = await this.#app.runners.link(runner).piSessions({ op: "list" });
             const needle = query.trim().toLowerCase();
             const continued = this.#continued(user, runner);
             const given = this.#app.policy.givenFolders(user, runner);
@@ -360,7 +358,7 @@ export class PiSessions {
 
             const result = await this.#app.runners
                 .link(runner)
-                .piSessions({ op: "preview", path, person: user.name }, signal);
+                .piSessions({ op: "preview", path }, signal);
             const preview = result.preview;
 
             if (preview === undefined) {

@@ -214,9 +214,9 @@ test("preview and open refuse a file Pi does not list, even for a session approv
     const scope = await approved();
 
     for (const request of [
-        { op: "preview" as const, path, person: "Owner" },
-        { op: "open" as const, path, session: scope.id, folder: project, person: "Owner" },
-        { op: "preview" as const, path: "/etc/passwd", person: "Owner" },
+        { op: "preview" as const, path },
+        { op: "open" as const, path, session: scope.id, folder: project },
+        { op: "preview" as const, path: "/etc/passwd" },
     ]) {
         await assert.rejects(link.piSessions(request), /Pi has no such session on Test laptop/);
     }
@@ -289,7 +289,6 @@ test("open refuses a session whose real folder does not contain the Pi cwd", asy
             path,
             session: scope.id,
             folder: otherProject,
-            person: "Owner",
         }),
         /outside the session's folder/,
     );
@@ -310,7 +309,6 @@ test("open also allows the companion files Pocket names beside the Pi file, and 
         path,
         session: scope.id,
         folder: project,
-        person: "Owner",
         companions: [".acp.json", ".missing.json"],
     });
     const env = app.runners.env(runnerId, project, scope);
@@ -331,7 +329,6 @@ test("open also allows the companion files Pocket names beside the Pi file, and 
                 path,
                 session: scope.id,
                 folder: project,
-                person: "Owner",
                 companions: ["/../../etc/passwd"],
             }),
         ),
@@ -348,7 +345,6 @@ test("the extra readable file expires after 5 minutes", async () => {
         path: file("Expiry history").path,
         session: scope.id,
         folder: project,
-        person: "Owner",
     });
     const env = app.runners.env(runnerId, project, scope);
 
@@ -493,7 +489,6 @@ test("Pi session control messages reject oversized lists, invalid operations, an
             JSON.stringify({
                 type: "pi-sessions",
                 id: "a",
-                person: "Owner",
                 op: "delete",
                 path: session.path,
             }),

@@ -102,7 +102,7 @@ export type RunnerPiSession = {
 export const COMPANION_SUFFIX = /^\.[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export type PiSessionsRequest = { type: "pi-sessions"; id: string } & PiSessionsQuery;
-export type PiSessionsQuery = { person: string } & (
+export type PiSessionsQuery =
     | { op: "list" }
     | { op: "preview"; path: string }
     | {
@@ -116,8 +116,7 @@ export type PiSessionsQuery = { person: string } & (
            * like the Pi file, and named in `companions`. Older runners ignore it.
            */
           companions?: string[];
-      }
-);
+      };
 export type PiSessionsResult = {
     type: "pi-sessions-result";
     id: string;
@@ -290,7 +289,6 @@ export function parseControl(text: string): ControlMessage | undefined {
     switch (message.type) {
         case "pi-sessions":
             return bounded(message.id, 256) &&
-                bounded(message.person, 256) &&
                 (message.op === "list" ||
                     (message.op === "preview" && bounded(message.path)) ||
                     (message.op === "open" &&
