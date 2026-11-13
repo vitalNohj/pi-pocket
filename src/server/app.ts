@@ -4170,6 +4170,10 @@ export class PocketApp {
                     ...(chat === undefined ? {} : { chatAt: chat.at, chatBy: chat.userId }),
                     ...(counts === undefined ? {} : { subagents: counts }),
                     ...(background === undefined ? {} : { background }),
+                    // May this person change whom it is shared with (`access.ts` `mayShare`): its menu offers Share.
+                    ...(user !== undefined && this.policy.mayShare(user, id)
+                        ? { mayShare: true as const }
+                        : {}),
                 };
             })
             .sort((a, b) => b.updatedAt - a.updatedAt);

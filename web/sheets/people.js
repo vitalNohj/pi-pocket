@@ -17,11 +17,6 @@ import {
 import { copyText, html, Icon, Loader, Sheet, timeAgo } from "../ui.js";
 import { ApprovalsList, ApprovalTime, TasksExpire } from "./approvals.js";
 
-const ROLE_TEXT = {
-    guest: "Can steer Pi, which can run commands on this machine",
-    viewer: "Can read along, react, and chat, but not steer Pi",
-};
-
 /** How long an invite may last: minutes, its button, and how the help text says it. */
 const LASTS = [
     [15, "15 min", "in 15 minutes"],
@@ -52,7 +47,6 @@ export function InviteSheet({ session = null }) {
             : view.conversation?.kind === "session"
               ? view.conversation
               : null;
-    const [role, setRole] = useState("guest");
     const [only, setOnly] = useState(session !== null);
     // The owner's own other device: it signs in as the owner, not as someone new.
     const [asOwner, setAsOwner] = useState(false);
@@ -61,7 +55,7 @@ export function InviteSheet({ session = null }) {
     // The newest invite could not be made: the sheet offers to try again rather than wait for ever.
     const [failed, setFailed] = useState(false);
     // What the sheet says now: an invite shows only while it was made for exactly this.
-    const asked = JSON.stringify([asOwner, role, only, minutes]);
+    const asked = JSON.stringify([asOwner, only, minutes]);
     // Only the newest invite shows: one asked for before a change, answering late, must not stand for what the sheet says.
     const latest = useRef(0);
     // The invite the sheet last showed: a change to what it grants, or how long it lasts, ends it.
@@ -92,7 +86,7 @@ export function InviteSheet({ session = null }) {
                     asOwner
                         ? { role: "owner" }
                         : collab()
-                          ? { role, ...(only && here ? { session: here.id } : {}), minutes }
+                          ? { ...(only && here ? { session: here.id } : {}), minutes }
                           : { minutes },
                 );
             } catch (error) {
@@ -122,7 +116,7 @@ export function InviteSheet({ session = null }) {
 
     useEffect(() => {
         create({ replacing: true });
-    }, [role, only, asOwner, minutes]);
+    }, [only, asOwner, minutes]);
     useEffect(
         () => () => {
             mounted.current = false;
@@ -154,28 +148,10 @@ export function InviteSheet({ session = null }) {
         ${
             collab() &&
             !asOwner &&
-            html`<div class="field">
-                <div class="label">They can</div>
-                <div class="segmented">
-                    <button
-                        class=${role === "guest" ? "on" : ""}
-                        aria-pressed=${role === "guest"}
-                        onClick=${() => setRole("guest")}
-                    >
-                        Steer
-                    </button>
-                    <button
-                        class=${role === "viewer" ? "on" : ""}
-                        aria-pressed=${role === "viewer"}
-                        onClick=${() => setRole("viewer")}
-                    >
-                        View only
-                    </button>
-                </div>
-                <div class="muted small">
-                    ${ROLE_TEXT[role]}.${role === "guest" && only ? " Seeing one session in the app does not limit what Pi can reach on the machine." : ""}
-                </div>
-            </div>
+            html`<p class="muted small">
+                They join as a viewer: they read along, react, and chat. To steer Pi, they link an authenticator under
+                their name; then the owner chooses Let steer for them in People.
+            </p>
             ${
                 here &&
                 html`<div class="field">

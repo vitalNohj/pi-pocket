@@ -776,6 +776,84 @@ describe("review drill fixes for people on a computer", () => {
         assert.deepEqual(app.config.server.users ?? [], here);
     });
 
+    it("offers Share to who may share a session, and keeps listing someone it is shared with who is not chosen there", async () => {
+        const host = person("Share host", "guest");
+        const theirs = app.config.addRunner(
+            "Share host's laptop",
+            host.id,
+            newIdentity().publicKey,
+        ).id;
+        const worker = person("Share worker", "guest");
+        const invited = person("Share invitee", "viewer");
+        const { id: session } = await app.commands.createSession(owner(app), { cwd: root });
+
+        // The worker's session on the host's computer. The owner is chosen there; the invitee came with an invite, and is
+        // chosen for nothing.
+        app.config.setRunnerUsers(theirs, [worker.id, owner(app).id]);
+        await app.harness.commit(async (tx) => {
+            const meta = (await tx.doc(SessionsDoc)).items[String(session)]!;
+
+            meta.runner = theirs;
+            meta.createdBy = worker.id;
+            meta.sharedWith = [owner(app).id, invited.id];
+        }, context);
+
+        const row = (user: User) =>
+            app.sessions(user).find((each) => each.id === Number(session)) as
+                { mayShare?: true } | undefined;
+
+        // Who is in charge of its computer, and its starter: Share. The owner only sees it there: no Share, and 403.
+        assert.equal(row(host)?.mayShare, true, "in charge of its computer");
+        assert.equal(row(worker)?.mayShare, true, "its starter");
+        assert.notEqual(row(owner(app)), undefined, "shared with the owner");
+        assert.equal(row(owner(app))?.mayShare, undefined, "the owner is not in charge there");
+        assert.equal((await request(owner(app), `sessions/${session}/share`)).status, 403);
+        assert.equal(row(invited)?.mayShare, undefined);
+
+        // Everyone it is shared with is listed, also who is not chosen there: they can be seen and taken off.
+        type Sharing = { sharedWith: string[]; people: { id: string; notChosen?: true }[] };
+        const sharing = await request<Sharing>(host, `sessions/${session}/share`);
+
+        assert.deepEqual(
+            sharing.body.people.map((each) => [each.id, each.notChosen === true]),
+            [
+                [owner(app).id, false],
+                [invited.id, true],
+            ],
+        );
+        assert.deepEqual(sharing.body.sharedWith, [owner(app).id, invited.id]);
+
+        // Saved as it is: they stay. Someone new who is not chosen there is still refused.
+        assert.equal(
+            (await request(host, `sessions/${session}/share`, { people: sharing.body.sharedWith }))
+                .status,
+            200,
+        );
+        assert.equal(app.canSee(invited, session), true);
+        assert.equal(
+            (
+                await request(host, `sessions/${session}/share`, {
+                    people: [...sharing.body.sharedWith, stranger.id],
+                })
+            ).status,
+            400,
+        );
+
+        // Taken off, they leave, and do not come back without being chosen.
+        await request(host, `sessions/${session}/share`, { people: [owner(app).id] });
+        assert.equal(app.canSee(invited, session), false);
+        assert.equal(
+            (await request(host, `sessions/${session}/share`, { people: [invited.id] })).status,
+            400,
+        );
+        assert.deepEqual(
+            (await request<Sharing>(host, `sessions/${session}/share`)).body.people.map(
+                (each) => each.id,
+            ),
+            [owner(app).id],
+        );
+    });
+
     it("links nothing with a code whose maker may no longer link computers, or was removed", async () => {
         const linker = person("Linker", "guest");
         const named = (name: string) => app.config.runners.filter((each) => each.name === name);

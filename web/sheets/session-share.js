@@ -1,22 +1,15 @@
-// Share a session with people, one at a time (`commands.ts` `sharing` and `shareSession`): its starter and the owner
-// pick from everyone chosen for its computer. Someone taken off leaves it at once.
+// Share a session with people, one at a time (`commands.ts` `sharing` and `shareSession`): its starter and who is in
+// charge of its computer pick from everyone chosen for it. Someone taken off leaves it at once.
 import { useEffect, useState } from "preact/hooks";
-import { api, attempt, canSteer, closeSheet, notify, store } from "../store.js";
+import { api, attempt, closeSheet, notify, store } from "../store.js";
 import { html, Loader, Sheet } from "../ui.js";
 
-/** May this tab share session `session` (a row of the list): the owner, or its starter who steers. */
+/**
+ * May this tab share session `session` (a row of the list): the server says so on the row (`access.ts` `mayShare`): who
+ * is in charge of its computer, and its starter while they steer it.
+ */
 export function canShare(session) {
-    const me = store.state.me;
-
-    if (!me || !session || session.pip !== undefined) {
-        return false;
-    }
-
-    if (me.role === "owner") {
-        return true;
-    }
-
-    return canSteer() && session.createdBy === me.id;
+    return Boolean(store.state.me) && session?.mayShare === true;
 }
 
 /** Whom session `id` is shared with, in a word for its menu item. */
@@ -108,6 +101,10 @@ export function SessionShareSheet({ id }) {
                                       ${person.name}${
                                           person.role === "viewer"
                                               ? html` <span class="muted small">(view only)</span>`
+                                              : ""
+                                      }${
+                                          person.notChosen
+                                              ? html` <span class="muted small">(not chosen for ${data.computer}: once taken off, choose them first)</span>`
                                               : ""
                                       }
                                   </label>`,

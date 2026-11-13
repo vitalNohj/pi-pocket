@@ -1030,15 +1030,16 @@ export class Commands {
 
     /**
      * Whom session `id` is shared with, and whom it can be: everyone who may use its computer, but who is in charge of
-     * it and its starter, who have it anyway. Its starter's and the owner's to see (`access.ts` `mayShare`); to anyone else who
-     * sees it, 403; to whom it is hidden, 404.
+     * it and its starter, who have it anyway. Someone it is shared with already who may not use the computer (they came
+     * with an invite, or are no longer chosen) is listed too, as `notChosen`: they keep it until taken off. Its starter's
+     * and the one in charge's to see (`access.ts` `mayShare`); to anyone else who sees it, 403; to whom it is hidden, 404.
      */
     sharing(
         id: ConversationId,
         user: User,
     ): {
         sharedWith: string[];
-        people: { id: string; name: string; role: User["role"] }[];
+        people: { id: string; name: string; role: User["role"]; notChosen?: true }[];
         computer: string;
     } {
         const app = this.#app;
@@ -1054,23 +1055,32 @@ export class Commands {
         if (!app.policy.mayShare(user, String(root))) {
             throw new HttpError(
                 403,
-                "Only the person who started this session or the owner can share it.",
+                "Only the person who started this session, or who is in charge of its computer, can share it.",
             );
         }
 
         const computer = meta.runner ?? THIS_SERVER;
         const starter = app.policy.starter({ id: String(root), computer, ...meta });
 
+        const shared = meta.sharedWith ?? [];
+        const people = app.config.users
+            .filter(
+                (person) =>
+                    !app.policy.inCharge(person, computer) &&
+                    person.id !== starter &&
+                    (app.policy.mayUse(person, computer) || shared.includes(person.id)),
+            )
+            .map((person) => ({
+                id: person.id,
+                name: person.name,
+                role: person.role,
+                ...(app.policy.mayUse(person, computer) ? {} : { notChosen: true as const }),
+            }));
+
         return {
-            sharedWith: meta.sharedWith ?? [],
-            people: app.config.users
-                .filter(
-                    (person) =>
-                        !app.policy.inCharge(person, computer) &&
-                        person.id !== starter &&
-                        app.policy.mayUse(person, computer),
-                )
-                .map((person) => ({ id: person.id, name: person.name, role: person.role })),
+            // Only the people listed: an id of someone who left, or who is in charge now, is not sent back on a save.
+            sharedWith: shared.filter((id) => people.some((person) => person.id === id)),
+            people,
             computer: computer === THIS_SERVER ? "This server" : app.runners.name(computer),
         };
     }
@@ -1078,7 +1088,8 @@ export class Commands {
     /**
      * Share session `id` with exactly `people` (person ids), one at a time: its starter and the owner may (`access.ts`
      * `mayShare`). Each must be able to use the session's computer; who is in charge of it sees every session there
-     * anyway, and the starter has it, so neither is kept. Someone taken off leaves it at once (`app.accessChanged`).
+     * anyway, and the starter has it, so neither is kept. Someone it is shared with already stays without that, until
+     * taken off. Someone taken off leaves it at once (`app.accessChanged`).
      */
     async shareSession(id: ConversationId, user: User, people: unknown): Promise<string[]> {
         const app = this.#app;
@@ -1094,7 +1105,7 @@ export class Commands {
         if (!app.policy.mayShare(user, String(root))) {
             throw new HttpError(
                 403,
-                "Only the person who started this session or the owner can share it.",
+                "Only the person who started this session, or who is in charge of its computer, can share it.",
             );
         }
 
@@ -1109,6 +1120,7 @@ export class Commands {
         const computer = meta.runner ?? THIS_SERVER;
         const starter = app.policy.starter({ id: String(root), computer, ...meta });
         const shared: string[] = [];
+        const before = new Set(meta.sharedWith ?? []);
 
         for (const each of new Set(people)) {
             const person = app.config.userById(each);
@@ -1121,7 +1133,7 @@ export class Commands {
                 continue;
             }
 
-            if (!app.policy.mayUse(person, computer)) {
+            if (!before.has(person.id) && !app.policy.mayUse(person, computer)) {
                 throw new HttpError(
                     400,
                     `${person.name} cannot use ${computer === THIS_SERVER ? "this server" : app.runners.name(computer)}: choose them for it first.`,
@@ -1130,8 +1142,6 @@ export class Commands {
 
             shared.push(person.id);
         }
-
-        const before = new Set(meta.sharedWith ?? []);
 
         await app.harness.commit(async (tx) => {
             const sessions = await tx.doc(SessionsDoc);
