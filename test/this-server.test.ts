@@ -312,6 +312,38 @@ test("an invite to every session passes on only the sessions its maker may see",
     assert.equal(app.canSee(fromAlex, hers), true, "a session the inviter may see");
 });
 
+test("the owner limits the spend of a session they may see, and learns nothing of one they may not", async () => {
+    const gina = person("Gina spends", "guest");
+    const ginas = app.config.addRunner("Gina's desktop", gina.id, newIdentity().publicKey).id;
+    const { id: mine } = await app.commands.createSession(owner(app), { cwd: project });
+    const { id: hers } = await app.commands.createSession(owner(app), { cwd: project });
+
+    // Moved to Gina's computer and hers: the owner is not in charge there, and sees nothing of it.
+    await app.harness.commit(async (tx) => {
+        const meta = (await tx.doc(SessionsDoc)).items[String(hers)]!;
+
+        meta.runner = ginas;
+        meta.createdBy = gina.id;
+    }, context);
+    assert.equal(app.canSee(owner(app), hers), false);
+
+    const allowed = await call(owner(app), "spend", { session: Number(mine), budget: 5 });
+
+    assert.equal(allowed.status, 200);
+    assert.equal(app.sessionMeta(mine)?.budget, 5);
+
+    // The same answer as for an id no session has: the id says nothing, and no limit is set.
+    const refused = await call(owner(app), "spend", { session: Number(hers), budget: 5 });
+    const missing = await call(owner(app), "spend", { session: 987_654, budget: 5 });
+
+    assert.equal(refused.status, 404);
+    assert.deepEqual(refused.body, missing.body);
+    assert.equal(missing.status, 404);
+    assert.equal(app.sessionMeta(hers)?.budget, undefined);
+    // Nobody else sets one at all.
+    assert.equal((await call(alex, "spend", { session: Number(mine), budget: 1 })).status, 403);
+});
+
 test("a tab whose person can no longer see a session gets none of its live events, before it is moved out", async () => {
     const { id } = await app.commands.createSession(owner(app), { cwd: project });
 
