@@ -24,8 +24,11 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
 import type { User } from "../src/server/config.ts";
+import { SubagentsDoc } from "../src/server/docs.ts";
+import createArtifacts from "../src/server/extensions/artifacts.ts";
+import type { PocketHost } from "../src/server/host.ts";
 import { createHandler } from "../src/server/http.ts";
 
 let app: App;
@@ -634,19 +637,79 @@ describe("linked sessions", () => {
 });
 
 describe("other lists that name sessions or folders", () => {
-    it("give a chosen guest only the sessions they may see: spend, artifacts, the board, and recent folders", async () => {
+    /** Each list, and what it says of the session nobody shares: its title, its artifact, or its subagent. */
+    const lists = [
+        ["artifacts", "hidden-artifact"],
+        ["running", "Hidden title"],
+        ["running/board", "Hidden title"],
+        ["subagents", "hidden-helper"],
+    ] as const;
+    const names = (body: unknown) =>
+        lists.map(([, marker]) => marker).filter((marker) => JSON.stringify(body).includes(marker));
+    let scheduled: string;
+
+    // The session nobody shares has something for each list to hide: an artifact, a message that waits for its time,
+    // and a subagent.
+    before(async () => {
         await app.commands.updateSession(hidden, owner(app), { title: "Hidden title" });
+        await createArtifacts({} as PocketHost).tools![0]!.execute(
+            { id: "hidden-artifact", title: "Kept from others", content: "<p>kept</p>" } as never,
+            {
+                conversationId: hidden,
+                taskId: 4321,
+                callId: "hidden-artifact-call",
+                agent: async () => ({ cwd: work }),
+                snapshot: app.harness.snapshot.bind(app.harness),
+                commit: app.harness.commit.bind(app.harness),
+            } as never,
+            context,
+        );
+        scheduled = (
+            await app.commands.schedule(hidden, owner(app), {
+                when: "in 2h look again",
+                zone: "UTC",
+            })
+        ).id;
+        await app.harness.commit(async (tx) => {
+            const { id } = await tx.createConversation({ ownership: { kind: "ownerless" } });
+
+            (await tx.doc(AgentDoc, id)).cwd = app.cwdOf(hidden);
+            (await tx.doc(SubagentsDoc, hidden)).agents["hidden-helper"] = {
+                conversationId: id,
+                reported: [],
+            };
+        }, context);
+        await until(
+            () => app.subagents(owner(app)).some((each) => each.name === "hidden-helper"),
+            "the subagent to show on the board",
+        );
+    });
+
+    after(async () => {
+        await app.commands.cancelSchedule(hidden, owner(app), scheduled);
+    });
+
+    it("give the owner what the session nobody shares has in each", async () => {
+        for (const [path, marker] of lists) {
+            const answer = await call(owner(app), path);
+
+            assert.equal(answer.status, 200, path);
+            assert.ok(JSON.stringify(answer.body).includes(marker), `${path} names ${marker}`);
+        }
+    });
+
+    it("give a chosen guest only the sessions they may see: spend, artifacts, the board, and recent folders", async () => {
         const spend = await call<{ sessions: { id: number }[] }>(guest, "spend");
 
         assert.equal(spend.status, 200);
         assert.ok(spend.body.sessions.some((each) => String(each.id) === String(shared)));
         assert.ok(!spend.body.sessions.some((each) => String(each.id) === String(hidden)));
 
-        for (const path of ["artifacts", "running", "running/board", "subagents"]) {
+        for (const [path] of lists) {
             const answer = await call(guest, path);
 
             assert.equal(answer.status, 200, path);
-            assert.ok(!JSON.stringify(answer.body).includes("Hidden title"), path);
+            assert.deepEqual(names(answer.body), [], path);
         }
 
         // The folder picker's recent folders are those of sessions the person may see.
@@ -667,10 +730,10 @@ describe("other lists that name sessions or folders", () => {
 
         assert.deepEqual(spend.body.sessions, []);
 
-        for (const path of ["artifacts", "running", "subagents"]) {
+        for (const [path] of lists) {
             const answer = await call(stranger, path);
 
-            assert.ok(!JSON.stringify(answer.body).includes("Hidden title"), path);
+            assert.deepEqual(names(answer.body), [], path);
             assert.ok(!JSON.stringify(answer.body).includes(`"id":${Number(shared)}`), path);
         }
 
@@ -680,8 +743,72 @@ describe("other lists that name sessions or folders", () => {
 });
 
 describe("approvals", () => {
-    it("are answered only by who may steer the session they belong to", async () => {
-        assert.equal(await app.answerApproval("no-such-approval", true, stranger), false);
-        assert.equal(await app.answerApproval("no-such-approval", true, guest), false);
+    let calls = 0;
+
+    /** A call that waits for an answer in session `id`, as Lancet Guard asks for one. */
+    const ask = (id: ConversationId, subject: string) => {
+        const request = {
+            id: `access-approval-${++calls}`,
+            conversationId: id,
+            taskId: calls as never,
+            callId: `access-call-${calls}`,
+            tool: "bash",
+            subject,
+            reason: "risky",
+            createdAt: Date.now(),
+        };
+
+        return { request, answered: app.approvals.request(request, context) };
+    };
+
+    const waits = (id: ConversationId, approval: string) =>
+        app.approvals.forConversation(id).some((each) => each.id === approval);
+
+    it("are answered by a chosen guest who steers the session they belong to", async () => {
+        const { request, answered } = ask(shared, "rm -rf build");
+
+        assert.equal((await call(guest, `approvals/${request.id}`, { allow: true })).status, 200);
+        assert.deepEqual(await answered, { allow: true, by: "Guest" });
+    });
+
+    it("are not there for someone the session is not shared with, and a viewer answers none", async () => {
+        const open = ask(shared, "rm -rf dist");
+
+        // Someone nobody chose: as if it did not exist, to allow and to deny alike.
+        assert.equal(
+            (await call(stranger, `approvals/${open.request.id}`, { allow: true })).status,
+            404,
+        );
+        assert.equal(
+            (await call(stranger, `approvals/${open.request.id}`, { allow: false })).status,
+            404,
+        );
+        // A viewer sees the session, and steers nothing in it.
+        assert.equal(
+            (await call(viewer, `approvals/${open.request.id}`, { allow: true })).status,
+            403,
+        );
+        assert.equal(
+            (await call(viewer, `approvals/${open.request.id}`, { allow: false })).status,
+            403,
+        );
+        assert.ok(waits(shared, open.request.id), "it still waits");
+
+        // A chosen guest, on a session that is not shared with them.
+        const closed = ask(hidden, "rm -rf cache");
+
+        assert.equal(
+            (await call(guest, `approvals/${closed.request.id}`, { allow: true })).status,
+            404,
+        );
+        assert.ok(waits(hidden, closed.request.id), "it still waits");
+
+        for (const each of [open, closed]) {
+            assert.equal(
+                (await call(owner(app), `approvals/${each.request.id}`, { allow: false })).status,
+                200,
+            );
+            assert.equal((await each.answered).allow, false);
+        }
     });
 });
