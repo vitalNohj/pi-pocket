@@ -37,7 +37,8 @@ import {
     type UserInput,
 } from "@earendil-works/pi-durable";
 import type { SessionScope } from "../runner/protocol.ts";
-import type { PocketApp } from "./app.ts";
+import { checkedContext } from "./admission.ts";
+import type { Approved, PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import {
     AuthorsDoc,
@@ -531,7 +532,7 @@ export class Commands {
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
 
         // The server decides (`access.ts` `folder`): a folder given to them, approved by their code or who is in charge.
-        const keep = await app.approveStart(user, cwd, signal, runner);
+        const approved = await app.approveStart(user, cwd, signal, runner);
 
         const runnerPermission = randomUUID();
 
@@ -573,10 +574,11 @@ export class Commands {
                             };
                         },
                     },
-                    context,
+                    // Unchosen, or the folder taken back, while the worktree was made: no session is saved.
+                    checkedContext(context, approved.check),
                 );
 
-                keep(conversation.id, cwd);
+                approved.keep(conversation.id, cwd);
                 void this.recordRepo(conversation.id, place.cwd);
 
                 return { id: conversation.id };
@@ -631,7 +633,7 @@ export class Commands {
 
         // A folder here needs an approval unless the policy says it does not (`access.ts` `folder`). A workspace URI is
         // the owner's alone, who needs none.
-        const keep = remote ? () => {} : await app.approveStart(user, folder, signal);
+        const approved = remote ? undefined : await app.approveStart(user, folder, signal);
 
         const now = Date.now();
 
@@ -676,10 +678,11 @@ export class Commands {
                             await init?.(tx, id);
                         },
                     },
-                    context,
+                    // Unchosen, or the folder taken back, while the approval or the worktree waited: nothing is saved.
+                    approved === undefined ? context : checkedContext(context, approved.check),
                 );
 
-                keep(conversation.id, folder);
+                approved?.keep(conversation.id, folder);
                 void this.recordRepo(conversation.id, cwd);
 
                 return { id: conversation.id };
@@ -701,7 +704,7 @@ export class Commands {
         let cwd: string;
         let runnerPermission: string | undefined;
 
-        let keep: (id: ConversationId, folder: string) => void = () => {};
+        let approved: Approved | undefined;
 
         if (runner !== undefined) {
             app.runners.require(runner);
@@ -730,7 +733,7 @@ export class Commands {
 
             // As a new session in the Pi session's folder: one given to them, approved by their code or who is in
             // charge (`access.ts` `folder`). Only then does the computer let the session read Pi's file.
-            keep = await app.approveStart(user, cwd, signal, runner);
+            approved = await app.approveStart(user, cwd, signal, runner);
             runnerPermission = randomUUID();
             const link = app.runners.link(runner);
             const opened = await link.piSessions(
@@ -815,10 +818,10 @@ export class Commands {
                     });
                 },
             },
-            context,
+            approved === undefined ? context : checkedContext(context, approved.check),
         );
 
-        keep(conversation.id, cwd);
+        approved?.keep(conversation.id, cwd);
         void this.recordRepo(conversation.id, cwd);
 
         return { id: conversation.id };
@@ -919,6 +922,8 @@ export class Commands {
             }
         }
 
+        // Checked again after the reads above: the worktree goes only for who still drives the session.
+        app.recheck(id, user);
         await removeWorktree(worktree, force === true, access);
 
         // The session and its subagents go back to the folders the worktree came from.
@@ -1378,7 +1383,10 @@ export class Commands {
         // A failed subagent's failure as the person writes to it: what their message comes to settles it.
         const failure = await this.#failureOf(id);
 
-        let submitContext = context;
+        // Checked at the top, then prepared (the skill, the files, the model's images): where the message is saved, the
+        // person must still see and steer the session, have the wheel, and its approval be live (`app.ts` `admission`).
+        const how = task === true ? { task } : {};
+        let submitContext = app.admission(id, user, how);
 
         // Human extension starts acquire a short policy lease after preparation. Its context checks policy again
         // when durable admission reaches the mutation line, not just before it joins the queue.
@@ -1386,7 +1394,7 @@ export class Commands {
             const accepted = await admission.beforeSubmit();
 
             user = accepted.user;
-            submitContext = accepted.context;
+            submitContext = app.admission(id, user, { ...how, parent: accepted.context });
             submitContext.abortSignal?.throwIfAborted();
         }
 
@@ -2142,6 +2150,7 @@ export class Commands {
         app.spend.check(user, id);
         const conversation = await app.conversation(id);
         const held = (await app.harness.snapshot(HeldDoc, id, context))?.items ?? [];
+        const saving = app.admission(id, user);
 
         for (const item of held) {
             await conversation.submit(
@@ -2154,7 +2163,7 @@ export class Commands {
                         ? {}
                         : { entry: item.entry as unknown as InputEntry }),
                 },
-                context,
+                saving,
             );
         }
 
@@ -2392,19 +2401,22 @@ export class Commands {
         }
 
         if (mode !== "interrupt") {
-            const moved = await app.harness.commit(async (tx) => {
-                const item = (await tx.doc(InboxDoc, id)).items.find(
-                    (entry) => Number(entry.id) === submissionId,
-                );
+            const moved = await app.harness.commit(
+                async (tx) => {
+                    const item = (await tx.doc(InboxDoc, id)).items.find(
+                        (entry) => Number(entry.id) === submissionId,
+                    );
 
-                if (item === undefined || item.mode === "write") {
-                    return false;
-                }
+                    if (item === undefined || item.mode === "write") {
+                        return false;
+                    }
 
-                item.mode = mode;
+                    item.mode = mode;
 
-                return true;
-            }, context);
+                    return true;
+                },
+                mode === "followUp" ? context : app.admission(id, user),
+            );
 
             if (!moved) {
                 throw new HttpError(409, "That message has already gone to Pi.");
@@ -2413,10 +2425,11 @@ export class Commands {
             return;
         }
 
-        await this.#interrupt(id, {
-            submissionId,
-            requestId: ownRequest(user.id, `interrupt-${submissionId}`),
-        });
+        await this.#interrupt(
+            id,
+            { submissionId, requestId: ownRequest(user.id, `interrupt-${submissionId}`) },
+            app.admission(id, user),
+        );
         await app.collab.activity(id, user, "interrupted the run");
     }
 
@@ -2649,14 +2662,19 @@ export class Commands {
                   ? await app.resolveCwd(request.cwd)
                   : await app.runners.checkFolder(runner, request.cwd);
 
+        let moving: Approved | undefined;
+
         // Moving to another folder: one given to them, under the session's own approval (renewed first when locked).
         if (
             cwd !== undefined &&
             app.workspaceScheme(cwd) === undefined &&
             cwd !== (current?.cwd ?? app.cwdOf(id))
         ) {
-            await app.approveFrom(user, id, cwd, runner);
+            moving = await app.approveFrom(user, id, cwd, runner);
         }
+
+        // Where the change is saved: they still drive the session, and the new folder is still theirs.
+        const saving = app.admission(id, user, moving === undefined ? {} : { also: moving.check });
 
         const change = {
             ...(request.model === undefined
@@ -2676,9 +2694,9 @@ export class Commands {
                 }
 
                 Object.assign(await tx.doc(AgentDoc, id), change);
-            }, context);
+            }, saving);
         } else {
-            await conversation.configure(change, context);
+            await conversation.configure(change, saving);
         }
 
         if (cwd !== undefined && app.sessionMeta(id) !== undefined) {
@@ -2735,7 +2753,7 @@ export class Commands {
             throw new HttpError(413, `Handoff notes are limited to ${MAX_HANDOFF} characters`);
         }
 
-        await (await app.conversation(id)).reset(handoff, context);
+        await (await app.conversation(id)).reset(handoff, app.admission(id, user));
         await app.collab.activity(
             id,
             user,
@@ -2773,7 +2791,10 @@ export class Commands {
 
         await (
             await app.conversation(id)
-        ).configure({ instructions: instructions === "" ? null : instructions }, context);
+        ).configure(
+            { instructions: instructions === "" ? null : instructions },
+            app.admission(id, user),
+        );
         await app.collab.activity(
             id,
             user,
@@ -2838,30 +2859,33 @@ export class Commands {
 
     /** Set plan mode for a session and the subagents under it; true when that changed it. */
     #switchPlan(id: ConversationId, user: User, on: boolean): Promise<boolean> {
-        return this.#app.harness.commit(async (tx) => {
-            if ((await tx.doc(PlanDoc, id)).on === on) {
-                return false;
-            }
-
-            // Subagents follow their session: one already at work stops changing things too.
-            const conversations = [id];
-
-            for (let index = 0; index < conversations.length; index++) {
-                for (const agent of Object.values(
-                    (await tx.doc(SubagentsDoc, conversations[index]!)).agents,
-                )) {
-                    conversations.push(agent.conversationId);
+        return this.#app.harness.commit(
+            async (tx) => {
+                if ((await tx.doc(PlanDoc, id)).on === on) {
+                    return false;
                 }
-            }
 
-            const at = Date.now();
+                // Subagents follow their session: one already at work stops changing things too.
+                const conversations = [id];
 
-            for (const each of conversations) {
-                Object.assign(await tx.doc(PlanDoc, each), { on, by: user.id, at });
-            }
+                for (let index = 0; index < conversations.length; index++) {
+                    for (const agent of Object.values(
+                        (await tx.doc(SubagentsDoc, conversations[index]!)).agents,
+                    )) {
+                        conversations.push(agent.conversationId);
+                    }
+                }
 
-            return true;
-        }, context);
+                const at = Date.now();
+
+                for (const each of conversations) {
+                    Object.assign(await tx.doc(PlanDoc, each), { on, by: user.id, at });
+                }
+
+                return true;
+            },
+            this.#app.admission(id, user),
+        );
     }
 
     /** Set up a message to Pi for later, or on repeat: `when` is when, then what it says (`in 2h check the deploy`). */
@@ -2881,11 +2905,15 @@ export class Commands {
         }
 
         app.spend.check(user, id);
-        const schedule = await app.schedules.add(id, {
-            when: optionalText(request.when, "when") ?? "",
-            by: user,
-            ...(zone === undefined ? {} : { zone }),
-        });
+        const schedule = await app.schedules.add(
+            id,
+            {
+                when: optionalText(request.when, "when") ?? "",
+                by: user,
+                ...(zone === undefined ? {} : { zone }),
+            },
+            app.admission(id, user),
+        );
         const when =
             schedule.every === undefined
                 ? `for ${describeMoment(schedule.next, schedule.zone)}`
@@ -2923,10 +2951,12 @@ export class Commands {
         await app.requireDriver(id, user);
         app.spend.check(user, id);
         const asked = optionalText(pr, "pr");
+        // Starting one asks GitHub first, which takes time: it is saved only for who still drives the session.
         const watch = await app.watches.start(
             id,
             user.id,
             asked === undefined ? {} : { pr: asked },
+            app.admission(id, user),
         );
 
         await app.collab.activity(
@@ -3059,7 +3089,12 @@ export class Commands {
             throw new HttpError(400, "Only sessions can have a goal");
         }
 
-        const goal = await app.goals.set(id, user.id, optionalText(command, "command") ?? "");
+        const goal = await app.goals.set(
+            id,
+            user.id,
+            optionalText(command, "command") ?? "",
+            app.admission(id, user),
+        );
 
         await app.collab.activity(
             id,
@@ -3569,7 +3604,7 @@ export class Commands {
 
         // Approve before git or copies use the folder: the copy inherits this session's approval (renewed first when
         // locked); on another computer, it starts as a new session there would. The worktree is the copy's own folder.
-        const keep = await this.#app.approveFrom(user, id, destination.cwd, runner, signal);
+        const approved = await this.#app.approveFrom(user, id, destination.cwd, runner, signal);
 
         // Given up while it waited: no copy is made.
         signal?.throwIfAborted();
@@ -3586,9 +3621,10 @@ export class Commands {
                     place,
                     destination,
                     runnerPermission,
+                    check: approved.check,
                 });
 
-                keep(copy, destination.cwd);
+                approved.keep(copy, destination.cwd);
 
                 return copy;
             },
@@ -3617,10 +3653,14 @@ export class Commands {
             destination: Destination;
             runnerPermission?: string;
             resend?: Resend;
+            /** What allowed the copy, checked again where it is saved (`app.ts` `Approved`). */
+            check: () => void;
         },
     ): Promise<ConversationId> {
         const app = this.#app;
         const source = await app.agentState(id);
+        // The worktree and the copied files took time: the copy is saved only for who may still make it.
+        const saving = checkedContext(context, fork.check);
         const { at, title, place, destination } = fork;
         // A copy runs on the computer it was sent to: one on another computer with the extensions that work there, one
         // here with all of them, also when its session ran elsewhere (the inherited list goes). A fresh one copies no
@@ -3749,11 +3789,11 @@ export class Commands {
                           },
                           init,
                       },
-                      context,
+                      saving,
                   )
                 : await (
                       await app.conversation(id)
-                  ).fork(at as unknown as EntryId, { ownership, agent, init }, context);
+                  ).fork(at as unknown as EntryId, { ownership, agent, init }, saving);
         const where =
             place.worktree !== undefined
                 ? ` into a worktree on ${place.worktree.branch}${place.skipped.length === 0 ? "" : ` (${place.skipped.length} big new files were not copied)`}`
@@ -3789,7 +3829,7 @@ export class Commands {
         // Compacting asks the model for a summary, which costs like any other request.
         app.spend.check(user, id);
         const conversation = await app.conversation(id);
-        const taskId = await conversation.compact(instructions, context);
+        const taskId = await conversation.compact(instructions, app.admission(id, user));
         const done = pip ? "PiP's context compacted." : "Compacted.";
 
         app.notice("info", pip ? "Compacting PiP's context…" : "Compacting…", id);

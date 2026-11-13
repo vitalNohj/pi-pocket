@@ -136,6 +136,9 @@ export async function browserRoutes(
     await app.conversation(id);
     const body = await readJson<Record<string, unknown>>(request);
 
+    // The body took time to arrive: the page is driven only by who still drives the session.
+    app.recheck(id, user);
+
     // Typing into, stopping, or clearing a page that is not open opens nothing.
     if (action === "input" || action === "stop" || action === "clear") {
         const page = browsers.page(key);

@@ -346,6 +346,8 @@ export class Watches {
         asking: ConversationId,
         personId: string | undefined,
         request: WatchRequest = {},
+        // The context of its save; a person's carries their check (`app.ts` `admission`).
+        saving: Context = context,
     ): Promise<PrWatch> {
         const app = this.#app;
 
@@ -573,7 +575,7 @@ export class Watches {
             doc.watch = watch;
 
             return watch;
-        }, context);
+        }, saving);
     }
 
     /** Stop a session's watch, or clear one that ended (a subagent's session's). Returns it; undefined for none. */

@@ -23,11 +23,12 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { after, before, beforeEach, test } from "node:test";
+import { after, before, beforeEach, test, type TestContext } from "node:test";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { THIS_SERVER } from "../src/server/access.ts";
+import { ownRequest } from "../src/server/requests.ts";
 import { STEP_MS, totp } from "../src/server/totp.ts";
 import type { User } from "../src/server/config.ts";
 import { FOLDER_REQUEST_MS, type FolderRequestView } from "../src/server/folder-requests.ts";
@@ -964,6 +965,197 @@ test("taking a folder back moves sessions there to the owner, and leaves the oth
     await app.handOver(alex.id, THIS_SERVER);
     assert.equal(app.sessionMeta(ids[0]!)?.createdBy, alex.id);
     assert.equal(app.sessionMeta(ids[1]!)?.createdBy, owner(app).id);
+});
+
+/** A session Alex started with his code and shares with Gale, with a model picked. */
+async function sharedSession(): Promise<ConversationId> {
+    const folder = newFolder();
+    const started = app.commands.createSession(alex, { cwd: folder });
+
+    await app.folderRequests.approve(alex, (await pending(alex, folder)).id, {
+        method: "totp",
+        code: nextCode(alexSecret),
+    });
+
+    const { id } = await started;
+
+    await app.commands.shareSession(id, alex, [gale.id]);
+    await app.commands.configure(id, alex, {
+        model: { provider: "faux", modelId: "faux-1" },
+        thinkingLevel: "off",
+    });
+
+    return id;
+}
+
+/**
+ * Hold the next read of session `id`'s agent state, which a send and a settings change make after their check and
+ * before their save, until `go`: what a test changes meanwhile is what the save must see.
+ */
+function pauseAfterCheck(
+    t: TestContext,
+    id: ConversationId,
+): { reached: Promise<void>; go: () => void } {
+    const original = app.agentState.bind(app);
+    let go!: () => void;
+    let reach!: () => void;
+    const gate = new Promise<void>((resolve) => (go = resolve));
+    const reached = new Promise<void>((resolve) => (reach = resolve));
+    let held = false;
+
+    t.mock.method(app, "agentState", async (asked: ConversationId) => {
+        if (!held && String(asked) === String(id)) {
+            held = true;
+            reach();
+            await gate;
+        }
+
+        return original(asked);
+    });
+
+    return { reached, go };
+}
+
+/** The message saved in session `id` for the request `user` sent as `requestId` (`requests.ts`), if one was. */
+async function saved(id: ConversationId, user: User, requestId: string): Promise<unknown> {
+    return (
+        (await app.harness.commit(
+            (tx) => tx.submissionByRequest(id, ownRequest(user.id, requestId)),
+            context,
+        )) ?? undefined
+    );
+}
+
+test("a send is checked again where it is saved: sharing ended meanwhile, and nothing is stored", async (t) => {
+    const id = await sharedSession();
+
+    // Nothing changes meanwhile: the send goes through.
+    const first = pauseAfterCheck(t, id);
+    const allowedRequest = crypto.randomUUID();
+    const allowed = app.commands.submit(id, gale, { text: "hello", requestId: allowedRequest });
+
+    await first.reached;
+    first.go();
+    await (await app.harness.submission((await allowed).submissionId, context))!.wait(context);
+    assert.notEqual(await saved(id, gale, allowedRequest), undefined);
+    t.mock.restoreAll();
+
+    // Checked, then Alex stops sharing while the send prepares: refused at the save.
+    const second = pauseAfterCheck(t, id);
+    const requestId = crypto.randomUUID();
+    const refused = assert.rejects(
+        app.commands.submit(id, gale, { text: "too late", requestId }),
+        /not shared with you/,
+    );
+
+    await second.reached;
+    await app.commands.shareSession(id, alex, []);
+    second.go();
+    await refused;
+    assert.equal(await saved(id, gale, requestId), undefined, "no message was stored");
+});
+
+test("a settings change is checked again where it is saved: sharing ended meanwhile, and the model stays", async (t) => {
+    const id = await sharedSession();
+    const paused = pauseAfterCheck(t, id);
+    const refused = assert.rejects(
+        app.commands.configure(id, gale, { model: { provider: "faux", modelId: "faux-2" } }),
+        /not shared with you/,
+    );
+
+    await paused.reached;
+    await app.commands.shareSession(id, alex, []);
+    paused.go();
+    await refused;
+    assert.equal((await app.agentState(id))?.model?.modelId, "faux-1");
+
+    // Shared again, and nothing changes meanwhile: the change is saved.
+    t.mock.restoreAll();
+    await app.commands.shareSession(id, alex, [gale.id]);
+
+    const again = pauseAfterCheck(t, id);
+    const allowed = app.commands.configure(id, gale, {
+        model: { provider: "faux", modelId: "faux-2" },
+    });
+
+    await again.reached;
+    again.go();
+    await allowed;
+    assert.equal((await app.agentState(id))?.model?.modelId, "faux-2");
+});
+
+test("a send is refused where it is saved when the approval ended or the wheel went meanwhile", async (t) => {
+    const id = await sharedSession();
+
+    // Alex turns on take turns while Gale's send prepares: he drives, and her message is not stored.
+    const wheel = pauseAfterCheck(t, id);
+    const wheelRequest = crypto.randomUUID();
+    const noWheel = assert.rejects(
+        app.commands.submit(id, gale, { text: "mine", requestId: wheelRequest }),
+        /Alex is driving/,
+    );
+
+    await wheel.reached;
+    await app.collab.turns(id, alex, { action: "on" });
+    wheel.go();
+    await noWheel;
+    assert.equal(await saved(id, gale, wheelRequest), undefined);
+    await app.collab.turns(id, alex, { action: "off" });
+    t.mock.restoreAll();
+
+    // The owner revokes the session's approval while Alex's send prepares: nobody is asked, nothing is stored.
+    const approval = pauseAfterCheck(t, id);
+    const approvalRequest = crypto.randomUUID();
+    const locked = assert.rejects(
+        app.commands.submit(id, alex, { text: "late", requestId: approvalRequest }),
+        /approval ended before this was saved/,
+    );
+
+    await approval.reached;
+    app.folderApprovals.revoke(String(id), true);
+    approval.go();
+    await locked;
+    assert.equal(await saved(id, alex, approvalRequest), undefined);
+    assert.deepEqual(app.folderRequests.list(owner(app)), [], "the save asks nobody");
+});
+
+test("a new session is checked again where it is saved: the folder was taken back meanwhile", async (t) => {
+    const create = app.harness.createConversation.bind(app.harness);
+    let takeBack = false;
+
+    // The approval came, the folder is ready; then, as the session is about to be saved, the owner takes the folder back.
+    t.mock.method(app.harness, "createConversation", ((...args: Parameters<typeof create>) => {
+        if (takeBack) {
+            takeBack = false;
+            app.config.setGivenFolders(undefined, alex.id, []);
+        }
+
+        return create(...args);
+    }) as typeof create);
+
+    const start = async (folder: string) => {
+        const started = app.commands.createSession(alex, { cwd: folder });
+
+        // Handled now: a refusal comes before anyone reads it below.
+        started.catch(() => {});
+        await app.folderRequests.approve(alex, (await pending(alex, folder)).id, {
+            method: "totp",
+            code: nextCode(alexSecret),
+        });
+
+        return started;
+    };
+
+    const before = app.sessions(owner(app)).length;
+    const kept = await start(newFolder());
+
+    assert.equal(app.folderApprovals.live(String(kept.id)), true);
+    assert.equal(app.sessions(owner(app)).length, before + 1);
+
+    takeBack = true;
+    await assert.rejects(start(newFolder()), /has not given you this folder/);
+    assert.equal(app.sessions(owner(app)).length, before + 1, "no session was saved");
+    assert.equal(app.config.folderApprovals.length, 1, "and no approval kept");
 });
 
 test("each person's tabs hear only their own requests, and the owner's every one", async () => {

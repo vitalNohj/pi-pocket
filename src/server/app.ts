@@ -9,6 +9,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, posix, resolve as resolvePath, win32 } from "node:path";
+import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
@@ -172,6 +173,7 @@ import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.t
 import { AccessPolicy, inFolder, THIS_SERVER } from "./access.ts";
 import { realFolder } from "../runner/folders.ts";
 import { FolderRequests } from "./folder-requests.ts";
+import { checkedContext } from "./admission.ts";
 import { type ApprovalView, DAY_MS, FolderApprovals } from "./folder-approvals.ts";
 import {
     changedThere,
@@ -291,6 +293,16 @@ export type SubagentEntry = ReturnType<typeof subagentView> & {
 
 /** Where a subagent is. Waiting for an approval comes before working: it is working, held up. */
 export type SubagentState = "waiting" | "working" | "failed" | "stopped" | "done";
+
+/**
+ * An approval to start, copy, move, or link a session into a folder (`approveStart`, `approveFrom`). `check` refuses
+ * once what allowed it no longer holds (unchosen, the folder taken back, the source no longer theirs to steer); it runs
+ * where the new session is saved (`admission.ts`). `keep` records the approval for the session once it has an id.
+ */
+export type Approved = {
+    check: () => void;
+    keep: (session: ConversationId, folder: string) => void;
+};
 
 /**
  * This server in the Runners sheet (`thisServer`), as those who manage it see it: the people the owner chose, its saved
@@ -538,6 +550,11 @@ export class PocketApp {
 
     /** The newest chat message (not activity) of each conversation, for unread dots in the session list. */
     readonly #lastChat = new Map<string, { at: number; userId: string }>();
+    /**
+     * Take turns of each session read so far, by its root: kept by every commit that changes it, so the check where a
+     * save happens (`recheck`) needs no read.
+     */
+    readonly #turns = new Map<string, { on: boolean; driver?: string }>();
     /** Subagent conversation → the conversation that spawned it. */
     readonly #parents = new Map<ConversationId, ConversationId>();
     /** Each conversation's subagents, and those with a report on its way to it: for the board and the session list. */
@@ -1587,6 +1604,12 @@ export class PocketApp {
             );
 
             if (kind === TurnsDoc.definition.kind) {
+                if (value === null) {
+                    this.#turns.delete(String(id));
+                } else {
+                    this.#turns.set(String(id), value as { on: boolean; driver?: string });
+                }
+
                 for (const pending of this.#rooms.values()) {
                     void pending.then(
                         (room) => {
@@ -2801,29 +2824,35 @@ export class PocketApp {
      * Before `user` starts a new session in `folder` on computer `computer` (undefined: this server): go on at once when
      * they are in charge of it, refuse a folder they were not given, or wait for an approval (`folder-requests.ts`):
      * their own authenticator code, or Allow by who is in charge. Returns what keeps the approval for the new session
-     * once it has an id (nothing to keep for who is in charge). `folder` is a real path there: on this server it is
-     * resolved here, so a symlink changed later cannot widen it; a runner's is checked there (`runners.ts` `checkFolder`).
+     * once it has an id (nothing to keep for who is in charge), and what checks them again where the session is saved
+     * (`Approved`). `folder` is a real path there: on this server it is resolved here, so a symlink changed later cannot
+     * widen it; a runner's is checked there (`runners.ts` `checkFolder`).
      */
     async approveStart(
         user: User,
         folder: string,
         signal?: AbortSignal,
         computer: string = THIS_SERVER,
-    ): Promise<(session: ConversationId, folder: string) => void> {
+    ): Promise<Approved> {
         const real = computer === THIS_SERVER ? await realFolder(folder) : folder;
         const decision = this.policy.folder(user, computer, real);
+        // Unchosen, or the folder taken back, while the approval or the preparation waited: nothing is saved.
+        const check = () => this.policy.requireFolder(user, computer, real);
 
         // Who is in charge is not asked, but their session still gets an approval, on their clock: people it is shared
         // with use it while it is live.
         if (decision.kind === "allow") {
-            return (session, cwd) =>
-                void this.folderApprovals.approve(
-                    String(session),
-                    { computer, folder: cwd },
-                    "owner",
-                    user.id,
-                    user,
-                );
+            return {
+                check,
+                keep: (session, cwd) =>
+                    void this.folderApprovals.approve(
+                        String(session),
+                        { computer, folder: cwd },
+                        "owner",
+                        user.id,
+                        user,
+                    ),
+            };
         }
 
         if (decision.kind === "refuse") {
@@ -2841,14 +2870,17 @@ export class PocketApp {
             signal,
         );
 
-        return (session, cwd) =>
-            void this.folderApprovals.approve(
-                String(session),
-                { computer, folder: cwd },
-                answer.method,
-                answer.by,
-                user,
-            );
+        return {
+            check,
+            keep: (session, cwd) =>
+                void this.folderApprovals.approve(
+                    String(session),
+                    { computer, folder: cwd },
+                    answer.method,
+                    answer.by,
+                    user,
+                ),
+        };
     }
 
     /**
@@ -2866,7 +2898,7 @@ export class PocketApp {
         folder: string,
         runner?: string,
         signal?: AbortSignal,
-    ): Promise<(session: ConversationId, folder: string) => void> {
+    ): Promise<Approved> {
         const computer = runner ?? THIS_SERVER;
         const real = computer === THIS_SERVER ? await realFolder(folder) : folder;
         const root = String(this.rootOf(from));
@@ -2877,7 +2909,9 @@ export class PocketApp {
                 ? this.#worktreeSource(computer, own)
                 : undefined;
 
-        this.policy.requireFolder(user, computer, source ?? real);
+        const folderRule = () => this.policy.requireFolder(user, computer, source ?? real);
+
+        folderRule();
 
         // From another computer, it starts as a new session there would.
         if (!sameComputer) {
@@ -2890,24 +2924,32 @@ export class PocketApp {
         // The approval is of the folder the worktree came from, as the source's own is (`#approvalFolder`).
         const approved = (cwd: string) => (source !== undefined && cwd === folder ? source : cwd);
 
-        // The copy inherits the source's approval; who is in charge gives one on their own clock when it has none.
-        return (session, cwd) =>
-            this.folderApprovals.get(root) === undefined
-                ? inCharge
-                    ? void this.folderApprovals.approve(
+        return {
+            // Where it is saved: the folder is still theirs, and the source still theirs to steer, its approval live.
+            check: () => {
+                folderRule();
+                this.requireSteer(user, from);
+                this.#requireLive(from, user);
+            },
+            // The copy inherits the source's approval; who is in charge gives one on their own clock when it has none.
+            keep: (session, cwd) =>
+                this.folderApprovals.get(root) === undefined
+                    ? inCharge
+                        ? void this.folderApprovals.approve(
+                              String(this.rootOf(session)),
+                              { computer, folder: approved(cwd) },
+                              "owner",
+                              user.id,
+                              user,
+                          )
+                        : undefined
+                    : void this.folderApprovals.inherit(
+                          root,
                           String(this.rootOf(session)),
                           { computer, folder: approved(cwd) },
-                          "owner",
-                          user.id,
                           user,
-                      )
-                    : undefined
-                : void this.folderApprovals.inherit(
-                      root,
-                      String(this.rootOf(session)),
-                      { computer, folder: approved(cwd) },
-                      user,
-                  );
+                      ),
+        };
     }
 
     /**
@@ -3516,8 +3558,20 @@ export class PocketApp {
      */
     async requireTurn(id: ConversationId, user: User): Promise<void> {
         this.requireSteer(user, id);
-        const turns = await this.harness.snapshot(TurnsDoc, this.rootOf(id), context);
 
+        const root = this.rootOf(id);
+        const turns = await this.harness.snapshot(TurnsDoc, root, context);
+
+        // Only when no commit told it meanwhile: that one is newer than this read.
+        if (!this.#turns.has(String(root))) {
+            this.#turns.set(String(root), turns ?? { on: false });
+        }
+
+        this.#requireWheel(turns ?? undefined, user);
+    }
+
+    /** Refuse who does not have the wheel while take turns is on. */
+    #requireWheel(turns: { on: boolean; driver?: string } | undefined, user: User): void {
         if (turns?.on !== true || turns.driver === user.id) {
             return;
         }
@@ -3530,6 +3584,59 @@ export class PocketApp {
                 ? "Take turns is on: take the wheel first."
                 : `${driver.name} is driving. Ask to drive first.`,
         );
+    }
+
+    /** Refuse `user` when session `id`'s approval is not live for them now (`access.ts` `steer`). Nobody is asked. */
+    #requireLive(id: ConversationId, user: User): void {
+        const root = String(this.rootOf(id));
+        const facts = this.policy.session(root);
+
+        if (
+            facts !== undefined &&
+            facts.pip === undefined &&
+            this.policy.steer(user, root) !== "allow"
+        ) {
+            throw new HttpError(
+                409,
+                "This session's approval ended before this was saved. Try again.",
+            );
+        }
+    }
+
+    /**
+     * What `requireDriver` allowed, checked again now, without a read or a wait: `user` still sees and steers session
+     * `id`, has the wheel, and its approval is live (a task: its tasks may run). A command prepares between its check and
+     * its save, and the person can lose any of these meanwhile; this runs where the save happens (`admission`).
+     */
+    recheck(id: ConversationId, user: User, task?: boolean): void {
+        this.requireSteer(user, id);
+        this.#requireWheel(this.#turns.get(String(this.rootOf(id))), user);
+
+        if (task !== true) {
+            this.#requireLive(id, user);
+        } else if (!this.tasksMayRun(id)) {
+            throw new HttpError(
+                403,
+                "This session's approval ended, so its tasks are paused until someone renews it.",
+            );
+        }
+    }
+
+    /**
+     * The context for a save that `user` makes in session `id`: Pi Durable reads its signal where the queued save
+     * changes anything, and `recheck` (then `also`) runs on that read (`admission.ts`). Refused there, nothing is saved.
+     * Only for the save itself: what follows it (waiting for the run, a second save that completes the first) uses the
+     * plain context.
+     */
+    admission(
+        id: ConversationId,
+        user: User,
+        options: { task?: boolean; parent?: Context; also?: () => void } = {},
+    ): Context {
+        return checkedContext(options.parent ?? context, () => {
+            this.recheck(id, user, options.task);
+            options.also?.();
+        });
     }
 
     #noteChat(id: ConversationId, messages: readonly ChatMessage[] | undefined): boolean {

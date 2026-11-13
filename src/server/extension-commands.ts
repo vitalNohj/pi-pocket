@@ -406,56 +406,64 @@ export class ExtensionCommands {
         this.#pending.set(selection, { command, by: user.id });
 
         try {
-            return await app.harness.commit(async (tx) => {
-                made = false;
-                const requests = await tx.doc(CommandRequestsDoc, id, user.id, null);
-                const known = requests.items[requestId];
+            return await app.harness.commit(
+                async (tx) => {
+                    made = false;
+                    const requests = await tx.doc(CommandRequestsDoc, id, user.id, null);
+                    const known = requests.items[requestId];
 
-                // The same request, sent twice at once: the one that came first made the task.
-                if (known !== undefined) {
-                    return this.#same(known, commandId, args, tx);
-                }
-
-                // Past the most kept, the oldest finished ones make room; a run that still goes keeps its id. Tasks
-                // are read before the new one is made: a commit reads tables before it writes.
-                const finished: string[] = [];
-                const extra = Object.keys(requests.items).length + 1 - KEEP_REQUESTS;
-
-                for (const [old, oldTask] of Object.entries(requests.items)) {
-                    if (finished.length >= extra) {
-                        break;
+                    // The same request, sent twice at once: the one that came first made the task.
+                    if (known !== undefined) {
+                        return this.#same(known, commandId, args, tx);
                     }
 
-                    const record = await tx.task(oldTask as unknown as TaskId);
+                    // Past the most kept, the oldest finished ones make room; a run that still goes keeps its id. Tasks
+                    // are read before the new one is made: a commit reads tables before it writes.
+                    const finished: string[] = [];
+                    const extra = Object.keys(requests.items).length + 1 - KEEP_REQUESTS;
 
-                    if (record === undefined || record.state.status === "terminal") {
-                        finished.push(old);
+                    for (const [old, oldTask] of Object.entries(requests.items)) {
+                        if (finished.length >= extra) {
+                            break;
+                        }
+
+                        const record = await tx.task(oldTask as unknown as TaskId);
+
+                        if (record === undefined || record.state.status === "terminal") {
+                            finished.push(old);
+                        }
                     }
-                }
 
-                const created = await tx.createTask(
-                    this.task,
-                    {
-                        commandId,
-                        selection,
-                        command: command.name,
-                        scope: command.scope,
-                        args,
-                        by: user.id,
-                        name: user.name,
-                    },
-                    { ownership: { kind: "conversation" }, background: true, conversationId: id },
-                );
+                    const created = await tx.createTask(
+                        this.task,
+                        {
+                            commandId,
+                            selection,
+                            command: command.name,
+                            scope: command.scope,
+                            args,
+                            by: user.id,
+                            name: user.name,
+                        },
+                        {
+                            ownership: { kind: "conversation" },
+                            background: true,
+                            conversationId: id,
+                        },
+                    );
 
-                for (const old of finished) {
-                    delete requests.items[old];
-                }
+                    for (const old of finished) {
+                        delete requests.items[old];
+                    }
 
-                requests.items[requestId] = Number(created);
-                made = true;
+                    requests.items[requestId] = Number(created);
+                    made = true;
 
-                return created;
-            }, context);
+                    return created;
+                    // A session command is stored only for who still drives the session; a global one is the owner's.
+                },
+                command.scope === "global" ? context : app.admission(id, user),
+            );
         } finally {
             // No task took this handler: it is not kept.
             if (!made) {

@@ -1408,12 +1408,17 @@ export class Pip {
             id,
             key,
             () =>
-                app.schedules.add(id, {
-                    when,
-                    text: `[via ${PIP_NAME}] ${message}`,
-                    requestedBy: user.id,
-                    key,
-                }),
+                app.schedules.add(
+                    id,
+                    {
+                        when,
+                        text: `[via ${PIP_NAME}] ${message}`,
+                        requestedBy: user.id,
+                        key,
+                    },
+                    // The checks above read and waited: it is saved only while PiP's person still drives that session.
+                    app.admission(id, user),
+                ),
             user,
         );
     }

@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { checkedContext } from "./admission.ts";
 import {
     AgentDoc,
     type AgentState,
@@ -824,101 +825,110 @@ export class LinkedSessions implements LinkedSessionsApi {
 
         // A linked session inherits its source's approval: Pi's work from a live run asks no one. Another folder must be
         // one given to its starter: an agent gets no more than they have.
-        const keep =
+        const folderApproval =
             app.workspaceScheme(cwd) === undefined
                 ? await app.approveFrom(user, source, cwd, runner)
-                : () => {};
+                : undefined;
+        const base = actor?.context ?? context;
 
         const now = Date.now();
 
         return app.harness
-            .commit(async (tx) => {
-                let inherited = agent;
+            .commit(
+                async (tx) => {
+                    let inherited = agent;
 
-                if (actor !== undefined) {
-                    user = await this.#authorize(tx, source, actor);
-                    inherited = JSON.parse(
-                        JSON.stringify(await tx.doc(AgentDoc, source)),
-                    ) as AgentState;
-                    actor.checkSource(inherited);
+                    if (actor !== undefined) {
+                        user = await this.#authorize(tx, source, actor);
+                        inherited = JSON.parse(
+                            JSON.stringify(await tx.doc(AgentDoc, source)),
+                        ) as AgentState;
+                        actor.checkSource(inherited);
 
-                    if (this.#selection(agent, request, true).thinking !== thinking) {
-                        throw new HttpError(
-                            409,
-                            "The selected model's thinking support changed. Try again.",
-                        );
+                        if (this.#selection(agent, request, true).thinking !== thinking) {
+                            throw new HttpError(
+                                409,
+                                "The selected model's thinking support changed. Try again.",
+                            );
+                        }
+
+                        if (
+                            !app.policy.mayStart(user, app.runnerOf(source) ?? THIS_SERVER) ||
+                            app.sessionMeta(source)?.linkedFrom !== undefined
+                        ) {
+                            throw new HttpError(
+                                403,
+                                "This person or source cannot start linked sessions.",
+                            );
+                        }
                     }
+
+                    const receipt = recordOf(
+                        await tx.doc(LinkedSessionCallsDoc, source),
+                        token,
+                        now,
+                    );
 
                     if (
-                        !app.policy.mayStart(user, app.runnerOf(source) ?? THIS_SERVER) ||
-                        app.sessionMeta(source)?.linkedFrom !== undefined
+                        actor !== undefined &&
+                        receipt.by !== undefined &&
+                        receipt.by !== actor.current().id
                     ) {
-                        throw new HttpError(
-                            403,
-                            "This person or source cannot start linked sessions.",
-                        );
+                        throw new HttpError(409, "This start key belongs to another person.");
                     }
-                }
 
-                const receipt = recordOf(await tx.doc(LinkedSessionCallsDoc, source), token, now);
-
-                if (
-                    actor !== undefined &&
-                    receipt.by !== undefined &&
-                    receipt.by !== actor.current().id
-                ) {
-                    throw new HttpError(409, "This start key belongs to another person.");
-                }
-
-                if (receipt.conversationId !== undefined) {
-                    return receipt.conversationId as unknown as ConversationId;
-                }
-
-                const sessions = await tx.doc(SessionsDoc);
-                const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
-
-                const childAgent = await tx.doc(AgentDoc, child.id);
-
-                Object.assign(childAgent, inherited, {
-                    cwd,
-                    model,
-                    thinkingLevel: thinking,
-                });
-
-                if (runner !== undefined) {
-                    childAgent.extensions = app.remoteExtensions();
-                }
-
-                sessions.items[String(child.id)] = {
-                    cwd,
-                    title,
-                    ...(runner === undefined ? {} : { runner, runnerPermission }),
-                    createdAt: now,
-                    updatedAt: now,
-                    createdBy: user.id,
-                    // Linking does not share: the new session starts shared as its computer says.
-                    ...app.initialShares(runner, user),
-                    linkedFrom: { id: Number(source) },
-                };
-                receipt.conversationId = Number(child.id);
-                receipt.by = user.id;
-
-                if (actor !== undefined) {
-                    await this.#authorize(tx, source, actor);
-                    actor.checkSource(await tx.doc(AgentDoc, source));
-
-                    if (this.#selection(agent, request, true).thinking !== thinking) {
-                        throw new HttpError(
-                            409,
-                            "The selected model's thinking support changed. Try again.",
-                        );
+                    if (receipt.conversationId !== undefined) {
+                        return receipt.conversationId as unknown as ConversationId;
                     }
-                }
 
-                return child.id;
-            }, actor?.context ?? context)
+                    const sessions = await tx.doc(SessionsDoc);
+                    const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
+
+                    const childAgent = await tx.doc(AgentDoc, child.id);
+
+                    Object.assign(childAgent, inherited, {
+                        cwd,
+                        model,
+                        thinkingLevel: thinking,
+                    });
+
+                    if (runner !== undefined) {
+                        childAgent.extensions = app.remoteExtensions();
+                    }
+
+                    sessions.items[String(child.id)] = {
+                        cwd,
+                        title,
+                        ...(runner === undefined ? {} : { runner, runnerPermission }),
+                        createdAt: now,
+                        updatedAt: now,
+                        createdBy: user.id,
+                        // Linking does not share: the new session starts shared as its computer says.
+                        ...app.initialShares(runner, user),
+                        linkedFrom: { id: Number(source) },
+                    };
+                    receipt.conversationId = Number(child.id);
+                    receipt.by = user.id;
+
+                    if (actor !== undefined) {
+                        await this.#authorize(tx, source, actor);
+                        actor.checkSource(await tx.doc(AgentDoc, source));
+
+                        if (this.#selection(agent, request, true).thinking !== thinking) {
+                            throw new HttpError(
+                                409,
+                                "The selected model's thinking support changed. Try again.",
+                            );
+                        }
+                    }
+
+                    return child.id;
+                    // Where it is saved: the folder is still its starter's, and the source still theirs to steer.
+                },
+                folderApproval === undefined ? base : checkedContext(base, folderApproval.check),
+            )
             .then((child) => {
-                keep(child, cwd);
+                folderApproval?.keep(child, cwd);
 
                 return child;
             });

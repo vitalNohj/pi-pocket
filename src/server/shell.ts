@@ -294,50 +294,54 @@ export class Shell {
             typeof request.requestId === "string" && request.requestId !== ""
                 ? `${user.id}:${request.requestId.slice(0, 64)}`
                 : undefined;
-        const taskId = await app.harness.commit(async (tx) => {
-            const requests = await tx.doc(ShellRequestsDoc, id);
-            const known = key === undefined ? undefined : requests.items[key];
+        const taskId = await app.harness.commit(
+            async (tx) => {
+                const requests = await tx.doc(ShellRequestsDoc, id);
+                const known = key === undefined ? undefined : requests.items[key];
 
-            if (known !== undefined) {
-                return known;
-            }
-
-            // Past the most kept, the oldest finished ones make room; a command still running keeps its request id,
-            // however many follow. Tasks are read before the new one is made: a commit reads tables before it writes.
-            const finished: string[] = [];
-            const extra =
-                key === undefined ? 0 : Object.keys(requests.items).length + 1 - KEEP_REQUESTS;
-
-            for (const [old, oldTask] of Object.entries(requests.items)) {
-                if (finished.length >= extra) {
-                    break;
+                if (known !== undefined) {
+                    return known;
                 }
 
-                const record = await tx.task(oldTask as unknown as TaskId);
+                // Past the most kept, the oldest finished ones make room; a command still running keeps its request id,
+                // however many follow. Tasks are read before the new one is made: a commit reads tables before it writes.
+                const finished: string[] = [];
+                const extra =
+                    key === undefined ? 0 : Object.keys(requests.items).length + 1 - KEEP_REQUESTS;
 
-                if (record === undefined || record.state.status === "terminal") {
-                    finished.push(old);
-                }
-            }
+                for (const [old, oldTask] of Object.entries(requests.items)) {
+                    if (finished.length >= extra) {
+                        break;
+                    }
 
-            const created = Number(
-                await tx.createTask(this.task, input, {
-                    ownership: { kind: "conversation" },
-                    background: true,
-                    conversationId: id,
-                }),
-            );
+                    const record = await tx.task(oldTask as unknown as TaskId);
 
-            if (key !== undefined) {
-                for (const old of finished) {
-                    delete requests.items[old];
+                    if (record === undefined || record.state.status === "terminal") {
+                        finished.push(old);
+                    }
                 }
 
-                requests.items[key] = created;
-            }
+                const created = Number(
+                    await tx.createTask(this.task, input, {
+                        ownership: { kind: "conversation" },
+                        background: true,
+                        conversationId: id,
+                    }),
+                );
 
-            return created;
-        }, BACKGROUND_CONTEXT);
+                if (key !== undefined) {
+                    for (const old of finished) {
+                        delete requests.items[old];
+                    }
+
+                    requests.items[key] = created;
+                }
+
+                return created;
+                // The guard's judgement took time: the command is stored only for who still drives the session.
+            },
+            app.admission(id, user),
+        );
 
         return { taskId };
     }

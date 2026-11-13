@@ -441,17 +441,22 @@ export class Hooks {
             count: 0,
         };
 
-        await app.harness.commit(async (tx) => {
-            const doc = await tx.doc(HooksDoc);
+        await app.harness.commit(
+            async (tx) => {
+                const doc = await tx.doc(HooksDoc);
 
-            if (
-                Object.values(doc.items).filter((each) => each.by === user.id).length >= MAX_HOOKS
-            ) {
-                throw new HttpError(409, `A person can have ${MAX_HOOKS} webhooks at most.`);
-            }
+                if (
+                    Object.values(doc.items).filter((each) => each.by === user.id).length >=
+                    MAX_HOOKS
+                ) {
+                    throw new HttpError(409, `A person can have ${MAX_HOOKS} webhooks at most.`);
+                }
 
-            doc.items[hook.id] = hook;
-        }, context);
+                doc.items[hook.id] = hook;
+                // Where it is saved: they still drive that session, its approval live.
+            },
+            app.admission(target, user),
+        );
 
         return this.view(hook);
     }
@@ -489,7 +494,8 @@ export class Hooks {
                 throw new HttpError(404, "No such webhook");
             }
 
-            this.#app.requireSteer(user, item.target as unknown as ConversationId);
+            // Where it is saved: they still drive that session, its approval live.
+            this.#app.recheck(item.target as unknown as ConversationId, user);
             item.instructions = text;
 
             return { ...item };

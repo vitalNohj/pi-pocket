@@ -344,6 +344,8 @@ export class Workspace {
 
         const before = this.head(id);
 
+        // The checks above read the repository, there on a runner: the branch switches only for who still drives it.
+        this.#app.recheck(id, user);
         await switchBranch(
             cwd,
             {
@@ -936,6 +938,10 @@ export class Workspace {
         }
 
         const access = await this.#access(id);
+
+        // Still theirs to drive when the file is undone.
+        this.#app.recheck(id, user);
+
         const kind = await revertFile(
             this.#app.cwdOf(id),
             path,

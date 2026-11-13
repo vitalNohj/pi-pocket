@@ -371,8 +371,15 @@ export class Schedules {
         return this.#app.loader.extensionNames().includes(SCHEDULES_EXTENSION);
     }
 
-    /** Set up a message to Pi. Throws an HttpError a person can act on when the time or the message will not do. */
-    async add(conversationId: ConversationId, request: ScheduleRequest): Promise<Schedule> {
+    /**
+     * Set up a message to Pi. Throws an HttpError a person can act on when the time or the message will not do.
+     * `saving`: the context of its save; a person's carries their check (`app.ts` `admission`).
+     */
+    async add(
+        conversationId: ConversationId,
+        request: ScheduleRequest,
+        saving: Context = context,
+    ): Promise<Schedule> {
         const app = this.#app;
 
         if (!this.running) {
@@ -472,7 +479,7 @@ export class Schedules {
             doc.items[id] = schedule;
 
             return schedule;
-        }, context);
+        }, saving);
     }
 
     /** Stop a schedule: it sends nothing more. Returns it; undefined when there is no such schedule. */
