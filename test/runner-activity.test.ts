@@ -172,7 +172,6 @@ describe("a runner's activity", () => {
             const env = runners.env(linked.id, work, {
                 id: "7053c1d4-4f9f-48b4-81ea-5b3fccc10fb6",
                 folder: work,
-                person: "Owner",
             });
             const running = env.exec("sleep 0.6; echo done", {}, context);
 

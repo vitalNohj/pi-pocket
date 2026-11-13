@@ -33,8 +33,8 @@ async function fixture(t: TestContext) {
 
     writeFileSync(join(folder, "file.txt"), "inside");
     writeFileSync(join(outside, "file.txt"), "outside");
-    const a: SessionScope = { id: "10fc1ade-5001-4e35-8107-d1800dc80a9b", folder, person: "Alice" };
-    const b: SessionScope = { id: "82c9e98d-d891-4e29-8978-76b8dc9304b9", folder, person: "Bob" };
+    const a: SessionScope = { id: "10fc1ade-5001-4e35-8107-d1800dc80a9b", folder };
+    const b: SessionScope = { id: "82c9e98d-d891-4e29-8978-76b8dc9304b9", folder };
 
     const sent: Buffer[] = [];
     const replies: Buffer[] = [];

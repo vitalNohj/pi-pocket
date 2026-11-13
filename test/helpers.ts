@@ -27,8 +27,8 @@ mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 export const work = join(root, "work");
 mkdirSync(work);
 /**
- * The home folder the app finds `~/.agents/skills` in, for the same isolation. Beside `root`, not in it: a folder above
- * home is too broad to save (`broadFolder`), and `addPerson` saves `root`.
+ * The home folder the app finds `~/.agents/skills` in, for the same isolation. Beside `root`, not in it, so the folder
+ * `addPerson` gives people (`root`) does not hold it.
  */
 export const home = mkdtempSync(join(tmpdir(), "pi-pocket-test-home-"));
 

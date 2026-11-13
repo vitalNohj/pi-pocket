@@ -1,6 +1,5 @@
-/** Allowed working folders belong to this computer, never to the server. */
+/** Folder paths as this computer compares them: its own case rules, its own real paths. */
 import { realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 
 function comparable(folder: string, platform: NodeJS.Platform): string {
@@ -30,54 +29,7 @@ export function folderContains(
     );
 }
 
-/** A root, the home folder, or an ancestor of the home folder must not be saved by an Allow answer. */
-export function broadFolder(
-    folder: string,
-    home: string,
-    platform: NodeJS.Platform = process.platform,
-): boolean {
-    const paths = platform === "win32" ? win32 : posix;
-
-    return (
-        comparable(folder, platform) === comparable(paths.parse(folder).root, platform) ||
-        folderContains(folder, home, platform)
-    );
-}
-
 /** A missing asked folder keeps the path the server gave. */
 export async function realFolder(folder: string): Promise<string> {
     return realpath(folder).catch(() => folder);
-}
-
-/**
- * Missing saved folders do not grant access, including paths through a replaced symlink. `home` is this computer's
- * home folder, for the broad-folder rule; the server passes its own.
- */
-export async function coveredFolder(
-    folder: string,
-    folders: readonly string[],
-    home?: string,
-): Promise<boolean> {
-    home = await realFolder(home ?? homedir());
-
-    for (const saved of folders) {
-        try {
-            const real = await realpath(saved);
-
-            if (!broadFolder(real, home) && folderContains(real, folder)) {
-                return true;
-            }
-        } catch {
-            // A saved folder that no longer exists grants nothing.
-        }
-    }
-
-    return false;
-}
-
-/** Compare an entry for removal, also when the saved folder no longer exists. */
-export async function sameFolder(left: string, right: string): Promise<boolean> {
-    const [a, b] = await Promise.all([realFolder(left), realFolder(right)]);
-
-    return folderContains(a, b) && folderContains(b, a);
 }

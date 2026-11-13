@@ -148,11 +148,11 @@ after(async () => {
 });
 
 /** A session the server approved on the computer: its scope, as the runner sees it in each request. */
-async function approved(folder = project): Promise<{ id: string; folder: string; person: string }> {
+async function approved(folder = project): Promise<{ id: string; folder: string }> {
     const id = await app.commands.createSession(owner(app), { cwd: folder, runner: runnerId });
     const meta = app.sessionMeta(id.id)!;
 
-    return { id: meta.runnerPermission!, folder, person: owner(app).name };
+    return { id: meta.runnerPermission!, folder };
 }
 
 test("the list sends only metadata, newest first; search does not read message bodies", async () => {
@@ -262,7 +262,7 @@ test("continue starts a new session in its folder, imports history, and scopes t
         (await list()).body.sessions.find((each) => each.path === source.path)!.pocket,
         { id, behind: false },
     );
-    const scope = { id: meta.runnerPermission!, folder: project, person: "Owner" };
+    const scope = { id: meta.runnerPermission!, folder: project };
     const env = app.runners.env(runnerId, project, scope);
 
     assert.equal((await env.readTextFile(source.path, context)).ok, true);

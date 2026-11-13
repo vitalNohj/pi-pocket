@@ -69,11 +69,11 @@ export const MAX_FRAME = 16 * 1024 * 1024;
 export type RunnerTools = { git: boolean; gh: boolean; github: boolean };
 
 /**
- * The session a request belongs to, as the server names it: its id (the root session's permission id), its folder on the
- * computer, and who started it. The server decided that this person may use this folder (`src/server/access.ts`); the
- * runner keeps the request inside it (`request-gate.ts`).
+ * The session a request belongs to, as the server names it: its id (the root session's permission id) and its folder on
+ * the computer. The server decided that the person it works for may use this folder (`src/server/access.ts`); the runner
+ * keeps the request inside it (`request-gate.ts`).
  */
-export type SessionScope = { id: string; folder: string; person: string };
+export type SessionScope = { id: string; folder: string };
 
 /** Removed by the runner before a request reaches pi-env: the request's `SessionScope`. */
 export const SESSION_FIELD = "_pocketSession";
@@ -264,8 +264,7 @@ function scopeOf(value: unknown): value is SessionScope {
         typeof scope === "object" &&
         scope !== null &&
         typeof scope.id === "string" &&
-        typeof scope.folder === "string" &&
-        typeof scope.person === "string"
+        typeof scope.folder === "string"
     );
 }
 

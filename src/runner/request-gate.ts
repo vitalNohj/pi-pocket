@@ -146,10 +146,7 @@ export function sessionScope(value: unknown): SessionScope | undefined {
 
     const scope = value as Record<string, unknown>;
 
-    return permissionId(scope.id) &&
-        typeof scope.folder === "string" &&
-        isAbsolute(scope.folder) &&
-        typeof scope.person === "string"
+    return permissionId(scope.id) && typeof scope.folder === "string" && isAbsolute(scope.folder)
         ? (scope as SessionScope)
         : undefined;
 }

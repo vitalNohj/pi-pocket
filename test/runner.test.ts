@@ -14,13 +14,7 @@ import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import {
-    broadFolder,
-    coveredFolder,
-    folderContains,
-    realFolder,
-    sameFolder,
-} from "../src/runner/folders.ts";
+import { folderContains, realFolder } from "../src/runner/folders.ts";
 import { Runner, type RunnerOptions, RunnerStopped } from "../src/runner/runner.ts";
 import { checkTools, toolsStatus } from "../src/runner/tools.ts";
 import { ConfigStore } from "../src/server/config.ts";
@@ -88,7 +82,7 @@ function startRunner(
 async function sessionEnv(setup: Setup, id: string, cwd: string, session = randomUUID()) {
     await setup.runners.link(id).whenOnline();
 
-    return setup.runners.env(id, cwd, { id: session, folder: cwd, person: "Owner" });
+    return setup.runners.env(id, cwd, { id: session, folder: cwd });
 }
 
 /** The options each test runner started with, to start it again (`startRunnerFor`). */
@@ -533,7 +527,7 @@ describe("runner link", () => {
             const link = setup.runners.link(id);
             const [near, far] = socketPair();
             const opened = runner.opened;
-            const session = { id: randomUUID(), folder: root, person: "Owner" };
+            const session = { id: randomUUID(), folder: root };
 
             await link.openNetwork("localhost", (echo.address() as AddressInfo).port, far, {
                 first: [Buffer.from("first ")],
@@ -694,26 +688,16 @@ describe("allowed folders", () => {
         assert.equal(folderContains("/", "/work", "linux"), true);
         assert.equal(folderContains("C:\\", "C:\\work", "win32"), true);
         assert.equal(folderContains("/work\\", "/work", "linux"), false);
-        assert.equal(broadFolder("/", "/home/person", "linux"), true);
-        assert.equal(broadFolder("/home", "/home/person", "linux"), true);
-        assert.equal(broadFolder("/home/person", "/home/person", "linux"), true);
-        assert.equal(broadFolder("/home/person/project", "/home/person", "linux"), false);
-        assert.equal(broadFolder("C:\\", "C:\\Users\\person", "win32"), true);
-        assert.equal(broadFolder("/USERS", "/Users/person", "darwin"), true);
     });
 
-    it("uses real paths, skips deleted entries, and can remove an entry that no longer exists", async () => {
+    it("uses real paths, and keeps the path of a folder that is not there", async () => {
         const folder = mkdtempSync(join(root, "real-"));
         const alias = `${folder}-alias`;
         const missing = join(folder, "missing");
 
         symlinkSync(folder, alias, process.platform === "win32" ? "junction" : "dir");
         assert.equal(await realFolder(alias), await realFolder(folder));
-        assert.equal(await coveredFolder(folder, [alias]), true);
-        assert.equal(await coveredFolder(missing, [missing]), false);
         assert.equal(await realFolder(missing), missing);
-        assert.equal(await sameFolder(alias, folder), true);
-        assert.equal(await sameFolder(missing, missing), true);
     });
 });
 

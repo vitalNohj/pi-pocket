@@ -583,7 +583,7 @@ export class Commands {
 
                 return { id: conversation.id };
             },
-            { runner, scope: { id: runnerPermission, folder: cwd, person: user.name } },
+            { runner, scope: { id: runnerPermission, folder: cwd } },
         );
     }
 
@@ -745,11 +745,7 @@ export class Commands {
                 throw new HttpError(409, "The computer did not return the Pi session file.");
             }
 
-            const env = app.runners.env(runner, cwd, {
-                id: runnerPermission,
-                folder: cwd,
-                person: user.name,
-            });
+            const env = app.runners.env(runner, cwd, { id: runnerPermission, folder: cwd });
             const text = await env.readTextFile(
                 opened.path,
                 signal === undefined ? context : withAbortSignal(signal, context),
@@ -3642,7 +3638,7 @@ export class Commands {
                 ? undefined
                 : {
                       runner,
-                      scope: { id: runnerPermission, folder: destination.cwd, person: user.name },
+                      scope: { id: runnerPermission, folder: destination.cwd },
                   },
         );
     }
