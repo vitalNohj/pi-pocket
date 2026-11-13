@@ -388,6 +388,70 @@ test("the owner limits a person to sessions the owner may share, never to one on
     assert.deepEqual(limited(), [String(hers), String(mine)]);
 });
 
+test("the people list names a limited person's sessions only to those who may see them", async () => {
+    const gina = person("Gina lists", "guest");
+    const ginas = app.config.addRunner("Gina's phone", gina.id, newIdentity().publicKey).id;
+    const { id: mine } = await app.commands.createSession(owner(app), { cwd: project });
+    const { id: hers } = await app.commands.createSession(owner(app), { cwd: project });
+
+    await app.harness.commit(async (tx) => {
+        const meta = (await tx.doc(SessionsDoc)).items[String(hers)]!;
+
+        meta.runner = ginas;
+        meta.createdBy = gina.id;
+    }, context);
+    const quinn = person("Quinn", "viewer", [String(hers), String(mine)]);
+    const listed = (viewer: User) =>
+        app.people(viewer).find((each) => each.id === quinn.id)?.sessions;
+
+    // The owner sees their own session there, and nothing of Gina's computer: not even that session's id.
+    assert.deepEqual(listed(owner(app)), [Number(mine)]);
+    // Gina is in charge of her computer; the owner's session is not shared with her.
+    assert.deepEqual(listed(gina), [Number(hers)]);
+    // Someone who sees neither still learns that Quinn is limited.
+    assert.deepEqual(listed(person("Rae", "guest")), []);
+});
+
+test("a copy tells where it was forked from only to those who may see that session", async () => {
+    const { id: source } = await app.commands.createSession(owner(app), { cwd: project });
+    const { id: copy } = await app.commands.createSession(owner(app), { cwd: project });
+
+    await call(owner(app), `runners/${THIS_SERVER}/users`, { users: [alex.id, vera.id] });
+    await app.harness.commit(async (tx) => {
+        (await tx.doc(SessionsDoc)).items[String(copy)]!.forkedFrom = {
+            id: Number(source),
+            entryId: 3,
+        };
+    }, context);
+    await app.commands.shareSession(copy, owner(app), [alex.id]);
+    assert.equal(app.canSee(alex, source), false);
+
+    const mineTab = fakeTab(copy, owner(app));
+    const alexTab = fakeTab(copy, alex);
+
+    await app.attach(mineTab.client);
+    await app.attach(alexTab.client);
+
+    try {
+        await until(
+            () => mineTab.last("view") !== undefined && alexTab.last("view") !== undefined,
+            "both tabs get the session",
+        );
+        assert.deepEqual(
+            (mineTab.last("view")?.conversation as { forkedFrom?: unknown }).forkedFrom,
+            { id: Number(source), entryId: 3 },
+        );
+        // Alex learns that it is a copy, and not of which session.
+        assert.deepEqual(
+            (alexTab.last("view")?.conversation as { forkedFrom?: unknown }).forkedFrom,
+            {},
+        );
+    } finally {
+        app.detach(mineTab.client);
+        app.detach(alexTab.client);
+    }
+});
+
 test("a tab whose person can no longer see a session gets none of its live events, before it is moved out", async () => {
     const { id } = await app.commands.createSession(owner(app), { cwd: project });
 

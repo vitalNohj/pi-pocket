@@ -929,7 +929,7 @@ export class Room {
 
         client.send("view", {
             full,
-            conversation: this.#app.conversationInfo(this),
+            conversation: this.#app.conversationInfo(this, client.user),
             entries,
             ...(orderChanged || full ? orderPart : {}),
             // Last, so that nothing that throws before the send leaves the server thinking the tab has these blocks.

@@ -378,7 +378,7 @@ function PeopleList() {
                     </div>
                     <div class="muted small">
                         ${person.role === "owner" ? "owner" : person.role === "viewer" ? "view only" : "can steer"}
-                        ${person.sessions ? ` · only ${person.sessions.map(sessionTitle).join(", ")}` : ""} · ${lastSeen(person)}
+                        ${person.sessions ? ` · only ${person.sessions.length > 0 ? person.sessions.map(sessionTitle).join(", ") : "sessions not shared with you"}` : ""} · ${lastSeen(person)}
                         ${person.authenticator ? " · authenticator linked" : ""}
                         ${person.linksRunners ? " · links runners" : ""}
                     </div>

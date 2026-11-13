@@ -2680,9 +2680,15 @@ export class PocketApp {
                 ...(each.avatar === undefined ? {} : { avatar: each.avatar }),
                 online: this.#online(each.id),
                 ...(each.lastSeen === undefined ? {} : { lastSeen: each.lastSeen }),
+                // Which sessions they are limited to: only the ones this viewer may see themselves. An empty list still
+                // says that they are limited.
                 ...(each.sessions === undefined || scope !== undefined
                     ? {}
-                    : { sessions: each.sessions.map(Number) }),
+                    : {
+                          sessions: each.sessions
+                              .filter((id) => this.policy.maySee(viewer, id))
+                              .map(Number),
+                      }),
                 // For the owner, who can remove it (a lost phone): that one is linked, never what it holds.
                 ...(viewer.role === "owner" && each.authenticator?.confirmedAt !== undefined
                     ? { authenticator: true }
@@ -4331,7 +4337,8 @@ export class PocketApp {
         return `Conversation ${String(id)}`;
     }
 
-    conversationInfo(room: Room) {
+    /** What a tab shows of a conversation. `viewer`: whose tab; a session it was forked from that they may not see is not named. */
+    conversationInfo(room: Room, viewer?: User) {
         const meta = this.#sessions[String(room.id)];
         const agent = (room.value?.docs["pi.agent"] ?? {}) as AgentState;
         const forkedFrom = meta?.forkedFrom;
@@ -4359,7 +4366,15 @@ export class PocketApp {
             ...(room.parent === undefined ? {} : { parent: room.parent }),
             ...(room.subagentName === undefined ? {} : { subagentName: room.subagentName }),
             // Each browser finds the source's title in its own session list, so only people who can open it get a link.
-            ...(forkedFrom === undefined ? {} : { forkedFrom }),
+            // Someone who may not see the source learns only that there is one.
+            ...(forkedFrom === undefined
+                ? {}
+                : {
+                      forkedFrom:
+                          viewer === undefined || this.policy.maySee(viewer, String(forkedFrom.id))
+                              ? forkedFrom
+                              : {},
+                  }),
             // The session's spend with its subagents', and its limit, with what counts against it.
             spend: {
                 spent: subagent
