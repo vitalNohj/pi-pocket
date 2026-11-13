@@ -2184,8 +2184,9 @@ export class Commands {
         app.requireSteer(user, id);
         const item = await this.#heldItem(id, key);
 
+        // Someone else's: the driver's to drop. It stops work, so it never waits for the session's approval.
         if (item.by !== user.id) {
-            await app.requireDriver(id, user);
+            await app.requireTurn(id, user);
         }
 
         await this.#unhold(id, key);
@@ -2287,8 +2288,9 @@ export class Commands {
         app.requireSteer(user, id);
         const by = await app.attribution.submitter(submissionId);
 
+        // Someone else's: the driver's to take back. It stops work, so it never waits for the session's approval.
         if (by !== user.id) {
-            await app.requireDriver(id, user);
+            await app.requireTurn(id, user);
         }
 
         await this.#discardReports(id, submissionId);
@@ -2894,11 +2896,12 @@ export class Commands {
         return schedule;
     }
 
+    /** Cancel a scheduled message. Stopping work: it never waits for the session's approval (`requireTurn`). */
     async cancelSchedule(id: ConversationId, user: User, scheduleId: string): Promise<void> {
         const app = this.#app;
 
         app.requireSee(user, id);
-        await app.requireDriver(id, user);
+        await app.requireTurn(id, user);
         const schedule = await app.schedules.cancel(id, scheduleId);
 
         if (schedule === undefined) {
@@ -2935,12 +2938,15 @@ export class Commands {
         return { number: watch.number };
     }
 
-    /** Stop watching the session's pull request, or clear a watch that ended. */
+    /**
+     * Stop watching the session's pull request, or clear a watch that ended. Stopping work: it never waits for the
+     * session's approval (`requireTurn`).
+     */
     async unwatchPr(id: ConversationId, user: User): Promise<void> {
         const app = this.#app;
 
         app.requireSee(user, id);
-        await app.requireDriver(id, user);
+        await app.requireTurn(id, user);
         const watch = await app.watches.stop(id);
 
         if (watch?.status === "watching") {

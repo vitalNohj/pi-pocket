@@ -65,6 +65,12 @@ function tooLong(message: string): void {
     }
 }
 
+/**
+ * How a call acts on a session, for its approval (`app.ts` `requireDriver`, `requireTurn`). `send`: a person's agent
+ * makes Pi work, so the approval must be live or renewed now. `stop`: it only stops work, which never waits. `report`:
+ * the end of a run reports on its own, as a task runs: nobody is asked.
+ */
+type Acting = "send" | "stop" | "report";
 type CallOutcome = { busy: boolean; stopping?: boolean } | { archived: boolean; repeating: number };
 type CallRecord = { conversationId?: number; by?: string; at: number; result?: CallOutcome };
 
@@ -119,7 +125,21 @@ export class LinkedSessions implements LinkedSessionsApi {
         return user;
     }
 
-    async #maySend(source: ConversationId, user: User, actor?: RequestActor): Promise<void> {
+    /** The session's approval, as `how` the call acts needs it (`Acting`), and the turn while take turns is on. */
+    async #mayDrive(id: ConversationId, user: User, how: Acting): Promise<void> {
+        if (how === "stop") {
+            await this.#app.requireTurn(id, user);
+        } else {
+            await this.#app.requireDriver(id, user, how === "report");
+        }
+    }
+
+    async #maySend(
+        source: ConversationId,
+        user: User,
+        actor?: RequestActor,
+        how: Acting = "send",
+    ): Promise<void> {
         const app = this.#app;
 
         if (actor !== undefined) {
@@ -128,7 +148,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             return;
         }
 
-        await app.requireDriver(source, user);
+        await this.#mayDrive(source, user, how);
 
         if ((await app.harness.snapshot(PlanDoc, source, context))?.on) {
             throw new HttpError(409, "This session is in plan mode.");
@@ -1016,7 +1036,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             return { busy: repeat.busy };
         }
 
-        await this.#mayAct(source, id, user);
+        await this.#mayAct(source, id, user, "stop");
         // The receipt is stored with the busy state, marked `stopping`, before the run stops, and marked done after.
         // A repeat that finds it done stops nothing. One that finds `stopping` (a crash came between) stops again,
         // which is safe, and finishes it. A key for another session is refused here.
@@ -1121,12 +1141,15 @@ export class LinkedSessions implements LinkedSessionsApi {
     }
 
     /** The checks `send` makes before a message goes: the source, then the turn and the spend limit in the target. */
-    async #mayAct(source: ConversationId, target: ConversationId, user: User): Promise<void> {
-        const app = this.#app;
-
-        await this.#maySend(source, user);
-        await app.requireDriver(target, user);
-        app.spend.check(user, target);
+    async #mayAct(
+        source: ConversationId,
+        target: ConversationId,
+        user: User,
+        how: Acting = "send",
+    ): Promise<void> {
+        await this.#maySend(source, user, undefined, how);
+        await this.#mayDrive(target, user, how);
+        this.#app.spend.check(user, target);
     }
 
     /**
@@ -1240,8 +1263,11 @@ export class LinkedSessions implements LinkedSessionsApi {
             return;
         }
 
-        await this.#maySend(source, user, actor);
-        await app.requireDriver(target, user);
+        // The end of a run reports on its own: nobody acts, so nobody is asked to renew an approval.
+        const how: Acting = ended === undefined ? "send" : "report";
+
+        await this.#maySend(source, user, actor, how);
+        await this.#mayDrive(target, user, how);
         app.spend.check(user, target);
 
         if (actor !== undefined) {

@@ -342,9 +342,23 @@ test("a locked session waits for a renewal: its starter's code, or the owner's A
     await galeSends;
     assert.equal(app.folderApprovals.get(String(id))?.method, "owner");
 
-    // Stopping work never needs an approval.
-    clock += 8 * DAY;
+    // Stopping work never needs an approval: the run, a schedule, and a pull request watch end at once, for its
+    // starter and for someone it is shared with, and nobody is asked.
+    const first = await app.commands.schedule(id, alex, { when: "in 10m check it", zone: "UTC" });
+    const second = await app.commands.schedule(id, alex, { when: "in 20m and again", zone: "UTC" });
+
+    await app.commands.shareSession(id, alex, [gale.id, vera.id]);
+    app.folderApprovals.revoke(String(id), true);
+    assert.equal(app.policy.steer(alex, String(id)), "locked");
+    // A viewer it is shared with still stops nothing.
+    await assert.rejects(app.commands.cancelSchedule(id, vera, first.id), { status: 403 });
     await app.commands.abort(id, alex);
+    await app.commands.cancelSchedule(id, alex, first.id);
+    await app.commands.cancelSchedule(id, gale, second.id);
+    await app.commands.unwatchPr(id, alex);
+    assert.deepEqual(await app.schedules.list(id), []);
+    assert.deepEqual(app.folderRequests.list(owner(app)), [], "stopping asked nobody");
+    assert.equal(app.policy.steer(alex, String(id)), "locked", "and renewed nothing");
 });
 
 test("in a locked session, making or editing a webhook waits for the renewal", async () => {
@@ -606,7 +620,7 @@ test("copies, moves, and linked sessions inherit the session's approval, in fold
     await (await app.harness.submission(submissionId, context))!.wait(context);
 
     const elsewhere = newFolder();
-    const { session } = await app.linkedSessions.start(
+    const { session, address: linked } = await app.linkedSessions.start(
         id,
         { message: "Work over there", cwd: elsewhere },
         crypto.randomUUID(),
@@ -618,6 +632,12 @@ test("copies, moves, and linked sessions inherit the session's approval, in fold
 
     // A locked source is renewed before its copy is made.
     clock += 8 * DAY;
+
+    // Stopping the linked session asks nobody, though both sessions are locked.
+    assert.equal(app.policy.steer(alex, String(id)), "locked");
+    assert.equal(app.policy.steer(alex, String(session)), "locked");
+    await app.linkedSessions.stop(id, { to: linked }, crypto.randomUUID());
+    assert.deepEqual(app.folderRequests.list(owner(app)), [], "stopping asked nobody");
 
     const copying = app.commands.fork(id, alex, {});
     const renew = await renewing(alex);

@@ -3451,19 +3451,28 @@ export class PocketApp {
      * live (`#requireApproval`), or renewed now. `task`: one of its tasks runs (`tasksMayRun` decides), not a person.
      */
     async requireDriver(id: ConversationId, user: User, task?: boolean): Promise<void> {
+        await this.requireTurn(id, user);
+
+        if (task !== true) {
+            await this.#requireApproval(id, user);
+        } else if (!this.tasksMayRun(id)) {
+            throw new HttpError(
+                403,
+                "This session's approval ended, so its tasks are paused until someone renews it.",
+            );
+        }
+    }
+
+    /**
+     * Who may steer session `id`, and has the wheel while take turns is on. All that stopping work asks (cancelling a
+     * schedule, ending a watch, stopping a linked session): an approval checks who a person is before Pi works for
+     * them, and stopping makes Pi do nothing, so a locked session never makes it wait.
+     */
+    async requireTurn(id: ConversationId, user: User): Promise<void> {
         this.requireSteer(user, id);
         const turns = await this.harness.snapshot(TurnsDoc, this.rootOf(id), context);
 
         if (turns?.on !== true || turns.driver === user.id) {
-            if (task !== true) {
-                await this.#requireApproval(id, user);
-            } else if (!this.tasksMayRun(id)) {
-                throw new HttpError(
-                    403,
-                    "This session's approval ended, so its tasks are paused until someone renews it.",
-                );
-            }
-
             return;
         }
 

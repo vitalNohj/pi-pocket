@@ -1423,7 +1423,8 @@ export class Pip {
         const user = this.#person(pipId);
         const id = this.#session(pipId, user, sessionId);
 
-        await app.requireDriver(id, user);
+        // Stopping work never waits for the session's approval.
+        await app.requireTurn(id, user);
         this.#requireLooked(pipId, sessionId, "cancel schedules in");
 
         return app.schedules.cancel(id, scheduleId);
