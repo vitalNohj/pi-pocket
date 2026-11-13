@@ -9,6 +9,8 @@ import {
     cleanUp,
     context,
     fakeTab,
+    lastText,
+    modelTexts,
     openApp,
     owner,
     root,
@@ -21,6 +23,8 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
+import type { FauxResponseStep } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { THIS_SERVER } from "../src/server/access.ts";
 import { STEP_MS, totp } from "../src/server/totp.ts";
@@ -29,6 +33,20 @@ import { FOLDER_REQUEST_MS, type FolderRequestView } from "../src/server/folder-
 import { createHandler } from "../src/server/http.ts";
 
 let clock = 1_800_000_000_000;
+/** Set, the next run answers only once `release` is called, so a test can end an approval while that run works. */
+let hold = false;
+let release: (() => void) | undefined;
+
+/** The echo model; one run waits for `release` when a test asked it to `hold`. */
+const route: FauxResponseStep = async (request) => {
+    if (hold) {
+        hold = false;
+        await new Promise<void>((resolve) => (release = resolve));
+    }
+
+    return fauxAssistantMessage([fauxText(`echo: ${lastText(request as never).text}`)]);
+};
+
 let app: App;
 let server: Server;
 let address: string;
@@ -124,7 +142,7 @@ async function pending(user: User, folder: string): Promise<FolderRequestView> {
 }
 
 before(async () => {
-    app = await openApp(scriptedModel(), undefined, () => clock);
+    app = await openApp(scriptedModel(route), undefined, () => clock);
     alex = person("Alex", "guest");
     gale = person("Gale", "guest");
     vera = person("Vera", "viewer");
@@ -754,6 +772,64 @@ test("copies, moves, and linked sessions inherit the session's approval, in fold
 
     await app.folderRequests.approve(owner(app), renew.id, { method: "owner" });
     assert.equal(app.folderApprovals.live(String((await copying).id)), true);
+});
+
+test("a linked session's report at the end of its run asks nobody, though both approvals ended meanwhile", async () => {
+    const folder = newFolder();
+    const started = app.commands.createSession(alex, { cwd: folder });
+
+    await app.folderRequests.approve(owner(app), (await pending(alex, folder)).id, {
+        method: "owner",
+    });
+
+    const { id } = await started;
+
+    await app.commands.configure(id, alex, {
+        model: { provider: "faux", modelId: "faux-1" },
+        thinkingLevel: "off",
+    });
+
+    const { submissionId } = await app.commands.submit(id, alex, {
+        text: "hello",
+        requestId: crypto.randomUUID(),
+    });
+
+    await (await app.harness.submission(submissionId, context))!.wait(context);
+
+    const { session } = await app.linkedSessions.start(
+        id,
+        { message: "Work beside me" },
+        crypto.randomUUID(),
+    );
+
+    // The reports that came in (strings), not the echo model's answers to them (arrays of parts).
+    const finished = async () =>
+        (await modelTexts(app, id)).filter(
+            (text) => text.startsWith('"') && /Linked session \S+ finished its run/.test(text),
+        ).length;
+
+    await until(async () => (await finished()) === 1, "the first run's report");
+    await until(() => !app.isBusy(id) && !app.isBusy(session), "both to be idle");
+
+    const to = (await app.linkedSessions.list(id))[0]!.address;
+
+    // The second run is still going when both approvals end. Nobody acts when it ends: its report comes back as a task
+    // runs, and asks nobody to renew anything.
+    release = undefined;
+    hold = true;
+    await app.linkedSessions.send(id, { to, message: "more" }, crypto.randomUUID());
+    await until(() => release !== undefined, "the second run to start");
+    clock += 8 * DAY;
+    assert.equal(app.policy.steer(alex, String(id)), "locked");
+    assert.equal(app.policy.steer(alex, String(session)), "locked");
+    assert.equal(await finished(), 1, "the run has not ended yet");
+    release!();
+    await until(
+        async () => (await finished()) === 2,
+        "the report of a run that ended while locked",
+    );
+    assert.deepEqual(app.folderRequests.list(owner(app)), [], "the report asked nobody");
+    assert.equal(app.folderApprovals.live(String(id)), false, "and renewed nothing");
 });
 
 test("a person removed from this server loses their waiting requests, and their sessions go to the owner", async () => {

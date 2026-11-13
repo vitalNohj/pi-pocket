@@ -1325,6 +1325,8 @@ export class LinkedSessions implements LinkedSessionsApi {
                               }, actor.context),
                           afterSubmit: () => closeAdmission(),
                       },
+                // The end of a run, told with nobody acting: it goes in as a task does, and asks no one to renew.
+                how === "report",
             );
         } finally {
             closeAdmission();
