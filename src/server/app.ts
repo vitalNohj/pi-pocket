@@ -653,6 +653,7 @@ export class PocketApp {
             mayList: (id, user) => user.role === "owner" || this.policy.mayUse(user, id),
             mayManage: (id, user) => this.policy.mayManage(user, id),
             mayStart: (id, user) => this.policy.mayStart(user, id),
+            mayUse: (id, user) => this.policy.mayUse(user, id),
         });
         this.cacheKeeper = new CacheKeeper({
             log: (line) => this.#log(line),

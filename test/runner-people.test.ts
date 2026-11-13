@@ -622,6 +622,65 @@ describe("review drill fixes for people on a computer", () => {
         );
     });
 
+    it("tells what a computer is only to the people who may use it, not to an owner who only lists it", async () => {
+        const lina = person("Lina", "guest");
+        const cho = person("Cho", "guest");
+        const linas = app.config.addRunner("Lina's laptop", lina.id, newIdentity().publicKey).id;
+
+        // As its runner reported when it connected.
+        app.config.updateRunner(linas, {
+            platform: {
+                os: "linux",
+                arch: "arm64",
+                home: "/home/lina",
+                version: "9.9.9",
+                tmpdir: "/tmp/lina",
+            },
+            tools: { git: true, gh: true, github: true },
+        });
+        app.config.setRunnerUsers(linas, [cho.id]);
+
+        try {
+            const seenBy = async (user: User) =>
+                (await request<RunnerView[]>(user, "runners")).body.find(
+                    (each) => each.id === linas,
+                );
+
+            // Who is in charge of it, and someone chosen for it: all of it.
+            for (const user of [lina, cho]) {
+                const view = await seenBy(user);
+
+                assert.equal(view?.os, "linux", user.name);
+                assert.equal(view?.home, "/home/lina", user.name);
+                assert.equal(view?.version, "9.9.9", user.name);
+                assert.deepEqual(view?.tools, { git: true, gh: true, github: true }, user.name);
+            }
+
+            // The owner, not chosen there: that it is there, whose it is, and whether it is on. Nothing of what it is.
+            const owners = await seenBy(owner(app));
+
+            assert.equal(owners?.name, "Lina's laptop");
+            assert.equal(owners?.createdBy, lina.id);
+            assert.equal(owners?.mayStart, false);
+
+            for (const key of ["os", "arch", "home", "version", "tmpdir", "tools"] as const) {
+                assert.equal(
+                    (owners as unknown as Record<string, unknown>)[key],
+                    undefined,
+                    `the owner's list has no ${key}`,
+                );
+            }
+
+            // The same list goes out when a tab opens.
+            assert.ok(JSON.stringify(await app.hello(lina)).includes("/home/lina"));
+            assert.ok(!JSON.stringify(await app.hello(owner(app))).includes("/home/lina"));
+            // Someone nobody chose there does not get it at all.
+            assert.equal(await seenBy(visitor()), undefined);
+        } finally {
+            app.config.removeRunner(linas);
+        }
+    });
+
     it("never lets another person download the computer's runner link or Pi's sign-ins", async () => {
         const home = join(there, "home");
 

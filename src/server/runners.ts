@@ -1055,6 +1055,7 @@ export class Runners {
     /** May this person change computer `id`'s people and settings (`access.ts` `mayManage`). */
     readonly #mayManage: (id: string, user: User) => boolean;
     readonly #mayStart: (id: string, user: User) => boolean;
+    readonly #mayUse: (id: string, user: User) => boolean;
     readonly #links = new Map<string, RunnerLink>();
     readonly #envs = new Map<string, RunnerEnv>();
     readonly #server = new WebSocketServer({
@@ -1076,6 +1077,8 @@ export class Runners {
         mayManage?: (id: string, user: User) => boolean;
         /** The access policy's "may start sessions there"; absent: as `mayList`. */
         mayStart?: (id: string, user: User) => boolean;
+        /** The access policy's "may use it" (in charge of it, or chosen for it); absent: as `mayList`. */
+        mayUse?: (id: string, user: User) => boolean;
     }) {
         this.#config = options.config;
         this.#log = options.log;
@@ -1086,6 +1089,7 @@ export class Runners {
         this.#mayList = options.mayList ?? ownerOnly;
         this.#mayManage = options.mayManage ?? ownerOnly;
         this.#mayStart = options.mayStart ?? this.#mayList;
+        this.#mayUse = options.mayUse ?? this.#mayList;
 
         const config = options.config;
 
@@ -1333,6 +1337,9 @@ export class Runners {
                 const link = this.#links.get(runner.id);
                 // Its people, folders, and settings are the business of who is in charge of it: its linker.
                 const manages = user === undefined || this.#mayManage(runner.id, user);
+                // What the computer is (its system, home folder, runner version, and sign-ins) is for the people who
+                // may use it. The owner lists a computer someone else linked only to unlink it, and learns none of it.
+                const uses = user === undefined || this.#mayUse(runner.id, user);
 
                 return {
                     id: runner.id,
@@ -1377,8 +1384,8 @@ export class Runners {
                     online: link?.online === true,
                     away: link?.away === true,
                     ...(runner.lastSeen === undefined ? {} : { lastSeen: runner.lastSeen }),
-                    ...(runner.platform ?? {}),
-                    ...(runner.tools === undefined ? {} : { tools: runner.tools }),
+                    ...(uses ? (runner.platform ?? {}) : {}),
+                    ...(uses && runner.tools !== undefined ? { tools: runner.tools } : {}),
                 };
             });
     }
