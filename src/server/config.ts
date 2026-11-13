@@ -787,16 +787,18 @@ export class ConfigStore {
         }
     }
 
-    /** The people who may be chosen for a computer: everyone but owners and people invited to one session. */
-    #choosable(users: readonly string[]): string[] {
+    /**
+     * The people who may be chosen for a computer: everyone but who is in charge of it (`inCharge`: they have it
+     * anyway) and people invited to one session. On a runner someone else linked, the owner is chosen as anyone is.
+     */
+    #choosable(users: readonly string[], inCharge: (user: User) => boolean): string[] {
         return [...new Set(users)].filter((id) => {
             const user = this.userById(id);
 
-            return user !== undefined && user.role !== "owner" && user.sessions === undefined;
+            return user !== undefined && !inCharge(user) && user.sessions === undefined;
         });
     }
 
-    /** Grant access to existing people with access to the whole server, never to owners. */
     /** Runner `id`'s linker left: `linker` (the owner) is in charge of it now. */
     setRunnerLinker(id: string, linker: string): void {
         const runner = this.runnerById(id);
@@ -808,11 +810,12 @@ export class ConfigStore {
         }
     }
 
+    /** Choose the people who may use runner `id`: anyone but its linker, who is in charge of it. */
     setRunnerUsers(id: string, users: string[]): void {
         const runner = this.runnerById(id);
 
         if (runner !== undefined) {
-            runner.users = this.#choosable(users);
+            runner.users = this.#choosable(users, (user) => user.id === runner.createdBy);
             this.save();
         }
     }
@@ -822,10 +825,10 @@ export class ConfigStore {
         return this.#config.server ?? {};
     }
 
-    /** Choose the people who may use this server. */
+    /** Choose the people who may use this server: anyone but the owner, who is in charge of it. */
     setServerUsers(users: string[]): void {
         this.#changeServer((server) => {
-            server.users = this.#choosable(users);
+            server.users = this.#choosable(users, (user) => user.role === "owner");
         });
     }
 

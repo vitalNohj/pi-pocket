@@ -1029,8 +1029,8 @@ export class Commands {
     }
 
     /**
-     * Whom session `id` is shared with, and whom it can be: everyone who may use its computer, but the owner and its
-     * starter, who have it anyway. Its starter's and the owner's to see (`access.ts` `mayShare`); to anyone else who
+     * Whom session `id` is shared with, and whom it can be: everyone who may use its computer, but who is in charge of
+     * it and its starter, who have it anyway. Its starter's and the owner's to see (`access.ts` `mayShare`); to anyone else who
      * sees it, 403; to whom it is hidden, 404.
      */
     sharing(
@@ -1066,7 +1066,7 @@ export class Commands {
             people: app.config.users
                 .filter(
                     (person) =>
-                        person.role !== "owner" &&
+                        !app.policy.inCharge(person, computer) &&
                         person.id !== starter &&
                         app.policy.mayUse(person, computer),
                 )
@@ -1077,8 +1077,8 @@ export class Commands {
 
     /**
      * Share session `id` with exactly `people` (person ids), one at a time: its starter and the owner may (`access.ts`
-     * `mayShare`). Each must be able to use the session's computer; owners see every session anyway, and the starter
-     * has it, so neither is kept. Someone taken off leaves it at once (`app.accessChanged`).
+     * `mayShare`). Each must be able to use the session's computer; who is in charge of it sees every session there
+     * anyway, and the starter has it, so neither is kept. Someone taken off leaves it at once (`app.accessChanged`).
      */
     async shareSession(id: ConversationId, user: User, people: unknown): Promise<string[]> {
         const app = this.#app;
@@ -1117,7 +1117,7 @@ export class Commands {
                 throw new HttpError(400, "That person is not on this server.");
             }
 
-            if (person.role === "owner" || person.id === starter) {
+            if (app.policy.inCharge(person, computer) || person.id === starter) {
                 continue;
             }
 

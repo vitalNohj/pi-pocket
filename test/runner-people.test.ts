@@ -22,7 +22,7 @@ import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { Runner } from "../src/runner/runner.ts";
 import { ConfigStore, type User } from "../src/server/config.ts";
-import { SubagentsDoc } from "../src/server/docs.ts";
+import { SessionsDoc, SubagentsDoc } from "../src/server/docs.ts";
 import { HttpError } from "../src/server/errors.ts";
 import { createHandler } from "../src/server/http.ts";
 import type { RunnerView } from "../src/server/runners.ts";
@@ -158,7 +158,7 @@ describe("people granted a computer", () => {
         }
 
         const granted = await request<RunnerView>(owner(app), `runners/${runnerId}/users`, {
-            users: [guest.id, guest.id, "missing", owner(app).id, otherOwner.id],
+            users: [guest.id, guest.id, "missing", owner(app).id],
         });
 
         assert.equal(granted.status, 200);
@@ -723,6 +723,57 @@ describe("review drill fixes for people on a computer", () => {
         } finally {
             info.home = original;
         }
+    });
+
+    it("lets a guest in charge of their computer choose the owner, as anyone else, and share a session there with them", async () => {
+        const host = person("Runner host", "guest");
+        const theirs = app.config.addRunner("Host's laptop", host.id, newIdentity().publicKey).id;
+        const scoped = person("Host's one session", "guest", [String(id)]);
+        const { id: hers } = await app.commands.createSession(owner(app), { cwd: root });
+
+        // A session on the host's computer, the host's own.
+        await app.harness.commit(async (tx) => {
+            const meta = (await tx.doc(SessionsDoc)).items[String(hers)]!;
+
+            meta.runner = theirs;
+            meta.createdBy = host.id;
+        }, context);
+        assert.equal(app.policy.mayUse(owner(app), theirs), false, "nothing there for the owner");
+        assert.equal(app.canSee(owner(app), hers), false);
+
+        // Chosen as anyone is. Never who is in charge (they have it anyway), nor someone invited to one session.
+        const chosen = await request<RunnerView>(host, `runners/${theirs}/users`, {
+            users: [owner(app).id, host.id, scoped.id],
+        });
+
+        assert.equal(chosen.status, 200);
+        assert.deepEqual(
+            chosen.body.users?.map((each) => each.id),
+            [owner(app).id],
+        );
+        assert.equal(app.policy.mayUse(owner(app), theirs), true);
+        assert.equal(app.policy.inCharge(owner(app), theirs), false, "still the host's");
+        assert.equal(app.canSee(owner(app), hers), false, "a private session stays private");
+
+        // The host shares a session there with the owner, who is listed as anyone chosen.
+        const sharing = await request<{ people: { id: string }[] }>(host, `sessions/${hers}/share`);
+
+        assert.deepEqual(
+            sharing.body.people.map((each) => each.id),
+            [owner(app).id],
+        );
+        assert.equal(
+            (await request(host, `sessions/${hers}/share`, { people: [owner(app).id] })).status,
+            200,
+        );
+        assert.deepEqual(app.sessionMeta(hers)?.sharedWith, [owner(app).id]);
+        assert.equal(app.canSee(owner(app), hers), true);
+
+        // On this server the owner is in charge, so they are never among its chosen people.
+        const here = [...(app.config.server.users ?? [])];
+
+        app.config.setServerUsers([...here, owner(app).id]);
+        assert.deepEqual(app.config.server.users ?? [], here);
     });
 
     it("links nothing with a code whose maker may no longer link computers, or was removed", async () => {

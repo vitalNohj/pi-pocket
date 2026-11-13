@@ -312,11 +312,16 @@ function RunnerSettings({ runner }) {
 
 /**
  * The people a computer's linker chooses (`access.ts`): they may use it, and viewers among them only see. The same list
- * as the People sheet, for this server and runners alike; people invited to one session keep only that session.
+ * as the People sheet, for this server and runners alike; people invited to one session keep only that session. Who is
+ * in charge has it anyway: the owner here, the linker of a runner (where the owner is chosen as anyone is).
  */
 function ChoosePeople({ runner, note }) {
     const people = store.state.users.filter(
-        (person) => person.role !== "owner" && !person.sessions,
+        (person) =>
+            !person.sessions &&
+            (runner.id === "this-server"
+                ? person.role !== "owner"
+                : person.id !== runner.createdBy),
     );
     const [choosing, setChoosing] = useState(false);
     const [selected, setSelected] = useState([]);
