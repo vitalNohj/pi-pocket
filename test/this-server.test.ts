@@ -344,6 +344,50 @@ test("the owner limits the spend of a session they may see, and learns nothing o
     assert.equal((await call(alex, "spend", { session: Number(mine), budget: 1 })).status, 403);
 });
 
+test("the owner limits a person to sessions the owner may share, never to one on a computer they see nothing of", async () => {
+    const gina = person("Gina limits", "guest");
+    const ginas = app.config.addRunner("Gina's tablet", gina.id, newIdentity().publicKey).id;
+    const pat = person("Pat", "viewer");
+    const { id: mine } = await app.commands.createSession(owner(app), { cwd: project });
+    const { id: hers } = await app.commands.createSession(owner(app), { cwd: project });
+    const limited = () => app.config.userById(pat.id)?.sessions;
+
+    await app.harness.commit(async (tx) => {
+        const meta = (await tx.doc(SessionsDoc)).items[String(hers)]!;
+
+        meta.runner = ginas;
+        meta.createdBy = gina.id;
+    }, context);
+    assert.equal(app.canSee(owner(app), hers), false);
+
+    // Allowed: a session of this server, which the owner is in charge of.
+    const allowed = await call(owner(app), `users/${pat.id}`, { sessions: [Number(mine)] });
+
+    assert.equal(allowed.status, 200);
+    assert.deepEqual(limited(), [String(mine)]);
+    assert.equal(app.canSee(pat, mine), true);
+
+    // Refused: Gina's session, with the answer an id of no session gets. Pat keeps what they had, and sees nothing more.
+    const refused = await call(owner(app), `users/${pat.id}`, {
+        sessions: [Number(mine), Number(hers)],
+    });
+    const missing = await call(owner(app), `users/${pat.id}`, { sessions: [987_654] });
+
+    assert.equal(refused.status, 400);
+    assert.deepEqual(refused.body, missing.body);
+    assert.deepEqual(limited(), [String(mine)]);
+    assert.equal(app.canSee(pat, hers), false);
+
+    // A session they have already stays theirs through a change (Gina invited them to hers).
+    app.config.updateUser(pat.id, { sessions: [String(hers)] });
+    assert.equal(
+        (await call(owner(app), `users/${pat.id}`, { sessions: [Number(hers), Number(mine)] }))
+            .status,
+        200,
+    );
+    assert.deepEqual(limited(), [String(hers), String(mine)]);
+});
+
 test("a tab whose person can no longer see a session gets none of its live events, before it is moved out", async () => {
     const { id } = await app.commands.createSession(owner(app), { cwd: project });
 

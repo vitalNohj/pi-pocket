@@ -4555,7 +4555,14 @@ export class PocketApp {
                 change.sessions = undefined;
             } else if (
                 Array.isArray(patch.sessions) &&
-                patch.sessions.every((each) => this.#sessions[String(each)] !== undefined)
+                // A session they have already, or one the owner may share (`access.ts` `mayShare`): never one on a computer
+                // someone else is in charge of, which the owner does not see. Such a one answers as a missing one.
+                patch.sessions.every(
+                    (each) =>
+                        this.#sessions[String(each)] !== undefined &&
+                        (target.sessions?.includes(String(each)) === true ||
+                            this.policy.mayShare(owner, String(each))),
+                )
             ) {
                 change.sessions = patch.sessions.map(String);
             } else {
