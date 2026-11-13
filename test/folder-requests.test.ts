@@ -1191,3 +1191,109 @@ test("each person's tabs hear only their own requests, and the owner's every one
         app.detach(galeTab.client);
     }
 });
+
+/** The days left that a session's people are told, each time they are reminded that its tasks run on. */
+function reminders(t: TestContext): number[] {
+    const told: number[] = [];
+
+    t.mock.method(
+        app.alerts,
+        "tasksEnding",
+        (_people: readonly string[], _session: string, _title: string, days: number) => {
+            told.push(days);
+        },
+    );
+
+    return told;
+}
+
+test("with tasks expiring, a revoke locks the session at once and its tasks run on for a week, with reminders", async (t) => {
+    const id = await sharedSession();
+    const session = String(id);
+    const told = reminders(t);
+
+    app.setTasksExpire(owner(app), true);
+
+    try {
+        assert.equal(app.tasksMayRun(id), true);
+        assert.deepEqual(told, [], "a live approval reminds nobody");
+
+        // Its starter revokes it: people are locked out at once. Its tasks have a week from the revoke; its starter and
+        // the owner hear once a day.
+        app.revokeApproval(alex, id);
+        assert.equal(app.policy.steer(alex, session), "locked");
+        assert.equal(app.tasksMayRun(id), true);
+        assert.deepEqual(told, [7]);
+        assert.equal(app.tasksMayRun(id), true);
+        assert.deepEqual(told, [7], "once a day");
+        // Its row stays, ended, to renew.
+        assert.equal(app.folderApprovals.get(session)?.revokedAt, clock);
+        assert.equal(
+            app.sessionApprovals(alex).find((each) => each.session === session)?.ended,
+            true,
+        );
+        clock += 6 * DAY + DAY / 2;
+        assert.equal(app.tasksMayRun(id), true);
+        assert.deepEqual(told, [7, 1]);
+
+        // The week is over: they pause, which is told once and then no more.
+        clock += DAY;
+        assert.equal(app.tasksMayRun(id), false);
+        assert.deepEqual(told, [7, 1, 0]);
+        clock += 3 * DAY;
+        assert.equal(app.tasksMayRun(id), false);
+        assert.deepEqual(told, [7, 1, 0], "a paused task rings nobody again");
+
+        // Renewed: the revoke is over, and so is the count of reminders.
+        await app.renewApproval(owner(app), id);
+        assert.equal(app.tasksMayRun(id), true);
+        assert.equal(app.folderApprovals.get(session)?.revokedAt, undefined);
+        assert.deepEqual(app.config.taskReminders, {});
+    } finally {
+        app.setTasksExpire(owner(app), false);
+    }
+});
+
+test("turning on tasks expire gives a session that never had an approval its week from then", async (t) => {
+    const id = await sharedSession();
+    const own = await app.commands.createSession(owner(app), { cwd: newFolder() });
+    const told = reminders(t);
+
+    // As sessions from before approvals: they have none.
+    app.config.setFolderApprovals([]);
+    assert.equal(app.tasksMayRun(id), true, "off, tasks run for good");
+    // A session's start is on the real clock: this test's clock is past it.
+    clock = Math.max(clock, Date.now()) + DAY;
+    app.setTasksExpire(owner(app), true);
+
+    try {
+        const since = clock;
+
+        assert.equal(app.tasksMayRun(id), true);
+        assert.deepEqual(told, [7]);
+        assert.equal(app.config.server.tasksExpireSince, since);
+
+        // On while it is on moves nothing: the week counts from the first time.
+        clock += 3 * DAY;
+        app.setTasksExpire(owner(app), true);
+        assert.equal(app.config.server.tasksExpireSince, since);
+        clock += 3 * DAY + DAY / 2;
+        assert.equal(app.tasksMayRun(id), true);
+        clock += DAY;
+        assert.equal(app.tasksMayRun(id), false);
+        assert.deepEqual(told, [7, 1, 0]);
+        // The owner's own session needs none, with or without a record.
+        assert.equal(app.tasksMayRun(own.id), true);
+
+        // Its starter renews it with their own code.
+        await app.renewApproval(alex, id, nextCode(alexSecret));
+        assert.equal(app.tasksMayRun(id), true);
+    } finally {
+        app.setTasksExpire(owner(app), false);
+    }
+
+    // Off forgets when it went on, and every reminder.
+    assert.equal(app.config.server.tasksExpireSince, undefined);
+    assert.deepEqual(app.config.taskReminders, {});
+    assert.equal(app.tasksMayRun(id), true);
+});

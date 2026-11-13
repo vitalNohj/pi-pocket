@@ -102,8 +102,8 @@ export interface StoredApproval {
     usedAt: number;
     /** Who used it last: their approval time sets how long it lasts from `usedAt`. */
     lastUser: string;
-    /** When it ended, while tasks still run on it in their week of grace (`app.ts` `taskMayRun`). */
-    reminded?: number;
+    /** When it was revoked: it ended then, whatever its clock says, until it is renewed. */
+    revokedAt?: number;
 }
 
 /** An invite not yet used, kept by its code's sha256 (the code itself is only shown to whoever made it). */
@@ -171,6 +171,11 @@ export interface StoredServer {
      * ends, with reminders, until someone renews it. Off (absent): they run for good once set up.
      */
     tasksExpire?: true;
+    /**
+     * When `tasksExpire` was turned on. A session with no approval at all (from before approvals) counts as ended then,
+     * so its tasks get their week too.
+     */
+    tasksExpireSince?: number;
 }
 
 /** A one-time code that links a computer, not yet used: kept by its sha256, for a few minutes. */
@@ -243,6 +248,11 @@ interface PocketConfig {
     server?: StoredServer;
     /** Approvals of folders and shared sessions, on every computer (`folder-approvals.ts`). */
     folderApprovals?: StoredApproval[];
+    /**
+     * When each session's starter and who is in charge last heard that its approval ended while its tasks run on, by
+     * the session's top id (`app.ts` `tasksMayRun`). Gone once it is renewed, or the owner turns `tasksExpire` off.
+     */
+    taskReminders?: Record<string, number>;
 }
 
 /**
@@ -872,18 +882,27 @@ export class ConfigStore {
         }
     }
 
-    /** Change a computer's rules (`id` undefined: this server). */
-    /** The owner turns "Tasks expire with the session" on or off (`app.ts` `tasksMayRun`). */
-    setTasksExpire(on: boolean): void {
+    /**
+     * The owner turns "Tasks expire with the session" on or off (`app.ts` `tasksMayRun`), at `now`. On while it was on
+     * changes nothing: the time it went on stays. Off forgets that time and every reminder.
+     */
+    setTasksExpire(on: boolean, now: number): void {
+        if (!on) {
+            delete this.#config.taskReminders;
+        }
+
         this.#changeServer((server) => {
-            if (on) {
-                server.tasksExpire = true;
-            } else {
+            if (!on) {
                 delete server.tasksExpire;
+                delete server.tasksExpireSince;
+            } else if (server.tasksExpire !== true) {
+                server.tasksExpire = true;
+                server.tasksExpireSince = now;
             }
         });
     }
 
+    /** Change a computer's rules (`id` undefined: this server). */
     setComputerSettings(id: string | undefined, change: ComputerSettings): void {
         const apply = (target: { shareNew?: true }): void => {
             if (change.shareNew === true) {
@@ -938,6 +957,30 @@ export class ConfigStore {
             delete this.#config.folderApprovals;
         } else {
             this.#config.folderApprovals = approvals;
+        }
+
+        this.save();
+    }
+
+    /** When each session's people were last reminded that its tasks run on an ended approval (`folder-approvals.ts`). */
+    get taskReminders(): Readonly<Record<string, number>> {
+        return this.#config.taskReminders ?? {};
+    }
+
+    /** Session `session`'s people were reminded at `at`; undefined forgets it (renewed). */
+    setTaskReminder(session: string, at: number | undefined): void {
+        const reminders = { ...this.#config.taskReminders };
+
+        if (at === undefined) {
+            delete reminders[session];
+        } else {
+            reminders[session] = at;
+        }
+
+        if (Object.keys(reminders).length === 0) {
+            delete this.#config.taskReminders;
+        } else {
+            this.#config.taskReminders = reminders;
         }
 
         this.save();

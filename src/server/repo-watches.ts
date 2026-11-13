@@ -759,6 +759,18 @@ export class RepoWatches {
                 return this.#again(id, runtime, this.timing.poll, context, "PiP is turned off");
             }
 
+            // Its session's tasks are paused (its approval ended, `app.ts` `tasksMayRun`): held at the usual pace, and
+            // nothing failed. What the look found waits, untold, until someone renews it.
+            if (!app.tasksMayRun(target)) {
+                return this.#again(
+                    id,
+                    runtime,
+                    this.timing.poll,
+                    context,
+                    "Waits until its session's approval is renewed.",
+                );
+            }
+
             try {
                 await app.commands.submit(
                     target,

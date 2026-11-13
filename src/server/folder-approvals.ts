@@ -30,6 +30,9 @@ export type ApprovalView = StoredApproval & {
 export interface FolderApprovalStore {
     readonly folderApprovals: readonly StoredApproval[];
     setFolderApprovals(approvals: StoredApproval[]): void;
+    /** When each session's people last heard that its tasks run on borrowed time, by session (`app.ts` `tasksMayRun`). */
+    readonly taskReminders: Readonly<Record<string, number>>;
+    setTaskReminder(session: string, at: number | undefined): void;
     userById(id: string): User | undefined;
 }
 
@@ -54,16 +57,20 @@ export class FolderApprovals {
         this.#approved = options.approved ?? (() => {});
     }
 
-    /** Session `session`'s approval, live or ended; undefined when it never had one (or it was revoked). */
+    /** Session `session`'s approval, live or ended (a revoked one ended then); undefined when it never had one. */
     get(session: string): StoredApproval | undefined {
         return this.#store.folderApprovals.find((each) => each.session === session);
     }
 
     /**
      * When `approval` ends unless used again: its last user's approval time after its last use; null for never. A last
-     * user who is gone counts as the default time.
+     * user who is gone counts as the default time. A revoked one ended when it was revoked.
      */
     expiresAt(approval: StoredApproval): number | null {
+        if (approval.revokedAt !== undefined) {
+            return approval.revokedAt;
+        }
+
         const user = this.#store.userById(approval.lastUser);
         const days = approvalDays(user ?? {});
 
@@ -104,7 +111,7 @@ export class FolderApprovals {
 
     /**
      * Approve session `session` (on `computer`, in `folder`), or renew its approval: `method` by `by`, for `user`, who
-     * uses it first. A renewal ends any week of grace (`reminded`).
+     * uses it first. A renewal ends a revoke, and any week of grace of its tasks (`reminded`).
      */
     approve(
         session: string,
@@ -126,6 +133,11 @@ export class FolderApprovals {
         };
 
         this.#replace(session, approval);
+
+        if (this.remindedAt(session) !== undefined) {
+            this.#store.setTaskReminder(session, undefined);
+        }
+
         this.#approved(approval);
 
         return approval;
@@ -161,13 +173,14 @@ export class FolderApprovals {
         }
     }
 
-    /** Mark when session `session`'s tasks were last reminded that its approval ended. */
-    reminded(session: string, at: number): void {
-        const found = this.get(session);
+    /** When session `session`'s people last heard that its approval ended while its tasks run on; undefined: not yet. */
+    remindedAt(session: string): number | undefined {
+        return this.#store.taskReminders[session];
+    }
 
-        if (found !== undefined) {
-            this.#replace(session, { ...found, reminded: at });
-        }
+    /** Mark that they heard it now, at `at`. Kept by session: one that never had an approval is reminded too. */
+    reminded(session: string, at: number): void {
+        this.#store.setTaskReminder(session, at);
     }
 
     /**
@@ -194,13 +207,21 @@ export class FolderApprovals {
             .sort((a, b) => b.usedAt - a.usedAt);
     }
 
-    /** Revoke session `session`'s approval, which `may` allows: the session locks until renewed. Else 404. */
+    /**
+     * Revoke session `session`'s approval, which `may` allows: it ends now, and the session locks until renewed. Else
+     * 404. It is kept, as any ended one: its row offers Renew, and its tasks' week of grace counts from now
+     * (`app.ts` `tasksMayRun`). One that ended already keeps its own time.
+     */
     revoke(session: string, may: boolean): void {
-        if (!may || this.get(session) === undefined) {
+        const found = this.get(session);
+
+        if (!may || found === undefined) {
             throw new HttpError(404, "That approval is gone.");
         }
 
-        this.#save((list) => list.filter((each) => each.session !== session));
+        if (this.#live(found)) {
+            this.#replace(session, { ...found, revokedAt: this.#now() });
+        }
     }
 
     /** Drop the approvals `keep` refuses: of sessions that are gone. */

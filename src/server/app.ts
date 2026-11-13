@@ -3202,7 +3202,9 @@ export class PocketApp {
     /**
      * May session `id`'s tasks (webhooks, schedules, watches) run now. "Tasks expire with the session" off (the default):
      * they run for good once set up. On: while its approval is live, or the 7 days of grace after it ended (with a
-     * reminder each day to its starter and who is in charge), then they pause until someone renews it. Who is in charge
+     * reminder each day to its starter and who is in charge), then they pause until someone renews it, and those two
+     * hear it once. A revoke ends it then, so the 7 days count from the revoke. A session with no approval at all (from
+     * before approvals) counts as ended when the switch went on, or when it started if that was later. Who is in charge
      * of its computer, and a PiP, never need one.
      */
     tasksMayRun(id: ConversationId): boolean {
@@ -3224,20 +3226,28 @@ export class PocketApp {
         }
 
         const approval = this.folderApprovals.get(root);
-        const ended = approval === undefined ? undefined : this.folderApprovals.expiresAt(approval);
-
-        if (approval === undefined || ended === undefined) {
-            return false;
-        }
+        const ended =
+            approval === undefined
+                ? Math.max(
+                      this.config.server.tasksExpireSince ?? 0,
+                      this.sessionMeta(this.rootOf(id))?.createdAt ?? 0,
+                  )
+                : this.folderApprovals.expiresAt(approval);
 
         if (ended === null || ended > this.now()) {
             return true;
         }
 
-        const left = Math.ceil((ended + TASK_GRACE_MS - this.now()) / DAY_MS);
+        const pausedAt = ended + TASK_GRACE_MS;
+        const left = Math.ceil((pausedAt - this.now()) / DAY_MS);
+        const reminded = this.folderApprovals.remindedAt(root);
 
-        // Once a day: who is in charge and its starter hear how long its tasks have.
-        if (approval.reminded === undefined || this.now() - approval.reminded >= DAY_MS) {
+        // Once a day of the week of grace, who is in charge and its starter hear how long its tasks have; and once
+        // more when they pause. Then nothing: a task that asks each few minutes does not ring every day for good.
+        if (
+            reminded === undefined ||
+            (reminded < pausedAt && (this.now() >= pausedAt || this.now() - reminded >= DAY_MS))
+        ) {
             this.folderApprovals.reminded(root, this.now());
             this.alerts.tasksEnding(
                 [starter, this.policy.inChargeOf(root)],
@@ -3256,7 +3266,7 @@ export class PocketApp {
             throw new HttpError(403, "Only the owner can change this.");
         }
 
-        this.config.setTasksExpire(on);
+        this.config.setTasksExpire(on, this.now());
         this.#peopleChanged();
     }
 

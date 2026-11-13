@@ -989,6 +989,18 @@ export class Watches {
                 });
             }
 
+            // Its session's tasks are paused (its approval ended, `app.ts` `tasksMayRun`): the watch waits, and counts no
+            // failure, until someone renews it or two weeks pass with nothing told.
+            if (!app.tasksMayRun(id)) {
+                if (app.now() - watch.lastNewsAt > QUIET_MS) {
+                    return this.#end(runtime, "expired", context);
+                }
+
+                return this.#again(runtime, this.timing.retry, {}, context, {
+                    note: "Waits until this session's approval is renewed.",
+                });
+            }
+
             try {
                 await app.commands.submit(
                     id,

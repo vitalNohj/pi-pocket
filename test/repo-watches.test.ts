@@ -651,3 +651,68 @@ test("while triggers are off, watches ask GitHub nothing; on again, what came is
     await app.repoWatches.remove(owner(app), added.id);
     github.issues = [];
 });
+
+test("a repository watch waits while its session's tasks are paused, as no failure, and tells once it is renewed", async () => {
+    const guest = (await addPerson(app, "Rae", "guest")).user;
+    const { id } = await app.commands.createSession(guest, { cwd: work });
+    const target = String(id);
+
+    await app.commands.configure(id, guest, {
+        model: { provider: "faux", modelId: "faux-1" },
+        thinkingLevel: "off",
+    });
+    const added = await app.repoWatches.add(guest, {
+        repo: "acme/api",
+        events: ["issues"],
+        target: id,
+        byPi: false,
+    });
+    const mine = async () => (await watches()).find((each) => each.id === added.id);
+    const looked = github.calls.length;
+
+    await until(() => github.calls.length > looked, "a look");
+
+    // The owner has tasks expire with their session, and this one's approval ended more than a week ago.
+    const approval = app.folderApprovals.get(target)!;
+
+    app.config.setFolderApprovals([
+        ...app.config.folderApprovals.filter((each) => each.session !== target),
+        { ...approval, revokedAt: Date.now() - 8 * 86_400_000 },
+    ]);
+    app.setTasksExpire(owner(app), true);
+
+    try {
+        assert.equal(app.tasksMayRun(id), false);
+        github.issues = [
+            {
+                number: 71,
+                title: "While paused",
+                user: { login: "ann" },
+                author_association: "OWNER",
+                created_at: later(),
+            },
+        ];
+        await until(
+            async () => (await mine())?.note === "Waits until its session's approval is renewed.",
+            "the watch to wait for a renewal",
+        );
+        const calls = github.calls.length;
+
+        await until(() => github.calls.length > calls + 2, "more looks");
+        assert.equal((await mine())?.errors, 0);
+        assert.equal((await mine())?.count, 0);
+        assert.deepEqual(await messages(id), [], "nothing goes while its tasks are paused");
+
+        // The owner renews it: what the watch found is told, once.
+        await app.renewApproval(owner(app), id);
+        await until(async () => (await mine())?.count === 1, "the issue");
+        await until(async () => !app.isBusy(id), "Pi to answer");
+        assert.equal((await messages(id)).length, 1);
+        assert.match((await messages(id))[0]!, /New issue #71 “While paused”/);
+        assert.equal((await mine())?.note, undefined);
+    } finally {
+        app.setTasksExpire(owner(app), false);
+        await app.repoWatches.remove(owner(app), added.id);
+        github.issues = [];
+    }
+});

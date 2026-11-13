@@ -32,7 +32,9 @@ function ends(approval) {
     }
 
     if (approval.ended) {
-        return "ended: locked until renewed";
+        return approval.revokedAt === undefined
+            ? "ended: locked until renewed"
+            : "revoked: locked until renewed";
     }
 
     const left = approval.expiresAt - Date.now();
