@@ -361,6 +361,116 @@ test("a locked session waits for a renewal: its starter's code, or the owner's A
     assert.equal(app.policy.steer(alex, String(id)), "locked", "and renewed nothing");
 });
 
+test("a renewal is the session's: everyone waiting on it goes on, however it was renewed", async () => {
+    const folder = newFolder();
+    const started = app.commands.createSession(alex, { cwd: folder });
+
+    await app.folderRequests.approve(alex, (await pending(alex, folder)).id, {
+        method: "totp",
+        code: nextCode(alexSecret),
+    });
+
+    const { id } = await started;
+
+    await app.commands.shareSession(id, alex, [gale.id]);
+
+    // Both wait on the locked session; the owner allows Gale's request, and Alex goes on too.
+    clock += 8 * DAY;
+
+    let alexWent = false;
+    const alexSends = app.requireDriver(id, alex).then(() => (alexWent = true));
+    const galeSends = app.requireDriver(id, gale);
+    const his = await renewing(alex);
+    const hers = await renewing(gale);
+
+    assert.notEqual(his.id, hers.id);
+    assert.equal(alexWent, false);
+    await app.folderRequests.approve(owner(app), hers.id, { method: "owner" });
+    await galeSends;
+    await alexSends;
+    assert.deepEqual(app.folderRequests.list(owner(app)), [], "no request is left waiting");
+    assert.equal(app.folderApprovals.live(String(id)), true);
+
+    // Renewed from its row, with nobody's request answered: both go on.
+    clock += 8 * DAY;
+
+    const again = [app.requireDriver(id, alex), app.requireDriver(id, gale)];
+
+    await renewing(alex);
+    await renewing(gale);
+    await app.renewApproval(owner(app), id);
+    await Promise.all(again);
+    assert.deepEqual(app.folderRequests.list(owner(app)), []);
+
+    // A denial is one person's: Gale is refused, and Alex still waits for his own answer.
+    clock += 8 * DAY;
+
+    const refused = assert.rejects(app.requireDriver(id, gale), /was not renewed/);
+    const waiting = app.requireDriver(id, alex);
+    const denied = await renewing(gale);
+    const kept = await renewing(alex);
+
+    app.folderRequests.deny(owner(app), denied.id);
+    await refused;
+    assert.deepEqual(
+        app.folderRequests.list(owner(app)).map((each) => each.id),
+        [kept.id],
+    );
+    await app.folderRequests.approve(alex, kept.id, {
+        method: "totp",
+        code: nextCode(alexSecret),
+    });
+    await waiting;
+});
+
+test("giving up while a locked session waits makes nothing later, and leaves the others waiting", async () => {
+    const folder = newFolder();
+    const started = app.commands.createSession(alex, { cwd: folder });
+
+    await app.folderRequests.approve(alex, (await pending(alex, folder)).id, {
+        method: "totp",
+        code: nextCode(alexSecret),
+    });
+
+    const { id } = await started;
+    const sessions = () => app.sessions(owner(app)).length;
+
+    clock += 8 * DAY;
+
+    // A copy and a send wait on the one request. The copy is given up: only it ends.
+    const count = sessions();
+    const controller = new AbortController();
+    const copying = assert.rejects(app.commands.fork(id, alex, {}, controller.signal), /Cancelled/);
+    const sending = app.requireDriver(id, alex);
+    const renew = await renewing(alex);
+
+    controller.abort();
+    await copying;
+    assert.deepEqual(
+        app.folderRequests.list(alex).map((each) => each.id),
+        [renew.id],
+        "the send still waits on it",
+    );
+
+    // Approved later: the send goes on, and no copy is made.
+    await app.folderRequests.approve(owner(app), renew.id, { method: "owner" });
+    await sending;
+    assert.equal(sessions(), count, "the copy that was given up is not made");
+
+    // The only one waiting gives up: the request ends with it.
+    clock += 8 * DAY;
+
+    const alone = new AbortController();
+    const lone = assert.rejects(app.commands.fork(id, alex, {}, alone.signal), /Cancelled/);
+
+    await renewing(alex);
+    alone.abort();
+    await lone;
+    assert.deepEqual(app.folderRequests.list(owner(app)), []);
+    assert.equal(sessions(), count);
+    assert.equal(app.policy.steer(alex, String(id)), "locked", "and nothing was renewed");
+});
+
 test("in a locked session, making or editing a webhook waits for the renewal", async () => {
     const folder = newFolder();
     const started = app.commands.createSession(alex, { cwd: folder });

@@ -3571,6 +3571,9 @@ export class Commands {
         // locked); on another computer, it starts as a new session there would. The worktree is the copy's own folder.
         const keep = await this.#app.approveFrom(user, id, destination.cwd, runner, signal);
 
+        // Given up while it waited: no copy is made.
+        signal?.throwIfAborted();
+
         return this.#inPlace(
             destination.cwd,
             branch.worktree,

@@ -37,14 +37,21 @@ export class FolderApprovals {
     readonly #store: FolderApprovalStore;
     readonly #now: () => number;
     readonly #changed: () => void;
+    readonly #approved: (approval: StoredApproval) => void;
 
+    /** `approved`: a session was approved or renewed, by any way; whoever waits to renew it goes on. */
     constructor(
         store: FolderApprovalStore,
-        options: { now?: () => number; changed?: () => void } = {},
+        options: {
+            now?: () => number;
+            changed?: () => void;
+            approved?: (approval: StoredApproval) => void;
+        } = {},
     ) {
         this.#store = store;
         this.#now = options.now ?? (() => Date.now());
         this.#changed = options.changed ?? (() => {});
+        this.#approved = options.approved ?? (() => {});
     }
 
     /** Session `session`'s approval, live or ended; undefined when it never had one (or it was revoked). */
@@ -119,6 +126,7 @@ export class FolderApprovals {
         };
 
         this.#replace(session, approval);
+        this.#approved(approval);
 
         return approval;
     }

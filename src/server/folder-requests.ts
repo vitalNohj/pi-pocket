@@ -4,6 +4,9 @@
  * old. Two ways approve one (`approval-methods.ts`): the requester's own authenticator code, or Allow in the app by who
  * is in charge of the computer (the owner here, a runner's linker there). The caller keeps the approval that answers it.
  *
+ * A session's approval belongs to the session: once it is renewed, by any request or from its row, everyone waiting to
+ * renew it goes on (`renewed`). A caller who gives up leaves only its own wait; the request ends with its last one.
+ *
  * Requests live in memory: a restart ends them, and the person asks again. Nothing here is a document.
  */
 import { randomUUID } from "node:crypto";
@@ -44,10 +47,10 @@ export type FolderRequestView = FolderQuestion & {
 /** Who answered a request, and how. */
 export type FolderAnswer = { method: MethodId; by: string };
 
-type Pending = FolderRequestView & {
-    resolve: (answer: FolderAnswer) => void;
-    reject: (error: Error) => void;
-};
+/** One caller waiting on a request: the same person may wait on it more than once (two actions in a locked session). */
+type Waiter = { resolve: (answer: FolderAnswer) => void; reject: (error: Error) => void };
+
+type Pending = { view: FolderRequestView; waiters: Set<Waiter>; timer: NodeJS.Timeout };
 
 export type FolderRequestOptions = {
     methods: ApprovalMethods;
@@ -83,8 +86,8 @@ export class FolderRequests {
         }
 
         return [...this.#pending.values()]
-            .filter((each) => this.#sees(current, each))
-            .map(({ resolve: _resolve, reject: _reject, ...view }) => view);
+            .filter((each) => this.#sees(current, each.view))
+            .map((each) => ({ ...each.view }));
     }
 
     #sees(person: Pick<Person, "id">, request: FolderRequestView): boolean {
@@ -108,79 +111,113 @@ export class FolderRequests {
             throw new HttpError(403, "You are not on this server.");
         }
 
-        signal?.throwIfAborted();
-
-        // One standing request per person and session: asking again joins it.
-        const standing =
-            question.session === undefined
-                ? undefined
-                : [...this.#pending.values()].find(
-                      (each) => each.person === current.id && each.session === question.session,
-                  );
-
-        if (standing !== undefined) {
-            return new Promise<FolderAnswer>((resolve, reject) => {
-                const { resolve: first, reject: firstReject } = standing;
-
-                standing.resolve = (answer) => {
-                    first(answer);
-                    resolve(answer);
-                };
-
-                standing.reject = (error) => {
-                    firstReject(error);
-                    reject(error);
-                };
-            });
+        if (signal?.aborted === true) {
+            throw new HttpError(409, "Cancelled.");
         }
 
-        const id = randomUUID();
-        let timer: NodeJS.Timeout | undefined;
-        let abort: (() => void) | undefined;
+        // One standing request per person and session: asking again waits on it too.
+        const request =
+            (question.session === undefined
+                ? undefined
+                : [...this.#pending.values()].find(
+                      (each) =>
+                          each.view.person === current.id && each.view.session === question.session,
+                  )) ?? this.#open(current, question, code);
 
         return new Promise<FolderAnswer>((resolve, reject) => {
-            const request: Pending = {
-                ...question,
-                id,
-                person: current.id,
-                name: current.name,
-                code: code && this.#options.hasCode(current.id),
-                expiresAt: this.#now() + FOLDER_REQUEST_MS,
-                resolve,
-                reject,
+            // This caller gives up: only its own wait ends, and the request with its last one.
+            const abort = () => {
+                request.waiters.delete(waiter);
+                reject(new HttpError(409, "Cancelled."));
+
+                if (request.waiters.size === 0) {
+                    this.#settle(request, new HttpError(409, "Cancelled."));
+                }
             };
 
-            this.#pending.set(id, request);
-            timer = setTimeout(
+            const waiter: Waiter = {
+                resolve: (answer) => {
+                    signal?.removeEventListener("abort", abort);
+                    resolve(answer);
+                },
+                reject: (error) => {
+                    signal?.removeEventListener("abort", abort);
+                    reject(error);
+                },
+            };
+
+            request.waiters.add(waiter);
+            signal?.addEventListener("abort", abort, { once: true });
+        });
+    }
+
+    /** A new request of `person`: it stands until it is answered, too old, or its last waiter gives up. */
+    #open(person: Person & { name: string }, question: FolderQuestion, code: boolean): Pending {
+        const view: FolderRequestView = {
+            ...question,
+            id: randomUUID(),
+            person: person.id,
+            name: person.name,
+            code: code && this.#options.hasCode(person.id),
+            expiresAt: this.#now() + FOLDER_REQUEST_MS,
+        };
+        const request: Pending = {
+            view,
+            waiters: new Set(),
+            timer: setTimeout(
                 () =>
-                    request.reject(
+                    this.#settle(
+                        request,
                         new HttpError(
                             409,
-                            request.code
+                            view.code
                                 ? "Nobody approved it in time. Try again, and enter a code from your authenticator."
                                 : `Nobody approved it in time. Ask whoever is in charge of ${question.computerName} to allow it.`,
                         ),
                     ),
                 FOLDER_REQUEST_MS,
-            );
-            timer.unref?.();
-            abort = () => request.reject(new HttpError(409, "Cancelled."));
-            signal?.addEventListener("abort", abort, { once: true });
-            this.#options.changed();
+            ),
+        };
 
-            const { resolve: _resolve, reject: _reject, ...view } = request;
+        request.timer.unref?.();
+        this.#pending.set(view.id, request);
+        this.#options.changed();
+        this.#options.asked({ ...view });
 
-            this.#options.asked(view);
-        }).finally(() => {
-            clearTimeout(timer);
+        return request;
+    }
 
-            if (abort !== undefined) {
-                signal?.removeEventListener("abort", abort);
+    /** End `request` with `outcome` for everyone waiting on it. One that already ended stays as it ended. */
+    #settle(request: Pending, outcome: FolderAnswer | Error): void {
+        if (this.#pending.get(request.view.id) !== request) {
+            return;
+        }
+
+        this.#pending.delete(request.view.id);
+        clearTimeout(request.timer);
+
+        for (const waiter of [...request.waiters]) {
+            if (outcome instanceof Error) {
+                waiter.reject(outcome);
+            } else {
+                waiter.resolve(outcome);
             }
+        }
 
-            this.#pending.delete(id);
-            this.#options.changed();
-        });
+        request.waiters.clear();
+        this.#options.changed();
+    }
+
+    /**
+     * Session `session`'s approval was renewed (`answer`: by whom, and how): everyone waiting to renew it goes on, also
+     * those whose own request nobody answered. The approval is the session's, not a person's.
+     */
+    renewed(session: string, answer: FolderAnswer): void {
+        for (const request of [...this.#pending.values()]) {
+            if (request.view.kind === "renew" && request.view.session === session) {
+                this.#settle(request, answer);
+            }
+        }
     }
 
     /**
@@ -189,19 +226,20 @@ export class FolderRequests {
      */
     async approve(approver: Pick<Person, "id">, id: string, proof: Proof): Promise<void> {
         const request = this.#visible(approver, id);
+        const { view } = request;
         const current = this.#options.person(approver.id)!;
-        const requester = this.#options.person(request.person);
+        const requester = this.#options.person(view.person);
 
         if (requester === undefined) {
-            request.reject(new HttpError(403, "You are not on this server."));
+            this.#settle(request, new HttpError(403, "You are not on this server."));
 
             return;
         }
 
-        if (proof.method === "totp" && !request.code) {
+        if (proof.method === "totp" && !view.code) {
             throw new HttpError(
                 403,
-                `Only whoever is in charge of ${request.computerName} can renew this session.`,
+                `Only whoever is in charge of ${view.computerName} can renew this session.`,
             );
         }
 
@@ -209,24 +247,25 @@ export class FolderRequests {
             current,
             requester,
             proof,
-            this.#options.inCharge(current, request.computer),
+            this.#options.inCharge(current, view.computer),
         );
 
-        // Answered by someone else while the code was checked: nothing more to do.
-        this.#pending.get(id)?.resolve({ method, by: current.id });
+        // Answered by someone else while the code was checked: nothing more to do (`#settle`).
+        this.#settle(request, { method, by: current.id });
     }
 
     /** Who is in charge denies request `id`; its requester withdraws it. */
     deny(person: Pick<Person, "id">, id: string): void {
         const request = this.#visible(person, id);
-        const mine = person.id === request.person;
+        const mine = person.id === request.view.person;
 
-        request.reject(
+        this.#settle(
+            request,
             new HttpError(
                 mine ? 409 : 403,
                 mine
                     ? "Cancelled."
-                    : request.kind === "renew"
+                    : request.view.kind === "renew"
                       ? "It was not renewed."
                       : "This folder was not allowed.",
             ),
@@ -236,8 +275,8 @@ export class FolderRequests {
     /** End the requests `keep` refuses (a person removed, no longer chosen, or no longer given the folder). */
     prune(keep: (request: FolderRequestView) => boolean): void {
         for (const request of [...this.#pending.values()]) {
-            if (!keep(request)) {
-                request.reject(new HttpError(403, "You can no longer work there."));
+            if (!keep(request.view)) {
+                this.#settle(request, new HttpError(403, "You can no longer work there."));
             }
         }
     }
@@ -246,7 +285,7 @@ export class FolderRequests {
         const current = this.#options.person(person.id);
         const request = this.#pending.get(id);
 
-        if (current === undefined || request === undefined || !this.#sees(current, request)) {
+        if (current === undefined || request === undefined || !this.#sees(current, request.view)) {
             throw new HttpError(
                 404,
                 "That request is gone: it was answered, cancelled, or too old.",

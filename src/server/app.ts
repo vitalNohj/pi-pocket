@@ -601,6 +601,13 @@ export class PocketApp {
         this.folderApprovals = new FolderApprovals(this.config, {
             now: () => this.now(),
             changed: () => this.#approvalsChanged(),
+            // The approval is the session's: renewed by one request, from its row, or by who is in charge using it,
+            // everyone else waiting to renew it goes on too.
+            approved: (approval) =>
+                this.folderRequests.renewed(approval.session, {
+                    method: approval.method,
+                    by: approval.by,
+                }),
         });
         this.policy = this.#makePolicy();
         this.folderRequests = new FolderRequests({
@@ -2869,7 +2876,7 @@ export class PocketApp {
             return this.approveStart(user, real, signal, computer);
         }
 
-        await this.#requireApproval(from, user);
+        await this.#requireApproval(from, user, signal);
 
         const inCharge = this.policy.inCharge(user, computer);
 
@@ -2982,9 +2989,10 @@ export class PocketApp {
 
     /**
      * Before `user` sends to session `id`, changes its settings, or edits its tasks (`requireDriver`): its approval must
-     * be live (`access.ts` `steer`), and their use resets its clock. A locked session waits for a renewal (`#renew`).
+     * be live (`access.ts` `steer`), and their use resets its clock. A locked session waits for a renewal (`#renew`),
+     * until `signal` says the caller gave up.
      */
-    async #requireApproval(id: ConversationId, user: User): Promise<void> {
+    async #requireApproval(id: ConversationId, user: User, signal?: AbortSignal): Promise<void> {
         const root = String(this.rootOf(id));
         const facts = this.policy.session(root);
 
@@ -3010,7 +3018,7 @@ export class PocketApp {
             return;
         }
 
-        await this.#renew(id, user);
+        await this.#renew(id, user, signal);
     }
 
     /**
@@ -3038,6 +3046,11 @@ export class PocketApp {
             signal,
             this.policy.mayRenewWithCode(user, root),
         );
+
+        // Renewed another way meanwhile (someone else's request, its row): this person only uses it.
+        if (this.policy.steer(user, root) === "allow" && this.folderApprovals.use(root, user)) {
+            return;
+        }
 
         this.folderApprovals.approve(
             root,
