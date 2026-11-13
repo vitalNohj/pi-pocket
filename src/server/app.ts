@@ -654,6 +654,9 @@ export class PocketApp {
             mayManage: (id, user) => this.policy.mayManage(user, id),
             mayStart: (id, user) => this.policy.mayStart(user, id),
             mayUse: (id, user) => this.policy.mayUse(user, id),
+            mayLink: (by, runner) =>
+                this.policy.mayLink({ id: by }) &&
+                (runner === undefined || this.policy.mayManage({ id: by }, runner)),
         });
         this.cacheKeeper = new CacheKeeper({
             log: (line) => this.#log(line),

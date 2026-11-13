@@ -1057,6 +1057,8 @@ export class Runners {
     readonly #mayManage: (id: string, user: User) => boolean;
     readonly #mayStart: (id: string, user: User) => boolean;
     readonly #mayUse: (id: string, user: User) => boolean;
+    /** May the person with this id still link a computer, or link `runner` again (`access.ts` `mayLink`, `mayManage`). */
+    readonly #mayLink: (by: string, runner?: string) => boolean;
     readonly #links = new Map<string, RunnerLink>();
     readonly #envs = new Map<string, RunnerEnv>();
     readonly #server = new WebSocketServer({
@@ -1080,6 +1082,11 @@ export class Runners {
         mayStart?: (id: string, user: User) => boolean;
         /** The access policy's "may use it" (in charge of it, or chosen for it); absent: as `mayList`. */
         mayUse?: (id: string, user: User) => boolean;
+        /**
+         * May the person with id `by` link a computer now, or link `runner` again: asked when their code is used, so a
+         * code does not outlive its maker's right. Absent (tests of the link alone): yes.
+         */
+        mayLink?: (by: string, runner?: string) => boolean;
     }) {
         this.#config = options.config;
         this.#log = options.log;
@@ -1091,6 +1098,7 @@ export class Runners {
         this.#mayManage = options.mayManage ?? ownerOnly;
         this.#mayStart = options.mayStart ?? this.#mayList;
         this.#mayUse = options.mayUse ?? this.#mayList;
+        this.#mayLink = options.mayLink ?? (() => true);
 
         const config = options.config;
 
@@ -1475,6 +1483,16 @@ export class Runners {
             }
 
             this.changed();
+
+            throw new HttpError(403, WRONG_CODE);
+        }
+
+        // A code is worth its maker's right to link, now: taken back, or the person removed, it links nothing. The code
+        // is used up, and this is no wrong code: the runner knew it.
+        if (!this.#mayLink(found.createdBy, found.runner)) {
+            this.log(
+                `A link code for ${found.name} was refused: the person who made it may no longer link it.`,
+            );
 
             throw new HttpError(403, WRONG_CODE);
         }

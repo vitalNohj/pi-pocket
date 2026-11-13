@@ -647,6 +647,13 @@ export class ConfigStore {
             for (const computer of [this.#config.server, ...(this.#config.runners ?? [])]) {
                 delete computer?.given?.[id];
             }
+
+            // Nor a link code they made and nobody used yet.
+            if (this.#config.runnerCodes?.some((code) => code.createdBy === id) === true) {
+                this.#config.runnerCodes = this.#config.runnerCodes.filter(
+                    (code) => code.createdBy !== id,
+                );
+            }
         }
 
         this.save();

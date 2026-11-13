@@ -14,7 +14,7 @@ As the server owner, you link a computer with a one-time code:
 
         `pi-pocket runner` opens a menu: use the arrow keys and Enter. Choose **Link this computer**, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. Then choose **Start**, and leave the terminal open. Press Ctrl+C to stop the runner and its commands.
 
-Only the server owner can link computers. Only link a server you trust: its session commands run as your user account on the linked computer.
+The server owner links computers, and so do the guests the owner lets (**May link runners** in **People**). A link code is worth its maker's right to link at the moment it is used: when the owner takes that right back, or removes the person, their open codes link nothing. Only link a server you trust: its session commands run as your user account on the linked computer.
 
 **Wrong link codes.** The server counts wrong codes for each client address. Five wrong codes in 10 minutes lock that address out of linking for 10 minutes. The third lockout of an address bans it; its count starts over a week after its last lockout. A banned address gets the same answer as a wrong code. The ban stays until you lift it in **Runners**, under **Banned from linking**. The address of this server's own machine is never banned, because every client of an unnamed proxy shares it.
 

@@ -724,4 +724,47 @@ describe("review drill fixes for people on a computer", () => {
             info.home = original;
         }
     });
+
+    it("links nothing with a code whose maker may no longer link computers, or was removed", async () => {
+        const linker = person("Linker", "guest");
+        const named = (name: string) => app.config.runners.filter((each) => each.name === name);
+        const code = async (name: string) =>
+            (await request<{ code: string }>(linker, "runners/code", { name })).body.code;
+        const link = (with_: string) => linkInProcess((each) => app.runners.redeem(each), with_);
+
+        app.setLinksRunners(owner(app), linker.id, true);
+
+        // Allowed: their code links a computer of their own.
+        const first = link(await code("Linker's laptop"));
+
+        assert.equal(app.config.runnerById(first.id)?.createdBy, linker.id);
+
+        // The owner takes the right back while a code waits: it links nothing.
+        const waiting = await code("Linker's desktop");
+
+        app.setLinksRunners(owner(app), linker.id, false);
+        assert.throws(() => link(waiting), /wrong, already used, or expired/);
+        assert.deepEqual(named("Linker's desktop"), []);
+        // Used up: giving the right back does not bring the code back.
+        app.setLinksRunners(owner(app), linker.id, true);
+        assert.throws(() => link(waiting), /wrong, already used, or expired/);
+
+        // A code to link their computer again is worth no more.
+        const again = (
+            await request<{ code: string }>(linker, "runners/code", { runner: first.id })
+        ).body.code;
+        const key = app.config.runnerById(first.id)?.publicKey;
+
+        app.setLinksRunners(owner(app), linker.id, false);
+        assert.throws(() => link(again), /wrong, already used, or expired/);
+        assert.equal(app.config.runnerById(first.id)?.publicKey, key, "its key stays");
+
+        // Removed while a code waits: no computer of nobody appears.
+        app.setLinksRunners(owner(app), linker.id, true);
+        const last = await code("Linker's phone");
+
+        await app.removeUser(owner(app), linker.id);
+        assert.throws(() => link(last), /wrong, already used, or expired/);
+        assert.deepEqual(named("Linker's phone"), []);
+    });
 });
