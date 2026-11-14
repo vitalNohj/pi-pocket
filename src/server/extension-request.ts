@@ -6,7 +6,6 @@ import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import { TurnsDoc } from "./docs.ts";
 import { HttpError } from "./errors.ts";
-import { mayUse } from "./extension-web.ts";
 import type { WebAccess, WebRequest } from "./host.ts";
 
 /** Internal only: no extension can select an actor through the public host. */
@@ -62,7 +61,7 @@ export class ExtensionRequest implements RequestActor {
 
         const user = this.#app.config.userById(this.#by);
 
-        if (user === undefined || !mayUse(user, this.#access)) {
+        if (user === undefined || !this.#app.policy.mayUseExtension(user, this.#access)) {
             throw new HttpError(403, "You no longer have access to this extension route.");
         }
 
@@ -109,7 +108,7 @@ export class ExtensionRequest implements RequestActor {
         const user = this.current();
 
         if (mutation) {
-            this.#app.requireSteer(user);
+            this.#app.requireSteer(user, this.#source);
 
             if (turns?.on === true && turns.driver !== user.id) {
                 throw new HttpError(409, "Take turns is on: take the wheel first.");

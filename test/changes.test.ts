@@ -1,5 +1,6 @@
 // Changes: Pi's edits from its tool calls, and a repository's uncommitted changes with their diffs.
 import {
+    addPerson,
     type App,
     cleanUp,
     lastText,
@@ -131,7 +132,7 @@ test("a session's changes list git's uncommitted files, mark Pi's, and give each
         status: 404,
         message: /no uncommitted changes/,
     });
-    const viewer = app.config.addUser("Vee", "viewer").user;
+    const viewer = (await addPerson(app, "Vee", "viewer")).user;
 
     await assert.rejects(app.workspace.changes(id, viewer), { status: 403 });
 

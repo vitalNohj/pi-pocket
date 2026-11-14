@@ -364,6 +364,11 @@ export class Hooks {
         return this.#app.loader.extensionNames().includes(TRIGGERS_EXTENSION);
     }
 
+    /** Its maker, or who is in charge of its session's computer and may see the session. */
+    #mayManage(user: User, hook: Pick<Hook, "by" | "target">): boolean {
+        return this.#app.policy.mayManageTask(user, hook.by, String(hook.target));
+    }
+
     async #all(): Promise<Hook[]> {
         return Object.values((await this.#app.harness.snapshot(HooksDoc, context))?.items ?? {});
     }
@@ -377,10 +382,13 @@ export class Hooks {
             : { ...rest, path: `/hook/${hook.id}/${secret}` };
     }
 
-    /** The hooks a person may see and remove: their own; the owner's sees every one. Newest first. */
+    /**
+     * The hooks a person may see and remove: their own, and those of the sessions they are in charge of and may see
+     * (`access.ts` `mayManageTask`). Newest first.
+     */
     async list(user: User): Promise<HookView[]> {
         return (await this.#all())
-            .filter((hook) => user.role === "owner" || hook.by === user.id)
+            .filter((hook) => this.#mayManage(user, hook))
             .sort((a, b) => b.createdAt - a.createdAt)
             .map((hook) => this.view(hook));
     }
@@ -397,12 +405,15 @@ export class Hooks {
             throw new HttpError(409, "Triggers are turned off in Extensions.");
         }
 
-        app.requireSee(user, target);
-        app.requireSteer(user);
-
         if (app.sessionMeta(target) === undefined) {
+            app.requireSteer(user, target);
+
             throw new HttpError(400, "Webhooks message sessions, or PiP.");
         }
+
+        // A webhook sends Pi instructions in that session: who makes one drives it now, its approval live or renewed
+        // first, as for a schedule (`requireDriver`).
+        await app.requireDriver(target, user);
 
         // One line, without brackets: it is the label of every message the hook sends (`[via webhook <name>]`).
         const name = typeof request.name === "string" ? label(request.name) : "";
@@ -430,24 +441,27 @@ export class Hooks {
             count: 0,
         };
 
-        await app.harness.commit(async (tx) => {
-            const doc = await tx.doc(HooksDoc);
+        await app.harness.commit(
+            async (tx) => {
+                const doc = await tx.doc(HooksDoc);
 
-            if (
-                Object.values(doc.items).filter((each) => each.by === user.id).length >= MAX_HOOKS
-            ) {
-                throw new HttpError(409, `A person can have ${MAX_HOOKS} webhooks at most.`);
-            }
+                if (
+                    Object.values(doc.items).filter((each) => each.by === user.id).length >=
+                    MAX_HOOKS
+                ) {
+                    throw new HttpError(409, `A person can have ${MAX_HOOKS} webhooks at most.`);
+                }
 
-            doc.items[hook.id] = hook;
-        }, context);
+                doc.items[hook.id] = hook;
+                // Where it is saved: they still drive that session, its approval live.
+            },
+            app.admission(target, user),
+        );
 
         return this.view(hook);
     }
 
     async update(user: User, id: string, instructions: unknown): Promise<HookView> {
-        this.#app.requireSteer(user);
-
         if (typeof instructions !== "string") {
             throw new HttpError(400, "instructions must be a string.");
         }
@@ -458,14 +472,30 @@ export class Hooks {
             throw new HttpError(413, `Instructions are limited to ${MAX_INSTRUCTIONS} characters.`);
         }
 
+        const mine = (item: Hook | undefined): item is Hook =>
+            item !== undefined && this.#mayManage(user, item);
+        const before = (await this.#app.harness.snapshot(HooksDoc, context))?.items;
+        const found = before !== undefined && Object.hasOwn(before, id) ? before[id] : undefined;
+
+        if (!mine(found)) {
+            throw new HttpError(404, "No such webhook");
+        }
+
+        // The instructions go to Pi in the hook's session: who changes them drives it now, its approval live or
+        // renewed first (`requireDriver`), before the change is saved.
+        await this.#app.requireDriver(found.target as unknown as ConversationId, user);
+
         const hook = await this.#app.harness.commit(async (tx) => {
             const { items } = await tx.doc(HooksDoc);
             const item = Object.hasOwn(items, id) ? items[id] : undefined;
 
-            if (item === undefined || (user.role !== "owner" && item.by !== user.id)) {
+            // Gone, or moved to another session, while the approval was renewed: no change.
+            if (!mine(item) || item.target !== found.target) {
                 throw new HttpError(404, "No such webhook");
             }
 
+            // Where it is saved: they still drive that session, its approval live.
+            this.#app.recheck(item.target as unknown as ConversationId, user);
             item.instructions = text;
 
             return { ...item };
@@ -481,7 +511,7 @@ export class Hooks {
             // Own keys only: an id like `__proto__` names no hook.
             const item = Object.hasOwn(items, id) ? items[id] : undefined;
 
-            if (item === undefined || (user.role !== "owner" && item.by !== user.id)) {
+            if (item === undefined || !this.#mayManage(user, item)) {
                 throw new HttpError(404, "No such webhook");
             }
 
@@ -493,13 +523,13 @@ export class Hooks {
         return this.view(hook);
     }
 
-    /** Remove a hook: posts to it get 404 from now on. Its maker or the owner may. */
+    /** Remove a hook: posts to it get 404 from now on. Its maker, or who is in charge of its session, may. */
     async remove(user: User, id: string): Promise<Hook> {
         return this.#app.harness.commit(async (tx) => {
             const doc = await tx.doc(HooksDoc);
             const hook = Object.hasOwn(doc.items, id) ? doc.items[id] : undefined;
 
-            if (hook === undefined || (user.role !== "owner" && hook.by !== user.id)) {
+            if (hook === undefined || !this.#mayManage(user, hook)) {
                 throw new HttpError(404, "No such webhook");
             }
 
@@ -607,9 +637,8 @@ export class Hooks {
 
         if (
             person === undefined ||
-            person.role === "viewer" ||
             meta === undefined ||
-            !app.canSee(person, target)
+            !app.policy.maySteer(person, String(target))
         ) {
             throw new HttpError(
                 410,
@@ -674,6 +703,8 @@ export class Hooks {
                 person,
                 { text, requestId: key },
                 `webhook ${label(hook.name)}`,
+                undefined,
+                true,
             );
         } catch (error) {
             // A post that did not go gives its place in the hour back.

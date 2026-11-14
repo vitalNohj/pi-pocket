@@ -3,6 +3,7 @@
 // bridge once it runs (a follow-up after a tap; saved state), and the same for a viewer and for someone invited to
 // this session alone.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -444,7 +445,7 @@ test("on a phone the card fits the screen", real, async () => {
 });
 
 test("a viewer sees the card and can run it; they get a notice for a follow-up", real, async () => {
-    const viewer = app.config.addUser("Vee", "viewer");
+    const viewer = await addPerson(app, "Vee", "viewer");
     const theirs = await signedIn(viewer.token);
 
     try {

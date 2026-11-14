@@ -7,7 +7,7 @@ import { BrowserButton, BrowserPanel } from "./browser-panel.js";
 import { browserAvailable, setBrowserOpen, toggleBrowser } from "./browser.js";
 import { PeopleButton, PeoplePanel } from "./chat.js";
 import { Composer, openingByAlt, shortModel, StatusLine } from "./composer.js";
-import { SessionApproval } from "./runner-wait.js";
+import { FolderRequests } from "./folder-requests.js";
 import { useChanges } from "./diff.js";
 import {
     FilesButton,
@@ -57,6 +57,7 @@ import { SubagentsBoard } from "./subagents-board.js";
 import {
     actions,
     attempt,
+    canStart,
     canSteer,
     dismiss,
     filesShown,
@@ -604,7 +605,7 @@ function App() {
                         // PiP's conversation as a board has PiP's own box, the one its panel has.
                         (pipBoard()
                             ? html`<${PipBoardBox}><${StatusLine} /><//>`
-                            : html`<${SessionApproval} /><${Composer} key=${state.conversationId} />`)
+                            : html`<${Composer} key=${state.conversationId} />`)
                     }`
                           : html`<div class="home-list" data-part="home-list">
                           <${RailNav} />
@@ -641,6 +642,7 @@ function App() {
         <${Sheets} />
         <${QuoteReplyButton} />
         <${LauncherHost} />
+        <${FolderRequests} />
         <${Notices} />
     </div>`;
 }
@@ -782,7 +784,7 @@ addEventListener("keydown", (event) => {
             return;
         }
 
-        if (event.code === "KeyN" && canSteer() && !scoped()) {
+        if (event.code === "KeyN" && canStart()) {
             event.preventDefault();
             openSheet({ type: "cwd", mode: "new" });
 

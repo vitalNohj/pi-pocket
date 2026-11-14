@@ -1,4 +1,5 @@
 import {
+    addPerson,
     type App,
     cleanUp,
     fakeTab,
@@ -102,7 +103,7 @@ test("a sign-in that cannot be renewed needs sign-in: the sheet, the models, and
     assert.ok(renewed.length > 0, "the renewal was tried");
 
     const tab = fakeTab(undefined, owner(app));
-    const guest = fakeTab(undefined, app.config.addUser("Guest", "guest").user);
+    const guest = fakeTab(undefined, (await addPerson(app, "Guest", "guest")).user);
 
     await app.attach(tab.client);
     await app.attach(guest.client);

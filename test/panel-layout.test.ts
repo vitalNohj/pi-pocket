@@ -1,6 +1,6 @@
 // Which panel each session shows (`web/panel-layout.js`, `web/store.js`): read from the state and shown again, kept for
 // the sessions shown last, taken over once from the panel a tab kept before, and kept for the person signed in.
-import { cleanUp, newSession, openApp, root, scriptedModel, until } from "./helpers.ts";
+import { addPerson, cleanUp, newSession, openApp, root, scriptedModel, until } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { createServer } from "node:http";
@@ -167,7 +167,7 @@ test("a session shows again its panel, for its person only", real, async () => {
         assert.equal(await panel(), null);
 
         // Another account in this browser sees none of the owner's.
-        await signIn(app.config.addUser("Guest", "guest").token);
+        await signIn((await addPerson(app, "Guest", "guest")).token);
         await open(second, true);
         assert.equal(await panel(), null);
     } finally {

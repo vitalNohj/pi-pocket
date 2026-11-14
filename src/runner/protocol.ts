@@ -23,7 +23,7 @@
  */
 
 /** The link protocol's version. Both sides refuse a different one. */
-export const LINK_PROTOCOL = 1;
+export const LINK_PROTOCOL = 2;
 
 /** The WebSocket subprotocol a runner asks for. */
 export const LINK_SUBPROTOCOL = `pi-pocket-runner.${LINK_PROTOCOL}`;
@@ -34,15 +34,27 @@ export const LINK_PATH = "/runner/socket";
 /** Where a runner exchanges a one-time code for its key, on the server. */
 export const LINK_CODE_PATH = "/runner/link";
 
-/** WebSocket close codes with a meaning for the runner. */
+/**
+ * WebSocket close codes the server ends a link with, for logs and tests. A code stops no runner: anyone on the path can
+ * send one. A runner stops for good only on what the server proves: `Bye.stop` inside the sealed link, or a signed
+ * refusal in the handshake (`secure-link.ts`).
+ */
 export const CLOSE = {
-    /** Another connection of the same computer took over: this runner stops. */
+    /** Another connection of the same computer took over. */
     replaced: 4000,
-    /** The computer was removed from the server: its key no longer works, and the runner stops. */
+    /** The computer was removed from the server: its key no longer works. */
     removed: 4001,
-    /** The two sides speak different link protocols: the runner stops. */
+    /** The two sides speak different link protocols. */
     protocol: 4002,
 } as const;
+
+/**
+ * Why the server sends a runner away for good: its computer was removed, another runner took its link, the two sides
+ * speak different link protocols, or its computer was linked again with a new key.
+ */
+export type Stop = "removed" | "replaced" | "protocol" | "relinked";
+
+const STOPS: ReadonlySet<unknown> = new Set<Stop>(["removed", "replaced", "protocol", "relinked"]);
 
 /** The largest WebSocket message either side accepts: one pi-env frame (16 MiB) and some room. */
 export const MAX_MESSAGE = 17 * 1024 * 1024;
@@ -56,34 +68,25 @@ export const MAX_FRAME = 16 * 1024 * 1024;
 /** Programs ready on the runner, checked at each connection. */
 export type RunnerTools = { git: boolean; gh: boolean; github: boolean };
 
-import type { ApprovalState, RunnerAction, SessionScope } from "./approvals.ts";
-export type { ApprovalState, RunnerAction, SessionScope } from "./approvals.ts";
+/**
+ * The session a request belongs to, as the server names it: its id (the root session's permission id) and its folder on
+ * the computer. The server decided that the person it works for may use this folder (`src/server/access.ts`); the runner
+ * keeps the request inside it (`request-gate.ts`).
+ */
+export type SessionScope = { id: string; folder: string };
 
-/** Each request's session scope, removed by the runner before the request reaches pi-env. */
+/** Removed by the runner before a request reaches pi-env: the request's `SessionScope`. */
 export const SESSION_FIELD = "_pocketSession";
-export type ApprovalNeeded = {
-    type: "approval-needed";
-    kind: "session" | "pi-preview";
-    title?: string;
-    id: string;
-    session: string;
-    folder: string;
-    permission: "folder" | "session";
-    expired: boolean;
-    broad: boolean;
-    totp: boolean;
-};
-export type ApprovalEnded = { type: "approval-ended"; id: string };
-export type ApprovalCode = { type: "approval-code"; id: string; code: string };
-export type CodeResult = { type: "code-result"; id: string; allow: boolean; reason?: string };
-export type StateMessage = { type: "runner-state"; state: ApprovalState };
-export type ActionMessage = { type: "runner-action"; id: string; request: RunnerAction };
-export type ActionResult = {
-    type: "runner-result";
-    id: string;
-    ok: boolean;
-    reason?: string;
-    state?: ApprovalState;
+
+/**
+ * Server to runner: this computer's settings, kept on the server and changed in its Runners sheet. Sent after each
+ * welcome and on each change. `network` false: sessions' browsers do not use this computer's network. `downloads`: where
+ * their downloads go, an absolute folder here; absent, the temporary folder.
+ */
+export type RunnerSettingsMessage = {
+    type: "runner-settings";
+    network: boolean;
+    downloads?: string;
 };
 
 /** Metadata only: no message body travels with a Pi session list. */
@@ -99,20 +102,21 @@ export type RunnerPiSession = {
 export const COMPANION_SUFFIX = /^\.[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export type PiSessionsRequest = { type: "pi-sessions"; id: string } & PiSessionsQuery;
-export type PiSessionsQuery = { person: string } & (
+export type PiSessionsQuery =
     | { op: "list" }
     | { op: "preview"; path: string }
     | {
           op: "open";
           path: string;
           session: string;
+          /** The session's folder here: Pi's session must have worked in it or below it. */
+          folder: string;
           /**
            * Suffixes of files extensions keep beside Pi's file (`.acp.json`): each one there is also allowed to read,
            * like the Pi file, and named in `companions`. Older runners ignore it.
            */
           companions?: string[];
-      }
-);
+      };
 export type PiSessionsResult = {
     type: "pi-sessions-result";
     id: string;
@@ -125,8 +129,8 @@ export type PiSessionsResult = {
     companions?: string[];
 };
 
-/** Runner-owned background tasks, independent of the pi-env daemon session. */
-export type TaskRequest = { type: "task"; id: string; permission: string } & (
+/** Runner-owned background tasks, independent of the pi-env daemon session. `scope`: the session's, for its folder. */
+export type TaskRequest = { type: "task"; id: string; permission: string; scope: SessionScope } & (
     | {
           op: "start";
           task: string;
@@ -159,32 +163,9 @@ export type Hello = {
     /** The runner's Pi Pocket version, for the computers list. */
     version: string;
     tools: RunnerTools;
-    /** The folder for its browser downloads, absolute (`settings downloads`). Absent: its temporary folder. */
-    downloads?: string;
+    /** Plain HTTP to this server is allowed on this computer (`pi-pocket runner link --allow-http`), for the sheet. */
+    allowHttp?: boolean;
 };
-
-/**
- * Server to runner, before a session starts on its computer: who wants it and where. The runner asks its person (or
- * not, as its settings say) and answers with `Confirmed`.
- */
-export type Confirm = {
-    type: "confirm";
-    id: string;
-    /** A new session, a fork (a copy), or a change of working folder. */
-    kind: "new" | "fork" | "move";
-    /** Who asked, by their name on the server. */
-    person: string;
-    /** The folder on this computer. */
-    folder: string;
-    /** Root session permission. */
-    session: string;
-};
-
-/** Runner to server: the answer to `Confirm`; `reason` says why not, in words for the person who asked. */
-export type Confirmed = { type: "confirmed"; id: string; allow: boolean; reason?: string };
-
-/** Server to runner: the session question with this id no longer stands. */
-export type Withdraw = { type: "withdraw"; id: string };
 
 /** Server to runner, the answer to `Hello`. */
 export type Welcome = {
@@ -199,8 +180,11 @@ export type Welcome = {
 /** Either side: bytes of the other side's stream received so far, so the other side can drop them. */
 export type Ack = { type: "ack"; received: number };
 
-/** Either side, before it closes the link on purpose: why. */
-export type Bye = { type: "bye"; reason: string };
+/**
+ * Either side, before it closes the link on purpose: why. `stop`, from the server alone: the runner stops for good.
+ * It is sealed with the link's keys, so only the server this computer linked to can say it.
+ */
+export type Bye = { type: "bye"; reason: string; stop?: Stop };
 
 /** Server to runner: open a TCP connection to `host`:`port` on the computer, as stream `id`. */
 export type NetOpen = {
@@ -239,17 +223,8 @@ export type ControlMessage =
     | Welcome
     | Ack
     | Bye
-    | Confirm
-    | Confirmed
-    | Withdraw
     | NetMessage
-    | ApprovalNeeded
-    | ApprovalEnded
-    | ApprovalCode
-    | CodeResult
-    | StateMessage
-    | ActionMessage
-    | ActionResult
+    | RunnerSettingsMessage
     | TaskRequest
     | TaskResult
     | PiSessionsRequest
@@ -281,48 +256,18 @@ function piSession(value: unknown): value is RunnerPiSession {
     );
 }
 
-/** Parse a text message; undefined for anything that is not a control message. */
-/** A runner's approvals state as the server reads it: a computer that sends another shape is not trusted with it. */
-function approvalState(value: unknown): value is ApprovalState {
-    const state = value as Record<string, unknown> | null;
-    const settings = state?.settings as Record<string, unknown> | null | undefined;
-    const text = (each: unknown) => typeof each === "string";
-    const time = (each: unknown) => each === null || typeof each === "number";
+function scopeOf(value: unknown): value is SessionScope {
+    const scope = value as Record<string, unknown> | null;
 
     return (
-        typeof state === "object" &&
-        state !== null &&
-        typeof state.totp === "boolean" &&
-        typeof settings === "object" &&
-        settings !== null &&
-        typeof settings.stopAsking === "boolean" &&
-        time(settings.totpDays) &&
-        typeof settings.allowHttp === "boolean" &&
-        typeof settings.network === "boolean" &&
-        (settings.downloads === null || text(settings.downloads)) &&
-        Array.isArray(state.folders) &&
-        state.folders.every(text) &&
-        Array.isArray(state.sessions) &&
-        state.sessions.every((each: unknown) => {
-            const session = each as Record<string, unknown> | null;
-
-            return (
-                typeof session === "object" &&
-                session !== null &&
-                text(session.id) &&
-                text(session.folder) &&
-                text(session.person) &&
-                text(session.approvedBy) &&
-                typeof session.approvedAt === "number" &&
-                typeof session.idleAt === "number" &&
-                time(session.ttlMs) &&
-                typeof session.inUse === "boolean" &&
-                time(session.expiresAt)
-            );
-        })
+        typeof scope === "object" &&
+        scope !== null &&
+        typeof scope.id === "string" &&
+        typeof scope.folder === "string"
     );
 }
 
+/** Parse a text message; undefined for anything that is not a control message. */
 export function parseControl(text: string): ControlMessage | undefined {
     let value: unknown;
 
@@ -344,12 +289,12 @@ export function parseControl(text: string): ControlMessage | undefined {
     switch (message.type) {
         case "pi-sessions":
             return bounded(message.id, 256) &&
-                bounded(message.person, 256) &&
                 (message.op === "list" ||
                     (message.op === "preview" && bounded(message.path)) ||
                     (message.op === "open" &&
                         bounded(message.path) &&
                         bounded(message.session, 256) &&
+                        bounded(message.folder) &&
                         (message.companions === undefined ||
                             (Array.isArray(message.companions) &&
                                 message.companions.length <= 16 &&
@@ -392,50 +337,18 @@ export function parseControl(text: string): ControlMessage | undefined {
                 : undefined;
         }
 
-        case "approval-needed":
-            return typeof message.id === "string" &&
-                typeof message.session === "string" &&
-                typeof message.folder === "string" &&
-                ["folder", "session"].includes(message.permission as string) &&
-                typeof message.expired === "boolean" &&
-                typeof message.broad === "boolean" &&
-                typeof message.totp === "boolean" &&
-                ["session", "pi-preview"].includes(message.kind as string) &&
-                (message.title === undefined || bounded(message.title, 80))
-                ? (message as ApprovalNeeded)
+        case "runner-settings":
+            return typeof message.network === "boolean" &&
+                (message.downloads === undefined || typeof message.downloads === "string")
+                ? (message as RunnerSettingsMessage)
                 : undefined;
-        case "approval-ended":
-            return typeof message.id === "string" ? (message as ApprovalEnded) : undefined;
-        case "approval-code":
-            return typeof message.id === "string" && typeof message.code === "string"
-                ? (message as ApprovalCode)
-                : undefined;
-        case "code-result":
-            return typeof message.id === "string" && typeof message.allow === "boolean"
-                ? (message as CodeResult)
-                : undefined;
-        case "runner-state":
-            return approvalState(message.state) ? (message as StateMessage) : undefined;
-
-        case "runner-action": {
-            const request = message.request as Record<string, unknown> | undefined;
-
-            return typeof message.id === "string" &&
-                request !== null &&
-                typeof request === "object" &&
-                ((request.action === "revoke" && typeof request.session === "string") ||
-                    (request.action === "remove-folder" && typeof request.folder === "string") ||
-                    (request.action === "settings" &&
-                        typeof request.code === "string" &&
-                        typeof request.change === "object" &&
-                        request.change !== null &&
-                        !Array.isArray(request.change)))
-                ? (message as ActionMessage)
-                : undefined;
-        }
 
         case "task": {
-            if (typeof message.id !== "string" || typeof message.permission !== "string") {
+            if (
+                typeof message.id !== "string" ||
+                typeof message.permission !== "string" ||
+                !scopeOf(message.scope)
+            ) {
                 return undefined;
             }
 
@@ -494,12 +407,6 @@ export function parseControl(text: string): ControlMessage | undefined {
                         })))
                 ? (message as TaskResult)
                 : undefined;
-        case "runner-result":
-            return typeof message.id === "string" &&
-                typeof message.ok === "boolean" &&
-                (message.state === undefined || approvalState(message.state))
-                ? (message as ActionResult)
-                : undefined;
         case "net-open":
             return stream &&
                 typeof message.host === "string" &&
@@ -544,22 +451,9 @@ export function parseControl(text: string): ControlMessage | undefined {
         case "ack":
             return count("received") ? (message as Ack) : undefined;
         case "bye":
-            return typeof message.reason === "string" ? (message as Bye) : undefined;
-        case "confirm":
-            return typeof message.id === "string" &&
-                (message.kind === "new" || message.kind === "fork" || message.kind === "move") &&
-                typeof message.person === "string" &&
-                typeof message.folder === "string" &&
-                typeof message.session === "string"
-                ? (message as Confirm)
-                : undefined;
-        case "withdraw":
-            return typeof message.id === "string" ? (message as Withdraw) : undefined;
-        case "confirmed":
-            return typeof message.id === "string" &&
-                typeof message.allow === "boolean" &&
-                (message.reason === undefined || typeof message.reason === "string")
-                ? (message as Confirmed)
+            return typeof message.reason === "string" &&
+                (message.stop === undefined || STOPS.has(message.stop))
+                ? (message as Bye)
                 : undefined;
         default:
             return undefined;

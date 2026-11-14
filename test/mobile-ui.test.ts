@@ -484,13 +484,21 @@ test(
         await until(async () => (await status(week)) === 410, "the week's invite, ended");
         await tap('.sheet label.check input[type="checkbox"]');
         await until(async () => (await code()) !== null, "a guest's invite again");
-        const steer = await code();
+        const week2 = await code();
 
-        // Not for a frame does the sheet show an invite made for other settings: View only shows no Steer invite.
+        // Every invite starts as a viewer: the sheet offers no choice of what they can do.
+        assert.deepEqual(
+            await inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".sheet .segmented button")].map((each) => each.textContent.trim()).filter((label) => label === "Steer" || label === "View only"))`,
+            ),
+            [],
+        );
+
+        // Not for a frame does the sheet show an invite made for other settings: 1 hour shows no invite for a week.
         await page.evaluate(`
             window.frames = [];
             const watch = () => {
-                const on = document.querySelector(".sheet .segmented .on")?.textContent.trim();
+                const on = [...document.querySelectorAll(".sheet .segmented .on")].map((each) => each.textContent.trim()).join("|");
                 const code = document.querySelector(".invite-code-value")?.textContent.replace(/\\s/g, "");
 
                 window.frames.push([on, code ?? null]);
@@ -501,25 +509,25 @@ test(
             };
 
             requestAnimationFrame(watch);
-            [...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === "View only").click();
+            [...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === "1 hour").click();
         `);
-        await until(async () => ![null, steer].includes(await code()), "the view-only invite");
+        await until(async () => ![null, week2].includes(await code()), "the hour's invite");
         const frames = await inPage<[string, string | null][]>(
             `return JSON.stringify(window.frames)`,
         );
 
         assert.ok(
-            !frames.some(([on, shown]) => on === "View only" && shown === steer),
-            "no frame shows the Steer invite under View only",
+            !frames.some(([on, shown]) => on.includes("1 hour") && shown === week2),
+            "no frame shows the week's invite under 1 hour",
         );
-        const viewOnly = await code();
+        const hour = await code();
 
         // New invite makes another and leaves the one before working; closing leaves the last one working.
         await tap(".sheet .button.wide:last-of-type");
-        await until(async () => ![null, viewOnly].includes(await code()), "another invite");
+        await until(async () => ![null, hour].includes(await code()), "another invite");
         const another = await code();
 
-        assert.equal(await status(viewOnly), 200, "the one before New invite still works");
+        assert.equal(await status(hour), 200, "the one before New invite still works");
         await back();
         await reach({ sheet: null, layers: 0 }, "closed");
         assert.equal(await status(another), 200, "the last one shown still works");

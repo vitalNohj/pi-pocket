@@ -84,11 +84,21 @@ export type InviteGrant =
     { role: Exclude<Role, "owner">; session?: string } | { role: "owner"; session?: never };
 
 /** Invites live in `config.json` (by their codes' hashes), so one that lasts a day or a week outlives a restart. */
+/**
+ * May `creator` invite someone new, to session `session` alone or to this server: the app's access policy
+ * (`access.ts` `mayInvite`). Without it, by role alone: no viewer, no one invited to one session.
+ */
+export type MayInvite = (creator: User, session?: string) => boolean;
+
+const byRole: MayInvite = (creator) => creator.role !== "viewer" && creator.sessions === undefined;
+
 export class Auth {
     readonly #config: ConfigStore;
+    readonly #mayInvite: MayInvite;
 
-    constructor(config: ConfigStore) {
+    constructor(config: ConfigStore, mayInvite: MayInvite = byRole) {
         this.#config = config;
+        this.#mayInvite = mayInvite;
     }
 
     user(request: IncomingMessage): User | undefined {
@@ -129,6 +139,11 @@ export class Auth {
         const lasts = grant.role === "owner" ? INVITE_MINUTES[0] : minutes;
         const expiresAt = Date.now() + lasts * 60_000;
 
+        // Every invite but an owner's starts its person as a viewer: steering comes once they link an authenticator.
+        if (grant.role !== "owner") {
+            grant = { ...grant, role: "viewer" };
+        }
+
         this.#config.addInvite(code, { ...grant, expiresAt, createdBy: by.id });
 
         return { code, expiresAt, minutes: lasts };
@@ -162,17 +177,20 @@ export class Auth {
      * Spend an invite on a new device: a user with the invite's role and scope, and its own token. An owner invite makes
      * no one new: the device gets the owner and the owner's token. Either way the invite is gone, used or not.
      */
-    redeem(code: string, name: string): { user: User; token: string } | undefined {
+    redeem(
+        code: string,
+        name: string,
+    ): { user: User; token: string; invitedBy?: string } | undefined {
         const invite = this.#config.invite(code);
 
         if (invite === undefined || !this.#config.removeInvite(code)) {
             return undefined;
         }
 
-        // The person who made it must still be allowed to: not removed, not view only, not limited to one session.
+        // The person who made it must still be allowed to: not removed, and still free to invite to what it grants.
         const creator = this.#config.userById(invite.createdBy);
 
-        if (creator === undefined || creator.role === "viewer" || creator.sessions !== undefined) {
+        if (creator === undefined) {
             return undefined;
         }
 
@@ -182,12 +200,20 @@ export class Auth {
                 : undefined;
         }
 
-        const clean = name.replace(/\s+/g, " ").trim().slice(0, 40) || "Guest";
+        if (!this.#mayInvite(creator, invite.session)) {
+            return undefined;
+        }
 
-        return this.#config.addUser(
+        const clean = name.replace(/\s+/g, " ").trim().slice(0, 40) || "Guest";
+        // Every invite starts its person as a viewer, also one saved before this rule with another role: steering
+        // takes their own authenticator and the owner's Let steer (`app.ts` `setAccess`).
+        const added = this.#config.addUser(
             clean,
-            invite.role,
+            "viewer",
             invite.session === undefined ? undefined : [invite.session],
         );
+
+        // An invite to every session: the app shares the inviter's sessions with them (`app.ts` `welcome`).
+        return invite.session === undefined ? { ...added, invitedBy: creator.id } : added;
     }
 }

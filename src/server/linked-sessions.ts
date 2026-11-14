@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { checkedContext } from "./admission.ts";
 import {
     AgentDoc,
     type AgentState,
@@ -25,6 +26,7 @@ import {
     SessionsDoc,
     TurnsDoc,
 } from "./docs.ts";
+import { THIS_SERVER } from "./access.ts";
 import { ChooseModelError, describe, HttpError } from "./errors.ts";
 import { defang, INVISIBLE_CLASS } from "./fence.ts";
 import { isThinkingLevel, levelFor, resolveModel, THINKING_LEVELS } from "./models.ts";
@@ -64,6 +66,12 @@ function tooLong(message: string): void {
     }
 }
 
+/**
+ * How a call acts on a session, for its approval (`app.ts` `requireDriver`, `requireTurn`). `send`: a person's agent
+ * makes Pi work, so the approval must be live or renewed now. `stop`: it only stops work, which never waits. `report`:
+ * the end of a run reports on its own, as a task runs: nobody is asked.
+ */
+type Acting = "send" | "stop" | "report";
 type CallOutcome = { busy: boolean; stopping?: boolean } | { archived: boolean; repeating: number };
 type CallRecord = { conversationId?: number; by?: string; at: number; result?: CallOutcome };
 
@@ -118,7 +126,21 @@ export class LinkedSessions implements LinkedSessionsApi {
         return user;
     }
 
-    async #maySend(source: ConversationId, user: User, actor?: RequestActor): Promise<void> {
+    /** The session's approval, as `how` the call acts needs it (`Acting`), and the turn while take turns is on. */
+    async #mayDrive(id: ConversationId, user: User, how: Acting): Promise<void> {
+        if (how === "stop") {
+            await this.#app.requireTurn(id, user);
+        } else {
+            await this.#app.requireDriver(id, user, how === "report");
+        }
+    }
+
+    async #maySend(
+        source: ConversationId,
+        user: User,
+        actor?: RequestActor,
+        how: Acting = "send",
+    ): Promise<void> {
         const app = this.#app;
 
         if (actor !== undefined) {
@@ -127,7 +149,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             return;
         }
 
-        await app.requireDriver(source, user);
+        await this.#mayDrive(source, user, how);
 
         if ((await app.harness.snapshot(PlanDoc, source, context))?.on) {
             throw new HttpError(409, "This session is in plan mode.");
@@ -146,7 +168,7 @@ export class LinkedSessions implements LinkedSessionsApi {
 
         const user = actor.current();
 
-        this.#app.requireSteer(user);
+        this.#app.requireSteer(user, source);
 
         if (plan.on) {
             throw new HttpError(409, "This session is in plan mode.");
@@ -172,8 +194,7 @@ export class LinkedSessions implements LinkedSessionsApi {
         const child = await tx.doc(AgentDoc, target);
         const user = actor.current();
 
-        this.#app.requireSee(user, target);
-        this.#app.requireSteer(user);
+        this.#app.requireSteer(user, target);
         this.#app.spend.check(user, source);
         this.#app.spend.check(user, target);
 
@@ -289,13 +310,12 @@ export class LinkedSessions implements LinkedSessionsApi {
                     const current = actor.current();
 
                     actor.checkSource(sourceAgent);
-                    app.requireSee(current, target);
-                    app.requireSteer(current);
+                    app.requireSteer(current, target);
                     app.spend.check(current, source);
                     app.spend.check(current, target);
 
                     if (
-                        current.sessions !== undefined ||
+                        !app.policy.mayStart(current, app.runnerOf(source) ?? THIS_SERVER) ||
                         app.sessionMeta(source)?.linkedFrom !== undefined ||
                         app.sessionMeta(target)?.linkedFrom?.id !== Number(source)
                     ) {
@@ -612,7 +632,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             throw new HttpError(409, "This start key belongs to another person.");
         }
 
-        app.requireSteer(user);
+        app.requireSteer(user, source);
 
         let approved: StartSettings | undefined;
 
@@ -771,16 +791,8 @@ export class LinkedSessions implements LinkedSessionsApi {
         const title = request.title;
         const runner = app.runnerOf(source);
 
-        if (runner !== undefined && !app.runners.mayUse(runner, user)) {
-            throw new HttpError(
-                403,
-                "Only the person who linked this computer or the people they chose can start sessions on it.",
-            );
-        }
-
-        if (user.sessions !== undefined) {
-            throw new HttpError(403, "You were invited to one session and cannot start new ones.");
-        }
+        // A linked session is a new session on the source's computer: it has its starter's rights there, not more.
+        app.policy.requireStart(user, runner ?? THIS_SERVER);
 
         if (app.sessionMeta(source)?.linkedFrom !== undefined) {
             throw new HttpError(403, "A linked session cannot start sessions.");
@@ -811,101 +823,115 @@ export class LinkedSessions implements LinkedSessionsApi {
                   ? app.runnerScope(source).id
                   : randomUUID();
 
-        if (runner !== undefined && !sameFolder) {
-            await app.runners.link(runner).confirm(
-                {
-                    kind: "new",
-                    person: user.name,
-                    folder: cwd,
-                    session: runnerPermission!,
-                },
-                undefined,
-                user.id,
-            );
-        }
+        // A linked session inherits its source's approval: Pi's work from a live run asks no one. Another folder must be
+        // one given to its starter: an agent gets no more than they have.
+        const folderApproval =
+            app.workspaceScheme(cwd) === undefined
+                ? await app.approveFrom(user, source, cwd, runner)
+                : undefined;
+        const base = actor?.context ?? context;
 
         const now = Date.now();
 
-        return app.harness.commit(async (tx) => {
-            let inherited = agent;
+        return app.harness
+            .commit(
+                async (tx) => {
+                    let inherited = agent;
 
-            if (actor !== undefined) {
-                user = await this.#authorize(tx, source, actor);
-                inherited = JSON.parse(
-                    JSON.stringify(await tx.doc(AgentDoc, source)),
-                ) as AgentState;
-                actor.checkSource(inherited);
+                    if (actor !== undefined) {
+                        user = await this.#authorize(tx, source, actor);
+                        inherited = JSON.parse(
+                            JSON.stringify(await tx.doc(AgentDoc, source)),
+                        ) as AgentState;
+                        actor.checkSource(inherited);
 
-                if (this.#selection(agent, request, true).thinking !== thinking) {
-                    throw new HttpError(
-                        409,
-                        "The selected model's thinking support changed. Try again.",
+                        if (this.#selection(agent, request, true).thinking !== thinking) {
+                            throw new HttpError(
+                                409,
+                                "The selected model's thinking support changed. Try again.",
+                            );
+                        }
+
+                        if (
+                            !app.policy.mayStart(user, app.runnerOf(source) ?? THIS_SERVER) ||
+                            app.sessionMeta(source)?.linkedFrom !== undefined
+                        ) {
+                            throw new HttpError(
+                                403,
+                                "This person or source cannot start linked sessions.",
+                            );
+                        }
+                    }
+
+                    const receipt = recordOf(
+                        await tx.doc(LinkedSessionCallsDoc, source),
+                        token,
+                        now,
                     );
-                }
 
-                if (
-                    user.sessions !== undefined ||
-                    app.sessionMeta(source)?.linkedFrom !== undefined
-                ) {
-                    throw new HttpError(403, "This person or source cannot start linked sessions.");
-                }
-            }
+                    if (
+                        actor !== undefined &&
+                        receipt.by !== undefined &&
+                        receipt.by !== actor.current().id
+                    ) {
+                        throw new HttpError(409, "This start key belongs to another person.");
+                    }
 
-            const receipt = recordOf(await tx.doc(LinkedSessionCallsDoc, source), token, now);
+                    if (receipt.conversationId !== undefined) {
+                        return receipt.conversationId as unknown as ConversationId;
+                    }
 
-            if (
-                actor !== undefined &&
-                receipt.by !== undefined &&
-                receipt.by !== actor.current().id
-            ) {
-                throw new HttpError(409, "This start key belongs to another person.");
-            }
+                    const sessions = await tx.doc(SessionsDoc);
+                    const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
 
-            if (receipt.conversationId !== undefined) {
-                return receipt.conversationId as unknown as ConversationId;
-            }
+                    const childAgent = await tx.doc(AgentDoc, child.id);
 
-            const sessions = await tx.doc(SessionsDoc);
-            const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
+                    Object.assign(childAgent, inherited, {
+                        cwd,
+                        model,
+                        thinkingLevel: thinking,
+                    });
 
-            const childAgent = await tx.doc(AgentDoc, child.id);
+                    if (runner !== undefined) {
+                        childAgent.extensions = app.remoteExtensions();
+                    }
 
-            Object.assign(childAgent, inherited, {
-                cwd,
-                model,
-                thinkingLevel: thinking,
+                    sessions.items[String(child.id)] = {
+                        cwd,
+                        title,
+                        ...(runner === undefined ? {} : { runner, runnerPermission }),
+                        createdAt: now,
+                        updatedAt: now,
+                        createdBy: user.id,
+                        // Linking does not share: the new session starts shared as its computer says.
+                        ...app.initialShares(runner, user),
+                        linkedFrom: { id: Number(source) },
+                    };
+                    receipt.conversationId = Number(child.id);
+                    receipt.by = user.id;
+
+                    if (actor !== undefined) {
+                        await this.#authorize(tx, source, actor);
+                        actor.checkSource(await tx.doc(AgentDoc, source));
+
+                        if (this.#selection(agent, request, true).thinking !== thinking) {
+                            throw new HttpError(
+                                409,
+                                "The selected model's thinking support changed. Try again.",
+                            );
+                        }
+                    }
+
+                    return child.id;
+                    // Where it is saved: the folder is still its starter's, and the source still theirs to steer.
+                },
+                folderApproval === undefined ? base : checkedContext(base, folderApproval.check),
+            )
+            .then((child) => {
+                folderApproval?.keep(child, cwd);
+
+                return child;
             });
-
-            if (runner !== undefined) {
-                childAgent.extensions = app.remoteExtensions();
-            }
-
-            sessions.items[String(child.id)] = {
-                cwd,
-                title,
-                ...(runner === undefined ? {} : { runner, runnerPermission }),
-                createdAt: now,
-                updatedAt: now,
-                createdBy: user.id,
-                linkedFrom: { id: Number(source) },
-            };
-            receipt.conversationId = Number(child.id);
-            receipt.by = user.id;
-
-            if (actor !== undefined) {
-                await this.#authorize(tx, source, actor);
-                actor.checkSource(await tx.doc(AgentDoc, source));
-
-                if (this.#selection(agent, request, true).thinking !== thinking) {
-                    throw new HttpError(
-                        409,
-                        "The selected model's thinking support changed. Try again.",
-                    );
-                }
-            }
-
-            return child.id;
-        }, actor?.context ?? context);
     }
 
     /**
@@ -939,7 +965,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             ?.items[token];
         const user = this.#person(source, previous?.by);
 
-        app.requireSteer(user);
+        app.requireSteer(user, source);
 
         if (!this.#family(source, user).some((each) => each.id === target)) {
             throw new HttpError(
@@ -1020,7 +1046,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             return { busy: repeat.busy };
         }
 
-        await this.#mayAct(source, id, user);
+        await this.#mayAct(source, id, user, "stop");
         // The receipt is stored with the busy state, marked `stopping`, before the run stops, and marked done after.
         // A repeat that finds it done stops nothing. One that finds `stopping` (a crash came between) stops again,
         // which is safe, and finishes it. A key for another session is refused here.
@@ -1125,12 +1151,15 @@ export class LinkedSessions implements LinkedSessionsApi {
     }
 
     /** The checks `send` makes before a message goes: the source, then the turn and the spend limit in the target. */
-    async #mayAct(source: ConversationId, target: ConversationId, user: User): Promise<void> {
-        const app = this.#app;
-
-        await this.#maySend(source, user);
-        await app.requireDriver(target, user);
-        app.spend.check(user, target);
+    async #mayAct(
+        source: ConversationId,
+        target: ConversationId,
+        user: User,
+        how: Acting = "send",
+    ): Promise<void> {
+        await this.#maySend(source, user, undefined, how);
+        await this.#mayDrive(target, user, how);
+        this.#app.spend.check(user, target);
     }
 
     /**
@@ -1152,7 +1181,7 @@ export class LinkedSessions implements LinkedSessionsApi {
             ?.items[token];
         const user = this.#person(source, previous?.by);
 
-        app.requireSteer(user);
+        app.requireSteer(user, source);
 
         if (!this.#family(source, user).some((each) => each.id === target)) {
             throw new HttpError(
@@ -1244,8 +1273,11 @@ export class LinkedSessions implements LinkedSessionsApi {
             return;
         }
 
-        await this.#maySend(source, user, actor);
-        await app.requireDriver(target, user);
+        // The end of a run reports on its own: nobody acts, so nobody is asked to renew an approval.
+        const how: Acting = ended === undefined ? "send" : "report";
+
+        await this.#maySend(source, user, actor, how);
+        await this.#mayDrive(target, user, how);
         app.spend.check(user, target);
 
         if (actor !== undefined) {
@@ -1303,6 +1335,8 @@ export class LinkedSessions implements LinkedSessionsApi {
                               }, actor.context),
                           afterSubmit: () => closeAdmission(),
                       },
+                // The end of a run, told with nobody acting: it goes in as a task does, and asks no one to renew.
+                how === "report",
             );
         } finally {
             closeAdmission();

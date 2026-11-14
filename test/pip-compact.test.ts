@@ -3,6 +3,7 @@
 // webhooks' posts, GitHub's events, files), so none of it comes back as PiP's own notes. The summary's cost is counted
 // once; a summary that cannot be written fails the compaction rather than summarize the outside text; follows work on.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -406,7 +407,7 @@ test("PiP compacts itself once idle above its threshold; not below it, nor when 
 
 test("only the owner sets when PiP compacts, to one of its choices; PiP turned off is not compacted", async () => {
     const me = owner(app);
-    const guest = app.config.addUser("Guest", "guest").user;
+    const guest = (await addPerson(app, "Guest", "guest")).user;
     const id = await pip();
 
     await assert.rejects(app.setPipCompactAt(guest, 40_000), /Only the owner/);

@@ -16,6 +16,7 @@ import {
 } from "../store.js";
 import { isPinned, movePin, togglePin } from "../theme.js";
 import { copyText, html, item, scrimPress, Sheet } from "../ui.js";
+import { canShare } from "./session-share.js";
 
 const linkOf = (id) => `${location.origin}/s/${id}`;
 
@@ -61,10 +62,17 @@ function sessionItems(session) {
                 run: () => store.set({ sheet: { type: "fork", id } }),
             },
             starts && { label: "New session in this folder", run: () => newIn(session.cwd) },
+            collab() &&
+                canShare(session) && {
+                    label: "Share",
+                    hint: "with people",
+                    opens: true,
+                    run: () => store.set({ sheet: { type: "session-share", id } }),
+                },
             starts &&
                 collab() && {
-                    label: "Share",
-                    hint: "invite someone",
+                    label: "Invite someone",
+                    hint: "to this session only",
                     opens: true,
                     run: () => store.set({ sheet: { type: "invite", session: id } }),
                 },

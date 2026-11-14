@@ -1,5 +1,6 @@
 // A run that hits a provider limit waits inside its request. The "limit" is an error the scripted model throws.
 import {
+    addPerson,
     type App,
     cleanUp,
     modelTexts,
@@ -81,9 +82,12 @@ test("a run that hits a limit waits inside its request and answers by itself, wi
     assert.ok(app.isBusy(id));
 
     // Only someone who may steer sends the request now.
-    await assert.rejects(app.commands.retryLimit(id, app.config.addUser("Vee", "viewer").user), {
-        status: 403,
-    });
+    await assert.rejects(
+        app.commands.retryLimit(id, (await addPerson(app, "Vee", "viewer")).user),
+        {
+            status: 403,
+        },
+    );
     state.limited = false;
     assert.equal(await app.commands.retryLimit(id, owner(app)), true);
     await until(async () => (await lastStop(app, id)) === "stop", "the answer");
@@ -188,7 +192,7 @@ test("only the owner sets the longest wait, and turning it off lets a waiting ru
     const app = await open(model);
     const id = await newSession(app);
 
-    await assert.rejects(app.setLimitWaitHours(app.config.addUser("Gil", "guest").user, 1), {
+    await assert.rejects(app.setLimitWaitHours((await addPerson(app, "Gil", "guest")).user, 1), {
         status: 403,
     });
     await send(app, id, "hello");

@@ -1,4 +1,5 @@
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -271,8 +272,8 @@ test("GET usage uses conversation-route access and filters hidden descendants", 
     const source = await newSession(app);
     const visible = await link(source);
     const hidden = await link(source);
-    const other = app.config.addUser("Other", "guest");
-    const viewer = app.config.addUser("Reader", "viewer");
+    const other = await addPerson(app, "Other", "guest");
+    const viewer = await addPerson(app, "Reader", "viewer");
 
     await response(visible, 2);
     await response(hidden, 1000);
@@ -303,7 +304,7 @@ test("GET usage uses conversation-route access and filters hidden descendants", 
 
 test("usage rechecks access after awaited reads and expires with the route", async () => {
     const source = await newSession(app);
-    const viewer = app.config.addUser("Changing", "viewer");
+    const viewer = await addPerson(app, "Changing", "viewer");
     const original = app.harness.snapshot.bind(app.harness);
     let changed = false;
 

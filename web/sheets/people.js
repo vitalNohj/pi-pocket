@@ -5,6 +5,7 @@ import {
     actions,
     api,
     attempt,
+    canStart,
     canSteer,
     closeSheet,
     collab,
@@ -14,11 +15,7 @@ import {
     store,
 } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, timeAgo } from "../ui.js";
-
-const ROLE_TEXT = {
-    guest: "Can steer Pi, which can run commands on this machine",
-    viewer: "Can read along, react, and chat, but not steer Pi",
-};
+import { ApprovalsList, ApprovalTime, TasksExpire } from "./approvals.js";
 
 /** How long an invite may last: minutes, its button, and how the help text says it. */
 const LASTS = [
@@ -50,7 +47,6 @@ export function InviteSheet({ session = null }) {
             : view.conversation?.kind === "session"
               ? view.conversation
               : null;
-    const [role, setRole] = useState("guest");
     const [only, setOnly] = useState(session !== null);
     // The owner's own other device: it signs in as the owner, not as someone new.
     const [asOwner, setAsOwner] = useState(false);
@@ -59,7 +55,7 @@ export function InviteSheet({ session = null }) {
     // The newest invite could not be made: the sheet offers to try again rather than wait for ever.
     const [failed, setFailed] = useState(false);
     // What the sheet says now: an invite shows only while it was made for exactly this.
-    const asked = JSON.stringify([asOwner, role, only, minutes]);
+    const asked = JSON.stringify([asOwner, only, minutes]);
     // Only the newest invite shows: one asked for before a change, answering late, must not stand for what the sheet says.
     const latest = useRef(0);
     // The invite the sheet last showed: a change to what it grants, or how long it lasts, ends it.
@@ -90,7 +86,7 @@ export function InviteSheet({ session = null }) {
                     asOwner
                         ? { role: "owner" }
                         : collab()
-                          ? { role, ...(only && here ? { session: here.id } : {}), minutes }
+                          ? { ...(only && here ? { session: here.id } : {}), minutes }
                           : { minutes },
                 );
             } catch (error) {
@@ -120,7 +116,7 @@ export function InviteSheet({ session = null }) {
 
     useEffect(() => {
         create({ replacing: true });
-    }, [role, only, asOwner, minutes]);
+    }, [only, asOwner, minutes]);
     useEffect(
         () => () => {
             mounted.current = false;
@@ -152,28 +148,10 @@ export function InviteSheet({ session = null }) {
         ${
             collab() &&
             !asOwner &&
-            html`<div class="field">
-                <div class="label">They can</div>
-                <div class="segmented">
-                    <button
-                        class=${role === "guest" ? "on" : ""}
-                        aria-pressed=${role === "guest"}
-                        onClick=${() => setRole("guest")}
-                    >
-                        Steer
-                    </button>
-                    <button
-                        class=${role === "viewer" ? "on" : ""}
-                        aria-pressed=${role === "viewer"}
-                        onClick=${() => setRole("viewer")}
-                    >
-                        View only
-                    </button>
-                </div>
-                <div class="muted small">
-                    ${ROLE_TEXT[role]}.${role === "guest" && only ? " Seeing one session in the app does not limit what Pi can reach on the machine." : ""}
-                </div>
-            </div>
+            html`<p class="muted small">
+                They join as a viewer: they read along, react, and chat. To steer Pi, they link an authenticator under
+                their name; then the owner chooses Let steer for them in People.
+            </p>
             ${
                 here &&
                 html`<div class="field">
@@ -376,8 +354,16 @@ function PeopleList() {
                     </div>
                     <div class="muted small">
                         ${person.role === "owner" ? "owner" : person.role === "viewer" ? "view only" : "can steer"}
-                        ${person.sessions ? ` · only ${person.sessions.map(sessionTitle).join(", ")}` : ""} · ${lastSeen(person)}
+                        ${person.sessions ? ` · only ${person.sessions.length > 0 ? person.sessions.map(sessionTitle).join(", ") : "sessions not shared with you"}` : ""} · ${lastSeen(person)}
+                        ${person.authenticator ? " · authenticator linked" : ""}
+                        ${person.linksRunners ? " · links runners" : ""}
                     </div>
+                    ${
+                        owner &&
+                        person.role !== "viewer" &&
+                        person.approvalDays !== undefined &&
+                        html`<${ApprovalTime} person=${person} />`
+                    }
                 </div>
                 ${
                     owner &&
@@ -387,10 +373,27 @@ function PeopleList() {
                             collab() &&
                             html`<button
                                 class="button small"
-                                title="Change what they can do"
+                                title=${person.role === "viewer" && !person.hasCode ? "They link an authenticator first, under their name" : "Change what they can do"}
                                 onClick=${() => change(person, { role: person.role === "viewer" ? "guest" : "viewer" })}
                             >
                                 ${person.role === "viewer" ? "Let steer" : "View only"}
+                            </button>`
+                        }
+                        ${
+                            person.role === "guest" &&
+                            !person.sessions &&
+                            html`<button
+                                class="button small"
+                                aria-pressed=${person.linksRunners === true}
+                                title="Let them link computers of their own as runners, which they are in charge of"
+                                onClick=${() =>
+                                    attempt(() =>
+                                        api(`users/${person.id}/links-runners`, {
+                                            on: person.linksRunners !== true,
+                                        }),
+                                    )}
+                            >
+                                ${person.linksRunners ? "Stop linking runners" : "May link runners"}
                             </button>`
                         }
                         ${
@@ -402,6 +405,30 @@ function PeopleList() {
                                 onClick=${() => change(person, { sessions: null })}
                             >
                                 All sessions
+                            </button>`
+                        }
+                        ${
+                            person.authenticator &&
+                            html`<button
+                                class="button small ghost"
+                                title="For a lost phone: they can link a new one from their account"
+                                onClick=${() =>
+                                    confirm(
+                                        `Remove ${person.name}'s authenticator? They link a new one to approve folders again.`,
+                                    ) &&
+                                    attempt(async () =>
+                                        store.set({
+                                            users: await api(
+                                                `users/${person.id}/authenticator`,
+                                                undefined,
+                                                {
+                                                    method: "DELETE",
+                                                },
+                                            ),
+                                        }),
+                                    )}
+                            >
+                                Remove authenticator
                             </button>`
                         }
                         <button
@@ -428,7 +455,7 @@ function PeopleList() {
 }
 
 export function PeopleSheet() {
-    const canInvite = canSteer() && !scoped();
+    const canInvite = canStart();
 
     return html`<${Sheet} title="People" onClose=${closeSheet}>
         ${
@@ -438,6 +465,7 @@ export function PeopleSheet() {
             </button>`
         }
         <${PeopleList} />
+        ${store.state.me?.role === "owner" && html`<${ApprovalsList} /><${TasksExpire} />`}
         <button
             class="button ghost wide sheet-footer"
             onClick=${() => openSheet({ type: "notifications" })}

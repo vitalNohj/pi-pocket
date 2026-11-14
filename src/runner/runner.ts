@@ -10,6 +10,9 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
+import { connect as connectTcp, type LookupFunction, type Socket } from "node:net";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
     FOUND_FOR_MS,
@@ -18,39 +21,33 @@ import {
     readPiTail,
     titleOf,
 } from "../server/pi-session-files.ts";
-import { connect as connectTcp, type LookupFunction, type Socket } from "node:net";
-import { homedir, tmpdir } from "node:os";
 import { privateFolders } from "./private-folders.ts";
-import { join } from "node:path";
 import { localDaemon } from "@earendil-works/pi-env";
-import WebSocket from "ws";
+import { WebSocket as RawWebSocket } from "ws";
+import { RunnerLinkSocket } from "./secure-link.ts";
 import { checkTransport, pinnedLookup, refusal, type Transport } from "./transport.ts";
+
+/** The link to the server, sealed with the link's keys (`secure-link.ts`). */
+type WebSocket = RunnerLinkSocket;
+const WebSocket = { OPEN: RawWebSocket.OPEN } as const;
+
 import { checkTools } from "./tools.ts";
-import { broadFolder, coveredFolder, folderContains, realFolder } from "./folders.ts";
-import {
-    Approvals,
-    type SessionPermission,
-    type SessionScope,
-    type ApprovalMethod,
-} from "./approvals.ts";
-import type { TotpState } from "./totp.ts";
+import { folderContains, realFolder } from "./folders.ts";
 import { Activity, type ActivityOptions, type ActivityState } from "./activity.ts";
 import { permissionId, RequestGate, sessionScope } from "./request-gate.ts";
 import { Tasks } from "./tasks.ts";
 import type {
-    RunnerTools,
-    TaskRequest,
-    TaskResult,
     PiSessionsRequest,
     PiSessionsResult,
     RunnerPiSession,
+    RunnerSettingsMessage,
+    RunnerTools,
+    Stop,
+    TaskRequest,
+    TaskResult,
 } from "./protocol.ts";
 import {
-    CLOSE,
     COMPANION_SUFFIX,
-    type Confirm,
-    type Confirmed,
-    type ApprovalNeeded,
     type ControlMessage,
     FRAME,
     FrameSplitter,
@@ -79,10 +76,6 @@ const ACK_MS = 1000;
 const OUTBOX_LIMIT = 32 * 1024 * 1024;
 /** The background starts whose answer is kept, for a start the server sends again after a lost answer. */
 const TASK_RESULTS = 1000;
-/** A preview answer is for the person the question named, and that one Pi file. */
-const previewKey = (person: string, path: string) => `${person}\u0000${path}`;
-/** How often open browser connections are checked against their session's permission. */
-const STREAM_CHECK_MS = 60_000;
 
 /** Reconnect waits, growing from the first to the last. */
 const RETRY_MS = [1000, 2000, 5000, 10_000, 20_000, 30_000];
@@ -98,22 +91,19 @@ export type RunnerLinkFile = {
     server: string;
     id: string;
     name: string;
+    /** This computer's own private key for the link (`secure-link.ts`), PKCS#8 DER, base64url. Never sent. */
     key: string;
-    /** The person's choices for this link (`pi-pocket runner settings`); absent: the defaults. */
-    settings?: RunnerSettings;
+    /** The server's public key, pinned when this computer linked: a server without its private key is refused. */
+    serverKey: string;
+    /** Plain HTTP to this server, allowed when this computer linked (`--allow-http`). Needed before it connects. */
+    allowHttp?: boolean;
 };
 
-/** The runner's settings, kept with its link. */
+/**
+ * This computer's settings, kept on the server and sent with `runner-settings` (`protocol.ts`). Only `allowHttp` is
+ * kept here, in the link file: the runner needs it before it can reach the server.
+ */
 export type RunnerSettings = {
-    /** Ask before a new session starts on this computer. Default: true. */
-    confirm?: boolean;
-    /** Real absolute folders allowed by the person here, including their descendants. */
-    folders?: string[];
-    /** Authenticator grants last this many days; null means no expiry. Default: 7. */
-    totpDays?: number | null;
-    /** Local only: never sent to the server. */
-    totp?: TotpState;
-    sessions?: SessionPermission[];
     /** Use plain HTTP to this server even where it is not this computer or a tailnet device. Default: false. */
     allowHttp?: boolean;
     /** Open the network connections of sessions' browsers from this computer. Default: true. */
@@ -121,28 +111,6 @@ export type RunnerSettings = {
     /** Where sessions' browser downloads go, an absolute folder: `<folder>/<session>/`. Default: the temporary folder. */
     downloads?: string;
 };
-
-/** A question the server asked this computer: a session would start here. */
-export type SessionQuestion = {
-    kind: "new" | "fork" | "move" | "pi-preview";
-    title?: string;
-    /** A root, home folder, or ancestor of home: allow this session only. */
-    broad: boolean;
-    permission: "folder" | "session";
-    expired: boolean;
-    session: string;
-    totp: boolean;
-    expiresInMs: number;
-    person: string;
-    folder: string;
-    server: string;
-    computer: string;
-    /** Aborts when the question ends, not when the network link drops. */
-    signal: AbortSignal;
-};
-
-/** Whether a new session may start here, and why not, in words for the person who asked. */
-export type SessionAnswer = { allow: boolean; reason?: string };
 
 export type RunnerOptions = {
     link: RunnerLinkFile;
@@ -156,17 +124,6 @@ export type RunnerOptions = {
     log?: (line: string) => void;
     /** Reconnect waits; tests make them short. */
     retryMs?: readonly number[];
-    /** Tests shorten the fixed, 30-hour computer approval lifetime. */
-    approvalMs?: number;
-    /** The link's settings now: read again for each connect and each question, so changes need no restart. */
-    settings?: () => RunnerSettings;
-    /** Save a local settings change, preserving other settings read from the file now. */
-    saveSettings?: (change: RunnerSettings) => void | Promise<void>;
-    /**
-     * Ask the person here whether a session may start. Absent: nobody can be asked, so every session is refused
-     * while asking is on.
-     */
-    ask?: (question: SessionQuestion) => Promise<SessionAnswer>;
     /** Check the server's transport before each connect; tests and HTTPS skip it. Default: `checkTransport`. */
     transport?: (server: string, allowHttp: boolean) => Promise<Transport>;
     /** Told when sessions start or stop working on this computer, and where (`activity.ts`). */
@@ -175,18 +132,10 @@ export type RunnerOptions = {
     activityTiming?: Omit<ActivityOptions, "now">;
 };
 
-/** How long the runner waits for its person; the server waits 10 s longer (`CONFIRM_MS` in `runners.ts`). */
-const ASK_MS = 120_000;
-
-/** With an authenticator: time to open it and type a code in Pi Pocket. */
-const ASK_TOTP_MS = 300_000;
-
-const WITHDRAWN = "Withdrawn by the server.";
-
-/** What a question here came to; `method` says how an allowed one was approved. */
-type Approval = { allow: boolean; reason?: string; method?: ApprovalMethod; withdrawn?: boolean };
-
-/** Why a runner stopped for good: the server removed it, another one took its place, or the protocols differ. */
+/**
+ * Why a runner stopped for good: the server removed it, linked its computer again with a new key, gave its link to
+ * another runner, or speaks another protocol. Only its own server can say so (`#sentAway`).
+ */
 export class RunnerStopped extends Error {}
 
 /** The pi-env daemon on this computer: started with a fresh token, its output read after its sync line. */
@@ -315,78 +264,44 @@ export class Runner {
     readonly #log: (line: string) => void;
     readonly #retry: readonly number[];
     #socket: WebSocket | undefined;
-    /** Confirm answers wait until this socket has received its welcome. */
+    /** Output goes to the server only on a socket it welcomed (`#relay`). */
     #welcomed: WebSocket | undefined;
+    /** Answers to the server's requests (Pi's sessions here), kept until a welcomed link can take them. */
+    readonly #answers = new Map<string, PiSessionsResult>();
+    /** Requests from the server that are still in work, to end them when the link starts over. */
+    readonly #questions = new Map<string, AbortController>();
+    #piFound: { at: number; list: Promise<RunnerPiSession[]> } | undefined;
     #session!: Session;
     #stopping = false;
-    /** Questions that the server can withdraw while the person answers. */
-    readonly #questions = new Map<string, AbortController>();
-    /** Questions belong to this computer, not its WebSocket; announce them again after a drop. */
-    readonly #notices = new Map<string, ApprovalNeeded>();
-    /** A local answer made offline must still reach the server's waiting confirm. */
-    readonly #answers = new Map<string, Confirmed | PiSessionsResult>();
-    #piFound: { at: number; list: Promise<RunnerPiSession[]> } | undefined;
-    readonly #piPreviews = new Map<string, number>();
-    readonly #approvals: Approvals;
     readonly #tasks: Tasks;
     /** Starts are replayed after reconnects, once per id for this runner's lifetime. */
     readonly #taskResults = new Map<string, Promise<TaskResult>>();
-    /** Questions that wait here, by id: a code from Pi Pocket can answer them. */
-    readonly #pending = new Map<
-        string,
-        {
-            scope: SessionScope;
-            stop: AbortController;
-            resolve: (answer: Approval) => void;
-            promise: Promise<Approval>;
-            /** Another request of the same session waits on this question too. */
-            hold: (signal: AbortSignal | undefined) => void;
-        }
-    >();
     /** Whether sessions work on this computer now, and where (`activity.ts`). */
     readonly #activity: Activity;
-    /** Approvals and folders of a runner without `saveSettings` (tests, and programs that keep no file). */
-    #unsaved: RunnerSettings = {};
-    #stateTimer: NodeJS.Timeout | undefined;
-    #lastState = "";
+    /** This computer's settings, as the server last sent them (`runner-settings`). */
+    #server: Omit<RunnerSettingsMessage, "type"> = { network: true };
     #attempt = 0;
     #ackTimer: NodeJS.Timeout | undefined;
     #retryTimer: NodeJS.Timeout | undefined;
     /** Why the last connect was refused before it began (`transport.ts`), so it is said once. */
     #refused: string | undefined;
+    /** Why the last connection failed before the server welcomed it (`#trouble`), so it is said once. */
+    #troubled: string | undefined;
     /** The network streams of the current connection. */
     #streams: StreamLink | undefined;
     /** Network connections opened so far, for tests. */
     opened = 0;
     /** Network connections still connecting, by stream id. */
     readonly #connecting = new Map<number, Socket>();
-    /** The session of each open or opening browser connection, to close them when its permission ends. */
-    readonly #streamScopes = new Map<number, SessionScope>();
-    #streamCheck: NodeJS.Timeout | undefined;
     #done!: (error?: Error) => void;
     /** Settles when the runner stops: resolves after `stop()`, rejects with `RunnerStopped` when the server ends it. */
     readonly finished: Promise<void>;
 
     constructor(options: RunnerOptions) {
         this.#options = options;
-        this.#approvals = new Approvals(
-            () => this.#settings(),
-            async (change) => {
-                if (options.saveSettings !== undefined) {
-                    await options.saveSettings(change);
-                } else {
-                    // Nowhere to save: kept for this runner's life, over what `settings` reads.
-                    this.#unsaved = { ...this.#unsaved, ...change };
-                }
-            },
-            options.approvalMs,
-        );
         this.#activity = new Activity((state) => options.activity?.(state), options.activityTiming);
         this.#log = options.log ?? (() => {});
-        this.#tasks = new Tasks(
-            (permission, cwd) => this.#session.gate.task(permission, cwd),
-            this.#log,
-        );
+        this.#tasks = new Tasks((scope, cwd) => this.#session.gate.task(scope, cwd), this.#log);
         this.#retry = options.retryMs ?? RETRY_MS;
         this.#url = new URL(options.link.server);
         this.#url.protocol = this.#url.protocol === "https:" ? "wss:" : "ws:";
@@ -407,6 +322,11 @@ export class Runner {
     }
 
     /** Whether a link to the server is up and welcomed. */
+    /** This computer's settings, as the server last sent them: for its status, and tests. */
+    get settings(): Omit<RunnerSettingsMessage, "type"> {
+        return this.#server;
+    }
+
     get connected(): boolean {
         return this.#socket?.readyState === WebSocket.OPEN && this.#session?.id !== null;
     }
@@ -418,8 +338,6 @@ export class Runner {
 
     start(): void {
         this.#session = this.#fresh();
-        this.#stateTimer = setInterval(() => void this.#state(), 2000);
-        this.#stateTimer.unref();
         // Sessions' attachments, tasks, and downloads: private before the first session can use them.
         void privateFolders(tmpdir()).then(
             () => this.#connect(),
@@ -436,12 +354,10 @@ export class Runner {
         this.#stopping = true;
         clearTimeout(this.#retryTimer);
         clearTimeout(this.#ackTimer);
-        clearInterval(this.#stateTimer);
-        clearInterval(this.#streamCheck);
         this.#session.gate.stop();
 
-        for (const pending of this.#pending.values()) {
-            pending.stop.abort();
+        for (const question of this.#questions.values()) {
+            question.abort();
         }
 
         this.#control({ type: "bye", reason: "The runner was stopped" });
@@ -519,9 +435,6 @@ export class Runner {
         );
 
         made.gate = new RequestGate({
-            approvals: this.#approvals,
-            ask: async (scope, signal) =>
-                (await this.#approve(`resume-${scope.id}`, scope, "new", true, signal)).allow,
             send: (bytes) => made.daemon.write(bytes),
             reply: (bytes) => this.#relay(made, bytes),
             shared: async (id) => this.#shared(await temporary, id),
@@ -556,15 +469,13 @@ export class Runner {
 
     /** Stop for good, with why. */
     #fail(message: string): void {
-        this.#stopping = true;
-        clearTimeout(this.#retryTimer);
-        clearInterval(this.#stateTimer);
-        this.#session.gate.stop();
-
-        for (const pending of this.#pending.values()) {
-            pending.stop.abort();
+        if (this.#stopping) {
+            return;
         }
 
+        this.#stopping = true;
+        clearTimeout(this.#retryTimer);
+        this.#session.gate.stop();
         this.#log(message);
         void Promise.all([this.#session.daemon.stop(), this.#tasks.stop()]).then(() =>
             this.#done(new RunnerStopped(message)),
@@ -627,11 +538,12 @@ export class Runner {
         }
     }
 
-    /** The link's settings now. */
+    /** This computer's settings now: plain HTTP from its link, the rest from the server. */
     #settings(): RunnerSettings {
         return {
-            ...(this.#options.settings?.() ?? this.#options.link.settings ?? {}),
-            ...this.#unsaved,
+            ...(this.#options.link.allowHttp === true ? { allowHttp: true } : {}),
+            network: this.#server.network,
+            ...(this.#server.downloads === undefined ? {} : { downloads: this.#server.downloads }),
         };
     }
 
@@ -700,13 +612,23 @@ export class Runner {
         }
 
         const link = this.#options.link;
-        // Over plain HTTP to this computer or a tailnet device: only to the addresses checked (`pinnedLookup`).
-        const ws = new WebSocket(this.#url, LINK_SUBPROTOCOL, {
-            headers: { authorization: `Bearer ${link.key}` },
-            maxPayload: MAX_MESSAGE,
-            handshakeTimeout: 15_000,
-            ...(lookup === undefined ? {} : { lookup }),
-        });
+        let unproven = false;
+        // Sealed with this computer's key and the server's pinned one (`secure-link.ts`). What cannot prove that key is
+        // not this computer's server: nothing is sent to it, nothing it says counts, and the runner tries again. Only
+        // the proven server sends this runner away for good: here with a signed refusal, later with a sealed `bye`.
+        const ws = new RunnerLinkSocket(
+            new RawWebSocket(this.#url, LINK_SUBPROTOCOL, {
+                maxPayload: MAX_MESSAGE + 64,
+                handshakeTimeout: 15_000,
+                // Over plain HTTP to this computer or a tailnet device: only to the addresses checked (`pinnedLookup`).
+                ...(lookup === undefined ? {} : { lookup }),
+            }),
+            link,
+            {
+                unproven: () => (unproven = true),
+                refused: (why) => this.#fail(this.#sentAway(why, "")),
+            },
+        );
 
         this.#socket = ws;
 
@@ -744,17 +666,12 @@ export class Runner {
         }, PING_MS);
 
         pinger.unref();
+        // An HTTP answer in place of the link, whatever its status: a proxy, another program at this address, or a
+        // server that is starting. None of them is this computer's server proving its key, so none stops the runner.
         ws.on("unexpected-response", (_request, response) => {
-            if (response.statusCode === 401) {
-                this.#fail(
-                    `${link.server} no longer accepts this computer's key. To link again, run pi-pocket runner and choose Link again.`,
-                );
-            } else {
-                this.#log(
-                    `${link.server} returned HTTP ${String(response.statusCode)}. Retrying automatically. If this continues, check that Pi Pocket is running at this address.`,
-                );
-            }
-
+            this.#trouble(
+                `${link.server} returned HTTP ${String(response.statusCode)}. Retrying automatically. If this continues, check that Pi Pocket is running at this address.`,
+            );
             ws.terminate();
         });
         ws.on("open", () => {
@@ -767,9 +684,7 @@ export class Runner {
                     received: this.#session.inbox.received,
                     version: this.#options.version,
                     tools,
-                    ...(this.#settings().downloads === undefined
-                        ? {}
-                        : { downloads: this.#settings().downloads }),
+                    ...(link.allowHttp === true ? { allowHttp: true } : {}),
                 } satisfies ControlMessage),
             );
         });
@@ -814,7 +729,8 @@ export class Runner {
                 );
             }
         });
-        ws.on("close", (code, reason) => {
+        // A close code stops nothing: anyone on the path can send one. The runner tries again.
+        ws.on("close", (_code, reason) => {
             clearInterval(pinger);
             // Network streams do not survive a drop: the browser on the server opens them again.
             streams.dropAll();
@@ -824,9 +740,6 @@ export class Runner {
             }
 
             this.#connecting.clear();
-            this.#streamScopes.clear();
-            clearInterval(this.#streamCheck);
-            this.#streamCheck = undefined;
 
             if (this.#streams === streams) {
                 this.#streams = undefined;
@@ -842,28 +755,10 @@ export class Runner {
 
             const why = reason.toString("utf8");
 
-            if (code === CLOSE.removed) {
-                this.#fail(
-                    `${link.server} removed this computer. To link again, run pi-pocket runner and choose Link again.`,
+            if (unproven) {
+                this.#trouble(
+                    `${link.server} did not prove it is the server this computer linked to, so nothing was sent to it. Someone may be in the middle, or another server answers at this address. Trying again. If you replaced the server's data folder, link this computer again with a new code from Menu > Runners.`,
                 );
-
-                return;
-            }
-
-            if (code === CLOSE.replaced) {
-                this.#fail(
-                    "Another runner is using this computer's link. This runner has stopped. Stop the other runner before you start this one again.",
-                );
-
-                return;
-            }
-
-            if (code === CLOSE.protocol) {
-                this.#fail(
-                    `${why}. Update Pi Pocket on this computer and the server, then start the runner again.`,
-                );
-
-                return;
             }
 
             if (welcomed) {
@@ -885,9 +780,7 @@ export class Runner {
 
         if (message?.type === "welcome" && !welcomed) {
             this.#attempt = 0;
-            // Runners shows this computer's settings, folders, and sessions as soon as it is welcomed.
-            this.#lastState = "";
-            queueMicrotask(() => void this.#state());
+            this.#troubled = undefined;
 
             if (message.resume) {
                 const resent =
@@ -922,7 +815,7 @@ export class Runner {
                 this.#log(
                     `Reconnected to ${this.#options.link.server}. Running commands continue.`,
                 );
-                this.#welcomeApprovals(ws);
+                this.#welcome(ws);
 
                 return true;
             }
@@ -945,7 +838,7 @@ export class Runner {
             }
 
             this.#log(`Connected to ${this.#options.link.server} as "${this.#options.link.name}".`);
-            this.#welcomeApprovals(ws);
+            this.#welcome(ws);
 
             return true;
         }
@@ -957,56 +850,48 @@ export class Runner {
                 session.paused = false;
                 session.daemon.resume();
             }
-        } else if (message?.type === "confirm") {
-            void this.#answer(message);
+        } else if (message?.type === "runner-settings") {
+            this.#server = {
+                network: message.network,
+                ...(message.downloads === undefined ? {} : { downloads: message.downloads }),
+            };
+
+            // Network sharing turned off: what is open or opening closes now.
+            if (!message.network) {
+                const why = `${this.#options.link.name} does not share its network`;
+
+                this.#streams?.resetAll(why);
+
+                // Its error handler takes it out and tells the server the connection failed.
+                for (const socket of this.#connecting.values()) {
+                    socket.destroy(new Error(why));
+                }
+            }
         } else if (message?.type === "pi-sessions" && welcomed) {
             void this.#piSessions(message);
-        } else if (message?.type === "withdraw") {
-            this.#questions.get(message.id)?.abort(WITHDRAWN);
-        } else if (message?.type === "approval-code") {
-            void this.#code(message.id, message.code);
         } else if (message?.type === "task" && welcomed) {
             void this.#task(ws, message);
-        } else if (message?.type === "runner-action") {
-            void this.#approvals.action(message.request).then(
-                async () => {
-                    if (message.request.action === "revoke") {
-                        this.#session.gate.revokeReads(message.request.session);
-                        // Its browser connections end with it.
-                        await this.#closeStreams(message.request.session);
-                    }
-
-                    this.#control({
-                        type: "runner-result",
-                        id: message.id,
-                        ok: true,
-                        state: await this.#approvals.state(),
-                    });
-                },
-                (error: unknown) =>
-                    this.#control({
-                        type: "runner-result",
-                        id: message.id,
-                        ok: false,
-                        reason: (error as Error).message,
-                    }),
-            );
-        } else if (message?.type === "net-open") {
-            void this.#authorizedStream(ws, message);
+        } else if (message?.type === "net-open" && welcomed) {
+            this.#scopedStream(ws, message);
         } else if (
             message?.type === "net-end" ||
             message?.type === "net-reset" ||
             message?.type === "net-credit"
         ) {
             if (message.type === "net-reset") {
-                this.#questions.get(`net-${message.id}`)?.abort();
                 this.#connecting.get(message.id)?.destroy();
                 this.#connecting.delete(message.id);
             }
 
             this.#streams?.message(message);
         } else if (message?.type === "bye") {
-            this.#log(`Server message: ${message.reason}`);
+            // Sealed with the link's keys: only this computer's server can send its runner away for good.
+            if (message.stop === undefined) {
+                this.#log(`Server message: ${message.reason}`);
+            } else {
+                this.#fail(this.#sentAway(message.stop, message.reason));
+                ws.close(1000, "Stopped");
+            }
         } else {
             ws.close(1002, "Unexpected message");
         }
@@ -1014,65 +899,40 @@ export class Runner {
         return welcomed;
     }
 
-    /** Public state never contains the authenticator secret, failures, or accepted counter. */
-    async #state(): Promise<void> {
-        // Network sharing turned off (from Pi Pocket or on this computer): what is open or opening closes now.
-        if (this.#settings().network === false) {
-            const message = `${this.#options.link.name} does not share its network`;
+    /** What to say when this computer's server sent the runner away for good (`stop`), with the server's `reason`. */
+    #sentAway(stop: Stop, reason: string): string {
+        const server = this.#options.link.server;
 
-            this.#streams?.resetAll(message);
-
-            // Its error handler takes it out and tells the server the connection failed.
-            for (const socket of this.#connecting.values()) {
-                socket.destroy(new Error(message));
-            }
-        }
-
-        if (!this.connected) {
-            return;
-        }
-
-        try {
-            const state = await this.#approvals.state();
-            const json = JSON.stringify(state);
-
-            if (json !== this.#lastState) {
-                this.#lastState = json;
-                this.#control({ type: "runner-state", state });
-            }
-        } catch (error) {
-            this.#log("Could not read runner permissions: " + String(error));
+        switch (stop) {
+            case "removed":
+                return `${server} removed this computer. To link again, run pi-pocket runner and choose Link again.`;
+            case "relinked":
+                return `${server} linked this computer again with a new key, so this runner's key no longer works. Run pi-pocket runner and choose Link again, with a new code from Menu > Runners.`;
+            case "replaced":
+                return "Another runner is using this computer's link. This runner has stopped. Stop the other runner before you start this one again.";
+            case "protocol":
+                return `${reason === "" ? "The server speaks another link protocol" : reason}. Update Pi Pocket on this computer and the server, then start the runner again.`;
         }
     }
 
-    /** A code from Pi Pocket for a question that waits here. Only this runner checks it. */
-    async #code(id: string, code: string): Promise<void> {
-        const pending = this.#pending.get(id);
-        const allow =
-            pending !== undefined &&
-            !pending.stop.signal.aborted &&
-            (await this.#approvals.code(code));
-
-        this.#control({
-            type: "code-result",
-            id,
-            allow,
-            ...(allow ? {} : { reason: "That code is wrong or used. Try the next one." }),
-        });
-
-        if (allow && !pending!.stop.signal.aborted) {
-            pending!.resolve({ allow: true, method: "totp" });
+    /**
+     * A connection failed before the server welcomed it, and the runner tries again: say why once, until a link is
+     * welcomed or the reason changes.
+     */
+    #trouble(line: string): void {
+        if (line !== this.#troubled) {
+            this.#troubled = line;
+            this.#log(line);
         }
     }
 
-    /** Reattach the computer's open questions and saved answers to the welcomed link. */
-    #welcomeApprovals(ws: WebSocket): void {
+    /**
+     * A network stream for a session's browser. The server checked who may use it; the stream needs a session it names,
+     * so a stray one opens nothing.
+     */
+    /** The server welcomed `ws`: output may go to it now, and answers kept while the link was down go first. */
+    #welcome(ws: WebSocket): void {
         this.#welcomed = ws;
-
-        for (const notice of this.#notices.values()) {
-            this.#control(notice);
-        }
-
         this.#sendAnswers();
     }
 
@@ -1087,259 +947,7 @@ export class Runner {
         }
     }
 
-    /** The server's question before a session starts, moves, or is copied here. */
-    async #answer(question: Confirm): Promise<void> {
-        const scope: SessionScope = {
-            id: question.session,
-            folder: question.folder,
-            person: question.person,
-        };
-        const answer = await this.#approve(question.id, scope, question.kind, false);
-
-        if (answer.withdrawn) {
-            return;
-        }
-
-        this.#answers.set(question.id, {
-            type: "confirmed",
-            id: question.id,
-            allow: answer.allow,
-            ...(answer.allow
-                ? {}
-                : {
-                      reason:
-                          answer.reason ?? `${this.#options.link.name} did not allow the session.`,
-                  }),
-        });
-        this.#sendAnswers();
-    }
-
-    /** Session approvals can save a folder. Preview questions use only the shared question plumbing. */
-    async #approve(
-        id: string,
-        scope: SessionScope,
-        kind: "new" | "fork" | "move",
-        expired: boolean,
-        signal?: AbortSignal,
-    ): Promise<Approval> {
-        return this.#question(id, scope, signal, async (stop, totp, ask) => {
-            if ((await this.#approvals.valid(scope)) !== undefined) {
-                return { allow: true };
-            }
-
-            const folder = await realFolder(scope.folder);
-            const real = { ...scope, folder };
-            const broad = broadFolder(folder, await realFolder(homedir()));
-            const saved = await coveredFolder(folder, this.#settings().folders ?? []);
-            const what = expired
-                ? "a session to continue"
-                : kind === "move"
-                  ? "a session move"
-                  : kind === "fork"
-                    ? "a copy of a session"
-                    : "a session";
-            const answer =
-                saved && this.#settings().confirm === false
-                    ? { allow: true, method: "automatic" as const }
-                    : await ask({
-                          kind,
-                          broad,
-                          permission: saved ? "session" : "folder",
-                          expired,
-                          session: scope.id,
-                          totp,
-                          expiresInMs: totp ? ASK_TOTP_MS : ASK_MS,
-                          person: scope.person,
-                          folder,
-                          server: this.#options.link.server,
-                          computer: this.#options.link.name,
-                          signal: stop.signal,
-                      });
-
-            if (stop.signal.reason === WITHDRAWN) {
-                this.#log(`${scope.person} cancelled ${what} in ${scope.folder}.`);
-
-                return { allow: false, withdrawn: true };
-            }
-
-            if (!answer.allow || answer.method === undefined || stop.signal.aborted) {
-                this.#log(`Denied ${what} for ${scope.person} in ${folder}.`);
-
-                return answer.allow
-                    ? {
-                          allow: false,
-                          reason: `Nobody answered on ${this.#options.link.name} in time.`,
-                      }
-                    : answer;
-            }
-
-            if (!saved) {
-                await this.#approvals.saveFolder(folder);
-            }
-
-            await this.#approvals.approve(real, answer.method);
-
-            this.#log(
-                answer.method === "automatic"
-                    ? `${scope.person} started ${what} in ${folder} (asking is off).`
-                    : `Allowed ${what} for ${scope.person} in ${folder}${answer.method === "totp" ? " (with a code from the authenticator)" : ""}.`,
-            );
-
-            return { allow: true };
-        });
-    }
-
-    /** A question's lifetime, cancellation, local dialog, and code answer are identical for both kinds. */
-    async #question(
-        id: string,
-        scope: SessionScope,
-        signal: AbortSignal | undefined,
-        decide: (
-            stop: AbortController,
-            totp: boolean,
-            ask: (question: SessionQuestion) => Promise<Approval>,
-        ) => Promise<Approval>,
-    ): Promise<Approval> {
-        // The same question only: the same session in the same folder. A move to another folder, or a request named
-        // after another kind of question, asks for itself.
-        const existing = [...this.#pending.values()].find(
-            (each) => each.scope.id === scope.id && each.scope.folder === scope.folder,
-        );
-
-        if (existing !== undefined) {
-            existing.hold(signal);
-
-            return existing.promise;
-        }
-
-        const link = this.#options.link;
-        const stop = new AbortController();
-        const abort = () => stop.abort();
-        const totp = this.#settings().totp !== undefined;
-        const timer = setTimeout(abort, totp ? ASK_TOTP_MS : ASK_MS);
-
-        let resolveAnswer: (answer: Approval) => void = () => {};
-
-        let holders = 0;
-        let kept = false;
-        const released: (() => void)[] = [];
-
-        const hold = (more: AbortSignal | undefined) => {
-            if (more === undefined) {
-                kept = true;
-
-                return;
-            }
-
-            if (more.aborted) {
-                if (!kept && holders === 0) {
-                    stop.abort(more.reason);
-                }
-
-                return;
-            }
-
-            const release = () => {
-                holders--;
-
-                if (!kept && holders === 0) {
-                    stop.abort(more.reason);
-                }
-            };
-
-            holders++;
-            more.addEventListener("abort", release, { once: true });
-            released.push(() => more.removeEventListener("abort", release));
-        };
-
-        hold(signal);
-
-        const ask = async (question: SessionQuestion): Promise<Approval> => {
-            if (this.#options.ask === undefined && !totp) {
-                return {
-                    allow: false,
-                    reason: `${link.name} asks before new sessions, but nobody can answer there: its runner runs without a terminal. Run it in a terminal or a program that runs the runner, such as the desktop app, or set up an authenticator there.`,
-                };
-            }
-
-            const notice: ApprovalNeeded = {
-                type: "approval-needed",
-                id,
-                kind: question.kind === "pi-preview" ? "pi-preview" : "session",
-                ...(question.title === undefined ? {} : { title: question.title }),
-                session: scope.id,
-                folder: question.folder,
-                permission: question.permission,
-                expired: question.expired,
-                broad: question.broad,
-                totp,
-            };
-
-            this.#notices.set(id, notice);
-            this.#control(notice);
-
-            return new Promise<Approval>((resolve) => {
-                resolveAnswer = resolve;
-                const ended = () =>
-                    resolve({ allow: false, reason: `Nobody answered on ${link.name} in time.` });
-
-                if (stop.signal.aborted) {
-                    ended();
-
-                    return;
-                }
-
-                stop.signal.addEventListener("abort", ended, { once: true });
-                void this.#options.ask?.(question).then(
-                    (got) => resolve(got.allow ? { allow: true, method: "computer" } : got),
-                    () => resolve({ allow: false }),
-                );
-            });
-        };
-
-        // Defer `decide` until its pending record exists, even for a question with no preliminary I/O.
-        const promise = Promise.resolve().then(async (): Promise<Approval> => {
-            try {
-                return await decide(stop, totp, ask);
-            } catch (error) {
-                return {
-                    allow: false,
-                    reason: `${link.name} could not ask or save its answer: ${String(error)}`,
-                };
-            } finally {
-                clearTimeout(timer);
-
-                for (const release of released) {
-                    release();
-                }
-
-                this.#notices.delete(id);
-                this.#pending.delete(id);
-                this.#questions.delete(id);
-
-                if (this.connected) {
-                    this.#control({ type: "approval-ended", id });
-                }
-
-                // End the desktop question only after saving the answer.
-                stop.abort();
-                void this.#state();
-            }
-        });
-
-        this.#questions.set(id, stop);
-        this.#pending.set(id, {
-            scope,
-            stop,
-            resolve: (answer) => resolveAnswer(answer),
-            promise,
-            hold,
-        });
-
-        return promise;
-    }
-
-    /** Pi's list is read here. Only these metadata fields leave the computer without a question. */
+    /** Pi's list is read here. Only these metadata fields leave the computer; the server filters them per person. */
     #findPi(fresh = false): Promise<RunnerPiSession[]> {
         if (!fresh && this.#piFound !== undefined && Date.now() - this.#piFound.at < FOUND_FOR_MS) {
             return this.#piFound.list;
@@ -1386,6 +994,11 @@ export class Runner {
         return list;
     }
 
+    /**
+     * Pi's terminal sessions here: the list, one session's last messages, or the one file a new session continues
+     * from. The server decided that this person may (`src/server/pi-sessions.ts`); a session opens only a Pi file
+     * whose folder is in the session's own.
+     */
     async #piSessions(request: PiSessionsRequest): Promise<void> {
         const stop = new AbortController();
 
@@ -1410,17 +1023,14 @@ export class Runner {
                 stop.signal.throwIfAborted();
 
                 if (request.op === "open") {
-                    const permission = await this.#approvals.valid(request.session);
-
-                    if (permission === undefined) {
+                    if (
+                        !folderContains(
+                            await realFolder(request.folder),
+                            await realFolder(info.cwd),
+                        )
+                    ) {
                         throw new Error(
-                            `The session has no valid permission on ${this.#options.link.name}.`,
-                        );
-                    }
-
-                    if (!folderContains(permission.folder, await realFolder(info.cwd))) {
-                        throw new Error(
-                            `The Pi session's folder is outside the session's approved folder on ${this.#options.link.name}.`,
+                            `The Pi session's folder is outside the session's folder on ${this.#options.link.name}.`,
                         );
                     }
 
@@ -1452,81 +1062,6 @@ export class Runner {
                         ...(companions.length === 0 ? {} : { companions }),
                     };
                 } else {
-                    const at = this.#piPreviews.get(previewKey(request.person, info.path));
-
-                    if (at === undefined || Date.now() - at >= 10 * 60_000) {
-                        const scope = {
-                            id: "pi-preview:" + request.id,
-                            folder: info.cwd,
-                            person: request.person,
-                        };
-                        const answer = await this.#question(
-                            request.id,
-                            scope,
-                            stop.signal,
-                            async (questionStop, totp, ask) => {
-                                const answer = await ask({
-                                    kind: "pi-preview",
-                                    title: info.title,
-                                    folder: info.cwd,
-                                    permission: "session",
-                                    broad: false,
-                                    expired: false,
-                                    session: scope.id,
-                                    person: request.person,
-                                    server: this.#options.link.server,
-                                    computer: this.#options.link.name,
-                                    totp,
-                                    expiresInMs: totp ? ASK_TOTP_MS : ASK_MS,
-                                    signal: questionStop.signal,
-                                });
-                                const allow = answer.allow && !questionStop.signal.aborted;
-
-                                this.#log(
-                                    `${allow ? "Allowed" : "Denied"} ${request.person} to see the Pi session "${info.title}".`,
-                                );
-
-                                if (allow) {
-                                    const at = Date.now();
-
-                                    this.#piPreviews.set(previewKey(request.person, info.path), at);
-                                    setTimeout(() => {
-                                        if (
-                                            this.#piPreviews.get(
-                                                previewKey(request.person, info.path),
-                                            ) === at
-                                        ) {
-                                            this.#piPreviews.delete(
-                                                previewKey(request.person, info.path),
-                                            );
-                                        }
-                                    }, 10 * 60_000).unref();
-
-                                    return { allow: true };
-                                }
-
-                                return {
-                                    allow: false,
-                                    reason:
-                                        answer.reason ??
-                                        `${this.#options.link.name} did not allow seeing the Pi session.`,
-                                    ...(questionStop.signal.reason === WITHDRAWN
-                                        ? { withdrawn: true }
-                                        : {}),
-                                };
-                            },
-                        );
-
-                        if (answer.withdrawn) {
-                            return;
-                        }
-
-                        if (!answer.allow) {
-                            throw new Error(answer.reason);
-                        }
-                    }
-
-                    stop.signal.throwIfAborted();
                     const tail = await readPiTail(info.path);
 
                     result = {
@@ -1562,75 +1097,20 @@ export class Runner {
         }
     }
 
-    /** A network stream for a session's browser: only for a session with a valid permission. */
-    async #authorizedStream(ws: WebSocket, open: NetOpen): Promise<void> {
+    #scopedStream(ws: WebSocket, open: NetOpen): void {
         const scope = sessionScope(open.session);
-        const stop = new AbortController();
 
-        this.#questions.set(`net-${open.id}`, stop);
-
-        try {
-            // A saved session permission, then or after its question: an answer alone (a preview's) opens nothing.
-            const allowed =
-                scope !== undefined &&
-                ((await this.#approvals.valid(scope)) !== undefined ||
-                    ((await this.#approve(`resume-${scope.id}`, scope, "new", true, stop.signal))
-                        .allow &&
-                        (await this.#approvals.valid(scope)) !== undefined));
-
-            if (allowed && ws.readyState === WebSocket.OPEN && !stop.signal.aborted) {
-                // Not use of the session: a page can hold a connection for days, and the session still expires when
-                // idle. Its connections close when its permission ends (`#closeStreams`).
-                this.#streamScopes.set(open.id, scope);
-                this.#watchStreams();
-                this.#openStream(ws, open, () => this.#streamScopes.delete(open.id));
-            } else if (ws.readyState === WebSocket.OPEN && !stop.signal.aborted) {
-                ws.send(
-                    JSON.stringify({
-                        type: "net-failed",
-                        id: open.id,
-                        code: "refused",
-                        message: `Session not approved on ${this.#options.link.name}`,
-                    } satisfies ControlMessage),
-                );
-            }
-        } finally {
-            this.#questions.delete(`net-${open.id}`);
-        }
-    }
-
-    /**
-     * Close the browser connections of sessions without a valid permission now: `session`, or with `"all"` or none
-     * given, each one whose permission was revoked or expired.
-     */
-    async #closeStreams(session?: string): Promise<void> {
-        for (const [id, scope] of [...this.#streamScopes]) {
-            if (
-                session === "all" ||
-                scope.id === session ||
-                (session === undefined && (await this.#approvals.valid(scope)) === undefined)
-            ) {
-                this.#streamScopes.delete(id);
-                this.#connecting.get(id)?.destroy();
-                this.#connecting.delete(id);
-
-                if (this.#streams?.has(id) === true) {
-                    this.#streams.reset(id, "The session's permission ended");
-                }
-            }
-        }
-
-        if (this.#streamScopes.size === 0) {
-            clearInterval(this.#streamCheck);
-            this.#streamCheck = undefined;
-        }
-    }
-
-    /** While browser connections are open, check now and then that their sessions still have permission. */
-    #watchStreams(): void {
-        if (this.#streamCheck === undefined) {
-            this.#streamCheck = setInterval(() => void this.#closeStreams(), STREAM_CHECK_MS);
-            this.#streamCheck.unref();
+        if (scope !== undefined) {
+            this.#openStream(ws, open, this.#activity.begin(scope.folder));
+        } else if (ws.readyState === WebSocket.OPEN) {
+            ws.send(
+                JSON.stringify({
+                    type: "net-failed",
+                    id: open.id,
+                    code: "refused",
+                    message: `The server named no session for this connection to ${this.#options.link.name}`,
+                } satisfies ControlMessage),
+            );
         }
     }
 

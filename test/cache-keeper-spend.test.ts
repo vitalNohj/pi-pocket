@@ -1,5 +1,6 @@
 // The real keeper's accounting wiring, on isolated data and scripted streams. No paid provider is used.
 import {
+    addPerson,
     cleanUp,
     context,
     newSession,
@@ -48,8 +49,8 @@ test("warm usage counts in the session and captured person's spend, including a 
             }),
         ),
     );
-    const alex = app.config.addUser("Alex", "guest").user;
-    const bea = app.config.addUser("Bea", "guest").user;
+    const alex = (await addPerson(app, "Alex", "guest")).user;
+    const bea = (await addPerson(app, "Bea", "guest")).user;
     let finish: ((message: AssistantMessage) => void) | undefined;
     let calls = 0;
     let id: ConversationId;
@@ -168,7 +169,7 @@ test("the keeper sends no warm after its payer reaches a spend limit", async () 
             }),
         ),
     );
-    const alex = app.config.addUser("Limited", "guest").user;
+    const alex = (await addPerson(app, "Limited", "guest")).user;
 
     try {
         const id = await newSession(app);

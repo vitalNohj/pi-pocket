@@ -1,13 +1,18 @@
-// Runner-side request authorization (`src/runner/request-gate.ts`), using real frames and folders.
+// Runner-side request checks (`src/runner/request-gate.ts`), using real frames and folders. The runner trusts its
+// server on who may use which session; it still keeps each request inside the folder its session names.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it, type TestContext } from "node:test";
-import { Approvals, type SessionScope } from "../src/runner/approvals.ts";
-import { FRAME, frame, readFrame, SESSION_FIELD } from "../src/runner/protocol.ts";
+import {
+    FRAME,
+    frame,
+    readFrame,
+    SESSION_FIELD,
+    type SessionScope,
+} from "../src/runner/protocol.ts";
 import { RequestGate } from "../src/runner/request-gate.ts";
-import type { RunnerSettings } from "../src/runner/runner.ts";
 
 const root = mkdtempSync(join(tmpdir(), "pi-pocket-request-gate-"));
 
@@ -15,7 +20,7 @@ after(() => rmSync(root, { recursive: true, force: true }));
 
 type Outcome = ReturnType<typeof readFrame> & { route: "send" | "reply" };
 
-async function fixture(t: TestContext, options: { approved?: boolean; answer?: boolean } = {}) {
+async function fixture(t: TestContext) {
     const dir = realpathSync(mkdtempSync(join(root, "gate-")));
     const folder = join(dir, "project");
     const outside = join(dir, "outside");
@@ -28,24 +33,11 @@ async function fixture(t: TestContext, options: { approved?: boolean; answer?: b
 
     writeFileSync(join(folder, "file.txt"), "inside");
     writeFileSync(join(outside, "file.txt"), "outside");
-    let settings: RunnerSettings = {};
-    const approvals = new Approvals(
-        () => settings,
-        (change) => {
-            settings = { ...settings, ...change };
-        },
-    );
-    const a: SessionScope = { id: "10fc1ade-5001-4e35-8107-d1800dc80a9b", folder, person: "Alice" };
-    const b: SessionScope = { id: "82c9e98d-d891-4e29-8978-76b8dc9304b9", folder, person: "Bob" };
-
-    if (options.approved !== false) {
-        await approvals.approve(a, "computer");
-        await approvals.approve(b, "computer");
-    }
+    const a: SessionScope = { id: "10fc1ade-5001-4e35-8107-d1800dc80a9b", folder };
+    const b: SessionScope = { id: "82c9e98d-d891-4e29-8978-76b8dc9304b9", folder };
 
     const sent: Buffer[] = [];
     const replies: Buffer[] = [];
-    const asked: { scope: SessionScope; signal: AbortSignal }[] = [];
     const pending = new Map<number, (outcome: Outcome) => void>();
 
     const collect = (route: Outcome["route"], frames: Buffer[]) => (whole: Buffer) => {
@@ -58,16 +50,6 @@ async function fixture(t: TestContext, options: { approved?: boolean; answer?: b
     };
 
     const gate = new RequestGate({
-        approvals,
-        async ask(scope, signal) {
-            asked.push({ scope, signal });
-
-            if (options.answer === true) {
-                await approvals.approve(scope, "computer");
-            }
-
-            return options.answer === true;
-        },
         send: collect("send", sent),
         reply: collect("reply", replies),
         shared: async () => [shared],
@@ -99,7 +81,7 @@ async function fixture(t: TestContext, options: { approved?: boolean; answer?: b
         return outcome.promise;
     }
 
-    return { gate, approvals, request, a, b, folder, outside, shared, sent, replies, asked };
+    return { gate, request, a, b, folder, outside, shared, sent, replies };
 }
 
 function refused(outcome: Outcome, message: RegExp): void {
@@ -111,17 +93,16 @@ function refused(outcome: Outcome, message: RegExp): void {
 
 describe("runner RequestGate", () => {
     it("refuses a request without its session field", async (t) => {
-        const { request, folder, sent, asked } = await fixture(t);
+        const { request, folder, sent } = await fixture(t);
         const outcome = await request({ op: "open", path: join(folder, "file.txt") }, null);
 
-        refused(outcome, /A session permission on Test computer is required/);
+        refused(outcome, /A session on Test computer is required/);
         assert.deepEqual(sent, []);
-        assert.deepEqual(asked, []);
     });
 
     for (const op of ["hello", "lstat", "realpath", "opendir"]) {
-        it(`allows the listing operation ${op} without a session or approval`, async (t) => {
-            const { request, outside, replies, asked } = await fixture(t, { approved: false });
+        it(`allows the listing operation ${op} without a session`, async (t) => {
+            const { request, outside, replies } = await fixture(t);
             const json = op === "hello" ? { op } : { op, path: outside };
             const outcome = await request(json, null);
 
@@ -129,22 +110,20 @@ describe("runner RequestGate", () => {
             assert.equal(outcome.type, FRAME.request);
             assert.deepEqual(outcome.json, json);
             assert.deepEqual(replies, []);
-            assert.deepEqual(asked, []);
         });
     }
 
     it("lets an unscoped folder listing use and close its directory handle", async (t) => {
-        const { gate, request, outside, asked } = await fixture(t, { approved: false });
+        const { gate, request, outside } = await fixture(t);
         const opened = await request({ op: "opendir", path: outside }, null);
 
         gate.output(frame(FRAME.result, opened.id, { handle: 41 }));
         assert.equal((await request({ op: "readdir", handle: 41 }, null)).route, "send");
         assert.equal((await request({ op: "close", handle: 41 }, null)).route, "send");
-        assert.deepEqual(asked, []);
     });
 
     it("forwards an approved request and payload after removing only the session field", async (t) => {
-        const { request, folder, replies, asked } = await fixture(t);
+        const { request, folder, replies } = await fixture(t);
         const json = { op: "open", path: join(folder, "file.txt"), flags: "r" };
         const payload = Uint8Array.of(0, 255, 1);
         const outcome = await request(json, undefined, payload);
@@ -155,14 +134,13 @@ describe("runner RequestGate", () => {
         assert.equal(Object.hasOwn(outcome.json, SESSION_FIELD), false);
         assert.deepEqual(outcome.payload, payload);
         assert.deepEqual(replies, []);
-        assert.deepEqual(asked, []);
     });
 
     it("refuses a path outside the approved folder", async (t) => {
         const { request, outside, sent } = await fixture(t);
         const outcome = await request({ op: "open", path: join(outside, "file.txt") });
 
-        refused(outcome, /outside the session's approved folder/);
+        refused(outcome, /outside the session's folder/);
         assert.deepEqual(sent, []);
     });
 
@@ -183,7 +161,7 @@ describe("runner RequestGate", () => {
             to: join(outside, "renamed.txt"),
         });
 
-        refused(outcome, /outside the session's approved folder/);
+        refused(outcome, /outside the session's folder/);
         assert.deepEqual(sent, []);
     });
 
@@ -195,7 +173,7 @@ describe("runner RequestGate", () => {
             targets: [{ path: join(folder, "file.txt") }, { path: join(outside, "file.txt") }],
         });
 
-        refused(outcome, /outside the session's approved folder/);
+        refused(outcome, /outside the session's folder/);
         assert.deepEqual(sent, []);
     });
 
@@ -305,29 +283,6 @@ describe("runner RequestGate", () => {
 
         refused(await request({ op: "exec", command: "printf ok", cwd: outside }), /outside/);
         assert.deepEqual(sent, []);
-    });
-
-    it("asks again without a valid permission and refuses a negative answer", async (t) => {
-        const { request, folder, a, asked, sent } = await fixture(t, { approved: false });
-        const outcome = await request({ op: "open", path: join(folder, "file.txt") });
-
-        refused(outcome, /Session not approved on Test computer/);
-        assert.equal(asked.length, 1);
-        assert.deepEqual(asked[0]!.scope, a);
-        assert.equal(asked[0]!.signal.aborted, false);
-        assert.deepEqual(sent, []);
-    });
-
-    it("rechecks the permission after a positive approval answer", async (t) => {
-        const { request, folder, asked, replies } = await fixture(t, {
-            approved: false,
-            answer: true,
-        });
-        const outcome = await request({ op: "open", path: join(folder, "file.txt") });
-
-        assert.equal(outcome.route, "send");
-        assert.equal(asked.length, 1);
-        assert.deepEqual(replies, []);
     });
 
     it("allows the runner's shared folder without granting other outside paths", async (t) => {

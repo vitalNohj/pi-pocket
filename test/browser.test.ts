@@ -1,4 +1,5 @@
 import {
+    addPerson,
     type App,
     cleanUp,
     fakeTab,
@@ -21,8 +22,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { Browsers } from "../src/server/browser.ts";
+import { Chromium } from "../src/server/browser/cdp.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
-import { SHOT_MAX } from "../src/server/browser/page.ts";
+import { BrowserPage, SHOT_MAX, titleFrom } from "../src/server/browser/page.ts";
+import { VIEWPORTS } from "../src/server/browser/viewport.ts";
 import { normalizeUrl } from "../src/server/browser/urls.ts";
 import { blockedInPlanMode } from "../src/server/extensions/plan.ts";
 
@@ -110,12 +113,42 @@ const PAGE = `<!doctype html><html><head><title>Smoke test</title><meta name="vi
 <div style="height:3000px"></div><p id="bottom">The end</p>
 </main><script>console.log("hello", {a: 1}); console.error("boom"); setTimeout(() => { throw new Error("late failure") }, 10);</script></body></html>`;
 
+/** An app that names its page a moment after it has loaded. */
+const APP = `<!doctype html><title>Loading</title><h1>App</h1>
+<script>addEventListener("load", () => setTimeout(() => { document.title = "App ready"; }, 50));</script>`;
+
 let site: Server;
 let base = "";
+/** How many times "/fresh" was loaded: its title says which load it is. */
+let freshLoads = 0;
 
 before(async () => {
     site = createServer((request, response) => {
-        response.writeHead(200, { "content-type": "text/html" });
+        const late = /^\/late(?:\?(.*))?$/.exec(request.url ?? "");
+        const fresh = request.url === "/fresh";
+
+        response.writeHead(200, {
+            "content-type": "text/html",
+            // Never kept: a reload loads it again.
+            ...(fresh ? { "cache-control": "no-store" } : {}),
+        });
+
+        // A page whose head comes a while after its first bytes, as from a slow server. "/fresh" has another title each
+        // time it loads.
+        if (late !== null || fresh) {
+            const title = fresh ? `Fresh ${++freshLoads}` : `Late ${late?.[1] ?? "title"}`;
+
+            response.write(`<!doctype html><!-- ${"x".repeat(2048)} -->`);
+            setTimeout(() => response.end(`<title>${title}</title><h1>Late</h1>`), 400);
+
+            return;
+        }
+
+        if (request.url === "/app") {
+            response.end(APP);
+
+            return;
+        }
 
         response.end(request.url === "/two" ? "<title>Two</title><h1>Second</h1>" : PAGE);
     });
@@ -175,6 +208,165 @@ test(
             assert.equal(page.url, `${base}/`);
         } finally {
             await browsers.closeAll({ final: true });
+        }
+    },
+);
+
+test("a page's address, as Chromium shows it until there is a title, is no title", () => {
+    assert.equal(titleFrom("Docs", "http://localhost:5173/"), "Docs");
+    assert.equal(titleFrom("http://localhost:5173/", "http://localhost:5173/"), "");
+    assert.equal(titleFrom("localhost:5173/", "http://localhost:5173/"), "");
+    // A bare host loses its slash too.
+    assert.equal(titleFrom("localhost:5173", "http://localhost:5173/"), "");
+    assert.equal(titleFrom("example.com/docs", "https://example.com/docs"), "");
+    // A path keeps its slash: this is another page's address, so it is a title here.
+    assert.equal(titleFrom("example.com/docs", "https://example.com/docs/"), "example.com/docs");
+    // Either address it may be: the one the browser names, or the one the page is at.
+    assert.equal(titleFrom("localhost:5173", "about:blank", "http://localhost:5173/"), "");
+    assert.equal(titleFrom("", "http://localhost:5173/"), "");
+});
+
+test(
+    "a page's title is its document's, also when its head comes late or nothing here started the load",
+    real,
+    async () => {
+        const browsers = new Browsers({
+            dataDir: mkdtempSync(join(root, "title-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+
+        try {
+            const page = await browsers.open(1, { restore: false });
+
+            // The answer of a navigation has the title, with no wait after it.
+            assert.deepEqual(await page.navigate(`${base}/late`), { status: 200 });
+            assert.equal(page.title, "Late title");
+
+            // A load the page started itself, as a link does: its title comes once it has loaded.
+            await page.evaluate(`location.href = "/late?again"; 1`);
+            await until(
+                () => page.url === `${base}/late?again` && page.title === "Late again",
+                "the title of a load the page started",
+            );
+
+            // An app names its page just after the load: the answer has that name, not the one it loaded with.
+            await page.navigate(`${base}/app`);
+            assert.equal(page.title, "App ready");
+
+            // A reload answers with the title of the document it loaded, not the one from before.
+            freshLoads = 0;
+            await page.navigate(`${base}/fresh`);
+            assert.equal(page.title, "Fresh 1");
+            await page.reload();
+            assert.equal(freshLoads, 2, "the reload loaded it again");
+            assert.equal(page.title, "Fresh 2");
+
+            // Going back answers with the title of the page it went back to, as that document has it.
+            await page.navigate(`${base}/two`);
+            assert.equal(page.title, "Two");
+            assert.equal(await page.go(-1), true);
+            assert.equal(page.url, `${base}/fresh`);
+            assert.match(page.title, /^Fresh \d$/);
+            assert.equal(page.title, await page.evaluate("document.title"));
+        } finally {
+            await browsers.closeAll({ final: true });
+        }
+    },
+);
+
+test(
+    "a page's title is in the answer of a navigation, a reload, and going back, however late the browser's history answers",
+    real,
+    async () => {
+        // With no page kept whole for Back, going back loads the page again, as a browser short of memory does.
+        const browser = await Chromium.launch(chromium!, mkdtempSync(join(root, "title-slow-")), [
+            "--disable-features=BackForwardCache",
+        ]);
+        const connection = browser.connection;
+        const send = connection.send.bind(connection);
+        /** History reads whose answer has not come yet. */
+        let late = 0;
+
+        // The browser's history, which a title is also read from in the background, answers a second late here. So
+        // nothing below passes because such a read happened to come in time: the answer itself has to have the title.
+        connection.send = (...args: Parameters<typeof send>) => {
+            const answer = send(...args);
+
+            if (args[0] !== "Page.getNavigationHistory") {
+                return answer;
+            }
+
+            late++;
+
+            return answer
+                .then(async (value) => {
+                    await new Promise((done) => setTimeout(done, 1000));
+
+                    return value;
+                })
+                .finally(() => late--);
+        };
+
+        try {
+            const { targetId } = await connection.send("Target.createTarget", {
+                url: "about:blank",
+            });
+            const { sessionId } = await connection.send("Target.attachToTarget", {
+                targetId,
+                flatten: true,
+            });
+            const page = new BrowserPage({
+                conversationId: 1,
+                connection,
+                session: sessionId,
+                target: targetId,
+                context: "",
+                userAgent: browser.userAgent,
+                viewport: VIEWPORTS.desktop,
+                changed: () => {},
+                saved: () => {},
+            });
+
+            // What the browser tells of the page's target reaches the page, as `Browsers` passes it on.
+            connection.onEvent = (method, params) => {
+                if (method.startsWith("Target.") && params.targetInfo !== undefined) {
+                    page.targetEvent(method, params.targetInfo);
+                }
+            };
+
+            await page.init();
+            // Between the steps, the late answers of the step before come in: they change nothing.
+            const quiet = () => until(() => late === 0, "the late answers", 15_000);
+
+            await page.navigate(`${base}/two`);
+            assert.equal(page.title, "Two");
+            await quiet();
+            assert.equal(page.title, "Two");
+
+            freshLoads = 0;
+            await page.navigate(`${base}/fresh`);
+            assert.equal(page.title, "Fresh 1");
+            await quiet();
+            await page.reload();
+            assert.equal(freshLoads, 2, "the reload loaded it again");
+            assert.equal(page.title, "Fresh 2");
+            await quiet();
+            assert.equal(page.title, "Fresh 2");
+
+            // Back, to a page that loads again with another title: the answer has that one.
+            await page.navigate(`${base}/two`);
+            assert.equal(page.title, "Two");
+            await quiet();
+            assert.equal(await page.go(-1), true);
+            assert.equal(page.url, `${base}/fresh`);
+            assert.equal(freshLoads, 3, "going back loaded it again");
+            assert.equal(page.title, "Fresh 3");
+            await quiet();
+            assert.equal(page.title, "Fresh 3");
+        } finally {
+            browser.kill();
+            await browser.exited;
         }
     },
 );
@@ -244,8 +436,8 @@ test(
 
         await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
         const api = `http://127.0.0.1:${(server.address() as { port: number }).port}/api`;
-        const viewer = app.config.addUser("Vee", "viewer");
-        const guest = app.config.addUser("Gus", "guest");
+        const viewer = await addPerson(app, "Vee", "viewer");
+        const guest = await addPerson(app, "Gus", "guest");
         const request = (token: string, path: string, body?: unknown) =>
             fetch(
                 `${api}/${path}`,

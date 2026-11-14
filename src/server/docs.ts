@@ -32,7 +32,13 @@ export type SessionMeta = {
     cwd: string;
     createdAt: number;
     updatedAt: number;
+    /** Who started it; absent (sessions from before it was kept): the owner (`access.ts`). */
     createdBy?: string;
+    /**
+     * The people it is shared with, one at a time, by its starter or the owner (`access.ts` `mayShare`). Set on a top
+     * session; its subagents follow it. Absent: no one.
+     */
+    sharedWith?: string[];
     archived?: boolean;
     /** The session this one was forked from, and the last entry it inherited; no entry: forked before the first message. */
     forkedFrom?: { id: number; entryId?: number };

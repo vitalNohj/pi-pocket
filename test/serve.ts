@@ -12,7 +12,16 @@
  * does not sign a browser out of a Pi Pocket on 127.0.0.1 or localhost.
  */
 // helpers.ts first: it points Pi's folder at a temporary one before anything from src/ loads.
-import { cleanUp, lastText, newSession, openApp, root, say, scriptedModel } from "./helpers.ts";
+import {
+    addPerson,
+    cleanUp,
+    lastText,
+    newSession,
+    openApp,
+    root,
+    say,
+    scriptedModel,
+} from "./helpers.ts";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -73,7 +82,7 @@ await new Promise<void>((resolve) => server.listen(port, host, resolve));
 const session = await newSession(app);
 
 await say(app, session, "Hello from the copy");
-const guest = app.config.addUser("Guest", "guest");
+const guest = await addPerson(app, "Guest", "guest");
 const base = `http://${host}:${port}`;
 
 console.log(`A copy of Pi Pocket, with its own data in ${root}`);

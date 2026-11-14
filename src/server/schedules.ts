@@ -164,8 +164,9 @@ export class Schedules {
         }
 
         // PiP's conversation while PiP is off would run without PiP's rules: its schedule waits, and goes out once PiP
-        // is back. Its `runs` stays, so a sending this replaces keeps its request id.
-        if (this.#waitsForPip(conversationId)) {
+        // is back. A session whose tasks paused (its approval ended, `app.ts` `tasksMayRun`) waits until it is renewed.
+        // Its `runs` stays, so a sending this replaces keeps its request id.
+        if (this.#waitsForPip(conversationId) || !this.#app.tasksMayRun(conversationId)) {
             return runtime.commit(async (tx) => {
                 const item = (await tx.doc(ScheduleDoc, conversationId)).items[id];
 
@@ -302,8 +303,15 @@ export class Schedules {
         return this.#app.loader.extensionNames().includes(SCHEDULES_EXTENSION);
     }
 
-    /** Set up a message to Pi. Throws an HttpError a person can act on when the time or the message will not do. */
-    async add(conversationId: ConversationId, request: ScheduleRequest): Promise<Schedule> {
+    /**
+     * Set up a message to Pi. Throws an HttpError a person can act on when the time or the message will not do.
+     * `saving`: the context of its save; a person's carries their check (`app.ts` `admission`).
+     */
+    async add(
+        conversationId: ConversationId,
+        request: ScheduleRequest,
+        saving: Context = context,
+    ): Promise<Schedule> {
         const app = this.#app;
 
         if (!this.running) {
@@ -406,7 +414,7 @@ export class Schedules {
             doc.items[id] = schedule;
 
             return schedule;
-        }, context);
+        }, saving);
     }
 
     /**
@@ -426,6 +434,8 @@ export class Schedules {
             version?: string;
             by: { id: string; name: string };
         },
+        /** The context of its save; a person's carries their check (`app.ts` `admission`). */
+        saving: Context = context,
     ): Promise<Schedule> {
         const app = this.#app;
 
@@ -492,7 +502,7 @@ export class Schedules {
             }
 
             return JSON.parse(JSON.stringify(item)) as Schedule;
-        }, context);
+        }, saving);
 
         // The old task finds the schedule no longer its own and ends.
         if (replaced !== undefined) {
@@ -534,6 +544,8 @@ export class Schedules {
         scheduleId: string,
         paused: boolean,
         by: { id: string },
+        /** The context of its save; a person who resumes it carries their check (`app.ts` `admission`). */
+        saving: Context = context,
     ): Promise<{ schedule: Schedule; changed: boolean }> {
         const app = this.#app;
 
@@ -573,7 +585,7 @@ export class Schedules {
             }
 
             return JSON.parse(JSON.stringify(item)) as Schedule;
-        }, context);
+        }, saving);
 
         if (replaced !== undefined) {
             await app.harness.abortTask(replaced, context).catch(() => undefined);

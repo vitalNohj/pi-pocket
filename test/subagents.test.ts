@@ -2,6 +2,7 @@
 // once, without a turn of the parent's per report; a restart, a stopped courier, or a withdrawn queue loses none. Who
 // sees a subagent's peek and the board. Past a spend limit, reports wait, and go once it is raised.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -379,7 +380,7 @@ test("an open board loses the subagents of a session no longer shared, at once",
     // The plan is read when the model answers: the first one's, before the next session's.
     await until(() => app.subagents().some((each) => each.name === "kept"), "the first subagent");
     const unshared = await orchestrate({ spawn: ["hidden"], rounds: 0, sleep: 0 });
-    const guest = app.config.addUser("Narrowed", "guest");
+    const guest = await addPerson(app, "Narrowed", "guest");
     const tab = fakeTab(undefined, guest.user);
     const names = () =>
         ((tab.last("subagents") ?? []) as unknown as { name: string }[])
@@ -471,12 +472,30 @@ test("past its spend limit, an idle parent starts no turn for a report: it waits
     slow = {};
 });
 
+/**
+ * The reports, by name, of the batch that waits in the parent's queue now; none while no batch waits there. One read of
+ * the batch and its submission: the queue's length alone is also 1 for an earlier batch, with fewer reports.
+ */
+async function waitingBatch(id: ConversationId): Promise<string[]> {
+    const sending = (await app.harness.snapshot(SubagentsDoc, id, context))?.sending;
+    let waits = false;
+
+    if (sending !== undefined) {
+        await app.harness.commit(async (tx) => {
+            waits = (await tx.submissionByRequest(id, sending.request))?.status === "queued";
+        }, context);
+    }
+
+    return sending !== undefined && waits ? sending.reports.map((report) => report.name) : [];
+}
+
 test("reports taken out of the queue by something other than a person go again, and reach Pi once", async () => {
     const id = await orchestrate({ spawn: ["again-a", "again-b"], rounds: 1, sleep: 8 });
 
+    // Both, in the one message: a report that comes once the run has ended wakes Pi itself (the test after this one).
     await until(
-        async () => (await queued(id)) === 1,
-        "the reports in the busy parent's queue",
+        async () => (await waitingBatch(id)).length === 2,
+        "both reports in the busy parent's queue",
         15_000,
     );
     // Not Stop: the run ends as Pi Durable ends it, which withdraws what waits. The courier sends them again; as
@@ -498,6 +517,34 @@ test("reports taken out of the queue by something other than a person go again, 
         15_000,
     );
     assert.deepEqual(await delivered(id), { "again-a": 1, "again-b": 1 });
+});
+
+test("a report that comes once the run has ended takes the one waiting with it, and each reaches Pi once", async () => {
+    slow = { "late-b": 3 };
+    const id = await orchestrate({ spawn: ["late-a", "late-b"], rounds: 1, sleep: 8 });
+
+    await until(
+        async () => (await waitingBatch(id)).length === 1,
+        "the first report in the busy parent's queue",
+        15_000,
+    );
+    assert.deepEqual(await waitingBatch(id), ["late-a"]);
+    // The run ends as Pi Durable ends it: the first report is sent again, and waits for the next message.
+    await (await app.harness.conversation(id, context))!.abort(context);
+    // The second finds the parent idle: it takes the first out of the queue, and both go as one message, which Pi
+    // answers.
+    await until(
+        async () => {
+            const got = await delivered(id);
+
+            return got["late-a"] === 1 && got["late-b"] === 1 && !app.isBusy(id);
+        },
+        "both reports, once",
+        15_000,
+    );
+    assert.deepEqual(await delivered(id), { "late-a": 1, "late-b": 1 });
+    assert.equal(await queued(id), 0);
+    assert.deepEqual(await held(id), { why: undefined, waiting: 0 });
 });
 
 test("a subagent's conversation shows what it cost itself, not its session's spend or limit", async () => {

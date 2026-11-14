@@ -1,4 +1,5 @@
 // A real runner and pi-env daemon: tasks and their logs belong to the session's computer, not this server.
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import {
     type App,
     cleanUp,
@@ -63,7 +64,8 @@ before(async () => {
         }
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const linked = app.runners.redeem(
+    const linked = linkInProcess(
+        (request) => app.runners.redeem(request),
         app.runners.makeCode("Background laptop", owner(app).id).code,
     );
 
@@ -74,7 +76,6 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50, 100, 200],
-        ask: () => Promise.resolve({ allow: true }),
     };
     runner = new Runner(options);
     runner.start();
@@ -317,7 +318,7 @@ test("task files are limited to their session's permission folder", async () => 
     assert.equal(denied.ok, false);
 
     if (!denied.ok) {
-        assert.match(denied.error.message, /outside the session's approved folder/);
+        assert.match(denied.error.message, /outside the session's folder/);
     }
 
     const parent = await app

@@ -1,6 +1,7 @@
 // Spend: what each session and person cost, counted once across restarts and crashes, and limits that refuse and
 // stop work. The scripted model costs nothing, so tests record usage in `pi.usage` themselves, as a response does.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -60,7 +61,7 @@ let alex: User;
 
 before(async () => {
     app = await openApp(model);
-    alex = app.config.addUser("Alex", "guest").user;
+    alex = (await addPerson(app, "Alex", "guest")).user;
 });
 
 after(async () => {
@@ -157,7 +158,7 @@ test("startup recovery stops a busy run after uncounted usage crosses its payer'
 
 test("spend goes to whoever asked for the work, also when someone else writes before it is stored", async () => {
     const id = await newSession(app);
-    const bea = app.config.addUser("Bea", "guest").user;
+    const bea = (await addPerson(app, "Bea", "guest")).user;
 
     await sayAs(alex, id, "do something");
     const before = app.spend.personSpent(alex.id);

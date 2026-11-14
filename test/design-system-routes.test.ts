@@ -1,4 +1,4 @@
-import { cleanUp, newSession, openApp, owner, root, scriptedModel } from "./helpers.ts";
+import { addPerson, cleanUp, newSession, openApp, owner, root, scriptedModel } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -64,7 +64,7 @@ before(async () => {
         ["Vic", "viewer", undefined],
         ["Sid", "guest", [String(session)]],
     ] as const) {
-        const added = app.config.addUser(name, role, sessions ? [...sessions] : undefined);
+        const added = await addPerson(app, name, role, sessions ? [...sessions] : undefined);
 
         people[name] = { token: added.token, id: added.user.id };
     }

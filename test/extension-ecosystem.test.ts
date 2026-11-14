@@ -2,7 +2,17 @@
 // module's service (`web.provide`) is used by another (`web.use`) and follows it as it goes and comes back; and a
 // module's settings (`web.settings`) are kept by core, set by the owner alone, read by the module, and never give a
 // secret to a browser.
-import { cleanUp, newSession, openApp, owner, root, say, scriptedModel, until } from "./helpers.ts";
+import {
+    addPerson,
+    cleanUp,
+    newSession,
+    openApp,
+    owner,
+    root,
+    say,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -102,8 +112,8 @@ before(async () => {
     await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     tokens.owner = app.config.ownerToken;
-    tokens.guest = app.config.addUser("Gus", "guest").token;
-    tokens.viewer = app.config.addUser("Vic", "viewer").token;
+    tokens.guest = (await addPerson(app, "Gus", "guest")).token;
+    tokens.viewer = (await addPerson(app, "Vic", "viewer")).token;
 
     for (const file of ["watcher.ts", "provider.ts", "consumer.ts", "configured.ts"]) {
         await app.setExtensionEnabled(owner(app), file, true);
