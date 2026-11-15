@@ -74,13 +74,15 @@ async function renew(approval, me) {
 
 /**
  * The session approvals this person may list: the sessions they started, and on computers they are in charge of every
- * one (named by who used it last). Revoke locks a session at once; Renew opens it again.
+ * one (named by who used it last). Revoke locks a session at once; Renew opens it again. `computer` keeps one
+ * computer's, `person` the ones that person used last. `heading` false: under a page's own title.
  */
-export function ApprovalsList({ mine = false, computer }) {
+export function ApprovalsList({ mine = false, computer, person, heading = true }) {
     const { folderApprovals, me } = store.state;
     const shown = (folderApprovals ?? []).filter(
         (each) =>
             (computer === undefined || each.computer === computer) &&
+            (person === undefined || each.lastUser === person) &&
             (!mine ||
                 store.state.sessions.find((session) => String(session.id) === each.session)
                     ?.createdBy === me?.id),
@@ -94,7 +96,7 @@ export function ApprovalsList({ mine = false, computer }) {
         );
 
     return html`<div class="group approvals">
-        <div class="group-title">${mine ? "Your sessions' approvals" : "Session approvals"}</div>
+        ${heading && html`<div class="group-title">${mine ? "Your sessions' approvals" : "Session approvals"}</div>`}
         ${
             shown.length === 0 &&
             html`<div class="muted small">
@@ -136,15 +138,15 @@ export function ApprovalsList({ mine = false, computer }) {
     </div>`;
 }
 
-/** The owner picks how long a session's approval lasts after `person` used it. */
-export function ApprovalTime({ person }) {
+/** The owner picks how long a session's approval lasts after `person` used it. `plain`: the choice without its words. */
+export function ApprovalTime({ person, plain = false }) {
     const set = (days) =>
         attempt(() =>
             api(`users/${encodeURIComponent(person.id)}/approval-days`, { days: Number(days) }),
         );
 
     return html`<label class="approval-time small">
-        <span class="muted">Approvals last</span>
+        ${!plain && html`<span class="muted">Approvals last</span>`}
         <select
             value=${String(person.approvalDays ?? 7)}
             aria-label=${`How long a session's approval lasts after ${person.name} used it`}

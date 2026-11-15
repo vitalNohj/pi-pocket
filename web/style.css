@@ -7320,27 +7320,26 @@ div.group-head {
     color: var(--danger, #c33);
 }
 
-/* The row grows with the computer's settings: its status dot stays beside the computer's name. */
 /*
- * Runners: a wide sheet with the computers and this server's pages on the left, and the chosen one on the right. On a
- * phone the two stack: the list first, then the page.
+ * A sheet of pages (`sheets/pages.js`), as Runners and People are: wide, with what there is to choose on the left
+ * (computers, people) and the chosen one's page on the right. On a phone the two stack: the list first, then the page.
  */
-.sheet.runners-sheet {
+.sheet.pages-sheet {
     max-width: min(960px, calc(100vw - 32px));
 }
 
-.runners-sheet .sheet-body {
+.pages-sheet .sheet-body {
     padding: 0;
     gap: 0;
 }
 
-.runners-split {
+.pages-split {
     display: grid;
     grid-template-columns: 240px minmax(0, 1fr);
     min-height: min(560px, 70dvh);
 }
 
-.runners-list {
+.pages-list {
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -7348,15 +7347,15 @@ div.group-head {
     border-right: 1px solid var(--hair);
 }
 
-.runners-list > .group-title {
+.pages-list > .group-title {
     margin: 10px 8px 4px;
 }
 
-.runners-list > .group-title:first-child {
+.pages-list > .group-title:first-child {
     margin-top: 2px;
 }
 
-.runner-item {
+.pages-item {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -7370,36 +7369,36 @@ div.group-head {
 }
 
 @media (hover: hover) {
-    .runner-item:hover {
+    .pages-item:hover {
         background: var(--hover);
     }
 }
 
-.runner-item.on {
+.pages-item.on {
     background: var(--raised);
     border-color: var(--hair);
 }
 
-.runner-item > svg {
+.pages-item > svg {
     flex: none;
     color: var(--muted);
 }
 
-.runner-item-text {
+.pages-item-text {
     display: flex;
     flex-direction: column;
     flex: 1;
     min-width: 0;
 }
 
-.runner-item-title {
+.pages-item-title {
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.runner-badge {
+.pages-badge {
     flex: none;
     padding: 1px 7px;
     border-radius: 999px;
@@ -7408,7 +7407,7 @@ div.group-head {
     font-size: 11px;
 }
 
-.runners-detail {
+.pages-detail {
     min-width: 0;
     padding: calc(16px * var(--space-y)) calc(20px * var(--space-x)) calc(20px * var(--space-y));
 }
@@ -7429,76 +7428,76 @@ div.group-head {
     background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 
-.runner-page,
-.runner-pane {
+.sheet-page,
+.sheet-pane {
     display: flex;
     flex-direction: column;
     gap: 10px;
     min-width: 0;
 }
 
-.runner-page p,
-.runner-pane p {
+.sheet-page p,
+.sheet-pane p {
     margin: 0;
 }
 
-.runner-page > .group-title,
-.runner-pane > .group-title {
+.sheet-page > .group-title,
+.sheet-pane > .group-title {
     margin: 8px 2px 0;
 }
 
-.runner-page-head {
+.sheet-page-head {
     display: flex;
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
 }
 
-.runner-page-title {
+.sheet-page-title {
     margin: 0;
     font-size: 19px;
     font-weight: 600;
 }
 
-.runner-page-actions {
+.sheet-page-actions {
     display: flex;
     gap: 8px;
     margin-left: auto;
 }
 
-.runner-tabs {
+.sheet-tabs {
     margin: 4px 0 2px;
 }
 
-.runner-rows {
+.sheet-rows {
     display: flex;
     flex-direction: column;
 }
 
-.runner-rows > * {
+.sheet-rows > * {
     padding: 9px 0;
     border-top: 1px solid var(--hair);
 }
 
-.runner-rows > *:first-child {
+.sheet-rows > *:first-child {
     border-top: 0;
 }
 
-.runner-rows > .setting {
+.sheet-rows > .setting {
     margin-top: 0;
 }
 
-.runner-glance {
+.sheet-glance {
     display: flex;
     gap: 12px;
 }
 
 @media (max-width: 719px) {
-    .runners-split {
+    .pages-split {
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .runners-list {
+    .pages-list {
         border-right: 0;
         border-bottom: 1px solid var(--hair);
     }
@@ -7515,6 +7514,59 @@ div.group-head {
 .runner-permission-row code {
     min-width: 0;
     overflow-wrap: anywhere;
+}
+
+/* The folders given to one person on one computer (`sheets/access.js`): the list, then the field that adds one. */
+.given-folders {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.given-folders > .row > input {
+    flex: 1;
+    min-width: 0;
+}
+
+/* In Runners, a person's name over their folders there. */
+.given-person {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 10px;
+    border-top: 1px solid var(--hair);
+}
+
+/* In People, one computer for the person shown: whether they may use it, then their folders there, set in under it. */
+.access-computer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--bg);
+}
+
+.access-computer > .setting {
+    margin-top: 0;
+}
+
+.access-computer > .given-folders {
+    padding-top: 8px;
+    border-top: 1px solid var(--hair);
+}
+
+/* A person's picture in the list of a sheet of pages, and at the head of their page. */
+.pages-item > .people-here,
+.sheet-page-head > .people-here {
+    flex: none;
+}
+
+.pages-list .online-mark,
+.sheet-page-head .online-mark {
+    box-shadow: 0 0 0 2px var(--panel, var(--bg));
 }
 
 /* An approval (`sheets/approvals.js`): what, and when it ends, then Revoke. */
@@ -10938,32 +10990,9 @@ textarea.notes {
     background: var(--accent);
 }
 
-.person-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 14px;
-}
-
-@media (max-width: 480px) {
-    .person-row {
-        flex-wrap: wrap;
-    }
-    .person-actions {
-        flex-basis: 100%;
-    }
-}
-
 .person-main {
     flex: 1;
     min-width: 0;
-}
-
-.person-actions {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 0.3rem;
 }
 
 .flash {
@@ -21707,7 +21736,7 @@ pre.gallery-code {
     font: 12px var(--mono);
 }
 
-/* Computers (`sheets/computers.js`): other computers that run sessions' tools. Rows are People's (`.person-row`). */
+/* Computers (`sheets/computers.js`): other computers that run sessions' tools. */
 .runner-dot {
     width: 0.6rem;
     height: 0.6rem;

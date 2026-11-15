@@ -250,6 +250,85 @@ test("a change reaches the owner's tabs live, and never anyone else's", async ()
     }
 });
 
+test("one person is chosen, or no longer, and the others stay as they are", async () => {
+    // What the People sheet's switch sends: the list as it is now, with that one change.
+    const added = await call<ServerView>(owner(app), `runners/${THIS_SERVER}/users`, {
+        person: vera.id,
+        on: true,
+    });
+
+    assert.equal(added.status, 200);
+    assert.deepEqual(
+        added.body.users.map((each) => each.name),
+        ["Alex", "Vera"],
+        "Alex, chosen before, stays",
+    );
+
+    // Chosen twice is chosen once.
+    await call(owner(app), `runners/${THIS_SERVER}/users`, { person: vera.id, on: true });
+    assert.deepEqual(app.config.server.users, [alex.id, vera.id]);
+
+    const removed = await call<ServerView>(owner(app), `runners/${THIS_SERVER}/users`, {
+        person: vera.id,
+        on: false,
+    });
+
+    assert.deepEqual(
+        removed.body.users.map((each) => each.name),
+        ["Alex"],
+    );
+    assert.equal(app.policy.mayUse(vera, THIS_SERVER), false);
+    assert.equal(app.policy.mayStart(alex, THIS_SERVER), true);
+
+    // The same list as a runner's: the same route, the same answer.
+    const there = await call<{ users: { name: string }[] }>(
+        owner(app),
+        `runners/${runnerId}/users`,
+        { person: alex.id, on: true },
+    );
+
+    assert.deepEqual(
+        there.body.users.map((each) => each.name),
+        ["Alex"],
+    );
+    await call(owner(app), `runners/${runnerId}/users`, { person: alex.id, on: false });
+    assert.deepEqual(app.config.runnerById(runnerId)?.users, []);
+});
+
+test("choosing one person says why it cannot be done, and is the owner's alone", async () => {
+    const one = await call<{ error: string }>(owner(app), `runners/${THIS_SERVER}/users`, {
+        person: sam.id,
+        on: true,
+    });
+
+    assert.equal(one.status, 400);
+    assert.match(one.body.error, /invited to one session only/);
+
+    const self = await call<{ error: string }>(owner(app), `runners/${THIS_SERVER}/users`, {
+        person: owner(app).id,
+        on: true,
+    });
+
+    assert.equal(self.status, 400);
+    assert.match(self.body.error, /in charge of it/);
+    assert.equal(
+        (await call(owner(app), `runners/${THIS_SERVER}/users`, { person: "nobody", on: true }))
+            .status,
+        404,
+    );
+    assert.equal(
+        (await call(owner(app), `runners/${THIS_SERVER}/users`, { person: vera.id })).status,
+        400,
+        "on is needed",
+    );
+    // Someone chosen for it is not in charge of it.
+    assert.equal(
+        (await call(alex, `runners/${THIS_SERVER}/users`, { person: vera.id, on: true })).status,
+        403,
+    );
+    assert.deepEqual(app.config.server.users, [alex.id]);
+});
+
 test("someone no longer chosen leaves at once", async () => {
     assert.equal(app.policy.mayStart(alex, THIS_SERVER), true);
     await call(owner(app), `runners/${THIS_SERVER}/users`, { users: [] });

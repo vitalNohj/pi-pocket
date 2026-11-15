@@ -2587,7 +2587,7 @@ function AllSessions({ compact = false }) {
                 sessionsLoaded &&
                 shown.length === 0 &&
                 html`<div class="sessions-empty">
-                    ${kept !== null && !needle ? "No sessions match the filters." : archived ? "No archived sessions." : needle ? "No matches." : starts ? "No sessions yet. Start one with New." : "No sessions shared with you yet. The owner shares them, or chooses you for this server in Runners."}
+                    ${kept !== null && !needle ? "No sessions match the filters." : archived ? "No archived sessions." : needle ? "No matches." : starts ? "No sessions yet. Start one with New." : "No sessions shared with you yet. The owner shares them, or chooses you for this server."}
                 </div>`
             }
             ${

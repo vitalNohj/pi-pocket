@@ -5,7 +5,16 @@
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, canLink, closeSheet, notify, openSheet, store } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
+import {
+    choosable,
+    choosePeople,
+    computers as allComputers,
+    FolderList,
+    inCharge,
+    loadComputers,
+} from "./access.js";
 import { ApprovalsList } from "./approvals.js";
+import { PageItem, Pages, PageTabs } from "./pages.js";
 
 /** What a computer is doing now, in a few words. */
 function status(runner) {
@@ -54,8 +63,8 @@ function LinkSteps({ made, onDone }) {
     const server = location.origin;
     const minutes = Math.max(1, Math.round((made.expiresAt - Date.now()) / 60000));
 
-    return html`<div class="runner-page runner-link">
-        <h3 class="runner-page-title">Link ${made.name}</h3>
+    return html`<div class="sheet-page runner-link">
+        <h3 class="sheet-page-title">Link ${made.name}</h3>
         <${TrustNote} />
         <p class="muted small">Give the runner on ${made.name} this address and code:</p>
         <${Copyable} label="Address" text=${server} />
@@ -100,18 +109,18 @@ export function TrustNote() {
  * lift (`link-limits.ts`). Only the owner opens Runners.
  */
 function LinkLocks({ locks, reload }) {
-    const intro = html`<h3 class="runner-page-title">Linking limits</h3>
+    const intro = html`<h3 class="sheet-page-title">Linking limits</h3>
         <p class="muted small">
             Redeeming a link code is the one thing anyone can try without signing in. Wrong codes are limited for each
             address, and in total; an address locked out 3 times in a week is banned.
         </p>`;
 
     if (!locks) {
-        return html`<div class="runner-page">${intro}<${Loader} /></div>`;
+        return html`<div class="sheet-page">${intro}<${Loader} /></div>`;
     }
 
     if (!locks.server && locks.addresses.length === 0 && locks.bans.length === 0) {
-        return html`<div class="runner-page">
+        return html`<div class="sheet-page">
             ${intro}
             <p class="muted small">Nothing is locked or banned.</p>
         </div>`;
@@ -134,7 +143,7 @@ function LinkLocks({ locks, reload }) {
             reload();
         });
 
-    return html`<div class="runner-page runner-locks">
+    return html`<div class="sheet-page runner-locks">
         ${intro}
         ${
             (locks.server || locks.addresses.length > 0) &&
@@ -175,13 +184,6 @@ function LinkLocks({ locks, reload }) {
     </div>`;
 }
 
-/** Whether I am in charge of a computer: its linker, or for this server the owner (`access.ts` `inCharge`). */
-function inCharge(computer) {
-    return computer.id === "this-server"
-        ? store.state.me?.role === "owner"
-        : computer.createdBy === store.state.me?.id;
-}
-
 /** Link a computer: name it, get a one-time code, and run the runner there with this address and code. */
 function LinkComputer({ onDone }) {
     const [name, setName] = useState("");
@@ -204,8 +206,8 @@ function LinkComputer({ onDone }) {
         return html`<${LinkSteps} made=${made} onDone=${onDone} />`;
     }
 
-    return html`<div class="runner-page runner-link">
-        <h3 class="runner-page-title">Link a computer</h3>
+    return html`<div class="sheet-page runner-link">
+        <h3 class="sheet-page-title">Link a computer</h3>
         <${TrustNote} />
         <label class="field">
             <span class="label">Name</span>
@@ -283,7 +285,7 @@ function RunnerSettings({ runner }) {
         }
     };
 
-    return html`<div class="runner-pane">
+    return html`<div class="sheet-pane">
         <${Rule}
             runner=${runner}
             name="network"
@@ -312,16 +314,13 @@ function RunnerSettings({ runner }) {
 
 /**
  * The people a computer's linker chooses (`access.ts`): they may use it, and viewers among them only see. The same list
- * as the People sheet, for this server and runners alike; people invited to one session keep only that session. Who is
- * in charge has it anyway: the owner here, the linker of a runner (where the owner is chosen as anyone is).
+ * as the People sheet's Access part shows by person, for this server and runners alike; people invited to one session
+ * keep only that session. Who is in charge has it anyway: the owner here, the linker of a runner (where the owner is
+ * chosen as anyone is).
  */
 function ChoosePeople({ runner, note }) {
     const people = store.state.users.filter(
-        (person) =>
-            !person.sessions &&
-            (runner.id === "this-server"
-                ? person.role !== "owner"
-                : person.id !== runner.createdBy),
+        (person) => !person.sessions && choosable(runner, person),
     );
     const [choosing, setChoosing] = useState(false);
     const [selected, setSelected] = useState([]);
@@ -339,17 +338,17 @@ function ChoosePeople({ runner, note }) {
         setChoosing(true);
     };
 
-    const save = () =>
-        attempt(async () => {
-            setBusy(true);
+    const save = async () => {
+        setBusy(true);
 
-            try {
-                await api(`runners/${encodeURIComponent(runner.id)}/users`, { users: selected });
+        try {
+            if (await choosePeople(runner, selected)) {
                 setChoosing(false);
-            } finally {
-                setBusy(false);
             }
-        });
+        } finally {
+            setBusy(false);
+        }
+    };
 
     return html`<div class="group">
         <div class="group-title">People</div>
@@ -376,7 +375,7 @@ function ChoosePeople({ runner, note }) {
         ${
             choosing &&
             html`<div role="group" aria-label=${`People who may use ${runner.name}`}>
-                ${people.length === 0 && html`<p class="muted small">No one else yet. Invite people in the People sheet.</p>`}
+                ${people.length === 0 && html`<p class="muted small">No one else yet. Invite people in People.</p>`}
                 ${people.map(
                     (person) => html`<label class="check" key=${person.id}>
                         <input
@@ -407,7 +406,7 @@ function ChoosePeople({ runner, note }) {
                 </div>
             </div>`
         }
-        <p class="muted small">${note}</p>
+        <p class="muted small">${note} The same choices are in People, under each person's Access.</p>
     </div>`;
 }
 
@@ -432,73 +431,26 @@ const SHARE_HINT =
 /**
  * The folders given to each chosen person on a computer (`access.ts`): each covers the folders in it. A person given
  * none may not start sessions there. Only who is in charge (the owner here, a runner's linker there) sees and changes
- * them.
+ * them. Each person's list is the one the People sheet shows under this computer (`access.js` `FolderList`).
  */
 function GivenFolders({ computer }) {
-    const given = computer.given ?? {};
     const people = (computer.users ?? []).filter((person) => person.role !== "viewer");
-    const [adding, setAdding] = useState({});
 
     if (!inCharge(computer) || people.length === 0) {
         return null;
     }
-
-    const save = (person, folders) =>
-        attempt(() => api(`runners/${encodeURIComponent(computer.id)}/given`, { person, folders }));
 
     return html`<div class="group">
         <div class="group-title">Folders</div>
         <div class="muted small">
             Each person works only in the folders you give them here, and the folders inside them.
         </div>
-        ${people.map((person) => {
-            const folders = given[person.id] ?? [];
-            const draft = adding[person.id] ?? "";
-
-            const add = () => {
-                const folder = draft.trim();
-
-                if (folder !== "") {
-                    void save(person.id, [...folders, folder]).then(() =>
-                        setAdding({ ...adding, [person.id]: "" }),
-                    );
-                }
-            };
-
-            return html`<div class="given-folders" key=${person.id}>
+        ${people.map(
+            (person) => html`<div class="given-person" key=${person.id}>
                 <div class="small"><strong>${person.name}</strong></div>
-                ${folders.length === 0 && html`<div class="muted small">No folders yet.</div>`}
-                ${folders.map(
-                    (folder) => html`<div class="runner-permission-row" key=${folder}>
-                        <code>${folder}</code>
-                        <button
-                            class="button small ghost"
-                            onClick=${() =>
-                                save(
-                                    person.id,
-                                    folders.filter((each) => each !== folder),
-                                )}
-                        >
-                            Remove
-                        </button>
-                    </div>`,
-                )}
-                <div class="row">
-                    <input
-                        type="text"
-                        placeholder="Add a folder, as ~/projects/app"
-                        aria-label=${`Add a folder for ${person.name}`}
-                        value=${draft}
-                        onInput=${(event) =>
-                            setAdding({ ...adding, [person.id]: event.currentTarget.value })}
-                        onKeyDown=${(event) => event.key === "Enter" && add()}
-                    />
-                    <button class="button small" disabled=${draft.trim() === ""} onClick=${add}>
-                        Add
-                    </button>
-                </div>
-            </div>`;
-        })}
+                <${FolderList} computer=${computer} person=${person} />
+            </div>`,
+        )}
     </div>`;
 }
 
@@ -544,7 +496,7 @@ function Overview({ computer }) {
         ["Session approvals", String(approvals)],
     ].filter(Boolean);
 
-    return html`<div class="runner-pane">
+    return html`<div class="sheet-pane">
         ${
             !server &&
             !computer.online &&
@@ -568,9 +520,9 @@ function Overview({ computer }) {
         ${!server && html`<${Tools} runner=${computer} />`}
         ${computer.fingerprint && html`<div class="muted small runner-key">Key: <code>${computer.fingerprint}</code></div>`}
         <div class="group-title">At a glance</div>
-        <div class="runner-rows">
+        <div class="sheet-rows">
             ${rows.map(
-                ([label, value]) => html`<div class="runner-glance" key=${label}>
+                ([label, value]) => html`<div class="sheet-glance" key=${label}>
                     <span class="grow">${label}</span>
                     <span class="muted">${value}</span>
                 </div>`,
@@ -624,14 +576,14 @@ function ComputerPage({ computer }) {
         return html`<${LinkSteps} made=${again} onDone=${() => setAgain(null)} />`;
     }
 
-    return html`<div class="runner-page">
-        <div class="runner-page-head">
+    return html`<div class="sheet-page">
+        <div class="sheet-page-head">
             <span
                 class=${`runner-dot ${server || computer.online ? "on" : computer.away ? "away" : ""}`}
                 aria-hidden="true"
             ></span>
-            <h3 class="runner-page-title">${computer.name}</h3>
-            <div class="runner-page-actions">
+            <h3 class="sheet-page-title">${computer.name}</h3>
+            <div class="sheet-page-actions">
                 ${
                     computer.mayStart !== false &&
                     html`<button
@@ -666,23 +618,16 @@ function ComputerPage({ computer }) {
         <div class="muted small">
             ${server ? "Pi Pocket itself · always here, and cannot be removed" : details(computer)}
         </div>
-        <div class="segmented runner-tabs" role="tablist" aria-label=${`${computer.name}: parts`}>
-            ${tabs.map(
-                ([id, label]) => html`<button
-                    key=${id}
-                    role="tab"
-                    class=${shown === id ? "on" : ""}
-                    aria-selected=${shown === id}
-                    onClick=${() => setTab(id)}
-                >
-                    ${label}${id === "approvals" && count > 0 ? html` <span class="muted">${count}</span>` : ""}
-                </button>`,
-            )}
-        </div>
+        <${PageTabs}
+            label=${`${computer.name}: parts`}
+            tabs=${tabs.map(([id, label]) => [id, label, id === "approvals" ? count : 0])}
+            shown=${shown}
+            onShow=${setTab}
+        />
         ${shown === "overview" && html`<${Overview} computer=${computer} />`}
         ${
             shown === "people" &&
-            html`<div class="runner-pane">
+            html`<div class="sheet-pane">
                 <${ChoosePeople}
                     runner=${computer}
                     note=${
@@ -696,11 +641,11 @@ function ComputerPage({ computer }) {
         }
         ${
             shown === "approvals" &&
-            html`<div class="runner-pane"><${ApprovalsList} computer=${computer.id} /></div>`
+            html`<div class="sheet-pane"><${ApprovalsList} computer=${computer.id} /></div>`
         }
         ${
             shown === "settings" &&
-            html`<div class="runner-pane">
+            html`<div class="sheet-pane">
                 <${Sharing} computer=${computer} />
                 ${!server && html`<${RunnerSettings} runner=${computer} />`}
             </div>`
@@ -710,8 +655,8 @@ function ComputerPage({ computer }) {
 
 /** What runners are, for the About page. */
 function AboutRunners() {
-    return html`<div class="runner-page">
-        <h3 class="runner-page-title">About runners</h3>
+    return html`<div class="sheet-page">
+        <h3 class="sheet-page-title">About runners</h3>
         <p>
             Run a session's tools on another of your computers: its files and commands are used there, while Pi,
             your models, and the history stay on this server.
@@ -737,22 +682,6 @@ export function runnersHint() {
     return `${online} of ${runners.length} online`;
 }
 
-/** A row in the list on the left: a computer, or a page about this server. */
-function ListItem({ selected, onSelect, lead, title, detail, badge }) {
-    return html`<button
-        class=${`runner-item ${selected ? "on" : ""}`}
-        aria-current=${selected ? "page" : undefined}
-        onClick=${onSelect}
-    >
-        ${lead}
-        <span class="runner-item-text">
-            <span class="runner-item-title">${title}</span>
-            ${detail && html`<span class="muted small">${detail}</span>`}
-        </span>
-        ${badge && html`<span class="runner-badge">${badge}</span>`}
-    </button>`;
-}
-
 export function ComputersSheet() {
     const { runners, thisServer } = store.state;
     const owner = store.state.me?.role === "owner";
@@ -763,13 +692,7 @@ export function ComputersSheet() {
 
     useEffect(() => {
         attempt(async () => {
-            // This server's record is the owner's business alone (who is in charge of it).
-            const [list, server] = await Promise.all([
-                api("runners"),
-                owner ? api("runners/this-server") : null,
-            ]);
-
-            store.set({ runners: list, thisServer: server });
+            await loadComputers();
             setLoaded(true);
         });
     }, []);
@@ -779,7 +702,7 @@ export function ComputersSheet() {
         }
     }, [store.state.runners, view]);
 
-    const computers = [...(thisServer ? [thisServer] : []), ...runners];
+    const computers = allComputers();
     // The first computer, or linking when there is none; a removed computer's page falls back the same way.
     const shown =
         view &&
@@ -801,15 +724,12 @@ export function ComputersSheet() {
         ? computers.find((each) => `computer:${each.id}` === shown)
         : undefined;
 
-    return html`<${Sheet} title="Runners" onClose=${closeSheet} className="runners-sheet">
-        <div class="runners-split">
-            <nav class="runners-list" aria-label="Runners">
-                <div class="group-title">Computers</div>
+    const list = html`<div class="group-title">Computers</div>
                 ${!loaded && computers.length === 0 && html`<${Loader} />`}
                 ${loaded && computers.length === 0 && html`<p class="muted small runner-none">No computers linked yet.</p>`}
                 ${
                     thisServer &&
-                    html`<${ListItem}
+                    html`<${PageItem}
                         selected=${shown === `computer:${thisServer.id}`}
                         onSelect=${() => setView(`computer:${thisServer.id}`)}
                         lead=${html`<span class="runner-dot on" aria-hidden="true"></span>`}
@@ -818,7 +738,7 @@ export function ComputersSheet() {
                     />`
                 }
                 ${runners.map(
-                    (runner) => html`<${ListItem}
+                    (runner) => html`<${PageItem}
                         key=${runner.id}
                         selected=${shown === `computer:${runner.id}`}
                         onSelect=${() => setView(`computer:${runner.id}`)}
@@ -844,7 +764,7 @@ export function ComputersSheet() {
                 <div class="group-title">Linking</div>
                 ${
                     canLink() &&
-                    html`<${ListItem}
+                    html`<${PageItem}
                         selected=${shown === "link"}
                         onSelect=${() => setView("link")}
                         lead=${html`<${Icon} name="plus" size=${16} />`}
@@ -853,7 +773,7 @@ export function ComputersSheet() {
                 }
                 ${
                     owner &&
-                    html`<${ListItem}
+                    html`<${PageItem}
                         selected=${shown === "limits"}
                         onSelect=${() => setView("limits")}
                         lead=${html`<${Icon} name="shield" size=${16} />`}
@@ -861,19 +781,19 @@ export function ComputersSheet() {
                         badge=${lockCount > 0 ? String(lockCount) : null}
                     />`
                 }
-                <${ListItem}
+                <${PageItem}
                     selected=${shown === "about"}
                     onSelect=${() => setView("about")}
                     lead=${html`<${Icon} name="monitor" size=${16} />`}
                     title="About runners"
-                />
-            </nav>
-            <div class="runners-detail">
-                ${current && html`<${ComputerPage} key=${current.id} computer=${current} />`}
-                ${shown === "link" && canLink() && html`<${LinkComputer} onDone=${() => setView(null)} />`}
-                ${shown === "limits" && owner && html`<${LinkLocks} locks=${locks} reload=${loadLocks} />`}
-                ${shown === "about" && html`<${AboutRunners} />`}
-            </div>
-        </div>
+                />`;
+
+    return html`<${Sheet} title="Runners" onClose=${closeSheet} className="pages-sheet">
+        <${Pages} label="Runners" list=${list}>
+            ${current && html`<${ComputerPage} key=${current.id} computer=${current} />`}
+            ${shown === "link" && canLink() && html`<${LinkComputer} onDone=${() => setView(null)} />`}
+            ${shown === "limits" && owner && html`<${LinkLocks} locks=${locks} reload=${loadLocks} />`}
+            ${shown === "about" && html`<${AboutRunners} />`}
+        <//>
     <//>`;
 }

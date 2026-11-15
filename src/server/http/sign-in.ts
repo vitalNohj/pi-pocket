@@ -155,7 +155,7 @@ export async function join(
 
     const where =
         grant.session === undefined
-            ? "every session on this server"
+            ? "the sessions shared with you on this server"
             : `the session “${escapeHtml(await app.conversationTitle(conversationId(grant.session)))}”`;
     const can =
         grant.role === "viewer"
