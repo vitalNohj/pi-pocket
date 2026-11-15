@@ -22,6 +22,7 @@ import {
     say,
     scriptedModel,
 } from "./helpers.ts";
+import { newIdentity } from "../src/runner/secure-link.ts";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -84,6 +85,18 @@ const session = await newSession(app);
 await say(app, session, "Hello from the copy");
 const guest = await addPerson(app, "Guest", "guest");
 const base = `http://${host}:${port}`;
+
+// PI_POCKET_TEST_PEOPLE=1: more people, as invites leave them, and a linked computer that is not connected, to look at
+// the People sheet and the Runners sheet: a viewer nobody chose yet, and someone invited to that one session.
+if (process.env.PI_POCKET_TEST_PEOPLE) {
+    const viewer = app.config.addUser("Vera", "viewer");
+    const one = app.config.addUser("Sam", "viewer", [String(session)]);
+    const first = app.config.users.find((each) => each.role === "owner");
+
+    app.config.addRunner("Laptop", first?.id ?? "", newIdentity().publicKey);
+    console.log(`  viewer, not chosen: ${base}/login?token=${encodeURIComponent(viewer.token)}`);
+    console.log(`  invited to one session: ${base}/login?token=${encodeURIComponent(one.token)}`);
+}
 
 console.log(`A copy of Pi Pocket, with its own data in ${root}`);
 console.log(`  owner: ${base}/login?token=${encodeURIComponent(app.config.ownerToken)}`);

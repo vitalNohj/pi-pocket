@@ -75,12 +75,12 @@ export function SessionShareSheet({ id }) {
             data &&
             html`<p class="muted small">
                     The people you pick see this session; those who steer can also send to Pi. You can pick only people
-                    chosen for ${data.computer} (Menu → Runners).
+                    chosen for ${data.computer} (Menu → People, or Menu → Runners).
                 </p>
                 ${
                     data.people.length === 0
                         ? html`<p class="muted small">
-                              No one to pick yet. Choose people for ${data.computer} first.
+                              No one to pick yet. Choose people for ${data.computer} first, in People or in Runners.
                           </p>`
                         : html`<div role="group" aria-label="People to share with">
                               ${data.people.map(

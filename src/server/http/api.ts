@@ -966,7 +966,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
-        // Who may use a computer: its linker's and the owner's to choose (`access.ts` `mayManage`).
+        // Who may use a computer: for who is in charge of it to choose (`access.ts` `mayManage`). Either the whole list
+        // (`users`), or one person chosen or no longer (`person` and `on`), which leaves the others as they are now.
         if (first === "runners" && second !== undefined && third === "users" && method === "POST") {
             if (second !== THIS_SERVER) {
                 app.runners.require(second);
@@ -974,13 +975,25 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             app.policy.requireManage(user, second);
 
-            const body = await readJson<{ users?: unknown } | null>(request);
+            const body = await readJson<{
+                users?: unknown;
+                person?: unknown;
+                on?: unknown;
+            } | null>(request);
 
-            if (!Array.isArray(body?.users) || !body.users.every((id) => typeof id === "string")) {
-                throw new HttpError(400, "users must be a list of person ids.");
+            if (typeof body?.person === "string" && typeof body.on === "boolean") {
+                await app.choosePerson(second, body.person, body.on);
+            } else if (
+                Array.isArray(body?.users) &&
+                body.users.every((id) => typeof id === "string")
+            ) {
+                await app.choosePeople(second, body.users as string[]);
+            } else {
+                throw new HttpError(
+                    400,
+                    "users must be a list of person ids; or send person, with on true or false.",
+                );
             }
-
-            await app.choosePeople(second, body.users);
 
             return json(
                 response,

@@ -4791,6 +4791,37 @@ export class PocketApp {
     }
 
     /**
+     * Who is in charge of computer `id` chooses `person` for it, or no longer: its list as it is now, with that one
+     * change (`choosePeople`). Read and saved in one step, so two such changes at once both count. A person who cannot be
+     * chosen is refused with the reason, where the whole list leaves them out without a word.
+     */
+    async choosePerson(id: string, person: string, on: boolean): Promise<void> {
+        const target = this.config.userById(person);
+
+        if (target === undefined) {
+            throw new HttpError(404, "No such person");
+        }
+
+        if (on && this.policy.inCharge(target, id)) {
+            throw new HttpError(400, `${target.name} is in charge of it, and has it anyway.`);
+        }
+
+        if (on && target.sessions !== undefined) {
+            throw new HttpError(
+                400,
+                `${target.name} is invited to one session only. Remove that limit first.`,
+            );
+        }
+
+        const now =
+            id === THIS_SERVER
+                ? (this.config.server.users ?? [])
+                : (this.config.runnerById(id)?.users ?? []);
+
+        await this.choosePeople(id, on ? [...now, person] : now.filter((each) => each !== person));
+    }
+
+    /**
      * Unlink runner `id` (its linker, or the owner): its link ends. Its sessions stay, as before, and run nowhere until
      * it is linked again.
      */
