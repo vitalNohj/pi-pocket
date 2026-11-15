@@ -1,9 +1,11 @@
-// The People sheet in a real browser (`web/sheets/people.js`): laid out as the Runners sheet is, and its Access part
-// changes the same list as each computer's People in Runners (`web/sheets/access.js`), in both directions. A runner
-// someone else linked is the owner's to read in Runners, and no choice in People.
+// The People sheet in a real browser (`web/sheets/people.js`): laid out as the Runners sheet is, and where a person may
+// work is the same record as each computer's People in Runners (`web/sheets/access.js`), in both directions: whether
+// they may use it, and under it their folders and their sessions there, two lists that stay closed until asked for,
+// each taken back alone. A runner someone else linked is the owner's to read in Runners, and no choice in People.
 import { newIdentity } from "../src/runner/secure-link.ts";
 import {
     type App,
+    answerRequests,
     cleanUp,
     newSession,
     openApp,
@@ -11,6 +13,7 @@ import {
     root,
     scriptedModel,
     until,
+    work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
@@ -183,20 +186,56 @@ test(
         );
         assert.deepEqual(
             [...people.items].sort(),
-            [
-                "Gina",
-                "Invite someone",
-                "Notifications",
-                "Owner (you)",
-                "Sam",
-                "Session approvals",
-                "Vera",
-            ],
+            ["Gina", "Invite someone", "Notifications", "Owner (you)", "Sam", "Settings", "Vera"],
             "everyone, then what else the sheet holds",
         );
         assert.notEqual(people.title, "Owner (you)", "it opens on someone whose access is to set");
     },
 );
+
+/** The lists under the rows of the page shown, closed until asked for: what each is called, and whether it is open. */
+const folds = () =>
+    inPage<string[]>(`
+        return JSON.stringify(
+            [...document.querySelectorAll(".pages-detail .access-fold-head")].map(
+                (each) => each.getAttribute("aria-label") + (each.getAttribute("aria-expanded") === "true" ? " (open)" : ""),
+            ),
+        );
+    `);
+
+/** Open, or close, the list called \`name\`. */
+const fold = (name: string) =>
+    inPage(`
+        [...document.querySelectorAll(".pages-detail .access-fold-head")]
+            .find((each) => each.getAttribute("aria-label").startsWith(${JSON.stringify(name)}))
+            .click();
+
+        return JSON.stringify(true);
+    `);
+
+/** The sessions the open lists of the page show, as "title | how they have it". */
+const sessionRows = () =>
+    inPage<string[]>(`
+        return JSON.stringify(
+            [...document.querySelectorAll(".pages-detail .access-session")].map(
+                (each) =>
+                    each.querySelector(".access-session-name").textContent.trim() +
+                    " | " +
+                    each.querySelector(".access-session-text .muted").textContent.replace(/\\s+/g, " ").trim().replace(/^.*? · /, ""),
+            ),
+        );
+    `);
+
+/** Press the button called \`label\` on the page shown; a question it asks is answered yes. */
+const press = (label: string) =>
+    inPage(`
+        window.confirm = () => true;
+        [...document.querySelectorAll(".pages-detail button")]
+            .find((each) => each.getAttribute("aria-label") === ${JSON.stringify(label)})
+            .click();
+
+        return JSON.stringify(true);
+    `);
 
 test("what a person may use is set in People, and shows in Runners", real, async () => {
     await open("people");
@@ -207,6 +246,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "Gina may use This server: off",
         "Gina may use Laptop: off",
     ]);
+    assert.deepEqual(await folds(), [], "nothing to list where she is not chosen");
 
     await flip("Gina may use This server");
     await until(
@@ -219,14 +259,23 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "the server to choose Gina for the Laptop",
     );
 
-    // Chosen for this server, her folders there are given on the same page.
-    await until(
-        async () =>
-            await inPage<boolean>(
-                `return JSON.stringify(document.querySelector('[aria-label="Add a folder for Gina on This server"]') !== null)`,
-            ),
-        "her folders on this server",
+    // Chosen, she has two lists under each computer, apart from each other and closed until asked for.
+    await until(async () => (await folds()).length === 4, "her lists");
+    assert.deepEqual(await folds(), [
+        "Folders of Gina on This server: 0",
+        "Sessions of Gina on This server: 0",
+        "Folders of Gina on Laptop: 0",
+        "Sessions of Gina on Laptop: 0",
+    ]);
+    assert.equal(
+        await inPage<boolean>(
+            `return JSON.stringify(document.querySelector('[aria-label="Add a folder for Gina on This server"]') !== null)`,
+        ),
+        false,
+        "closed: its folders do not show",
     );
+
+    await fold("Folders of Gina on This server");
     await page.type({ selector: '[aria-label="Add a folder for Gina on This server"]' }, root, {
         submit: true,
     });
@@ -235,8 +284,12 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "the folder to be given",
     );
     assert.equal(app.policy.mayStart(guest, THIS_SERVER), true);
+    await until(
+        async () => (await folds()).includes("Folders of Gina on This server: 1 (open)"),
+        "the count to follow",
+    );
 
-    // The same list, by computer.
+    // The same record, by computer: a row for each person, with the same two lists.
     await open("computers");
     await show("Laptop");
     await inPage(`
@@ -247,13 +300,137 @@ test("what a person may use is set in People, and shows in Runners", real, async
         return JSON.stringify(true);
     `);
     await until(
-        async () =>
-            await inPage<boolean>(
-                `return JSON.stringify(document.querySelector('[aria-label="Add a folder for Gina on Laptop"]') !== null)`,
-            ),
+        async () => (await switches()).includes("Gina may use Laptop: on"),
         "Gina among the Laptop's people",
     );
+    assert.deepEqual(await switches(), ["Gina may use Laptop: on", "Vera may use Laptop: off"]);
+    assert.deepEqual(await folds(), [
+        "Folders of Gina on Laptop: 0",
+        "Sessions of Gina on Laptop: 0",
+    ]);
+    assert.doesNotMatch(
+        await inPage<string>(
+            `return JSON.stringify(document.querySelector(".pages-detail").textContent)`,
+        ),
+        /Choose people|Sam/,
+        "no list to tick, and no one who has nothing here",
+    );
 });
+
+test(
+    "a person's folders and sessions are two lists, each taken back alone, and a session opens from its row",
+    real,
+    async () => {
+        // Gina has this server and a folder there (the test before). She starts two sessions; a third is the owner's,
+        // shared with her.
+        const stop = answerRequests(app, () => true);
+        let first: number;
+        let second: number;
+        let shared: number;
+
+        try {
+            first = Number(
+                (await app.commands.createSession(guest, { cwd: work, title: "Her first" })).id,
+            );
+            second = Number(
+                (await app.commands.createSession(guest, { cwd: work, title: "Her second" })).id,
+            );
+        } finally {
+            stop();
+        }
+
+        shared = Number(
+            (await app.commands.createSession(owner(app), { cwd: work, title: "The owner's" })).id,
+        );
+        await app.commands.shareSession(
+            shared as unknown as Parameters<typeof app.commands.shareSession>[0],
+            owner(app),
+            [guest.id],
+        );
+
+        const listed = () => app.sessions(guest).map((each) => each.id);
+
+        await open("computers");
+        await show("This server");
+        await inPage(`
+            [...document.querySelectorAll(".sheet-tabs [role=tab]")]
+                .find((each) => each.textContent.trim().startsWith("People"))
+                .click();
+
+            return JSON.stringify(true);
+        `);
+        await until(
+            async () => (await folds()).includes("Sessions of Gina on This server: 3"),
+            "her sessions' count",
+        );
+        assert.deepEqual(await sessionRows(), [], "closed: no session shows");
+
+        await fold("Sessions of Gina on This server");
+        await until(async () => (await sessionRows()).length === 3, "her sessions");
+        assert.deepEqual((await sessionRows()).sort(), [
+            "Her first | started it",
+            "Her second | started it",
+            "The owner's | shared with them",
+        ]);
+        assert.equal(
+            await inPage<boolean>(
+                `return JSON.stringify(document.querySelector('[aria-label="Add a folder for Gina on This server"]') !== null)`,
+            ),
+            false,
+            "her folders are another list, still closed",
+        );
+
+        // One session is taken from her alone: the others, and her folder, stay.
+        await press("Revoke Her first from Gina");
+        await until(() => !listed().includes(first), "the server to take it from her");
+        assert.ok(listed().includes(second) && listed().includes(shared));
+        assert.equal(app.policy.mayStart(guest, THIS_SERVER), true);
+        await until(async () => (await sessionRows()).length === 2, "the row to go");
+
+        await press("Revoke The owner's from Gina");
+        await until(() => !listed().includes(shared), "the server to stop sharing it");
+        assert.deepEqual(listed(), [second]);
+
+        // The same two lists on her page in People, and a session's row opens it.
+        await open("people");
+        await show("Gina");
+        await until(
+            async () => (await folds()).includes("Sessions of Gina on This server: 1"),
+            "her lists in People",
+        );
+        assert.ok((await folds()).includes("Folders of Gina on This server: 1"));
+        await fold("Sessions of Gina on This server");
+        await until(async () => (await sessionRows()).length === 1, "her session in People");
+        assert.deepEqual(await sessionRows(), ["Her second | started it"]);
+        await press("Go to Her second");
+        await until(
+            async () =>
+                await inPage<boolean>(`
+                    const { store } = await import("/store.js");
+
+                    return JSON.stringify(store.state.sheet === null && store.state.conversationId === ${second});
+                `),
+            "the session to open, and the sheet to close",
+        );
+
+        // One folder is taken from her alone: she stays chosen. The session she started in that folder goes with it,
+        // to who is in charge (`app.ts` `handOver`): she may no longer work there.
+        await open("people");
+        await show("Gina");
+        await fold("Folders of Gina on This server");
+        await press(`Remove ${realpathSync(root)} from Gina on This server`);
+        await until(
+            () => app.config.givenFolders(undefined, guest.id).length === 0,
+            "the folder to be taken back",
+        );
+        assert.equal(app.policy.mayUse(guest, THIS_SERVER), true, "she is still chosen");
+        await until(() => listed().length === 0, "her session in that folder to move");
+        await until(
+            async () => (await folds()).includes("Sessions of Gina on This server: 0"),
+            "the count to follow",
+        );
+    },
+);
 
 test("what is chosen in Runners shows in People", real, async () => {
     await app.choosePeople(runnerId, []);
@@ -336,7 +513,7 @@ test(
             `);
 
             assert.match(shown.row, /Gina$/, "the list says whose it is");
-            assert.deepEqual(shown.tabs, [], "one part to read: no People, Approvals, or Settings");
+            assert.deepEqual(shown.tabs, [], "one part to read: no People or Settings");
             assert.match(shown.note, /Linked by Gina, who is in charge of it/);
             assert.match(shown.note, /you can unlink it/);
             assert.deepEqual(shown.actions, ["Unlink"]);
@@ -370,47 +547,12 @@ test(
 );
 
 test(
-    "an approval's text and button stand clear of the list's edges, and the owner's switch under it saves",
+    "the owner's Settings page keeps what holds for everyone, and no page lists approvals",
     real,
     async () => {
         await open("people");
-        await show("Session approvals");
-
-        // Two approvals, put in the page's own state: the list as it is drawn, with nothing started for it.
-        const shown = await inPage<{ left: number; right: number; lines: number }>(`
-            const { store } = await import("/store.js");
-            const row = (session, title) => ({
-                session,
-                title,
-                folder: "/home/someone/project",
-                computer: "this-server",
-                lastUser: store.state.me.id,
-                name: "Owner",
-                method: "owner",
-                usedAt: Date.now() - 60000,
-                expiresAt: null,
-                ended: false,
-            });
-
-            store.set({ folderApprovals: [row("901", "First session"), row("902", "Second session")] });
-            await new Promise((resolve) => setTimeout(resolve, 200));
-
-            const first = document.querySelector(".approval-row");
-            const list = first.parentElement.getBoundingClientRect();
-
-            return JSON.stringify({
-                left: Math.round(first.querySelector(".approval-text").getBoundingClientRect().left - list.left),
-                right: Math.round(list.right - first.querySelector(".button").getBoundingClientRect().right),
-                lines: first.querySelectorAll(".approval-text > *").length,
-            });
-        `);
-
-        assert.ok(shown.left >= 10, `the text is ${shown.left}px from the list's edge`);
-        assert.ok(shown.right >= 10, `the button is ${shown.right}px from the list's edge`);
-        assert.equal(shown.lines, 3, "its name, where it is, and when it ends: a line each");
-
-        // The owner's choice under the list is a switch, as every other choice in the sheet, and it is kept.
-        assert.ok((await switches()).includes("Tasks expire with the session: off"));
+        await show("Settings");
+        assert.deepEqual(await switches(), ["Tasks expire with the session: off"]);
         await flip("Tasks expire with the session");
         await until(() => app.config.server.tasksExpire === true, "the server to keep the choice");
         await until(
@@ -419,6 +561,46 @@ test(
         );
         await flip("Tasks expire with the session");
         await until(() => app.config.server.tasksExpire !== true, "the choice to be taken back");
+
+        // An approval kept on the server is listed nowhere: not here, not on a person, not under a computer.
+        await inPage(`
+            const { store } = await import("/store.js");
+
+            store.set({
+                folderApprovals: [{
+                    session: "901", title: "Some session", folder: "/home/someone/project", computer: "this-server",
+                    lastUser: store.state.me.id, name: "Owner", method: "owner", usedAt: Date.now(), expiresAt: null,
+                    ended: false,
+                }],
+            });
+            await new Promise((resolve) => setTimeout(resolve, 200));
+
+            return JSON.stringify(true);
+        `);
+
+        for (const [sheet, item] of [
+            ["people", "Settings"],
+            ["people", "Owner"],
+            ["computers", "This server"],
+        ] as const) {
+            await open(sheet);
+            await show(item);
+            assert.doesNotMatch(
+                await inPage<string>(
+                    `return JSON.stringify(document.querySelector(".sheet").textContent)`,
+                ),
+                /Session approvals|Approvals\s*\d|allowed in the app|Some session/,
+                `${sheet}: ${item}`,
+            );
+        }
+
+        assert.deepEqual(
+            await inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".pages-detail .sheet-tabs [role=tab]")].map((each) => each.textContent.trim()))`,
+            ),
+            ["Overview", "People", "Settings"],
+            "a computer's parts",
+        );
     },
 );
 

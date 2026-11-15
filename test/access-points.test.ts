@@ -554,6 +554,88 @@ describe("sharing and invites", () => {
         assert.equal((await call(owner(app), `sessions/${body.id}/share`)).status, 200);
     });
 
+    it("lets who is in charge take one session from one person: a shared one, and one they started", async () => {
+        // Shared with the guest and the viewer: taken from the viewer alone.
+        const mine = await newSession(app);
+
+        await app.commands.shareSession(mine, owner(app), [guest.id, viewer.id]);
+        assert.ok(listed(viewer).includes(String(mine)));
+        assert.equal(
+            (await call(owner(app), `sessions/${mine}/revoke`, { person: viewer.id })).status,
+            200,
+        );
+        assert.ok(!listed(viewer).includes(String(mine)), "the viewer no longer sees it");
+        assert.ok(listed(guest).includes(String(mine)), "the guest keeps it");
+        assert.ok(listed(viewer).includes(String(shared)), "the viewer's other session stays");
+
+        // Started by the guest, who may still use its folder: it moves to the owner, and their other one stays theirs.
+        const first = await call<{ id: number }>(guest, "sessions", { cwd: work });
+        const second = await call<{ id: number }>(guest, "sessions", { cwd: work });
+
+        assert.equal(
+            (await call(owner(app), `sessions/${first.body.id}/revoke`, { person: guest.id }))
+                .status,
+            200,
+        );
+        assert.ok(!listed(guest).includes(String(first.body.id)), "the guest no longer sees it");
+        assert.ok(listed(owner(app)).includes(String(first.body.id)), "the owner has it");
+        assert.equal(
+            app.sessionMeta(first.body.id as unknown as ConversationId)?.createdBy,
+            owner(app).id,
+        );
+        assert.ok(listed(guest).includes(String(second.body.id)), "their other session stays");
+        assert.equal(app.policy.mayStart(guest, "this-server"), true, "and so does their folder");
+
+        // Invited to it alone: no longer.
+        const alone = await newSession(app);
+        const one = person("Only", "viewer", [String(alone)]);
+
+        assert.ok(listed(one).includes(String(alone)));
+        assert.equal(
+            (await call(owner(app), `sessions/${alone}/revoke`, { person: one.id })).status,
+            200,
+        );
+        assert.deepEqual(listed(one), []);
+    });
+
+    it("refuses taking a session from someone to who is not in charge, and for who does not have it", async () => {
+        const { body } = await call<{ id: number }>(guest, "sessions", { cwd: work });
+
+        await call(guest, `sessions/${body.id}/share`, { people: [viewer.id] });
+
+        // Its starter shares and stops sharing it, but takes it from no one this way: that is who is in charge's.
+        assert.equal(
+            (await call(guest, `sessions/${body.id}/revoke`, { person: viewer.id })).status,
+            403,
+        );
+        assert.equal(
+            (await call(viewer, `sessions/${body.id}/revoke`, { person: guest.id })).status,
+            403,
+        );
+        // Not seen: not there.
+        assert.equal(
+            (await call(stranger, `sessions/${body.id}/revoke`, { person: guest.id })).status,
+            404,
+        );
+        assert.ok(listed(viewer).includes(String(body.id)), "nothing changed");
+
+        // The owner: not from someone who does not have it, not from themselves, and not from no one.
+        assert.equal(
+            (await call(owner(app), `sessions/${body.id}/revoke`, { person: stranger.id })).status,
+            404,
+        );
+        assert.equal(
+            (await call(owner(app), `sessions/${body.id}/revoke`, { person: owner(app).id }))
+                .status,
+            400,
+        );
+        assert.equal(
+            (await call(owner(app), `sessions/${body.id}/revoke`, { person: "nobody" })).status,
+            400,
+        );
+        assert.equal((await call(owner(app), `sessions/${body.id}/revoke`, {})).status, 400);
+    });
+
     it("hides whom a session is shared with from who may not share it", async () => {
         // Seen but not theirs: refused. Not seen: not there.
         assert.equal((await call(viewer, `sessions/${shared}/share`)).status, 403);

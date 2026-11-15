@@ -1,19 +1,20 @@
 // Runners (`src/server/runners.ts`): this server and other computers of the owner's that run sessions' tools. Link one
 // with a one-time code, see which are online, start a session on one, remove one, and choose for each (this server
-// too) who may use it, the folders each person may use, and whether new sessions start shared (`src/server/access.ts`).
+// too) who may use it, each person's folders and sessions there, and whether new sessions start shared
+// (`src/server/access.ts`).
 // A runner trusts its server after the link: its settings are kept here and sent to it.
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, canLink, closeSheet, notify, openSheet, store } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
+import { Avatar } from "../avatar.js";
 import {
+    AccessRow,
     choosable,
-    choosePeople,
     computers as allComputers,
-    FolderList,
     inCharge,
     loadComputers,
+    sessionsOf,
 } from "./access.js";
-import { ApprovalsList } from "./approvals.js";
 import { PageItem, Pages, PageTabs } from "./pages.js";
 
 /** What a computer is doing now, in a few words. */
@@ -313,100 +314,39 @@ function RunnerSettings({ runner }) {
 }
 
 /**
- * The people a computer's linker chooses (`access.ts`): they may use it, and viewers among them only see. The same list
- * as the People sheet's Access part shows by person, for this server and runners alike; people invited to one session
- * keep only that session. Who is in charge has it anyway: the owner here, the linker of a runner (where the owner is
- * chosen as anyone is).
+ * The people of a computer, for who is in charge of it (the owner here, a runner's linker there): each person a row
+ * with whether they may use it, and under each the folders given to them there and the sessions they have there, as
+ * two lists, each taken back alone (`access.js` `AccessRow`). The same record as People shows by person. Who is in
+ * charge has it anyway, and is not listed; someone invited to one session shows only where that session is.
  */
-function ChoosePeople({ runner, note }) {
+function ComputerPeople({ computer, note }) {
     const people = store.state.users.filter(
-        (person) => !person.sessions && choosable(runner, person),
+        (person) =>
+            choosable(computer, person) &&
+            (!person.sessions || sessionsOf(computer, person).length > 0),
     );
-    const [choosing, setChoosing] = useState(false);
-    const [selected, setSelected] = useState([]);
-    const [busy, setBusy] = useState(false);
-    const mine = inCharge(runner);
-    const roleOf = (id) => store.state.users.find((person) => person.id === id)?.role;
 
     // Who may use it is the business of who is in charge: nobody else gets its list.
-    if (!mine) {
+    if (!inCharge(computer)) {
         return null;
     }
 
-    const choose = () => {
-        setSelected((runner.users ?? []).map((person) => person.id));
-        setChoosing(true);
-    };
-
-    const save = async () => {
-        setBusy(true);
-
-        try {
-            if (await choosePeople(runner, selected)) {
-                setChoosing(false);
-            }
-        } finally {
-            setBusy(false);
-        }
-    };
-
     return html`<div class="group">
         <div class="group-title">People</div>
-        <div class="row wrap">
-            <span class="small">
-                ${
-                    runner.users
-                        ?.map((person) =>
-                            roleOf(person.id) === "viewer"
-                                ? `${person.name} (view only)`
-                                : person.name,
-                        )
-                        .join(", ") || "No people chosen"
-                }
-            </span>
-            ${
-                mine &&
-                !choosing &&
-                html`<button class="button small ghost" onClick=${choose}>
-                    Choose people
-                </button>`
-            }
-        </div>
-        ${
-            choosing &&
-            html`<div role="group" aria-label=${`People who may use ${runner.name}`}>
-                ${people.length === 0 && html`<p class="muted small">No one else yet. Invite people in People.</p>`}
-                ${people.map(
-                    (person) => html`<label class="check" key=${person.id}>
-                        <input
-                            type="checkbox"
-                            checked=${selected.includes(person.id)}
-                            disabled=${busy}
-                            onChange=${(event) =>
-                                setSelected(
-                                    event.currentTarget.checked
-                                        ? [...selected, person.id]
-                                        : selected.filter((id) => id !== person.id),
-                                )}
-                        />
-                        ${person.name}${person.role === "viewer" ? html` <span class="muted small">(view only)</span>` : ""}
-                    </label>`,
-                )}
-                <div class="row">
-                    <button class="button small primary" disabled=${busy} onClick=${save}>
-                        Save
-                    </button>
-                    <button
-                        class="button small ghost"
-                        disabled=${busy}
-                        onClick=${() => setChoosing(false)}
-                    >
-                        Cancel
-                    </button>
-                </div>
-            </div>`
-        }
-        <p class="muted small">${note} The same choices are in People, under each person's Access.</p>
+        <div class="muted small">${note}</div>
+        ${people.length === 0 && html`<p class="muted small">No one else yet. Invite people in People.</p>`}
+        ${people.map(
+            (person) => html`<${AccessRow}
+                key=${person.id}
+                computer=${computer}
+                person=${person}
+                title=${person.name}
+                lead=${html`<span class="people-here">
+                    <${Avatar} person=${person} size=${28} />
+                    <span class=${`online-mark ${person.online ? "" : "away"}`} aria-hidden="true"></span>
+                </span>`}
+            />`,
+        )}
     </div>`;
 }
 
@@ -427,34 +367,6 @@ function Rule({ runner, name, label, hint, on }) {
 
 const SHARE_HINT =
     "Off: a new session is private to whoever started it, until they share it. On: it starts shared with the people chosen here.";
-
-/**
- * The folders given to each chosen person on a computer (`access.ts`): each covers the folders in it. A person given
- * none may not start sessions there. Only who is in charge (the owner here, a runner's linker there) sees and changes
- * them. Each person's list is the one the People sheet shows under this computer (`access.js` `FolderList`).
- */
-function GivenFolders({ computer }) {
-    const people = (computer.users ?? []).filter((person) => person.role !== "viewer");
-
-    if (!inCharge(computer) || people.length === 0) {
-        return null;
-    }
-
-    return html`<div class="group">
-        <div class="group-title">Folders</div>
-        <div class="muted small">
-            Each person works only in the folders you give them here, and the folders inside them.
-        </div>
-        ${people.map(
-            (person) => html`<div class="given-person" key=${person.id}>
-                <div class="small"><strong>${person.name}</strong></div>
-                <${FolderList} computer=${computer} person=${person} />
-            </div>`,
-        )}
-    </div>`;
-}
-
-/**
 
 /** Sharing on a computer: whether new sessions there start shared with its people. */
 function Sharing({ computer }) {
@@ -482,20 +394,16 @@ function details(runner) {
         .join(" · ");
 }
 
-/** Counts for the Overview: who may use it, their folders, and its sessions' approvals. */
+/** Counts for the Overview: who may use it, and their folders. */
 function Overview({ computer }) {
     const server = computer.id === "this-server";
     const people = computer.users?.length ?? 0;
     const given = Object.values(computer.given ?? {}).reduce((sum, each) => sum + each.length, 0);
-    const approvals = (store.state.folderApprovals ?? []).filter(
-        (each) => each.computer === computer.id,
-    ).length;
     const mine = inCharge(computer);
     const linker = store.state.users.find((each) => each.id === computer.createdBy)?.name;
     const rows = [
         mine && ["People who may use it", people === 0 ? "none" : String(people)],
         mine && ["Folders given", String(given)],
-        usesIt(computer) && ["Session approvals", String(approvals)],
     ].filter(Boolean);
 
     return html`<div class="sheet-pane">
@@ -549,16 +457,8 @@ function Overview({ computer }) {
 }
 
 /**
- * Whether I work on a computer: in charge of it, or chosen for it to start sessions (`mayStart`, from the server). The
- * owner lists a runner someone else linked without it: they read that it is there, and can unlink it.
- */
-function usesIt(computer) {
-    return inCharge(computer) || computer.mayStart !== false;
-}
-
-/**
- * The parts of a computer, as tabs. Its people, their folders, and its settings are who is in charge's alone, to see
- * and to change; its sessions' approvals are for the people who work on it. Anyone else reads its overview only.
+ * The parts of a computer, as tabs. Its people (with their folders and sessions there) and its settings are who is in
+ * charge's alone, to see and to change. Anyone else reads its overview only.
  */
 function tabsFor(computer) {
     const mine = inCharge(computer);
@@ -566,7 +466,6 @@ function tabsFor(computer) {
     return [
         ["overview", "Overview"],
         mine && ["people", "People"],
-        usesIt(computer) && ["approvals", "Approvals"],
         mine && ["settings", "Settings"],
     ].filter(Boolean);
 }
@@ -578,9 +477,6 @@ function ComputerPage({ computer }) {
     const server = computer.id === "this-server";
     const tabs = tabsFor(computer);
     const shown = tabs.some(([id]) => id === tab) ? tab : "overview";
-    const count = (store.state.folderApprovals ?? []).filter(
-        (each) => each.computer === computer.id,
-    ).length;
     const mine = computer.createdBy === store.state.me?.id;
     const owner = store.state.me?.role === "owner";
     // A computer linked before the secure link: a code for it links its runner again, with the same sessions.
@@ -647,7 +543,7 @@ function ComputerPage({ computer }) {
         </div>
         <${PageTabs}
             label=${`${computer.name}: parts`}
-            tabs=${tabs.map(([id, label]) => [id, label, id === "approvals" ? count : 0])}
+            tabs=${tabs}
             shown=${shown}
             onShow=${setTab}
         />
@@ -655,20 +551,15 @@ function ComputerPage({ computer }) {
         ${
             shown === "people" &&
             html`<div class="sheet-pane">
-                <${ChoosePeople}
-                    runner=${computer}
+                <${ComputerPeople}
+                    computer=${computer}
                     note=${
                         server
-                            ? "They see their own sessions and the ones shared with them, and those who steer start sessions in the folders you give them. Sessions run as this server's user, like yours."
-                            : "Those who steer start sessions in the folders you give them. Their sessions run as this computer's user, like yours."
+                            ? "Turn on each person who may use this server. They see their own sessions and the ones shared with them, and those who steer start sessions only in the folders you give them. Sessions run as this server's user, like yours."
+                            : `Turn on each person who may use ${computer.name}. Those who steer start sessions only in the folders you give them. Their sessions run as this computer's user, like yours.`
                     }
                 />
-                <${GivenFolders} computer=${computer} />
             </div>`
-        }
-        ${
-            shown === "approvals" &&
-            html`<div class="sheet-pane"><${ApprovalsList} computer=${computer.id} /></div>`
         }
         ${
             shown === "settings" &&

@@ -7529,17 +7529,10 @@ div.group-head {
     min-width: 0;
 }
 
-/* In Runners, a person's name over their folders there. */
-.given-person {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding-top: 10px;
-    border-top: 1px solid var(--hair);
-}
-
-/* In People, one computer for the person shown: whether they may use it, then their folders there, set in under it. */
-.access-computer {
+/* One person on one computer (`sheets/access.js` `AccessRow`), a person under a computer in Runners and a computer
+ * under a person in People: whether they may use it, then their folders and their sessions there, two lists that stay
+ * closed until asked for. */
+.access-row {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -7547,15 +7540,98 @@ div.group-head {
     border: 1px solid var(--hair);
     border-radius: var(--r-card);
     background: var(--bg);
+    min-width: 0;
 }
 
-.access-computer > .setting {
+.access-row > .setting {
     margin-top: 0;
 }
 
-.access-computer > .given-folders {
-    padding-top: 8px;
+.person-access {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 6px;
     border-top: 1px solid var(--hair);
+    min-width: 0;
+}
+
+.access-fold {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.access-fold-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 4px;
+    border: 0;
+    border-radius: var(--r-control);
+    background: none;
+    color: var(--text);
+    text-align: left;
+}
+
+@media (hover: hover) {
+    .access-fold-head:hover {
+        background: var(--hover);
+    }
+}
+
+.access-fold-count {
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Set in under its name, in line with the name's first letter. */
+.access-fold-body {
+    padding: 4px 4px 8px 24px;
+    min-width: 0;
+}
+
+.access-sessions {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+/* One session: what it is and where, then its buttons, which go under the words where the two do not fit. */
+.access-session {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 8px 0;
+    min-width: 0;
+}
+
+.access-session + .access-session {
+    border-top: 1px solid var(--hair);
+}
+
+.access-session-text {
+    flex: 1 1 14rem;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.access-session-name {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.access-session-actions {
+    display: flex;
+    flex: none;
+    gap: 6px;
 }
 
 /* A person's picture in the list of a sheet of pages, and at the head of their page. */
@@ -7567,46 +7643,6 @@ div.group-head {
 .pages-list .online-mark,
 .sheet-page-head .online-mark {
     box-shadow: 0 0 0 2px var(--panel, var(--bg));
-}
-
-/* The approvals of sessions (`sheets/approvals.js`): what the list is, then the list. */
-.approvals {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 0;
-}
-
-.approvals > .group-title {
-    margin: 0 2px;
-}
-
-/* One approval: the session, where it is, and when its approval ends; then Revoke or Renew, clear of the list's edge. */
-.approval-row {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 11px 12px 11px 14px;
-    min-width: 0;
-}
-
-.approval-text {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-}
-
-.approval-name {
-    font-size: 13.5px;
-    font-weight: 600;
-}
-
-.approval-row > .button {
-    flex: none;
 }
 
 /* Sign in another device, on one's own page in People: the choice, then the link it made under it. */
@@ -7632,10 +7668,8 @@ div.group-head {
     gap: 8px;
 }
 
-/* The owner's switch under the list of every approval: set off from the list, in line with its rows. */
+/* The owner's switch on the Settings page of People: its words, then the switch, with room between. */
 .tasks-expire {
-    margin-top: 6px;
-    padding: 0 12px 0 14px;
     gap: 14px;
 }
 

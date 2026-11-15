@@ -80,7 +80,7 @@ export function SessionShareSheet({ id }) {
                 ${
                     data.people.length === 0
                         ? html`<p class="muted small">
-                              No one to pick yet. Choose people for ${data.computer} first, in People or in Runners.
+                              No one to pick yet. Turn ${data.computer} on for someone first, in People or in Runners.
                           </p>`
                         : html`<div role="group" aria-label="People to share with">
                               ${data.people.map(

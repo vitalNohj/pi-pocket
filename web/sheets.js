@@ -26,7 +26,6 @@ import { MenuSheet, PlacesSheet } from "./sheets/menu.js";
 import { MessageSheet } from "./sheets/message.js";
 import { ModelPicker } from "./sheets/model.js";
 import { MyAuthenticator } from "./sheets/authenticator.js";
-import { ApprovalsList } from "./sheets/approvals.js";
 import { InviteSheet, MyPhoto, PeopleSheet } from "./sheets/people.js";
 import { SessionShareSheet } from "./sheets/session-share.js";
 import { AuthDialog, ProvidersSheet } from "./sheets/providers.js";
@@ -425,7 +424,6 @@ function sheetBody(sheet) {
                 initial=${me?.name ?? ""}
                 header=${html`<${MyPhoto} />`}
                 footer=${html`<${MyAuthenticator} />
-                <${ApprovalsList} mine=${true} />
                 <button class="button ghost wide sheet-footer signout" onClick=${signOut}>
                     <${Icon} name="logout" size=${16} /> Sign out
                 </button>`}
