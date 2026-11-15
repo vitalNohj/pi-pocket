@@ -7609,6 +7609,29 @@ div.group-head {
     flex: none;
 }
 
+/* Sign in another device, on one's own page in People: the choice, then the link it made under it. */
+.device-link {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}
+
+.device-link > .setting {
+    margin-top: 0;
+}
+
+.device-link > .setting > .button,
+.device-link-actions {
+    flex: none;
+}
+
+/* New link and Done stay side by side, also where they stand under their words. */
+.device-link-actions {
+    display: flex;
+    gap: 8px;
+}
+
 /* The owner's switch under the list of every approval: set off from the list, in line with its rows. */
 .tasks-expire {
     margin-top: 6px;

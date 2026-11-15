@@ -76,7 +76,10 @@ export async function login(
     return;
 }
 
-/** `/join/:code`: what an invite grants, and redeeming it with a name (or, for an owner invite, signing in as the owner). */
+/**
+ * `/join/:code`: what an invite grants, and redeeming it with a name; or, for a device link, who this device signs in
+ * as, and signing it in.
+ */
 export async function join(
     app: PocketApp,
     auth: Auth,
@@ -90,7 +93,8 @@ export async function join(
         }
 
         const form = new URLSearchParams((await readBody(request, 10_000)).toString("utf8"));
-        const redeemed = auth.redeem(code, form.get("name") ?? "");
+        const tunnel = quickTunnelHost(request);
+        const redeemed = auth.redeem(code, form.get("name") ?? "", tunnel);
 
         if (redeemed === undefined) {
             return send(
@@ -105,10 +109,9 @@ export async function join(
             await app.welcome(redeemed.user.id, redeemed.invitedBy);
         }
 
-        const tunnel = quickTunnelHost(request);
-
-        // The owner is never tied to one tunnel.
-        if (tunnel !== undefined && redeemed.user.role !== "owner") {
+        // Someone new is tied to the tunnel they joined through. Another device of someone here is tied to it alone
+        // (`redeem`), never the person.
+        if (tunnel !== undefined && redeemed.device !== true && redeemed.user.role !== "owner") {
             app.config.updateUser(redeemed.user.id, { tunnel });
         }
 
@@ -133,20 +136,26 @@ export async function join(
         );
     }
 
-    if (grant.role === "owner") {
+    if ("device" in grant) {
+        const person = grant.device;
+        const name = escapeHtml(person.name);
         const current = auth.user(request);
         // Signed in as someone else: say so, as switching accounts does.
         const switching =
-            current !== undefined && current.role !== "owner"
-                ? `<p>This browser is signed in as ${escapeHtml(current.name)}. It will change to the owner.</p>`
+            current !== undefined && current.id !== person.id
+                ? `<p>This browser is signed in as ${escapeHtml(current.name)}. It will change to ${name}.</p>`
                 : "";
+        const gets =
+            person.role === "owner"
+                ? "It gets full control of Pi Pocket and of this machine."
+                : "It sees and does all that they can here.";
 
         return send(
             response,
             200,
             page(
-                "Sign in as owner · Pi Pocket",
-                `<h1>Sign in as owner</h1><p>This device will sign in as you, the owner. It gets full control of Pi Pocket and of this machine.</p>${switching}<form method="post"><button type="submit">Sign in as owner</button></form>`,
+                `Sign in as ${name} · Pi Pocket`,
+                `<h1>Sign in as ${name}</h1><p>This device will sign in as ${name}${person.role === "owner" ? ", the owner" : ""}. ${gets} Go on only if you are ${name}.</p>${switching}<form method="post"><button type="submit">Sign in as ${name}</button></form>`,
             ),
             "text/html; charset=utf-8",
             { "referrer-policy": "no-referrer" },

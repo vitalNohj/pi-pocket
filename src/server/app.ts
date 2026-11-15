@@ -4834,6 +4834,7 @@ export class PocketApp {
     /**
      * How other devices reach this server, from the launcher. People who signed in through another Cloudflare quick
      * tunnel can never sign in again (its address is gone, and their cookie works only there), so they are removed.
+     * Another device of someone here that came through it is signed out alone: the person stays.
      */
     setReach(access: AccessInfo | undefined): void {
         this.access = access;
@@ -4848,6 +4849,8 @@ export class PocketApp {
                 void this.#forget(user.id);
             }
         }
+
+        this.config.endTunnelDevices(current);
     }
 
     async #forget(userId: string): Promise<void> {

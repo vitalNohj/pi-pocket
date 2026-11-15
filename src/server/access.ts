@@ -205,7 +205,7 @@ export class AccessPolicy {
     /**
      * May `person` invite someone new: to session `session` alone, who may share it (`mayShare`); to every session, who
      * steers on this server or a runner they link. Every invite starts as a viewer (`auth.ts`), so it gives no more.
-     * An owner invite is the owner's alone; it is a role, not access, and `api.ts` checks it.
+     * Another device of one's own takes a device link (`auth.ts` `createDeviceLink`), which anyone makes for themselves.
      */
     mayInvite(person: Pick<Person, "id">, session?: string): boolean {
         const current = this.#current(person);

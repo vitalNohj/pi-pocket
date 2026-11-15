@@ -470,20 +470,33 @@ test(
         await until(async () => (await code()) !== null, "the first invite");
         const first = await code();
 
-        await page.evaluate(
-            `[...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === "1 week").click()`,
-        );
+        const pick = (label: string) =>
+            page.evaluate(
+                `[...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === ${JSON.stringify(label)}).click()`,
+            );
+
+        await pick("1 week");
         await until(async () => ![null, first].includes(await code()), "the week's invite");
         const week = await code();
 
         assert.equal(await status(week), 200);
         await until(async () => (await status(first)) === 410, "the 15 minutes' invite, ended");
 
-        await tap('.sheet label.check input[type="checkbox"]');
-        await until(async () => ![null, week].includes(await code()), "the owner's invite");
+        // The sheet invites someone new only: it has no box that signs in a device of the owner's (that is in People).
+        assert.equal(
+            await inPage<number>(
+                `return JSON.stringify(document.querySelectorAll('.sheet input[type="checkbox"]').length)`,
+            ),
+            0,
+        );
+
+        await pick("1 day");
+        await until(async () => ![null, week].includes(await code()), "the day's invite");
+        const day = await code();
+
         await until(async () => (await status(week)) === 410, "the week's invite, ended");
-        await tap('.sheet label.check input[type="checkbox"]');
-        await until(async () => (await code()) !== null, "a guest's invite again");
+        await pick("1 week");
+        await until(async () => ![null, day].includes(await code()), "a week's invite again");
         const week2 = await code();
 
         // Every invite starts as a viewer: the sheet offers no choice of what they can do.

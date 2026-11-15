@@ -71,6 +71,19 @@ export interface User {
     approvalDays?: number;
     /** The owner let this guest link computers of their own (`access.ts` `mayLink`). */
     linksRunners?: true;
+    /** Their other devices, each signed in with a link from one of their own (`auth.ts` `createDeviceLink`). */
+    devices?: StoredDevice[];
+}
+
+/**
+ * Another device of one person. It has a token of its own, kept by its hash, so signing it out, or the end of the
+ * tunnel it came through, ends that device alone.
+ */
+export interface StoredDevice {
+    tokenHash: string;
+    createdAt: number;
+    /** The Cloudflare quick tunnel host it signed in through: its cookie works only there (as `User.tunnel`). */
+    tunnel?: string;
 }
 
 /** The approval times on offer, in days; 0 is "never ends". */
@@ -107,15 +120,22 @@ export interface StoredApproval {
 }
 
 /** An invite not yet used, kept by its code's sha256 (the code itself is only shown to whoever made it). */
-export interface StoredInvite {
+export type StoredInvite = {
     codeHash: string;
-    role: Role;
-    /** The one session it is for; absent means every session. Never set for an owner invite. */
-    session?: string;
     expiresAt: number;
-    /** Who made it: it works only while they may still invite. */
+    /** Who made it: it works only while they are still here and, for someone new, may still invite. */
     createdBy: string;
-}
+} & InviteFor;
+
+/** What an invite is for: someone new, or another device of the person who made it. */
+export type InviteFor =
+    | {
+          role: Exclude<Role, "owner">;
+          /** The one session it is for; absent means the sessions shared with them. */
+          session?: string;
+          device?: never;
+      }
+    | { device: true; role?: never; session?: never };
 
 /**
  * A computer whose runner (`pi-pocket runner`) may connect, so sessions can run their tools there (`runners.ts`). Kept by
@@ -285,6 +305,9 @@ function sameHash(a: string, b: string): boolean {
 /** The most invites one person keeps live at once. */
 export const MAX_INVITES = 50;
 
+/** The most other devices one person keeps signed in; one more signs out the one signed in longest ago. */
+export const MAX_DEVICES = 20;
+
 /** `config.json` in the data directory, written atomically with mode 0600. */
 export class ConfigStore {
     readonly file: string;
@@ -321,11 +344,18 @@ export class ConfigStore {
      * Bring an older file up to date. The one global switch that shared every runner session went with the access
      * policy: each session now has its own share list, and every existing one starts private (the owner's choice). A
      * computer linked before the secure link (`secure-link.ts`) loses its shared key, which no longer opens anything:
-     * it links again, keeping its id and sessions. Open link codes stay: they were kept by the same hash.
+     * it links again, keeping its id and sessions. Open link codes stay: they were kept by the same hash. An owner
+     * invite, which handed out the owner's token, is now a device link (`auth.ts`): one not yet used ends.
      */
     #migrate(): void {
         const old = this.#config as PocketConfig & { sharedRunnerSessions?: boolean };
         let changed = false;
+        const invites = old.invites?.filter((each) => (each.role as Role | undefined) !== "owner");
+
+        if (invites !== undefined && invites.length !== old.invites?.length) {
+            old.invites = invites;
+            changed = true;
+        }
 
         if ("sharedRunnerSessions" in old) {
             delete old.sharedRunnerSessions;
@@ -532,10 +562,85 @@ export class ConfigStore {
         this.save();
     }
 
+    /** Whose token this is: their first one, or one of their other devices'. */
     userByToken(token: string): User | undefined {
         const hash = hashToken(token);
 
-        return this.#config.users.find((user) => sameHash(user.tokenHash, hash));
+        return this.#config.users.find(
+            (user) =>
+                sameHash(user.tokenHash, hash) ||
+                user.devices?.some((each) => sameHash(each.tokenHash, hash)) === true,
+        );
+    }
+
+    /** Sign another device in as person `id`: its new token, or undefined when they are gone. */
+    addDevice(id: string, tunnel?: string): string | undefined {
+        const user = this.userById(id);
+
+        if (user === undefined) {
+            return undefined;
+        }
+
+        const token = newToken();
+
+        user.devices = [
+            ...(user.devices ?? []),
+            {
+                tokenHash: hashToken(token),
+                createdAt: Date.now(),
+                ...(tunnel === undefined ? {} : { tunnel }),
+            },
+        ].slice(-MAX_DEVICES);
+        this.save();
+
+        return token;
+    }
+
+    /** Whether `token` is one of someone's other devices', not their first one. */
+    isDevice(token: string): boolean {
+        const hash = hashToken(token);
+
+        return this.#config.users.some(
+            (user) => user.devices?.some((each) => sameHash(each.tokenHash, hash)) === true,
+        );
+    }
+
+    /** Sign out the device that holds `token`. A person's first token is not a device's: it stays. */
+    removeDevice(token: string): boolean {
+        const hash = hashToken(token);
+
+        return this.#endDevices((each) => sameHash(each.tokenHash, hash));
+    }
+
+    /** Sign out the devices that came through a Cloudflare quick tunnel other than `current`: its address is gone. */
+    endTunnelDevices(current: string | undefined): boolean {
+        return this.#endDevices((each) => each.tunnel !== undefined && each.tunnel !== current);
+    }
+
+    #endDevices(ending: (device: StoredDevice) => boolean): boolean {
+        let changed = false;
+
+        for (const user of this.#config.users) {
+            const kept = user.devices?.filter((each) => !ending(each));
+
+            if (kept === undefined || kept.length === user.devices?.length) {
+                continue;
+            }
+
+            if (kept.length === 0) {
+                delete user.devices;
+            } else {
+                user.devices = kept;
+            }
+
+            changed = true;
+        }
+
+        if (changed) {
+            this.save();
+        }
+
+        return changed;
     }
 
     userById(id: string): User | undefined {
@@ -670,7 +775,7 @@ export class ConfigStore {
     }
 
     /** Keep a new invite. A person keeps at most `MAX_INVITES` live: beyond that, their oldest ends. */
-    addInvite(code: string, invite: Omit<StoredInvite, "codeHash">): void {
+    addInvite(code: string, invite: { expiresAt: number; createdBy: string } & InviteFor): void {
         this.#pruneInvites();
         const theirs = (this.#config.invites ?? []).filter(
             (each) => each.createdBy === invite.createdBy,
@@ -717,8 +822,8 @@ export class ConfigStore {
     }
 
     /**
-     * Replace the owner token, signing out every device that used the old one. Owner invites not yet used go too: one
-     * spent later would hand out the new token.
+     * Replace the owner token, signing out every device of the owner: the ones that used the old token, and the ones
+     * signed in with a device link. The owner's device links not yet used end too.
      */
     rotateOwnerToken(): string {
         const token = newToken();
@@ -728,10 +833,13 @@ export class ConfigStore {
 
         if (owner !== undefined) {
             owner.tokenHash = hashToken(token);
+            delete owner.devices;
         }
 
         if (this.#config.invites !== undefined) {
-            this.#config.invites = this.#config.invites.filter((invite) => invite.role !== "owner");
+            this.#config.invites = this.#config.invites.filter(
+                (invite) => !(invite.device === true && invite.createdBy === owner?.id),
+            );
         }
 
         this.save();

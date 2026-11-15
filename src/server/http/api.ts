@@ -203,13 +203,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
     /**
      * What an invite may grant (`access.ts` `mayInvite`): to this server, who may start sessions on it; to one session,
-     * who may share it. Only the owner can sign a device in as the owner (never for one session).
+     * who may share it. An invite is always for someone new: one's own other device takes a device link (`me/device`).
      */
     const inviteGrant = (user: User, body: { role?: unknown; session?: unknown }): InviteGrant => {
+        // A page loaded before device links still asks for an owner invite, which handed out the owner's token.
         if (body.role === "owner") {
-            requireOwner(user);
-
-            return { role: "owner" };
+            throw new HttpError(
+                400,
+                "Reload Pi Pocket, then use Sign in another device on your own page in People.",
+            );
         }
 
         // Every invite starts as a viewer: steering comes later, once they link an authenticator, from who is in charge.
@@ -257,12 +259,60 @@ export function createApi(options: HttpOptions, auth: Auth) {
         return minutes;
     };
 
+    /**
+     * An invite or a device link as its maker's page shows it: the link another device can open, its QR code, and the
+     * other addresses this server answers at.
+     */
+    const shownInvite = async (
+        request: IncomingMessage,
+        user: User,
+        invite: { code: string; expiresAt: number; minutes: InviteMinutes },
+    ) => {
+        const here = origin(request);
+        const loopback = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?$/.test(here);
+        const wildcard = options.listen.host === "0.0.0.0" || options.listen.host === "::";
+        const lan =
+            loopback && wildcard
+                ? lanAddresses().map((address) => `http://${address}:${options.listen.port}`)
+                : [];
+        // A tunnel the launcher started is the way in for other devices.
+        const tunnel = loopback ? app.access?.url : undefined;
+        const base = tunnel ?? lan[0] ?? here;
+        const link = `${base}/join/${invite.code}`;
+        // One whose QR code could not be made is never shown: it ends rather than stay live, unseen.
+        const svg = await QRCode.toString(link, {
+            type: "svg",
+            margin: 1,
+            color: { dark: "#000000", light: "#ffffff" },
+        }).catch((error: unknown) => {
+            auth.cancelInvite(invite.code, user);
+
+            throw error;
+        });
+
+        return {
+            ...invite,
+            url: link,
+            svg,
+            alternatives: (tunnel === undefined ? lan.slice(1) : lan).map(
+                (address) => `${address}/join/${invite.code}`,
+            ),
+            // Only this device can open a loopback link.
+            local: loopback && lan.length === 0 && tunnel === undefined,
+            ...(app.access === undefined ? {} : { access: app.access }),
+        };
+    };
+
     /** A guest signed in by a cookie set on a Cloudflare quick tunnel can only come back through it: remember which one. */
     const noteTunnel = (request: IncomingMessage, user: User): void => {
+        const cookie = parseCookies(request.headers.cookie)[COOKIE];
+
+        // Another device of theirs was tagged alone when it signed in (`auth.ts` `redeem`): never the person for it.
         if (
             user.role === "owner" ||
             user.tunnel !== undefined ||
-            !parseCookies(request.headers.cookie)[COOKIE]
+            !cookie ||
+            app.config.isDevice(cookie)
         ) {
             return;
         }
@@ -411,6 +461,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         // Each person's own authenticator app (`approval-methods.ts`): they approve their new folders with its codes.
+        // A device link: it signs another device in as this person, whoever they are, once, within 15 minutes.
+        if (first === "me" && second === "device" && third === undefined && method === "POST") {
+            return json(
+                response,
+                200,
+                await shownInvite(request, user, auth.createDeviceLink(user)),
+            );
+        }
+
         if (first === "me" && second === "authenticator") {
             return json(response, 200, await authenticatorRoute(route, third, method));
         }
@@ -448,6 +507,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "logout" && method === "POST") {
+            // Another device of theirs has a token of its own, which ends with it. Their first one stays: it is all
+            // that the link they signed in with carries.
+            app.config.removeDevice(parseCookies(request.headers.cookie)[COOKIE] ?? "");
             clearAuthCookie(response);
 
             return json(response, 200, { ok: true });
@@ -1559,42 +1621,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
             };
             const grant = inviteGrant(user, body);
             const invite = auth.createInvite(user, grant, inviteMinutes(body));
-            const here = origin(request);
-            const loopback = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?$/.test(
-                here,
-            );
-            const wildcard = options.listen.host === "0.0.0.0" || options.listen.host === "::";
-            const lan =
-                loopback && wildcard
-                    ? lanAddresses().map((address) => `http://${address}:${options.listen.port}`)
-                    : [];
-            // A tunnel the launcher started is the way in for other devices.
-            const tunnel = loopback ? app.access?.url : undefined;
-            const base = tunnel ?? lan[0] ?? here;
-            const link = `${base}/join/${invite.code}`;
-            // An invite whose QR code could not be made is never shown: it ends rather than stay live, unseen.
-            const svg = await QRCode.toString(link, {
-                type: "svg",
-                margin: 1,
-                color: { dark: "#000000", light: "#ffffff" },
-            }).catch((error: unknown) => {
-                auth.cancelInvite(invite.code, user);
 
-                throw error;
-            });
-
-            return json(response, 200, {
-                ...invite,
-                grant,
-                url: link,
-                svg,
-                alternatives: (tunnel === undefined ? lan.slice(1) : lan).map(
-                    (address) => `${address}/join/${invite.code}`,
-                ),
-                // Only this device can open a loopback link.
-                local: loopback && lan.length === 0 && tunnel === undefined,
-                ...(app.access === undefined ? {} : { access: app.access }),
-            });
+            return json(response, 200, { ...(await shownInvite(request, user, invite)), grant });
         }
 
         if (first === "restart" && method === "POST") {
