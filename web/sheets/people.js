@@ -165,7 +165,7 @@ export function InviteSheet({ session = null }) {
             !asOwner &&
             html`<p class="muted small">
                 They join as a viewer: they read along, react, and chat. To steer Pi, they link an authenticator under
-                their name; then the owner chooses Let steer for them in People.
+                their name; then the owner turns on Steer Pi for them in People.
             </p>
             ${
                 here &&
