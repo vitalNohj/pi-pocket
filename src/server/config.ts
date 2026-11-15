@@ -134,8 +134,15 @@ export type InviteFor =
           /** The one session it is for; absent means the sessions shared with them. */
           session?: string;
           device?: never;
+          person?: never;
       }
-    | { device: true; role?: never; session?: never };
+    | {
+          device: true;
+          /** Who the device signs in as, when not whoever made the link: the owner makes one for someone else. */
+          person?: string;
+          role?: never;
+          session?: never;
+      };
 
 /**
  * A computer whose runner (`pi-pocket runner`) may connect, so sessions can run their tools there (`runners.ts`). Kept by
@@ -885,7 +892,10 @@ export class ConfigStore {
         };
     }
 
-    /** Remove someone (never the owner), and the invites they made, which could no longer be used. */
+    /**
+     * Remove someone (never the owner), the invites they made, which could no longer be used, and the device links
+     * the owner made for them.
+     */
     removeUser(id: string): void {
         this.#config.users = this.#config.users.filter(
             (user) => user.id !== id || user.role === "owner",
@@ -893,7 +903,7 @@ export class ConfigStore {
 
         if (!this.#config.users.some((user) => user.id === id)) {
             this.#config.invites = this.#config.invites?.filter(
-                (invite) => invite.createdBy !== id,
+                (invite) => invite.createdBy !== id && invite.person !== id,
             );
 
             // Nothing they were given outlives them; their sessions and tasks move to who is in charge (`app.ts`).
@@ -961,7 +971,7 @@ export class ConfigStore {
 
     /**
      * Replace the owner token, signing out every device of the owner: the ones that used the old token, and the ones
-     * signed in with a device link. The owner's device links not yet used end too.
+     * signed in with a device link. The device links the owner made and nobody used end too, also one for someone else.
      */
     rotateOwnerToken(): string {
         const token = newToken();

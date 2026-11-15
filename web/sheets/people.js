@@ -272,11 +272,14 @@ function InviteShown({ invite, code = "Invite code", again = "invite" }) {
 }
 
 /**
- * Sign in another device, on one's own page: a device link, which signs that device in as oneself and makes no one
- * new. It works once and lasts 15 minutes; a new one ends the one before, and it leaves the page when its time is up.
+ * Sign in another device: a device link, which signs that device in as `person` and makes no one new. On one's own
+ * page it is for a device of one's own; on someone else's, the owner makes it for them (a lost device). It works once
+ * and lasts 15 minutes; a new one ends the one before, and it leaves the page when its time is up. Someone with an
+ * authenticator also gives one of its codes on the new device.
  */
-function DeviceLink() {
-    const owner = store.state.me?.role === "owner";
+function DeviceLink({ person }) {
+    const theirs = person.id !== store.state.me?.id;
+    const owner = person.role === "owner";
     const [made, setMade] = useState(null);
     const [busy, setBusy] = useState(false);
     // Only the newest link shows: one that answers late, or after the page went, ends unseen.
@@ -307,7 +310,10 @@ function DeviceLink() {
             setBusy(true);
 
             try {
-                const answer = await api("me/device", {});
+                const answer = await api(
+                    theirs ? `users/${encodeURIComponent(person.id)}/device` : "me/device",
+                    {},
+                );
 
                 if (!mounted.current || ticket !== latest.current) {
                     cancelInvite(answer);
@@ -337,11 +343,15 @@ function DeviceLink() {
 
     return html`<div class="device-link" data-part="device-link">
         <${Setting}
-            label="Sign in another device"
+            label=${theirs ? "Sign in a device of theirs" : "Sign in another device"}
             hint=${
-                made
-                    ? `Scan this on your other device, or open the link there. It signs that device in as you${owner ? ", the owner, with full control" : ""}, so keep it to yourself. It works once, until ${until}.`
-                    : "Makes a link that signs another phone or computer in as you. It works once, within 15 minutes."
+                theirs
+                    ? made
+                        ? `Send this to ${person.name}, or let them scan it. It signs their device in as ${person.name}, with all they have here, so give it only to them. It works once, until ${until}.${person.hasCode ? " Their device also asks for a code from their authenticator: if they lost that too, remove it under Sign-in first." : ""}`
+                        : `For a lost device: makes a link that signs a phone or computer in as ${person.name}, not as someone new. It works once, within 15 minutes.`
+                    : made
+                      ? `Scan this on your other device, or open the link there. It signs that device in as you${owner ? ", the owner, with full control" : ""}, so keep it to yourself. It works once, until ${until}.${person.hasCode ? " That device also asks for a code from your authenticator." : ""}`
+                      : "Makes a link that signs another phone or computer in as you. It works once, within 15 minutes."
             }
         >
             ${
@@ -639,7 +649,7 @@ function Authenticator({ person }) {
 
 /**
  * One person: who they are, then what they may do and where, and their sessions' approvals. One's own page also signs
- * in another device of one's own.
+ * in another device of one's own; for the owner, anyone's page signs in a device of theirs.
  */
 function PersonPage({ person }) {
     const { me } = store.state;
@@ -699,7 +709,11 @@ function PersonPage({ person }) {
                 .filter(Boolean)
                 .join(" · ")}
         </div>
-        ${myself && collab() && html`<${DeviceLink} />`}
+        ${
+            collab() &&
+            (myself || owner) &&
+            html`<${DeviceLink} key=${person.id} person=${person} />`
+        }
         <${PageTabs}
             label=${`${person.name}: parts`}
             tabs=${tabs}

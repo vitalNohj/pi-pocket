@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ConfigStore, Role, User } from "./config.ts";
+import type { ConfigStore, Role, StoredInvite, User } from "./config.ts";
+import { HttpError } from "./errors.ts";
 
 export const COOKIE = "pocket_auth";
 
@@ -79,8 +80,18 @@ export function clearAuthCookie(response: ServerResponse): void {
 /** What an invite grants someone new: a role, and optionally a single session instead of the ones shared with them. */
 export type InviteGrant = { role: Exclude<Role, "owner">; session?: string };
 
-/** What a live code is for: someone new, or another device of the person who made it (a device link). */
-export type Invite = InviteGrant | { device: User };
+/**
+ * What a live code is for: someone new, or another device of someone here (a device link). `code`: that person has an
+ * authenticator, so the device must give one of its codes too.
+ */
+export type Invite = InviteGrant | { device: User; code?: true };
+
+/** Each person's authenticator, as a device link asks (`approval-methods.ts` `Authenticators`). */
+export interface Codes {
+    linked(person: string): boolean;
+    check(person: string, code: string): boolean;
+    refusal(person: string): HttpError;
+}
 
 /** A code that is easy to type on a phone: ten unambiguous characters. */
 function newCode(): string {
@@ -106,10 +117,12 @@ const byRole: MayInvite = (creator) => creator.role !== "viewer" && creator.sess
 export class Auth {
     readonly #config: ConfigStore;
     readonly #mayInvite: MayInvite;
+    readonly #codes: Codes | undefined;
 
-    constructor(config: ConfigStore, mayInvite: MayInvite = byRole) {
+    constructor(config: ConfigStore, mayInvite: MayInvite = byRole, codes?: Codes) {
         this.#config = config;
         this.#mayInvite = mayInvite;
+        this.#codes = codes;
     }
 
     user(request: IncomingMessage): User | undefined {
@@ -148,17 +161,45 @@ export class Auth {
     }
 
     /**
-     * A device link: it signs another device in as `by` themselves, whoever they are, and makes no one new. It works
-     * once and lasts 15 minutes, the least: whoever opens it gets all that `by` has.
+     * A device link: it signs another device in as `target` and makes no one new. Anyone makes one for themselves; the
+     * owner makes one for someone else, who lost their device (`api.ts` checks who asks). It works once and lasts 15
+     * minutes, the least: whoever opens it gets all that `target` has, after a code from their authenticator when they
+     * have one (`redeem`).
      */
-    createDeviceLink(by: User): { code: string; expiresAt: number; minutes: InviteMinutes } {
+    createDeviceLink(
+        by: User,
+        target: User = by,
+    ): { code: string; expiresAt: number; minutes: InviteMinutes } {
         const code = newCode();
         const minutes = INVITE_MINUTES[0];
         const expiresAt = Date.now() + minutes * 60_000;
 
-        this.#config.addInvite(code, { device: true, expiresAt, createdBy: by.id });
+        this.#config.addInvite(code, {
+            device: true,
+            ...(target.id === by.id ? {} : { person: target.id }),
+            expiresAt,
+            createdBy: by.id,
+        });
 
         return { code, expiresAt, minutes };
+    }
+
+    /**
+     * Who a device link signs in: whoever made it, or the person the owner made it for. Undefined when either is gone,
+     * or when its maker is no longer the owner.
+     */
+    #devicePerson(invite: StoredInvite): User | undefined {
+        const maker = this.#config.userById(invite.createdBy);
+
+        if (maker === undefined) {
+            return undefined;
+        }
+
+        if (invite.person === undefined || invite.person === maker.id) {
+            return maker;
+        }
+
+        return maker.role === "owner" ? this.#config.userById(invite.person) : undefined;
     }
 
     /** End an invite before its time, if `by` made it: when the sheet that showed it moves on to another. */
@@ -168,7 +209,7 @@ export class Auth {
         }
     }
 
-    /** What a live code is for, or undefined when it expired, was used, or is a device link of someone removed. */
+    /** What a live code is for, or undefined when it expired, was used, or is a device link for someone removed. */
     invite(code: string): Invite | undefined {
         const invite = this.#config.invite(code);
 
@@ -177,9 +218,13 @@ export class Auth {
         }
 
         if (invite.device === true) {
-            const device = this.#config.userById(invite.createdBy);
+            const device = this.#devicePerson(invite);
 
-            return device === undefined ? undefined : { device };
+            if (device === undefined) {
+                return undefined;
+            }
+
+            return this.#codes?.linked(device.id) === true ? { device, code: true } : { device };
         }
 
         return invite.session === undefined
@@ -193,17 +238,48 @@ export class Auth {
 
     /**
      * Spend an invite on a new device: a user with the invite's role and scope, and its own token. A device link makes
-     * no one new: the device gets the person who made it, with a token of its own (`tunnel`: the Cloudflare quick
+     * no one new: the device gets the person it is for, with a token of its own (`tunnel`: the Cloudflare quick
      * tunnel it came through, which that token is tied to). Either way the invite is gone, used or not.
+     *
+     * A device link for someone with an authenticator takes two codes: its own, and one from that authenticator
+     * (`proof`). Without that one, or with a wrong one, this throws and the link stays for another try: a wrong code
+     * counts toward their lockout (`approval-methods.ts`).
      */
     redeem(
         code: string,
         name: string,
         tunnel?: string,
+        proof?: string,
     ): { user: User; token: string; invitedBy?: string; device?: true } | undefined {
         const invite = this.#config.invite(code);
 
-        if (invite === undefined || !this.#config.removeInvite(code)) {
+        if (invite === undefined) {
+            return undefined;
+        }
+
+        if (invite.device === true) {
+            const person = this.#devicePerson(invite);
+
+            if (person !== undefined && this.#codes?.linked(person.id) === true) {
+                if (proof === undefined || proof === "") {
+                    throw new HttpError(400, "Enter the code from your authenticator.");
+                }
+
+                if (!this.#codes.check(person.id, proof)) {
+                    throw this.#codes.refusal(person.id);
+                }
+            }
+
+            if (!this.#config.removeInvite(code) || person === undefined) {
+                return undefined;
+            }
+
+            const token = this.#config.addDevice(person.id, tunnel);
+
+            return token === undefined ? undefined : { user: person, token, device: true };
+        }
+
+        if (!this.#config.removeInvite(code)) {
             return undefined;
         }
 
@@ -212,12 +288,6 @@ export class Auth {
 
         if (creator === undefined) {
             return undefined;
-        }
-
-        if (invite.device === true) {
-            const token = this.#config.addDevice(creator.id, tunnel);
-
-            return token === undefined ? undefined : { user: creator, token, device: true };
         }
 
         if (!this.#mayInvite(creator, invite.session)) {

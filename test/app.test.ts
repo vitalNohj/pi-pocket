@@ -2299,6 +2299,32 @@ test("anyone signs another device in as themselves: the link works once, makes n
         assert.equal(app.config.users.length, people);
         assert.notEqual(second, guest.token);
 
+        // The owner makes one for someone else, who lost their device: it signs a device in as them, and makes no one new.
+        const forGuest = await call(app.config.ownerToken, `users/${guest.user.id}/device`, {});
+
+        assert.equal(forGuest.status, 200);
+
+        const lost = (await forGuest.json()) as { code: string; minutes: number };
+
+        assert.equal(lost.minutes, 15);
+        assert.match(
+            await (await fetch(`${base}/join/${lost.code}`)).text(),
+            /Sign in as Gwen<\/h1>.*all that they can here/s,
+        );
+        const found = cookieOf(await signIn(lost.code, "same-origin"));
+
+        assert.equal(await whoIs(found), guest.user.id);
+        assert.notEqual(found, guest.token);
+        assert.equal(app.config.users.length, people);
+
+        // Only the owner does, and only for someone here.
+        for (const token of [guest.token, viewer.token]) {
+            assert.equal((await call(token, `users/${owner().id}/device`, {})).status, 403);
+            assert.equal((await call(token, `users/${scoped.user.id}/device`, {})).status, 403);
+        }
+
+        assert.equal((await call(app.config.ownerToken, "users/nobody/device", {})).status, 404);
+
         // Signing that device out ends its token alone: their first device stays in.
         const out = await fetch(`${base}/api/logout`, {
             method: "POST",
@@ -2325,17 +2351,29 @@ test("anyone signs another device in as themselves: the link works once, makes n
         const auth = new Auth(app.config);
         const left = await link(scoped.token);
         const gone = app.config.addDevice(scoped.user.id)!;
+        const forThem = (await (
+            await call(app.config.ownerToken, `users/${scoped.user.id}/device`, {})
+        ).json()) as { code: string };
 
         app.config.removeUser(scoped.user.id);
         assert.equal(await whoIs(gone), 401);
+        assert.equal(
+            (await fetch(`${base}/join/${forThem.code}`)).status,
+            410,
+            "also the one the owner made for them",
+        );
         assert.equal((await fetch(`${base}/join/${left.code}`)).status, 410);
         assert.equal(auth.redeem(left.code, ""), undefined);
 
         // A new owner token signs out every device of the owner, and ends the owner's unused links; others stay.
         const unused = await link(app.config.ownerToken);
         const guests = await link(guest.token);
+        const made = (await (
+            await call(app.config.ownerToken, `users/${guest.user.id}/device`, {})
+        ).json()) as { code: string };
 
         app.config.rotateOwnerToken();
+        assert.equal(auth.invite(made.code), undefined, "also one the owner made for someone else");
         assert.equal(await whoIs(device), 401);
         assert.equal(auth.invite(unused.code), undefined);
         assert.deepEqual(auth.invite(guests.code), { device: guest.user });
