@@ -470,6 +470,23 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
+        // The owner makes one for someone else, who lost their device: it signs a device in as them, not as someone new.
+        if (first === "users" && second !== undefined && third === "device" && method === "POST") {
+            requireOwner(user);
+
+            const person = app.config.userById(second);
+
+            if (person === undefined) {
+                throw new HttpError(404, "No such person.");
+            }
+
+            return json(
+                response,
+                200,
+                await shownInvite(request, user, auth.createDeviceLink(user, person)),
+            );
+        }
+
         if (first === "me" && second === "authenticator") {
             return json(response, 200, await authenticatorRoute(route, third, method));
         }

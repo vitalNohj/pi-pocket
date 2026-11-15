@@ -258,3 +258,150 @@ test("the owner sees who linked one, and removes anyone's; nobody else can", asy
         404,
     );
 });
+
+/** Open a device link as a browser does, or, with `form`, post its page. `who`: whom the answer signs in. */
+async function join(
+    code: string,
+    form?: Record<string, string>,
+): Promise<{ status: number; text: string; who: string | undefined }> {
+    const response = await fetch(`${address}/join/${code}`, {
+        method: form === undefined ? "GET" : "POST",
+        redirect: "manual",
+        signal: AbortSignal.timeout(20_000),
+        ...(form === undefined
+            ? {}
+            : {
+                  body: new URLSearchParams(form).toString(),
+                  headers: {
+                      "content-type": "application/x-www-form-urlencoded",
+                      "sec-fetch-site": "same-origin",
+                  },
+              }),
+    });
+    const cookie = /pocket_auth=([^;]+)/.exec(response.headers.get("set-cookie") ?? "")?.[1];
+
+    return {
+        status: response.status,
+        text: await response.text(),
+        who:
+            cookie === undefined
+                ? undefined
+                : app.config.userByToken(decodeURIComponent(cookie))?.id,
+    };
+}
+
+test("a device link for someone with an authenticator takes two codes: its own, and one from the authenticator", async () => {
+    const dana = person("Dana", "viewer");
+    const secret = await link(dana);
+    const made = await call<{ code: string }>(dana, "me/device", {});
+
+    assert.equal(made.status, 200);
+
+    const page = await join(made.body.code);
+
+    assert.equal(page.status, 200);
+    assert.match(page.text, /Code from Dana's authenticator app<input name="code"/);
+
+    // Without the second code, or with a wrong one, nobody is signed in, and the link stays for another try.
+    const none = await join(made.body.code, {});
+
+    assert.equal(none.status, 400);
+    assert.equal(none.who, undefined);
+    assert.match(none.text, /role="alert">Enter the code from your authenticator\./);
+    assert.match(none.text, /<input name="code"/, "the page asks again");
+
+    const wrong = await join(made.body.code, { code: "000000" });
+
+    assert.equal(wrong.status, 400);
+    assert.equal(wrong.who, undefined);
+    assert.match(wrong.text, /That code is wrong or used/);
+    assert.equal((await join(made.body.code)).status, 200, "the link is not spent");
+
+    // Both codes sign the device in as them, and the link is spent.
+    clock += STEP_MS;
+
+    const right = await join(made.body.code, { code: codeOf(secret) });
+
+    assert.equal(right.status, 303);
+    assert.equal(right.who, dana.id);
+    assert.equal((await join(made.body.code, { code: codeOf(secret, 1) })).status, 410);
+
+    // A code works once here too: the one just used opens no other link.
+    const second = await call<{ code: string }>(dana, "me/device", {});
+    const replayed = await join(second.body.code, { code: codeOf(secret) });
+
+    assert.equal(replayed.status, 400);
+    assert.equal(replayed.who, undefined);
+
+    // Someone without an authenticator is asked for none.
+    const pat = person("Pat", "viewer");
+    const theirs = await call<{ code: string }>(pat, "me/device", {});
+
+    assert.doesNotMatch((await join(theirs.body.code)).text, /name="code"/);
+    assert.equal((await join(theirs.body.code, {})).who, pat.id);
+});
+
+test("the owner makes a device link for someone else; their authenticator is still asked, and wrong codes lock it out", async () => {
+    const lou = person("Lou", "viewer");
+    const secret = await link(lou);
+
+    // Only the owner makes one for someone else, and only for someone here.
+    assert.equal((await call(alex, `users/${lou.id}/device`, {})).status, 403);
+    assert.equal((await call(lou, `users/${owner(app).id}/device`, {})).status, 403);
+    assert.equal((await call(owner(app), "users/nobody/device", {})).status, 404);
+
+    const made = await call<{ code: string; minutes: number }>(
+        owner(app),
+        `users/${lou.id}/device`,
+        {},
+    );
+
+    assert.equal(made.status, 200);
+    assert.equal(made.body.minutes, 15);
+    assert.match(
+        (await join(made.body.code)).text,
+        /Sign in as Lou<\/h1>.*Code from Lou's authenticator app/s,
+    );
+
+    // The link alone signs nobody in as Lou, and wrong codes count as they do anywhere else.
+    for (let i = 0; i < 4; i++) {
+        const wrong = await join(made.body.code, { code: "000000" });
+
+        assert.equal(wrong.status, 400);
+        assert.equal(wrong.who, undefined);
+    }
+
+    const locked = await join(made.body.code, { code: "000000" });
+
+    assert.equal(locked.status, 429);
+    assert.match(locked.text, /Too many wrong codes\. Try again in 10 minutes\./);
+
+    // Locked out, the right code is refused too; the link stays.
+    clock += STEP_MS;
+
+    const refused = await join(made.body.code, { code: codeOf(secret) });
+
+    assert.equal(refused.status, 429);
+    assert.equal(refused.who, undefined);
+    assert.equal((await join(made.body.code)).status, 200);
+
+    // Lou lost the authenticator too: the owner removes it, and the link then signs a device in as Lou.
+    assert.equal(
+        (await call(owner(app), `users/${lou.id}/authenticator`, undefined, "DELETE")).status,
+        200,
+    );
+    assert.doesNotMatch((await join(made.body.code)).text, /name="code"/);
+
+    const signed = await join(made.body.code, {});
+
+    assert.equal(signed.status, 303);
+    assert.equal(signed.who, lou.id);
+    assert.equal(app.config.users.filter((each) => each.name === "Lou").length, 1, "no one new");
+
+    // Removing someone ends a link the owner made for them.
+    const again = await call<{ code: string }>(owner(app), `users/${lou.id}/device`, {});
+
+    assert.equal((await join(again.body.code)).status, 200);
+    await app.removeUser(owner(app), lou.id);
+    assert.equal((await join(again.body.code)).status, 410);
+});

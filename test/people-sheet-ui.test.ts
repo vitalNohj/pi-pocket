@@ -423,7 +423,7 @@ test(
 );
 
 test(
-    "one's own page signs in another device: a link shows there, a new one ends it, and no one else's page offers it",
+    "one's own page signs in another device, and a new link ends the one before; the owner's page for someone else signs in a device of theirs",
     real,
     async () => {
         const part = (what: string) =>
@@ -445,10 +445,34 @@ test(
                 }
             ).invites?.filter((each) => each.device === true).length ?? 0;
 
-        // Someone else's page: nothing to sign in there, also for the owner.
+        // Someone else's page, for the owner: a link that signs a device in as them, for a lost device.
         await open("people");
         await show("Gina");
-        assert.equal(await part(".small"), null);
+        assert.equal(await part(".small"), "Sign in a device of theirs");
+        assert.equal(live(), 0, "nothing is made until asked");
+        await press("Make a link");
+        await until(async () => (await part("input.mono")) !== null, "Gina's link");
+        assert.match((await part(".muted"))!, /signs their device in as Gina/);
+
+        const hers = await fetch((await part("input.mono"))!, {
+            method: "POST",
+            redirect: "manual",
+            body: "",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+        });
+
+        assert.equal(
+            app.config.userByToken(
+                decodeURIComponent(
+                    /pocket_auth=([^;]+)/.exec(hers.headers.get("set-cookie") ?? "")![1]!,
+                ),
+            )?.id,
+            guest.id,
+            "the device is Gina, not the owner who made the link",
+        );
+        await press("Done");
+        await until(async () => (await part("input.mono")) === null, "Gina's link to go");
+        assert.equal(live(), 0, "used, so nothing is left");
 
         // The invite sheet no longer signs the owner's device in.
         assert.ok(
