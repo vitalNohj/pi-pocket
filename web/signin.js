@@ -26,7 +26,7 @@ export function SignIn() {
         }
 
         // Invite codes are ten lowercase letters and digits, and phones capitalize the first letter typed. Tokens are longer.
-        // The invite sheet shows a code in two groups, so spaces typed or copied between them are dropped.
+        // A device link's code is one too. Both show in two groups, so spaces typed or copied between them are dropped.
         const code = text.toLowerCase().replace(/\s+/g, "");
 
         location.href = /^[a-z0-9]{10}$/.test(code)
@@ -38,12 +38,12 @@ export function SignIn() {
         <div class="pi big">π</div>
         <h1>Pi Pocket</h1>
         <p class="muted">
-            Open the sign-in link Pi Pocket printed when it started, or an invite from a signed-in device. You can also paste the link, the token, or an invite code here.
+            Open the sign-in link Pi Pocket printed when it started, an invite from someone signed in, or a link from Sign in another device on a device of your own. You can also paste the link, the token, or the code here.
         </p>
         <div class="row">
             <input
                 value=${value}
-                placeholder="Link, token, or invite code"
+                placeholder="Link, token, or code"
                 autocapitalize="none"
                 autocorrect="off"
                 autocomplete="off"

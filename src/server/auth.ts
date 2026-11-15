@@ -4,7 +4,7 @@ import type { ConfigStore, Role, User } from "./config.ts";
 
 export const COOKIE = "pocket_auth";
 
-/** How long an invite may last, in minutes: 15 minutes (the default, and always for an owner invite), an hour, a day, or a week. */
+/** How long an invite may last, in minutes: 15 minutes (the default, and always for a device link), an hour, a day, or a week. */
 export const INVITE_MINUTES = [15, 60, 24 * 60, 7 * 24 * 60] as const;
 export type InviteMinutes = (typeof INVITE_MINUTES)[number];
 
@@ -76,12 +76,23 @@ export function clearAuthCookie(response: ServerResponse): void {
     response.setHeader("set-cookie", `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
-/**
- * What an invite grants: a role, and optionally a single session instead of all of them. An owner invite signs a device
- * in as the owner, with the owner's token: it is never for one session.
- */
-export type InviteGrant =
-    { role: Exclude<Role, "owner">; session?: string } | { role: "owner"; session?: never };
+/** What an invite grants someone new: a role, and optionally a single session instead of the ones shared with them. */
+export type InviteGrant = { role: Exclude<Role, "owner">; session?: string };
+
+/** What a live code is for: someone new, or another device of the person who made it (a device link). */
+export type Invite = InviteGrant | { device: User };
+
+/** A code that is easy to type on a phone: ten unambiguous characters. */
+function newCode(): string {
+    const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+    let code = "";
+
+    for (const byte of randomBytes(10)) {
+        code += alphabet[byte % alphabet.length];
+    }
+
+    return code;
+}
 
 /** Invites live in `config.json` (by their codes' hashes), so one that lasts a day or a week outlives a restart. */
 /**
@@ -121,32 +132,33 @@ export class Auth {
         return this.#config.userByToken(token);
     }
 
-    /** A new invite that lasts `minutes`; an owner invite always lasts 15, the least. */
+    /** A new invite for someone new, which lasts `minutes`. */
     createInvite(
         by: User,
         grant: InviteGrant = { role: "guest" },
         minutes: InviteMinutes = 15,
     ): { code: string; expiresAt: number; minutes: InviteMinutes } {
-        // Unambiguous characters, easy to type on a phone.
-        const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
-        const bytes = randomBytes(10);
-        let code = "";
+        const code = newCode();
+        const expiresAt = Date.now() + minutes * 60_000;
 
-        for (const byte of bytes) {
-            code += alphabet[byte % alphabet.length];
-        }
+        // Every invite starts its person as a viewer: steering comes once they link an authenticator.
+        this.#config.addInvite(code, { ...grant, role: "viewer", expiresAt, createdBy: by.id });
 
-        const lasts = grant.role === "owner" ? INVITE_MINUTES[0] : minutes;
-        const expiresAt = Date.now() + lasts * 60_000;
+        return { code, expiresAt, minutes };
+    }
 
-        // Every invite but an owner's starts its person as a viewer: steering comes once they link an authenticator.
-        if (grant.role !== "owner") {
-            grant = { ...grant, role: "viewer" };
-        }
+    /**
+     * A device link: it signs another device in as `by` themselves, whoever they are, and makes no one new. It works
+     * once and lasts 15 minutes, the least: whoever opens it gets all that `by` has.
+     */
+    createDeviceLink(by: User): { code: string; expiresAt: number; minutes: InviteMinutes } {
+        const code = newCode();
+        const minutes = INVITE_MINUTES[0];
+        const expiresAt = Date.now() + minutes * 60_000;
 
-        this.#config.addInvite(code, { ...grant, expiresAt, createdBy: by.id });
+        this.#config.addInvite(code, { device: true, expiresAt, createdBy: by.id });
 
-        return { code, expiresAt, minutes: lasts };
+        return { code, expiresAt, minutes };
     }
 
     /** End an invite before its time, if `by` made it: when the sheet that showed it moves on to another. */
@@ -156,15 +168,21 @@ export class Auth {
         }
     }
 
-    /** The grant of a live invite, or undefined when it expired or was used. */
-    invite(code: string): InviteGrant | undefined {
+    /** What a live code is for, or undefined when it expired, was used, or is a device link of someone removed. */
+    invite(code: string): Invite | undefined {
         const invite = this.#config.invite(code);
 
         if (invite === undefined) {
             return undefined;
         }
 
-        return invite.role === "owner" || invite.session === undefined
+        if (invite.device === true) {
+            const device = this.#config.userById(invite.createdBy);
+
+            return device === undefined ? undefined : { device };
+        }
+
+        return invite.session === undefined
             ? { role: invite.role }
             : { role: invite.role, session: invite.session };
     }
@@ -174,13 +192,15 @@ export class Auth {
     }
 
     /**
-     * Spend an invite on a new device: a user with the invite's role and scope, and its own token. An owner invite makes
-     * no one new: the device gets the owner and the owner's token. Either way the invite is gone, used or not.
+     * Spend an invite on a new device: a user with the invite's role and scope, and its own token. A device link makes
+     * no one new: the device gets the person who made it, with a token of its own (`tunnel`: the Cloudflare quick
+     * tunnel it came through, which that token is tied to). Either way the invite is gone, used or not.
      */
     redeem(
         code: string,
         name: string,
-    ): { user: User; token: string; invitedBy?: string } | undefined {
+        tunnel?: string,
+    ): { user: User; token: string; invitedBy?: string; device?: true } | undefined {
         const invite = this.#config.invite(code);
 
         if (invite === undefined || !this.#config.removeInvite(code)) {
@@ -194,10 +214,10 @@ export class Auth {
             return undefined;
         }
 
-        if (invite.role === "owner") {
-            return creator.role === "owner"
-                ? { user: creator, token: this.#config.ownerToken }
-                : undefined;
+        if (invite.device === true) {
+            const token = this.#config.addDevice(creator.id, tunnel);
+
+            return token === undefined ? undefined : { user: creator, token, device: true };
         }
 
         if (!this.#mayInvite(creator, invite.session)) {

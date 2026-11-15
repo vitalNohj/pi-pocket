@@ -2185,10 +2185,11 @@ test("invites carry a role and a session over HTTP, and viewers get 403 on steer
     }
 });
 
-test("the owner signs another device in as the owner: owner only, once, no one new, and a new owner token signs it out", async () => {
+test("anyone signs another device in as themselves: the link works once, makes no one new, and that device has a token of its own", async () => {
     const { createServer } = await import("node:http");
     const { createHandler } = await import("../src/server/http.ts");
     const { Auth } = await import("../src/server/auth.ts");
+    const { MAX_DEVICES } = await import("../src/server/config.ts");
     const server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
     );
@@ -2215,83 +2216,140 @@ test("the owner signs another device in as the owner: owner only, once, no one n
                 "sec-fetch-site": site,
             },
         });
+    const cookieOf = (response: Response) =>
+        decodeURIComponent(
+            /pocket_auth=([^;]+)/.exec(response.headers.get("set-cookie") ?? "")![1]!,
+        );
+
+    /** Who a device with this cookie is, or the status that refused it. */
+    const whoIs = async (cookie: string): Promise<string | number> => {
+        const me = await fetch(`${base}/api/me`, {
+            headers: { cookie: `pocket_auth=${encodeURIComponent(cookie)}` },
+        });
+
+        return me.ok ? ((await me.json()) as { user: { id: string } }).user.id : me.status;
+    };
+
+    const link = async (token: string) =>
+        (await (await call(token, "me/device", {})).json()) as {
+            code: string;
+            minutes: number;
+            url: string;
+            svg: string;
+            grant?: unknown;
+        };
     const id = await newSession();
     const guest = await addPerson(app, "Gwen", "guest");
     const viewer = await addPerson(app, "Vic", "viewer");
+    const scoped = await addPerson(app, "Sol", "viewer", [String(id)]);
 
     try {
-        // Only the owner makes one, and it is never for one session.
-        const invite = (await (
-            await call(app.config.ownerToken, "invite", { role: "owner" })
-        ).json()) as { code: string; grant: unknown };
+        // Everyone makes one for themselves, whatever they may do here. It is not an invite: it grants nothing new.
+        for (const token of [app.config.ownerToken, guest.token, viewer.token, scoped.token]) {
+            assert.equal((await call(token, "me/device", {})).status, 200);
+        }
 
-        assert.deepEqual(invite.grant, { role: "owner" });
-        assert.equal((await call(guest.token, "invite", { role: "owner" })).status, 403);
-        assert.equal((await call(viewer.token, "invite", { role: "owner" })).status, 403);
-        assert.deepEqual(
-            (
-                (await (
-                    await call(app.config.ownerToken, "invite", {
-                        role: "owner",
-                        session: Number(id),
-                    })
-                ).json()) as { grant: unknown }
-            ).grant,
-            { role: "owner" },
-        );
+        const mine = await link(app.config.ownerToken);
 
-        // Another site cannot spend it.
-        assert.equal((await signIn(invite.code, "cross-site")).status, 403);
-        assert.equal(
-            (await fetch(`${base}/join/${invite.code}`)).status,
-            200,
-            "the invite still works",
-        );
+        assert.equal(mine.minutes, 15);
+        assert.equal(mine.grant, undefined);
+        assert.ok(mine.url.endsWith(`/join/${mine.code}`) && mine.svg.includes("<svg"));
 
-        // The device gets the owner's token, and no one new is made.
+        // The owner invite it replaced, which handed out the owner's token, is gone for everyone.
+        for (const token of [app.config.ownerToken, guest.token]) {
+            assert.equal((await call(token, "invite", { role: "owner" })).status, 400);
+        }
+
+        // Another site cannot spend it, and its page says who the device becomes.
+        assert.equal((await signIn(mine.code, "cross-site")).status, 403);
+        const page = await fetch(`${base}/join/${mine.code}`);
+
+        assert.equal(page.status, 200, "the link still works");
+        assert.match(await page.text(), /Sign in as Owner<\/h1>.*full control/s);
+
+        // The device is the owner, with a token of its own, and no one new is made.
         const people = app.config.users.length;
-        const signed = await signIn(invite.code, "same-origin");
+        const signed = await signIn(mine.code, "same-origin");
 
         assert.equal(signed.status, 303);
-        const cookie = decodeURIComponent(
-            /pocket_auth=([^;]+)/.exec(signed.headers.get("set-cookie") ?? "")![1]!,
-        );
+        const device = cookieOf(signed);
 
-        assert.equal(cookie, app.config.ownerToken);
+        assert.notEqual(device, app.config.ownerToken, "never the owner's token itself");
         assert.equal(app.config.users.length, people);
-        const me = await fetch(`${base}/api/me`, { headers: { cookie: `pocket_auth=${cookie}` } });
-
-        assert.equal(
-            ((await me.json()) as { user: { id: string; role: string } }).user.id,
-            owner().id,
+        assert.equal(await whoIs(device), owner().id);
+        assert.ok(!readFileSync(app.config.file, "utf8").includes(device), "kept by its hash");
+        assert.ok(
+            !JSON.stringify(app.people(owner())).includes("tokenHash"),
+            "and no list of people carries it",
         );
 
         // It works once.
-        assert.equal((await signIn(invite.code, "same-origin")).status, 410);
+        assert.equal((await signIn(mine.code, "same-origin")).status, 410);
 
-        // An owner invite made by anyone else (past the API's check) signs no one in.
-        const auth = new Auth(app.config);
-        const forged = auth.createInvite(guest.user, { role: "owner" });
+        // A guest's signs a device in as that guest, with what they have and no more.
+        const theirs = await link(guest.token);
 
-        assert.equal(auth.redeem(forged.code, ""), undefined);
-        assert.equal(auth.invite(forged.code), undefined, "and it is spent");
-
-        // A new owner token signs the device out.
-        app.config.rotateOwnerToken();
-        assert.equal(
-            (await fetch(`${base}/api/me`, { headers: { cookie: `pocket_auth=${cookie}` } }))
-                .status,
-            401,
+        assert.match(
+            await (await fetch(`${base}/join/${theirs.code}`)).text(),
+            /Sign in as Gwen<\/h1>.*all that they can here/s,
         );
+        const second = cookieOf(await signIn(theirs.code, "same-origin"));
+
+        assert.equal(await whoIs(second), guest.user.id);
+        assert.equal(app.config.users.length, people);
+        assert.notEqual(second, guest.token);
+
+        // Signing that device out ends its token alone: their first device stays in.
+        const out = await fetch(`${base}/api/logout`, {
+            method: "POST",
+            headers: { cookie: `pocket_auth=${encodeURIComponent(second)}`, "x-pocket": "1" },
+        });
+
+        assert.equal(out.status, 200);
+        assert.equal(await whoIs(second), 401);
+        assert.equal(await whoIs(guest.token), guest.user.id);
+
+        // Only so many devices stay signed in: one more signs out the one signed in longest ago.
+        const many: string[] = [];
+
+        for (let count = 0; count <= MAX_DEVICES; count++) {
+            many.push(app.config.addDevice(viewer.user.id)!);
+        }
+
+        assert.equal(await whoIs(many[0]!), 401);
+        assert.equal(await whoIs(many[1]!), viewer.user.id);
+        assert.equal(await whoIs(many.at(-1)!), viewer.user.id);
+        assert.equal(await whoIs(viewer.token), viewer.user.id, "never their first one");
+
+        // Someone removed takes their devices and their unused links along.
+        const auth = new Auth(app.config);
+        const left = await link(scoped.token);
+        const gone = app.config.addDevice(scoped.user.id)!;
+
+        app.config.removeUser(scoped.user.id);
+        assert.equal(await whoIs(gone), 401);
+        assert.equal((await fetch(`${base}/join/${left.code}`)).status, 410);
+        assert.equal(auth.redeem(left.code, ""), undefined);
+
+        // A new owner token signs out every device of the owner, and ends the owner's unused links; others stay.
+        const unused = await link(app.config.ownerToken);
+        const guests = await link(guest.token);
+
+        app.config.rotateOwnerToken();
+        assert.equal(await whoIs(device), 401);
+        assert.equal(auth.invite(unused.code), undefined);
+        assert.deepEqual(auth.invite(guests.code), { device: guest.user });
+        assert.equal(await whoIs(app.config.ownerToken), owner().id);
     } finally {
         app.config.removeUser(guest.user.id);
         app.config.removeUser(viewer.user.id);
+        app.config.removeUser(scoped.user.id);
         server.closeAllConnections();
         server.close();
     }
 });
 
-test("an invite lasts as long as asked (an owner's always 15 minutes), outlives a restart, and ends when its maker moves on", async () => {
+test("an invite lasts as long as asked (a device link always 15 minutes), outlives a restart, and ends when its maker moves on", async () => {
     const { createServer } = await import("node:http");
     const { createHandler } = await import("../src/server/http.ts");
     const { Auth } = await import("../src/server/auth.ts");
@@ -2324,19 +2382,23 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
     const MINUTE = 60_000;
 
     try {
-        // As long as asked, 15 minutes when not said; an owner invite, 15 whatever is asked.
-        for (const [body, minutes] of [
-            [{}, 15],
-            [{ minutes: 7 * 24 * 60, role: "owner" }, 15],
+        // As long as asked, 15 minutes when not said; a device link, 15 whatever is asked.
+        for (const [path, body, minutes] of [
+            ["invite", {}, 15],
+            ["invite", { minutes: 60 }, 60],
+            ["me/device", { minutes: 7 * 24 * 60 }, 15],
         ] as const) {
             const before = Date.now();
-            const invite = await make(body);
+            const invite = (await (await call(app.config.ownerToken, path, body)).json()) as {
+                expiresAt: number;
+                minutes: number;
+            };
 
-            assert.equal(invite.minutes, minutes, JSON.stringify(body));
+            assert.equal(invite.minutes, minutes, path);
             assert.ok(
                 invite.expiresAt >= before + minutes * MINUTE &&
                     invite.expiresAt <= Date.now() + minutes * MINUTE,
-                JSON.stringify(body),
+                path,
             );
         }
 
@@ -2418,8 +2480,8 @@ test("an invite lasts as long as asked (an owner's always 15 minutes), outlives 
         assert.equal(auth.invite(left.code), undefined);
         assert.ok(!(await live(left.code)));
 
-        // A new owner token ends owner invites not yet used, which would hand it out; others stay.
-        const mine = auth.createInvite(owner(), { role: "owner" });
+        // A new owner token ends the owner's device links not yet used; invites for someone new stay.
+        const mine = auth.createDeviceLink(owner());
         const theirs = auth.createInvite(owner(), { role: "guest" }, 24 * 60);
 
         app.config.rotateOwnerToken();
@@ -2472,8 +2534,42 @@ test("people who signed in through a Cloudflare quick tunnel are removed once th
 
     try {
         await join("Tunnelled", "old-tunnel.trycloudflare.com");
-        await join("Wifi");
+        const wifi = await join("Wifi");
         const legacy = await join("Legacy");
+        // Another device of someone here, signed in through the tunnel: the device is tied to it, not the person.
+        const { code } = (await (
+            await fetch(`${base}/api/me/device`, {
+                method: "POST",
+                headers: { ...owner, authorization: `Bearer ${wifi}` },
+                body: "{}",
+            })
+        ).json()) as { code: string };
+        const second = decodeURIComponent(
+            /pocket_auth=([^;]+)/.exec(
+                (
+                    await fetch(`${base}/join/${code}`, {
+                        method: "POST",
+                        body: "",
+                        headers: {
+                            "content-type": "application/x-www-form-urlencoded",
+                            "x-forwarded-host": "old-tunnel.trycloudflare.com",
+                        },
+                        redirect: "manual",
+                    })
+                ).headers.get("set-cookie") ?? "",
+            )![1]!,
+        );
+        const signedIn = async (cookie: string) =>
+            (
+                await fetch(`${base}/api/me`, {
+                    headers: {
+                        cookie: `pocket_auth=${encodeURIComponent(cookie)}`,
+                        "x-forwarded-host": "old-tunnel.trycloudflare.com",
+                    },
+                })
+            ).status === 200;
+
+        assert.ok(await signedIn(second));
 
         assert.equal(named("Tunnelled")?.tunnel, "old-tunnel.trycloudflare.com");
         assert.equal(named("Wifi")?.tunnel, undefined);
@@ -2493,6 +2589,7 @@ test("people who signed in through a Cloudflare quick tunnel are removed once th
             url: "https://old-tunnel.trycloudflare.com",
         });
         assert.ok(named("Tunnelled") && named("Legacy") && named("Wifi"));
+        assert.ok(await signedIn(second));
         // A new tunnel: its address is new, so the old one's people go. Others and the owner stay.
         app.setReach({
             mode: "cloudflare",
@@ -2502,6 +2599,9 @@ test("people who signed in through a Cloudflare quick tunnel are removed once th
         assert.equal(named("Tunnelled"), undefined);
         assert.equal(named("Legacy"), undefined);
         assert.ok(named("Wifi"));
+        assert.equal(named("Wifi")?.tunnel, undefined, "their device's tunnel never became theirs");
+        assert.ok(!(await signedIn(second)), "the device that came through the old tunnel is out");
+        assert.ok(await signedIn(wifi), "their first device is not");
         assert.ok(app.config.users.some((each) => each.role === "owner"));
     } finally {
         app.access = before;

@@ -13,7 +13,7 @@ import {
     until,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -419,6 +419,105 @@ test(
         );
         await flip("Tasks expire with the session");
         await until(() => app.config.server.tasksExpire !== true, "the choice to be taken back");
+    },
+);
+
+test(
+    "one's own page signs in another device: a link shows there, a new one ends it, and no one else's page offers it",
+    real,
+    async () => {
+        const part = (what: string) =>
+            inPage<string | null>(
+                `return JSON.stringify(document.querySelector('.pages-detail [data-part="device-link"] ${what}')?.${what.startsWith("input") ? "value" : "textContent"}.trim() ?? null)`,
+            );
+        const press = (label: string) =>
+            inPage(`
+                [...document.querySelectorAll('.pages-detail [data-part="device-link"] button')]
+                    .find((each) => each.textContent.trim() === ${JSON.stringify(label)})
+                    .click();
+
+                return JSON.stringify(true);
+            `);
+        const live = () =>
+            (
+                JSON.parse(readFileSync(app.config.file, "utf8")) as {
+                    invites?: { device?: true }[];
+                }
+            ).invites?.filter((each) => each.device === true).length ?? 0;
+
+        // Someone else's page: nothing to sign in there, also for the owner.
+        await open("people");
+        await show("Gina");
+        assert.equal(await part(".small"), null);
+
+        // The invite sheet no longer signs the owner's device in.
+        assert.ok(
+            !(await inPage<boolean>(
+                `const { openSheet } = await import("/store.js"); openSheet({ type: "invite" }); await new Promise((resolve) => setTimeout(resolve, 400)); return JSON.stringify(document.querySelector(".sheet").textContent.includes("Sign in as me"))`,
+            )),
+        );
+
+        await open("people");
+        await show("Owner");
+        assert.equal(await part(".small"), "Sign in another device");
+        assert.equal(live(), 0, "nothing is made until asked");
+
+        await press("Make a link");
+        await until(async () => (await part("input.mono")) !== null, "the link");
+
+        const first = (await part("input.mono"))!;
+
+        assert.match(first, /\/join\/[a-z0-9]{10}$/);
+        assert.equal(live(), 1);
+        assert.match((await part(".invite-code-head span"))!, /^Sign-in code$/);
+        assert.match(
+            (await part(".muted"))!,
+            /signs that device in as you, the owner, with full control/,
+        );
+
+        // It signs a device in as the owner, with a token of its own.
+        const signed = await fetch(first, {
+            method: "POST",
+            redirect: "manual",
+            body: "",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+        });
+        const cookie = decodeURIComponent(
+            /pocket_auth=([^;]+)/.exec(signed.headers.get("set-cookie") ?? "")![1]!,
+        );
+
+        assert.equal(app.config.userByToken(cookie)?.id, owner(app).id);
+        assert.notEqual(cookie, app.config.ownerToken);
+
+        // A new link ends the one shown; Done ends that one too, and the page is as it was.
+        await press("New link");
+        await until(async () => {
+            const now = await part("input.mono");
+
+            return now !== null && now !== first;
+        }, "another link");
+        assert.equal(live(), 1, "the one before ended, used or not");
+        await press("Done");
+        await until(async () => (await part("input.mono")) === null, "the link to go");
+        await until(() => live() === 0, "the server to end it");
+
+        // On a phone it fits the screen.
+        await open("people", VIEWPORTS.mobile);
+        await show("Owner");
+        await press("Make a link");
+        await until(async () => (await part("input.mono")) !== null, "the link on a phone");
+        assert.deepEqual(
+            await inPage<string[]>(`
+                return JSON.stringify(
+                    [...document.querySelectorAll(".sheet-body *")]
+                        .filter((each) => each.getBoundingClientRect().right > innerWidth + 1)
+                        .map((each) => each.className),
+                );
+            `),
+            [],
+        );
+        await press("Done");
+        await until(() => live() === 0, "the server to end the phone's");
     },
 );
 

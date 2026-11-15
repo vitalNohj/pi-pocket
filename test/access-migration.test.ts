@@ -58,6 +58,21 @@ before(async () => {
 
     old.sharedRunnerSessions = true;
     delete old.server;
+    // An owner invite nobody used yet, which handed out the owner's token, beside an invite for someone new.
+    old.invites = [
+        {
+            codeHash: "a".repeat(64),
+            role: "owner",
+            expiresAt: Date.now() + 600_000,
+            createdBy: owner(app).id,
+        },
+        {
+            codeHash: "b".repeat(64),
+            role: "viewer",
+            expiresAt: Date.now() + 600_000,
+            createdBy: owner(app).id,
+        },
+    ];
     writeFileSync(file, JSON.stringify(old, null, 2));
 
     app = await openApp(model);
@@ -75,6 +90,17 @@ test("the old global sharing switch is gone from the file", () => {
 
     assert.equal("sharedRunnerSessions" in saved, false);
     assert.deepEqual(app.config.server.users ?? [], []);
+});
+
+test("an owner invite nobody used ends: a device link took its place; an invite for someone new stays", () => {
+    const saved = JSON.parse(readFileSync(app.config.file, "utf8")) as {
+        invites: { codeHash: string; role?: string }[];
+    };
+
+    assert.deepEqual(
+        saved.invites.map((each) => [each.codeHash[0], each.role]),
+        [["b", "viewer"]],
+    );
 });
 
 test("invited people are shut out until the owner chooses them; the one invited to a session keeps it", () => {

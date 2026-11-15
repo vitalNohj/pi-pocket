@@ -36,7 +36,7 @@ const LASTS = [
     [7 * 24 * 60, "1 week", "in a week"],
 ];
 
-/** End an invite nobody will see: one the sheet stopped showing, or one that answered too late to show. */
+/** End an invite or a device link nobody will see: one no longer shown, or one that answered too late to show. */
 const cancelInvite = (invite) => {
     // A server that says how long its invites last also ends them on request; an older one has no such route.
     if (invite?.minutes !== undefined) {
@@ -51,7 +51,7 @@ const cancelInvite = (invite) => {
 };
 
 export function InviteSheet({ session = null }) {
-    const { view, me, sessions } = store.state;
+    const { view, sessions } = store.state;
     const here =
         session !== null
             ? (sessions.find((each) => each.id === session) ?? null)
@@ -59,14 +59,12 @@ export function InviteSheet({ session = null }) {
               ? view.conversation
               : null;
     const [only, setOnly] = useState(session !== null);
-    // The owner's own other device: it signs in as the owner, not as someone new.
-    const [asOwner, setAsOwner] = useState(false);
     const [minutes, setMinutes] = useState(15);
     const [made, setMade] = useState(null);
     // The newest invite could not be made: the sheet offers to try again rather than wait for ever.
     const [failed, setFailed] = useState(false);
     // What the sheet says now: an invite shows only while it was made for exactly this.
-    const asked = JSON.stringify([asOwner, only, minutes]);
+    const asked = JSON.stringify([only, minutes]);
     // Only the newest invite shows: one asked for before a change, answering late, must not stand for what the sheet says.
     const latest = useRef(0);
     // The invite the sheet last showed: a change to what it grants, or how long it lasts, ends it.
@@ -94,11 +92,9 @@ export function InviteSheet({ session = null }) {
             try {
                 answer = await api(
                     "invite",
-                    asOwner
-                        ? { role: "owner" }
-                        : collab()
-                          ? { ...(only && here ? { session: here.id } : {}), minutes }
-                          : { minutes },
+                    collab()
+                        ? { ...(only && here ? { session: here.id } : {}), minutes }
+                        : { minutes },
                 );
             } catch (error) {
                 if (ticket === latest.current) {
@@ -114,30 +110,21 @@ export function InviteSheet({ session = null }) {
                 return;
             }
 
-            // A server from before owner invites makes a guest's: never shown as the owner's.
-            if (asOwner && answer.grant?.role !== "owner") {
-                setFailed(true);
-
-                throw new Error("Restart Pi Pocket to sign in another device as the owner.");
-            }
-
             shown.current = answer;
             setMade({ ...answer, asked });
         });
 
     useEffect(() => {
         create({ replacing: true });
-    }, [only, asOwner, minutes]);
+    }, [only, minutes]);
     useEffect(
         () => () => {
             mounted.current = false;
         },
         [],
     );
-    // Shown only while it is what the sheet says, not for a frame after a change: above all, never an owner's invite
-    // under a cleared box (which the server's answer says too).
-    const invite =
-        made && made.asked === asked && (made.grant?.role === "owner") === asOwner ? made : null;
+    // Shown only while it is what the sheet says, not for a frame after a change.
+    const invite = made && made.asked === asked ? made : null;
     // An invite to more than one session shows its maker's sessions as they are now (`app.ts` `welcome`), no others.
     const where =
         only && here
@@ -150,19 +137,7 @@ export function InviteSheet({ session = null }) {
 
     return html`<${Sheet} title="Invite someone" onClose=${closeSheet}>
         ${
-            me?.role === "owner" &&
-            html`<label class="check">
-                <input
-                    type="checkbox"
-                    checked=${asOwner}
-                    onChange=${(event) => setAsOwner(event.currentTarget.checked)}
-                />
-                Sign in as me (owner)
-            </label>`
-        }
-        ${
             collab() &&
-            !asOwner &&
             html`<p class="muted small">
                 They join as a viewer: they read along, react, and chat. To steer Pi, they link an authenticator under
                 their name; then the owner turns on Steer Pi for them in People.
@@ -190,29 +165,22 @@ export function InviteSheet({ session = null }) {
                 </div>`
             }`
         }
-        ${
-            !asOwner &&
-            html`<div class="field">
-                <div class="label">Expires after</div>
-                <div class="segmented">
-                    ${LASTS.map(
-                        ([each, label]) => html`<button
-                            class=${minutes === each ? "on" : ""}
-                            aria-pressed=${minutes === each}
-                            onClick=${() => setMinutes(each)}
-                        >
-                            ${label}
-                        </button>`,
-                    )}
-                </div>
-            </div>`
-        }
+        <div class="field">
+            <div class="label">Expires after</div>
+            <div class="segmented">
+                ${LASTS.map(
+                    ([each, label]) => html`<button
+                        class=${minutes === each ? "on" : ""}
+                        aria-pressed=${minutes === each}
+                        onClick=${() => setMinutes(each)}
+                    >
+                        ${label}
+                    </button>`,
+                )}
+            </div>
+        </div>
         <p class="muted small">
-            ${
-                asOwner
-                    ? "Scan this on your other device, or send it the link. That device signs in as you, the owner. It works once and expires in 15 minutes."
-                    : `Scan this on the other device, or send it the link. It works once and expires ${lasting}. Whoever joins sees ${where}.`
-            }
+            ${`Scan this on the other device, or send it the link. It works once and expires ${lasting}. Whoever joins sees ${where}.`}
         </p>
         ${
             invite?.access?.url &&
@@ -220,74 +188,175 @@ export function InviteSheet({ session = null }) {
         }
         ${
             invite
-                ? html`<div class="invite">
-                    ${
-                        invite.local &&
-                        html`<div class="error-box">
-                            This link only works on this device. To let other devices in, press <span class="mono">a</span> in the Pi Pocket terminal (or start it with <span class="mono">--access</span>) and pick Local network, Cloudflare Tunnel, or Tailscale. Then make a new invite.
-                        </div>`
-                    }
-                    <div class="invite-details">
-                    <div class="qr" dangerouslySetInnerHTML=${{ __html: invite.svg }}></div>
-                    <div class="invite-code">
-                        <div class="invite-code-head">
-                            <span>Invite code</span>
-                            <button
-                                class="link small"
-                                onClick=${() =>
-                                    copyText(invite.code).then(
-                                        () => notify("info", "Code copied."),
-                                        () => notify("error", "Could not copy."),
-                                    )}
-                            >
-                                Copy
-                            </button>
-                        </div>
-                        <div
-                            class="invite-code-value"
-                            aria-label=${`Invite code ${invite.code.split("").join(" ")}`}
-                        >
-                            <span>${invite.code.slice(0, 5)}</span>
-                            <span>${invite.code.slice(5)}</span>
-                        </div>
-                        <div class="muted small">
-                            Or enter it on the other device's sign-in screen.
-                        </div>
-                    </div>
-                    </div>
-                    <div class="row">
-                        <input
-                            class="mono"
-                            readonly
-                            value=${invite.url}
-                            onFocus=${(event) => event.currentTarget.select()}
-                        />
-                        <button
-                            class="button"
-                            onClick=${() =>
-                                copyText(invite.url).then(
-                                    () => notify("info", "Link copied."),
-                                    () => notify("error", "Could not copy."),
-                                )}
-                        >
-                            Copy
-                        </button>
-                    </div>
-                    ${
-                        invite.alternatives?.length > 0 &&
-                        html`<p class="muted small">
-                            Also reachable at: ${invite.alternatives.map(
-                                (url) => html`<span class="mono">${url} </span>`,
-                            )}
-                        </p>`
-                    }
-                </div>`
+                ? html`<${InviteShown} invite=${invite} />`
                 : failed
                   ? html`<p class="muted small">No invite yet. Tap New invite to try again.</p>`
                   : html`<${Loader} label="Making an invite" />`
         }
         <button class="button wide" onClick=${create}>New invite</button>
+        ${
+            collab() &&
+            html`<p class="muted small">
+                An invite is for someone new. For another device of your own, open your name in People and use Sign in
+                another device.
+            </p>`
+        }
     <//>`;
+}
+
+/**
+ * An invite, or a device link, as made: its QR code, its code to type on the other device's sign-in screen, and its
+ * link. `code`: what the code is called; `again`: what to make once other devices can get in.
+ */
+function InviteShown({ invite, code = "Invite code", again = "invite" }) {
+    return html`<div class="invite">
+        ${
+            invite.local &&
+            html`<div class="error-box">
+                This link only works on this device. To let other devices in, press <span class="mono">a</span> in the Pi Pocket terminal (or start it with <span class="mono">--access</span>) and pick Local network, Cloudflare Tunnel, or Tailscale. Then make a new ${again}.
+            </div>`
+        }
+        <div class="invite-details">
+            <div class="qr" dangerouslySetInnerHTML=${{ __html: invite.svg }}></div>
+            <div class="invite-code">
+                <div class="invite-code-head">
+                    <span>${code}</span>
+                    <button
+                        class="link small"
+                        onClick=${() =>
+                            copyText(invite.code).then(
+                                () => notify("info", "Code copied."),
+                                () => notify("error", "Could not copy."),
+                            )}
+                    >
+                        Copy
+                    </button>
+                </div>
+                <div
+                    class="invite-code-value"
+                    aria-label=${`${code} ${invite.code.split("").join(" ")}`}
+                >
+                    <span>${invite.code.slice(0, 5)}</span>
+                    <span>${invite.code.slice(5)}</span>
+                </div>
+                <div class="muted small">Or enter it on the other device's sign-in screen.</div>
+            </div>
+        </div>
+        <div class="row">
+            <input
+                class="mono"
+                readonly
+                value=${invite.url}
+                onFocus=${(event) => event.currentTarget.select()}
+            />
+            <button
+                class="button"
+                onClick=${() =>
+                    copyText(invite.url).then(
+                        () => notify("info", "Link copied."),
+                        () => notify("error", "Could not copy."),
+                    )}
+            >
+                Copy
+            </button>
+        </div>
+        ${
+            invite.alternatives?.length > 0 &&
+            html`<p class="muted small">
+                Also reachable at: ${invite.alternatives.map(
+                    (url) => html`<span class="mono">${url} </span>`,
+                )}
+            </p>`
+        }
+    </div>`;
+}
+
+/**
+ * Sign in another device, on one's own page: a device link, which signs that device in as oneself and makes no one
+ * new. It works once and lasts 15 minutes; a new one ends the one before, and it leaves the page when its time is up.
+ */
+function DeviceLink() {
+    const owner = store.state.me?.role === "owner";
+    const [made, setMade] = useState(null);
+    const [busy, setBusy] = useState(false);
+    // Only the newest link shows: one that answers late, or after the page went, ends unseen.
+    const latest = useRef(0);
+    const mounted = useRef(true);
+
+    useEffect(
+        () => () => {
+            mounted.current = false;
+        },
+        [],
+    );
+    useEffect(() => {
+        if (made === null) {
+            return undefined;
+        }
+
+        const timer = setTimeout(() => setMade(null), Math.max(0, made.expiresAt - Date.now()));
+
+        return () => clearTimeout(timer);
+    }, [made]);
+
+    const make = () =>
+        attempt(async () => {
+            const ticket = ++latest.current;
+            const before = made;
+
+            setBusy(true);
+
+            try {
+                const answer = await api("me/device", {});
+
+                if (!mounted.current || ticket !== latest.current) {
+                    cancelInvite(answer);
+
+                    return;
+                }
+
+                cancelInvite(before);
+                setMade(answer);
+            } finally {
+                if (mounted.current && ticket === latest.current) {
+                    setBusy(false);
+                }
+            }
+        });
+
+    const end = () => {
+        latest.current += 1;
+        cancelInvite(made);
+        setMade(null);
+        setBusy(false);
+    };
+
+    const until =
+        made &&
+        new Date(made.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    return html`<div class="device-link" data-part="device-link">
+        <${Setting}
+            label="Sign in another device"
+            hint=${
+                made
+                    ? `Scan this on your other device, or open the link there. It signs that device in as you${owner ? ", the owner, with full control" : ""}, so keep it to yourself. It works once, until ${until}.`
+                    : "Makes a link that signs another phone or computer in as you. It works once, within 15 minutes."
+            }
+        >
+            ${
+                made
+                    ? html`<div class="device-link-actions">
+                          <button class="button small" disabled=${busy} onClick=${make}>New link</button>
+                          <button class="button small ghost" onClick=${end}>Done</button>
+                      </div>`
+                    : html`<button class="button small" disabled=${busy} onClick=${make}>
+                          Make a link
+                      </button>`
+            }
+        <//>
+        ${made && html`<${InviteShown} invite=${made} code="Sign-in code" again="link" />`}
+    </div>`;
 }
 
 function lastSeen(person) {
@@ -568,7 +637,10 @@ function Authenticator({ person }) {
     </div>`;
 }
 
-/** One person: who they are, then what they may do and where, and their sessions' approvals. */
+/**
+ * One person: who they are, then what they may do and where, and their sessions' approvals. One's own page also signs
+ * in another device of one's own.
+ */
 function PersonPage({ person }) {
     const { me } = store.state;
     const owner = me?.role === "owner";
@@ -627,6 +699,7 @@ function PersonPage({ person }) {
                 .filter(Boolean)
                 .join(" · ")}
         </div>
+        ${myself && collab() && html`<${DeviceLink} />`}
         <${PageTabs}
             label=${`${person.name}: parts`}
             tabs=${tabs}
