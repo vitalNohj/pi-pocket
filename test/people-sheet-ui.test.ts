@@ -1,5 +1,6 @@
 // The People sheet in a real browser (`web/sheets/people.js`): laid out as the Runners sheet is, and its Access part
-// changes the same list as each computer's People in Runners (`web/sheets/access.js`), in both directions.
+// changes the same list as each computer's People in Runners (`web/sheets/access.js`), in both directions. A runner
+// someone else linked is the owner's to read in Runners, and no choice in People.
 import { newIdentity } from "../src/runner/secure-link.ts";
 import {
     type App,
@@ -296,6 +297,75 @@ test(
             "Sam may use Laptop: off (disabled)",
         ]);
         assert.equal(app.policy.mayUse(scoped, THIS_SERVER), false);
+    },
+);
+
+test(
+    "a runner someone else linked is the owner's to read, not to change, and no choice in People",
+    real,
+    async () => {
+        // Gina may link her own, and did; she chose Vera for it.
+        const ginas = app.config.addRunner("Gina's desktop", guest.id, newIdentity().publicKey).id;
+
+        app.config.setRunnerUsers(ginas, [viewer.id]);
+
+        try {
+            await open("computers");
+            await show("Gina's desktop");
+
+            const shown = await inPage<{
+                row: string;
+                tabs: string[];
+                note: string;
+                actions: string[];
+                switches: number;
+                text: string;
+            }>(`
+                const row = [...document.querySelectorAll(".pages-item")].find((each) =>
+                    each.querySelector(".pages-item-title").textContent.startsWith("Gina's desktop"),
+                );
+
+                return JSON.stringify({
+                    row: row.textContent.replace(/\\s+/g, " ").trim(),
+                    tabs: [...document.querySelectorAll(".pages-detail .sheet-tabs [role=tab]")].map((each) => each.textContent.trim()),
+                    note: document.querySelector('.pages-detail [data-part="read-only"]')?.textContent.replace(/\\s+/g, " ").trim() ?? "",
+                    actions: [...document.querySelectorAll(".pages-detail .sheet-page-actions button")].map((each) => each.textContent.trim()),
+                    switches: document.querySelectorAll(".pages-detail [role=switch], .pages-detail input").length,
+                    text: document.querySelector(".pages-detail").textContent,
+                });
+            `);
+
+            assert.match(shown.row, /Gina$/, "the list says whose it is");
+            assert.deepEqual(shown.tabs, [], "one part to read: no People, Approvals, or Settings");
+            assert.match(shown.note, /Linked by Gina, who is in charge of it/);
+            assert.match(shown.note, /you can unlink it/);
+            assert.deepEqual(shown.actions, ["Unlink"]);
+            assert.equal(shown.switches, 0, "nothing to switch or type");
+            assert.doesNotMatch(shown.text, /Vera/, "its people are not the owner's to know");
+            assert.doesNotMatch(
+                shown.text,
+                /Tools on this computer|Start its runner|At a glance/,
+                "no heading with nothing under it, and no step that is its linker's to take",
+            );
+
+            // In People, a person's Access lists only the computers the owner is in charge of.
+            await open("people");
+            await show("Vera");
+            assert.deepEqual(
+                (await switches())
+                    .filter((each) => each.includes("may use"))
+                    .map((each) => each.replace(/: .*/, "")),
+                ["Vera may use This server", "Vera may use Laptop"],
+            );
+            assert.doesNotMatch(
+                await inPage<string>(
+                    `return JSON.stringify(document.querySelector(".pages-detail").textContent)`,
+                ),
+                /Gina's desktop/,
+            );
+        } finally {
+            await app.unlinkRunner(ginas);
+        }
     },
 );
 

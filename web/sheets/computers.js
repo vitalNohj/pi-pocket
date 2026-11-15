@@ -490,13 +490,24 @@ function Overview({ computer }) {
     const approvals = (store.state.folderApprovals ?? []).filter(
         (each) => each.computer === computer.id,
     ).length;
+    const mine = inCharge(computer);
+    const linker = store.state.users.find((each) => each.id === computer.createdBy)?.name;
     const rows = [
-        inCharge(computer) && ["People who may use it", people === 0 ? "none" : String(people)],
-        inCharge(computer) && ["Folders given", String(given)],
-        ["Session approvals", String(approvals)],
+        mine && ["People who may use it", people === 0 ? "none" : String(people)],
+        mine && ["Folders given", String(given)],
+        usesIt(computer) && ["Session approvals", String(approvals)],
     ].filter(Boolean);
 
     return html`<div class="sheet-pane">
+        ${
+            !mine &&
+            html`<div class="runner-note" data-part="read-only">
+                Linked by ${linker ?? "someone else"}, who is in charge of it: only they choose its people, give
+                folders there, and change its settings.${
+                    store.state.me?.role === "owner" ? " As the owner, you can unlink it." : ""
+                }
+            </div>`
+        }
         ${
             !server &&
             !computer.online &&
@@ -505,7 +516,9 @@ function Overview({ computer }) {
                     ${
                         computer.away
                             ? `${computer.name} is offline. Its sessions wait, and continue when it is back.`
-                            : `${computer.name} is not connected. Start its runner: pi-pocket runner.`
+                            : mine
+                              ? `${computer.name} is not connected. Start its runner: pi-pocket runner.`
+                              : `${computer.name} is not connected.`
                     }
                 </div>
             </div>`
@@ -513,13 +526,17 @@ function Overview({ computer }) {
         ${
             computer.relink &&
             html`<div class="runner-relink small" role="alert">
-                Linked by an older runner: link it again to connect. It keeps its sessions and people.
+                ${
+                    mine
+                        ? "Linked by an older runner: link it again to connect. It keeps its sessions and people."
+                        : "Linked by an older runner: who linked it links it again to connect."
+                }
             </div>`
         }
-        ${!server && html`<div class="group-title">Tools on this computer</div>`}
+        ${!server && computer.tools && html`<div class="group-title">Tools on this computer</div>`}
         ${!server && html`<${Tools} runner=${computer} />`}
         ${computer.fingerprint && html`<div class="muted small runner-key">Key: <code>${computer.fingerprint}</code></div>`}
-        <div class="group-title">At a glance</div>
+        ${rows.length > 0 && html`<div class="group-title">At a glance</div>`}
         <div class="sheet-rows">
             ${rows.map(
                 ([label, value]) => html`<div class="sheet-glance" key=${label}>
@@ -531,16 +548,26 @@ function Overview({ computer }) {
     </div>`;
 }
 
-/** The parts of a computer, as tabs: the people and folders tabs are who is in charge's alone. */
+/**
+ * Whether I work on a computer: in charge of it, or chosen for it to start sessions (`mayStart`, from the server). The
+ * owner lists a runner someone else linked without it: they read that it is there, and can unlink it.
+ */
+function usesIt(computer) {
+    return inCharge(computer) || computer.mayStart !== false;
+}
+
+/**
+ * The parts of a computer, as tabs. Its people, their folders, and its settings are who is in charge's alone, to see
+ * and to change; its sessions' approvals are for the people who work on it. Anyone else reads its overview only.
+ */
 function tabsFor(computer) {
     const mine = inCharge(computer);
-    const server = computer.id === "this-server";
 
     return [
         ["overview", "Overview"],
         mine && ["people", "People"],
-        ["approvals", "Approvals"],
-        (mine || !server) && ["settings", "Settings"],
+        usesIt(computer) && ["approvals", "Approvals"],
+        mine && ["settings", "Settings"],
     ].filter(Boolean);
 }
 
@@ -756,6 +783,10 @@ export function ComputersSheet() {
                                     ? "Offline"
                                     : "Not connected",
                             system(runner),
+                            // Whose it is, when it is not mine to change.
+                            !inCharge(runner) &&
+                                store.state.users.find((each) => each.id === runner.createdBy)
+                                    ?.name,
                         ]
                             .filter(Boolean)
                             .join(" · ")}
