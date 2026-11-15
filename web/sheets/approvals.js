@@ -4,7 +4,7 @@
 // of a computer, every one there. And the owner's choice of each person's approval time (`config.ts` `APPROVAL_DAYS`),
 // and of whether tasks stop with their session's approval.
 import { api, attempt, notify, store } from "../store.js";
-import { html, timeAgo } from "../ui.js";
+import { html, Switch, timeAgo } from "../ui.js";
 
 /** The choices of an approval time, in days; 0 is "never ends". */
 export const APPROVAL_DAYS = [1, 7, 14, 30, 0];
@@ -103,38 +103,37 @@ export function ApprovalsList({ mine = false, computer, person, heading = true }
                 None now. A session someone starts on a computer they are not in charge of gets one.
             </div>`
         }
-        <div class="sheet-list">
-            ${shown.map(
-                (
-                    approval,
-                ) => html`<div class="runner-permission-row approval-row" key=${approval.session}>
-                    <div class="person-main">
-                        <div class="small"><strong>${approval.title}</strong> · ${where(approval)}</div>
-                        <div class="muted small">
-                            ${[
-                                approval.method === "owner" ? "allowed in the app" : "with a code",
-                                `used by ${approval.name} ${timeAgo(approval.usedAt)}${timeAgo(approval.usedAt) === "now" ? "" : " ago"}`,
-                                ends(approval),
-                            ].join(" · ")}
+        ${
+            shown.length > 0 &&
+            html`<div class="sheet-list">
+                ${shown.map(
+                    (approval) => html`<div class="approval-row" key=${approval.session}>
+                        <div class="approval-text">
+                            <div class="approval-name">${approval.title}</div>
+                            <div class="muted small">${where(approval)}</div>
+                            <div class="muted small">
+                                ${[
+                                    approval.method === "owner"
+                                        ? "allowed in the app"
+                                        : "with a code",
+                                    `used by ${approval.name} ${timeAgo(approval.usedAt)}${timeAgo(approval.usedAt) === "now" ? "" : " ago"}`,
+                                    ends(approval),
+                                ].join(" · ")}
+                            </div>
                         </div>
-                    </div>
-                    <div class="row">
                         ${
-                            approval.ended &&
-                            html`<button class="button small" onClick=${() => renew(approval, me)}>
-                                Renew
-                            </button>`
+                            approval.ended
+                                ? html`<button class="button small" onClick=${() => renew(approval, me)}>
+                                      Renew
+                                  </button>`
+                                : html`<button class="button small ghost" onClick=${() => revoke(approval)}>
+                                      Revoke
+                                  </button>`
                         }
-                        ${
-                            !approval.ended &&
-                            html`<button class="button small ghost" onClick=${() => revoke(approval)}>
-                                Revoke
-                            </button>`
-                        }
-                    </div>
-                </div>`,
-            )}
-        </div>
+                    </div>`,
+                )}
+            </div>`
+        }
     </div>`;
 }
 
@@ -171,13 +170,17 @@ export function TasksExpire() {
             store.set({ tasksExpire: !on });
         });
 
-    return html`<label class="row small tasks-expire">
-        <input type="checkbox" checked=${on} onChange=${toggle} />
-        <span>
-            Tasks expire with the session
-            <span class="muted">
-                ${" "}· webhooks, schedules, and watches pause a week after their session's approval ends, with reminders.
-            </span>
-        </span>
-    </label>`;
+    return html`<div class="setting wrap tasks-expire">
+        <div class="grow">
+            <div class="small">Tasks expire with the session</div>
+            <div class="muted small">
+                ${
+                    on
+                        ? "On: webhooks, schedules, and watches pause a week after their session's approval ends, with reminders."
+                        : "Off: webhooks, schedules, and watches run for good once set up."
+                }
+            </div>
+        </div>
+        <${Switch} on=${on} label=${`Tasks expire with the session: ${on ? "on" : "off"}`} onChange=${toggle} />
+    </div>`;
 }

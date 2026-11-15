@@ -370,6 +370,59 @@ test(
 );
 
 test(
+    "an approval's text and button stand clear of the list's edges, and the owner's switch under it saves",
+    real,
+    async () => {
+        await open("people");
+        await show("Session approvals");
+
+        // Two approvals, put in the page's own state: the list as it is drawn, with nothing started for it.
+        const shown = await inPage<{ left: number; right: number; lines: number }>(`
+            const { store } = await import("/store.js");
+            const row = (session, title) => ({
+                session,
+                title,
+                folder: "/home/someone/project",
+                computer: "this-server",
+                lastUser: store.state.me.id,
+                name: "Owner",
+                method: "owner",
+                usedAt: Date.now() - 60000,
+                expiresAt: null,
+                ended: false,
+            });
+
+            store.set({ folderApprovals: [row("901", "First session"), row("902", "Second session")] });
+            await new Promise((resolve) => setTimeout(resolve, 200));
+
+            const first = document.querySelector(".approval-row");
+            const list = first.parentElement.getBoundingClientRect();
+
+            return JSON.stringify({
+                left: Math.round(first.querySelector(".approval-text").getBoundingClientRect().left - list.left),
+                right: Math.round(list.right - first.querySelector(".button").getBoundingClientRect().right),
+                lines: first.querySelectorAll(".approval-text > *").length,
+            });
+        `);
+
+        assert.ok(shown.left >= 10, `the text is ${shown.left}px from the list's edge`);
+        assert.ok(shown.right >= 10, `the button is ${shown.right}px from the list's edge`);
+        assert.equal(shown.lines, 3, "its name, where it is, and when it ends: a line each");
+
+        // The owner's choice under the list is a switch, as every other choice in the sheet, and it is kept.
+        assert.ok((await switches()).includes("Tasks expire with the session: off"));
+        await flip("Tasks expire with the session");
+        await until(() => app.config.server.tasksExpire === true, "the server to keep the choice");
+        await until(
+            async () => (await switches()).includes("Tasks expire with the session: on"),
+            "the switch to show it",
+        );
+        await flip("Tasks expire with the session");
+        await until(() => app.config.server.tasksExpire !== true, "the choice to be taken back");
+    },
+);
+
+test(
     "on a phone the list stands over the page, and nothing is wider than the screen",
     real,
     async () => {
