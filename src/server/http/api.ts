@@ -1259,6 +1259,20 @@ export function createApi(options: HttpOptions, auth: Auth) {
             });
         }
 
+        // Who is in charge of a session's computer takes that one session from one person (`app.ts` `revokeSession`).
+        if (
+            first === "sessions" &&
+            second !== undefined &&
+            third === "revoke" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ person?: unknown } | null>(request);
+
+            await app.revokeSession(user, conversationId(second), body?.person);
+
+            return json(response, 200, { ok: true });
+        }
+
         if (
             first === "sessions" &&
             second !== undefined &&

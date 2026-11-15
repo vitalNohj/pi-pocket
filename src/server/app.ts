@@ -3258,6 +3258,59 @@ export class PocketApp {
     }
 
     /**
+     * `by`, in charge of session `id`'s computer, takes that one session from `personId`, and nothing else of theirs:
+     * shared with them, it is no longer; started by them, it moves to `by` with the tasks they set up in it
+     * (`handOver`); invited to it alone, they are no longer. They leave it at once.
+     */
+    async revokeSession(by: User, id: ConversationId, personId: unknown): Promise<void> {
+        const root = this.rootOf(id);
+        const facts = this.policy.session(String(root));
+
+        this.requireSee(by, root);
+
+        if (facts === undefined || facts.pip !== undefined) {
+            throw new HttpError(404, "Not a session");
+        }
+
+        this.policy.requireManage(by, facts.computer);
+
+        const person = typeof personId === "string" ? this.config.userById(personId) : undefined;
+
+        if (person === undefined) {
+            throw new HttpError(400, "That person is not on this server.");
+        }
+
+        if (this.policy.inCharge(person, facts.computer)) {
+            throw new HttpError(
+                400,
+                `${person.name} is in charge of ${this.#computerName(facts.computer)}: every session there is theirs.`,
+            );
+        }
+
+        const invited = person.sessions?.includes(facts.id) === true;
+
+        if (
+            !invited &&
+            this.policy.starter(facts) !== person.id &&
+            facts.sharedWith?.includes(person.id) !== true
+        ) {
+            throw new HttpError(404, `${person.name} does not have that session.`);
+        }
+
+        if (invited) {
+            this.config.updateUser(person.id, {
+                sessions: person.sessions!.filter((each) => each !== facts.id),
+            });
+        }
+
+        await this.handOver(person.id, facts.computer, facts.id);
+        void this.#refreshUser(person.id);
+        this.accessChanged();
+        this.#peopleChanged();
+        await this.collab.activity(root, by, `took the session from ${person.name}`);
+    }
+
+    /**
      * May session `id`'s tasks (webhooks, schedules, watches) run now. "Tasks expire with the session" off (the default):
      * they run for good once set up. On: while its approval is live, or the 7 days of grace after it ended (with a
      * reminder each day to its starter and who is in charge), then they pause until someone renews it, and those two
@@ -3351,8 +3404,11 @@ export class PocketApp {
      * set up on a session there that they may no longer steer: on their own sessions and on sessions shared with them
      * alike. One commit moves both, so a restart never leaves a task with someone who left (`#handOverGone` finishes one
      * that removing a person began). Nothing stops.
+     *
+     * With `only` (a top session there), that session alone is taken from them (`revokeSession`): it is no longer
+     * shared with them, and one they started moves although they may still use its folder.
      */
-    async handOver(person: string, computer?: string): Promise<void> {
+    async handOver(person: string, computer?: string, only?: string): Promise<void> {
         const gone = this.config.userById(person) === undefined;
         const on = (where: string) => computer === undefined || where === computer;
         const moved = new Map<string, string>();
@@ -3363,11 +3419,26 @@ export class PocketApp {
             for (const [id, meta] of Object.entries(sessions.items)) {
                 const where = meta.runner ?? THIS_SERVER;
 
+                if (only !== undefined) {
+                    if (id !== only) {
+                        continue;
+                    }
+
+                    const kept = meta.sharedWith?.filter((each) => each !== person);
+
+                    if (kept === undefined || kept.length === 0) {
+                        delete meta.sharedWith;
+                    } else {
+                        meta.sharedWith = kept;
+                    }
+                }
+
                 if (meta.createdBy !== person || meta.pip !== undefined || !on(where)) {
                     continue;
                 }
 
                 const stays =
+                    only === undefined &&
                     !gone &&
                     this.policy.mayUseFolder({ id: person }, where, this.#accessFolder(meta));
 

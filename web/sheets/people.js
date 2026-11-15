@@ -1,6 +1,7 @@
 // People with access to this server, and invites for more. The People sheet is laid out as the Runners sheet is
-// (`pages.js`): everyone on the left, the chosen person's page beside it, with what they may do and where. Where a
-// person may work is the same list as each computer's People in Runners (`access.js`).
+// (`pages.js`): everyone on the left, the chosen person's page beside it. The owner manages a person there: what they
+// may do, where they may work (their folders and their sessions on each computer, as in Runners: `access.js`), and
+// their sign-in. Anyone else reads who is here, and has their own things.
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Avatar, avatarBlob } from "../avatar.js";
 import {
@@ -15,18 +16,9 @@ import {
     store,
 } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
-import {
-    choosable,
-    choosePerson,
-    chosenFor,
-    computers,
-    FolderList,
-    inCharge,
-    loadComputers,
-    THIS_SERVER,
-} from "./access.js";
-import { ApprovalsList, ApprovalTime, TasksExpire } from "./approvals.js";
-import { PageItem, Pages, PageTabs } from "./pages.js";
+import { AccessRow, choosable, computers, inCharge, loadComputers } from "./access.js";
+import { ApprovalTime, TasksExpire } from "./approvals.js";
+import { PageItem, Pages } from "./pages.js";
 
 /** How long an invite may last: minutes, its button, and how the help text says it. */
 const LASTS = [
@@ -450,7 +442,7 @@ function Setting({ label, hint, children }) {
 
 /**
  * What the owner lets a person do everywhere: steer Pi (which takes their own authenticator), link computers of their
- * own, and get in past the one session they were invited to.
+ * own, how long their sessions' approvals last, and get in past the one session they were invited to.
  */
 function Rights({ person }) {
     const sessionTitle = (id) =>
@@ -503,6 +495,16 @@ function Rights({ person }) {
             <//>`
         }
         ${
+            steers &&
+            person.approvalDays !== undefined &&
+            html`<${Setting}
+                label="Approvals last"
+                hint=${`How long a session of theirs stays open after ${person.name} last used it. Then it is locked until they give a code, or you allow it.`}
+            >
+                <${ApprovalTime} person=${person} plain=${true} />
+            <//>`
+        }
+        ${
             only &&
             html`<${Setting}
                 label="One session only"
@@ -522,89 +524,33 @@ function Rights({ person }) {
     </div>`;
 }
 
-/**
- * One computer for one person: whether they may use it, and the folders given to them there. The same list the Runners
- * sheet shows under that computer's People (`access.js`): a change in one is a change in the other.
- */
-function PersonComputer({ computer, person }) {
-    const [busy, setBusy] = useState(false);
-    const chosen = chosenFor(computer, person);
-    const server = computer.id === THIS_SERVER;
-
-    const toggle = async () => {
-        if (
-            chosen &&
-            !confirm(
-                `Take ${computer.name} from ${person.name}? They leave its sessions at once, and the sessions they started there move to you.`,
-            )
-        ) {
-            return;
-        }
-
-        setBusy(true);
-
-        try {
-            await choosePerson(computer, person, !chosen);
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    return html`<div class="access-computer">
-        <div class="setting wrap">
-            <span
-                class=${`runner-dot ${server || computer.online ? "on" : computer.away ? "away" : ""}`}
-                aria-hidden="true"
-            ></span>
-            <div class="grow">
-                <div class="small"><strong>${computer.name}</strong></div>
-                <div class="muted small">
-                    ${
-                        person.sessions
-                            ? "Not for someone invited to one session only."
-                            : !chosen
-                              ? "Off: they see nothing of it."
-                              : person.role === "viewer"
-                                ? "On: they see the sessions shared with them here."
-                                : "On: they start sessions in the folders below, and see the ones shared with them."
-                    }
-                </div>
-            </div>
-            <${Switch}
-                on=${chosen}
-                disabled=${busy || Boolean(person.sessions)}
-                label=${`${person.name} may use ${computer.name}: ${chosen ? "on" : "off"}`}
-                onChange=${toggle}
-            />
-        </div>
-        ${chosen && person.role === "guest" && html`<${FolderList} computer=${computer} person=${person} />`}
-    </div>`;
-}
-
 /** The computers I am in charge of that `person` can be chosen for. */
 function placesFor(person) {
     return computers().filter((each) => inCharge(each) && choosable(each, person));
 }
 
-/** Where a person may work: each computer I am in charge of, with their folders there. */
+/**
+ * Where a person may work, for the owner: each computer, whether they may use it, and under it the folders given to
+ * them there and the sessions they have there, as two lists (`access.js` `AccessRow`). The same record as that
+ * computer's People in Runners: a change in one is a change in the other.
+ */
 function Places({ person }) {
-    const mine = placesFor(person);
-
-    if (mine.length === 0) {
-        return null;
-    }
-
     return html`<div class="group">
         <div class="group-title">Where</div>
         <div class="muted small">
-            A person gets in only on the computers chosen for them. Those who steer work only in the folders given
-            to them there, and the folders inside them. The same choices are in Runners, under each computer's People.
+            A person gets in only on the computers turned on for them. Under each: the folders given to them there, and
+            the sessions they have there. The same is in Runners, under each computer's People.
         </div>
-        ${mine.map(
-            (computer) => html`<${PersonComputer}
+        ${placesFor(person).map(
+            (computer) => html`<${AccessRow}
                 key=${computer.id}
                 computer=${computer}
                 person=${person}
+                title=${computer.name}
+                lead=${html`<span
+                    class=${`runner-dot ${computer.id === "this-server" || computer.online ? "on" : computer.away ? "away" : ""}`}
+                    aria-hidden="true"
+                ></span>`}
             />`,
         )}
     </div>`;
@@ -648,8 +594,10 @@ function Authenticator({ person }) {
 }
 
 /**
- * One person: who they are, then what they may do and where, and their sessions' approvals. One's own page also signs
- * in another device of one's own; for the owner, anyone's page signs in a device of theirs.
+ * One person: who they are, then, for the owner, everything about them: what they may do, where they may work (each
+ * computer, with their folders and their sessions there as two lists, as in Runners), and their sign-in. Anyone else
+ * reads who they are. One's own page also signs in another device of one's own; for the owner, anyone's page signs in
+ * a device of theirs.
  */
 function PersonPage({ person }) {
     const { me } = store.state;
@@ -657,18 +605,10 @@ function PersonPage({ person }) {
     const myself = person.id === me?.id;
     // What the owner decides for a person; the owner themselves can do everything.
     const rules = owner && person.role !== "owner" && collab();
-    const count = (store.state.folderApprovals ?? []).filter(
-        (each) => each.lastUser === person.id,
-    ).length;
-    const tabs = [
-        (rules || placesFor(person).length > 0) && ["access", "Access"],
-        // Viewers start nothing, so nothing of theirs needs an approval.
-        owner &&
-            person.role !== "viewer" &&
-            person.approvalDays !== undefined && ["approvals", "Approvals", count],
-    ].filter(Boolean);
-    const [tab, setTab] = useState(null);
-    const shown = tabs.some(([id]) => id === tab) ? tab : tabs[0]?.[0];
+    // Where a person may work is the owner's to set here. A runner's linker sets it under their computer, in Runners.
+    const places = owner && placesFor(person).length > 0;
+    // One's own approval time counts only on a computer someone else is in charge of.
+    const asked = owner && myself && computers().some((each) => !inCharge(each));
 
     const remove = () =>
         confirm(
@@ -714,38 +654,31 @@ function PersonPage({ person }) {
             (myself || owner) &&
             html`<${DeviceLink} key=${person.id} person=${person} />`
         }
-        <${PageTabs}
-            label=${`${person.name}: parts`}
-            tabs=${tabs}
-            shown=${shown}
-            onShow=${setTab}
-        />
         ${
-            shown === "access" &&
+            asked &&
+            person.approvalDays !== undefined &&
+            html`<${Setting}
+                label="Approvals last"
+                hint="How long your session stays open on a computer someone else is in charge of, after you last used it."
+            >
+                <${ApprovalTime} person=${person} plain=${true} />
+            <//>`
+        }
+        ${
+            (rules || places) &&
             html`<div class="sheet-pane">
                 ${rules && html`<${Rights} person=${person} />`}
-                <${Places} person=${person} />
+                ${places && html`<${Places} person=${person} />`}
                 ${rules && html`<${Authenticator} person=${person} />`}
             </div>`
         }
         ${
-            shown === "approvals" &&
-            html`<div class="sheet-pane">
-                <${Setting}
-                    label="Approvals last"
-                    hint=${`How long a session's approval lasts after ${myself ? "you" : person.name} last used it.`}
-                >
-                    <${ApprovalTime} person=${person} plain=${true} />
-                <//>
-                <${ApprovalsList} person=${person.id} />
-            </div>`
-        }
-        ${
-            tabs.length === 0 &&
+            !rules &&
+            !places &&
             html`<p class="muted small">
                 ${
                     person.role === "owner"
-                        ? "They can do everything here: every session on this server is theirs to see, and they choose who gets in."
+                        ? `${myself ? "You can" : "They can"} do everything here: every session on this server is ${myself ? "yours" : "theirs"} to see, and ${myself ? "you" : "they"} choose who gets in.`
                         : person.role === "viewer"
                           ? `${myself ? "You read" : "They read"} the sessions shared with ${myself ? "you" : "them"}, react, and chat. Steering Pi takes an authenticator, and the owner's leave.`
                           : `${myself ? "You send" : "They send"} to Pi in the sessions shared with ${myself ? "you" : "them"}, and start sessions in the folders the owner gave ${myself ? "you" : "them"}.`
@@ -755,23 +688,18 @@ function PersonPage({ person }) {
     </div>`;
 }
 
-/** Every session approval the owner may list, and whether tasks stop with them. */
-function ApprovalsPage() {
+/** What the owner sets for everyone on this server. */
+function SettingsPage() {
     return html`<div class="sheet-page">
-        <h3 class="sheet-page-title">Session approvals</h3>
-        <p class="muted small">
-            A session someone works in on a computer they are not in charge of has an approval. It ends when it is not
-            used for that person's approval time; then the session is locked until it is renewed.
-        </p>
-        <${ApprovalsList} heading=${false} />
+        <h3 class="sheet-page-title">Settings</h3>
+        <p class="muted small">For everyone on this server.</p>
         <${TasksExpire} />
     </div>`;
 }
 
 /**
  * People: everyone with access on the left, and the chosen person's page beside it, laid out as the Runners sheet is
- * (`pages.js`). The owner sets there what each person may do and, as anyone in charge of a computer, where: the same
- * choices as under each computer in Runners.
+ * (`pages.js`). The owner manages each person there, and sets what holds for everyone (Settings).
  */
 export function PeopleSheet() {
     const { me, users } = store.state;
@@ -792,7 +720,7 @@ export function PeopleSheet() {
     // falls back the same way.
     const fallback = (people.find((each) => each.id !== me?.id) ?? people[0])?.id;
     const shown =
-        view === "approvals" && owner
+        view === "settings" && owner
             ? view
             : people.some((each) => `person:${each.id}` === view)
               ? view
@@ -800,7 +728,6 @@ export function PeopleSheet() {
                 ? null
                 : `person:${fallback}`;
     const current = people.find((each) => `person:${each.id}` === shown);
-    const approvals = (store.state.folderApprovals ?? []).length;
 
     const list = html`<div class="group-title">People</div>
         ${people.map(
@@ -825,11 +752,11 @@ export function PeopleSheet() {
         ${
             owner &&
             html`<${PageItem}
-                selected=${shown === "approvals"}
-                onSelect=${() => setView("approvals")}
+                selected=${shown === "settings"}
+                onSelect=${() => setView("settings")}
                 lead=${html`<${Icon} name="shield" size=${16} />`}
-                title="Session approvals"
-                badge=${approvals > 0 ? String(approvals) : null}
+                title="Settings"
+                detail="For everyone"
             />`
         }
         <${PageItem}
@@ -842,7 +769,7 @@ export function PeopleSheet() {
     return html`<${Sheet} title="People" onClose=${closeSheet} className="pages-sheet">
         <${Pages} label="People" list=${list}>
             ${current && html`<${PersonPage} key=${current.id} person=${current} />`}
-            ${shown === "approvals" && html`<${ApprovalsPage} />`}
+            ${shown === "settings" && html`<${SettingsPage} />`}
         <//>
     <//>`;
 }

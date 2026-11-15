@@ -295,7 +295,7 @@ The Extensions hub in `sheets/gallery.js` shares one listing between Discover, I
 
 PiP's `pip-window.js` handles pointer resize zones and the account/browser size preference.
 
-People (`sheets/people.js`) and Runners (`sheets/computers.js`) are each a sheet of pages (`sheets/pages.js`: a list on the left, the chosen one's page beside it, stacked on a phone). Who may use a computer, and in which folders, is one list on the server: both sheets show and change it with the same parts (`sheets/access.js`), People by person and Runners by computer.
+People (`sheets/people.js`) and Runners (`sheets/computers.js`) are each a sheet of pages (`sheets/pages.js`: a list on the left, the chosen one's page beside it, stacked on a phone). Who may use a computer, and in which folders, is one record on the server: both sheets show and change it with the same part (`sheets/access.js` `AccessRow`: the switch, and under it two closed lists, the person's folders there and their sessions there, each row taken back alone), People by person and Runners by computer. Approvals are listed in neither; `sheets/approvals.js` keeps only each person's approval time and **Tasks expire with the session**.
 
 The menu in `sheets/menu.js` keeps `Sheet`'s focus, Escape, drag-to-close, and the sheet trail's Back behavior. Its `MenuFrame` positions it below the top bar's menu button at ≥700px, and adds arrow navigation and focus return; below that width it stays a bottom sheet. `PlacesSheet` uses the same three-column tiles.
 
