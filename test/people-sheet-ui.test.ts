@@ -1,12 +1,14 @@
 // The People sheet in a real browser (`web/sheets/people.js`): laid out as the Runners sheet is, and where a person may
 // work is the same record as each computer's People in Runners (`web/sheets/access.js`), in both directions: whether
-// they may use it, and under it their folders and their sessions there, two lists that stay closed until asked for,
-// each taken back alone. A runner someone else linked is the owner's to read in Runners, and no choice in People.
+// they may use it, and under it one tree of that computer alone, with the rows of the Files panel's: the folders given
+// to them there, closed until opened, and in each the sessions they have in it. Each row is taken back alone. A runner
+// someone else linked is the owner's to read in Runners, and no choice in People.
 import { newIdentity } from "../src/runner/secure-link.ts";
 import {
     type App,
     answerRequests,
     cleanUp,
+    home,
     newSession,
     openApp,
     owner,
@@ -193,43 +195,62 @@ test(
     },
 );
 
-/** The lists under the rows of the page shown, closed until asked for: what each is called, and whether it is open. */
+/**
+ * The rows of the trees on the page shown that open: each folder given, and the group of sessions in no folder. What
+ * each is called (its count at the end), and whether it is open.
+ */
 const folds = () =>
     inPage<string[]>(`
         return JSON.stringify(
-            [...document.querySelectorAll(".pages-detail .access-fold-head")].map(
+            [...document.querySelectorAll(".pages-detail .at-folder, .pages-detail .at-rest")].map(
                 (each) => each.getAttribute("aria-label") + (each.getAttribute("aria-expanded") === "true" ? " (open)" : ""),
             ),
         );
     `);
 
-/** Open, or close, the list called \`name\`. */
+/** Open, or close, the row of a tree called \`name\`. */
 const fold = (name: string) =>
     inPage(`
-        [...document.querySelectorAll(".pages-detail .access-fold-head")]
+        [...document.querySelectorAll(".pages-detail .at-folder, .pages-detail .at-rest")]
             .find((each) => each.getAttribute("aria-label").startsWith(${JSON.stringify(name)}))
             .click();
 
         return JSON.stringify(true);
     `);
 
-/** The sessions the open lists of the page show, as "title | how they have it". */
+/** The sessions the opened rows show, as "title | how they have it". */
 const sessionRows = () =>
     inPage<string[]>(`
         return JSON.stringify(
-            [...document.querySelectorAll(".pages-detail .access-session")].map(
+            [...document.querySelectorAll(".pages-detail .at-session")].map(
                 (each) =>
-                    each.querySelector(".access-session-name").textContent.trim() +
+                    each.querySelector(".at-session-name").textContent.trim() +
                     " | " +
-                    each.querySelector(".access-session-text .muted").textContent.replace(/\\s+/g, " ").trim().replace(/^.*? · /, ""),
+                    each.querySelector(".at-how").textContent.replace(/\\s+/g, " ").trim(),
             ),
         );
     `);
 
-/** Press the button called \`label\` on the page shown; a question it asks is answered yes. */
+/** The sessions under the open folder called \`name\`, by title. */
+const under = (name: string) =>
+    inPage<string[]>(`
+        const row = [...document.querySelectorAll(".pages-detail .at-folder, .pages-detail .at-rest")]
+            .find((each) => each.getAttribute("aria-label").startsWith(${JSON.stringify(name)}));
+
+        return JSON.stringify(
+            [...row.closest(".at-node").querySelectorAll(".at-session-name")].map((each) => each.textContent.trim()),
+        );
+    `);
+
+/** Press the button called \`label\` on the page shown; a question it asks is kept, and answered yes. */
 const press = (label: string) =>
     inPage(`
-        window.confirm = () => true;
+        window.asked = [];
+        window.confirm = (text) => {
+            window.asked.push(text);
+
+            return true;
+        };
         [...document.querySelectorAll(".pages-detail button")]
             .find((each) => each.getAttribute("aria-label") === ${JSON.stringify(label)})
             .click();
@@ -237,7 +258,17 @@ const press = (label: string) =>
         return JSON.stringify(true);
     `);
 
+const asked = () => inPage<string[]>(`return JSON.stringify(window.asked ?? [])`);
+
+/** Whether the page shown has something called \`label\`. */
+const has = (label: string) =>
+    inPage<boolean>(
+        `return JSON.stringify(document.querySelector('.pages-detail [aria-label=${JSON.stringify(label)}]') !== null)`,
+    );
+
 test("what a person may use is set in People, and shows in Runners", real, async () => {
+    const given = realpathSync(root);
+
     await open("people");
     await show("Gina");
     assert.deepEqual(await switches(), [
@@ -247,6 +278,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "Gina may use Laptop: off",
     ]);
     assert.deepEqual(await folds(), [], "nothing to list where she is not chosen");
+    assert.equal(await has("Give Gina a folder on This server"), false);
 
     await flip("Gina may use This server");
     await until(
@@ -259,37 +291,48 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "the server to choose Gina for the Laptop",
     );
 
-    // Chosen, she has two lists under each computer, apart from each other and closed until asked for.
-    await until(async () => (await folds()).length === 4, "her lists");
-    assert.deepEqual(await folds(), [
-        "Folders of Gina on This server: 0",
-        "Sessions of Gina on This server: 0",
-        "Folders of Gina on Laptop: 0",
-        "Sessions of Gina on Laptop: 0",
-    ]);
+    // Chosen, she has a tree under each computer, of that computer alone: no folders yet, and the row that adds one.
+    await until(async () => await has("Give Gina a folder on Laptop"), "her trees");
+    assert.equal(await has("Give Gina a folder on This server"), true);
+    assert.deepEqual(await folds(), [], "no folder given, and no session, so nothing to open");
     assert.equal(
-        await inPage<boolean>(
-            `return JSON.stringify(document.querySelector('[aria-label="Add a folder for Gina on This server"]') !== null)`,
-        ),
+        await has("Add a folder for Gina on This server"),
         false,
-        "closed: its folders do not show",
+        "no field until asked for",
     );
 
-    await fold("Folders of Gina on This server");
+    // The row that adds a folder turns into the field; the folder given is then a row of the tree, closed.
+    await press("Give Gina a folder on This server");
+    await until(async () => await has("Add a folder for Gina on This server"), "the field");
     await page.type({ selector: '[aria-label="Add a folder for Gina on This server"]' }, root, {
         submit: true,
     });
     await until(
-        () => app.config.givenFolders(undefined, guest.id).includes(realpathSync(root)),
+        () => app.config.givenFolders(undefined, guest.id).includes(given),
         "the folder to be given",
     );
     assert.equal(app.policy.mayStart(guest, THIS_SERVER), true);
     await until(
-        async () => (await folds()).includes("Folders of Gina on This server: 1 (open)"),
-        "the count to follow",
+        async () => (await folds()).includes(`Folder ${given} of Gina on This server: 0`),
+        "the folder's row",
+    );
+    assert.deepEqual(await folds(), [`Folder ${given} of Gina on This server: 0`]);
+    assert.equal(await has("Add a folder for Gina on This server"), false, "the field closed");
+
+    // The tree's rows are the Files panel's: the same row, set in by its depth.
+    assert.deepEqual(
+        await inPage<{ row: boolean; mono: boolean }>(`
+            const row = document.querySelector(".pages-detail .at-folder");
+
+            return JSON.stringify({
+                row: row.classList.contains("ft-row") && row.classList.contains("dir"),
+                mono: getComputedStyle(row).fontFamily === getComputedStyle(document.querySelector(".pages-detail .at-add")).fontFamily,
+            });
+        `),
+        { row: true, mono: true },
     );
 
-    // The same record, by computer: a row for each person, with the same two lists.
+    // The same record, by computer: a row for each person, with the tree of that computer alone.
     await open("computers");
     await show("Laptop");
     await inPage(`
@@ -304,10 +347,8 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "Gina among the Laptop's people",
     );
     assert.deepEqual(await switches(), ["Gina may use Laptop: on", "Vera may use Laptop: off"]);
-    assert.deepEqual(await folds(), [
-        "Folders of Gina on Laptop: 0",
-        "Sessions of Gina on Laptop: 0",
-    ]);
+    assert.deepEqual(await folds(), [], "this server's folder is not the Laptop's");
+    assert.equal(await has("Give Gina a folder on Laptop"), true);
     assert.doesNotMatch(
         await inPage<string>(
             `return JSON.stringify(document.querySelector(".pages-detail").textContent)`,
@@ -318,15 +359,16 @@ test("what a person may use is set in People, and shows in Runners", real, async
 });
 
 test(
-    "a person's folders and sessions are two lists, each taken back alone, and a session opens from its row",
+    "a person's sessions sit under the folders given to them; each row is taken back alone, and a session opens from its row",
     real,
     async () => {
-        // Gina has this server and a folder there (the test before). She starts two sessions; a third is the owner's,
-        // shared with her.
+        const given = realpathSync(root);
+        const folder = `Folder ${given} of Gina on This server`;
+        // Gina has this server and a folder there (the test before). She starts two sessions in it. The owner shares
+        // two with her: one in that folder, and one outside every folder of hers.
         const stop = answerRequests(app, () => true);
         let first: number;
         let second: number;
-        let shared: number;
 
         try {
             first = Number(
@@ -339,15 +381,16 @@ test(
             stop();
         }
 
-        shared = Number(
-            (await app.commands.createSession(owner(app), { cwd: work, title: "The owner's" })).id,
-        );
-        await app.commands.shareSession(
-            shared as unknown as Parameters<typeof app.commands.shareSession>[0],
-            owner(app),
-            [guest.id],
-        );
+        const share = async (cwd: string, title: string) => {
+            const { id } = await app.commands.createSession(owner(app), { cwd, title });
 
+            await app.commands.shareSession(id, owner(app), [guest.id]);
+
+            return Number(id);
+        };
+
+        const shared = await share(work, "The owner's");
+        const outside = await share(home, "Elsewhere");
         const listed = () => app.sessions(guest).map((each) => each.id);
 
         await open("computers");
@@ -359,47 +402,43 @@ test(
 
             return JSON.stringify(true);
         `);
-        await until(
-            async () => (await folds()).includes("Sessions of Gina on This server: 3"),
-            "her sessions' count",
+        await until(async () => (await folds()).includes(`${folder}: 3`), "her folder's count");
+        assert.deepEqual(
+            (await folds()).filter((each) => each.includes("Gina")),
+            [`${folder}: 3`, "Other sessions of Gina on This server: 1"],
         );
         assert.deepEqual(await sessionRows(), [], "closed: no session shows");
 
-        await fold("Sessions of Gina on This server");
-        await until(async () => (await sessionRows()).length === 3, "her sessions");
+        // Opened, the folder holds the sessions she has in it, and only those.
+        await fold(folder);
+        await until(async () => (await sessionRows()).length === 3, "her sessions in the folder");
         assert.deepEqual((await sessionRows()).sort(), [
             "Her first | started it",
             "Her second | started it",
             "The owner's | shared with them",
         ]);
-        assert.equal(
-            await inPage<boolean>(
-                `return JSON.stringify(document.querySelector('[aria-label="Add a folder for Gina on This server"]') !== null)`,
-            ),
-            false,
-            "her folders are another list, still closed",
-        );
+        await fold("Other sessions of Gina on This server");
+        await until(async () => (await sessionRows()).length === 4, "the one outside her folders");
+        assert.deepEqual(await under("Other sessions of Gina on This server"), ["Elsewhere"]);
+        assert.deepEqual((await under(folder)).sort(), ["Her first", "Her second", "The owner's"]);
 
         // One session is taken from her alone: the others, and her folder, stay.
         await press("Revoke Her first from Gina");
         await until(() => !listed().includes(first), "the server to take it from her");
         assert.ok(listed().includes(second) && listed().includes(shared));
         assert.equal(app.policy.mayStart(guest, THIS_SERVER), true);
-        await until(async () => (await sessionRows()).length === 2, "the row to go");
+        await until(async () => (await folds()).includes(`${folder}: 2 (open)`), "the row to go");
 
         await press("Revoke The owner's from Gina");
         await until(() => !listed().includes(shared), "the server to stop sharing it");
-        assert.deepEqual(listed(), [second]);
+        assert.deepEqual(listed().sort(), [second, outside].sort());
 
-        // The same two lists on her page in People, and a session's row opens it.
+        // The same tree on her page in People, and a session's row opens it.
         await open("people");
         await show("Gina");
-        await until(
-            async () => (await folds()).includes("Sessions of Gina on This server: 1"),
-            "her lists in People",
-        );
-        assert.ok((await folds()).includes("Folders of Gina on This server: 1"));
-        await fold("Sessions of Gina on This server");
+        await until(async () => (await folds()).includes(`${folder}: 1`), "her tree in People");
+        assert.ok((await folds()).includes("Other sessions of Gina on This server: 1"));
+        await fold(folder);
         await until(async () => (await sessionRows()).length === 1, "her session in People");
         assert.deepEqual(await sessionRows(), ["Her second | started it"]);
         await press("Go to Her second");
@@ -413,21 +452,29 @@ test(
             "the session to open, and the sheet to close",
         );
 
-        // One folder is taken from her alone: she stays chosen. The session she started in that folder goes with it,
-        // to who is in charge (`app.ts` `handOver`): she may no longer work there.
+        // One folder is taken from her alone: she stays chosen. The session she started in it goes with it, to who is
+        // in charge (`app.ts` `handOver`), which its Remove says first; the one shared with her elsewhere stays.
         await open("people");
         await show("Gina");
-        await fold("Folders of Gina on This server");
-        await press(`Remove ${realpathSync(root)} from Gina on This server`);
+        await press(`Remove ${given} from Gina on This server`);
+        assert.equal((await asked()).length, 1);
+        assert.match((await asked())[0]!, /The session they started in it moves to you/);
+        assert.match((await asked())[0]!, /Sessions shared with them stay/);
         await until(
             () => app.config.givenFolders(undefined, guest.id).length === 0,
             "the folder to be taken back",
         );
         assert.equal(app.policy.mayUse(guest, THIS_SERVER), true, "she is still chosen");
-        await until(() => listed().length === 0, "her session in that folder to move");
+        await until(() => !listed().includes(second), "her session in that folder to move");
+        assert.deepEqual(listed(), [outside]);
+        // With no folder of hers left, her sessions are one group.
         await until(
-            async () => (await folds()).includes("Sessions of Gina on This server: 0"),
-            "the count to follow",
+            async () => (await folds()).includes("Sessions of Gina on This server: 1"),
+            "the tree to follow",
+        );
+        assert.deepEqual(
+            (await folds()).filter((each) => each.includes("This server")),
+            ["Sessions of Gina on This server: 1"],
         );
     },
 );
@@ -460,12 +507,11 @@ test(
         // A viewer is chosen as anyone is, and given no folders: they start nothing.
         await flip("Vera may use This server");
         await until(() => app.policy.mayUse(viewer, THIS_SERVER), "the server to choose Vera");
-        assert.equal(
-            await inPage<boolean>(
-                `return JSON.stringify(document.querySelector('[aria-label="Add a folder for Vera on This server"]') !== null)`,
-            ),
-            false,
+        await until(
+            async () => (await folds()).includes("Sessions of Vera on This server: 0"),
+            "her sessions' row",
         );
+        assert.equal(await has("Give Vera a folder on This server"), false);
 
         await show("Sam");
         assert.deepEqual(await switches(), [
@@ -733,6 +779,9 @@ test(
     async () => {
         await open("people", VIEWPORTS.mobile);
         await show("Gina");
+        // With the tree open: its session's row and buttons fit too.
+        await fold("Sessions of Gina on This server");
+        await until(async () => (await sessionRows()).length === 1, "her session's row");
 
         const phone = await inPage<{ columns: number; wider: string[] }>(`
         return JSON.stringify({
