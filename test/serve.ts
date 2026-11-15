@@ -87,13 +87,15 @@ const guest = await addPerson(app, "Guest", "guest");
 const base = `http://${host}:${port}`;
 
 // PI_POCKET_TEST_PEOPLE=1: more people, as invites leave them, and a linked computer that is not connected, to look at
-// the People sheet and the Runners sheet: a viewer nobody chose yet, and someone invited to that one session.
+// the People sheet and the Runners sheet: a viewer nobody chose yet, someone invited to that one session, and a
+// computer the guest linked, which the owner only reads.
 if (process.env.PI_POCKET_TEST_PEOPLE) {
     const viewer = app.config.addUser("Vera", "viewer");
     const one = app.config.addUser("Sam", "viewer", [String(session)]);
     const first = app.config.users.find((each) => each.role === "owner");
 
     app.config.addRunner("Laptop", first?.id ?? "", newIdentity().publicKey);
+    app.config.addRunner("Guest's desktop", guest.user.id, newIdentity().publicKey);
     console.log(`  viewer, not chosen: ${base}/login?token=${encodeURIComponent(viewer.token)}`);
     console.log(`  invited to one session: ${base}/login?token=${encodeURIComponent(one.token)}`);
 }

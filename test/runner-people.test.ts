@@ -671,6 +671,44 @@ describe("review drill fixes for people on a computer", () => {
                 );
             }
 
+            // Nor its people, their folders, or its settings: those are its linker's, to see and to change.
+            for (const key of ["users", "given", "network", "downloads", "fingerprint"] as const) {
+                assert.equal(owners?.[key], undefined, `the owner's list has no ${key}`);
+            }
+
+            assert.deepEqual(
+                (await seenBy(lina))?.users?.map((each) => each.id),
+                [cho.id],
+            );
+
+            // The owner changes nothing there: not who may use it, not one person, not a folder, not a setting.
+            for (const [path, body] of [
+                ["users", { users: [owner(app).id] }],
+                ["users", { person: owner(app).id, on: true }],
+                ["users", { person: cho.id, on: false }],
+                ["given", { person: cho.id, folders: ["/home/lina"] }],
+                ["settings", { shareNew: true }],
+                ["settings", { network: false }],
+            ] as const) {
+                const refused = await request<{ error: string }>(
+                    owner(app),
+                    `runners/${linas}/${path}`,
+                    body,
+                );
+
+                assert.equal(refused.status, 403, `${path} ${JSON.stringify(body)}`);
+                assert.match(refused.body.error, /Only the person who linked this computer/);
+            }
+
+            assert.deepEqual(
+                app.runners.stored(linas)?.users,
+                [cho.id],
+                "its people are as they were",
+            );
+            assert.deepEqual([...app.config.givenFolders(linas, cho.id)], []);
+            assert.equal(app.runners.stored(linas)?.shareNew, undefined);
+            assert.equal(app.policy.mayUse(owner(app), linas), false);
+
             // The same list goes out when a tab opens.
             assert.ok(JSON.stringify(await app.hello(lina)).includes("/home/lina"));
             assert.ok(!JSON.stringify(await app.hello(owner(app))).includes("/home/lina"));
