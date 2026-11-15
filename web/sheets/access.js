@@ -1,10 +1,12 @@
 // Who may use a computer, in which folders, and which sessions they have there (`src/server/access.ts`): the parts the
 // Runners sheet (by computer) and the People sheet (by person) share, so a choice made in one is the same choice in the
 // other. Both change the one record kept on the server, over the same routes (`POST /api/runners/:id/users` and
-// `/given`, `POST /api/sessions/:id/revoke`).
-import { useState } from "preact/hooks";
+// `/given`, `POST /api/sessions/:id/revoke`). One person on one computer is a switch and, under it, one tree with the
+// rows of the Files panel's: the folders given to them there, and in each the sessions they have in it.
+import { useEffect, useRef, useState } from "preact/hooks";
 import { api, attempt, closeSheet, navigate, store } from "../store.js";
 import { html, Icon, Switch } from "../ui.js";
+import { below, leaving, placed } from "./access-tree.js";
 
 export const THIS_SERVER = "this-server";
 
@@ -83,14 +85,56 @@ export function sessionsOf(computer, person) {
     );
 }
 
+/** Whether a session is locked now: its approval ended, or was revoked, and nobody renewed it (`folder-approvals.ts`). */
+function locked(session) {
+    return (store.state.folderApprovals ?? []).some(
+        (each) =>
+            each.session === String(session.id) &&
+            (each.ended || (each.expiresAt !== null && each.expiresAt <= Date.now())),
+    );
+}
+
+/** What the group of sessions in no given folder is opened by, in the tree's own record of what is open. */
+const OTHER = "\0other";
+
 /**
- * The folders given to one chosen person on a computer: each covers the folders in it, and each is taken back alone. A
- * person given none may not start sessions there.
+ * One person's folders on one computer and their sessions there, as one tree (`access-tree.js`), with the rows of the
+ * Files panel's. A folder given to them (`starts`: they start sessions, so they have folders) holds the sessions they
+ * have in it, and stays closed until opened; the sessions in no given folder are a group of their own. Each row is
+ * taken back alone: a folder with Remove, a session with Revoke (`app.ts` `revokeSession`). A session opens from its
+ * row, and a locked one is allowed again there.
  */
-function FolderList({ computer, person }) {
-    const folders = computer.given?.[person.id] ?? [];
+function AccessTree({ computer, person, starts }) {
+    const folders = starts ? (computer.given?.[person.id] ?? []) : [];
+    const sessions = sessionsOf(computer, person);
+    const there = store.state.sessions.filter(
+        (each) => (each.runner ?? THIS_SERVER) === computer.id,
+    );
+    const shape = placed(folders, sessions, there);
+    const [open, setOpen] = useState(() => new Set());
+    const [adding, setAdding] = useState(false);
     const [draft, setDraft] = useState("");
     const [busy, setBusy] = useState(false);
+    const field = useRef(null);
+    const title = (session) => session.title ?? "New session";
+    const on = `${person.name} on ${computer.name}`;
+
+    useEffect(() => {
+        if (adding) {
+            field.current?.focus();
+        }
+    }, [adding]);
+
+    const toggle = (key) =>
+        setOpen((now) => {
+            const next = new Set(now);
+
+            if (!next.delete(key)) {
+                next.add(key);
+            }
+
+            return next;
+        });
 
     const save = async (next) => {
         setBusy(true);
@@ -112,63 +156,51 @@ function FolderList({ computer, person }) {
         // What was typed stays when it is refused (not a folder there), to correct it.
         if (folder !== "" && (await save([...folders, folder]))) {
             setDraft("");
+            setAdding(false);
         }
     };
 
-    return html`<div class="given-folders">
-        ${folders.length === 0 && html`<div class="muted small">No folders yet: ${person.name} cannot start sessions here.</div>`}
-        ${folders.map(
-            (folder) => html`<div class="runner-permission-row" key=${folder}>
-                <code>${folder}</code>
-                <button
-                    class="button small ghost"
-                    disabled=${busy}
-                    aria-label=${`Remove ${folder} from ${person.name} on ${computer.name}`}
-                    onClick=${() => save(folders.filter((each) => each !== folder))}
-                >
-                    Remove
-                </button>
-            </div>`,
-        )}
-        <div class="row">
-            <input
-                type="text"
-                placeholder="Add a folder, as ~/projects/app"
-                aria-label=${`Add a folder for ${person.name} on ${computer.name}`}
-                value=${draft}
-                onInput=${(event) => setDraft(event.currentTarget.value)}
-                onKeyDown=${(event) => event.key === "Enter" && !busy && add()}
-            />
-            <button class="button small" disabled=${busy || draft.trim() === ""} onClick=${add}>
-                Add
-            </button>
-        </div>
-    </div>`;
-}
+    // The sessions they started in a folder go with it, to who is in charge: said before it is taken back.
+    const remove = (folder) => {
+        const gone = leaving(
+            folder,
+            folders,
+            sessions.filter((each) => each.createdBy === person.id),
+            there,
+        ).length;
 
-/** Whether a session is locked now: its approval ended, or was revoked, and nobody renewed it (`folder-approvals.ts`). */
-function locked(session) {
-    return (store.state.folderApprovals ?? []).some(
-        (each) =>
-            each.session === String(session.id) &&
-            (each.ended || (each.expiresAt !== null && each.expiresAt <= Date.now())),
-    );
-}
+        if (
+            gone > 0 &&
+            !confirm(
+                `Remove ${folder} from ${person.name}? ${gone === 1 ? "The session they started in it moves" : `The ${gone} sessions they started in it move`} to you, with the tasks they set up there. Sessions shared with them stay.`,
+            )
+        ) {
+            return;
+        }
 
-/**
- * The sessions one person has on a computer: each opens from here, and each is taken from them alone
- * (`app.ts` `revokeSession`). A locked one is allowed again here.
- */
-function SessionList({ computer, person }) {
-    const sessions = sessionsOf(computer, person);
-    const [busy, setBusy] = useState(false);
-    const name = (session) => session.title ?? "New session";
+        void save(folders.filter((each) => each !== folder));
+    };
+
     const how = (session) =>
-        person.sessions?.includes(session.id)
-            ? "invited to it alone"
-            : session.createdBy === person.id
-              ? "started it"
-              : "shared with them";
+        [
+            person.sessions?.includes(session.id)
+                ? "invited to it alone"
+                : session.createdBy === person.id
+                  ? "started it"
+                  : "shared with them",
+            session.archived && "archived",
+            locked(session) && "locked until allowed",
+        ]
+            .filter(Boolean)
+            .join(" · ");
+
+    // Where in its folder a session works, when that is not the folder itself; its whole folder outside one.
+    const where = (session, folder) =>
+        session.worktree
+            ? `⎇ ${session.worktree.branch}`
+            : folder === undefined
+              ? session.cwd
+              : below(session.cwd, folder);
 
     const go = (session) => {
         closeSheet();
@@ -177,10 +209,10 @@ function SessionList({ computer, person }) {
 
     const revoke = async (session) => {
         const asked = person.sessions?.includes(session.id)
-            ? `Take “${name(session)}” from ${person.name}? They were invited to it alone.`
+            ? `Take “${title(session)}” from ${person.name}? They were invited to it alone.`
             : session.createdBy === person.id
-              ? `Take “${name(session)}” from ${person.name}? They started it: it moves to you, with the tasks they set up in it.`
-              : `Stop sharing “${name(session)}” with ${person.name}?`;
+              ? `Take “${title(session)}” from ${person.name}? They started it: it moves to you, with the tasks they set up in it.`
+              : `Stop sharing “${title(session)}” with ${person.name}?`;
 
         if (!confirm(asked)) {
             return;
@@ -198,28 +230,28 @@ function SessionList({ computer, person }) {
     const allow = (session) =>
         attempt(() => api(`session-approvals/${encodeURIComponent(session.id)}`, {}));
 
-    return html`<div class="access-sessions">
-        ${sessions.length === 0 && html`<div class="muted small">No sessions here.</div>`}
-        ${sessions.map(
-            (session) => html`<div class="access-session" key=${session.id}>
-                <div class="access-session-text">
-                    <div class="access-session-name">${name(session)}</div>
-                    <div class="muted small">
-                        <code>${session.cwd}</code>${` · ${[
-                            how(session),
-                            session.archived && "archived",
-                            locked(session) && "locked until allowed",
-                        ]
-                            .filter(Boolean)
-                            .join(" · ")}`}
-                    </div>
+    /** The sessions of one opened row, set in under it. */
+    const inside = (list, folder) => html`<div class="at-group" role="group">
+        ${list.length === 0 && html`<div class="ft-row muted at-note" style="--depth:1">No sessions ${folder === undefined ? "here" : "in it"}.</div>`}
+        ${list.map((session) => {
+            const place = where(session, folder);
+
+            return html`<div class="at-line at-session" key=${session.id}>
+                <div class="ft-row" style="--depth:1" title=${title(session)}>
+                    <span class="ft-spacer"></span>
+                    <${Icon} name="chat" size=${13} />
+                    <span class="ft-name at-session-name">${title(session)}</span>
+                    <span class="at-about">
+                        <span class="at-how">${how(session)}</span>
+                        ${place && html`<span class="at-where" title=${place}>${place}</span>`}
+                    </span>
                 </div>
-                <div class="access-session-actions">
+                <div class="at-actions">
                     ${
                         locked(session) &&
                         html`<button
                             class="button small"
-                            aria-label=${`Allow ${name(session)} again`}
+                            aria-label=${`Allow ${title(session)} again`}
                             onClick=${() => allow(session)}
                         >
                             Allow
@@ -227,7 +259,7 @@ function SessionList({ computer, person }) {
                     }
                     <button
                         class="button small"
-                        aria-label=${`Go to ${name(session)}`}
+                        aria-label=${`Go to ${title(session)}`}
                         onClick=${() => go(session)}
                     >
                         Go to session
@@ -235,40 +267,135 @@ function SessionList({ computer, person }) {
                     <button
                         class="button small ghost"
                         disabled=${busy}
-                        aria-label=${`Revoke ${name(session)} from ${person.name}`}
+                        aria-label=${`Revoke ${title(session)} from ${person.name}`}
                         onClick=${() => revoke(session)}
                     >
                         Revoke
                     </button>
                 </div>
+            </div>`;
+        })}
+    </div>`;
+
+    // With folders, the sessions outside them are the others; without (a viewer, someone invited to one session),
+    // they are all there is.
+    const rest = folders.length > 0 ? "Other sessions" : "Sessions";
+
+    return html`<div class="at-tree" role="group" aria-label=${`Folders and sessions of ${on}`}>
+        ${starts && folders.length === 0 && html`<div class="ft-row muted at-note">No folders yet: ${person.name} cannot start sessions here.</div>`}
+        ${shape.folders.map(
+            (node) => html`<div class="at-node" key=${node.folder}>
+                <div class="at-line">
+                    <button
+                        type="button"
+                        class="ft-row dir at-folder"
+                        aria-expanded=${open.has(node.folder)}
+                        aria-label=${`Folder ${node.folder} of ${on}: ${node.sessions.length}`}
+                        onClick=${() => toggle(node.folder)}
+                    >
+                        <${Icon}
+                            name="chevron"
+                            size=${11}
+                            class=${`chev ${open.has(node.folder) ? "open" : ""}`}
+                        />
+                        <${Icon} name="folder" size=${13} />
+                        <span class="ft-name">${node.folder}</span>
+                        <span class="at-count">${node.sessions.length}</span>
+                    </button>
+                    <button
+                        class="button small ghost"
+                        disabled=${busy}
+                        aria-label=${`Remove ${node.folder} from ${on}`}
+                        onClick=${() => remove(node.folder)}
+                    >
+                        Remove
+                    </button>
+                </div>
+                ${open.has(node.folder) && inside(node.sessions, node.folder)}
             </div>`,
         )}
-    </div>`;
-}
-
-/** A list that stays closed until asked for: what it is, and how many it holds. */
-function Fold({ label, count, name, children }) {
-    const [open, setOpen] = useState(false);
-
-    return html`<div class=${`access-fold ${open ? "open" : ""}`}>
-        <button
-            class="access-fold-head"
-            aria-expanded=${open}
-            aria-label=${`${name}: ${count}`}
-            onClick=${() => setOpen(!open)}
-        >
-            <${Icon} name="chevron" size=${12} class=${`chev ${open ? "open" : ""}`} />
-            <span class="small">${label}</span>
-            <span class="access-fold-count">${count}</span>
-        </button>
-        ${open && html`<div class="access-fold-body">${children}</div>`}
+        ${
+            (shape.other.length > 0 || !starts) &&
+            html`<div class="at-node">
+                <div class="at-line">
+                    <button
+                        type="button"
+                        class="ft-row dir at-rest"
+                        aria-expanded=${open.has(OTHER)}
+                        aria-label=${`${rest} of ${on}: ${shape.other.length}`}
+                        title=${folders.length > 0 ? "In no folder given to them: shared with them, or invited to." : undefined}
+                        onClick=${() => toggle(OTHER)}
+                    >
+                        <${Icon}
+                            name="chevron"
+                            size=${11}
+                            class=${`chev ${open.has(OTHER) ? "open" : ""}`}
+                        />
+                        <${Icon} name="chat" size=${13} />
+                        <span class="ft-name">${rest}</span>
+                        <span class="at-count">${shape.other.length}</span>
+                    </button>
+                </div>
+                ${open.has(OTHER) && inside(shape.other, undefined)}
+            </div>`
+        }
+        ${
+            starts &&
+            (adding
+                ? html`<div class="at-line at-adding">
+                      <input
+                          ref=${field}
+                          type="text"
+                          placeholder="A folder, as ~/projects/app"
+                          aria-label=${`Add a folder for ${on}`}
+                          value=${draft}
+                          onInput=${(event) => setDraft(event.currentTarget.value)}
+                          onKeyDown=${(event) => {
+                              if (event.key === "Enter" && !busy) {
+                                  void add();
+                              } else if (event.key === "Escape") {
+                                  // Escape closes the field, not the sheet around it.
+                                  event.stopPropagation();
+                                  setDraft("");
+                                  setAdding(false);
+                              }
+                          }}
+                      />
+                      <button
+                          class="button small"
+                          disabled=${busy || draft.trim() === ""}
+                          onClick=${add}
+                      >
+                          Add
+                      </button>
+                      <button
+                          class="button small ghost"
+                          onClick=${() => {
+                              setDraft("");
+                              setAdding(false);
+                          }}
+                      >
+                          Cancel
+                      </button>
+                  </div>`
+                : html`<button
+                      type="button"
+                      class="ft-row at-add"
+                      aria-label=${`Give ${person.name} a folder on ${computer.name}`}
+                      onClick=${() => setAdding(true)}
+                  >
+                      <span class="ft-spacer"></span>
+                      <${Icon} name="plus" size=${13} />
+                      <span class="ft-name">Add a folder</span>
+                  </button>`)
+        }
     </div>`;
 }
 
 /**
- * One person on one computer, for who is in charge of it: whether they may use it, then two separate lists, closed
- * until asked for: the folders given to them there, and the sessions they have there. Runners shows it per person under
- * a computer (`lead`, `title`: the person); People shows it per computer under a person (the computer).
+ * One person on one computer, for who is in charge of it: whether they may use it, then the tree of that computer's
+ * folders given to them and their sessions there (`AccessTree`). Runners shows it per person under a computer (`lead`,
+ * `title`: the person); People shows it per computer under a person (the computer).
  */
 export function AccessRow({ computer, person, lead, title }) {
     const [busy, setBusy] = useState(false);
@@ -325,25 +452,7 @@ export function AccessRow({ computer, person, lead, title }) {
         </div>
         ${
             (chosen || sessions.length > 0) &&
-            html`<div class="person-access">
-                ${
-                    starts &&
-                    html`<${Fold}
-                        label="Folders"
-                        count=${folders.length}
-                        name=${`Folders of ${person.name} on ${computer.name}`}
-                    >
-                        <${FolderList} computer=${computer} person=${person} />
-                    <//>`
-                }
-                <${Fold}
-                    label="Sessions"
-                    count=${sessions.length}
-                    name=${`Sessions of ${person.name} on ${computer.name}`}
-                >
-                    <${SessionList} computer=${computer} person=${person} />
-                <//>
-            </div>`
+            html`<${AccessTree} computer=${computer} person=${person} starts=${starts} />`
         }
     </div>`;
 }
