@@ -536,11 +536,7 @@ function placesFor(person) {
  */
 function Places({ person }) {
     return html`<div class="group">
-        <div class="group-title">Where</div>
-        <div class="muted small">
-            A person gets in only on the computers turned on for them. Under each: the folders given to them there, and
-            the sessions they have there. The same is in Runners, under each computer's People.
-        </div>
+        <div class="group-title">Where they may work</div>
         ${placesFor(person).map(
             (computer) => html`<${AccessRow}
                 key=${computer.id}
