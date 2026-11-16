@@ -588,17 +588,12 @@ test("the owner renews or revokes a session's approval from the list; its starte
 
     // Alex lists their own; Gale, who did not start it, does not.
     assert.deepEqual(
-        (await call<{ session: string }[]>(alex, "session-approvals")).body.map(
-            (each) => each.session,
-        ),
+        app.sessionApprovals(alex).map((each) => each.session),
         [session],
     );
-    assert.deepEqual((await call<unknown[]>(gale, "session-approvals")).body, []);
+    assert.deepEqual(app.sessionApprovals(gale), []);
     assert.equal(
-        (await call(owner(app), "session-approvals")).body instanceof Array &&
-            (await call<{ session: string }[]>(owner(app), "session-approvals")).body.some(
-                (each) => each.session === session,
-            ),
+        app.sessionApprovals(owner(app)).some((each) => each.session === session),
         true,
     );
 

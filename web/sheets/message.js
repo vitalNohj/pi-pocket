@@ -11,7 +11,6 @@ import {
     closeSheet,
     notify,
     openSheet,
-    scoped,
     store,
 } from "../store.js";
 import { copyText, html, replyText, Sheet, writtenText } from "../ui.js";
@@ -164,7 +163,6 @@ function ReplySheet({ entry, canBranch }) {
         startCopy(
             (signal) => actions.fork(entry.id, { place: placeOf(draft) }, signal),
             "Opened the fork. The original is unchanged.",
-            draft,
         ).finally(() => setBusy(false));
     }, [canBranch, busy, draft, entry.id]);
 
@@ -239,7 +237,6 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
                     signal,
                 ),
             "Opened the new session. The original is unchanged.",
-            draft,
         ).finally(() => setBusy(false));
     }, [again, busy, draft, edited, written, entry.id, filesAlone]);
 

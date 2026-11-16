@@ -1909,7 +1909,7 @@ export function memo(component, ignored = []) {
                 }
             }
 
-            for (const key in this.props) {
+            for (const _key in this.props) {
                 count--;
             }
 

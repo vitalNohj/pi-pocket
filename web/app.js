@@ -68,7 +68,6 @@ import {
     openSheet,
     panelsBeside,
     peopleDocked,
-    scoped,
     start,
     store,
     workspaceOrder,

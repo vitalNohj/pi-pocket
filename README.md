@@ -101,7 +101,7 @@ Other options: `--port` (8787), `--cwd`, `--data` (`~/.pi-pocket`), `--host`, an
 npm run check   # type-check
 npm test        # server tests with a scripted model
 npm run format  # ESLint's layout fixes, then Prettier
-npm run lint    # check the layout rules
+npm run lint    # check the layout rules, and for unused code in web/
 ```
 
 `web/` changes reload every open browser, and extensions reload into the running server. `node test/serve.ts` runs a throwaway copy to check a change on. [AGENTS.md](AGENTS.md) covers editing Pi Pocket safely from inside itself, and [CONTRIBUTING.md](CONTRIBUTING.md) how to send a change.

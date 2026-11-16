@@ -391,10 +391,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // Session approvals (`folder-approvals.ts`): of the sessions a person started, and on computers they are in charge
         // of. DELETE revokes one (the session locks); POST renews it: Allow by who is in charge, or the starter's code.
-        if (first === "session-approvals" && second === undefined && method === "GET") {
-            return json(response, 200, app.sessionApprovals(user));
-        }
-
         if (first === "session-approvals" && second !== undefined && method === "DELETE") {
             app.revokeApproval(user, conversationId(second));
 
