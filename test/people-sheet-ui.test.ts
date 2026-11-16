@@ -272,7 +272,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
     await open("people");
     await show("Gina");
     assert.deepEqual(await switches(), [
-        "Gina steers Pi: on",
+        "Gina can prompt: on",
         "Gina links runners: off",
         "Gina may use This server: off",
         "Gina may use Laptop: off",
@@ -500,7 +500,7 @@ test(
         await open("people");
         await show("Vera");
         assert.deepEqual(await switches(), [
-            "Vera steers Pi: off (disabled)",
+            "Vera can prompt: off (disabled)",
             "Vera may use This server: off",
             "Vera may use Laptop: off",
         ]);
@@ -515,7 +515,7 @@ test(
 
         await show("Sam");
         assert.deepEqual(await switches(), [
-            "Sam steers Pi: off (disabled)",
+            "Sam can prompt: off (disabled)",
             "Sam may use This server: off (disabled)",
             "Sam may use Laptop: off (disabled)",
         ]);

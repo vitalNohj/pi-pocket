@@ -202,7 +202,7 @@ test("someone not chosen for this server is refused before anything waits", asyn
         app.commands.createSession(stranger, { cwd: folder }),
         /not chosen you for this server/,
     );
-    await assert.rejects(app.approveStart(vera, folder), /view sessions but not start/);
+    await assert.rejects(app.approveStart(vera, folder), /Viewers cannot start sessions/);
     assert.deepEqual(app.folderRequests.list(owner(app)), []);
 });
 

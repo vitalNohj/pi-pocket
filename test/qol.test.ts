@@ -150,7 +150,7 @@ test("a command that is stopped says so and keeps what it printed; a retried req
     try {
         await assert.rejects(
             app.shell.start(id, viewer, { command: "echo hi" }),
-            /view this session but not steer/,
+            /Viewers cannot prompt/,
         );
     } finally {
         app.config.removeUser(viewer.id);
