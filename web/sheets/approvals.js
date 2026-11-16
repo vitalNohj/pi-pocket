@@ -54,8 +54,8 @@ export function TasksExpire() {
             <div class="muted small">
                 ${
                     on
-                        ? "On: webhooks, schedules, and watches pause a week after their session's approval ends, with reminders."
-                        : "Off: webhooks, schedules, and watches run for good once set up."
+                        ? "On: a session's webhooks, schedules, and watches pause a week after its approval ends."
+                        : "Off: they keep running."
                 }
             </div>
         </div>

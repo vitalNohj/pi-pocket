@@ -149,7 +149,7 @@ describe("may this person use this computer", () => {
         assert.equal(policy.mayStart(viewer, THIS_SERVER), false);
         assert.throws(() => policy.requireStart(viewer, THIS_SERVER), {
             status: 403,
-            message: /view sessions but not start them/,
+            message: /Viewers cannot start sessions/,
         });
         assert.throws(() => policy.requireStart(stranger, "runner"), {
             message: /person who linked this computer has not chosen you/,

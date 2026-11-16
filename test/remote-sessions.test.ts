@@ -327,9 +327,12 @@ describe("a session on another computer", () => {
             assert.ok(app.sessions(other).some((each) => each.id === Number(id)));
             await assert.rejects(
                 app.commands.createSession(other, { cwd: there, runner: runnerId }),
-                /view sessions but not start them/,
+                /Viewers cannot start sessions/,
             );
-            await assert.rejects(app.commands.fork(id as never, other, {}), /not steer/);
+            await assert.rejects(
+                app.commands.fork(id as never, other, {}),
+                /Viewers cannot prompt/,
+            );
         } finally {
             await app.commands.shareSession(id as never, owner(app), []);
             app.config.setRunnerUsers(runnerId, []);

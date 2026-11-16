@@ -3618,10 +3618,7 @@ export class PocketApp {
         const current = this.config.userById(user.id);
 
         if (current === undefined || current.role === "viewer") {
-            throw new HttpError(
-                403,
-                "You can view this session but not steer Pi. Ask the owner for steering rights.",
-            );
+            throw new HttpError(403, "Viewers cannot prompt. Ask to be made a user.");
         }
     }
 

@@ -821,12 +821,12 @@ test("viewers read and chat but never steer; people invited to one session see o
     try {
         await assert.rejects(
             app.commands.submit(id, viewer, { text: "hi", requestId: "v1" }),
-            /not steer/,
+            /Viewers cannot prompt/,
         );
-        await assert.rejects(app.commands.abort(id, viewer), /not steer/);
+        await assert.rejects(app.commands.abort(id, viewer), /Viewers cannot prompt/);
         await assert.rejects(
             app.commands.createSession(viewer, { cwd: work }),
-            /view sessions but not start them/,
+            /Viewers cannot start sessions/,
         );
         // An approval that is not there, or not theirs to see, is no answer: a viewer learns nothing from its id.
         assert.equal(await app.answerApproval("nope", true, viewer), false);

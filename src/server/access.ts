@@ -465,10 +465,7 @@ export class AccessPolicy {
         this.requireSee(person, id);
 
         if (!this.maySteer(person, id)) {
-            throw new HttpError(
-                403,
-                "You can view this session but not steer Pi. Ask the owner for steering rights.",
-            );
+            throw new HttpError(403, "Viewers cannot prompt. Ask to be made a user.");
         }
     }
 
@@ -485,7 +482,7 @@ export class AccessPolicy {
         return current?.sessions !== undefined
             ? "You were invited to one session and cannot start new ones."
             : current?.role === "viewer" && this.mayUse(current, id)
-              ? "You can view sessions but not start them. Ask the owner for steering rights."
+              ? "Viewers cannot start sessions. Ask to be made a user."
               : id === THIS_SERVER
                 ? "The owner has not chosen you for this server yet."
                 : "The person who linked this computer has not chosen you for it yet.";

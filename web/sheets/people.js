@@ -131,8 +131,7 @@ export function InviteSheet({ session = null }) {
         ${
             collab() &&
             html`<p class="muted small">
-                They join as a viewer: they read along, react, and chat. To steer Pi, they link an authenticator under
-                their name; then the owner turns on Steer Pi for them in People.
+                They join as a viewer. To prompt, they link an authenticator and are made a user in People.
             </p>
             ${
                 here &&
@@ -189,8 +188,7 @@ export function InviteSheet({ session = null }) {
         ${
             collab() &&
             html`<p class="muted small">
-                An invite is for someone new. For another device of your own, open your name in People and use Sign in
-                another device.
+                Your own device? Use Sign in another device on your page in People.
             </p>`
         }
     <//>`;
@@ -418,7 +416,7 @@ function ordered(users) {
 
 /** What a person may do, in a word or two. */
 function roleText(person) {
-    return person.role === "owner" ? "owner" : person.role === "viewer" ? "view only" : "can steer";
+    return person.role === "owner" ? "owner" : person.role === "viewer" ? "viewer" : "user";
 }
 
 /** A person's picture with the mark that says whether they are here now. */
@@ -459,19 +457,19 @@ function Rights({ person }) {
     return html`<div class="group">
         <div class="group-title">What they may do</div>
         <${Setting}
-            label="Steer Pi"
+            label="Can prompt"
             hint=${
                 steers
-                    ? "On: they send to Pi and start sessions in their folders."
+                    ? "On: a user. They prompt and start sessions in their folders."
                     : person.hasCode
-                      ? "Off: view only."
-                      : `Off: view only. ${person.name} must link an authenticator first.`
+                      ? "Off: a viewer."
+                      : `Off: a viewer. ${person.name} must link an authenticator first.`
             }
         >
             <${Switch}
                 on=${steers}
                 disabled=${!steers && !person.hasCode}
-                label=${`${person.name} steers Pi: ${steers ? "on" : "off"}`}
+                label=${`${person.name} can prompt: ${steers ? "on" : "off"}`}
                 onChange=${() => change({ role: steers ? "viewer" : "guest" })}
             />
         <//>
@@ -514,10 +512,10 @@ function Rights({ person }) {
                     class="button small ghost"
                     onClick=${() =>
                         confirm(
-                            `Lift ${person.name}'s limit? They then get in as anyone does: on the computers chosen for them, and to the sessions shared with them. They keep that session only if it is shared with them.`,
+                            `Remove ${person.name}'s one-session limit? They lose that session until you share it with them.`,
                         ) && change({ sessions: null })}
                 >
-                    Lift the limit
+                    Remove the limit
                 </button>
             <//>`
         }
@@ -570,7 +568,7 @@ function Authenticator({ person }) {
                     class="button small ghost"
                     onClick=${() =>
                         confirm(
-                            `Remove ${person.name}'s authenticator? They view only until they link a new one and you let them steer again.`,
+                            `Remove ${person.name}'s authenticator? They are a viewer until they link a new one and are made a user again.`,
                         ) &&
                         attempt(async () =>
                             store.set({
@@ -679,7 +677,7 @@ function PersonPage({ person }) {
                         ? "They see every session and choose who gets in."
                         : person.role === "viewer"
                           ? `${myself ? "You read" : "They read"} the sessions shared with ${myself ? "you" : "them"}, and cannot send to Pi Pocket.`
-                          : `${myself ? "You send" : "They send"} to Pi and start sessions in ${myself ? "your" : "their"} folders.`
+                          : `${myself ? "You prompt" : "They prompt"} and start sessions in ${myself ? "your" : "their"} folders.`
                 }
             </p>`
         }
