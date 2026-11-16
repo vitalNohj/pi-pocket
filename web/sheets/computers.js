@@ -100,8 +100,8 @@ function LinkSteps({ made, onDone }) {
 /** What linking means for that computer, said where people link: before the code, and with it. */
 export function TrustNote() {
     return html`<p class="runner-trust small">
-        <strong>The linked computer trusts this server fully.</strong> Sessions you start there run commands and change
-        files as that computer's user, with everything that user can reach. Nothing runs in a sandbox.
+        <strong>The linked computer trusts this server fully.</strong> Sessions there run commands as that computer's
+        user, with no sandbox. To limit that, run the runner in a container or VM.
     </p>`;
 }
 
@@ -303,8 +303,8 @@ function RunnerSettings({ runner }) {
         <div class="muted small">
             ${
                 runner.allowHttp
-                    ? "Plain HTTP to this server is allowed there, as chosen when it was linked."
-                    : "Plain HTTP only to this computer itself or a tailnet device, as chosen when it was linked."
+                    ? "Plain HTTP to this server: allowed. Link again to change."
+                    : "Plain HTTP: only to this computer or a tailnet device. Link again to change."
             }
         </div>
     </div>`;
@@ -576,8 +576,7 @@ function AboutRunners() {
             Run a session's commands and files on another of your computers. Pi and the history stay on this server.
         </p>
         <p class="muted">
-            The computer connects out, so it needs no open port. Who may use it is set here. More in
-            <code>docs/runners.md</code>.
+            The computer connects out, so it needs no open port. Who may use it is set here.
         </p>
     </div>`;
 }
