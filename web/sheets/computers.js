@@ -554,8 +554,8 @@ function ComputerPage({ computer }) {
                     computer=${computer}
                     note=${
                         server
-                            ? "Turn on each person who may use this server. They see their own sessions and the ones shared with them, and those who steer start sessions only in the folders you give them. Sessions run as this server's user, like yours."
-                            : `Turn on each person who may use ${computer.name}. Those who steer start sessions only in the folders you give them. Their sessions run as this computer's user, like yours.`
+                            ? "Turn on who may use this server."
+                            : `Turn on who may use ${computer.name}.`
                     }
                 />
             </div>`
