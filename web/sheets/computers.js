@@ -87,8 +87,8 @@ function LinkSteps({ made, onDone }) {
         ${
             made.fingerprint &&
             html`<p class="muted small">
-                This server's key, which ${made.name} keeps to know this server: <code>${made.fingerprint}</code>.
-                <code>pi-pocket runner status</code> there shows the same.
+                This server's key: <code>${made.fingerprint}</code>. <code>pi-pocket runner status</code> on
+                ${made.name} shows the same.
             </p>`
         }
         <div class="row">
@@ -151,9 +151,8 @@ function LinkLocks({ locks, reload }) {
                 ${
                     locks.server &&
                     html`<p>
-                        <strong>New linking is paused until ${until(locks.server)}.</strong> Too many wrong link codes
-                        reached this server from many addresses, so every open code was voided. Get a new one after
-                        that. Linked computers keep working.
+                        <strong>Linking is paused until ${until(locks.server)}</strong>: too many wrong link codes.
+                        Open codes were voided.
                     </p>`
                 }
                 ${locks.addresses.map(
@@ -365,7 +364,7 @@ function Rule({ runner, name, label, hint, on }) {
 }
 
 const SHARE_HINT =
-    "Off: a new session is private to whoever started it, until they share it. On: it starts shared with the people chosen here.";
+    "On: new sessions start shared with the people chosen here. Off: they start private.";
 
 /** Sharing on a computer: whether new sessions there start shared with its people. */
 function Sharing({ computer }) {
@@ -575,13 +574,11 @@ function AboutRunners() {
     return html`<div class="sheet-page">
         <h3 class="sheet-page-title">About runners</h3>
         <p>
-            Run a session's tools on another of your computers: its files and commands are used there, while Pi,
-            your models, and the history stay on this server.
+            Run a session's commands and files on another of your computers. Pi and the history stay on this server.
         </p>
         <p class="muted">
-            The computer connects out to this server, so it needs no open port. It trusts this server after the link:
-            who may use it, in which folders, and for how long are decided here. On each computer, this server too,
-            only the people its linker chooses get in. See <code>docs/runners.md</code> for everything else.
+            The computer connects out, so it needs no open port. Who may use it is set here. More in
+            <code>docs/runners.md</code>.
         </p>
     </div>`;
 }

@@ -180,7 +180,7 @@ export class LinkLimits {
         if (this.#serverUntil > now) {
             throw new HttpError(
                 429,
-                `Too many wrong link codes reached this server, so linking is paused for ${minutes(this.#serverUntil - now)} min, and the open codes were voided. Get a new code in Menu → Runners after that.`,
+                `Too many wrong link codes: linking is paused for ${minutes(this.#serverUntil - now)} min. Then get a new code in Menu → Runners.`,
             );
         }
 

@@ -340,7 +340,7 @@ function DeviceLink({ person }) {
                 theirs
                     ? made
                         ? `Send this to ${person.name}, or let them scan it. It signs their device in as ${person.name}, with all they have here, so give it only to them. It works once, until ${until}.${person.hasCode ? " Their device also asks for a code from their authenticator: if they lost that too, remove it under Sign-in first." : ""}`
-                        : `For a lost device: makes a link that signs a phone or computer in as ${person.name}, not as someone new. It works once, within 15 minutes.`
+                        : `Makes a link that signs a device in as ${person.name}. It works once, within 15 minutes.`
                     : made
                       ? `Scan this on your other device, or open the link there. It signs that device in as you${owner ? ", the owner, with full control" : ""}, so keep it to yourself. It works once, until ${until}.${person.hasCode ? " That device also asks for a code from your authenticator." : ""}`
                       : "Makes a link that signs another phone or computer in as you. It works once, within 15 minutes."
@@ -462,10 +462,10 @@ function Rights({ person }) {
             label="Steer Pi"
             hint=${
                 steers
-                    ? "On: they send to Pi, approve its requests, and start sessions in the folders given to them."
+                    ? "On: they send to Pi and start sessions in their folders."
                     : person.hasCode
-                      ? "Off: they read along, react, and chat."
-                      : `Off: they read along, react, and chat. ${person.name} links an authenticator first: Menu → their name → Authenticator.`
+                      ? "Off: view only."
+                      : `Off: view only. ${person.name} must link an authenticator first.`
             }
         >
             <${Switch}
@@ -499,7 +499,7 @@ function Rights({ person }) {
             person.approvalDays !== undefined &&
             html`<${Setting}
                 label="Approvals last"
-                hint=${`How long a session of theirs stays open after ${person.name} last used it. Then it is locked until they give a code, or you allow it.`}
+                hint=${"A session of theirs locks this long after they last used it."}
             >
                 <${ApprovalTime} person=${person} plain=${true} />
             <//>`
@@ -681,7 +681,7 @@ function PersonPage({ person }) {
                         ? `${myself ? "You can" : "They can"} do everything here: every session on this server is ${myself ? "yours" : "theirs"} to see, and ${myself ? "you" : "they"} choose who gets in.`
                         : person.role === "viewer"
                           ? `${myself ? "You read" : "They read"} the sessions shared with ${myself ? "you" : "them"}, react, and chat. Steering Pi takes an authenticator, and the owner's leave.`
-                          : `${myself ? "You send" : "They send"} to Pi in the sessions shared with ${myself ? "you" : "them"}, and start sessions in the folders the owner gave ${myself ? "you" : "them"}.`
+                          : `${myself ? "You send" : "They send"} to Pi and start sessions in ${myself ? "your" : "their"} folders.`
                 }
             </p>`
         }

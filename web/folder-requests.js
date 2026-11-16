@@ -41,7 +41,7 @@ function myText(request) {
     if (request.kind === "renew") {
         return request.code
             ? `This session's approval ended. Enter a code from your authenticator to go on, or wait for ${who} to allow it.`
-            : `This session's approval ended. Wait for ${who} to allow it: only its starter can renew it with a code.`;
+            : `This session's approval ended. Wait for ${who} to allow it.`;
     }
 
     return request.code
