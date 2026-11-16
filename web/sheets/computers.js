@@ -112,8 +112,7 @@ export function TrustNote() {
 function LinkLocks({ locks, reload }) {
     const intro = html`<h3 class="sheet-page-title">Linking limits</h3>
         <p class="muted small">
-            Redeeming a link code is the one thing anyone can try without signing in. Wrong codes are limited for each
-            address, and in total; an address locked out 3 times in a week is banned.
+            Wrong link codes are limited. An address locked out 3 times in a week is banned.
         </p>`;
 
     if (!locks) {
