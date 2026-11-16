@@ -21868,12 +21868,6 @@ pre.gallery-code {
     background: var(--warn);
 }
 
-.runner-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 .runner-none {
     margin: 0;
 }

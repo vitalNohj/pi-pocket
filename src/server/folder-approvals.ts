@@ -21,10 +21,6 @@ const USE_STEP_MS = 60_000;
 export type ApprovalView = StoredApproval & {
     expiresAt: number | null;
     ended: boolean;
-    /** The session's title, for the lists. */
-    title: string;
-    /** Who used it last, by name. */
-    name: string;
 };
 
 export interface FolderApprovalStore {
@@ -187,10 +183,7 @@ export class FolderApprovals {
      * The approvals `viewer` may list (`may`: the sessions they see as starter or as the one in charge), newest use
      * first, ended ones too, so a locked session shows how to renew it.
      */
-    list(
-        may: (approval: StoredApproval) => boolean,
-        title: (session: string) => string,
-    ): ApprovalView[] {
+    list(may: (approval: StoredApproval) => boolean): ApprovalView[] {
         return this.#store.folderApprovals
             .filter((each) => may(each))
             .map((each) => {
@@ -200,8 +193,6 @@ export class FolderApprovals {
                     ...each,
                     expiresAt,
                     ended: expiresAt !== null && expiresAt <= this.#now(),
-                    title: title(each.session),
-                    name: this.#store.userById(each.lastUser)?.name ?? "Someone",
                 };
             })
             .sort((a, b) => b.usedAt - a.usedAt);

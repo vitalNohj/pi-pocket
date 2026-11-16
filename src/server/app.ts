@@ -3325,19 +3325,16 @@ export class PocketApp {
 
     /** The approvals `user` may list: of sessions they started, and on computers they are in charge of. */
     sessionApprovals(user: User): ApprovalView[] {
-        return this.folderApprovals.list(
-            (approval) => {
-                const facts = this.policy.session(approval.session);
+        return this.folderApprovals.list((approval) => {
+            const facts = this.policy.session(approval.session);
 
-                return (
-                    facts !== undefined &&
-                    this.policy.maySee(user, approval.session) &&
-                    (this.policy.starter(facts) === user.id ||
-                        this.policy.inCharge(user, facts.computer))
-                );
-            },
-            (session) => this.#sessions[session]?.title ?? "New session",
-        );
+            return (
+                facts !== undefined &&
+                this.policy.maySee(user, approval.session) &&
+                (this.policy.starter(facts) === user.id ||
+                    this.policy.inCharge(user, facts.computer))
+            );
+        });
     }
 
     /**

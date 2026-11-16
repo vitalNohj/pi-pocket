@@ -2422,7 +2422,7 @@ defineItem("reply", {
 
 /** Under Pi's answers: the message time, reactions, and ways to talk about it with the people here. */
 function AnswerActions({ entry }) {
-    const { view, me, users, server } = store.state;
+    const { view, me, users } = store.state;
     const [picking, setPicking] = useState(false);
     const reactions = view.reactions?.[entry.id] ?? {};
     const pinned = (view.pins ?? []).some((pin) => pin.entryId === entry.id);

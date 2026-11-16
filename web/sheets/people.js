@@ -269,7 +269,6 @@ function InviteShown({ invite, code = "Invite code", again = "invite" }) {
  */
 function DeviceLink({ person }) {
     const theirs = person.id !== store.state.me?.id;
-    const owner = person.role === "owner";
     const [made, setMade] = useState(null);
     const [busy, setBusy] = useState(false);
     // Only the newest link shows: one that answers late, or after the page went, ends unseen.

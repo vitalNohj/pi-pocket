@@ -335,7 +335,7 @@ A release with a warning (or notes that could not be read) is never installed by
 
 ## Checking a change
 
-- **Every change:** `npm run check` (types, and no unused imports or locals in the TypeScript), `npm run lint`, and `npm test`.
+- **Every change:** `npm run check` (types, and no unused imports or locals in the TypeScript), `npm run lint` (the layout rules, and no unused imports, variables, or parameters in the web app's JavaScript), and `npm test`.
 - **Server:** the tests drive a real `PocketApp` with a scripted model, a restart included (`openApp` on the same folder). The built-in browser and peek tiles also run in a real Chromium where one is installed.
 - **Web:**
     - `node --check` each file you edit.

@@ -27,7 +27,6 @@ import {
     notify,
     isUnread,
     openSheet,
-    scoped,
     sessionUnread,
     setChatReadAt,
     setUnread,

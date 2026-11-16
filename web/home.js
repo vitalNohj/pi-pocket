@@ -3,7 +3,7 @@
 import { folderColor } from "./avatar.js";
 import { useEffect, useRef } from "preact/hooks";
 import { sessionMark } from "./sessions.js";
-import { canStart, canSteer, navigate, openSheet, scoped, store, workspaceOrder } from "./store.js";
+import { canStart, canSteer, navigate, openSheet, store, workspaceOrder } from "./store.js";
 import { lookLabel, prefs } from "./theme.js";
 import { html, Icon, Keys, shortPath, timeAgo } from "./ui.js";
 

@@ -9,12 +9,10 @@ import {
     api,
     attempt,
     canStart,
-    canSteer,
     closeSheet,
     navigate,
     notify,
     openSheet,
-    scoped,
     store,
 } from "../store.js";
 import { sessionStarted } from "../extension-ui.js";
