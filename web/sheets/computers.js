@@ -157,8 +157,8 @@ function LinkLocks({ locks, reload }) {
                 }
                 ${locks.addresses.map(
                     (lock) => html`<p key=${lock.address}>
-                        <strong>${lock.address}</strong> is locked out of linking until ${until(lock.until)}: it sent
-                        too many wrong link codes. Lockout ${lock.blocks} of 3 this week; the third bans it.
+                        <strong>${lock.address}</strong> is locked out until ${until(lock.until)}. Lockout
+                        ${lock.blocks} of 3 this week.
                     </p>`,
                 )}
             </div>`
@@ -168,8 +168,7 @@ function LinkLocks({ locks, reload }) {
             html`<div class="runner-bans">
                 <div class="group-title">Banned from linking</div>
                 <p class="muted small">
-                    These addresses were locked out 3 times for guessing link codes. They get the same answer as a
-                    wrong code. Lift a ban to let one link again.
+                    Banned for guessing link codes. Lift a ban to let one link again.
                 </p>
                 ${locks.bans.map(
                     (ban) => html`<div class="runner-ban" key=${ban.address}>
