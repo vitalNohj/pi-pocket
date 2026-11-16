@@ -74,8 +74,7 @@ export function SessionShareSheet({ id }) {
         ${
             data &&
             html`<p class="muted small">
-                    The people you pick see this session; those who steer can also send to Pi. You can pick only people
-                    chosen for ${data.computer} (Menu → People, or Menu → Runners).
+                    The people you pick see this session. Only people chosen for ${data.computer} are listed.
                 </p>
                 ${
                     data.people.length === 0
