@@ -671,12 +671,14 @@ function PersonPage({ person }) {
         ${
             !rules &&
             !places &&
+            // The owner's own page says nothing of what they may do: they know.
+            !(myself && person.role === "owner") &&
             html`<p class="muted small">
                 ${
                     person.role === "owner"
-                        ? `${myself ? "You can" : "They can"} do everything here: every session on this server is ${myself ? "yours" : "theirs"} to see, and ${myself ? "you" : "they"} choose who gets in.`
+                        ? "They see every session and choose who gets in."
                         : person.role === "viewer"
-                          ? `${myself ? "You read" : "They read"} the sessions shared with ${myself ? "you" : "them"}, react, and chat. Steering Pi takes an authenticator, and the owner's leave.`
+                          ? `${myself ? "You read" : "They read"} the sessions shared with ${myself ? "you" : "them"}, and cannot send to Pi Pocket.`
                           : `${myself ? "You send" : "They send"} to Pi and start sessions in ${myself ? "your" : "their"} folders.`
                 }
             </p>`
