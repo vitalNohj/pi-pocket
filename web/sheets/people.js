@@ -339,10 +339,10 @@ function DeviceLink({ person }) {
             hint=${
                 theirs
                     ? made
-                        ? `Send this to ${person.name}, or let them scan it. It signs their device in as ${person.name}, with all they have here, so give it only to them. It works once, until ${until}.${person.hasCode ? " Their device also asks for a code from their authenticator: if they lost that too, remove it under Sign-in first." : ""}`
+                        ? `Give this only to ${person.name}: it signs a device in as them. It works once, until ${until}.${person.hasCode ? " It also asks for their authenticator code. A lost authenticator can be removed under Sign-in." : ""}`
                         : `Makes a link that signs a device in as ${person.name}. It works once, within 15 minutes.`
                     : made
-                      ? `Scan this on your other device, or open the link there. It signs that device in as you${owner ? ", the owner, with full control" : ""}, so keep it to yourself. It works once, until ${until}.${person.hasCode ? " That device also asks for a code from your authenticator." : ""}`
+                      ? `Open this on your other device. It signs in as you, so keep it to yourself. It works once, until ${until}.${person.hasCode ? " It also asks for your authenticator code." : ""}`
                       : "Makes a link that signs another phone or computer in as you. It works once, within 15 minutes."
             }
         >
