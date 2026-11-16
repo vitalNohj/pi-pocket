@@ -680,7 +680,10 @@ test(
         assert.equal(live(), 0, "nothing is made until asked");
         await press("Make a link");
         await until(async () => (await part("input.mono")) !== null, "Gina's link");
-        assert.match((await part(".muted"))!, /signs their device in as Gina/);
+        assert.match(
+            (await part(".muted"))!,
+            /^Give this only to Gina: it signs a device in as them\./,
+        );
 
         const hers = await fetch((await part("input.mono"))!, {
             method: "POST",
@@ -722,10 +725,7 @@ test(
         assert.match(first, /\/join\/[a-z0-9]{10}$/);
         assert.equal(live(), 1);
         assert.match((await part(".invite-code-head span"))!, /^Sign-in code$/);
-        assert.match(
-            (await part(".muted"))!,
-            /signs that device in as you, the owner, with full control/,
-        );
+        assert.match((await part(".muted"))!, /It signs in as you, so keep it to yourself\./);
 
         // It signs a device in as the owner, with a token of its own.
         const signed = await fetch(first, {
