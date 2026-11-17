@@ -163,6 +163,10 @@ export function InviteSheet({ session = null }) {
             : what === "folder" && here
               ? `the sessions you started in ${folder} so far, and later ones only when they are shared with them`
               : "the sessions you started so far, and later ones only when they are shared with them";
+    // An invite to all of its maker's sessions is the widest there is: the sheet says so, and what follows for an
+    // account that is not temporary. Only the owner makes someone a user (`app.ts` `setAccess`), never they themselves.
+    const all = what === "mine" || !here;
+    const makes = store.state.me?.role === "owner" ? "you make" : "the owner makes";
     // As long as the invite shown lasts (a server that does not say: 15 minutes), or, while one is made, as chosen.
     const lasting = LASTS.find(
         ([each]) => each === (invite ? (invite.minutes ?? 15) : minutes),
@@ -255,6 +259,18 @@ export function InviteSheet({ session = null }) {
                     onChange=${() => setTemporary(!temporary)}
                 />
             <//>`
+        }
+        ${
+            collab() &&
+            all &&
+            html`<div class="warn-box" data-part="invite-warning" role="note">
+                <strong>This invite shares every session you started so far.</strong>
+                ${
+                    !temporary &&
+                    html` Their account is not temporary: they can link an authenticator, and once ${makes} them a
+                        user, they can prompt in all of those sessions.`
+                }
+            </div>`
         }
         <p class="muted small">
             ${`Scan this on the other device, or send it the link. It works once and expires ${lasting}. Whoever joins sees ${where}.`}
