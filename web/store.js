@@ -660,6 +660,12 @@ export const scoped = () => Array.isArray(store.state.me?.sessions);
  */
 export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStart !== false;
 
+/**
+ * Does the owner let this person invite people (`access.ts` `invites`): the owner always, a user once the owner turns
+ * Invite people on for them. A server from before it does not say, so as before.
+ */
+export const canInvite = () => store.state.me?.invites !== false;
+
 /** May this person link computers of their own as runners: the owner, and the guests the owner lets (`mayLink`). */
 export const canLink = () => store.state.me?.mayLink === true;
 

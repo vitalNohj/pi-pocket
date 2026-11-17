@@ -567,11 +567,40 @@ describe("who may share a session", () => {
         assert.equal(policy.mayManageTask(owner, guest.id, "40"), false);
     });
 
-    it("lets people who steer here invite to every session, and refuses viewers and invited people", () => {
+    it("lets the owner invite, and nobody else until the owner lets them", () => {
         const { policy } = world();
 
+        assert.equal(policy.invites(owner), true);
         assert.equal(policy.mayInvite(owner), true);
+        assert.equal(policy.mayInvite(owner, "10"), true);
+
+        // Off for everyone else: not to every session, and not to a session of their own.
+        for (const each of [guest, viewer, invited, stranger, linker]) {
+            assert.equal(policy.invites(each), false);
+            assert.equal(policy.mayInvite(each), false);
+        }
+
+        assert.equal(policy.mayInvite(guest, "10"), false);
+    });
+
+    it("lets a user the owner lets invite: to their sessions when they steer here, to a session they may share; never a viewer", () => {
+        const let_ = (person: Person): Person => ({ ...person, invites: true });
+        const { policy } = world(undefined, undefined, [
+            owner,
+            let_(guest),
+            let_(viewer),
+            let_(stranger),
+            linker,
+            let_(invited),
+        ]);
+
+        assert.equal(policy.invites(guest), true);
         assert.equal(policy.mayInvite(guest), true);
+        // To one session: their own, not one only shared with them.
+        assert.equal(policy.mayInvite(guest, "10"), true);
+        assert.equal(policy.mayInvite(guest, "11"), false);
+        // The switch alone is not enough: a viewer never, someone invited to one session or not chosen here not to all.
+        assert.equal(policy.invites(viewer), false);
         assert.equal(policy.mayInvite(viewer), false);
         assert.equal(policy.mayInvite(invited), false);
         assert.equal(policy.mayInvite(stranger), false);

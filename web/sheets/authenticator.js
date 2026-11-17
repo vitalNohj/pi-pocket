@@ -1,7 +1,7 @@
 // Your own authenticator app (`src/server/approval-methods.ts`): link it to your account, and approve your new folders
 // with its codes. Its secret is shown once, while linking; the server keeps it and never sends it again.
 import { useEffect, useState } from "preact/hooks";
-import { api, attempt } from "../store.js";
+import { api, attempt, store } from "../store.js";
 import { copyText, html } from "../ui.js";
 
 /** A 6-digit code field: digits only, filled from the phone's suggestion where it offers one. */
@@ -94,9 +94,13 @@ export function MyAuthenticator() {
         setError("");
     };
 
-    if (status === null) {
+    // A temporary account links none (`config.ts` `User.temporary`), so it is offered nothing here.
+    if (status === null || status.allowed === false) {
         return null;
     }
+
+    // The owner is never made a user: an authenticator is only for their approvals.
+    const owner = store.state.me?.role === "owner";
 
     const lockedUntil = status.lockedUntil;
 
@@ -148,7 +152,9 @@ export function MyAuthenticator() {
                                 ${
                                     status.linked
                                         ? "You approve your new folders with its codes."
-                                        : "Link an authenticator app to approve your new folders with its codes."
+                                        : owner
+                                          ? "Link an authenticator app to approve your new folders with its codes."
+                                          : "Link an authenticator app to be made a user, who can prompt."
                                 }
                             </div>
                             ${

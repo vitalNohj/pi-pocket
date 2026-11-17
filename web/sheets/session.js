@@ -4,6 +4,7 @@ import { deselectInList, selectedInList, selectFromList, setArchived } from "../
 import {
     actions,
     attempt,
+    canInvite,
     canSteer,
     closeSheet,
     collab,
@@ -70,7 +71,8 @@ function sessionItems(session) {
                     run: () => store.set({ sheet: { type: "session-share", id } }),
                 },
             starts &&
-                collab() && {
+                collab() &&
+                canInvite() && {
                     label: "Invite someone",
                     hint: "to this session only",
                     opens: true,
