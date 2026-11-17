@@ -8528,6 +8528,29 @@ div.group-head {
     min-width: 0;
 }
 
+/* Invite someone: what the invite shares, with the session's name or the folder beside the choices. */
+.invite-share {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    min-width: 0;
+}
+
+.invite-what {
+    flex: 1 1 120px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+    font-size: 12.5px;
+}
+
+.invite-what.mono {
+    font-size: 11.5px;
+}
+
 .field > .label {
     margin: 0;
     color: var(--muted);

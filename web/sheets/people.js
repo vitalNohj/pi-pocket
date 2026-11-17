@@ -4,6 +4,7 @@
 // their sign-in. Anyone else reads who is here, and has their own things.
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Avatar, avatarBlob } from "../avatar.js";
+import { shortPath } from "../folder-paths.js";
 import {
     actions,
     api,
@@ -16,9 +17,11 @@ import {
     store,
 } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
+import { accessFolder } from "./access-tree.js";
 import { AccessRow, choosable, computers, inCharge, loadComputers } from "./access.js";
 import { ApprovalTime, TasksExpire } from "./approvals.js";
 import { PageItem, Pages } from "./pages.js";
+import { canShare } from "./session-share.js";
 
 /** How long an invite may last: minutes, its button, and how the help text says it. */
 const LASTS = [
@@ -50,13 +53,18 @@ export function InviteSheet({ session = null }) {
             : view.conversation?.kind === "session"
               ? view.conversation
               : null;
-    const [only, setOnly] = useState(session !== null);
+    // The session as the list has it: its folder, its computer, and whether this person may share it.
+    const row = here ? (sessions.find((each) => each.id === here.id) ?? here) : null;
+    // "Only this session" is for who may share it (`access.ts` `mayShare`); the other two, for who may invite.
+    const single = row !== null && canShare(row);
+    // What the invite shares: the open session when there is one, else its folder, else all of this person's.
+    const [what, setWhat] = useState(single ? "session" : here ? "folder" : "mine");
     const [minutes, setMinutes] = useState(15);
     const [made, setMade] = useState(null);
     // The newest invite could not be made: the sheet offers to try again rather than wait for ever.
     const [failed, setFailed] = useState(false);
     // What the sheet says now: an invite shows only while it was made for exactly this.
-    const asked = JSON.stringify([only, minutes]);
+    const asked = JSON.stringify([what, minutes]);
     // Only the newest invite shows: one asked for before a change, answering late, must not stand for what the sheet says.
     const latest = useRef(0);
     // The invite the sheet last showed: a change to what it grants, or how long it lasts, ends it.
@@ -84,10 +92,21 @@ export function InviteSheet({ session = null }) {
             try {
                 answer = await api(
                     "invite",
-                    collab()
-                        ? { ...(only && here ? { session: here.id } : {}), minutes }
+                    collab() && here && what !== "mine"
+                        ? {
+                              session: here.id,
+                              ...(what === "folder" ? { folder: true } : {}),
+                              minutes,
+                          }
                         : { minutes },
                 );
+
+                // A server from before folder invites made one to the session alone: never shown as the folder's.
+                if (what === "folder" && here && answer.grant?.folder === undefined) {
+                    cancelInvite(answer);
+
+                    throw new Error("Restart Pi Pocket to invite someone to a folder.");
+                }
             } catch (error) {
                 if (ticket === latest.current) {
                     setFailed(true);
@@ -108,7 +127,7 @@ export function InviteSheet({ session = null }) {
 
     useEffect(() => {
         create({ replacing: true });
-    }, [only, minutes]);
+    }, [what, minutes]);
     useEffect(
         () => () => {
             mounted.current = false;
@@ -118,10 +137,21 @@ export function InviteSheet({ session = null }) {
     // Shown only while it is what the sheet says, not for a frame after a change.
     const invite = made && made.asked === asked ? made : null;
     // An invite to more than one session shows its maker's sessions as they are now (`app.ts` `welcome`), no others.
+    // The folder a folder invite is to: the open session's, as the server counts it (`access-tree.js` `accessFolder`).
+    const folder =
+        invite?.grant?.folder?.path ??
+        (row
+            ? accessFolder(
+                  row,
+                  sessions.filter((each) => (each.runner ?? null) === (row.runner ?? null)),
+              )
+            : null);
     const where =
-        only && here
+        what === "session" && here
             ? `only “${here.title}”`
-            : "the sessions you started so far, and later ones only when they are shared with them";
+            : what === "folder" && here
+              ? `the sessions you started in ${folder} so far, and later ones only when they are shared with them`
+              : "the sessions you started so far, and later ones only when they are shared with them";
     // As long as the invite shown lasts (a server that does not say: 15 minutes), or, while one is made, as chosen.
     const lasting = LASTS.find(
         ([each]) => each === (invite ? (invite.minutes ?? 15) : minutes),
@@ -137,21 +167,49 @@ export function InviteSheet({ session = null }) {
                 here &&
                 html`<div class="field">
                     <div class="label">Share</div>
-                    <div class="segmented">
-                        <button
-                            class=${!only ? "on" : ""}
-                            aria-pressed=${!only}
-                            onClick=${() => setOnly(false)}
-                        >
-                            My sessions
-                        </button>
-                        <button
-                            class=${only ? "on" : ""}
-                            aria-pressed=${only}
-                            onClick=${() => setOnly(true)}
-                        >
-                            Only this session
-                        </button>
+                    <div class="invite-share">
+                        <div class="segmented">
+                            ${
+                                single &&
+                                html`<button
+                                    class=${what === "session" ? "on" : ""}
+                                    aria-pressed=${what === "session"}
+                                    onClick=${() => setWhat("session")}
+                                >
+                                    Only this session
+                                </button>`
+                            }
+                            <button
+                                class=${what === "folder" ? "on" : ""}
+                                aria-pressed=${what === "folder"}
+                                onClick=${() => setWhat("folder")}
+                            >
+                                This folder
+                            </button>
+                            <button
+                                class=${what === "mine" ? "on" : ""}
+                                aria-pressed=${what === "mine"}
+                                onClick=${() => setWhat("mine")}
+                            >
+                                My sessions
+                            </button>
+                        </div>
+                        ${
+                            what !== "mine" &&
+                            html`<span
+                                class=${`invite-what${what === "folder" ? " mono" : ""}`}
+                                title=${what === "folder" ? folder : row.title || "New session"}
+                            >
+                                ${
+                                    what === "folder"
+                                        ? shortPath(
+                                              folder,
+                                              row.runner ? undefined : store.state.server?.home,
+                                          )
+                                        : row.title || "New session"
+                                }
+                            </span>`
+                        }
                     </div>
                 </div>`
             }`

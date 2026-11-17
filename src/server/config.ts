@@ -133,6 +133,8 @@ export type InviteFor =
           role: Exclude<Role, "owner">;
           /** The one session it is for; absent means the sessions shared with them. */
           session?: string;
+          /** The one folder it is for: its maker's sessions in it on that computer, not all of theirs. */
+          folder?: { computer: string; path: string };
           device?: never;
           person?: never;
       }
@@ -142,6 +144,7 @@ export type InviteFor =
           person?: string;
           role?: never;
           session?: never;
+          folder?: never;
       };
 
 /**

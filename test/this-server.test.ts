@@ -392,6 +392,38 @@ test("an invite to every session passes on only the sessions its maker may see",
     assert.equal(app.canSee(fromAlex, hers), true, "a session the inviter may see");
 });
 
+test("an invite to a folder passes on only its maker's sessions in that folder, on that computer", async () => {
+    const other = join(root, "other-project");
+
+    mkdirSync(other, { recursive: true });
+
+    const { id: inside } = await app.commands.createSession(owner(app), { cwd: project });
+    const { id: outside } = await app.commands.createSession(owner(app), { cwd: other });
+    const { id: alexs } = await app.commands.createSession(owner(app), { cwd: project });
+
+    // In the same folder, but Alex's.
+    await app.harness.commit(async (tx) => {
+        (await tx.doc(SessionsDoc)).items[String(alexs)]!.createdBy = alex.id;
+    }, context);
+
+    const folder = app.folderOf(inside)!;
+
+    assert.deepEqual(folder, { computer: THIS_SERVER, path: app.cwdOf(inside) });
+
+    const fay = person("Fay", "viewer");
+
+    await app.welcome(fay.id, owner(app).id, folder);
+    assert.equal(app.canSee(fay, inside), true, "the inviter's session in the folder");
+    assert.equal(app.canSee(fay, outside), false, "not the inviter's session in another folder");
+    assert.equal(app.canSee(fay, alexs), false, "not someone else's session in the folder");
+
+    // The same path on another computer is another folder.
+    const finn = person("Finn", "viewer");
+
+    await app.welcome(finn.id, owner(app).id, { computer: runnerId, path: folder.path });
+    assert.equal(app.canSee(finn, inside), false);
+});
+
 test("the owner limits the spend of a session they may see, and learns nothing of one they may not", async () => {
     const gina = person("Gina spends", "guest");
     const ginas = app.config.addRunner("Gina's desktop", gina.id, newIdentity().publicKey).id;
