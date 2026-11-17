@@ -23350,6 +23350,11 @@ pre.gallery-code {
     margin-bottom: 0.4rem;
 }
 
+/* TEMPORARY: the fork's install line under npm's (`FORK_PACKAGE` in sheets/computers.js). */
+.runner-fork {
+    margin-top: 0.7rem;
+}
+
 .runner-copy {
     display: flex;
     align-items: center;

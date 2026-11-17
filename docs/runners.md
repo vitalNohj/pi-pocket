@@ -73,7 +73,7 @@ The link file is `~/.pi-pocket/runner.json`. It contains this computer's key, an
 
 Run `pi-pocket runner` again to start, change, or replace a saved link. Deleting the link file alone does not stop a runner that is already running.
 
-If your server uses a build that is not on npm, set `PI_POCKET_RUNNER_PACKAGE` on the server. For example, use the URL of a fork's package tarball. This changes the install command shown in **Runners**.
+If your server uses a build that is not on npm, set `PI_POCKET_RUNNER_PACKAGE` on the server. For example, use the URL of a fork's package tarball. This changes the install command shown in **Runners**. For now, while this fork's runner changes are not in npm's release, **Runners** also shows the fork's own install command under npm's when that setting is not set; install that one to link to this server.
 
 ## Who may use a computer
 

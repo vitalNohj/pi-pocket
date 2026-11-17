@@ -59,10 +59,19 @@ function Copyable({ text, label }) {
     </div>`;
 }
 
+/**
+ * TEMPORARY, for this fork only: remove it, its use in `LinkSteps`, `.runner-fork` in style.css, and its sentence in
+ * docs/runners.md ("For now, while this fork's…") once the runners pull request is merged upstream and npm's release
+ * links to this server. Until then npm's `pi-pocket@latest` is the original project's release, so the fork's own
+ * package is named under it (the address the desktop app installs from).
+ */
+const FORK_PACKAGE = "https://codeload.github.com/vitalNohj/pi-pocket/tar.gz/live-0.28";
+
 /** The address and code for the runner on that computer, and how to get a runner there. */
 function LinkSteps({ made, onDone }) {
     const server = location.origin;
     const minutes = Math.max(1, Math.round((made.expiresAt - Date.now()) / 60000));
+    const named = made.package ?? "pi-pocket@latest";
 
     return html`<div class="sheet-page runner-link">
         <h3 class="sheet-page-title">Link ${made.name}</h3>
@@ -74,7 +83,15 @@ function LinkSteps({ made, onDone }) {
         <ol class="runner-steps">
             <li>
                 <div>Install Pi Pocket (Node.js 22.19 or newer):</div>
-                <${Copyable} text=${`npm install -g ${made.package ?? "pi-pocket@latest"}`} />
+                <${Copyable} text=${`npm install -g ${named}`} />
+                ${
+                    named === "pi-pocket@latest" &&
+                    html`<div class="runner-fork muted small">
+                            This server runs a fork for now. Until its changes are in that release, install the
+                            fork instead:
+                        </div>
+                        <${Copyable} text=${`npm install -g ${FORK_PACKAGE}`} />`
+                }
             </li>
             <li>
                 <div>Run the runner, choose Link this computer, and enter the address and code:</div>
