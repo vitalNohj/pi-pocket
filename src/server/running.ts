@@ -28,6 +28,8 @@ export type RunningTask = {
     scheduleId?: string;
     /** When this server first saw the task at work: its start, or the server's, for one that ran on across a restart. */
     since?: number;
+    /** Since when its subagent made no progress, once its stall watch told the parent (`extensions/subagents.ts`). */
+    stalled?: number;
 };
 
 export type RunningSession = {
@@ -78,6 +80,8 @@ export type BoardSchedule = {
     requestedBy?: string;
     createdAt: number;
     runs: number;
+    /** How many times it sent nothing because its last message still waited in the queue (`schedules.ts`). */
+    skipped?: number;
     /** The next times it goes out, the first being `next`: up to `UPCOMING`, within `UPCOMING_MS`. */
     upcoming: number[];
     /** Why it would not go out now (a spend limit, or nobody left to steer), when it would not. */
@@ -155,6 +159,10 @@ async function describeTask(
             return { label: "compacting the context" };
         case "pocket.subagent-reporter":
             return { label: "waiting for a subagent's answer" };
+        case "pocket.subagent-stall-watch":
+            return { label: "watching subagents for work with no progress" };
+        case "pocket.linked-stall-watch":
+            return { label: "watching linked sessions for work with no progress" };
         case "pocket.follow-failure":
             return { label: "waiting for a failed subagent to answer a message" };
 
@@ -305,12 +313,18 @@ export async function runningNow(app: PocketApp, user: User): Promise<RunningSes
         }
 
         const parent = app.parentOf(node.conversationId);
-        const subagent =
+        const found =
             parent === undefined
                 ? undefined
                 : Object.entries(
                       (await app.harness.snapshot(SubagentsDoc, parent, context))?.agents ?? {},
-                  ).find(([, record]) => record.conversationId === node.conversationId)?.[0];
+                  ).find(([, record]) => record.conversationId === node.conversationId);
+        const subagent = found?.[0];
+        const stall = found?.[1].stall;
+        const stalled =
+            stall?.told === true && (node.kind === "pi.tool" || node.kind === "pi.generation")
+                ? stall.since
+                : undefined;
 
         (await session(node.conversationId)).tasks.push({
             id: Number(node.id),
@@ -319,6 +333,7 @@ export async function runningNow(app: PocketApp, user: User): Promise<RunningSes
             conversationId: Number(node.conversationId),
             since: since.get(String(node.id)) ?? Date.now(),
             ...(subagent === undefined ? {} : { subagent }),
+            ...(stalled === undefined ? {} : { stalled }),
             ...description,
         });
     }
@@ -531,6 +546,7 @@ export async function runningBoard(app: PocketApp, user: User): Promise<RunningB
                     : { requestedBy: schedule.requestedBy }),
                 createdAt: schedule.createdAt,
                 runs: schedule.runs,
+                ...(schedule.skipped === undefined ? {} : { skipped: schedule.skipped }),
                 upcoming:
                     paused === undefined
                         ? upcomingOf(schedule.id, schedule.next, schedule.every, schedule.zone)

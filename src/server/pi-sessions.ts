@@ -13,7 +13,7 @@
  * not there (a stray one, or one whose call a context edit took out), Pi Durable leaves it out, as providers refuse it.
  */
 import { stat } from "node:fs/promises";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import {

@@ -234,6 +234,28 @@ export async function conversationRoutes(
         );
     }
 
+    // What a Stop held: `send` them all, or `drop` or `edit` one, by its `key`.
+    if (third === "held" && method === "POST") {
+        const body = await readJson<{ action?: unknown; key?: unknown }>(request);
+        const key = String(body.key ?? "");
+
+        if (body.action === "send") {
+            return json(response, 200, { sent: await app.commands.sendHeld(id, user) });
+        }
+
+        if (body.action === "drop") {
+            await app.commands.dropHeld(id, user, key);
+
+            return json(response, 200, { ok: true });
+        }
+
+        if (body.action === "edit") {
+            return json(response, 200, await app.commands.editHeld(id, user, key));
+        }
+
+        throw new HttpError(400, "Say send, drop, or edit.");
+    }
+
     if (third === "move" && method === "POST") {
         const body = await readJson<{ submissionId?: number; mode?: string }>(request);
 
@@ -569,6 +591,9 @@ export async function conversationRoutes(
             throw new HttpError(400, "path is required");
         }
 
+        // As the viewer's own route (`view`): reading a file whole takes the right to steer, not only to see.
+        app.requireSteer(user, id);
+
         if (app.runnerOf(id) !== undefined) {
             // Whom the file viewer lets read it there (`Workspace.remoteFile`): the folder, never the computer's secrets.
             await app.workspace.remoteFile(user, id, requested);
@@ -817,7 +842,7 @@ export async function conversationRoutes(
             throw new HttpError(404, "No such background task here.");
         }
 
-        await app.background.stop(id, item.id);
+        await app.background.stop(id, item.id, "person");
 
         return json(response, 200, { ok: true });
     }

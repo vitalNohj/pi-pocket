@@ -76,9 +76,9 @@ import {
 } from "./ui.js";
 import { LessonCall, memoryAvailable } from "./sheets/memory.js";
 
-const REPORT = /^\[subagent (\S+) (answered|failed)([^\]]*)\]\s?([\s\S]*)$/;
+const REPORT = /^\[subagent (\S+) (answered|failed|stopped|stalled)([^\]]*)\]\s?([\s\S]*)$/;
 /** Where the next report starts, in a message of several that arrived together (`extensions/subagents.ts`). */
-const NEXT_REPORT = /\n\n(?=\[subagent \S+ (?:answered|failed))/;
+const NEXT_REPORT = /\n\n(?=\[subagent \S+ (?:answered|failed|stopped|stalled))/;
 
 /**
  * A background task's message to Pi (`background.ts`): its head line, its command, and the end of its output fenced.
@@ -337,14 +337,17 @@ function CodedText({ text }) {
 function Report({ report, view, fresh }) {
     const [, name, verb, after, text] = report;
     const child = view.subagents.find((agent) => agent.name === name);
-    // A failed one says why: "failed: stopped before it answered", "failed: Bad request".
-    const why = verb === "failed" ? after.replace(/^:\s*/, "") : "";
+    // One that did not answer says why: "failed: Bad request", "stalled again: no progress for 1 h…". Its words
+    // before the colon stay in its head ("stopped by Pi Pocket").
+    const said = verb === "answered" ? undefined : /^([^:]*):\s*([\s\S]*)$/.exec(after);
+    const why = said?.[2] ?? "";
+    const more = said?.[1]?.trim() ?? "";
 
     return html`<div
-        class=${`report ${verb === "failed" ? "failed" : ""} ${fresh ? "enter" : ""}`}
+        class=${`report ${verb === "answered" ? "" : verb} ${fresh ? "enter" : ""}`}
     >
         <div class="report-head">
-            <span class="report-name">${name}</span> ${verb}
+            <span class="report-name">${name}</span> ${verb}${more && ` ${more}`}
             ${
                 child &&
                 html`<button class="link" onClick=${() => openSubagent(child.conversationId)}>
@@ -3446,8 +3449,9 @@ function windowStart(rows, from) {
 }
 
 /**
- * How long new rows carry the catch-up entrance. Each update after rows are on screen opens this window (`keptAt`),
- * so a slow answer or reconnect still glides at the bottom, or keeps the reader's row when scrolled up.
+ * How long what comes for a session is its catch-up, from the server's first view after the session showed from what
+ * the tab or the device kept, or after a reconnect (`due`): it glides in at the bottom, or arrives below the reader
+ * without moving what they read.
  */
 const CATCH_UP_MS = 3000;
 /** How long a session held for its changes (Appearance's Wait for updates) waits for them before it shows anyway. */
@@ -3588,9 +3592,12 @@ export function Transcript() {
         entrance.current = routeSliding() ? "" : "rising";
     }
 
-    // The last update after this session had rows on screen. Every such update opens its own catch-up window: no
-    // deadline measured from opening the session can make a later answer jump. The initial view still shows whole.
+    // When the catch-up began, or 0. It begins with the first view after `due`, however late that view comes.
     const keptAt = useRef(0);
+    // The view on screen as a catch-up became due (rows from what was kept, or a reconnect), until the next view comes.
+    const due = useRef(null);
+    const open = store.state.connection === "open";
+    const wasOpen = useRef(open);
     const catching = () => keptAt.current > 0 && performance.now() - keptAt.current < CATCH_UP_MS;
     /** The row the reader looks at, as this draw began, while the session catches up (`anchorOf`). */
     const anchor = useRef(null);
@@ -3656,16 +3663,26 @@ export function Transcript() {
     // Rows of the catch-up about to be drawn: where the reader looks, before Preact changes the page (it does after this
     // function returns), to keep it there after.
     const drawnRows = useRef(rows);
-    // A draw has put rows on screen: the next rows are a catch-up, and glide.
+    // A draw has put rows on screen.
     const shown = useRef(false);
 
-    if (rows !== drawnRows.current) {
-        // Rows are already on screen (`shown`): this update glides however late it is, even after an earlier update's
-        // window has passed. The rows the session opens with do not glide themselves.
-        if (shown.current && view.conversation && !held) {
+    // Back from a reconnect, with rows on screen: what the server sends now is a catch-up.
+    if (open && !wasOpen.current && shown.current) {
+        due.current = view;
+    }
+
+    wasOpen.current = open;
+
+    // The first view after one that was due is the catch-up: with new rows, they glide, however late they come.
+    if (due.current !== null && view !== due.current) {
+        due.current = null;
+
+        if (rows !== drawnRows.current && shown.current && view.conversation && !held) {
             keptAt.current = performance.now();
         }
+    }
 
+    if (rows !== drawnRows.current) {
         drawnRows.current = rows;
         anchor.current = catching()
             ? anchorOf(scroller.current, column.current, stick.current)
@@ -3709,6 +3726,12 @@ export function Transcript() {
         catchUp(element);
         place(element);
         counted.current = rows.length;
+
+        // The first rows on screen are what the tab or the device kept: the server's view of them is still to come.
+        if (!shown.current && rows.length > 0 && !viewSynced(view.conversation?.id)) {
+            due.current = view;
+        }
+
         shown.current = rows.length > 0;
 
         if (rows.length === 0) {
@@ -3826,9 +3849,8 @@ export function Transcript() {
             return;
         }
 
-        // Rows already on screen: what mounts after them is new. The catch-up window (`keptAt`) opens on the next
-        // draw, so this cannot wait for it.
-        if (shown.current) {
+        // A kept session's rows are on screen: what mounts after them, its catch-up first, is new.
+        if (due.current !== null || keptAt.current > 0) {
             settledFor = conversationId;
 
             return;
@@ -4094,6 +4116,15 @@ export function Transcript() {
     const { sessions, sessionsLoaded } = store.state;
     const source =
         conversation.forkedFrom && sessions.find((each) => each.id === conversation.forkedFrom.id);
+    // The last run failed with no answer that says so (its compaction failed, say): the line stays until a run starts.
+    // A failed answer after the newest message says it under itself already.
+    const said =
+        entries.findLast((entry) => entry?.kind === "assistant" || entry?.kind === "user")
+            ?.stopReason === "error";
+    const failure =
+        busy || said
+            ? undefined
+            : sessions.find((each) => each.id === conversation.id && each.failed === true)?.failure;
 
     return html`<main class="scroller" ref=${scroller} onScroll=${onScroll}>
         <div
@@ -4151,6 +4182,12 @@ export function Transcript() {
             ${approvals.map(
                 (approval) => html`<${ApprovalCard} key=${approval.id} approval=${approval} />`,
             )}
+            ${
+                failure &&
+                html`<div class="error-box run-failure" data-part="run-failure" role="alert">
+                    Run failed: ${failure}
+                </div>`
+            }
             ${
                 (busy || compacting) &&
                 html`<${LiveLine}

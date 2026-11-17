@@ -1254,6 +1254,7 @@ export class CacheKeeper {
             const options: ObservedOptions = {
                 ...replayOptions(entry.options),
                 maxTokens: 1,
+                disableContinuation: true,
                 maxRetries: 0,
                 signal: abort.signal,
                 [FINAL_PAYLOAD]: (payload) => {

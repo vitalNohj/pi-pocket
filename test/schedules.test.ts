@@ -22,7 +22,13 @@ import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { AuthorsDoc, ChatDoc, ScheduleDoc } from "../src/server/docs.ts";
 import { DEFAULT_SCHEDULE_LIMITS } from "../src/server/schedules.ts";
-import { describeRepeat, nextClockTime, parseWhen, zonedMoment } from "../src/server/when.ts";
+import {
+    checkRepeat,
+    describeRepeat,
+    nextClockTime,
+    parseWhen,
+    zonedMoment,
+} from "../src/server/when.ts";
 
 const iso = (moment: number) => new Date(moment).toISOString();
 /** Sunday, October 4, 2026, 10:00 in Chicago (15:00 UTC). */
@@ -86,6 +92,8 @@ test("the shortest repeat and the furthest ahead can be set", () => {
         sunday + 400 * day,
     );
     assert.throws(() => parseWhen("in 400d x", sunday, chicago), /up to a year ahead/);
+    assert.throws(() => parseWhen("every 999999999999m x", sunday, chicago), /366 days/);
+    assert.throws(() => checkRepeat({ minutes: 1e15 }), /366 days/, "the editor too");
 });
 
 test("clock times hold across daylight saving changes", () => {
@@ -289,6 +297,24 @@ test("a scheduled message goes out at its time, also after a restart, once; a re
     );
     await app.commands.cancelSchedule(id, owner(app), repeat.id);
     assert.deepEqual(await items(id), []);
+});
+
+test("a windowed repeat whose window passed while the server was down waits for its next window", async () => {
+    const id = await newSession(app);
+    const hhmm = (at: number) => new Date(at).toISOString().slice(11, 16);
+    const from = Math.ceil((Date.now() + ahead) / 60_000) * 60_000 + 60_000;
+    const repeat = await app.commands.schedule(id, owner(app), {
+        when: `every 10m between ${hhmm(from)} and ${hhmm(from + 30 * 60_000)} missed`,
+        zone: "UTC",
+    });
+
+    assert.equal(repeat.next, from);
+    const startsAt = await restartLater(60);
+
+    await until(async () => (await items(id))[0]!.next > startsAt, "the next window");
+    assert.equal((await items(id))[0]?.runs, 0);
+    assert.ok(!(await userTexts(id)).some((text) => text.includes("missed")));
+    await app.commands.cancelSchedule(id, owner(app), repeat.id);
 });
 
 test("Pi schedules, lists, and cancels its own messages with its tool", async () => {

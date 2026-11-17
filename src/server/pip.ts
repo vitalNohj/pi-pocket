@@ -17,7 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
     AgentDoc,
@@ -989,7 +989,9 @@ export class Pip {
             .all()
             .filter((request) => app.rootOf(request.conversationId) === id)
             .map((request) => `- ${request.id}: ${request.tool} ${snippet(request.subject, 200)}`);
-        const schedules = await app.schedules.list(id);
+        const schedules = (await app.schedules.list(id)).filter(
+            (item) => item.paused === undefined,
+        );
         const state = app.approvals
             .all()
             .some((request) => app.rootOf(request.conversationId) === id)
@@ -1588,6 +1590,14 @@ export class Pip {
     /** A session's last words, for PiP: how its run ended, and Pi's last answer, fenced. */
     async #lastWords(id: ConversationId, title: string, state: string): Promise<string> {
         const name = `${quoted(title, 80)} (/s/${String(id)})`;
+        // A run that failed with no answer of its own (its compaction failed) left the answer before it as the last:
+        // the failure is what came of the run, not that answer.
+        const failure = this.#app.runFailure(id);
+
+        if (failure !== undefined) {
+            return `${name} stopped with an error: ${snippet(failure, 300)}`;
+        }
+
         const page = await (await this.#app.conversation(id)).entries({}, 16, undefined, context);
         const last = page.items
             .map((entry) => projectEntry(entry))

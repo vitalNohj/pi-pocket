@@ -1,6 +1,7 @@
 // OpenAI-compatible endpoints from the Providers sheet: models.json made when missing, keys in auth.json, hand-made
 // files left alone, and an endpoint's models discovered.
 import { cleanUp, openApp, owner, root, scriptedModel } from "./helpers.ts";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
@@ -18,6 +19,7 @@ import { after, before, test } from "node:test";
 import { HttpError } from "../src/server/errors.ts";
 import {
     DEFAULT_TIERS,
+    THINKING_LEVELS,
     idFor,
     parseModelList,
     priceOf,
@@ -483,13 +485,12 @@ test("a model's images and thinking levels go into models.json, and Pi offers wh
         input: ["text", "image"],
         reasoning: true,
         thinkingLevelMap: {
-            off: null,
-            minimal: null,
+            minimal: "minimal",
             low: "low",
             medium: "medium",
             high: "high",
-            xhigh: "xhigh",
-            max: "max",
+            xhigh: null,
+            max: null,
         },
     });
     assert.deepEqual(models[2], { id: "plain" });
@@ -498,6 +499,14 @@ test("a model's images and thinking levels go into models.json, and Pi offers wh
 
     assert.deepEqual(seer?.input, ["text", "image"]);
     assert.equal(seer?.reasoning, true);
+    // Thinking turned on keeps Off selectable and leaves out the levels most endpoints refuse.
+    assert.deepEqual(getSupportedThinkingLevels(seer!), [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+    ]);
     assert.deepEqual(app.models.getModel("caps", "plain")?.input, ["text"]);
     assert.deepEqual(app.models.getModel("caps", "own-names")?.thinkingLevelMap, {
         off: null,
@@ -551,6 +560,34 @@ test("a model's images and thinking levels go into models.json, and Pi offers wh
         /needs a value/,
     );
     await app.customProviders.remove("caps");
+});
+
+test("an edit saves a hand-made reasoning model with every level off as it is", async () => {
+    await app.customProviders.create({
+        name: "Fixed",
+        baseUrl,
+        noKey: true,
+        models: [{ id: "always", thinking: DEFAULT_TIERS }],
+    });
+
+    const config = readModels();
+    const levels = Object.fromEntries(THINKING_LEVELS.map((level) => [level, null]));
+
+    config.providers.fixed.models[0].thinkingLevelMap = levels;
+    writeFileSync(modelsFile, JSON.stringify(config));
+
+    const listed = app.customProviders.list().find((each) => each.id === "fixed")!;
+
+    assert.deepEqual(listed.models[0]?.thinking, []);
+
+    // What the form sends back for it on a rename.
+    await app.customProviders.update("fixed", { name: "Fixed 2", models: listed.models });
+
+    const kept = readModels().providers.fixed.models[0];
+
+    assert.equal(kept.reasoning, true);
+    assert.deepEqual(kept.thinkingLevelMap, levels);
+    await app.customProviders.remove("fixed");
 });
 
 test("discovery reads the model ids and vLLM's max_model_len, nothing a vendor adds", () => {

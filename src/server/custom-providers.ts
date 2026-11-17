@@ -54,10 +54,13 @@ export interface ThinkingTier {
     value: string;
 }
 
-/** The levels a model gets when thinking is turned on: low to max, each sending its own name. */
+/**
+ * The levels a model gets when thinking is turned on: the ones Pi offers a reasoning model that has no map (off to
+ * high, not xhigh or max), each sending its own name; off sends nothing.
+ */
 export const DEFAULT_TIERS: ThinkingTier[] = (
-    ["low", "medium", "high", "xhigh", "max"] as const
-).map((level) => ({ level, value: level }));
+    ["off", "minimal", "low", "medium", "high"] as const
+).map((level) => ({ level, value: level === "off" ? "" : level }));
 
 const MAX_TIER_VALUE = 64;
 
@@ -194,7 +197,12 @@ function modelsOf(value: unknown): CustomModel[] {
             ...(window === undefined ? {} : { contextWindow: window }),
             ...(most === undefined ? {} : { maxTokens: most }),
             ...(images === undefined ? {} : { images }),
-            ...(entry?.thinking === undefined ? {} : { thinking: tiersOf(id, entry.thinking) }),
+            // No levels at all is how a hand-made reasoning model with every level null reads back, and the form
+            // cannot make it: its save leaves the model's thinking as it is.
+            ...(entry?.thinking === undefined ||
+            (Array.isArray(entry.thinking) && entry.thinking.length === 0)
+                ? {}
+                : { thinking: tiersOf(id, entry.thinking) }),
             ...(entry?.cost === undefined ? {} : { cost: priceOf(id, entry.cost) }),
         });
     }
@@ -324,7 +332,8 @@ export function tiersOf(id: string, value: unknown): ThinkingTier[] | null {
 /**
  * A model's thinking levels as Pi reads its entry: none without `reasoning`; else each level the map does not mark
  * null, sending what the map says. A level the map leaves out sends its own name, as Pi does, except xhigh and max,
- * which Pi then leaves out; and off, which sends nothing.
+ * which Pi then leaves out; and off, which sends nothing. A reasoning model whose map marks every level null has
+ * none: the form sends `[]` back, and a save leaves that model's thinking as it is.
  */
 export function tiersOfEntry(model: Json): ThinkingTier[] | null {
     if (model.reasoning !== true) {

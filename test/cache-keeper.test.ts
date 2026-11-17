@@ -114,7 +114,7 @@ function rig(
     const timers: { at: number; fn: () => void }[] = [];
     let failNext = false;
     const ended = new Set<number>();
-    const calls: { maxTokens?: number; maxRetries?: number }[] = [];
+    const calls: { maxTokens?: number; maxRetries?: number; disableContinuation?: boolean }[] = [];
     const hashes: unknown[] = [];
     const changed: number[] = [];
     let stopReason = "stop";
@@ -128,6 +128,9 @@ function rig(
             calls.push({
                 ...(options?.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
                 ...(options?.maxRetries === undefined ? {} : { maxRetries: options.maxRetries }),
+                ...(options?.disableContinuation === undefined
+                    ? {}
+                    : { disableContinuation: options.disableContinuation }),
             });
             const message = {
                 role: "assistant",
@@ -340,6 +343,8 @@ test("a request that ended in a tool call is warmed, with a one-token cap and no
     assert.equal(r.calls.length, 2);
     assert.equal(r.calls[1]?.maxTokens, 1);
     assert.equal(r.calls[1]?.maxRetries, 0);
+    assert.equal(r.calls[0]?.disableContinuation, undefined);
+    assert.equal(r.calls[1]?.disableContinuation, true);
     assert.equal(r.keeper.status().warms, 1);
     assert.equal(r.timers.length, 1, "the next refresh is scheduled");
 });

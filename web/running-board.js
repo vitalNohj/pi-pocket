@@ -1102,9 +1102,14 @@ function Row({
                                   }${task.label}
                               </span>
                               <span
-                                  class=${`rb-status ${task.status === "running" ? "ok" : waiting ? "warn" : ""} ${task.status}`}
+                                  class=${`rb-status ${task.stalled ? "warn" : task.status === "running" ? "ok" : waiting ? "warn" : ""} ${task.status}`}
+                                  title=${
+                                      task.stalled
+                                          ? `No progress since ${new Date(task.stalled).toLocaleTimeString()}`
+                                          : undefined
+                                  }
                               >
-                                  ${task.status}
+                                  ${task.stalled ? "stalled" : task.status}
                               </span>
                               <span class="rb-elapsed">
                                   ${task.since ? elapsed(now - task.since) : ""}
@@ -1165,7 +1170,7 @@ function Row({
                               <span class="rb-sched-rel">
                                   ${
                                       schedule.paused === undefined
-                                          ? `${relative(schedule.next, now)}${schedule.every ? ` · ${schedule.runs}×` : ""}`
+                                          ? `${relative(schedule.next, now)}${schedule.every ? ` · ${schedule.runs}×` : ""}${schedule.skipped > 0 ? ` · skipped ${schedule.skipped}×` : ""}`
                                           : ""
                                   }
                               </span>
@@ -1202,48 +1207,50 @@ function Detail({ schedule, now, steer, color, onClose, onOpen, onCancel, onPaus
                 Held: ${schedule.held}. At its time it is cancelled, unless that changes first.
             </div>`
         }
-        <pre class="rb-message">${schedule.text}</pre>
-        <dl class="rb-facts">
-            <dt>Repeats</dt>
-            <dd>${schedule.repeat ?? "no, once"}</dd>
-            <dt>Next</dt>
-            <dd>
+        <div class="rb-detail-body">
+            <pre class="rb-message">${schedule.text}</pre>
+            <dl class="rb-facts">
+                <dt>Repeats</dt>
+                <dd>${schedule.repeat ?? "no, once"}</dd>
+                <dt>Next</dt>
+                <dd>
+                    ${
+                        schedule.paused !== undefined
+                            ? "paused"
+                            : html`${clock(schedule.next, schedule.zone, now, { day: "always" })}
+                                  ${zone && ` ${zone}`}
+                                  ${" · "}
+                                  ${relative(schedule.next, now)}`
+                    }
+                </dd>
+                <dt>Zone</dt>
+                <dd>${schedule.zone}</dd>
+                <dt>Set by</dt>
+                <dd>${setBy(schedule)}</dd>
+                <dt>Set up</dt>
+                <dd>${relative(schedule.createdAt, now)}</dd>
                 ${
-                    schedule.paused !== undefined
-                        ? "paused"
-                        : html`${clock(schedule.next, schedule.zone, now, { day: "always" })}
-                              ${zone && ` ${zone}`}
-                              ${" · "}
-                              ${relative(schedule.next, now)}`
+                    schedule.every &&
+                    html`<dt>Went out</dt>
+                        <dd>${schedule.runs} ${schedule.runs === 1 ? "time" : "times"}</dd>`
                 }
-            </dd>
-            <dt>Zone</dt>
-            <dd>${schedule.zone}</dd>
-            <dt>Set by</dt>
-            <dd>${setBy(schedule)}</dd>
-            <dt>Set up</dt>
-            <dd>${relative(schedule.createdAt, now)}</dd>
+                <dt>Id</dt>
+                <dd class="mono">${schedule.id}</dd>
+            </dl>
             ${
-                schedule.every &&
-                html`<dt>Went out</dt>
-                    <dd>${schedule.runs} ${schedule.runs === 1 ? "time" : "times"}</dd>`
+                schedule.upcoming.length > 1 &&
+                html`<div class="rb-sub">Coming up</div>
+                    <div class="rb-upcoming">
+                        ${schedule.upcoming.slice(0, 5).map(
+                            (t) =>
+                                html`<span key=${t}>
+                                        ${clock(t, schedule.zone, now, { day: "always" })}
+                                        ${zone && ` ${zone}`}
+                                    </span>`,
+                        )}
+                    </div>`
             }
-            <dt>Id</dt>
-            <dd class="mono">${schedule.id}</dd>
-        </dl>
-        ${
-            schedule.upcoming.length > 1 &&
-            html`<div class="rb-sub">Coming up</div>
-                <div class="rb-upcoming">
-                    ${schedule.upcoming.slice(0, 5).map(
-                        (t) =>
-                            html`<span key=${t}>
-                                    ${clock(t, schedule.zone, now, { day: "always" })}
-                                    ${zone && ` ${zone}`}
-                                </span>`,
-                    )}
-                </div>`
-        }
+        </div>
         <div class="rb-actions">
             <button class="button" onClick=${() => onOpen(schedule.session)}>Open session</button>
             ${

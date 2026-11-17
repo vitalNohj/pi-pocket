@@ -1,7 +1,15 @@
 // Scheduled messages of this session: what is coming, and an editor to set one up or change it.
 import { useEffect, useMemo, useState } from "preact/hooks";
-import { actions, attempt, canSteer, closeSheet, openSheet, store } from "../store.js";
-import { countdown, formatWhen, html, Icon, Sheet, useSecond } from "../ui.js";
+import {
+    actions,
+    attempt,
+    canSteer,
+    closeSheet,
+    openSheet,
+    serverClockOffset,
+    store,
+} from "../store.js";
+import { countdown, formatWhen, html, Icon, Sheet, Switch, useSecond } from "../ui.js";
 
 const DAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -11,6 +19,12 @@ const WEEKENDS = [0, 6];
 const UNITS = { minutes: 1, hours: 60, days: 1440 };
 const deviceZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 const pad = (number) => String(number).padStart(2, "0");
+
+/** The server's time now: schedules hold the server's clock, which each hello gives (`serverClockOffset`). */
+const serverNow = () => Date.now() + serverClockOffset();
+
+/** `useSecond` on the server's clock: a countdown to a server time stays right on a device whose clock is off. */
+const useServerSecond = (on) => useSecond(on) + serverClockOffset();
 
 /** A moment as a date field's value, on this device's clock: `2026-11-08`. */
 const dateValue = (ms) => {
@@ -30,26 +44,97 @@ const timeValue = (ms) => {
 const fromFields = (date, time) =>
     date === "" || time === "" ? Number.NaN : new Date(`${date}T${time}`).getTime();
 
-/** The next moment after `now` this device's clock shows `at` on one of `days`: the preview of a repeat. */
-function nextClock(at, days, now) {
-    const [hour, minute] = at.split(":").map(Number);
+/** The wall clock of `zone`: for a moment, its time as UTC, its day of the week, and its date (month from 0). */
+function wallOf(zone) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+        hour: "numeric",
+        minute: "numeric",
+        weekday: "short",
+    });
+
+    return (ms) => {
+        const of = Object.fromEntries(
+            parts.formatToParts(ms).map((part) => [part.type, part.value]),
+        );
+
+        return {
+            utc: Date.UTC(of.year, of.month - 1, of.day, of.hour, of.minute),
+            day: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(of.weekday),
+            date: [Number(of.year), Number(of.month) - 1, Number(of.day)],
+        };
+    };
+}
+
+/** The moment `wall`'s clock shows a date (month from 0) and a time: its offset read twice, to find a change of clocks. */
+function zoned(wall, year, month, date, time) {
+    // A time field the person cleared is "": no moment, not an error (`Intl` throws on an invalid time).
+    if (!/^\d{2}:\d{2}$/.test(time)) {
+        return Number.NaN;
+    }
+
+    const [hour, minute] = time.split(":").map(Number);
+    const target = Date.UTC(year, month, date, hour, minute);
+    const at = target - (wall(target).utc - target);
+
+    return target - (wall(at).utc - at);
+}
+
+/** The next moment after `now` that the clock of `zone` shows `at` on one of `days`: the preview of a repeat. */
+function nextClock(at, days, now, zone = deviceZone()) {
+    const wall = wallOf(zone);
 
     for (let ahead = 0; ahead <= 8; ahead++) {
-        const day = new Date(now);
+        const [year, month, date] = wall(now + ahead * 86_400_000).date;
+        const moment = zoned(wall, year, month, date, at);
 
-        day.setDate(day.getDate() + ahead);
-        day.setHours(hour, minute, 0, 0);
-
-        if (day.getTime() > now && days.includes(day.getDay())) {
-            return day.getTime();
+        if (moment > now && days.includes(wall(moment).day)) {
+            return moment;
         }
     }
 
     return Number.NaN;
 }
 
+/** The next run after `now` of a repeat every `minutes` in `window`: the server's `nextRepeat`, in this browser. */
+function nextInWindow(minutes, window, now, zone) {
+    const wall = wallOf(zone);
+    const [year, month, today] = wall(now).date;
+    const step = minutes * 60_000;
+    let best = Number.NaN;
+
+    // From yesterday, whose window may run into today, to eight days ahead, which always reaches an open day.
+    for (let ahead = -1; ahead <= 8; ahead++) {
+        const date = today + ahead;
+        const day = new Date(Date.UTC(year, month, date)).getUTCDay();
+
+        if (window.days !== undefined && !window.days.includes(day)) {
+            continue;
+        }
+
+        const start = zoned(wall, year, month, date, window.from);
+
+        if (start >= best) {
+            break;
+        }
+
+        const end = zoned(wall, year, month, date + (window.to <= window.from ? 1 : 0), window.to);
+        const run = start > now ? start : start + (Math.floor((now - start) / step) + 1) * step;
+
+        if (run < end && (Number.isNaN(best) || run < best)) {
+            best = run;
+        }
+    }
+
+    return best;
+}
+
 /** A while from now, rounded up to the next five minutes: where a new one-time message starts. */
-const soon = () => Math.ceil((Date.now() + 60 * 60_000) / 300_000) * 300_000;
+const soon = () => Math.ceil((serverNow() + 60 * 60_000) / 300_000) * 300_000;
 
 /** Days of the week in words: "Weekdays", "Mon, Wed, Fri". */
 function daysText(days) {
@@ -73,6 +158,7 @@ function daysText(days) {
 /** What the editor starts from: a schedule's own fields, or a new one-time message an hour from now. */
 function draftOf(schedule) {
     const every = schedule?.every;
+    const window = every?.window;
     const next = schedule?.next ?? soon();
     const minutes = every !== undefined && "minutes" in every ? every.minutes : 60;
     const unit = minutes % 1440 === 0 ? "days" : minutes % 60 === 0 ? "hours" : "minutes";
@@ -85,7 +171,16 @@ function draftOf(schedule) {
         amount: String(minutes / UNITS[unit]),
         unit,
         at: every?.at ?? timeValue(next),
-        days: every?.days ?? (every?.at === undefined ? WEEKDAYS : EVERY_DAY),
+        windowOn: window !== undefined,
+        from: window?.from ?? "09:00",
+        to: window?.to ?? "17:00",
+        days:
+            every?.days ??
+            (window !== undefined
+                ? (window.days ?? EVERY_DAY)
+                : every?.at === undefined
+                  ? WEEKDAYS
+                  : EVERY_DAY),
     };
 }
 
@@ -105,10 +200,37 @@ function timing(draft, schedule, now) {
 
     if (draft.kind === "interval") {
         const minutes = Math.round(Number(draft.amount) * UNITS[draft.unit]);
-        const every = { minutes };
         const old = schedule?.every;
+
+        if (draft.windowOn) {
+            const window = { from: draft.from, to: draft.to };
+
+            if (draft.days.length < 7) {
+                window.days = [...draft.days];
+            }
+
+            const every = { minutes, window };
+            // The same window keeps the zone it was set in; a new one is on this device's clock.
+            const same =
+                old?.window !== undefined &&
+                old.window.from === window.from &&
+                old.window.to === window.to &&
+                (old.window.days ?? []).join() === (window.days ?? []).join();
+            const zone = same ? schedule.zone : deviceZone();
+
+            return {
+                next: nextInWindow(minutes, window, now, zone),
+                send: same ? { every } : { every, zone },
+            };
+        }
+
+        const every = { minutes };
         // The same interval keeps its next time; a new one starts counting now.
-        const keeps = old !== undefined && old.minutes === minutes && schedule.next > now;
+        const keeps =
+            old !== undefined &&
+            old.minutes === minutes &&
+            old.window === undefined &&
+            schedule.next > now;
         const next = keeps ? schedule.next : now + minutes * 60_000;
 
         return { next, send: keeps ? { every, next } : { every } };
@@ -116,8 +238,19 @@ function timing(draft, schedule, now) {
 
     const every =
         draft.days.length === 7 ? { at: draft.at } : { at: draft.at, days: [...draft.days] };
+    const old = schedule?.every;
+    // The same days at the same time keep the zone they were set in; a new time of day is on this device's clock.
+    const same =
+        old !== undefined &&
+        old.at === every.at &&
+        (old.days ?? []).join() === (every.days ?? []).join();
+    // A paused one keeps its old next time, maybe past: the preview then counts on, in the zone it keeps.
+    const next =
+        same && schedule.next > now
+            ? schedule.next
+            : nextClock(draft.at, draft.days, now, same ? schedule.zone : deviceZone());
 
-    return { next: nextClock(draft.at, draft.days, now), send: { every } };
+    return { next, send: same ? { every } : { every, zone: deviceZone() } };
 }
 
 /** What is wrong with a draft before it goes to the server, in a few words; undefined when nothing is. */
@@ -141,6 +274,18 @@ function problem(draft, next, now) {
         if (minutes < shortest) {
             return `It can repeat at most every ${shortest} ${shortest === 1 ? "minute" : "minutes"}.`;
         }
+
+        if (draft.windowOn && (draft.from === "" || draft.to === "")) {
+            return "Pick when the window starts and ends.";
+        }
+
+        if (draft.windowOn && draft.from === draft.to) {
+            return "The window must end at another time than it starts.";
+        }
+
+        if (draft.windowOn && draft.days.length === 0) {
+            return "Pick at least one day.";
+        }
     }
 
     if (draft.kind === "days" && (draft.at === "" || draft.days.length === 0)) {
@@ -158,7 +303,7 @@ function ScheduleEditor({ schedule, onDone }) {
     const [saving, setSaving] = useState(false);
     const [pausing, setPausing] = useState(false);
     const changed = schedule !== undefined && version !== schedule.version;
-    const now = useSecond(true);
+    const now = useServerSecond(true);
     const set = (change) => setDraft((old) => ({ ...old, ...change }));
     const { next, send } = timing(draft, schedule, now);
     const wrong = problem(draft, next, now);
@@ -193,7 +338,7 @@ function ScheduleEditor({ schedule, onDone }) {
     const quick = (ms) => set({ kind: "once", date: dateValue(ms), time: timeValue(ms) });
 
     const tomorrowNine = () => {
-        const at = new Date();
+        const at = new Date(serverNow());
 
         at.setDate(at.getDate() + 1);
         at.setHours(9, 0, 0, 0);
@@ -207,6 +352,34 @@ function ScheduleEditor({ schedule, onDone }) {
                 ? draft.days.filter((each) => each !== day)
                 : [...draft.days, day].sort((a, b) => a - b),
         });
+
+    const dayPicker = html`<div class="sched-days" role="group" aria-label="Days">
+            ${DAY_LETTERS.map(
+                (letter, day) => html`<button
+                    class=${`sched-day ${draft.days.includes(day) ? "on" : ""}`}
+                    aria-pressed=${draft.days.includes(day)}
+                    aria-label=${DAY_NAMES[day]}
+                    title=${DAY_NAMES[day]}
+                    onClick=${() => toggleDay(day)}
+                >
+                    ${letter}
+                </button>`,
+            )}
+        </div>
+        <div class="sched-chips">
+            ${[
+                ["Every day", EVERY_DAY],
+                ["Weekdays", WEEKDAYS],
+                ["Weekends", WEEKENDS],
+            ].map(
+                ([label, days]) => html`<button
+                    class=${`chip toggle ${draft.days.join() === days.join() ? "on" : ""}`}
+                    onClick=${() => set({ days })}
+                >
+                    ${label}
+                </button>`,
+            )}
+        </div>`;
 
     return html`<div class="sched-editor" data-part="schedule-editor">
         <label class="field">
@@ -255,10 +428,10 @@ function ScheduleEditor({ schedule, onDone }) {
                     />
                 </div>
                 <div class="sched-chips">
-                    <button class="chip" onClick=${() => quick(Date.now() + 30 * 60_000)}>
+                    <button class="chip" onClick=${() => quick(serverNow() + 30 * 60_000)}>
                         in 30m
                     </button>
-                    <button class="chip" onClick=${() => quick(Date.now() + 2 * 60 * 60_000)}>
+                    <button class="chip" onClick=${() => quick(serverNow() + 2 * 60 * 60_000)}>
                         in 2h
                     </button>
                     <button class="chip" onClick=${() => quick(tomorrowNine())}>
@@ -276,58 +449,59 @@ function ScheduleEditor({ schedule, onDone }) {
                         onInput=${(event) => set({ at: event.currentTarget.value })}
                     />
                 </div>
-                <div class="sched-days" role="group" aria-label="Days">
-                    ${DAY_LETTERS.map(
-                        (letter, day) => html`<button
-                            class=${`sched-day ${draft.days.includes(day) ? "on" : ""}`}
-                            aria-pressed=${draft.days.includes(day)}
-                            aria-label=${DAY_NAMES[day]}
-                            title=${DAY_NAMES[day]}
-                            onClick=${() => toggleDay(day)}
-                        >
-                            ${letter}
-                        </button>`,
-                    )}
-                </div>
-                <div class="sched-chips">
-                    ${[
-                        ["Every day", EVERY_DAY],
-                        ["Weekdays", WEEKDAYS],
-                        ["Weekends", WEEKENDS],
-                    ].map(
-                        ([label, days]) => html`<button
-                            class=${`chip toggle ${draft.days.join() === days.join() ? "on" : ""}`}
-                            onClick=${() => set({ days })}
-                        >
-                            ${label}
-                        </button>`,
-                    )}
-                </div>`
+                ${dayPicker}`
         }
         ${
             draft.kind === "interval" &&
             html`<div class="sched-row">
-                <span class="sched-word">Every</span>
-                <input
-                    type="number"
-                    inputmode="numeric"
-                    min="1"
-                    step="1"
-                    aria-label="How often"
-                    class="sched-amount"
-                    value=${draft.amount}
-                    onInput=${(event) => set({ amount: event.currentTarget.value })}
-                />
-                <select
-                    aria-label="Unit"
-                    value=${draft.unit}
-                    onChange=${(event) => set({ unit: event.currentTarget.value })}
-                >
-                    <option value="minutes">minutes</option>
-                    <option value="hours">hours</option>
-                    <option value="days">days</option>
-                </select>
-            </div>`
+                    <span class="sched-word">Every</span>
+                    <input
+                        type="number"
+                        inputmode="numeric"
+                        min="1"
+                        step="1"
+                        aria-label="How often"
+                        class="sched-amount"
+                        value=${draft.amount}
+                        onInput=${(event) => set({ amount: event.currentTarget.value })}
+                    />
+                    <select
+                        aria-label="Unit"
+                        value=${draft.unit}
+                        onChange=${(event) => set({ unit: event.currentTarget.value })}
+                    >
+                        <option value="minutes">minutes</option>
+                        <option value="hours">hours</option>
+                        <option value="days">days</option>
+                    </select>
+                </div>
+                <div class="sched-row">
+                    <span class="sched-word grow">Only between</span>
+                    <${Switch}
+                        on=${draft.windowOn}
+                        label="Only between"
+                        onChange=${() => set({ windowOn: !draft.windowOn })}
+                    />
+                </div>
+                ${
+                    draft.windowOn &&
+                    html`<div class="sched-row" data-part="schedule-window">
+                            <input
+                                type="time"
+                                aria-label="From"
+                                value=${draft.from}
+                                onInput=${(event) => set({ from: event.currentTarget.value })}
+                            />
+                            <span class="sched-word">and</span>
+                            <input
+                                type="time"
+                                aria-label="To"
+                                value=${draft.to}
+                                onInput=${(event) => set({ to: event.currentTarget.value })}
+                            />
+                        </div>
+                        ${dayPicker}`
+                }`
         }
         <div class=${`sched-preview ${timeWrong ? "wrong" : ""}`} data-part="schedule-preview">
             ${
@@ -335,6 +509,11 @@ function ScheduleEditor({ schedule, onDone }) {
                 html`<${Icon} name="clock" size=${13} />
                     <span>
                         ${draft.kind === "days" ? `${daysText(draft.days)} at ${draft.at} · ` : ""}
+                        ${
+                            draft.kind === "interval" && draft.windowOn
+                                ? `${daysText(draft.days)}, ${draft.from} to ${draft.to} · `
+                                : ""
+                        }
                         Next ${formatWhen(next)}
                     </span>
                     <span class="sched-countdown">in ${countdown(next, now)}</span>`
@@ -349,7 +528,7 @@ function ScheduleEditor({ schedule, onDone }) {
         ${
             otherZone &&
             html`<p class="muted small">
-                Set in ${schedule.zone}. Saving uses this device's time zone, ${deviceZone()}.
+                Set in ${schedule.zone}. A new time of day uses this device's time zone, ${deviceZone()}.
             </p>`
         }
         ${
@@ -446,6 +625,12 @@ function ScheduleRow({ schedule, now, setBy, archived, steer, onEdit }) {
                     ${repeat && schedule.runs > 0 ? ` · sent ${schedule.runs}×` : ""}
                     ${archived ? " · session archived" : ""}
                 </span>
+                ${
+                    schedule.skipped > 0 &&
+                    html`<span class="sched-meta" data-part="schedule-skipped">
+                        Skipped ${schedule.skipped === 1 ? "once" : `${schedule.skipped} times`}, last ${formatWhen(schedule.skippedAt)}: its last message still waits in the queue
+                    </span>`
+                }
             </span>
             <span class="sched-side">
                 <span class="sched-countdown">
@@ -477,7 +662,7 @@ export function SchedulesSheet() {
     const [quickText, setQuickText] = useState("");
     // The schedule open in the editor: its id, "new", or none.
     const [editing, setEditing] = useState(null);
-    const now = useSecond(schedules.length > 0);
+    const now = useServerSecond(schedules.length > 0);
     const steer = canSteer();
     const archived = store.state.sessions.some(
         (session) => session.id === store.state.conversationId && session.archived,

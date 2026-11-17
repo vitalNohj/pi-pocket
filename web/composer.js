@@ -2,6 +2,7 @@
 // what was sent before (↑, Ctrl+R), fold long pastes, pick the model, stop.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Avatar } from "./avatar.js";
+import { useBack } from "./back.js";
 import { boxKey, keyBox } from "./box-keys.js";
 import { chatUnread, TypingLine } from "./chat.js";
 import {
@@ -35,8 +36,8 @@ import {
     canSteer,
     collab,
     drafts,
-    dropQuote,
     navigateUp,
+    dropQuote,
     notify,
     openSheet,
     onItsWay,
@@ -47,6 +48,7 @@ import {
 } from "./store.js";
 import { useDock } from "./dock.js";
 import { keepWarmOn } from "./sheets/keep-warm.js";
+import { fromServer } from "./seen.js";
 import { defineItem, slotItems } from "./slots.js";
 import { SubagentsBar } from "./subagents.js";
 import { TrustBar } from "./trust.js";
@@ -379,16 +381,149 @@ const SEND_MODES = [
     [
         "interrupt",
         "Interrupt",
-        "Stops the run right now (also its tool call) and clears the queue, then sends it",
+        "Stops the run right now (also its tool call), then sends it. The queued messages stay queued",
     ],
 ];
 
 /** What a send mode does, for a queued message's buttons. */
 const modeHint = (mode) => SEND_MODES.find(([value]) => value === mode)[2];
 
-/** What Interrupt does to a message waiting in the queue: the others there stay, unlike the composer's Interrupt. */
+/** What Interrupt does to a message waiting in the queue: the others there stay queued. */
 const QUEUED_INTERRUPT_HINT =
     "Stops the run right now (also its tool call), then sends this one. The other queued messages stay queued";
+
+/**
+ * Steer, Queue, and Interrupt as one button and its menu: a narrow message box shows it while Pi works instead of the
+ * three (`.mode-switch`), so the model keeps its room. A tap or a click opens it and leaves the focus in the box (a
+ * phone keeps its keyboard); Enter, Space, ↑, or ↓ open it with the focus on the chosen mode. A pick, Esc, a press
+ * outside, or back closes it.
+ */
+function ModePick({ mode, onPick }) {
+    const [open, setOpen] = useState(false);
+    const wrap = useRef(null);
+    const menu = useRef(null);
+    // Opened from the keyboard: the focus goes to the chosen mode.
+    const keyed = useRef(false);
+    const label = SEND_MODES.find(([value]) => value === mode)[1];
+
+    // Closed from inside the menu, the focus goes back to the button; from the box, it stays there.
+    const close = () => {
+        if (menu.current?.contains(document.activeElement)) {
+            wrap.current?.querySelector(".mode-pick-button").focus();
+        }
+
+        setOpen(false);
+    };
+
+    useBack(open, close);
+    useLayoutEffect(() => {
+        if (open && keyed.current) {
+            keyed.current = false;
+            menu.current?.querySelector('[aria-checked="true"]')?.focus();
+        }
+    });
+    // Before the first frame, not after it: a press right after the menu shows closes it too.
+    useLayoutEffect(() => {
+        if (!open) {
+            return;
+        }
+
+        const outside = (event) => !wrap.current?.contains(event.target) && setOpen(false);
+        // A wider box (a panel closing, the window growing) hides the button: the menu goes with it.
+        const hidden = new ResizeObserver(() => wrap.current?.offsetWidth === 0 && setOpen(false));
+
+        // Esc closes the menu, and does not count as the first of the two presses that stop Pi (`app.js`).
+        const onKey = (event) => {
+            if (event.key === "Escape" && !event.isComposing) {
+                event.preventDefault();
+                event.stopPropagation();
+                close();
+            }
+        };
+
+        addEventListener("pointerdown", outside, true);
+        addEventListener("keydown", onKey, true);
+        hidden.observe(wrap.current);
+
+        return () => {
+            removeEventListener("pointerdown", outside, true);
+            removeEventListener("keydown", onKey, true);
+            hidden.disconnect();
+        };
+    }, [open]);
+
+    const onMenuKey = (event) => {
+        const items = [...menu.current.querySelectorAll("button")];
+        const index = items.indexOf(document.activeElement);
+        const target = {
+            ArrowDown: items[(index + 1) % items.length],
+            ArrowUp: items[(index - 1 + items.length) % items.length],
+            Home: items[0],
+            End: items.at(-1),
+        }[event.key];
+
+        if (target) {
+            event.preventDefault();
+            target.focus();
+        } else if (event.key === "Tab") {
+            setOpen(false);
+        }
+    };
+
+    return html`<div class="mode-pick" data-part="composer-button" ref=${wrap}>
+        <button
+            class=${`mode-pick-button ${mode === "interrupt" ? "interrupt" : ""}`}
+            aria-haspopup="menu"
+            aria-expanded=${open ? "true" : "false"}
+            aria-label=${`Send as: ${label}`}
+            title=${modeHint(mode)}
+            onMouseDown=${(event) => event.preventDefault()}
+            onClick=${(event) => {
+                // `detail` is 0 for Enter or Space.
+                keyed.current = event.detail === 0;
+                setOpen(!open);
+            }}
+            onKeyDown=${(event) => {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    keyed.current = true;
+                    setOpen(true);
+                }
+            }}
+        >
+            ${label}
+            <${Icon} name="chevron" size=${12} stroke=${2.2} class="mode-pick-caret" />
+        </button>
+        ${
+            open &&
+            html`<div
+                class="pop-menu session-menu mode-menu"
+                role="menu"
+                aria-label="Send as"
+                ref=${menu}
+                onKeyDown=${onMenuKey}
+            >
+                ${SEND_MODES.map(
+                    ([value, name, tip]) => html`<button
+                        class=${`session-menu-item ${value === "interrupt" ? "interrupt" : ""}`}
+                        role="menuitemradio"
+                        aria-checked=${mode === value ? "true" : "false"}
+                        tabindex="-1"
+                        title=${tip}
+                        onMouseDown=${(event) => event.preventDefault()}
+                        onClick=${() => {
+                            onPick(value);
+                            close();
+                        }}
+                    >
+                        <span>${name}</span>
+                        ${mode === value && html`<${Icon} name="check" size=${14} />`}
+                    </button>`,
+                )}
+            </div>`
+        }
+    </div>`;
+}
 
 /**
  * Whether a queued message's Interrupt asks first: the first tap reads "Interrupt now?", a second within 4 s sends it.
@@ -509,6 +644,87 @@ function DriverBar() {
 }
 
 /** Plan mode: Pi proposes and changes nothing until someone here approves its plan. */
+/**
+ * What a Stop held out of the queue: it waits until someone sends it. Send sends them all, in their order; Show lists
+ * them, each with Edit (its sender's) and a × to withdraw it.
+ */
+function HeldBar({ blocked, onEdit }) {
+    const { view, me, users } = store.state;
+    const held = view.held ?? [];
+    const [open, setOpen] = useState(false);
+
+    if (held.length === 0) {
+        return null;
+    }
+
+    const steer = canSteer();
+    const heldBy = (item) =>
+        item.by === undefined
+            ? ""
+            : item.by === me?.id
+              ? " · you"
+              : ` · ${users.find((user) => user.id === item.by)?.name ?? "someone"}`;
+
+    return html`<div class="held-bar" data-part="held">
+        <span class="grow">
+            <strong>${held.length === 1 ? "1 message held." : `${held.length} messages held.`}</strong> Stop kept ${held.length === 1 ? "it" : "them"} from Pi until sent.
+        </span>
+        <button class="link small" aria-expanded=${open} onClick=${() => setOpen(!open)}>
+            ${open ? "Hide" : "Show"}
+        </button>
+        ${
+            steer &&
+            !blocked &&
+            html`<button
+                class="button small primary"
+                title="Send them to Pi, in their order"
+                onClick=${() => attempt(actions.sendHeld)}
+            >
+                Send
+            </button>`
+        }
+        ${
+            open &&
+            html`<div class="held-list">
+                ${held.map(
+                    (item) => html`<div class="queued" key=${item.key}>
+                        <span class="queued-mode">
+                            ${item.mode === "steer" ? "Steer" : "Queue"}
+                            <span class="muted">${heldBy(item)}</span>
+                        </span>
+                        <span class="queued-text">${(item.text ?? "").replace(FROM, "")}</span>
+                        ${
+                            steer &&
+                            !blocked &&
+                            item.by !== undefined &&
+                            item.by === me?.id &&
+                            html`<button
+                                class="link small"
+                                title="Take it back into the message box to change it"
+                                onClick=${() => onEdit(item)}
+                            >
+                                Edit
+                            </button>`
+                        }
+                        ${
+                            steer &&
+                            (!blocked || item.by === me?.id) &&
+                            html`<button
+                                class="icon-button small queued-remove"
+                                aria-label="Withdraw"
+                                title="Withdraw: Pi will not get it"
+                                onClick=${() => attempt(() => actions.dropHeld(item.key))}
+                            >
+                                <${Icon} name="close" size=${13} />
+                            </button>`
+                        }
+                    </div>`,
+                )}
+            </div>`
+        }
+    </div>`;
+}
+
 function PlanBar({ blocked }) {
     const { view } = store.state;
 
@@ -663,7 +879,8 @@ export function Composer() {
     const [marked, setMarked] = useState(null);
     // The passages Reply put in strips over the box instead (`loadStrips`).
     const [strips, setStrips] = useState(() => loadStrips(conversationId));
-    // ↑ through what was sent before: where in that list, and the draft ↓ comes back to. Ctrl+R searches it.
+    // ↑ through what was sent before: where in that list, and the draft ↓ comes back to, with its pieces. Ctrl+R
+    // searches it.
     const [browsing, setBrowsing] = useState(null);
     const [searching, setSearching] = useState(false);
     const [inlineFiles, setInlineFiles] = useState(() => localStorage.getItem(INLINE_KEY) === "1");
@@ -844,8 +1061,11 @@ export function Composer() {
 
     useEffect(() => {
         // It waits while a send is on its way: the box then holds only what goes.
-        const taken =
-            insert && !sending ? takeInsert(drafts.get(conversationId), conversationId) : null;
+        const draft = drafts.get(conversationId);
+        const underQuote = piecesIn(draft, piecesNow.current).some(
+            (piece) => draft.slice(piece.end).trim() === "",
+        );
+        const taken = insert && !sending ? takeInsert(draft, conversationId, underQuote) : null;
 
         if (taken?.files.length > 0) {
             addFiles(taken.files);
@@ -1173,9 +1393,14 @@ export function Composer() {
         }
 
         // A command runs or expands only as it is: a quote with it, in strips that go first or in its own text, would
-        // stop it or become part of it (a "> …" line is a redirection to a shell).
+        // stop it or become part of it (a "> …" line is a redirection to a shell). A piece an edit made plain text, its
+        // words still where they were (`removed`), counts too: what put them back or joined its line may have lost it.
+        const quoteIn = [...piecesNow.current, ...removed.current].some((piece) =>
+            text.startsWith(piece.text, piece.start),
+        );
+
         if (
-            (strips.length > 0 || quoted.length > 0) &&
+            (strips.length > 0 || quoted.length > 0 || quoteIn) &&
             (parsed || shell || template || text.trimStart().startsWith("/skill:"))
         ) {
             return notify("info", "A quote cannot go with a command. Remove the quotes to run it.");
@@ -1264,6 +1489,22 @@ export function Composer() {
         }
     };
 
+    // Edit on a held message: the same, for one a Stop held.
+    const editHeld = async (item) => {
+        if (takingBack.has(item.key)) {
+            return;
+        }
+
+        takingBack.add(item.key);
+        const back = await attempt(() => actions.editHeld(item.key, conversationId));
+
+        takingBack.delete(item.key);
+
+        if (back) {
+            keepBack(conversationId, back);
+        }
+    };
+
     /** Put a message sent before into the box, to send again or change. */
     const recall = (value, at = value.length) => {
         edit(value, at);
@@ -1300,7 +1541,12 @@ export function Composer() {
                 return false;
             }
 
-            setBrowsing({ index, draft: browsing?.draft ?? text });
+            // The draft keeps its quotes, pieces again when ↓ brings it back.
+            setBrowsing({
+                index,
+                draft: browsing?.draft ?? text,
+                pieces: browsing?.pieces ?? piecesNow.current,
+            });
             recall(list[index]);
 
             return true;
@@ -1318,6 +1564,7 @@ export function Composer() {
         } else {
             setBrowsing(null);
             recall(browsing.draft);
+            keepPieces(browsing.pieces);
         }
 
         return true;
@@ -1678,7 +1925,9 @@ export function Composer() {
             marked,
         );
 
-        if (!step || onTheWay.has(conversationId)) {
+        // One the browser makes anyway (a phone keyboard's): doing ours too would edit twice. The quote it changes is
+        // plain text from then on (`update`), its words all kept.
+        if (!step || !event.cancelable || onTheWay.has(conversationId)) {
             return;
         }
 
@@ -1762,6 +2011,7 @@ export function Composer() {
     return html`<footer class="composer-wrap" data-part="composer">
         <div class="dock" data-part="dock" ref=${dock}>
             <${TypingLine} where="pi" />
+            <${HeldBar} blocked=${blocked} onEdit=${editHeld} />
             ${
                 // How many wait: shown when the queue does not show them all (`dock.js`).
                 inbox.length > 0 &&
@@ -2235,6 +2485,7 @@ export function Composer() {
                                 )}
                             </div>`
                         }
+                        ${busy && html`<${ModePick} mode=${sendMode} onPick=${setSendMode} />`}
                         <${MicButton}
                             dictation=${dictation}
                             class="composer-mic"
@@ -2362,7 +2613,7 @@ function StopButton() {
         class="stop-button"
         data-part="composer-button stop-button"
         aria-label="Stop"
-        title="Stop (Esc twice)"
+        title="Stop (Esc twice). Queued messages are held until someone sends them"
         onClick=${() => attempt(actions.abort)}
     >
         <span class="stop-square" aria-hidden="true"></span>
@@ -2761,7 +3012,7 @@ function SchedulesPill({ schedules }) {
             html`<span class="schedules-tip" role="tooltip">
                 <span class="row">
                     <span>Next in</span>
-                    <span class="countdown">${countdown(next.next, now)}</span>
+                    <span class="countdown">${countdown(fromServer(next.next), now)}</span>
                 </span>
                 <span class="what">${next.text}</span>
                 <span class="muted">

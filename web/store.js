@@ -105,6 +105,7 @@ const emptyView = () => ({
     watch: null,
     branch: null,
     subagentsHeld: null,
+    held: [],
 });
 
 // ─── Each session's panel ──────────────────────────────────────────────────────────
@@ -1742,6 +1743,8 @@ function mergeView(current, data) {
         decisions: data.decisions ?? base.decisions,
         plan: data.plan ?? base.plan,
         schedules: data.schedules ?? base.schedules,
+        // What a Stop held out of the queue: it waits until someone sends it.
+        held: data.held ?? base.held,
         // No goal is null, which the server sends too: only a missing field keeps the last value.
         goal: data.goal === undefined ? base.goal : data.goal,
         // The session's PR watch, or null: the same.
@@ -2833,6 +2836,10 @@ export const actions = {
     /** Move one's own queued message to "steer" or "followUp", or send it now with "interrupt". */
     move: (submissionId, mode) => api(`c/${current()}/move`, { submissionId, mode }),
     editQueued: (submissionId, id = current()) => api(`c/${id}/edit-queued`, { submissionId }),
+    /** What a Stop held: send them all, or drop one or take it back into the box, by its key. */
+    sendHeld: () => api(`c/${current()}/held`, { action: "send" }),
+    dropHeld: (key) => api(`c/${current()}/held`, { action: "drop", key }),
+    editHeld: (key, id = current()) => api(`c/${id}/held`, { action: "edit", key }),
     configure: (change) => api(`c/${current()}/configure`, change),
     /** The owner's model and thinking level for new sessions, `{ provider, modelId, thinkingLevel }`; null clears it. */
     setDefaultModel: (choice) => api("settings", { defaultModel: choice }),
@@ -2894,12 +2901,9 @@ export const actions = {
             ...schedule,
             zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
+    /** The editor's change: it keeps the schedule's time zone unless it gives `zone`, for a new time of day. */
     updateSchedule: (id, schedule) =>
-        api(
-            `c/${current()}/schedules/${encodeURIComponent(id)}`,
-            { ...schedule, zone: Intl.DateTimeFormat().resolvedOptions().timeZone },
-            { method: "PUT" },
-        ),
+        api(`c/${current()}/schedules/${encodeURIComponent(id)}`, schedule, { method: "PUT" }),
     cancelSchedule: (id) => api(`c/${current()}/schedules/${encodeURIComponent(id)}/cancel`, {}),
     pauseSchedule: (id, paused) =>
         api(`c/${current()}/schedules/${encodeURIComponent(id)}/pause`, { paused }),
@@ -3185,9 +3189,10 @@ let waitingInserts = [];
 
 /**
  * Take, once, what `insertIntoComposer` put for `conversationId` that no box took yet: its files, and its text after
- * `current` (the box's words), or null for none. Null when nothing waits for it.
+ * `current` (the box's words), or null for none. Null when nothing waits for it. `underQuote`: `current` ends in a quote
+ * that is a piece, which inline text goes under: joined to its line, the quote would be plain text.
  */
-export function takeInsert(current, conversationId) {
+export function takeInsert(current, conversationId, underQuote = false) {
     const forThis = (insert) => insert.for === conversationId || insert.for === null;
     const mine = waitingInserts.filter(forThis);
 
@@ -3200,7 +3205,7 @@ export function takeInsert(current, conversationId) {
 
     for (const insert of mine) {
         if (insert.text !== "") {
-            const gap = insert.inline ? " " : "\n\n";
+            const gap = !insert.inline ? "\n\n" : underQuote && text === current ? "\n" : " ";
 
             text =
                 text.trim() === ""
