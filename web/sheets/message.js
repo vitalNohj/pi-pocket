@@ -1,6 +1,6 @@
 // What tapping a message opens, in the copy sheet's layout (`copy.js`). Pi's reply: fork from it, to a computer, folder,
 // and model of your choice; remember it; copy it. Your message: edit it at once and send it again in a new session,
-// placed the same way; copy it. Each sheet offers only the action of what was tapped.
+// placed the same way; undo it when it is the last one; copy it. Each sheet offers only the action of what was tapped.
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { updateDraft } from "../copy-draft.js";
 import {
@@ -8,6 +8,8 @@ import {
     attempt,
     canSteer,
     closeSheet,
+    insertIntoComposer,
+    navigate,
     notify,
     openSheet,
     scoped,
@@ -75,10 +77,48 @@ function lessonFrom(text) {
     return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
 }
 
+/** The newest prompt, even if Pi's replies or a note came after it. */
+function newestPrompt(view, history) {
+    // Only pi.user entries project to user rows in this view.
+    return (
+        view.order.findLast((id) => view.entries.get(id)?.kind === "user") ??
+        history?.findLast((entry) => entry.kind === "user")?.id
+    );
+}
+
+/** An undo on its way: a second tap waits for it. */
+let undoing = false;
+
+/**
+ * Open a copy of the session without its last message `entryId`, archive the session, and put the message back in the
+ * box. A second tap while the first is on its way does nothing.
+ */
+const undo = (entryId) => {
+    if (undoing) {
+        return;
+    }
+
+    undoing = true;
+    attempt(async () => {
+        const { id, text, attachments, attachmentsOmitted } = await actions.undo(entryId);
+
+        navigate(id);
+        insertIntoComposer(text, [], { attachments });
+        notify("info", "Undid your last message. The original is archived.");
+
+        if (attachmentsOmitted) {
+            notify("warning", "Some attachments could not be restored.");
+        }
+    }).finally(() => {
+        undoing = false;
+    });
+};
+
 /** A small action under the main button: a link-like button with an optional hint. */
 const Minor = ({ label, hint, run }) => html`<button
     type="button"
     class="copy-minor"
+    aria-label=${label}
     title=${hint}
     onClick=${run}
 >
@@ -213,6 +253,14 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
     const { view } = store.state;
     const sessionId = view.conversation.id;
     const again = canBranch && resendable(entry) && !waiting;
+    // The last message to Pi, once Pi is idle and the queue is empty, in a session on this server.
+    const canUndo =
+        again &&
+        view.conversation.runner === undefined &&
+        !view.live.busy &&
+        !view.live.compactions?.length &&
+        view.inbox.length === 0 &&
+        newestPrompt(view, store.state.history) === entry.id;
     // A message of files alone has no words: there is nothing to copy.
     const filesAlone = text.trim() === "";
     const draft = usePlace(sessionId, `message:${sessionId}:${entry.id}`, () => ({ text: null }));
@@ -280,6 +328,14 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
                 </div>`
         }
         <div class="copy-minors">
+            ${
+                canUndo &&
+                html`<${Minor}
+                    label="Undo"
+                    hint="Opens a copy without this message; the original is archived"
+                    run=${() => undo(entry.id)}
+                />`
+            }
             ${!filesAlone && !waiting && html`<${Minor} label="Copy text" hint="As written" run=${() => copyAndClose(text)} />`}
         </div>
     <//>`;
