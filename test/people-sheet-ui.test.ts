@@ -944,14 +944,18 @@ test(
         await open("people");
         await show("Hal");
 
-        const hints = await inPage<string[]>(
-            `return JSON.stringify([...document.querySelectorAll(".pages-detail .access-row")].map((each) => each.querySelector("strong").textContent.trim() + ": " + each.querySelector(".muted.small").textContent.trim()))`,
-        );
-
-        assert.deepEqual(hints, [
+        const hints = () =>
+            inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".pages-detail .access-row")].map((each) => each.querySelector("strong").textContent.trim() + ": " + each.querySelector(".muted.small").textContent.trim()))`,
+            );
+        const expected = [
             "This server: Off: they see only the sessions shared with them here.",
             "Laptop: Off: they see nothing of it.",
-        ]);
+        ];
+
+        // The sessions shared with Hal reach the page after it shows: the hint follows them.
+        await until(async () => (await hints())[0] === expected[0], "the hint of This server");
+        assert.deepEqual(await hints(), expected);
     },
 );
 
