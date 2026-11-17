@@ -3754,6 +3754,17 @@ pre.diff .del {
     overflow-wrap: anywhere;
 }
 
+/* A caution about what a choice gives, as the error box is laid out: nothing failed, so it is not red. */
+.warn-box {
+    padding: 10px 14px;
+    border: 1px solid var(--warn-line);
+    border-radius: var(--r-card);
+    background: var(--warn-soft);
+    color: var(--warn);
+    font-size: 13.5px;
+    overflow-wrap: anywhere;
+}
+
 .divider {
     text-align: center;
     color: var(--muted);

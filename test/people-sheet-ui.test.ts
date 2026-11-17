@@ -1231,3 +1231,81 @@ test(
         }
     },
 );
+
+test(
+    "an invite to all my sessions warns what it shares, and what follows when the account is not temporary",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const warning = () =>
+            inPage<string | null>(
+                `return JSON.stringify(document.querySelector('.sheet [data-part="invite-warning"]')?.textContent.replace(/\\s+/g, " ").trim() ?? null)`,
+            );
+        const code = () =>
+            inPage<string | null>(
+                `return JSON.stringify(document.querySelector(".sheet .invite-code-value")?.textContent.replace(/\\s/g, "") ?? null)`,
+            );
+        const choose = (label: string) =>
+            inPage(
+                `[...document.querySelectorAll(".sheet .invite-share .segmented button")].find((each) => each.textContent.trim() === ${JSON.stringify(label)}).click(); return JSON.stringify(true);`,
+            );
+
+        const invite = async (path: string, ready: string) => {
+            await page.setViewport(DESKTOP);
+            await page.navigate(`${base}${path}`);
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `const { store } = await import("/store.js"); return JSON.stringify(document.querySelector('[data-part="app"]') !== null && (${ready}))`,
+                    ),
+                `the app at ${path}`,
+                20_000,
+            );
+            await inPage(
+                `const { openSheet } = await import("/store.js"); openSheet({ type: "invite" }); return JSON.stringify(true);`,
+            );
+            await until(async () => (await code()) !== null, "an invite");
+        };
+
+        const everything = "This invite shares every session you started so far.";
+        const full = `${everything} Their account is not temporary: they can link an authenticator, and once you make them a user, they can prompt in all of those sessions.`;
+
+        // One session, then its folder: neither is everything, so nothing warns.
+        await invite(
+            `/s/${String(id)}`,
+            `store.state.view.conversation?.kind === "session" && store.state.sessions.some((each) => String(each.id) === ${JSON.stringify(String(id))} && each.mayShare === true)`,
+        );
+        assert.equal(await warning(), null, "only this session");
+        await choose("This folder");
+        await until(
+            async () =>
+                await inPage<boolean>(
+                    `return JSON.stringify([...document.querySelectorAll(".sheet .invite-share .segmented button")].some((each) => each.textContent.trim() === "This folder" && each.classList.contains("on")))`,
+                ),
+            "This folder to be chosen",
+        );
+        assert.equal(await warning(), null, "this folder");
+
+        // My sessions: it says what it shares, and what a full account can come to.
+        await choose("My sessions");
+        await until(async () => (await warning()) !== null, "the warning");
+        assert.equal(await warning(), full);
+
+        // A temporary account never prompts: only what it shares is said.
+        await inPage(
+            `[...document.querySelectorAll(".sheet [role=switch]")].find((each) => each.getAttribute("aria-label") === "Temporary account: off").click(); return JSON.stringify(true);`,
+        );
+        await until(async () => (await warning()) === everything, "the short warning");
+
+        // Back to one session: the warning goes, whatever the account.
+        await choose("Only this session");
+        await until(async () => (await warning()) === null, "the warning to go");
+
+        // With no session open the invite is to my sessions, so it warns from the start.
+        await invite("/", `store.state.view.conversation == null`);
+        assert.equal(await warning(), full);
+        await inPage(
+            `const { closeSheet } = await import("/store.js"); closeSheet(); return JSON.stringify(true);`,
+        );
+    },
+);
