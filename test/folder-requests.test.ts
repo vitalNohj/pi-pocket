@@ -829,6 +829,60 @@ test("a linked session's report at the end of its run asks nobody, though both a
     assert.equal(app.folderApprovals.live(String(id)), false, "and renewed nothing");
 });
 
+test("outside data comes in for a person who steers the session, as a task: it asks nobody, and no one else's comes in", async () => {
+    const folder = newFolder();
+    const started = app.commands.createSession(alex, { cwd: folder });
+
+    await app.folderRequests.approve(owner(app), (await pending(alex, folder)).id, {
+        method: "owner",
+    });
+
+    const { id } = await started;
+
+    await app.commands.configure(id, alex, {
+        model: { provider: "faux", modelId: "faux-1" },
+        thinkingLevel: "off",
+    });
+    // Vera, a viewer, reads it; Gale and the stranger have nothing of it.
+    await app.commands.shareSession(id, alex, [vera.id]);
+    assert.equal(app.canSee(vera, id), true);
+
+    const from = (by: User, key: string) =>
+        app.inbox.deliver(id, { by: by.id, via: "Test feed", payload: `news ${key}`, key });
+    const came = async (key: string) =>
+        (await modelTexts(app, id)).filter((text) => text.includes(`news ${key}`)).length;
+
+    // As an extension delivers it (`host.inbox.deliver`), for the person who set it up.
+    assert.deepEqual(await from(alex, "first"), { sent: true });
+    await until(async () => (await came("first")) > 0, "the first message");
+    assert.deepEqual(await from(alex, "first"), { sent: false }, "its key delivers once");
+    await until(() => !app.isBusy(id), "the session to be idle");
+
+    // The approval ended: a person at the keyboard would be asked to renew. A delivery is a task of the session: it
+    // comes in, and asks nobody.
+    clock += 8 * DAY;
+    assert.equal(app.policy.steer(alex, String(id)), "locked");
+    assert.deepEqual(await from(alex, "second"), { sent: true });
+    await until(async () => (await came("second")) > 0, "the message of a locked session");
+    assert.deepEqual(app.folderRequests.list(owner(app)), [], "the delivery asked nobody");
+    assert.equal(app.folderApprovals.live(String(id)), false, "and renewed nothing");
+
+    // A viewer who sees it, a person it is not shared with, and one not chosen here: nothing of theirs comes in.
+    for (const each of [vera, gale, stranger]) {
+        await assert.rejects(from(each, `no-${each.name}`), { status: 410 }, each.name);
+        assert.equal(await came(`no-${each.name}`), 0, each.name);
+    }
+
+    // Nor Alex's, once the session is no longer theirs to steer.
+    app.config.setServerUsers([gale.id, vera.id]);
+
+    try {
+        await assert.rejects(from(alex, "third"), { status: 410 });
+    } finally {
+        app.config.setServerUsers([alex.id, gale.id, vera.id]);
+    }
+});
+
 test("a session's own worktree counts as the folder it came from: its copies and linked sessions stay in it", async () => {
     const repo = newFolder();
     const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });

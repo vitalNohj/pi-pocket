@@ -7,9 +7,10 @@
  * `alerts.ts`, provider sign-ins in `providers.ts`, and each conversation's shared live view in `room.ts`.
  */
 import { realpath, stat } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { isAbsolute, join, posix, resolve as resolvePath, win32 } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
@@ -46,7 +47,8 @@ import {
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
+import { CodingTools, createCodingTools } from "@earendil-works/pi-durable/tools";
 import { Alerts } from "./alerts.ts";
 import { ApprovalMethods, Authenticators } from "./approval-methods.ts";
 import { Attribution, type Missing } from "./attribution.ts";
@@ -62,6 +64,7 @@ import {
     APPROVAL_DAYS,
     approvalDays,
     ConfigStore,
+    helloUser,
     modulesWith,
     type User,
 } from "./config.ts";
@@ -123,6 +126,7 @@ import { expandHome, workspaceScheme } from "./paths.ts";
 import { createPublicFetch } from "./public-fetch.ts";
 import { PiSessions } from "./pi-sessions.ts";
 import { Hooks } from "./hooks.ts";
+import { Inbox, type InboxDelivery } from "./inbox.ts";
 import { Pip, PIP_EXTENSION } from "./pip.ts";
 import { PIP_COMPACT_CHOICES, PipCompaction } from "./pip-compact.ts";
 import { RepoWatches } from "./repo-watches.ts";
@@ -148,9 +152,11 @@ import {
 } from "./room.ts";
 import { whyUnanswered } from "./subagent-runs.ts";
 import { Schedules } from "./schedules.ts";
+import { CoreSecrets } from "./secrets.ts";
 import { BackgroundTasks } from "./background.ts";
 import { Shares } from "./share.ts";
 import { CommandEnvs, HiddenValues, wrapEnv } from "./hidden.ts";
+import { withQuietLimit } from "./deadline.ts";
 import { AppEventBus } from "./app-events.ts";
 import { changeSettings, shownSettings } from "./extension-settings.ts";
 import { ask, browserFor, checkValues } from "./extension-points.ts";
@@ -498,6 +504,8 @@ export class PocketApp {
     readonly repoWatches = new RepoWatches(this);
     /** Webhooks: addresses other services post to, each a message to a session or PiP (`hooks.ts`). */
     readonly hooks = new Hooks(this);
+    /** Outside data delivered to a session as a person's message: webhooks, and extensions (`inbox.ts`). */
+    readonly inbox = new Inbox(this);
     /** Lessons Pi keeps across sessions, for a project or everywhere. */
     readonly memory = new Memory(this);
     /** Each person's favorite working folders, shared by their devices. */
@@ -524,6 +532,8 @@ export class PocketApp {
     readonly browsers: Browsers;
     /** What extension modules add to the app: their routes, browser modules, and events (`extension-web.ts`). */
     readonly webs: ExtensionWebs;
+    /** Core's own secrets: hidden in every session, and kept from Pi by Lancet Guard (`secrets.ts`). */
+    readonly secrets: CoreSecrets;
     #websTimer: NodeJS.Timeout | undefined;
     /** Whose tabs the next `hello` for browser modules goes to: those who may use any of these. */
     readonly #websFor = new Set<WebAccess>();
@@ -812,6 +822,15 @@ export class PocketApp {
             links: this.publicLinks,
             settings: (module) => this.config.extensionSettings(module),
         });
+        this.secrets = new CoreSecrets({
+            hidden: this.hidden,
+            config: this.config,
+            dataDir: this.dataDir,
+            agentDir: getAgentDir(),
+            settingsOf: (module) => this.webs.settingsOf(module),
+            log: (line) => this.#log(line),
+        });
+        this.guard.protect = (tool, args, cwd) => this.secrets.blocked(tool, args, cwd);
     }
 
     /**
@@ -999,7 +1018,7 @@ export class PocketApp {
 
         const registry = createRegistry();
 
-        registry.install(CodingTools);
+        registry.install(await codingTools(this.#log));
         // Durable work of the app itself, whatever extension modules are on.
         registry.install(
             defineExtension({
@@ -1015,6 +1034,9 @@ export class PocketApp {
                 hooks: [
                     hook(ToolTask, {
                         afterTool: async (call, result, api) => {
+                            // A secret that changed while the tool ran is hidden from its result too.
+                            this.secrets.sync();
+
                             // A context file or skill Pi wrote on another computer counts from the next request.
                             if (
                                 (call.name === "write" || call.name === "edit") &&
@@ -1092,7 +1114,15 @@ export class PocketApp {
                     options?.open === true,
                 ),
             notice: (level, message, conversationId) => this.notice(level, message, conversationId),
+            stopToolCall: (conversationId, callId) => this.stopToolCall(conversationId, callId),
+            waitsForLimit: (conversationId) => this.waitsOutside(conversationId),
+            alertOwner: (conversationId, title, body) =>
+                this.alerts.ownerAlert(conversationId, title, body),
             heldBack: (conversationId) => this.spend.heldBack(conversationId),
+            inbox: Object.freeze({
+                deliver: (target: ConversationId, delivery: InboxDelivery) =>
+                    this.inbox.deliver(target, delivery),
+            }),
             onLimitsChanged: (listener) => this.spend.onLimitsChanged(listener),
             linkedSessions: this.linkedSessions,
             sessions: this.extensionSessions,
@@ -1257,6 +1287,8 @@ export class PocketApp {
             void this.guard.warm().catch(() => {});
         }
 
+        // Core's secrets are hidden before any work goes on, with the settings the modules that loaded declare.
+        this.secrets.sync();
         await this.pip.tuneAll((line) => this.#log(line));
         await this.#tuneRemote();
         // Work a previous process left unfinished continues now.
@@ -1838,6 +1870,21 @@ export class PocketApp {
     }
 
     /**
+     * Whether a conversation's work waits on something that is not its own doing, which the stall watches count as no
+     * stall and no quiet time: a provider's limit that must clear (`limit-gate.ts`), or its linked computer being
+     * offline, where its tools wait until that computer is back (`runners.ts`).
+     */
+    waitsOutside(id: ConversationId): boolean {
+        if (this.limits.waits().some((wait) => wait.conversationId === Number(id))) {
+            return true;
+        }
+
+        const runner = this.runnerOf(id);
+
+        return runner !== undefined && !this.runners.link(runner).online;
+    }
+
+    /**
      * The computer a conversation's tools run on: its session's runner, for the session and every subagent under it.
      * Undefined: this machine.
      */
@@ -1978,13 +2025,21 @@ export class PocketApp {
      * session on another computer gets that computer's, never this machine's: when it is offline, what uses it waits.
      */
     #wrapped(id: ConversationId, cwd: string): ExecutionEnv {
+        // Each command hides core's secrets as they are now.
+        this.secrets.sync();
+
         const runner = this.runnerOf(id);
         const base =
             runner === undefined
                 ? this.#env(cwd)
                 : this.runners.env(runner, cwd, this.runnerScope(id));
 
-        return wrapEnv(base, Number(id), cwd, this.commandEnvs, this.hidden);
+        return withQuietLimit(
+            wrapEnv(base, Number(id), cwd, this.commandEnvs, this.hidden),
+            () => this.background.commandQuietMs,
+            // An offline computer's command waits (`runners.ts`): that wait is no quiet time.
+            runner === undefined ? undefined : () => !this.runners.link(runner).online,
+        );
     }
 
     /**
@@ -2079,12 +2134,39 @@ export class PocketApp {
         }
     }
 
+    /** Stop one running tool call, alone: its task is aborted, and its run goes on with the result that says so. */
+    async stopToolCall(id: ConversationId, callId: string): Promise<boolean> {
+        const live = await this.harness.snapshot(LiveDoc, id, context);
+        const slot = [...(live?.tools ?? []), ...(live?.nestedTools ?? [])].find(
+            (each) => each.callId === callId && each.status === "running",
+        );
+
+        if (slot?.taskId === undefined) {
+            return false;
+        }
+
+        await this.harness.abortTask(slot.taskId, context);
+
+        return true;
+    }
+
     /** A notice for the owner's tabs alone: about what only they may change. */
     ownerNotice(level: "info" | "warning" | "error", message: string): void {
         this.#log(`[${level}] ${message}`);
 
         for (const client of this.#clients) {
             if (client.user.role === "owner") {
+                client.send("notice", { level, message });
+            }
+        }
+    }
+
+    /** A notice for one person's tabs alone: about a session only they are in charge of. */
+    noticeTo(userId: string, level: "info" | "warning" | "error", message: string): void {
+        this.#log(`[${level}] ${message}`);
+
+        for (const client of this.#clients) {
+            if (client.user.id === userId) {
                 client.send("notice", { level, message });
             }
         }
@@ -3357,12 +3439,12 @@ export class PocketApp {
     }
 
     /**
-     * May session `id`'s tasks (webhooks, schedules, watches) run now. "Tasks expire with the session" off (the default):
-     * they run for good once set up. On: while its approval is live, or the 7 days of grace after it ended (with a
-     * reminder each day to its starter and who is in charge), then they pause until someone renews it, and those two
-     * hear it once. A revoke ends it then, so the 7 days count from the revoke. A session with no approval at all (from
-     * before approvals) counts as ended when the switch went on, or when it started if that was later. Who is in charge
-     * of its computer, and a PiP, never need one.
+     * May session `id`'s tasks (webhooks, schedules, watches, outside data that comes in: `inbox.ts`) run now. "Tasks
+     * expire with the session" off (the default): they run for good once set up. On: while its approval is live, or the
+     * 7 days of grace after it ended (with a reminder each day to its starter and who is in charge), then they pause
+     * until someone renews it, and those two hear it once. A revoke ends it then, so the 7 days count from the revoke. A
+     * session with no approval at all (from before approvals) counts as ended when the switch went on, or when it
+     * started if that was later. Who is in charge of its computer, and a PiP, never need one.
      */
     tasksMayRun(id: ConversationId): boolean {
         const root = String(this.rootOf(id));
@@ -4075,10 +4157,7 @@ export class PocketApp {
             folderRequests: this.folderRequests.list(user),
             folderApprovals: this.sessionApprovals(user),
             user: {
-                id: user.id,
-                name: user.name,
-                role: user.role,
-                ...(user.sessions === undefined ? {} : { sessions: user.sessions.map(Number) }),
+                ...helloUser(user),
                 // May they start sessions on this server (`access.ts` `mayStart`): the app offers New only then.
                 mayStart: this.#mayStartHere(user),
                 // May they link computers of their own (`access.ts` `mayLink`): the Runners sheet offers it.
@@ -4098,6 +4177,8 @@ export class PocketApp {
                 home: homedir(),
                 defaultCwd: this.defaultCwd,
                 extensions: this.loader.extensionNames(),
+                // The shortest repeat, so the Schedules sheet's editor keeps Save off for one the server refuses.
+                scheduleRepeatMinutes: this.schedules.limits.repeatMinutes,
                 // The browser modules this person's tabs load (`extension-ui.js`), each with the tools its module
                 // installs: the only ones whose calls it may describe (`pocket.toolCall`).
                 ui: this.#browserModules(user),
@@ -5557,6 +5638,8 @@ export class PocketApp {
                 `${module.title} is on but failed to load: ${describe(error)}`,
             );
         } finally {
+            // A module that came or went changes which of its stored values are secret.
+            this.secrets.sync();
             await this.#refreshClients();
         }
 
@@ -5729,6 +5812,8 @@ export class PocketApp {
         }
 
         this.config.setExtensionSettings(module, next);
+        // Hidden at once in every session: the new value, and the old one too.
+        this.secrets.sync();
         this.webs.settingsChanged(module);
 
         return shownSettings(fields, next, false);
@@ -6137,7 +6222,8 @@ export class PocketApp {
 /**
  * Continue on the runtime's calls: after Pi and the caller shaped a request, each shaper may replace the payload, the
  * last one closest to the wire. With no shaper, the call goes on untouched. A shaper may answer with a promise. One
- * that throws is logged and skipped: a faulty module must not fail the model call.
+ * that throws is logged and skipped: a faulty module must not fail the model call. A shaped call sends its whole
+ * request: an Anthropic thread continuation would leave out the system blocks and tools a shaper may have changed.
  */
 export function installRequestShaping(
     models: { streamSimple: ModelRuntime["streamSimple"] },
@@ -6153,6 +6239,7 @@ export function installRequestShaping(
 
         return stream(model, context, {
             ...options,
+            disableContinuation: true,
             onPayload: async (payload, payloadModel) => {
                 const asked = await options?.onPayload?.(payload, payloadModel);
                 let next = asked ?? payload;
@@ -6175,4 +6262,23 @@ export function installRequestShaping(
             },
         });
     };
+}
+
+/**
+ * Pi Durable's coding tools, whose `read` shrinks and converts images with Photon, in a worker thread that exits when
+ * idle. Without Photon's WebAssembly, `read` sends only images that fit the model's limits as they are.
+ */
+async function codingTools(log: (line: string) => void) {
+    try {
+        const node = import.meta.resolve("@earendil-works/pi-durable/images/node");
+
+        // Where Pi Durable loads it from, so a missing package shows now and not on the first image.
+        createRequire(node).resolve("@silvia-odwyer/photon/photon_rs_bg.wasm");
+
+        return createCodingTools({ images: await createNodePhotonImages() });
+    } catch (error) {
+        log(`read cannot shrink images, Photon is missing: ${describe(error)}`);
+
+        return CodingTools;
+    }
 }

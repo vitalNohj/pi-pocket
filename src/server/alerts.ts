@@ -321,6 +321,34 @@ export class Alerts {
         })().catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
     }
 
+    /**
+     * Work passed a hard limit: a notice in the tabs of who is in charge of the session's computer, and one push to
+     * them; they decide what follows. That is the owner on this server and a runner's linker on a runner (`access.ts`
+     * `inChargeOf`): the owner does not see a session on a runner someone else linked, so they are not told of it.
+     */
+    ownerAlert(conversationId: ConversationId, title: string, body: string): void {
+        const app = this.#app;
+        const root = app.rootOf(conversationId);
+        const ownerId = app.policy.inChargeOf(String(root));
+
+        app.noticeTo(ownerId, "warning", `${title}: ${body}`);
+
+        if (this.#quiet() || app.sessionMeta(root) === undefined) {
+            return;
+        }
+
+        void (async () => {
+            const message: PushMessage = {
+                title: `${title} · ${await app.conversationTitle(root)}`,
+                body: snippet(body, 400),
+                url: `/s/${String(root)}`,
+                tag: `stalled-${String(root)}`,
+            };
+
+            await this.push(ownerId, root, "stalled", message);
+        })().catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
+    }
+
     /** New approvals go out to everyone in the session who can answer them. */
     announceApprovals(): void {
         const app = this.#app;

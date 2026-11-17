@@ -75,6 +75,16 @@ export interface User {
     devices?: StoredDevice[];
 }
 
+/** Who is signed in, as `hello` says it to a tab, and as the app page carries it (`serveApp`). */
+export function helloUser(user: User) {
+    return {
+        id: user.id,
+        name: user.name,
+        role: user.role,
+        ...(user.sessions === undefined ? {} : { sessions: user.sessions.map(Number) }),
+    };
+}
+
 /**
  * Another device of one person. It has a token of its own, kept by its hash, so signing it out, or the end of the
  * tunnel it came through, ends that device alone.
@@ -453,6 +463,11 @@ export class ConfigStore {
     /** The owner's values for a module's settings (`web.settings`): a copy, by name. */
     extensionSettings(module: string): Record<string, string | number | boolean> {
         return { ...(this.#config.extensionSettings?.[module] ?? {}) };
+    }
+
+    /** The modules the owner set values for, on or off. */
+    extensionSettingModules(): string[] {
+        return Object.keys(this.#config.extensionSettings ?? {});
     }
 
     /** Keep a module's values, all of them at once; none drops its entry. */

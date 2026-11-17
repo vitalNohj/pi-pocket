@@ -31,6 +31,8 @@ export type PushPrefs = {
     security: boolean;
     /** The owner's alone: someone asks to start a session in a new folder on this server (`folder-requests.ts`). */
     folders: boolean;
+    /** Work passed a hard limit with no progress (a stalled subagent): for who is in charge of its computer. */
+    stalled: boolean;
 };
 export const DEFAULT_PREFS: PushPrefs = Object.freeze({
     done: true,
@@ -40,6 +42,7 @@ export const DEFAULT_PREFS: PushPrefs = Object.freeze({
     limit: true,
     security: true,
     folders: true,
+    stalled: true,
 });
 export type StoredSubscription = PushSubscriptionJson & {
     userId: string;

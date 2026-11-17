@@ -719,6 +719,49 @@ describe("review drill fixes for people on a computer", () => {
         }
     });
 
+    it("tells who is in charge of a session's computer that work in it stalled, and not an owner who cannot see it", async () => {
+        const host = person("Stall host", "guest");
+        const theirs = app.config.addRunner("Stall laptop", host.id, newIdentity().publicKey).id;
+        const { id: hers } = await app.commands.createSession(owner(app), { cwd: root });
+        const { id: here } = await app.commands.createSession(owner(app), { cwd: root });
+
+        // A session on the host's computer, the host's own: the owner does not see it.
+        await app.harness.commit(async (tx) => {
+            const meta = (await tx.doc(SessionsDoc)).items[String(hers)]!;
+
+            meta.runner = theirs;
+            meta.createdBy = host.id;
+        }, context);
+        assert.equal(app.canSee(owner(app), hers), false);
+
+        const owners = fakeTab(undefined, owner(app));
+        const hosts = fakeTab(undefined, host);
+        const stalls = (from: ReturnType<typeof fakeTab>) =>
+            from.events
+                .filter((each) => each.event === "notice")
+                .map((each) => String(each.data.message))
+                .filter((each) => each.includes("stalled"));
+
+        await app.attach(owners.client);
+        await app.attach(hosts.client);
+
+        try {
+            // As the stall watches of Subagents and Agent Teams call it (`host.alertOwner`).
+            app.alerts.ownerAlert(hers, "Subagent stalled", "Scout made no progress.");
+            assert.deepEqual(stalls(hosts), ["Subagent stalled: Scout made no progress."]);
+            assert.deepEqual(stalls(owners), [], "the owner is told nothing of a session there");
+
+            // On this server the owner is in charge: they hear, and the host does not.
+            app.alerts.ownerAlert(here, "Linked session stalled", "Builder made no progress.");
+            assert.deepEqual(stalls(owners), ["Linked session stalled: Builder made no progress."]);
+            assert.equal(stalls(hosts).length, 1, "the host hears nothing of the owner's session");
+        } finally {
+            app.detach(owners.client);
+            app.detach(hosts.client);
+            app.config.removeRunner(theirs);
+        }
+    });
+
     it("never lets another person download the computer's runner link or Pi's sign-ins", async () => {
         const home = join(there, "home");
 
