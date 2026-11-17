@@ -191,7 +191,7 @@ test(
             ["Gina", "Invite someone", "Notifications", "Owner (you)", "Sam", "Settings", "Vera"],
             "everyone, then what else the sheet holds",
         );
-        assert.notEqual(people.title, "Owner (you)", "it opens on someone whose access is to set");
+        assert.ok(people.title.startsWith("Owner"), "it opens on one's own page");
     },
 );
 
@@ -951,3 +951,39 @@ test(
         ]);
     },
 );
+
+test("People opens on one's own page for a viewer too, not on the owner's", real, async () => {
+    const { user, token } = app.config.addUser("Nora", "viewer");
+    // A browser of their own: a login link in one signed in as someone else asks before it switches.
+    const theirs = new Browsers({
+        dataDir: mkdtempSync(join(root, "people-sheet-viewer-")),
+        load: async () => undefined,
+        save: () => {},
+    });
+    const owners = page;
+
+    try {
+        page = await theirs.open(1);
+        await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+        await open("people");
+        assert.equal(
+            await inPage<string>(
+                `const { store } = await import("/store.js"); return JSON.stringify(store.state.me.id)`,
+            ),
+            user.id,
+            "signed in as the viewer",
+        );
+        assert.ok(
+            (
+                await inPage<string>(
+                    `return JSON.stringify(document.querySelector(".sheet-page-title").textContent.trim())`,
+                )
+            ).startsWith("Nora"),
+            "their own page",
+        );
+    } finally {
+        // The tests share one page: the owner's again, whatever happened.
+        page = owners;
+        await theirs.closeAll({ final: true });
+    }
+});
