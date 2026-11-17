@@ -77,6 +77,20 @@ export function leaving(folder, folders, started, there) {
     });
 }
 
+/**
+ * The folder of `sees` (the folders a person sees every session in) that gives them `session`, or undefined: the
+ * server's rule (`src/server/access.ts` `seesFolder`), by the folder the session counts as working in.
+ */
+export function seenBy(sees, session, there) {
+    if (sees.length === 0) {
+        return undefined;
+    }
+
+    const at = accessFolder(session, there);
+
+    return sees.find((each) => inFolder(at, each));
+}
+
 /** `path` as it reads under `folder`: nothing for the folder itself, the rest of the path for one in it. */
 export function below(path, folder) {
     const base = folder.replace(/[\\/]+$/, "");

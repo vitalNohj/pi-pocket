@@ -163,6 +163,8 @@ export interface StoredRunner {
     users?: string[];
     /** The folders the owner gave each chosen person here, by person id (`access.ts`). The owner needs none. */
     given?: Record<string, string[]>;
+    /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
+    sees?: Record<string, string[]>;
     /** When it last connected. */
     lastSeen?: number;
     /**
@@ -191,6 +193,8 @@ export interface StoredServer {
     users?: string[];
     /** The folders the owner gave each chosen person (real paths here), by person id (`access.ts`). */
     given?: Record<string, string[]>;
+    /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
+    sees?: Record<string, string[]>;
     /** New sessions here start shared with its people. */
     shareNew?: true;
     /**
@@ -293,6 +297,26 @@ export const DEFAULT_LIMIT_WAIT_HOURS = 6;
 
 /** Who may allow a risky tool call: anyone who can steer, or (for guests) only someone other than who asked. */
 export type ApprovalRule = "anyone" | "others";
+
+/** What a computer's record keeps per person about folders: the ones given, and the ones they see every session in. */
+type FolderGrants = { given?: Record<string, string[]>; sees?: Record<string, string[]> };
+
+/** Keep `list` as `person`'s under `key`; an empty one leaves no entry, and no entries leave no record. */
+function setList(
+    target: FolderGrants,
+    key: keyof FolderGrants,
+    person: string,
+    list: readonly string[],
+): void {
+    const { [person]: _was, ...rest } = target[key] ?? {};
+    const next = list.length === 0 ? rest : { ...rest, [person]: [...list] };
+
+    if (Object.keys(next).length === 0) {
+        delete target[key];
+    } else {
+        target[key] = next;
+    }
+}
 
 function newToken(): string {
     return randomBytes(24).toString("base64url");
@@ -770,7 +794,10 @@ export class ConfigStore {
 
             // Nothing they were given outlives them; their sessions and tasks move to who is in charge (`app.ts`).
             for (const computer of [this.#config.server, ...(this.#config.runners ?? [])]) {
-                delete computer?.given?.[id];
+                if (computer !== undefined) {
+                    setList(computer, "given", id, []);
+                    setList(computer, "sees", id, []);
+                }
             }
 
             // Nor a link code they made and nobody used yet.
@@ -970,20 +997,21 @@ export class ConfigStore {
         return computer?.given?.[person] ?? [];
     }
 
-    /** Set the folders given to `person` on computer `id` (undefined: this server); an empty list takes them all. */
+    /**
+     * Set the folders given to `person` on computer `id` (undefined: this server); an empty list takes them all. A
+     * folder taken back is no longer one they see every session in (`setSeenFolder`).
+     */
     setGivenFolders(id: string | undefined, person: string, folders: readonly string[]): void {
-        const apply = (target: { given?: Record<string, string[]> }): void => {
+        const apply = (target: FolderGrants): void => {
             const unique = [...new Set(folders)];
 
-            if (unique.length === 0) {
-                delete target.given?.[person];
-            } else {
-                target.given = { ...target.given, [person]: unique };
-            }
-
-            if (target.given !== undefined && Object.keys(target.given).length === 0) {
-                delete target.given;
-            }
+            setList(target, "given", person, unique);
+            setList(
+                target,
+                "sees",
+                person,
+                (target.sees?.[person] ?? []).filter((each) => unique.includes(each)),
+            );
         };
 
         if (id === undefined) {
@@ -998,6 +1026,49 @@ export class ConfigStore {
             apply(runner);
             this.save();
         }
+    }
+
+    /**
+     * Of the folders given to `person` on computer `id` (undefined: this server), the ones in which they see every
+     * session, their own or not (`access.ts` `seesFolder`).
+     */
+    seenFolders(id: string | undefined, person: string): readonly string[] {
+        const computer = id === undefined ? this.#config.server : this.runnerById(id);
+
+        return computer?.sees?.[person] ?? [];
+    }
+
+    /**
+     * `person` sees every session in `folder` on computer `id` (undefined: this server), or no longer. Only a folder
+     * given to them there, as it is written in that list: any other changes nothing, and the answer is false.
+     */
+    setSeenFolder(id: string | undefined, person: string, folder: string, on: boolean): boolean {
+        if (!this.givenFolders(id, person).includes(folder)) {
+            return false;
+        }
+
+        const apply = (target: FolderGrants): void => {
+            const rest = (target.sees?.[person] ?? []).filter((each) => each !== folder);
+
+            setList(target, "sees", person, on ? [...rest, folder] : rest);
+        };
+
+        if (id === undefined) {
+            this.#changeServer(apply);
+
+            return true;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner === undefined) {
+            return false;
+        }
+
+        apply(runner);
+        this.save();
+
+        return true;
     }
 
     /**

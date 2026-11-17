@@ -7625,9 +7625,26 @@ div.group-head {
 
 .at-actions {
     display: flex;
+    align-items: center;
     flex: none;
     gap: 6px;
     margin-left: auto;
+}
+
+/* A folder's line: the folder, then whether they see every session in it, and Remove; those go under it where the
+ * line is too short for both. */
+.at-folder-line {
+    flex-wrap: wrap;
+}
+
+.at-folder-line > .ft-row {
+    flex: 1 1 12rem;
+}
+
+.at-sees {
+    color: var(--muted);
+    font-size: 11.5px;
+    white-space: nowrap;
 }
 
 .at-tree .at-note {

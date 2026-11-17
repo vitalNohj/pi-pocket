@@ -153,6 +153,8 @@ export type RunnerView = {
     users?: { id: string; name: string; role: "owner" | "guest" | "viewer" }[];
     /** The folders given to each granted person there, by person id; only in the owner's list. */
     given?: Record<string, string[]>;
+    /** Of those, the folders in which that person sees every session, by person id; only in the owner's list. */
+    sees?: Record<string, string[]>;
     /** New sessions there start shared with its people. */
     shareNew?: true;
     /** False when this person may not start sessions there: the owner sees a runner someone else linked, to unlink it. */
@@ -1399,6 +1401,12 @@ export class Runners {
                                   (runner.users ?? []).map((id) => [
                                       id,
                                       [...this.#config.givenFolders(runner.id, id)],
+                                  ]),
+                              ),
+                              sees: Object.fromEntries(
+                                  (runner.users ?? []).map((id) => [
+                                      id,
+                                      [...this.#config.seenFolders(runner.id, id)],
                                   ]),
                               ),
                           }

@@ -105,6 +105,10 @@ export function SessionShareSheet({ id }) {
                                           person.notChosen
                                               ? html` <span class="muted small">(not chosen for ${data.computer}: once taken off, choose them first)</span>`
                                               : ""
+                                      }${
+                                          person.byFolder
+                                              ? html` <span class="muted small">(sees it anyway: they see every session in its folder)</span>`
+                                              : ""
                                       }
                                   </label>`,
                               )}

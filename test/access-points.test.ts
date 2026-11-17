@@ -894,3 +894,238 @@ describe("approvals", () => {
         }
     });
 });
+
+describe("seeing every session in a folder", () => {
+    const seen = join(root, "seen");
+    const deeper = join(seen, "deeper");
+    const apart = join(root, "seen-too");
+    /** Chosen for this server and given `seen` alone. */
+    let fellow: User;
+    /** The owner's, shared with nobody: in the folder, in a folder inside it, and beside it. */
+    let inside: ConversationId;
+    let below: ConversationId;
+    let beside: ConversationId;
+    let folder: string;
+
+    const sees = (by: User, body: unknown) => call(by, "runners/this-server/sees", body);
+
+    before(async () => {
+        for (const each of [seen, deeper, apart]) {
+            mkdirSync(each, { recursive: true });
+        }
+
+        folder = realpathSync(seen);
+        fellow = person("Fellow", "guest");
+        app.config.setServerUsers([guest.id, viewer.id, fellow.id]);
+        app.config.setGivenFolders(undefined, fellow.id, [folder]);
+        app.config.updateUser(fellow.id, { approvalDays: 0 });
+        app.accessChanged();
+        inside = await newSession(app, seen);
+        below = await newSession(app, deeper);
+        beside = await newSession(app, apart);
+
+        for (const each of [inside, below, beside]) {
+            approveSession(app, each, fellow);
+        }
+    });
+
+    after(async () => {
+        await app.removeUser(owner(app), fellow.id);
+    });
+
+    it("shows a person given the folder its sessions, the ones started later too, and lets them open and prompt them", async () => {
+        assert.deepEqual(listed(fellow), [], "nothing of the owner's before the switch");
+
+        const watching = fakeTab(undefined, fellow);
+
+        await app.attach(watching.client);
+
+        try {
+            const answer = await sees(owner(app), { person: fellow.id, folder, on: true });
+
+            assert.equal(answer.status, 200);
+            assert.deepEqual((answer.body as { sees: Record<string, string[]> }).sees[fellow.id], [
+                folder,
+            ]);
+            assert.deepEqual(
+                new Set(listed(fellow)),
+                new Set([String(inside), String(below)]),
+                "the ones in it and in a folder inside it, not the one beside it",
+            );
+            assert.deepEqual(
+                new Set(
+                    (await call<{ id: number }[]>(fellow, "sessions")).body.map((each) =>
+                        String(each.id),
+                    ),
+                ),
+                new Set([String(inside), String(below)]),
+            );
+            await until(() => everListed(watching).has(String(inside)), "the list, sent again");
+
+            // By its id: the view and its history, and a message to Pi.
+            assert.equal((await call(fellow, `c/${inside}/history`)).status, 200);
+            assert.equal(
+                (await call(fellow, `c/${inside}/submit`, { text: "hello", requestId: "f1" }))
+                    .status,
+                200,
+            );
+            assert.equal((await call(fellow, `c/${beside}/history`)).status, 404);
+
+            // One the owner starts there later arrives by itself; one started beside it never does.
+            const later = await newSession(app, seen);
+            const other = await newSession(app, apart);
+
+            await until(() => everListed(watching).has(String(later)), "the new session's arrival");
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            assert.equal(everSent(watching, other), false);
+            assert.equal(everSent(watching, beside), false);
+        } finally {
+            app.detach(watching.client);
+        }
+    });
+
+    it("is refused to who is not in charge, for a folder not given, and for who starts no sessions here", async () => {
+        const on = { person: fellow.id, folder, on: true };
+
+        assert.equal((await sees(guest, on)).status, 403);
+        assert.equal((await sees(fellow, on)).status, 403);
+        assert.equal((await sees(stranger, on)).status, 403);
+        // A folder not given to them, also one inside or above a given one: the list has it as it was given.
+        assert.equal((await sees(owner(app), { ...on, folder: realpathSync(apart) })).status, 400);
+        assert.equal((await sees(owner(app), { ...on, folder: realpathSync(deeper) })).status, 400);
+        assert.equal((await sees(owner(app), { ...on, folder: realpathSync(root) })).status, 400);
+        // Someone nobody chose, a viewer, and no such person.
+        assert.equal((await sees(owner(app), { ...on, person: stranger.id })).status, 400);
+        assert.equal(
+            (await sees(owner(app), { person: viewer.id, folder: realpathSync(root), on: true }))
+                .status,
+            400,
+        );
+        assert.equal((await sees(owner(app), { ...on, person: "nobody" })).status, 400);
+        assert.equal((await sees(owner(app), { person: fellow.id, folder })).status, 400);
+        assert.equal((await sees(owner(app), {})).status, 400);
+        assert.equal((await call(owner(app), "runners/no-such-computer/sees", on)).status, 404);
+        // The viewer was given the whole test folder (above), and still sees nothing by it.
+        assert.ok(!listed(viewer).includes(String(inside)));
+        assert.ok(!listed(guest).includes(String(inside)), "the switch is one person's");
+        assert.ok(!listed(stranger).includes(String(inside)));
+    });
+
+    it("takes them out of a session at once: the switch off, the session moved out, the folder taken back", async () => {
+        const open = async (id: ConversationId) => {
+            const tab = fakeTab(id, fellow);
+
+            await app.attach(tab.client);
+            assert.ok(
+                tab.events.some((each) => each.event === "view"),
+                "they are in",
+            );
+
+            return tab;
+        };
+
+        const gone = (tab: ReturnType<typeof fakeTab>, id: ConversationId) => {
+            assert.equal(tab.last("missing")?.conversationId, Number(id));
+            assert.equal(tab.client.conversationId, undefined);
+            assert.ok(!listed(fellow).includes(String(id)));
+        };
+
+        await sees(owner(app), { person: fellow.id, folder, on: true });
+
+        // The switch off.
+        let tab = await open(inside);
+
+        try {
+            assert.equal(
+                (await sees(owner(app), { person: fellow.id, folder, on: false })).status,
+                200,
+            );
+            gone(tab, inside);
+            assert.equal((await call(fellow, `c/${inside}/history`)).status, 404);
+            assert.deepEqual(app.config.seenFolders(undefined, fellow.id), []);
+        } finally {
+            app.detach(tab.client);
+        }
+
+        // The session moved to a folder beside it.
+        await sees(owner(app), { person: fellow.id, folder, on: true });
+
+        const moving = await newSession(app, seen);
+
+        tab = await open(moving);
+
+        try {
+            assert.equal(
+                (await call(owner(app), `c/${moving}/configure`, { cwd: apart })).status,
+                200,
+            );
+            await until(() => tab.last("missing") !== undefined, "the move takes them out");
+            gone(tab, moving);
+        } finally {
+            app.detach(tab.client);
+        }
+
+        // The folder taken back: the switch goes with it, and does not come back with the folder.
+        tab = await open(below);
+
+        try {
+            assert.equal(
+                (
+                    await call(owner(app), "runners/this-server/given", {
+                        person: fellow.id,
+                        folders: [],
+                    })
+                ).status,
+                200,
+            );
+            gone(tab, below);
+            assert.deepEqual(app.config.seenFolders(undefined, fellow.id), []);
+            await call(owner(app), "runners/this-server/given", {
+                person: fellow.id,
+                folders: [folder],
+            });
+            assert.ok(!listed(fellow).includes(String(inside)), "given again, the switch is off");
+        } finally {
+            app.detach(tab.client);
+        }
+    });
+
+    it("is taken back with the switch alone, shows in the session's share list, and hands their tasks on", async () => {
+        await sees(owner(app), { person: fellow.id, folder, on: true });
+
+        // There is no one session to take: the folder's switch is what gives it.
+        const refused = await call<{ error?: string }>(owner(app), `sessions/${inside}/revoke`, {
+            person: fellow.id,
+        });
+
+        assert.equal(refused.status, 400);
+        assert.match(String(refused.body.error), /Turn that off on the folder/);
+        assert.ok(listed(fellow).includes(String(inside)));
+
+        // Who shares the session sees that this person has it anyway.
+        const sharing = await call<{ people: { id: string; byFolder?: true }[] }>(
+            owner(app),
+            `sessions/${inside}/share`,
+        );
+
+        assert.equal(sharing.body.people.find((each) => each.id === fellow.id)?.byFolder, true);
+        assert.equal(sharing.body.people.find((each) => each.id === guest.id)?.byFolder, undefined);
+        // They may not share it themselves: it is not theirs.
+        assert.equal((await call(fellow, `sessions/${inside}/share`)).status, 403);
+
+        // A webhook they set up on it is theirs while they see it, and its starter's once they do not.
+        const hook = await app.hooks.add(fellow, inside, { name: "Builds", instructions: "Look" });
+
+        assert.ok((await app.hooks.list(fellow)).some((each) => each.id === hook.id));
+        await sees(owner(app), { person: fellow.id, folder, on: false });
+        assert.ok(!(await app.hooks.list(fellow)).some((each) => each.id === hook.id));
+        assert.ok((await app.hooks.list(owner(app))).some((each) => each.id === hook.id));
+
+        // Shared with them one at a time, it stays when the switch goes off.
+        await sees(owner(app), { person: fellow.id, folder, on: true });
+        await app.commands.shareSession(below, owner(app), [fellow.id]);
+        await sees(owner(app), { person: fellow.id, folder, on: false });
+        assert.deepEqual(listed(fellow), [String(below)]);
+        await app.commands.shareSession(below, owner(app), []);
+    });
+});

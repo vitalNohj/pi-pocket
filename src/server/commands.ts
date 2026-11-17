@@ -1035,7 +1035,14 @@ export class Commands {
         user: User,
     ): {
         sharedWith: string[];
-        people: { id: string; name: string; role: User["role"]; notChosen?: true }[];
+        people: {
+            id: string;
+            name: string;
+            role: User["role"];
+            notChosen?: true;
+            /** They see it anyway: it is in a folder they see every session of (`access.ts` `seesFolder`). */
+            byFolder?: true;
+        }[];
         computer: string;
     } {
         const app = this.#app;
@@ -1071,6 +1078,7 @@ export class Commands {
                 name: person.name,
                 role: person.role,
                 ...(app.policy.mayUse(person, computer) ? {} : { notChosen: true as const }),
+                ...(app.seesByFolder(person, root) ? { byFolder: true as const } : {}),
             }));
 
         return {

@@ -36,6 +36,7 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
         chosen: [guest.id, viewer.id],
         // The guest was given /given (and what is in it); no one else anything.
         given: (person) => (person === guest.id ? ["/given"] : []),
+        sees: () => [],
         shareNew: false,
         ...patch,
     };
@@ -343,6 +344,117 @@ describe("may this person see and steer this session", () => {
         assert.equal(policy.maySee(owner, "99"), false);
         assert.equal(policy.maySee({ id: "removed" }, "10"), false);
         assert.throws(() => policy.requireSee(stranger, "10"), { status: 404 });
+    });
+});
+
+describe("may this person see every session in a folder", () => {
+    // The guest was given /given, and sees every session in it on this server and on the runner.
+    const seeing = (patch: Partial<Computer> = {}) =>
+        world(
+            [
+                computer(THIS_SERVER, {
+                    sees: (person) => (person === guest.id ? ["/given"] : []),
+                    ...patch,
+                }),
+                computer("runner", { sees: (person) => (person === guest.id ? ["/given"] : []) }),
+            ],
+            [
+                { id: "50", computer: THIS_SERVER, createdBy: stranger.id, folder: "/given" },
+                { id: "51", computer: THIS_SERVER, createdBy: owner.id, folder: "/given/app/src" },
+                { id: "52", computer: THIS_SERVER, createdBy: stranger.id, folder: "/given-too" },
+                { id: "53", computer: THIS_SERVER, createdBy: stranger.id, folder: "/" },
+                { id: "54", computer: THIS_SERVER, createdBy: stranger.id },
+                { id: "55", computer: THIS_SERVER, pip: stranger.id, folder: "/given" },
+                { id: "56", computer: "runner", createdBy: linker.id, folder: "/given/work" },
+                { id: "57", computer: "runner", createdBy: linker.id, folder: "/elsewhere" },
+                {
+                    id: "58",
+                    computer: THIS_SERVER,
+                    createdBy: stranger.id,
+                    sharedWith: [guest.id],
+                    folder: "/given",
+                },
+                { id: "59", computer: THIS_SERVER, createdBy: guest.id, folder: "/given" },
+            ],
+        );
+
+    it("lets them see and steer a session someone else started in it, in a folder inside it, and on a runner", () => {
+        const { policy } = seeing();
+
+        for (const id of ["50", "51", "56"]) {
+            assert.equal(policy.maySee(guest, id), true, id);
+            assert.equal(policy.maySteer(guest, id), true, id);
+        }
+
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given/app"), true);
+    });
+
+    it("refuses a session beside the folder, above it, in no folder, on the runner outside it, and a PiP in it", () => {
+        const { policy } = seeing();
+
+        for (const id of ["52", "53", "54", "55", "57"]) {
+            assert.equal(policy.maySee(guest, id), false, id);
+        }
+
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given-too"), false);
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/"), false);
+    });
+
+    it("refuses everyone it was not turned on for: a stranger, a viewer, and the same guest with it off", () => {
+        const { policy } = seeing();
+
+        assert.equal(policy.maySee(stranger, "51"), false);
+        assert.equal(policy.maySee(viewer, "50"), false);
+        assert.equal(world().policy.maySee(guest, "12"), false);
+        assert.equal(seeing({ sees: () => [] }).policy.maySee(guest, "50"), false);
+    });
+
+    it("ends at once when the folder is taken back, they are no longer chosen, or they are made a viewer", () => {
+        // The folder is no longer given, though the switch's record is still there.
+        assert.equal(seeing({ given: () => [] }).policy.maySee(guest, "50"), false);
+        // Given a folder inside it only: the record names a folder that is not theirs.
+        assert.equal(seeing({ given: () => ["/given/app"] }).policy.maySee(guest, "51"), false);
+        assert.equal(seeing({ chosen: [viewer.id] }).policy.maySee(guest, "50"), false);
+
+        const { policy, people } = seeing();
+
+        people.set(guest.id, { ...guest, role: "viewer" });
+        assert.equal(policy.maySee(guest, "50"), false);
+        // What is shared with them one at a time stays, to read.
+        assert.equal(policy.maySee(guest, "58"), true);
+    });
+
+    it("gives a viewer and a person invited to one session nothing by a folder, whatever the record says", () => {
+        const everyone = seeing({
+            given: () => ["/given"],
+            sees: () => ["/given"],
+            chosen: [guest.id, viewer.id, invited.id],
+        }).policy;
+
+        assert.equal(everyone.maySee(viewer, "50"), false);
+        assert.equal(everyone.maySee(invited, "50"), false);
+        assert.equal(everyone.seesFolder(viewer, THIS_SERVER, "/given"), false);
+    });
+
+    it("lets them send while the session's approval is live, and neither share it nor renew it", () => {
+        const { policy, approved } = seeing();
+
+        assert.equal(policy.steer(guest, "50"), "locked");
+        approved.add("50");
+        assert.equal(policy.steer(guest, "50"), "allow");
+        assert.equal(policy.mayShare(guest, "50"), false);
+        assert.equal(policy.mayRenewWithCode(guest, "50"), false);
+        assert.equal(policy.mayRenewFree(guest, "50"), false);
+    });
+
+    it("tells a session they have by its folder alone from one that is theirs in another way", () => {
+        const { policy } = seeing();
+
+        assert.equal(policy.seesOnlyByFolder(guest, "50"), true);
+        assert.equal(policy.seesOnlyByFolder(guest, "58"), false, "shared with them");
+        assert.equal(policy.seesOnlyByFolder(guest, "59"), false, "they started it");
+        assert.equal(policy.seesOnlyByFolder(guest, "52"), false, "not theirs at all");
+        assert.equal(policy.seesOnlyByFolder(owner, "50"), false, "in charge");
     });
 });
 

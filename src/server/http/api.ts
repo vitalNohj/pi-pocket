@@ -1174,6 +1174,25 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
+        // One chosen person sees every session in one of their folders on a computer, or no longer (`app.ts` `seeFolder`).
+        if (first === "runners" && second !== undefined && third === "sees" && method === "POST") {
+            const body = await readJson<{
+                person?: unknown;
+                folder?: unknown;
+                on?: unknown;
+            } | null>(request);
+
+            await app.seeFolder(user, second, body?.person, body?.folder, body?.on);
+
+            return json(
+                response,
+                200,
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
+            );
+        }
+
         // The folders on another computer, for the folder picker of a new session there.
         if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
             if (!app.policy.mayBrowse(user, second)) {
