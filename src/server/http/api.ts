@@ -137,6 +137,8 @@ async function authenticatorRoute(
         return {
             linked: app.authenticators.linked(user.id),
             ...(until === undefined ? {} : { lockedUntil: until }),
+            // A temporary account links none (`config.ts` `User.temporary`): its page offers no way to.
+            ...(user.temporary === true ? { allowed: false } : {}),
         };
     };
 
@@ -146,6 +148,13 @@ async function authenticatorRoute(
 
     if (method !== "POST") {
         throw new HttpError(404, "Not found");
+    }
+
+    if ((action === "begin" || action === "confirm") && user.temporary === true) {
+        throw new HttpError(
+            403,
+            "A temporary account cannot link an authenticator. Ask the owner to make it a full account.",
+        );
     }
 
     if (action === "begin") {
@@ -214,6 +223,14 @@ export function createApi(options: HttpOptions, auth: Auth) {
             throw new HttpError(
                 400,
                 "Reload Pi Pocket, then use Sign in another device on your own page in People.",
+            );
+        }
+
+        // Off for everyone but the owner, until the owner turns Invite people on for a user (`access.ts` `invites`).
+        if (!app.policy.invites(user)) {
+            throw new HttpError(
+                403,
+                "Only the owner, and the users the owner lets, can invite people.",
             );
         }
 
@@ -445,6 +462,19 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             app.setLinksRunners(user, second, body.on);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // The owner lets a guest invite people, or takes it back.
+        if (first === "users" && second !== undefined && third === "invites" && method === "POST") {
+            const body = await readJson<{ on?: unknown } | null>(request);
+
+            if (typeof body?.on !== "boolean") {
+                throw new HttpError(400, "on must be true or false.");
+            }
+
+            app.setInvites(user, second, body.on);
 
             return json(response, 200, { ok: true });
         }
@@ -1697,8 +1727,13 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 session?: unknown;
                 folder?: unknown;
                 minutes?: unknown;
+                temporary?: unknown;
             };
-            const grant = inviteGrant(user, body);
+            // A temporary account, whatever the invite is to: whoever joins links no authenticator and stays a viewer.
+            const grant: InviteGrant = {
+                ...inviteGrant(user, body),
+                ...(body.temporary === true ? { temporary: true } : {}),
+            };
             const invite = auth.createInvite(user, grant, inviteMinutes(body));
 
             return json(response, 200, { ...(await shownInvite(request, user, invite)), grant });

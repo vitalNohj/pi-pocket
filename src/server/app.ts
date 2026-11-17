@@ -2777,6 +2777,14 @@ export class PocketApp {
                 ...(each.linksRunners === true && (viewer.role === "owner" || viewer.id === each.id)
                     ? { linksRunners: true }
                     : {}),
+                // May they invite people, for the owner, who sets it, and for themselves.
+                ...(each.invites === true && (viewer.role === "owner" || viewer.id === each.id)
+                    ? { invites: true }
+                    : {}),
+                // A temporary account, for the owner, who can end that, and for themselves.
+                ...(each.temporary === true && (viewer.role === "owner" || viewer.id === each.id)
+                    ? { temporary: true }
+                    : {}),
             }));
     }
 
@@ -4150,6 +4158,8 @@ export class PocketApp {
                 mayStart: this.#mayStartHere(user),
                 // May they link computers of their own (`access.ts` `mayLink`): the Runners sheet offers it.
                 mayLink: this.policy.mayLink(user),
+                // Does the owner let them invite people (`access.ts` `invites`): the app offers Invite someone only then.
+                invites: this.policy.invites(user),
             },
             // "Tasks expire with the session", for the owner's switch (`tasksMayRun`).
             ...(user.role === "owner" && this.config.server.tasksExpire === true
@@ -4778,7 +4788,11 @@ export class PocketApp {
     }
 
     /** The owner changes what someone may do: their role, or which session they may open. */
-    setAccess(owner: User, userId: string, patch: { role?: unknown; sessions?: unknown }): void {
+    setAccess(
+        owner: User,
+        userId: string,
+        patch: { role?: unknown; sessions?: unknown; temporary?: unknown },
+    ): void {
         if (owner.role !== "owner") {
             throw new HttpError(403, "Only the owner can do that");
         }
@@ -4793,11 +4807,32 @@ export class PocketApp {
             throw new HttpError(400, "The owner can do everything");
         }
 
-        const change: { role?: "guest" | "viewer"; sessions?: string[] | undefined } = {};
+        const change: {
+            role?: "guest" | "viewer";
+            sessions?: string[] | undefined;
+            temporary?: false;
+        } = {};
+
+        // A temporary account becomes a full one, never the other way: an invite alone makes one temporary.
+        if (patch.temporary !== undefined) {
+            if (patch.temporary !== false) {
+                throw new HttpError(400, "A temporary account can only be made a full one.");
+            }
+
+            change.temporary = false;
+        }
 
         if (patch.role !== undefined) {
             if (patch.role !== "guest" && patch.role !== "viewer") {
                 throw new HttpError(400, "role must be guest or viewer");
+            }
+
+            // A temporary account links no authenticator, so it stays a viewer until it is a full account.
+            if (patch.role === "guest" && target.temporary === true) {
+                throw new HttpError(
+                    409,
+                    `${target.name} has a temporary account. Turn Temporary account off first.`,
+                );
             }
 
             // Steering needs their own authenticator: it proves it is them when a session needs an approval.
@@ -5078,6 +5113,26 @@ export class PocketApp {
         this.config.updateUser(person, { linksRunners: on ? true : undefined });
         this.#peopleChanged();
         this.runners.changed();
+    }
+
+    /**
+     * The owner lets guest `person` invite people, or takes that back. Off until the owner turns it on; an invite they
+     * made before stops working with it (`auth.ts` `redeem`).
+     */
+    setInvites(owner: User, person: string, on: boolean): void {
+        if (owner.role !== "owner") {
+            throw new HttpError(403, "Only the owner can do that");
+        }
+
+        const target = this.config.userById(person);
+
+        if (target === undefined || target.role === "owner") {
+            throw new HttpError(404, "No such person");
+        }
+
+        this.config.updateUser(person, { invites: on ? true : undefined });
+        void this.#refreshUser(person);
+        this.#peopleChanged();
     }
 
     /**

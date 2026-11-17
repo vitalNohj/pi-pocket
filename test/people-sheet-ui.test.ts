@@ -274,6 +274,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
     assert.deepEqual(await switches(), [
         "Gina can prompt: on",
         "Gina links runners: off",
+        "Gina invites people: off",
         "Gina may use This server: off",
         "Gina may use Laptop: off",
     ]);
@@ -987,3 +988,246 @@ test("People opens on one's own page for a viewer too, not on the owner's", real
         await theirs.closeAll({ final: true });
     }
 });
+
+test(
+    "an invite makes a temporary account when asked: no authenticator and no Can prompt for it, until the owner ends that",
+    real,
+    async () => {
+        const code = () =>
+            inPage<string | null>(
+                `return JSON.stringify(document.querySelector(".sheet .invite-code-value")?.textContent.replace(/\\s/g, "") ?? null)`,
+            );
+        const sheetText = () =>
+            inPage<string>(
+                `return JSON.stringify([...document.querySelectorAll(".sheet p, .sheet .setting")].map((each) => each.textContent.replace(/\\s+/g, " ").trim()).join(" | "))`,
+            );
+        const ready = () =>
+            until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(document.querySelector('[data-part="app"]') !== null)`,
+                    ),
+                "the app",
+                20_000,
+            );
+
+        await page.setViewport(DESKTOP);
+        await page.navigate(`${base}/`);
+        await ready();
+        await inPage(
+            `const { openSheet } = await import("/store.js"); openSheet({ type: "invite" }); return JSON.stringify(true);`,
+        );
+        await until(async () => (await code()) !== null, "an invite");
+
+        // Off until asked: the invite is to a full account, which can become a user.
+        const full = await code();
+
+        assert.match(
+            await sheetText(),
+            /To prompt, they link an authenticator and are made a user/,
+        );
+        assert.match(
+            await sheetText(),
+            /Temporary account\s*A temporary account views what is shared with it, and cannot link an authenticator or become a user\./,
+        );
+
+        // On: the invite shown ends, and the new one makes a temporary account.
+        await inPage(
+            `[...document.querySelectorAll(".sheet [role=switch]")].find((each) => each.getAttribute("aria-label") === "Temporary account: off").click(); return JSON.stringify(true);`,
+        );
+        await until(async () => ![null, full].includes(await code()), "the temporary invite");
+        assert.match(await sheetText(), /They join as a viewer, with a temporary account\./);
+        assert.equal((await fetch(`${base}/join/${full}`)).status, 410, "the one before ended");
+
+        const joined = await fetch(`${base}/join/${await code()}`, {
+            method: "POST",
+            redirect: "manual",
+            body: new URLSearchParams({ name: "Tia" }).toString(),
+            headers: {
+                "content-type": "application/x-www-form-urlencoded",
+                "sec-fetch-site": "same-origin",
+            },
+        });
+        const token = decodeURIComponent(
+            /pocket_auth=([^;]+)/.exec(joined.headers.get("set-cookie") ?? "")?.[1] ?? "",
+        );
+        const tia = app.config.userByToken(token);
+
+        assert.equal(tia?.temporary, true, "whoever joins has a temporary account");
+        await inPage(
+            `const { closeSheet } = await import("/store.js"); closeSheet(); return JSON.stringify(true);`,
+        );
+
+        // A browser of their own: a login link in one signed in as someone else asks before it switches.
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "people-sheet-temporary-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+
+        try {
+            const tias = await theirs.open(1);
+
+            /** Their own sheet with their name: what it says of an authenticator, or null when it offers none. */
+            const authenticator = async () => {
+                await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+                await ready();
+                await inPage(
+                    `const { openSheet } = await import("/store.js"); openSheet({ type: "name" }); return JSON.stringify(true);`,
+                );
+                await until(
+                    async () =>
+                        await inPage<boolean>(
+                            `return JSON.stringify(document.querySelector(".sheet") !== null)`,
+                        ),
+                    "the sheet with their name",
+                );
+
+                // Once the server has answered what the sheet itself asked.
+                return await inPage<string | null>(
+                    `const { api } = await import("/store.js"); await api("me/authenticator"); await new Promise((resolve) => setTimeout(resolve, 300)); return JSON.stringify(document.querySelector(".my-authenticator")?.textContent.replace(/\\s+/g, " ").trim() ?? null)`,
+                );
+            };
+
+            page = tias;
+            assert.equal(
+                await authenticator(),
+                null,
+                "a temporary account is offered no authenticator",
+            );
+
+            // The owner's page for them: it says so, Can prompt is not theirs to get, and one switch ends it.
+            page = owners;
+            await open("people");
+            await show("Tia");
+            assert.match(
+                await inPage<string>(
+                    `return JSON.stringify(document.querySelector(".pages-detail").textContent.replace(/\\s+/g, " "))`,
+                ),
+                /viewer · temporary account/,
+            );
+            assert.match(
+                await inPage<string>(
+                    `return JSON.stringify(document.querySelector(".pages-detail").textContent.replace(/\\s+/g, " "))`,
+                ),
+                /Off: a viewer\. A temporary account cannot be made a user\./,
+            );
+
+            const before = await switches();
+
+            assert.ok(before.includes("Tia can prompt: off (disabled)"), before.join(", "));
+            assert.ok(before.includes("Tia has a temporary account: on"), before.join(", "));
+
+            await press("Tia has a temporary account: on");
+            await until(
+                async () => !(await switches()).some((each) => each.includes("temporary account")),
+                "a full account",
+            );
+            assert.deepEqual(await asked(), [
+                "Make Tia's account a full one? It cannot be made temporary again.",
+            ]);
+            assert.equal(app.config.userById(tia!.id)?.temporary, undefined);
+            assert.match(
+                await inPage<string>(
+                    `return JSON.stringify(document.querySelector(".pages-detail").textContent.replace(/\\s+/g, " "))`,
+                ),
+                /Off: a viewer\. Tia must link an authenticator first\./,
+            );
+
+            // Now their own sheet offers one, and says what it is for.
+            page = tias;
+            assert.match(
+                (await authenticator()) ?? "",
+                /Not linked\s*Link an authenticator app to be made a user, who can prompt\./,
+            );
+        } finally {
+            // The tests share one page: the owner's again, whatever happened.
+            page = owners;
+            await theirs.closeAll({ final: true });
+        }
+    },
+);
+
+test(
+    "Invite people is off for a user until the owner turns it on: only then are they offered Invite someone",
+    real,
+    async () => {
+        const chosen = app.config.server.users ?? [];
+        // A device of Gina's own, in a browser of its own: a login link in one signed in as someone else asks first.
+        const token = app.config.addDevice(guest.id);
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "people-sheet-invites-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+        const offered = () =>
+            inPage<boolean>(
+                `return JSON.stringify([...document.querySelectorAll(".pages-item .pages-item-title")].some((each) => each.textContent.trim() === "Invite someone"))`,
+            );
+        const hint = () =>
+            inPage<string>(
+                `return JSON.stringify(document.querySelector(".pages-detail").textContent.replace(/\\s+/g, " "))`,
+            );
+
+        assert.ok(token !== undefined);
+        // Chosen for this server, so that starting sessions here is not what keeps her from inviting.
+        app.config.setServerUsers([...new Set([...chosen, guest.id])]);
+        app.setInvites(owner(app), guest.id, false);
+        app.accessChanged();
+
+        try {
+            const ginas = await theirs.open(1);
+
+            page = ginas;
+            await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await open("people");
+            assert.equal(
+                await inPage<string>(
+                    `const { store } = await import("/store.js"); return JSON.stringify(store.state.me.id)`,
+                ),
+                guest.id,
+                "signed in as Gina",
+            );
+            assert.equal(await offered(), false, "off: she is offered no invite");
+
+            // The owner's page for her: off, and it says who invites then.
+            page = owners;
+            await open("people");
+            await show("Gina");
+            assert.ok((await switches()).includes("Gina invites people: off"));
+            assert.match(await hint(), /Off: only you invite people\./);
+            assert.equal(await offered(), true, "the owner always invites");
+
+            await flip("Gina invites people");
+            await until(
+                async () => (await switches()).includes("Gina invites people: on"),
+                "the switch to be on",
+            );
+            assert.equal(app.config.userById(guest.id)?.invites, true);
+            assert.match(await hint(), /On: they invite people, who join as viewers/);
+
+            // Her own page offers it now, without a reload.
+            page = ginas;
+            await until(async () => await offered(), "Gina to be offered Invite someone");
+
+            // Off again: it goes.
+            page = owners;
+            await flip("Gina invites people");
+            await until(
+                async () => (await switches()).includes("Gina invites people: off"),
+                "the switch to be off",
+            );
+            page = ginas;
+            await until(async () => !(await offered()), "the offer to go");
+        } finally {
+            // The tests share one page: the owner's again, whatever happened.
+            page = owners;
+            await theirs.closeAll({ final: true });
+            app.setInvites(owner(app), guest.id, false);
+            app.config.setServerUsers(chosen);
+            app.accessChanged();
+        }
+    },
+);

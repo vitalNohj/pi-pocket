@@ -16,13 +16,15 @@ import type { WebAccess } from "./host.ts";
 export const THIS_SERVER = "this-server";
 
 /**
- * A person as the policy needs them. `linksRunners`: the owner let this guest link computers of their own.
+ * A person as the policy needs them. `linksRunners`: the owner let this guest link computers of their own. `invites`:
+ * the owner let this guest invite people.
  */
 export type Person = {
     id: string;
     role: Role;
     sessions?: readonly string[];
     linksRunners?: boolean;
+    invites?: boolean;
 };
 
 /** A computer: this server, or a linked runner. */
@@ -209,13 +211,28 @@ export class AccessPolicy {
         );
     }
 
+    /** Does the owner let `person` invite people at all: the owner always, and the guests the owner lets. */
+    invites(person: Pick<Person, "id">): boolean {
+        const current = this.#current(person);
+
+        return (
+            current !== undefined &&
+            (current.role === "owner" || (current.role === "guest" && current.invites === true))
+        );
+    }
+
     /**
-     * May `person` invite someone new: to session `session` alone, who may share it (`mayShare`); to every session, who
-     * steers on this server or a runner they link. Every invite starts as a viewer (`auth.ts`), so it gives no more.
-     * Another device of one's own takes a device link (`auth.ts` `createDeviceLink`), which anyone makes for themselves.
+     * May `person` invite someone new: only who the owner lets (`invites`), and then to session `session` alone, who
+     * may share it (`mayShare`); to every session, who steers on this server or a runner they link. Every invite starts
+     * as a viewer (`auth.ts`), so it gives no more. Another device of one's own takes a device link (`auth.ts`
+     * `createDeviceLink`), which anyone makes for themselves.
      */
     mayInvite(person: Pick<Person, "id">, session?: string): boolean {
         const current = this.#current(person);
+
+        if (!this.invites(person)) {
+            return false;
+        }
 
         if (session !== undefined) {
             return this.mayShare(person, session);

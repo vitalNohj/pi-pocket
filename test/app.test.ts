@@ -2419,6 +2419,9 @@ test("an invite lasts as long as asked (a device link always 15 minutes), outliv
     const guest = await addPerson(app, "Gil", "guest");
     const MINUTE = 60_000;
 
+    // The owner lets Gil invite people: off until then.
+    app.setInvites(owner(), guest.user.id, true);
+
     try {
         // As long as asked, 15 minutes when not said; a device link, 15 whatever is asked.
         for (const [path, body, minutes] of [
@@ -2996,8 +2999,12 @@ test("an invite stops working when its creator loses the right to invite", async
     const guest = (await addPerson(app, "Gil", "guest")).user;
 
     try {
+        // Let by the owner, so the invite would work; then made a viewer, who invites nobody.
+        app.setInvites(owner(), guest.id, true);
+
         const { code } = auth.createInvite(guest, { role: "guest" });
 
+        assert.ok(auth.inviteValid(code));
         app.setAccess(owner(), guest.id, { role: "viewer" });
         assert.equal(auth.redeem(code, "Mallory"), undefined);
         assert.ok(!app.config.users.some((each) => each.name === "Mallory"));

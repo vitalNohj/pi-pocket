@@ -71,6 +71,13 @@ export interface User {
     approvalDays?: number;
     /** The owner let this guest link computers of their own (`access.ts` `mayLink`). */
     linksRunners?: true;
+    /** The owner let this guest invite people (`access.ts` `mayInvite`). The owner always may. */
+    invites?: true;
+    /**
+     * A temporary account, as its invite said: it links no authenticator, so it stays a viewer. Only the owner ends
+     * that, and it never comes back (`app.ts` `setAccess`).
+     */
+    temporary?: true;
     /** Their other devices, each signed in with a link from one of their own (`auth.ts` `createDeviceLink`). */
     devices?: StoredDevice[];
 }
@@ -135,6 +142,8 @@ export type InviteFor =
           session?: string;
           /** The one folder it is for: its maker's sessions in it on that computer, not all of theirs. */
           folder?: { computer: string; path: string };
+          /** The account it makes is temporary (`User.temporary`). */
+          temporary?: true;
           device?: never;
           person?: never;
       }
@@ -145,6 +154,7 @@ export type InviteFor =
           role?: never;
           session?: never;
           folder?: never;
+          temporary?: never;
       };
 
 /**
@@ -819,7 +829,12 @@ export class ConfigStore {
         return this.#config.users.find((user) => user.id === id);
     }
 
-    addUser(name: string, role: Role, sessions?: string[]): { user: User; token: string } {
+    addUser(
+        name: string,
+        role: Role,
+        sessions?: string[],
+        temporary = false,
+    ): { user: User; token: string } {
         const token = newToken();
         const user: User = {
             id: randomUUID(),
@@ -828,6 +843,7 @@ export class ConfigStore {
             tokenHash: hashToken(token),
             createdAt: Date.now(),
             ...(sessions === undefined ? {} : { sessions: [...sessions] }),
+            ...(temporary ? { temporary: true } : {}),
         };
 
         this.#config.users.push(user);
@@ -850,8 +866,12 @@ export class ConfigStore {
                 | "avatar"
                 | "approvalDays"
                 | "linksRunners"
+                | "invites"
             >
-        >,
+        > & {
+            /** Only ever turned off: a temporary account becomes a full one, never the other way. */
+            temporary?: false;
+        },
     ): void {
         const user = this.userById(id);
 
@@ -892,6 +912,14 @@ export class ConfigStore {
 
         if (user.linksRunners !== true) {
             delete user.linksRunners;
+        }
+
+        if (user.invites !== true) {
+            delete user.invites;
+        }
+
+        if (user.temporary !== true) {
+            delete user.temporary;
         }
 
         this.save();
