@@ -77,8 +77,15 @@ export function clearAuthCookie(response: ServerResponse): void {
     response.setHeader("set-cookie", `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
-/** What an invite grants someone new: a role, and optionally a single session instead of the ones shared with them. */
-export type InviteGrant = { role: Exclude<Role, "owner">; session?: string };
+/**
+ * What an invite grants someone new: a role, and optionally a single session instead of the ones shared with them, or
+ * only its maker's sessions in one folder of one computer instead of all of theirs.
+ */
+export type InviteGrant = {
+    role: Exclude<Role, "owner">;
+    session?: string;
+    folder?: { computer: string; path: string };
+};
 
 /**
  * What a live code is for: someone new, or another device of someone here (a device link). `code`: that person has an
@@ -227,9 +234,13 @@ export class Auth {
             return this.#codes?.linked(device.id) === true ? { device, code: true } : { device };
         }
 
-        return invite.session === undefined
+        if (invite.session !== undefined) {
+            return { role: invite.role, session: invite.session };
+        }
+
+        return invite.folder === undefined
             ? { role: invite.role }
-            : { role: invite.role, session: invite.session };
+            : { role: invite.role, folder: invite.folder };
     }
 
     inviteValid(code: string): boolean {
@@ -250,7 +261,15 @@ export class Auth {
         name: string,
         tunnel?: string,
         proof?: string,
-    ): { user: User; token: string; invitedBy?: string; device?: true } | undefined {
+    ):
+        | {
+              user: User;
+              token: string;
+              invitedBy?: string;
+              folder?: { computer: string; path: string };
+              device?: true;
+          }
+        | undefined {
         const invite = this.#config.invite(code);
 
         if (invite === undefined) {
@@ -303,7 +322,16 @@ export class Auth {
             invite.session === undefined ? undefined : [invite.session],
         );
 
-        // An invite to every session: the app shares the inviter's sessions with them (`app.ts` `welcome`).
-        return invite.session === undefined ? { ...added, invitedBy: creator.id } : added;
+        if (invite.session !== undefined) {
+            return added;
+        }
+
+        // An invite to every session, or to a folder's: the app shares the inviter's sessions with them (`app.ts`
+        // `welcome`).
+        return {
+            ...added,
+            invitedBy: creator.id,
+            ...(invite.folder === undefined ? {} : { folder: invite.folder }),
+        };
     }
 }

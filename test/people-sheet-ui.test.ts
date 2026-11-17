@@ -840,3 +840,114 @@ test(
         assert.deepEqual(phone.wider, []);
     },
 );
+
+test(
+    "an invite shares the open session first, then its folder, then my sessions; with no session open, my sessions",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const options = () =>
+            inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".sheet .invite-share .segmented button")].map((each) => each.textContent.trim() + (each.classList.contains("on") ? " (on)" : "")))`,
+            );
+        const code = () =>
+            inPage<string | null>(
+                `return JSON.stringify(document.querySelector(".sheet .invite-code-value")?.textContent.replace(/\\s/g, "") ?? null)`,
+            );
+        const joinPage = async (invite: string | null) =>
+            await (await fetch(`${base}/join/${invite}`)).text();
+
+        const invite = async (path: string, ready: string) => {
+            await page.setViewport(DESKTOP);
+            await page.navigate(`${base}${path}`);
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `const { store } = await import("/store.js"); return JSON.stringify(document.querySelector('[data-part="app"]') !== null && (${ready}))`,
+                    ),
+                `the app at ${path}`,
+                20_000,
+            );
+            await inPage(
+                `const { openSheet } = await import("/store.js"); openSheet({ type: "invite" }); return JSON.stringify(true);`,
+            );
+            await until(async () => (await code()) !== null, "an invite");
+        };
+
+        // A session is open, and the owner may share it: the invite is to it alone until another is chosen.
+        await invite(
+            `/s/${String(id)}`,
+            `store.state.view.conversation?.kind === "session" && store.state.sessions.some((each) => String(each.id) === ${JSON.stringify(String(id))} && each.mayShare === true)`,
+        );
+        assert.deepEqual(await options(), ["Only this session (on)", "This folder", "My sessions"]);
+        // What the choice is of shows beside the choices: the session's name, then the folder.
+        const beside = () =>
+            inPage<string | null>(
+                `return JSON.stringify(document.querySelector(".sheet .invite-what")?.getAttribute("title") ?? null)`,
+            );
+
+        assert.equal(
+            await beside(),
+            await inPage<string>(
+                `const { store } = await import("/store.js"); return JSON.stringify(store.state.sessions.find((each) => String(each.id) === ${JSON.stringify(String(id))}).title || "New session")`,
+            ),
+            "the session's name",
+        );
+
+        const first = await code();
+
+        assert.match(await joinPage(first), /the session “/);
+
+        // This folder: the invite shown ends, and the new one is to the session's folder.
+        await inPage(
+            `[...document.querySelectorAll(".sheet .invite-share .segmented button")].find((each) => each.textContent.trim() === "This folder").click(); return JSON.stringify(true);`,
+        );
+        await until(async () => ![null, first].includes(await code()), "the folder's invite");
+        assert.deepEqual(await options(), ["Only this session", "This folder (on)", "My sessions"]);
+
+        const second = await code();
+
+        assert.equal(await beside(), app.cwdOf(id), "the folder of This folder");
+
+        assert.ok(
+            (await joinPage(second)).includes("the sessions shared with you in the folder "),
+            "an invite to the folder",
+        );
+        assert.equal((await fetch(`${base}/join/${first}`)).status, 410, "the one before ended");
+
+        // No session open: nothing to choose, and the invite is to the owner's sessions.
+        await invite("/", `store.state.view.conversation == null`);
+        assert.deepEqual(await options(), []);
+        assert.equal(await beside(), null);
+        assert.ok(
+            (await joinPage(await code())).includes("the sessions shared with you on this server"),
+        );
+        await inPage(
+            `const { closeSheet } = await import("/store.js"); closeSheet(); return JSON.stringify(true);`,
+        );
+    },
+);
+
+test(
+    "a computer that is off for a person says so truly: nothing, or only the sessions shared with them",
+    real,
+    async () => {
+        // Hal joined with the owner's invite to their sessions: chosen for no computer, with sessions on this server.
+        const hal = app.config.addUser("Hal", "viewer").user;
+
+        await app.welcome(hal.id, owner(app).id);
+        assert.ok(app.sessions(hal).length > 0, "the owner's sessions are shared with Hal");
+
+        await open("people");
+        await show("Hal");
+
+        const hints = await inPage<string[]>(
+            `return JSON.stringify([...document.querySelectorAll(".pages-detail .access-row")].map((each) => each.querySelector("strong").textContent.trim() + ": " + each.querySelector(".muted.small").textContent.trim()))`,
+        );
+
+        assert.deepEqual(hints, [
+            "This server: Off: they see only the sessions shared with them here.",
+            "Laptop: Off: they see nothing of it.",
+        ]);
+    },
+);

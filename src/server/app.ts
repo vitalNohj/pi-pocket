@@ -3117,6 +3117,15 @@ export class PocketApp {
         );
     }
 
+    /** The computer and folder session `id` counts as working in, for an invite to that folder (`welcome`). */
+    folderOf(id: ConversationId): { computer: string; path: string } | undefined {
+        const meta = this.#sessions[String(this.rootOf(id))];
+
+        return meta === undefined || meta.pip !== undefined
+            ? undefined
+            : { computer: meta.runner ?? THIS_SERVER, path: this.#accessFolder(meta) };
+    }
+
     /** The folder session `meta`'s access is judged by: where its worktree came from, its own or the one it works in. */
     #accessFolder(meta: SessionMeta): string {
         return (
@@ -5030,8 +5039,14 @@ export class PocketApp {
      * Someone joined with `inviter`'s invite to every session: they see the sessions `inviter` started, and those shared
      * with everyone chosen on their computer, as they are now. Sessions started later are not theirs to see unless shared.
      * Only sessions `inviter` may see: an invite never passes on what its maker could not open.
+     *
+     * With `folder`, the invite was to one folder: only the sessions `inviter` started in it on that computer.
      */
-    async welcome(person: string, inviter: string): Promise<void> {
+    async welcome(
+        person: string,
+        inviter: string,
+        folder?: { computer: string; path: string },
+    ): Promise<void> {
         const by = this.config.userById(inviter);
 
         if (by === undefined) {
@@ -5058,7 +5073,14 @@ export class PocketApp {
                         (each) => each === starter || meta.sharedWith?.includes(each) === true,
                     );
 
-                if (starter === inviter || everyone) {
+                const given =
+                    folder === undefined
+                        ? starter === inviter || everyone
+                        : starter === inviter &&
+                          computer === folder.computer &&
+                          inFolder(this.#accessFolder(meta), folder.path);
+
+                if (given) {
                     meta.sharedWith = [...new Set([...(meta.sharedWith ?? []), person])];
                 }
             }

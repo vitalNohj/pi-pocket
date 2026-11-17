@@ -532,6 +532,78 @@ describe("sharing and invites", () => {
         assert.equal((await call(viewer, "invite", { role: "viewer" })).status, 403);
     });
 
+    it("lets who may invite make an invite to a session's folder: whoever joins gets only its maker's sessions there", async () => {
+        const here = await call<{ id: number }>(guest, "sessions", { cwd: work });
+        const there = await call<{ id: number }>(guest, "sessions", { cwd: elsewhere });
+
+        assert.equal(here.status, 200);
+        assert.equal(there.status, 200);
+
+        const made = await call<{ code: string; grant: unknown }>(guest, "invite", {
+            session: String(here.body.id),
+            folder: true,
+        });
+        const cwd = app
+            .sessions(guest)
+            .find((each) => String(each.id) === String(here.body.id))!.cwd;
+
+        assert.equal(made.status, 200);
+        // The server names the folder: the session's own, on its computer.
+        assert.deepEqual(made.body.grant, {
+            role: "viewer",
+            folder: { computer: "this-server", path: cwd },
+        });
+        assert.ok(
+            (await (await fetch(`${address}/join/${made.body.code}`)).text()).includes(
+                "the sessions shared with you in the folder ",
+            ),
+            "the join page says it is for a folder",
+        );
+
+        const joined = await fetch(`${address}/join/${made.body.code}`, {
+            method: "POST",
+            body: "name=Folder%20friend",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            redirect: "manual",
+        });
+
+        assert.equal(joined.status, 303);
+
+        const friend = app.config.users.find((each) => each.name === "Folder friend")!;
+
+        assert.equal(friend.role, "viewer");
+        assert.equal(friend.sessions, undefined, "not limited to one session");
+        assert.ok(
+            listed(friend).includes(String(here.body.id)),
+            "the maker's session in the folder",
+        );
+        assert.ok(
+            !listed(friend).includes(String(there.body.id)),
+            "not the maker's session in another folder",
+        );
+        assert.ok(!listed(friend).includes(String(shared)), "not someone else's session");
+        assert.ok(!listed(friend).includes(String(hidden)));
+    });
+
+    it("refuses a folder invite from who may not invite, and for a session they cannot see", async () => {
+        const { body } = await call<{ id: number }>(guest, "sessions", { cwd: work });
+
+        // A viewer and someone invited to one session invite nobody to more than a session they may share.
+        assert.equal(
+            (await call(viewer, "invite", { session: String(shared), folder: true })).status,
+            403,
+        );
+        assert.equal(
+            (await call(invited, "invite", { session: String(shared), folder: true })).status,
+            403,
+        );
+        // Someone not chosen does not see the session, so learns nothing of its folder.
+        assert.equal(
+            (await call(stranger, "invite", { session: String(body.id), folder: true })).status,
+            400,
+        );
+    });
+
     it("shows a session's starter whom it is shared with, and whom it can be: the people chosen for its computer", async () => {
         const { body } = await call<{ id: number }>(guest, "sessions", { cwd: work });
 

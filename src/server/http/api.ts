@@ -205,7 +205,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
      * What an invite may grant (`access.ts` `mayInvite`): to this server, who may start sessions on it; to one session,
      * who may share it. An invite is always for someone new: one's own other device takes a device link (`me/device`).
      */
-    const inviteGrant = (user: User, body: { role?: unknown; session?: unknown }): InviteGrant => {
+    const inviteGrant = (
+        user: User,
+        body: { role?: unknown; session?: unknown; folder?: unknown },
+    ): InviteGrant => {
         // A page loaded before device links still asks for an owner invite, which handed out the owner's token.
         if (body.role === "owner") {
             throw new HttpError(
@@ -232,6 +235,25 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         if (!app.canSee(user, session) || app.sessionMeta(session) === undefined) {
             throw new HttpError(400, "No such session");
+        }
+
+        // To the folder of that session: the server names the folder, never the page. As an invite to every session,
+        // it shares only what its maker started, so the same people may make it.
+        if (body.folder === true) {
+            const folder = app.folderOf(session);
+
+            if (folder === undefined) {
+                throw new HttpError(400, "No such session");
+            }
+
+            if (!app.policy.mayInvite(user)) {
+                throw new HttpError(
+                    403,
+                    "Only people who may start sessions on this server can invite others.",
+                );
+            }
+
+            return { role, folder };
         }
 
         if (!app.policy.mayInvite(user, String(app.rootOf(session)))) {
@@ -1663,6 +1685,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             const body = (await readJson(request)) as {
                 role?: unknown;
                 session?: unknown;
+                folder?: unknown;
                 minutes?: unknown;
             };
             const grant = inviteGrant(user, body);
