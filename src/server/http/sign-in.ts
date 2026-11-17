@@ -169,7 +169,7 @@ export async function join(
         }
 
         if (redeemed.invitedBy !== undefined) {
-            await app.welcome(redeemed.user.id, redeemed.invitedBy);
+            await app.welcome(redeemed.user.id, redeemed.invitedBy, redeemed.folder);
         }
 
         // Someone new is tied to the tunnel they joined through. Another device of someone here is tied to it alone
@@ -204,9 +204,11 @@ export async function join(
     }
 
     const where =
-        grant.session === undefined
-            ? "the sessions shared with you on this server"
-            : `the session “${escapeHtml(await app.conversationTitle(conversationId(grant.session)))}”`;
+        grant.session !== undefined
+            ? `the session “${escapeHtml(await app.conversationTitle(conversationId(grant.session)))}”`
+            : grant.folder !== undefined
+              ? `the sessions shared with you in the folder ${escapeHtml(grant.folder.path)}`
+              : "the sessions shared with you on this server";
     const can =
         grant.role === "viewer"
             ? `read ${where} and chat with the people there, but not steer Pi`

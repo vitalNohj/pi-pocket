@@ -503,7 +503,11 @@ export function AccessRow({ computer, person, lead, title }) {
                         person.sessions
                             ? "Invited to one session only: not chosen for a computer."
                             : !chosen
-                              ? "Off: they see nothing of it."
+                              ? sessions.length === 0
+                                  ? "Off: they see nothing of it."
+                                  : person.role === "viewer"
+                                    ? "Off: they see only the sessions shared with them here."
+                                    : "Off: they have only the sessions shared with them here, and start none."
                               : person.role === "viewer"
                                 ? "On: they see the sessions shared with them here. View only."
                                 : folders.length === 0
