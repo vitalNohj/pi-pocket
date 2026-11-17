@@ -4995,6 +4995,11 @@ export class PocketApp {
      * Only sessions `inviter` may see: an invite never passes on what its maker could not open.
      *
      * With `folder`, the invite was to one folder: only the sessions `inviter` started in it on that computer.
+     *
+     * They are also chosen for each computer on which a session became theirs, where `inviter` is in charge of it: a
+     * session is shared only with people chosen for its computer (`commands.ts` `shareSession`), so its switch says
+     * what they have, and turning it off takes those sessions back. On a computer someone else is in charge of, the
+     * sessions are shared and the choice stays with who is in charge.
      */
     async welcome(
         person: string,
@@ -5007,8 +5012,13 @@ export class PocketApp {
             return;
         }
 
+        const computers = new Set<string>();
+
         await this.harness.commit(async (tx) => {
             const sessions = await tx.doc(SessionsDoc);
+
+            // It can run again: only what this run shared counts.
+            computers.clear();
 
             for (const [key, meta] of Object.entries(sessions.items)) {
                 if (meta.pip !== undefined || !this.policy.maySee(by, key)) {
@@ -5036,9 +5046,25 @@ export class PocketApp {
 
                 if (given) {
                     meta.sharedWith = [...new Set([...(meta.sharedWith ?? []), person])];
+                    computers.add(computer);
                 }
             }
         }, context);
+
+        const joined = this.config.userById(person);
+
+        // After the shares are saved: "everyone chosen" above is who was chosen before they came.
+        for (const computer of computers) {
+            if (
+                joined !== undefined &&
+                joined.sessions === undefined &&
+                this.policy.inCharge(by, computer) &&
+                !this.policy.mayUse(joined, computer)
+            ) {
+                await this.choosePerson(computer, person, true);
+            }
+        }
+
         this.accessChanged();
     }
 

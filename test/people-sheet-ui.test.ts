@@ -8,6 +8,7 @@ import {
     type App,
     answerRequests,
     cleanUp,
+    context,
     home,
     newSession,
     openApp,
@@ -28,6 +29,7 @@ import { findBrowser } from "../src/server/browser/discovery.ts";
 import type { BrowserPage } from "../src/server/browser/page.ts";
 import { VIEWPORTS } from "../src/server/browser/viewport.ts";
 import type { User } from "../src/server/config.ts";
+import { SessionsDoc } from "../src/server/docs.ts";
 import { createHandler } from "../src/server/http.ts";
 
 const chromium = findBrowser();
@@ -932,30 +934,61 @@ test(
 );
 
 test(
-    "a computer that is off for a person says so truly: nothing, or only the sessions shared with them",
+    "after an invite a computer's switch says what the person has there: on where its maker is in charge, off with only the shared sessions where not",
     real,
     async () => {
-        // Hal joined with the owner's invite to their sessions: chosen for no computer, with sessions on this server.
-        const hal = app.config.addUser("Hal", "viewer").user;
-
-        await app.welcome(hal.id, owner(app).id);
-        assert.ok(app.sessions(hal).length > 0, "the owner's sessions are shared with Hal");
-
-        await open("people");
-        await show("Hal");
-
         const hints = () =>
             inPage<string[]>(
                 `return JSON.stringify([...document.querySelectorAll(".pages-detail .access-row")].map((each) => each.querySelector("strong").textContent.trim() + ": " + each.querySelector(".muted.small").textContent.trim()))`,
             );
-        const expected = [
-            "This server: Off: they see only the sessions shared with them here.",
-            "Laptop: Off: they see nothing of it.",
-        ];
 
-        // The sessions shared with Hal reach the page after it shows: the hint follows them.
-        await until(async () => (await hints())[0] === expected[0], "the hint of This server");
-        assert.deepEqual(await hints(), expected);
+        const shown = async (name: string, first: string) => {
+            await open("people");
+            await show(name);
+            // The sessions shared with them reach the page after it shows: the hint follows them.
+            await until(
+                async () => (await hints())[0] === first,
+                `the hint of This server for ${name}`,
+            );
+
+            return await hints();
+        };
+
+        const laptop = "Laptop: Off: they see nothing of it.";
+
+        // Hal joined with the owner's invite to their sessions. The owner is in charge of this server, so Hal is chosen
+        // for it; nothing on the laptop became his.
+        const hal = app.config.addUser("Hal", "viewer").user;
+        const on = "This server: On: they see the sessions shared with them here. View only.";
+
+        await app.welcome(hal.id, owner(app).id);
+        assert.ok(app.sessions(hal).length > 0, "the owner's sessions are shared with Hal");
+        assert.deepEqual(await shown("Hal", on), [on, laptop]);
+
+        // Its switch takes them back.
+        const nothing = "This server: Off: they see nothing of it.";
+
+        await app.choosePerson(THIS_SERVER, hal.id, false);
+        assert.equal(app.sessions(hal).length, 0, "off: nothing of it is his");
+        assert.deepEqual(await shown("Hal", nothing), [nothing, laptop]);
+
+        // Greta is chosen here and in charge of nothing. Hank joined with her invite: her session is shared with him,
+        // and choosing him stays the owner's.
+        const greta = app.config.addUser("Greta", "guest").user;
+        const hank = app.config.addUser("Hank", "viewer").user;
+        const { id } = await app.commands.createSession(owner(app), {
+            cwd: work,
+            title: "Greta's",
+        });
+        const only = "This server: Off: they see only the sessions shared with them here.";
+
+        await app.choosePerson(THIS_SERVER, greta.id, true);
+        await app.harness.commit(async (tx) => {
+            (await tx.doc(SessionsDoc)).items[String(id)]!.createdBy = greta.id;
+        }, context);
+        await app.welcome(hank.id, greta.id);
+        assert.equal(app.sessions(hank).length, 1, "Greta's session is shared with Hank");
+        assert.deepEqual(await shown("Hank", only), [only, laptop]);
     },
 );
 

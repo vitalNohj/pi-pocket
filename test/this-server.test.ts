@@ -385,11 +385,31 @@ test("an invite to every session passes on only the sessions its maker may see",
     assert.equal(app.canSee(fromOwner, local), true, "shared with everyone chosen here");
     assert.equal(app.canSee(fromOwner, hers), false, "not a session the inviter may not see");
 
+    // The owner is in charge of this server, so who joins is chosen for it: its switch says what they have. They are
+    // chosen for no computer on which nothing became theirs.
+    const chosenFor = (computer: string, who: User) =>
+        (computer === THIS_SERVER
+            ? app.config.server.users
+            : app.config.runnerById(computer)?.users
+        )?.includes(who.id) === true;
+
+    assert.equal(chosenFor(THIS_SERVER, fromOwner), true, "chosen where sessions became theirs");
+    assert.equal(chosenFor(runnerId, fromOwner), false, "not where none did");
+    assert.equal(chosenFor(ginas, fromOwner), false);
+
     // Alex's invite: Gina's session, which Alex may see.
     const fromAlex = person("Abe", "viewer");
 
     await app.welcome(fromAlex.id, alex.id);
     assert.equal(app.canSee(fromAlex, hers), true, "a session the inviter may see");
+    // Alex is in charge of neither computer: the sessions are shared, and the choice stays with who is.
+    assert.equal(chosenFor(ginas, fromAlex), false, "not chosen by someone not in charge");
+    assert.equal(chosenFor(THIS_SERVER, fromAlex), false);
+
+    // The switch of who was chosen by the invite takes the sessions back, as any switch does.
+    await call(owner(app), `runners/${THIS_SERVER}/users`, { person: fromOwner.id, on: false });
+    assert.equal(chosenFor(THIS_SERVER, fromOwner), false);
+    assert.equal(app.canSee(fromOwner, local), false, "off: the shared session is taken back");
 });
 
 test("an invite to a folder passes on only its maker's sessions in that folder, on that computer", async () => {
@@ -416,12 +436,20 @@ test("an invite to a folder passes on only its maker's sessions in that folder, 
     assert.equal(app.canSee(fay, inside), true, "the inviter's session in the folder");
     assert.equal(app.canSee(fay, outside), false, "not the inviter's session in another folder");
     assert.equal(app.canSee(fay, alexs), false, "not someone else's session in the folder");
+    assert.equal(
+        app.config.server.users?.includes(fay.id),
+        true,
+        "chosen for the folder's computer, which the inviter is in charge of",
+    );
 
     // The same path on another computer is another folder.
     const finn = person("Finn", "viewer");
 
     await app.welcome(finn.id, owner(app).id, { computer: runnerId, path: folder.path });
     assert.equal(app.canSee(finn, inside), false);
+    // Nothing became theirs: chosen nowhere.
+    assert.equal(app.config.runnerById(runnerId)?.users?.includes(finn.id) ?? false, false);
+    assert.equal(app.config.server.users?.includes(finn.id) ?? false, false);
 });
 
 test("the owner limits the spend of a session they may see, and learns nothing of one they may not", async () => {
