@@ -4856,7 +4856,7 @@ export class PocketApp {
             if (patch.role === "guest" && target.temporary === true) {
                 throw new HttpError(
                     409,
-                    `${target.name} has a temporary account. Turn Temporary account off first.`,
+                    `${target.name} has a temporary account. Turn on "Allow viewer to become a user and prompt" first.`,
                 );
             }
 

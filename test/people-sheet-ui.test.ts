@@ -545,6 +545,7 @@ test(
         await open("people");
         await show("Vera");
         assert.deepEqual(await switches(), [
+            "Vera may become a user and prompt: on (disabled)",
             "Vera can prompt: off (disabled)",
             "Vera may use This server: off",
             "Vera may use Laptop: off",
@@ -560,6 +561,7 @@ test(
 
         await show("Sam");
         assert.deepEqual(await switches(), [
+            "Sam may become a user and prompt: on (disabled)",
             "Sam can prompt: off (disabled)",
             "Sam may use This server: off (disabled)",
             "Sam may use Laptop: off (disabled)",
@@ -990,7 +992,7 @@ test("People opens on one's own page for a viewer too, not on the owner's", real
 });
 
 test(
-    "an invite makes a temporary account when asked: no authenticator and no Can prompt for it, until the owner ends that",
+    "an invite makes a temporary account unless it allows more: no authenticator and no Can prompt for it, until the owner allows it",
     real,
     async () => {
         const code = () =>
@@ -1019,25 +1021,63 @@ test(
         );
         await until(async () => (await code()) !== null, "an invite");
 
-        // Off until asked: the invite is to a full account, which can become a user.
-        const full = await code();
+        // Off until asked: the invite makes a temporary account, and the sheet says so.
+        const first = await code();
+        const allowSwitch = (state: "on" | "off") =>
+            inPage(
+                `[...document.querySelectorAll(".sheet [role=switch]")].find((each) => each.getAttribute("aria-label") === "Allow viewer to become a user and prompt: ${state}").click(); return JSON.stringify(true);`,
+            );
 
+        const joinAs = async (invite: string | null, name: string) => {
+            const answer = await fetch(`${base}/join/${invite}`, {
+                method: "POST",
+                redirect: "manual",
+                body: new URLSearchParams({ name }).toString(),
+                headers: {
+                    "content-type": "application/x-www-form-urlencoded",
+                    "sec-fetch-site": "same-origin",
+                },
+            });
+
+            return app.config.userByToken(
+                decodeURIComponent(
+                    /pocket_auth=([^;]+)/.exec(answer.headers.get("set-cookie") ?? "")?.[1] ?? "",
+                ),
+            );
+        };
+
+        assert.match(await sheetText(), /They join as a viewer, with a temporary account\./);
+        assert.match(
+            await sheetText(),
+            /Allow viewer to become a user and prompt\s*Off: a temporary account\. They view what is shared with them, and cannot link an authenticator or become a user\./,
+        );
+
+        // On: the invite shown ends, and whoever joins with the new one can become a user.
+        await allowSwitch("off");
+        await until(async () => ![null, first].includes(await code()), "the invite that allows it");
         assert.match(
             await sheetText(),
             /To prompt, they link an authenticator and are made a user/,
         );
         assert.match(
             await sheetText(),
-            /Temporary account\s*A temporary account views what is shared with it, and cannot link an authenticator or become a user\./,
+            /On: they can link an authenticator, and then be made a user in People\./,
         );
+        assert.equal((await fetch(`${base}/join/${first}`)).status, 410, "the one before ended");
 
-        // On: the invite shown ends, and the new one makes a temporary account.
-        await inPage(
-            `[...document.querySelectorAll(".sheet [role=switch]")].find((each) => each.getAttribute("aria-label") === "Temporary account: off").click(); return JSON.stringify(true);`,
+        const allowed = await code();
+        const fay = await joinAs(allowed, "Fay");
+
+        assert.equal(fay?.role, "viewer");
+        assert.equal(fay?.temporary, undefined, "allowed: not a temporary account");
+
+        // Off again: a temporary account once more.
+        await allowSwitch("on");
+        await until(
+            async () => ![null, first, allowed].includes(await code()),
+            "the temporary invite",
         );
-        await until(async () => ![null, full].includes(await code()), "the temporary invite");
         assert.match(await sheetText(), /They join as a viewer, with a temporary account\./);
-        assert.equal((await fetch(`${base}/join/${full}`)).status, 410, "the one before ended");
 
         const joined = await fetch(`${base}/join/${await code()}`, {
             method: "POST",
@@ -1111,21 +1151,22 @@ test(
                 await inPage<string>(
                     `return JSON.stringify(document.querySelector(".pages-detail").textContent.replace(/\\s+/g, " "))`,
                 ),
-                /Off: a viewer\. A temporary account cannot be made a user\./,
+                /Off: a viewer\. Turn on Allow viewer to become a user and prompt first\./,
             );
 
             const before = await switches();
 
             assert.ok(before.includes("Tia can prompt: off (disabled)"), before.join(", "));
-            assert.ok(before.includes("Tia has a temporary account: on"), before.join(", "));
+            assert.ok(before.includes("Tia may become a user and prompt: off"), before.join(", "));
 
-            await press("Tia has a temporary account: on");
+            await press("Tia may become a user and prompt: off");
             await until(
-                async () => !(await switches()).some((each) => each.includes("temporary account")),
-                "a full account",
+                async () =>
+                    (await switches()).includes("Tia may become a user and prompt: on (disabled)"),
+                "the switch to be on, for good",
             );
             assert.deepEqual(await asked(), [
-                "Make Tia's account a full one? It cannot be made temporary again.",
+                "Allow Tia to become a user and prompt? Their account cannot be made temporary again. You can still turn off Can prompt, revoke their sessions, or remove them.",
             ]);
             assert.equal(app.config.userById(tia!.id)?.temporary, undefined);
             assert.match(
@@ -1233,7 +1274,7 @@ test(
 );
 
 test(
-    "an invite to all my sessions warns what it shares, and what follows when the account is not temporary",
+    "an invite to all my sessions warns what it shares, and what follows when it allows them to become a user",
     real,
     async () => {
         const id = await newSession(app);
@@ -1268,7 +1309,7 @@ test(
         };
 
         const everything = "This invite shares every session you started so far.";
-        const full = `${everything} Their account is not temporary: they can link an authenticator, and once you make them a user, they can prompt in all of those sessions.`;
+        const full = `${everything} It allows them to become a user: they can link an authenticator, and once you make them a user, they can prompt in all of those sessions.`;
 
         // One session, then its folder: neither is everything, so nothing warns.
         await invite(
@@ -1286,16 +1327,16 @@ test(
         );
         assert.equal(await warning(), null, "this folder");
 
-        // My sessions: it says what it shares, and what a full account can come to.
+        // My sessions: it says what it shares. A temporary account, as it is until asked, never prompts.
         await choose("My sessions");
         await until(async () => (await warning()) !== null, "the warning");
-        assert.equal(await warning(), full);
+        assert.equal(await warning(), everything);
 
-        // A temporary account never prompts: only what it shares is said.
+        // Allowed to become a user: it says what that can come to.
         await inPage(
-            `[...document.querySelectorAll(".sheet [role=switch]")].find((each) => each.getAttribute("aria-label") === "Temporary account: off").click(); return JSON.stringify(true);`,
+            `[...document.querySelectorAll(".sheet [role=switch]")].find((each) => each.getAttribute("aria-label") === "Allow viewer to become a user and prompt: off").click(); return JSON.stringify(true);`,
         );
-        await until(async () => (await warning()) === everything, "the short warning");
+        await until(async () => (await warning()) === full, "the full warning");
 
         // Back to one session: the warning goes, whatever the account.
         await choose("Only this session");
@@ -1303,7 +1344,7 @@ test(
 
         // With no session open the invite is to my sessions, so it warns from the start.
         await invite("/", `store.state.view.conversation == null`);
-        assert.equal(await warning(), full);
+        assert.equal(await warning(), everything);
         await inPage(
             `const { closeSheet } = await import("/store.js"); closeSheet(); return JSON.stringify(true);`,
         );
