@@ -9,6 +9,7 @@ import {
     actions,
     api,
     attempt,
+    canInvite,
     canStart,
     closeSheet,
     collab,
@@ -60,11 +61,13 @@ export function InviteSheet({ session = null }) {
     // What the invite shares: the open session when there is one, else its folder, else all of this person's.
     const [what, setWhat] = useState(single ? "session" : here ? "folder" : "mine");
     const [minutes, setMinutes] = useState(15);
+    // A temporary account: whoever joins links no authenticator, so they stay a viewer.
+    const [temporary, setTemporary] = useState(false);
     const [made, setMade] = useState(null);
     // The newest invite could not be made: the sheet offers to try again rather than wait for ever.
     const [failed, setFailed] = useState(false);
     // What the sheet says now: an invite shows only while it was made for exactly this.
-    const asked = JSON.stringify([what, minutes]);
+    const asked = JSON.stringify([what, minutes, temporary]);
     // Only the newest invite shows: one asked for before a change, answering late, must not stand for what the sheet says.
     const latest = useRef(0);
     // The invite the sheet last showed: a change to what it grants, or how long it lasts, ends it.
@@ -97,8 +100,9 @@ export function InviteSheet({ session = null }) {
                               session: here.id,
                               ...(what === "folder" ? { folder: true } : {}),
                               minutes,
+                              ...(temporary ? { temporary: true } : {}),
                           }
-                        : { minutes },
+                        : { minutes, ...(temporary ? { temporary: true } : {}) },
                 );
 
                 // A server from before folder invites made one to the session alone: never shown as the folder's.
@@ -106,6 +110,13 @@ export function InviteSheet({ session = null }) {
                     cancelInvite(answer);
 
                     throw new Error("Restart Pi Pocket to invite someone to a folder.");
+                }
+
+                // A server from before temporary accounts made a full one: never shown as temporary.
+                if (temporary && answer.grant?.temporary !== true) {
+                    cancelInvite(answer);
+
+                    throw new Error("Restart Pi Pocket to make a temporary account.");
                 }
             } catch (error) {
                 if (ticket === latest.current) {
@@ -127,7 +138,7 @@ export function InviteSheet({ session = null }) {
 
     useEffect(() => {
         create({ replacing: true });
-    }, [what, minutes]);
+    }, [what, minutes, temporary]);
     useEffect(
         () => () => {
             mounted.current = false;
@@ -161,7 +172,11 @@ export function InviteSheet({ session = null }) {
         ${
             collab() &&
             html`<p class="muted small">
-                They join as a viewer. To prompt, they link an authenticator and are made a user in People.
+                ${
+                    temporary
+                        ? "They join as a viewer, with a temporary account."
+                        : "They join as a viewer. To prompt, they link an authenticator and are made a user in People."
+                }
             </p>
             ${
                 here &&
@@ -228,6 +243,19 @@ export function InviteSheet({ session = null }) {
                 )}
             </div>
         </div>
+        ${
+            collab() &&
+            html`<${Setting}
+                label="Temporary account"
+                hint="A temporary account views what is shared with it, and cannot link an authenticator or become a user."
+            >
+                <${Switch}
+                    on=${temporary}
+                    label=${`Temporary account: ${temporary ? "on" : "off"}`}
+                    onChange=${() => setTemporary(!temporary)}
+                />
+            <//>`
+        }
         <p class="muted small">
             ${`Scan this on the other device, or send it the link. It works once and expires ${lasting}. Whoever joins sees ${where}.`}
         </p>
@@ -518,18 +546,36 @@ function Rights({ person }) {
             hint=${
                 steers
                     ? "On: a user. They prompt and start sessions in their folders."
-                    : person.hasCode
-                      ? "Off: a viewer."
-                      : `Off: a viewer. ${person.name} must link an authenticator first.`
+                    : person.temporary
+                      ? "Off: a viewer. A temporary account cannot be made a user."
+                      : person.hasCode
+                        ? "Off: a viewer."
+                        : `Off: a viewer. ${person.name} must link an authenticator first.`
             }
         >
             <${Switch}
                 on=${steers}
-                disabled=${!steers && !person.hasCode}
+                disabled=${!steers && (!person.hasCode || person.temporary === true)}
                 label=${`${person.name} can prompt: ${steers ? "on" : "off"}`}
                 onChange=${() => change({ role: steers ? "viewer" : "guest" })}
             />
         <//>
+        ${
+            person.temporary &&
+            html`<${Setting}
+                label="Temporary account"
+                hint="On: they cannot link an authenticator or become a user. Once off, it stays off."
+            >
+                <${Switch}
+                    on=${true}
+                    label=${`${person.name} has a temporary account: on`}
+                    onChange=${() =>
+                        confirm(
+                            `Make ${person.name}'s account a full one? It cannot be made temporary again.`,
+                        ) && change({ temporary: false })}
+                />
+            <//>`
+        }
         ${
             steers &&
             !person.sessions &&
@@ -544,6 +590,29 @@ function Rights({ person }) {
                         attempt(() =>
                             api(`users/${encodeURIComponent(person.id)}/links-runners`, {
                                 on: person.linksRunners !== true,
+                            }),
+                        )}
+                />
+            <//>`
+        }
+        ${
+            steers &&
+            !person.sessions &&
+            html`<${Setting}
+                label="Invite people"
+                hint=${
+                    person.invites
+                        ? "On: they invite people, who join as viewers and see what the invite shares."
+                        : "Off: only you invite people."
+                }
+            >
+                <${Switch}
+                    on=${person.invites === true}
+                    label=${`${person.name} invites people: ${person.invites ? "on" : "off"}`}
+                    onChange=${() =>
+                        attempt(() =>
+                            api(`users/${encodeURIComponent(person.id)}/invites`, {
+                                on: person.invites !== true,
                             }),
                         )}
                 />
@@ -616,7 +685,9 @@ function Authenticator({ person }) {
             hint=${
                 person.authenticator
                     ? "Linked. For a lost phone, remove it: they link a new one under their name."
-                    : "None linked. They link one under their name: Menu → their name → Authenticator."
+                    : person.temporary
+                      ? "None: a temporary account cannot link one."
+                      : "None linked. They link one under their name: Menu → their name → Authenticator."
             }
         >
             ${
@@ -694,6 +765,7 @@ function PersonPage({ person }) {
             ${[
                 person.role === "owner" ? "owner · in charge of this server" : roleText(person),
                 person.sessions && "one session only",
+                person.temporary && "temporary account",
                 lastSeen(person),
                 person.linksRunners && "links runners",
             ]
@@ -795,6 +867,7 @@ export function PeopleSheet() {
         )}
         ${
             canStart() &&
+            canInvite() &&
             html`<${PageItem}
                 onSelect=${() => openSheet({ type: "invite" })}
                 lead=${html`<${Icon} name="plus" size=${16} />`}

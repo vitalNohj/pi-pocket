@@ -405,3 +405,100 @@ test("the owner makes a device link for someone else; their authenticator is sti
     await app.removeUser(owner(app), lou.id);
     assert.equal((await join(again.body.code)).status, 410);
 });
+
+/** Join with an invite as someone new, and keep their token for `call`. */
+async function joinAs(code: string, name: string): Promise<User> {
+    const response = await fetch(`${address}/join/${code}`, {
+        method: "POST",
+        redirect: "manual",
+        signal: AbortSignal.timeout(20_000),
+        body: new URLSearchParams({ name }).toString(),
+        headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "sec-fetch-site": "same-origin",
+        },
+    });
+    const cookie = /pocket_auth=([^;]+)/.exec(response.headers.get("set-cookie") ?? "")?.[1];
+
+    assert.ok(cookie !== undefined, "the invite signs the device in");
+
+    const token = decodeURIComponent(cookie);
+    const user = app.config.userByToken(token);
+
+    assert.ok(user !== undefined);
+    tokens.set(user.id, token);
+
+    return user;
+}
+
+test("a temporary account links no authenticator and is not made a user, until the owner makes it a full one", async () => {
+    // An invite without the switch makes a full account, which links one as anyone does.
+    const plain = await call<{ code: string; grant: { temporary?: true } }>(owner(app), "invite", {
+        minutes: 15,
+    });
+
+    assert.equal(plain.status, 200);
+    assert.equal(plain.body.grant.temporary, undefined);
+
+    const paul = await joinAs(plain.body.code, "Paul");
+
+    assert.equal(paul.temporary, undefined);
+    assert.deepEqual((await call(paul, "me/authenticator")).body, { linked: false });
+    clock += STEP_MS;
+    await link(paul);
+
+    // With the switch, whoever joins has a temporary account.
+    const made = await call<{ code: string; grant: { temporary?: true } }>(owner(app), "invite", {
+        minutes: 15,
+        temporary: true,
+    });
+
+    assert.equal(made.status, 200);
+    assert.equal(made.body.grant.temporary, true);
+
+    const tess = await joinAs(made.body.code, "Tess");
+
+    assert.equal(tess.role, "viewer");
+    assert.equal(tess.temporary, true);
+
+    // Their page offers no authenticator, and the server links none.
+    assert.deepEqual((await call(tess, "me/authenticator")).body, {
+        linked: false,
+        allowed: false,
+    });
+
+    const begun = await call<{ error?: string }>(tess, "me/authenticator/begin", {});
+
+    assert.equal(begun.status, 403);
+    assert.match(JSON.stringify(begun.body), /A temporary account cannot link an authenticator/);
+    assert.equal((await call(tess, "me/authenticator/confirm", { code: "123456" })).status, 403);
+    assert.equal(app.authenticators.linked(tess.id), false);
+
+    // Nobody makes them a user, and nobody but the owner ends it; it is never turned on again.
+    assert.throws(
+        () => app.setAccess(owner(app), tess.id, { role: "guest" }),
+        /has a temporary account/,
+    );
+    assert.equal((await call(tess, `users/${tess.id}`, { temporary: false })).status, 403);
+    assert.equal((await call(alex, `users/${tess.id}`, { temporary: false })).status, 403);
+    assert.equal(app.config.userById(tess.id)?.temporary, true);
+    assert.equal((await call(owner(app), `users/${paul.id}`, { temporary: true })).status, 400);
+    assert.equal(app.config.userById(paul.id)?.temporary, undefined);
+
+    // The owner and they themselves see that it is temporary; others do not.
+    const shown = (viewer: User) =>
+        app.people(viewer).find((each) => each.id === tess.id) as { temporary?: true } | undefined;
+
+    assert.equal(shown(owner(app))?.temporary, true);
+    assert.equal(shown(tess)?.temporary, true);
+    assert.equal(shown(vera)?.temporary, undefined);
+
+    // The owner makes it a full account: now they link one, and can be made a user.
+    assert.equal((await call(owner(app), `users/${tess.id}`, { temporary: false })).status, 200);
+    assert.equal(app.config.userById(tess.id)?.temporary, undefined);
+    assert.deepEqual((await call(tess, "me/authenticator")).body, { linked: false });
+    clock += STEP_MS;
+    await link(tess);
+    app.setAccess(owner(app), tess.id, { role: "guest" });
+    assert.equal(app.config.userById(tess.id)?.role, "guest");
+});

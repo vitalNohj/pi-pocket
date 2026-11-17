@@ -85,6 +85,8 @@ export type InviteGrant = {
     role: Exclude<Role, "owner">;
     session?: string;
     folder?: { computer: string; path: string };
+    /** The account it makes is temporary (`config.ts` `User.temporary`). */
+    temporary?: true;
 };
 
 /**
@@ -115,11 +117,14 @@ function newCode(): string {
 /** Invites live in `config.json` (by their codes' hashes), so one that lasts a day or a week outlives a restart. */
 /**
  * May `creator` invite someone new, to session `session` alone or to this server: the app's access policy
- * (`access.ts` `mayInvite`). Without it, by role alone: no viewer, no one invited to one session.
+ * (`access.ts` `mayInvite`). Without it, by role alone: the owner, and a guest the owner lets who is not invited to one
+ * session.
  */
 export type MayInvite = (creator: User, session?: string) => boolean;
 
-const byRole: MayInvite = (creator) => creator.role !== "viewer" && creator.sessions === undefined;
+const byRole: MayInvite = (creator) =>
+    creator.role === "owner" ||
+    (creator.role === "guest" && creator.invites === true && creator.sessions === undefined);
 
 export class Auth {
     readonly #config: ConfigStore;
@@ -234,13 +239,16 @@ export class Auth {
             return this.#codes?.linked(device.id) === true ? { device, code: true } : { device };
         }
 
+        // A temporary account, whatever else the invite is to (`config.ts` `User.temporary`).
+        const temporary = invite.temporary === true ? { temporary: true as const } : {};
+
         if (invite.session !== undefined) {
-            return { role: invite.role, session: invite.session };
+            return { role: invite.role, session: invite.session, ...temporary };
         }
 
         return invite.folder === undefined
-            ? { role: invite.role }
-            : { role: invite.role, folder: invite.folder };
+            ? { role: invite.role, ...temporary }
+            : { role: invite.role, folder: invite.folder, ...temporary };
     }
 
     inviteValid(code: string): boolean {
@@ -320,6 +328,7 @@ export class Auth {
             clean,
             "viewer",
             invite.session === undefined ? undefined : [invite.session],
+            invite.temporary === true,
         );
 
         if (invite.session !== undefined) {

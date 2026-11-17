@@ -135,6 +135,8 @@ before(async () => {
         app.config.updateUser(each.id, { approvalDays: 0 });
     }
 
+    // The owner lets the guest invite people: off until then (`access.ts` `invites`).
+    app.setInvites(owner(app), guest.id, true);
     stopAnswering = answerRequests(app, () => true);
     app.accessChanged();
     await app.commands.shareSession(shared, owner(app), [guest.id, viewer.id]);
@@ -597,11 +599,100 @@ describe("sharing and invites", () => {
             (await call(invited, "invite", { session: String(shared), folder: true })).status,
             403,
         );
-        // Someone not chosen does not see the session, so learns nothing of its folder.
+        // Someone not chosen does not see the session, so learns nothing of its folder, also when they may invite.
+        app.setInvites(owner(app), stranger.id, true);
+
+        try {
+            assert.equal(
+                (await call(stranger, "invite", { session: String(body.id), folder: true })).status,
+                400,
+            );
+        } finally {
+            app.setInvites(owner(app), stranger.id, false);
+        }
+    });
+
+    it("lets a user invite only while the owner lets them: off, they invite to nothing, and an invite they made stops working", async () => {
+        const { body } = await call<{ id: number }>(guest, "sessions", { cwd: work });
+        const kinds = [
+            { minutes: 15 },
+            { session: String(body.id) },
+            { session: String(body.id), folder: true },
+        ];
+        const join = async (code: string, name: string) =>
+            (
+                await fetch(`${address}/join/${code}`, {
+                    method: "POST",
+                    body: `name=${name}`,
+                    headers: { "content-type": "application/x-www-form-urlencoded" },
+                    redirect: "manual",
+                })
+            ).status;
+
+        // Let: every kind of invite is theirs to make.
+        const made: string[] = [];
+
+        for (const each of kinds) {
+            const answer = await call<{ code: string }>(guest, "invite", each);
+
+            assert.equal(answer.status, 200, JSON.stringify(each));
+            made.push(answer.body.code);
+        }
+
+        // Only the owner sets it.
+        assert.equal((await call(guest, `users/${guest.id}/invites`, { on: true })).status, 403);
+        assert.equal((await call(viewer, `users/${guest.id}/invites`, { on: false })).status, 403);
         assert.equal(
-            (await call(stranger, "invite", { session: String(body.id), folder: true })).status,
+            (await call(owner(app), `users/${guest.id}/invites`, { on: "yes" })).status,
             400,
         );
+        assert.equal(app.config.userById(guest.id)?.invites, true);
+
+        // Off: no kind of invite, and the ones made before bring nobody in.
+        assert.equal(
+            (await call(owner(app), `users/${guest.id}/invites`, { on: false })).status,
+            200,
+        );
+        assert.equal(app.config.userById(guest.id)?.invites, undefined);
+
+        try {
+            for (const each of kinds) {
+                const answer = await call<{ error?: string }>(guest, "invite", each);
+
+                assert.equal(answer.status, 403, JSON.stringify(each));
+                assert.match(
+                    JSON.stringify(answer.body),
+                    /Only the owner, and the users the owner lets, can invite people\./,
+                );
+            }
+
+            for (const [index, code] of made.entries()) {
+                assert.equal(
+                    await join(code, `Refused${index}`),
+                    410,
+                    JSON.stringify(kinds[index]),
+                );
+            }
+
+            assert.ok(!app.config.users.some((each) => each.name.startsWith("Refused")));
+            // The owner still invites, to the same session.
+            assert.equal(
+                (await call(owner(app), "invite", { session: String(body.id) })).status,
+                200,
+            );
+        } finally {
+            assert.equal(
+                (await call(owner(app), `users/${guest.id}/invites`, { on: true })).status,
+                200,
+            );
+        }
+
+        // On again: they invite as before, and whoever joins gets in.
+        const again = await call<{ code: string }>(guest, "invite", { session: String(body.id) });
+
+        assert.equal(again.status, 200);
+        assert.equal(await join(again.body.code, "Intime"), 303);
+        assert.ok(app.config.users.some((each) => each.name === "Intime"));
     });
 
     it("shows a session's starter whom it is shared with, and whom it can be: the people chosen for its computer", async () => {
