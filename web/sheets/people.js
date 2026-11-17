@@ -61,8 +61,10 @@ export function InviteSheet({ session = null }) {
     // What the invite shares: the open session when there is one, else its folder, else all of this person's.
     const [what, setWhat] = useState(single ? "session" : here ? "folder" : "mine");
     const [minutes, setMinutes] = useState(15);
-    // A temporary account: whoever joins links no authenticator, so they stay a viewer.
-    const [temporary, setTemporary] = useState(false);
+    // Off until asked: whoever joins has a temporary account, which links no authenticator and so stays a viewer.
+    const [allow, setAllow] = useState(false);
+    // A server from before roles knows no temporary account: nothing is asked of it.
+    const temporary = collab() && !allow;
     const [made, setMade] = useState(null);
     // The newest invite could not be made: the sheet offers to try again rather than wait for ever.
     const [failed, setFailed] = useState(false);
@@ -100,9 +102,9 @@ export function InviteSheet({ session = null }) {
                               session: here.id,
                               ...(what === "folder" ? { folder: true } : {}),
                               minutes,
-                              ...(temporary ? { temporary: true } : {}),
+                              temporary,
                           }
-                        : { minutes, ...(temporary ? { temporary: true } : {}) },
+                        : { minutes, ...(collab() ? { temporary } : {}) },
                 );
 
                 // A server from before folder invites made one to the session alone: never shown as the folder's.
@@ -250,13 +252,17 @@ export function InviteSheet({ session = null }) {
         ${
             collab() &&
             html`<${Setting}
-                label="Temporary account"
-                hint="A temporary account views what is shared with it, and cannot link an authenticator or become a user."
+                label="Allow viewer to become a user and prompt"
+                hint=${
+                    allow
+                        ? "On: they can link an authenticator, and then be made a user in People."
+                        : "Off: a temporary account. They view what is shared with them, and cannot link an authenticator or become a user."
+                }
             >
                 <${Switch}
-                    on=${temporary}
-                    label=${`Temporary account: ${temporary ? "on" : "off"}`}
-                    onChange=${() => setTemporary(!temporary)}
+                    on=${allow}
+                    label=${`Allow viewer to become a user and prompt: ${allow ? "on" : "off"}`}
+                    onChange=${() => setAllow(!allow)}
                 />
             <//>`
         }
@@ -267,8 +273,8 @@ export function InviteSheet({ session = null }) {
                 <strong>This invite shares every session you started so far.</strong>
                 ${
                     !temporary &&
-                    html` Their account is not temporary: they can link an authenticator, and once ${makes} them a
-                        user, they can prompt in all of those sessions.`
+                    html` It allows them to become a user: they can link an authenticator, and once ${makes} them
+                        a user, they can prompt in all of those sessions.`
                 }
             </div>`
         }
@@ -557,13 +563,34 @@ function Rights({ person }) {
 
     return html`<div class="group">
         <div class="group-title">What they may do</div>
+        ${
+            !steers &&
+            html`<${Setting}
+                label="Allow viewer to become a user and prompt"
+                hint=${
+                    person.temporary
+                        ? "Off: a temporary account. They cannot link an authenticator or become a user."
+                        : "On: they can link an authenticator and be made a user. It stays on; you can still turn off Can prompt, revoke their access, or remove them."
+                }
+            >
+                <${Switch}
+                    on=${!person.temporary}
+                    disabled=${!person.temporary}
+                    label=${`${person.name} may become a user and prompt: ${person.temporary ? "off" : "on"}`}
+                    onChange=${() =>
+                        confirm(
+                            `Allow ${person.name} to become a user and prompt? Their account cannot be made temporary again. You can still turn off Can prompt, revoke their sessions, or remove them.`,
+                        ) && change({ temporary: false })}
+                />
+            <//>`
+        }
         <${Setting}
             label="Can prompt"
             hint=${
                 steers
                     ? "On: a user. They prompt and start sessions in their folders."
                     : person.temporary
-                      ? "Off: a viewer. A temporary account cannot be made a user."
+                      ? "Off: a viewer. Turn on Allow viewer to become a user and prompt first."
                       : person.hasCode
                         ? "Off: a viewer."
                         : `Off: a viewer. ${person.name} must link an authenticator first.`
@@ -576,22 +603,6 @@ function Rights({ person }) {
                 onChange=${() => change({ role: steers ? "viewer" : "guest" })}
             />
         <//>
-        ${
-            person.temporary &&
-            html`<${Setting}
-                label="Temporary account"
-                hint="On: they cannot link an authenticator or become a user. Once off, it stays off."
-            >
-                <${Switch}
-                    on=${true}
-                    label=${`${person.name} has a temporary account: on`}
-                    onChange=${() =>
-                        confirm(
-                            `Make ${person.name}'s account a full one? It cannot be made temporary again.`,
-                        ) && change({ temporary: false })}
-                />
-            <//>`
-        }
         ${
             steers &&
             !person.sessions &&

@@ -431,10 +431,11 @@ async function joinAs(code: string, name: string): Promise<User> {
     return user;
 }
 
-test("a temporary account links no authenticator and is not made a user, until the owner makes it a full one", async () => {
-    // An invite without the switch makes a full account, which links one as anyone does.
+test("an invite makes a temporary account unless it says otherwise: it links no authenticator and is not made a user, until the owner allows it", async () => {
+    // An invite that allows them to become a user makes a full account, which links one as anyone does.
     const plain = await call<{ code: string; grant: { temporary?: true } }>(owner(app), "invite", {
         minutes: 15,
+        temporary: false,
     });
 
     assert.equal(plain.status, 200);
@@ -447,7 +448,16 @@ test("a temporary account links no authenticator and is not made a user, until t
     clock += STEP_MS;
     await link(paul);
 
-    // With the switch, whoever joins has a temporary account.
+    // An invite that says nothing gives the least: a temporary account.
+    const silent = await call<{ code: string; grant: { temporary?: true } }>(owner(app), "invite", {
+        minutes: 15,
+    });
+
+    assert.equal(silent.status, 200);
+    assert.equal(silent.body.grant.temporary, true);
+    assert.equal((await joinAs(silent.body.code, "Sid")).temporary, true);
+
+    // Said outright, the same.
     const made = await call<{ code: string; grant: { temporary?: true } }>(owner(app), "invite", {
         minutes: 15,
         temporary: true,

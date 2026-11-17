@@ -554,6 +554,8 @@ describe("sharing and invites", () => {
         assert.deepEqual(made.body.grant, {
             role: "viewer",
             folder: { computer: "this-server", path: cwd },
+            // What an invite makes unless it allows more.
+            temporary: true,
         });
         assert.ok(
             (await (await fetch(`${address}/join/${made.body.code}`)).text()).includes(
