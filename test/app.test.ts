@@ -2112,7 +2112,11 @@ test("invites carry a role and a session over HTTP, and viewers get 403 on steer
             await call(app.config.ownerToken, "invite", { role: "viewer", session: Number(id) })
         ).json()) as { code: string; grant: unknown };
 
-        assert.deepEqual(invite.grant, { role: "viewer", session: String(id) });
+        assert.deepEqual(invite.grant, {
+            role: "viewer",
+            session: String(id),
+            temporary: true,
+        });
         const redeemed = await fetch(`${base}/join/${invite.code}`, {
             method: "POST",
             body: "name=Watcher",
@@ -2451,7 +2455,8 @@ test("an invite lasts as long as asked (a device link always 15 minutes), outliv
         copyFileSync(app.config.file, join(copy, "config.json"));
         const again = new Auth(new ConfigStore(copy));
 
-        assert.deepEqual(again.invite(week.code), { role: "viewer" });
+        // Made over HTTP with nothing said of the account: a temporary one, the least an invite gives.
+        assert.deepEqual(again.invite(week.code), { role: "viewer", temporary: true });
         assert.ok(!readFileSync(app.config.file, "utf8").includes(week.code));
 
         // Only whoever made it ends it.

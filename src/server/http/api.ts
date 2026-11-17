@@ -153,7 +153,7 @@ async function authenticatorRoute(
     if ((action === "begin" || action === "confirm") && user.temporary === true) {
         throw new HttpError(
             403,
-            "A temporary account cannot link an authenticator. Ask the owner to make it a full account.",
+            "A temporary account cannot link an authenticator. Ask the owner to allow you to become a user.",
         );
     }
 
@@ -1730,9 +1730,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 temporary?: unknown;
             };
             // A temporary account, whatever the invite is to: whoever joins links no authenticator and stays a viewer.
+            // That is what an invite makes unless it says otherwise ("Allow viewer to become a user and prompt"), so
+            // one that says nothing gives the least.
             const grant: InviteGrant = {
                 ...inviteGrant(user, body),
-                ...(body.temporary === true ? { temporary: true } : {}),
+                ...(body.temporary === false ? {} : { temporary: true }),
             };
             const invite = auth.createInvite(user, grant, inviteMinutes(body));
 
