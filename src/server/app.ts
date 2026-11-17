@@ -318,6 +318,8 @@ export type ServerView = {
     users: { id: string; name: string; role: User["role"] }[];
     /** The folders given to each chosen person here, by person id. */
     given: Record<string, string[]>;
+    /** Of those, the folders in which that person sees every session, by person id. */
+    sees: Record<string, string[]>;
     shareNew: boolean;
 };
 
@@ -1617,13 +1619,25 @@ export class PocketApp {
             sessionsChanged = true;
             this.#sessionEvents(before, this.#sessions);
 
-            // Someone taken off a session's share list leaves it at once, before the list is sent again.
+            // Someone taken off a session's share list leaves it at once, before the list is sent again. So does who
+            // saw a session by its folder (`access.ts` `seesFolder`) when it moved to another one, or to another
+            // computer, or the worktree it works in is no longer there.
             if (
-                Object.entries(before).some(([key, was]) =>
-                    (was.sharedWith ?? []).some(
-                        (person) => !(this.#sessions[key]?.sharedWith ?? []).includes(person),
-                    ),
-                )
+                Object.entries(before).some(([key, was]) => {
+                    const now = this.#sessions[key];
+
+                    return (
+                        (was.sharedWith ?? []).some(
+                            (person) => !(now?.sharedWith ?? []).includes(person),
+                        ) ||
+                        (now === undefined
+                            ? was.worktree !== undefined
+                            : now.cwd !== was.cwd ||
+                              now.runner !== was.runner ||
+                              now.worktree?.path !== was.worktree?.path ||
+                              now.worktree?.source !== was.worktree?.source)
+                    );
+                })
             ) {
                 this.accessChanged();
             }
@@ -2822,6 +2836,7 @@ export class PocketApp {
                         linker: config.users.find((each) => each.role === "owner")?.id ?? "",
                         chosen: server.users ?? [],
                         given: (person) => config.givenFolders(undefined, person),
+                        sees: (person) => config.seenFolders(undefined, person),
                         shareNew: server.shareNew === true,
                     };
                 }
@@ -2837,6 +2852,7 @@ export class PocketApp {
                     linker: runner.createdBy,
                     chosen: runner.users ?? [],
                     given: (person) => config.givenFolders(id, person),
+                    sees: (person) => config.seenFolders(id, person),
                     shareNew: runner.shareNew === true,
                 };
             },
@@ -2844,6 +2860,7 @@ export class PocketApp {
             session: (id) => {
                 const root = String(this.rootOf(Number(id) as unknown as ConversationId));
                 const meta = this.#sessions[root];
+                const folder = (): string => this.#accessFolder(meta!);
 
                 return meta === undefined
                     ? undefined
@@ -2853,6 +2870,11 @@ export class PocketApp {
                           ...(meta.createdBy === undefined ? {} : { createdBy: meta.createdBy }),
                           ...(meta.sharedWith === undefined ? {} : { sharedWith: meta.sharedWith }),
                           ...(meta.pip === undefined ? {} : { pip: meta.pip }),
+                          // Read only when asked for (`access.ts` `#seesByFolder`): a worktree's takes a look at
+                          // every session.
+                          get folder() {
+                              return folder();
+                          },
                       };
             },
         });
@@ -2883,6 +2905,9 @@ export class PocketApp {
                     id,
                     [...this.config.givenFolders(undefined, id)],
                 ]),
+            ),
+            sees: Object.fromEntries(
+                (server.users ?? []).map((id) => [id, [...this.config.seenFolders(undefined, id)]]),
             ),
             shareNew: server.shareNew === true,
         };
@@ -3025,17 +3050,47 @@ export class PocketApp {
      * there; else undefined. A copy made without a worktree of its own works in its source's, and has no record of it.
      */
     #worktreeSource(computer: string, folder: string): string | undefined {
-        for (const meta of Object.values(this.#sessions)) {
-            if (
-                meta.worktree !== undefined &&
-                (meta.runner ?? THIS_SERVER) === computer &&
-                inFolder(folder, meta.worktree.path)
-            ) {
-                return meta.worktree.source;
-            }
+        // The sessions' record is replaced, never changed in place (`#committed`), so the list is good while it is the
+        // same record. A list of sessions asks this once for each of them (`access.ts` `#seesByFolder`).
+        if (this.#worktrees?.of !== this.#sessions) {
+            this.#worktrees = {
+                of: this.#sessions,
+                list: Object.values(this.#sessions).flatMap((meta) =>
+                    meta.worktree === undefined
+                        ? []
+                        : [
+                              {
+                                  computer: meta.runner ?? THIS_SERVER,
+                                  path: meta.worktree.path,
+                                  source: meta.worktree.source,
+                              },
+                          ],
+                ),
+            };
         }
 
-        return undefined;
+        return this.#worktrees.list.find(
+            (each) => each.computer === computer && inFolder(folder, each.path),
+        )?.source;
+    }
+
+    /** Every session's worktree, as read from the sessions' record `of`. */
+    #worktrees:
+        | {
+              of: Record<string, SessionMeta>;
+              list: { computer: string; path: string; source: string }[];
+          }
+        | undefined;
+
+    /** Whether `person` sees session `id` through its folder (`access.ts` `seesFolder`), whatever else gives it to them. */
+    seesByFolder(person: Pick<User, "id">, id: ConversationId): boolean {
+        const meta = this.#sessions[String(this.rootOf(id))];
+
+        return (
+            meta !== undefined &&
+            meta.pip === undefined &&
+            this.policy.seesFolder(person, meta.runner ?? THIS_SERVER, this.#accessFolder(meta))
+        );
     }
 
     /** The folder session `meta`'s access is judged by: where its worktree came from, its own or the one it works in. */
@@ -3094,6 +3149,47 @@ export class PocketApp {
         await this.handOver(person, id);
         this.accessChanged();
         this.runners.changed();
+    }
+
+    /**
+     * The owner, or who is in charge of runner `id`, lets `person` see every session in `folder` on computer `id`,
+     * whoever started it, or no longer (`access.ts` `seesFolder`). `folder` is one of the folders given to them there,
+     * as that list has it. On: the sessions in it now and the ones started later are theirs as shared ones are. Off:
+     * they leave the ones they had by it at once, and each task they set up on one moves to its starter (`handOver`);
+     * what they started, and what is shared with them one at a time, stays.
+     */
+    async seeFolder(
+        by: User,
+        id: string,
+        person: unknown,
+        folder: unknown,
+        on: unknown,
+    ): Promise<void> {
+        if (id !== THIS_SERVER) {
+            this.runners.require(id);
+        }
+
+        this.policy.requireManage(by, id);
+
+        if (typeof person !== "string" || typeof folder !== "string" || typeof on !== "boolean") {
+            throw new HttpError(400, "Send person, folder, and on.");
+        }
+
+        const target = this.config.userById(person);
+
+        if (target === undefined || !this.policy.mayStart(target, id)) {
+            throw new HttpError(400, "Choose them for this computer first.");
+        }
+
+        if (!this.config.setSeenFolder(id === THIS_SERVER ? undefined : id, person, folder, on)) {
+            throw new HttpError(400, "Give them that folder first.");
+        }
+
+        if (!on) {
+            await this.handOver(person, id);
+        }
+
+        this.accessChanged();
     }
 
     /** The owner sets how long a session's approval lasts after `person` last used it (`APPROVAL_DAYS`); null: 7 days. */
@@ -3289,6 +3385,14 @@ export class PocketApp {
 
         const invited = person.sessions?.includes(facts.id) === true;
 
+        // Theirs by its folder alone: there is no one session to take, only the folder's switch.
+        if (this.policy.seesOnlyByFolder(person, facts.id)) {
+            throw new HttpError(
+                400,
+                `${person.name} sees every session in that folder. Turn that off on the folder.`,
+            );
+        }
+
         if (
             !invited &&
             this.policy.starter(facts) !== person.id &&
@@ -3464,11 +3568,13 @@ export class PocketApp {
                     return undefined;
                 }
 
+                const there = meta.runner ?? THIS_SERVER;
                 const steers =
                     !gone &&
                     !moved.has(String(root)) &&
-                    (meta.createdBy === person || meta.sharedWith?.includes(person) === true) &&
-                    this.policy.mayUse({ id: person }, meta.runner ?? THIS_SERVER);
+                    (((meta.createdBy === person || meta.sharedWith?.includes(person) === true) &&
+                        this.policy.mayUse({ id: person }, there)) ||
+                        this.policy.seesFolder({ id: person }, there, this.#accessFolder(meta)));
 
                 return steers
                     ? undefined

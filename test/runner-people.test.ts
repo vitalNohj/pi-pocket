@@ -814,6 +814,75 @@ describe("review drill fixes for people on a computer", () => {
         assert.deepEqual(app.config.server.users ?? [], here);
     });
 
+    it("lets who linked a computer, and no one else, let a person see every session in a folder there", async () => {
+        const host = person("Folder host", "guest");
+        const theirs = app.config.addRunner("Folder laptop", host.id, newIdentity().publicKey).id;
+        const fellow = person("Folder fellow", "guest");
+        const other = person("Folder other", "guest");
+        const on = { person: fellow.id, folder: "/srv/app", on: true };
+
+        // Two sessions on the host's computer, the host's own and shared with nobody: one in the folder, one beside it.
+        const sessionIn = async (cwd: string) => {
+            const { id: made } = await app.commands.createSession(owner(app), { cwd: root });
+
+            await app.harness.commit(async (tx) => {
+                const meta = (await tx.doc(SessionsDoc)).items[String(made)]!;
+
+                meta.runner = theirs;
+                meta.createdBy = host.id;
+                meta.cwd = cwd;
+            }, context);
+
+            return made;
+        };
+
+        const inside = await sessionIn("/srv/app/api");
+        const beside = await sessionIn("/srv/apple");
+
+        app.config.setRunnerUsers(theirs, [fellow.id, other.id]);
+        app.config.setGivenFolders(theirs, fellow.id, ["/srv/app"]);
+        app.config.setGivenFolders(theirs, other.id, ["/srv/app"]);
+        assert.equal(
+            app.canSee(fellow, inside),
+            false,
+            "given the folder, they see only their own there",
+        );
+
+        // The owner is no one special on a computer someone else linked, and neither is a person chosen for it.
+        assert.equal((await request(owner(app), `runners/${theirs}/sees`, on)).status, 403);
+        assert.equal((await request(fellow, `runners/${theirs}/sees`, on)).status, 403);
+        assert.equal(app.canSee(fellow, inside), false);
+
+        const answer = await request<RunnerView>(host, `runners/${theirs}/sees`, on);
+
+        assert.equal(answer.status, 200);
+        assert.deepEqual(answer.body.sees?.[fellow.id], ["/srv/app"]);
+        assert.equal(app.canSee(fellow, inside), true);
+        assert.equal(app.policy.maySteer(fellow, String(inside)), true);
+        assert.equal(app.canSee(fellow, beside), false, "a folder whose name only starts the same");
+        assert.equal(app.canSee(other, inside), false, "the switch is one person's");
+        assert.equal(app.canSee(owner(app), inside), false, "and never the owner's by it");
+        // The same folder on another computer is another folder.
+        assert.equal(app.policy.seesFolder(fellow, runnerId, "/srv/app/api"), false);
+        assert.equal(app.policy.seesFolder(fellow, "this-server", "/srv/app/api"), false);
+
+        // Only who manages the computer is told who sees what there.
+        const lists = async (user: User) =>
+            (await request<RunnerView[]>(user, "runners")).body.find((each) => each.id === theirs);
+
+        // An entry for each person chosen, as for the folders given: empty for who has no such folder.
+        assert.deepEqual((await lists(host))?.sees, { [fellow.id]: ["/srv/app"], [other.id]: [] });
+        assert.equal((await lists(fellow))?.sees, undefined);
+
+        // No longer chosen: it ends, and a person removed leaves no record behind.
+        app.config.setRunnerUsers(theirs, [other.id]);
+        app.accessChanged();
+        assert.equal(app.canSee(fellow, inside), false);
+        await app.removeUser(owner(app), fellow.id);
+        assert.deepEqual(app.config.seenFolders(theirs, fellow.id), []);
+        assert.equal(app.config.runnerById(theirs)?.sees, undefined);
+    });
+
     it("offers Share to who may share a session, and keeps listing someone it is shared with who is not chosen there", async () => {
         const host = person("Share host", "guest");
         const theirs = app.config.addRunner(

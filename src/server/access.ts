@@ -37,6 +37,8 @@ export type Computer = {
     chosen: readonly string[];
     /** The folders the one in charge gave `person` here (real paths); each covers the folders in it. */
     given(person: string): readonly string[];
+    /** Of those, the folders in which `person` sees every session, whoever started it (`seesFolder`). */
+    sees(person: string): readonly string[];
     /** Share new sessions with its chosen people. Off unless the linker turns it on. */
     shareNew: boolean;
 };
@@ -53,6 +55,11 @@ export type SessionFacts = {
     sharedWith?: readonly string[];
     /** Set on a PiP: the person it belongs to. */
     pip?: string;
+    /**
+     * The folder its access is judged by, a real path on its computer: its own, or the folder its git worktree came
+     * from. Absent: in no folder anyone was given.
+     */
+    folder?: string;
 };
 
 export interface AccessFacts {
@@ -283,6 +290,25 @@ export class AccessPolicy {
     }
 
     /**
+     * Does `person` see every session in `folder` on computer `id` (a real path there), whoever started it: the one in
+     * charge turned that on for a folder given to them that holds it. Only while the folder is theirs to work in, so
+     * taking them off the computer, taking the folder back, or making them a viewer ends it at once. Such a session is
+     * theirs as one shared with them is: they prompt it too.
+     */
+    seesFolder(person: Pick<Person, "id">, id: string, folder: string): boolean {
+        const current = this.#current(person);
+
+        if (current === undefined) {
+            return false;
+        }
+
+        const given = this.givenFolders(current, id) ?? [];
+        const sees = this.#facts.computer(id)?.sees(current.id) ?? [];
+
+        return sees.some((each) => given.includes(each) && inFolder(folder, each));
+    }
+
+    /**
      * May `person` start a new session in `folder` on computer `id` (a real path there). Refused unless they may start
      * sessions there and were given the folder. Who is in charge needs no approval; anyone else proves it is them, with
      * their own code or the Allow of the one in charge, and that approval belongs to the new session.
@@ -356,7 +382,8 @@ export class AccessPolicy {
     /**
      * May `person` see session `id` (any session of its tree). A PiP is its person's alone. Who is in charge of its
      * computer sees every session there. A person invited to one session sees that session. Anyone else sees the ones
-     * they started, while they may use that computer, and the ones shared with them.
+     * they started, while they may use that computer, the ones shared with them, and every one in a folder they were
+     * given to see all of (`seesFolder`).
      */
     maySee(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -389,7 +416,42 @@ export class AccessPolicy {
 
         return (
             facts.sharedWith?.includes(current.id) === true ||
-            (this.starter(facts) === current.id && this.mayUse(current, facts.computer))
+            (this.starter(facts) === current.id && this.mayUse(current, facts.computer)) ||
+            this.#seesByFolder(current, facts)
+        );
+    }
+
+    /**
+     * Does `person` see session `facts` by its folder alone (`seesFolder`). The session's folder is read only for
+     * someone who has such a folder on its computer: finding it costs a look at every session there (a worktree).
+     */
+    #seesByFolder(person: Pick<Person, "id">, facts: SessionFacts): boolean {
+        if ((this.#facts.computer(facts.computer)?.sees(person.id) ?? []).length === 0) {
+            return false;
+        }
+
+        const folder = facts.folder;
+
+        return folder !== undefined && this.seesFolder(person, facts.computer, folder);
+    }
+
+    /**
+     * Has `person` session `id` by its folder and nothing else: not as its starter, not shared with them, not invited to
+     * it. Such a one is taken back with the folder's switch, not alone.
+     */
+    seesOnlyByFolder(person: Pick<Person, "id">, id: string): boolean {
+        const current = this.#current(person);
+        const facts = this.#facts.session(id);
+
+        return (
+            current !== undefined &&
+            facts !== undefined &&
+            facts.pip === undefined &&
+            current.sessions === undefined &&
+            this.starter(facts) !== current.id &&
+            facts.sharedWith?.includes(current.id) !== true &&
+            !this.inCharge(current, facts.computer) &&
+            this.#seesByFolder(current, facts)
         );
     }
 

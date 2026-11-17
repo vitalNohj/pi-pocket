@@ -392,6 +392,12 @@ test(
         const shared = await share(work, "The owner's");
         const outside = await share(home, "Elsewhere");
         const listed = () => app.sessions(guest).map((each) => each.id);
+        // In her folder, and the owner's alone: not hers until she sees every session there. The session Sam was
+        // invited to (`before`) is the owner's and in that folder too.
+        const unshared = Number(
+            (await app.commands.createSession(owner(app), { cwd: work, title: "Not hers" })).id,
+        );
+        const seesAll = `Gina sees every session in ${given} on This server`;
 
         await open("computers");
         await show("This server");
@@ -421,6 +427,44 @@ test(
         await until(async () => (await sessionRows()).length === 4, "the one outside her folders");
         assert.deepEqual(await under("Other sessions of Gina on This server"), ["Elsewhere"]);
         assert.deepEqual((await under(folder)).sort(), ["Her first", "Her second", "The owner's"]);
+
+        // The folder's own switch: she sees every session in it, whoever started it. It says how many become hers; the
+        // one that does shows how she has it, and is not taken back alone. Off, it leaves her again, and only it.
+        assert.ok((await switches()).includes(`${seesAll}: off`));
+        assert.ok(!listed().includes(unshared));
+        await inPage(`
+            window.asked = [];
+            window.confirm = (text) => {
+                window.asked.push(text);
+
+                return true;
+            };
+
+            return JSON.stringify(true);
+        `);
+        await flip(seesAll);
+        await until(() => listed().includes(unshared), "the server to let her see the folder");
+        assert.match(
+            (await asked())[0]!,
+            /2 sessions of other people's are theirs to open and prompt now/,
+        );
+        await until(
+            async () => (await folds()).includes(`${folder}: 5 (open)`),
+            "its rows to come",
+        );
+        assert.ok((await switches()).includes(`${seesAll}: on`));
+        assert.ok((await sessionRows()).includes("Not hers | sees all sessions here"));
+        assert.equal(await has("Go to Not hers"), true);
+        assert.equal(await has("Revoke Not hers from Gina"), false);
+        assert.equal(await has("Revoke Her second from Gina"), true, "one of her own still is");
+        await flip(seesAll);
+        await until(
+            () => !listed().includes(unshared),
+            "the server to take the folder's sessions back",
+        );
+        assert.deepEqual(listed().sort(), [first, second, shared, outside].sort());
+        await until(async () => (await folds()).includes(`${folder}: 3 (open)`), "its row to go");
+        assert.ok((await switches()).includes(`${seesAll}: off`));
 
         // One session is taken from her alone: the others, and her folder, stay.
         await press("Revoke Her first from Gina");

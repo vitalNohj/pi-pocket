@@ -126,3 +126,32 @@ test("a session's folder reads as its place in the given folder", () => {
     assert.equal(below("C:\\Users\\a\\app\\src", "C:\\Users\\a\\app"), "src");
     assert.equal(below("/data/worktrees/app-1", "/home/a/app"), "/data/worktrees/app-1");
 });
+
+test("a folder they see every session in gives them the sessions in it, in what is in it, and in its worktrees", () => {
+    const seenBy = tree.seenBy as (
+        sees: string[],
+        session: Session,
+        there: Session[],
+    ) => string | undefined;
+    const own: Session = {
+        id: 1,
+        cwd: "/data/worktrees/app-1",
+        worktree: { path: "/data/worktrees/app-1", branch: "fix", source: "/home/a/app" },
+    };
+    const copy: Session = { id: 2, cwd: "/data/worktrees/app-1/src" };
+    const inside: Session = { id: 3, cwd: "/home/a/app/src" };
+    const beside: Session = { id: 4, cwd: "/home/a/application" };
+    const above: Session = { id: 5, cwd: "/home/a" };
+    const there = [own, copy, inside, beside, above];
+
+    for (const each of [own, copy, inside]) {
+        assert.equal(seenBy(["/home/a/app"], each, there), "/home/a/app", String(each.id));
+    }
+
+    for (const each of [beside, above]) {
+        assert.equal(seenBy(["/home/a/app"], each, there), undefined, String(each.id));
+    }
+
+    assert.equal(seenBy([], inside, there), undefined, "no such folder, no session");
+    assert.equal(seenBy(["/other", "/home/a"], above, there), "/home/a");
+});

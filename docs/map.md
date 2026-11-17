@@ -50,19 +50,19 @@ A module split into parts keeps its name for the part others import, with the re
 
 ### People
 
-| File                   | Owns                                                                                                                                                          |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config.ts`, `auth.ts` | People and settings; cookies, tokens, invites                                                                                                                 |
-| `access.ts`            | `AccessPolicy`, the one access policy for this server and runners: who may use a computer, start in a folder there, and see, steer, or share a session        |
-| `approval-methods.ts`  | How a person approves a new folder: each person's own authenticator (`Authenticators`, kept with their account, lockouts), and the owner from the app         |
-| `totp.ts`              | Authenticator codes (TOTP, RFC 6238): secrets, `otpauth://` links, and checking a code                                                                        |
-| `folder-requests.ts`   | Requests to start or renew a session on a computer (`FolderRequests`, in memory): the starter's code, or Allow from who is in charge                          |
-| `folder-approvals.ts`  | One approval per session (`FolderApprovals`, in `config.json`): lasts after each use for its last user's approval time; ended locks the session until renewed |
-| `avatars.ts`           | People's profile pictures: files in `avatars/` of the data folder (PNG, JPEG, WebP, GIF, up to 512 KB), checked by their bytes                                |
-| `requests.ts`          | Request ids, which say whose each message to Pi is (`u:` a person's own, `p:` sent for a person)                                                              |
-| `collab.ts`            | Chat, activity lines (`addActivity`), reactions, pins, notes, typing, take turns                                                                              |
-| `alerts.ts`, `push.ts` | Push notifications: who hears about what; Web Push without dependencies (RFC 8291, 8292); the same to embedders over their connections (`embedder-notify`)    |
-| `spend.ts`             | Cost per conversation and person; limits, a team's (linked sessions') against the budget of the session that started it                                       |
+| File                   | Owns                                                                                                                                                                                                                        |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.ts`, `auth.ts` | People and settings; cookies, tokens, invites                                                                                                                                                                               |
+| `access.ts`            | `AccessPolicy`, the one access policy for this server and runners: who may use a computer, start in a folder there, and see, steer, or share a session; `seesFolder`: a person sees every session in a folder given to them |
+| `approval-methods.ts`  | How a person approves a new folder: each person's own authenticator (`Authenticators`, kept with their account, lockouts), and the owner from the app                                                                       |
+| `totp.ts`              | Authenticator codes (TOTP, RFC 6238): secrets, `otpauth://` links, and checking a code                                                                                                                                      |
+| `folder-requests.ts`   | Requests to start or renew a session on a computer (`FolderRequests`, in memory): the starter's code, or Allow from who is in charge                                                                                        |
+| `folder-approvals.ts`  | One approval per session (`FolderApprovals`, in `config.json`): lasts after each use for its last user's approval time; ended locks the session until renewed                                                               |
+| `avatars.ts`           | People's profile pictures: files in `avatars/` of the data folder (PNG, JPEG, WebP, GIF, up to 512 KB), checked by their bytes                                                                                              |
+| `requests.ts`          | Request ids, which say whose each message to Pi is (`u:` a person's own, `p:` sent for a person)                                                                                                                            |
+| `collab.ts`            | Chat, activity lines (`addActivity`), reactions, pins, notes, typing, take turns                                                                                                                                            |
+| `alerts.ts`, `push.ts` | Push notifications: who hears about what; Web Push without dependencies (RFC 8291, 8292); the same to embedders over their connections (`embedder-notify`)                                                                  |
+| `spend.ts`             | Cost per conversation and person; limits, a team's (linked sessions') against the budget of the session that started it                                                                                                     |
 
 ### What people ask of Pi
 
@@ -295,7 +295,7 @@ The Extensions hub in `sheets/gallery.js` shares one listing between Discover, I
 
 PiP's `pip-window.js` handles pointer resize zones and the account/browser size preference.
 
-People (`sheets/people.js`) and Runners (`sheets/computers.js`) are each a sheet of pages (`sheets/pages.js`: a list on the left, the chosen one's page beside it, stacked on a phone). Who may use a computer, and in which folders, is one record on the server: both sheets show and change it with the same part (`sheets/access.js` `AccessRow`: the switch, and under it `AccessTree`, one tree of that computer alone with the Files panel's rows: the folders given to the person there, and in each the sessions they have in it, each row taken back alone; `sheets/access-tree.js` places the sessions as the server judges folders), People by person and Runners by computer. Approvals are listed in neither; `sheets/approvals.js` keeps only each person's approval time and **Tasks expire with the session**.
+People (`sheets/people.js`) and Runners (`sheets/computers.js`) are each a sheet of pages (`sheets/pages.js`: a list on the left, the chosen one's page beside it, stacked on a phone). Who may use a computer, and in which folders, is one record on the server: both sheets show and change it with the same part (`sheets/access.js` `AccessRow`: the switch, and under it `AccessTree`, one tree of that computer alone with the Files panel's rows: the folders given to the person there, and in each the sessions they have in it, each row taken back alone, and each folder with the switch for whether they see every session in it; `sheets/access-tree.js` places the sessions as the server judges folders), People by person and Runners by computer. Approvals are listed in neither; `sheets/approvals.js` keeps only each person's approval time and **Tasks expire with the session**.
 
 The menu in `sheets/menu.js` keeps `Sheet`'s focus, Escape, drag-to-close, and the sheet trail's Back behavior. Its `MenuFrame` positions it below the top bar's menu button at ≥700px, and adds arrow navigation and focus return; below that width it stays a bottom sheet. `PlacesSheet` uses the same three-column tiles.
 
