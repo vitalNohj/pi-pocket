@@ -397,7 +397,7 @@ test(
         const unshared = Number(
             (await app.commands.createSession(owner(app), { cwd: work, title: "Not hers" })).id,
         );
-        const seesAll = `Gina sees every session in ${given} on This server`;
+        const seesAll = `Gina accesses all sessions in ${given} on This server`;
 
         await open("computers");
         await show("This server");
@@ -453,7 +453,7 @@ test(
             "its rows to come",
         );
         assert.ok((await switches()).includes(`${seesAll}: on`));
-        assert.ok((await sessionRows()).includes("Not hers | sees all sessions here"));
+        assert.ok((await sessionRows()).includes("Not hers | accesses all sessions here"));
         assert.equal(await has("Go to Not hers"), true);
         assert.equal(await has("Revoke Not hers from Gina"), false);
         assert.equal(await has("Revoke Her second from Gina"), true, "one of her own still is");
