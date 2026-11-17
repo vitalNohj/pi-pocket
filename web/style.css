@@ -7660,8 +7660,8 @@ div.group-head {
 .at-tree {
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    padding-top: 6px;
+    gap: 4px;
+    padding-top: 8px;
     border-top: 1px solid var(--hair);
     min-width: 0;
 }
@@ -7670,7 +7670,7 @@ div.group-head {
 .at-group {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 4px;
     min-width: 0;
 }
 
@@ -7762,8 +7762,22 @@ div.group-head {
     display: flex;
     align-items: center;
     flex: none;
-    gap: 6px;
+    gap: 8px;
     margin-left: auto;
+}
+
+/* The tree's buttons are a row high, so the lines keep their distance and two buttons never touch. */
+.at-tree .button.small {
+    min-height: 26px;
+    padding: 2px 10px;
+}
+
+/* What ends a line (Revoke, Remove) has one width, and a line without it keeps its place: the buttons before it are
+ * one column down the tree. */
+.at-end {
+    flex: none;
+    width: 4.75rem;
+    justify-content: center;
 }
 
 /* A folder's line: the folder, then whether they see every session in it, and Remove; those go under it where the
@@ -7776,10 +7790,17 @@ div.group-head {
     flex: 1 1 12rem;
 }
 
+/* Its switch's name takes more lines where the line is short, as on a phone. */
+.at-folder-line > .at-actions {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
 .at-sees {
+    min-width: 0;
     color: var(--muted);
     font-size: 11.5px;
-    white-space: nowrap;
+    text-align: right;
 }
 
 .at-tree .at-note {
