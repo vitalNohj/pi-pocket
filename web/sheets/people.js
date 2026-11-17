@@ -136,7 +136,7 @@ export function InviteSheet({ session = null }) {
             ${
                 here &&
                 html`<div class="field">
-                    <div class="label">In</div>
+                    <div class="label">Share</div>
                     <div class="segmented">
                         <button
                             class=${!only ? "on" : ""}
@@ -157,7 +157,7 @@ export function InviteSheet({ session = null }) {
             }`
         }
         <div class="field">
-            <div class="label">Expires after</div>
+            <div class="label">Invite expires in</div>
             <div class="segmented">
                 ${LASTS.map(
                     ([each, label]) => html`<button
