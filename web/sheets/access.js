@@ -214,7 +214,7 @@ function AccessTree({ computer, person, starts }) {
                 ? "No one else has a session there now. They will see each one started there later."
                 : `${more === 1 ? "1 session of someone else's is" : `${more} sessions of other people's are`} theirs to open and prompt now, and so is each one started there later.`;
 
-        if (on && !confirm(`Let ${person.name} see every session in ${folder}? ${now}`)) {
+        if (on && !confirm(`Let ${person.name} access all sessions in ${folder}? ${now}`)) {
             return;
         }
 
@@ -238,8 +238,8 @@ function AccessTree({ computer, person, starts }) {
                   : session.sharedWith?.includes(person.id)
                     ? "shared with them"
                     : onlyBy(session) === folder
-                      ? "sees all sessions here"
-                      : `sees all sessions in ${onlyBy(session)}`,
+                      ? "accesses all sessions here"
+                      : `accesses all sessions in ${onlyBy(session)}`,
             session.archived && "archived",
             locked(session) && "locked until allowed",
         ]
@@ -317,15 +317,18 @@ function AccessTree({ computer, person, starts }) {
                         Go to session
                     </button>
                     ${
-                        onlyBy(session) === undefined &&
-                        html`<button
-                            class="button small ghost"
-                            disabled=${busy}
-                            aria-label=${`Revoke ${title(session)} from ${person.name}`}
-                            onClick=${() => revoke(session)}
-                        >
-                            Revoke
-                        </button>`
+                        // One they have by its folder alone has no Revoke: its place stays, so the buttons before
+                        // it are one column down the tree.
+                        onlyBy(session) === undefined
+                            ? html`<button
+                                  class="button small ghost at-end"
+                                  disabled=${busy}
+                                  aria-label=${`Revoke ${title(session)} from ${person.name}`}
+                                  onClick=${() => revoke(session)}
+                              >
+                                  Revoke
+                              </button>`
+                            : html`<span class="at-end" aria-hidden="true"></span>`
                     }
                 </div>
             </div>`;
@@ -359,16 +362,16 @@ function AccessTree({ computer, person, starts }) {
                     </button>
                     <div class="at-actions">
                         <span class="at-sees" title="Every session in this folder, whoever started it: to open and to prompt.">
-                            Sees all sessions
+                            User accesses all sessions in folder
                         </span>
                         <${Switch}
                             on=${sees.includes(node.folder)}
                             disabled=${busy}
-                            label=${`${person.name} sees every session in ${node.folder} on ${computer.name}: ${sees.includes(node.folder) ? "on" : "off"}`}
+                            label=${`${person.name} accesses all sessions in ${node.folder} on ${computer.name}: ${sees.includes(node.folder) ? "on" : "off"}`}
                             onChange=${() => seeAll(node.folder)}
                         />
                         <button
-                            class="button small ghost"
+                            class="button small ghost at-end"
                             disabled=${busy}
                             aria-label=${`Remove ${node.folder} from ${on}`}
                             onClick=${() => remove(node.folder)}
