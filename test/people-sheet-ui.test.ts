@@ -1354,3 +1354,67 @@ test(
         );
     },
 );
+
+test(
+    "an opened row shows 18 sessions at their full height; with more, that list scrolls alone",
+    real,
+    async () => {
+        // Ines joined with the owner's invite to their sessions: every session the owner started is shared with her.
+        const ines = app.config.addUser("Ines", "viewer").user;
+        const hers = () => app.sessions(ines).length;
+
+        const more = async (count: number) => {
+            for (let index = 0; index < count; index++) {
+                await app.commands.createSession(owner(app), { cwd: work, title: "One of many" });
+            }
+
+            await app.welcome(ines.id, owner(app).id);
+        };
+
+        const box = async (count: number) => {
+            await open("people");
+            await show("Ines");
+            // Her sessions reach the page after it shows, and their row with them.
+            await until(
+                async () =>
+                    (await folds()).some((each) =>
+                        each.startsWith("Sessions of Ines on This server"),
+                    ),
+                "the row of her sessions",
+            );
+            await fold("Sessions of Ines on This server");
+            await until(async () => (await sessionRows()).length === count, `${count} sessions`);
+
+            return await inPage<{ shown: number; whole: number; last: boolean }>(`
+                const group = document.querySelector(".pages-detail .at-group");
+
+                group.scrollTop = group.scrollHeight;
+
+                const rows = group.querySelectorAll(".at-session");
+
+                return JSON.stringify({
+                    shown: group.clientHeight,
+                    whole: group.scrollHeight,
+                    last: rows[rows.length - 1].getBoundingClientRect().bottom <= group.getBoundingClientRect().bottom + 1,
+                });
+            `);
+        };
+
+        await app.welcome(ines.id, owner(app).id);
+        assert.ok(hers() <= 18, "room to make it 18");
+        await more(18 - hers());
+        assert.equal(hers(), 18);
+
+        const fits = await box(18);
+
+        assert.equal(fits.whole, fits.shown, "18 sessions: nothing to scroll");
+
+        await more(1);
+
+        const scrolls = await box(19);
+
+        assert.equal(scrolls.shown, fits.shown, "19 sessions: the list is as high as 18");
+        assert.ok(scrolls.whole > scrolls.shown, "and it scrolls");
+        assert.ok(scrolls.last, "to its last session");
+    },
+);

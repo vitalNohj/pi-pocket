@@ -7685,6 +7685,20 @@ div.group-head {
     min-width: 0;
 }
 
+/* The sessions of an opened row: as high as 18 of them (a row is 28px, `.ft-row`, and 4px from the next), then that
+ * list scrolls alone. The room around it keeps the focus ring of a button at its edge whole. */
+.at-group {
+    --rows: 18;
+    max-height: calc(var(--rows) * 28px + (var(--rows) - 1) * 4px + 4px);
+    margin: -2px;
+    padding: 2px;
+    overflow-y: auto;
+}
+
+.at-group > * {
+    flex: none;
+}
+
 .at-line {
     display: flex;
     align-items: center;
