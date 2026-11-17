@@ -769,9 +769,9 @@ export function PeopleSheet() {
         });
     }, []);
 
-    // The first other person, whose settings are what this sheet is for; alone here, oneself. A removed person's page
-    // falls back the same way.
-    const fallback = (people.find((each) => each.id !== me?.id) ?? people[0])?.id;
+    // One's own page first, for everyone: what is theirs to change is there. A removed person's page falls back the same
+    // way.
+    const fallback = (people.find((each) => each.id === me?.id) ?? people[0])?.id;
     const shown =
         view === "settings" && owner
             ? view
