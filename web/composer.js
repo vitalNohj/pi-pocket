@@ -1071,6 +1071,10 @@ export function Composer() {
             addFiles(taken.files);
         }
 
+        if (taken?.attachments.length > 0) {
+            setFiles((current) => [...current, ...taken.attachments.map(chipOf)]);
+        }
+
         if (!taken?.text) {
             return;
         }

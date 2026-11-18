@@ -2837,6 +2837,8 @@ export const actions = {
         ),
     /** A new session with all of session `id`'s history, run as `place` says. */
     forkSession: (id, place, signal) => api(`c/${id}/fork`, place ? { place } : {}, { signal }),
+    /** Open a copy without the last message; archive this session and return the message as a draft. */
+    undo: (entryId) => api(`sessions/${current()}/undo`, { entryId }),
     /**
      * Send a message to Pi again in a fork that ends just before it: `{ text }` edits it, `{ model }` picks another
      * model, `{ place }` where it runs and with which model and thinking level.
@@ -3146,10 +3148,11 @@ export function openSheet(sheet) {
 /**
  * Put text into the message box in the session's place (after what is there: on a new paragraph, or with `inline`,
  * after a space), and files to attach, and close any sheet so it shows. The box of the conversation in that place
- * then takes it (`takeInsert`), also when it waits for a send.
+ * then takes it (`takeInsert`), also when it waits for a send. `attachments` are files already uploaded to this
+ * session.
  */
-export function insertIntoComposer(text, files = [], { inline = false } = {}) {
-    waitingInserts.push({ text, files, inline, for: store.state.conversationId });
+export function insertIntoComposer(text, files = [], { inline = false, attachments = [] } = {}) {
+    waitingInserts.push({ text, files, inline, attachments, for: store.state.conversationId });
     store.set((state) => ({
         sheet: null,
         composerInsert: { n: (state.composerInsert?.n ?? 0) + 1 },
@@ -3163,9 +3166,10 @@ export function insertIntoComposer(text, files = [], { inline = false } = {}) {
 let waitingInserts = [];
 
 /**
- * Take, once, what `insertIntoComposer` put for `conversationId` that no box took yet: its files, and its text after
- * `current` (the box's words), or null for none. Null when nothing waits for it. `underQuote`: `current` ends in a quote
- * that is a piece, which inline text goes under: joined to its line, the quote would be plain text.
+ * Take, once, what `insertIntoComposer` put for `conversationId` that no box took yet: its files, its attachments
+ * already uploaded, and its text after `current` (the box's words), or null for none. Null when nothing waits for it.
+ * `underQuote`: `current` ends in a quote that is a piece, which inline text goes under: joined to its line, the quote
+ * would be plain text.
  */
 export function takeInsert(current, conversationId, underQuote = false) {
     const forThis = (insert) => insert.for === conversationId || insert.for === null;
@@ -3191,6 +3195,7 @@ export function takeInsert(current, conversationId, underQuote = false) {
 
     return {
         files: mine.flatMap((insert) => insert.files ?? []),
+        attachments: mine.flatMap((insert) => insert.attachments ?? []),
         text: mine.some((insert) => insert.text !== "") ? text : null,
     };
 }

@@ -830,10 +830,17 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "sessions" && second !== undefined && method === "POST") {
+            const id = conversationId(second);
+
+            if (third === "undo" && fourth === undefined) {
+                app.requireSee(user, id);
+
+                return conversationRoutes(route, id, parts);
+            }
+
             const body = await readJson<{ title?: string; archived?: boolean; keepWarm?: unknown }>(
                 request,
             );
-            const id = conversationId(second);
 
             const { repeating } = await app.commands.updateSession(id, user, body);
 
