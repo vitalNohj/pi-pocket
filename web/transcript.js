@@ -27,6 +27,7 @@ import { Highlighted, InlineArtifact } from "./rich.js";
 import {
     actions,
     attempt,
+    allowsOwn,
     canSteer,
     collab,
     discuss,
@@ -2285,10 +2286,10 @@ function ApprovalCard({ approval }) {
     };
 
     // With approvals that need someone else, nobody can allow a call their own message led to, but who is in charge of
-    // this computer (the server says whether that is me, and checks too).
+    // this computer and the people they let there (the server says whether that is me, and checks too).
     const ownCall =
         server?.approvalRule === "others" &&
-        store.state.view.conversation?.inCharge !== true &&
+        !allowsOwn(store.state.view.conversation) &&
         approval.requestedBy === me?.id;
 
     return html`<div class="approval" data-part="approval">
@@ -3134,7 +3135,7 @@ function canAnswer(approvals) {
                     : approval.requestedBy === me?.id
                 : !(
                       server?.approvalRule === "others" &&
-                      !inCharge &&
+                      !allowsOwn(view.conversation) &&
                       approval.requestedBy === me?.id
                   ),
         )

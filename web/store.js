@@ -634,7 +634,8 @@ export const canSteer = () => store.state.me?.role !== "viewer";
 
 /**
  * Whether this person may turn take turns on or off here, as the server decides: anyone who steers while it is off; the
- * driver, the owner, or anyone when nobody drives or the driver has left, while it is on.
+ * driver, who overrides take turns on this computer (`overridesTurns`), or anyone when nobody drives or the driver has
+ * left, while it is on.
  */
 export function canToggleTurns() {
     const { me, presence, view } = store.state;
@@ -644,7 +645,7 @@ export function canToggleTurns() {
         canSteer() &&
         (!turns?.on ||
             turns.driver === me?.id ||
-            me?.role === "owner" ||
+            overridesTurns(view.conversation) ||
             !turns.driver ||
             !presence.some((person) => person.id === turns.driver))
     );
@@ -664,6 +665,33 @@ export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStar
  * Invite people on for them. A server from before it does not say, so as before.
  */
 export const canInvite = () => store.state.me?.invites !== false;
+
+/** The computer a session runs on, as the server names it (`access.ts` `THIS_SERVER`): a runner's id, or this server. */
+const computerOf = (session) => session?.runner ?? "this-server";
+
+/**
+ * May this person take the wheel from a driver in `session` (a session of the list, or the open one), and turn take
+ * turns off under them (`access.ts` `overridesTurns`): the server names the computers where they may, those they are in
+ * charge of and those where they were given it. A server from before it does not say: the owner, as before.
+ */
+export function overridesTurns(session) {
+    const { me } = store.state;
+
+    return Array.isArray(me?.wheel) ? me.wheel.includes(computerOf(session)) : me?.role === "owner";
+}
+
+/**
+ * May this person allow a call their own message led to in `session` while approvals need someone else (`access.ts`
+ * `allowsOwn`): the server names the computers where they may. A server from before it does not say: who is in charge
+ * of the session's computer, as before.
+ */
+export function allowsOwn(session) {
+    const { me } = store.state;
+
+    return Array.isArray(me?.allows)
+        ? me.allows.includes(computerOf(session))
+        : session?.inCharge === true;
+}
 
 /** May this person link computers of their own as runners: the owner, and the guests the owner lets (`mayLink`). */
 export const canLink = () => store.state.me?.mayLink === true;

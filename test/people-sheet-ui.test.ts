@@ -9,6 +9,7 @@ import {
     answerRequests,
     cleanUp,
     context,
+    fakeTab,
     home,
     newSession,
     openApp,
@@ -367,7 +368,13 @@ test("what a person may use is set in People, and shows in Runners", real, async
         async () => (await switches()).includes("Gina may use Laptop: on"),
         "Gina among the Laptop's people",
     );
-    assert.deepEqual(await switches(), ["Gina may use Laptop: on", "Vera may use Laptop: off"]);
+    // Under her switch, the rights of someone who prompts there, off until given (`access.js` `RightSwitch`).
+    assert.deepEqual(await switches(), [
+        "Gina may use Laptop: on",
+        "Gina overrides take turns on Laptop: off",
+        "Gina allows their own calls on Laptop: off",
+        "Vera may use Laptop: off",
+    ]);
     assert.deepEqual(await folds(), [], "this server's folder is not the Laptop's");
     assert.equal(await has("Give Gina a folder on Laptop"), true);
     assert.doesNotMatch(
@@ -1570,5 +1577,132 @@ test(
         assert.equal(scrolls.shown, fits.shown, "19 sessions: the list is as high as 18");
         assert.ok(scrolls.whole > scrolls.shown, "and it scrolls");
         assert.ok(scrolls.last, "to its last session");
+    },
+);
+
+test(
+    "a person's rights on a computer are two switches under it, for those who prompt there: flipped, their open session offers the wheel and their own calls at once",
+    real,
+    async () => {
+        const chosen = app.config.server.users ?? [];
+        const there = app.config.runnerById(runnerId)?.users ?? [];
+        // A device of Gina's own, in a browser of its own: a login link in one signed in as someone else asks first.
+        const token = app.config.addDevice(guest.id);
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "people-sheet-rights-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+        let ginas: BrowserPage | undefined;
+        // What her session offers: the buttons of the driver bar, and whether her own calls are hers to allow here.
+        const hers = async () =>
+            JSON.parse(
+                await ginas!.evaluate(
+                    `const { allowsOwn, overridesTurns, store } = await import("/store.js"); return JSON.stringify({ bar: [...document.querySelectorAll(".driver-bar button")].map((each) => each.textContent.trim()), wheel: overridesTurns(store.state.view.conversation), own: allowsOwn(store.state.view.conversation) })`,
+                ),
+            ) as { bar: string[]; wheel: boolean; own: boolean };
+        const rights = () =>
+            inPage<Record<string, string[]>>(
+                `return JSON.stringify(Object.fromEntries([...document.querySelectorAll(".pages-detail .access-row")].map((row) => [row.querySelector("strong").textContent.trim(), [...row.querySelectorAll("[data-right] [role=switch]")].map((each) => each.getAttribute("aria-label"))])))`,
+            );
+
+        assert.ok(token !== undefined);
+        // Chosen for this server, both; for the Laptop, neither.
+        app.config.setServerUsers([...new Set([...chosen, guest.id, viewer.id])]);
+        app.config.setRunnerUsers(runnerId, []);
+        app.accessChanged();
+
+        // A session of the owner's, shared with her, in which the owner is here and drives.
+        const id = await newSession(app);
+
+        await app.commands.shareSession(id, owner(app), [guest.id]);
+
+        const ownerTab = fakeTab(id, owner(app));
+
+        try {
+            await app.attach(ownerTab.client);
+            await app.collab.turns(id, owner(app), { action: "on" });
+
+            ginas = await theirs.open(1);
+            await ginas.setViewport(DESKTOP);
+            await ginas.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await ginas.navigate(`${base}/s/${String(id)}`);
+            await until(
+                async () => (await hers().catch(() => undefined))?.bar.length === 1,
+                "her driver bar",
+                20_000,
+            );
+            assert.deepEqual(
+                await hers(),
+                { bar: ["Ask to drive"], wheel: false, own: false },
+                "off: she asks, and waits",
+            );
+
+            // The owner's People: the two switches under This server for her, who prompts there; none for a viewer,
+            // none under a computer she is not chosen for.
+            await open("people");
+            await show("Vera");
+            assert.deepEqual(await rights(), { "This server": [], Laptop: [] });
+            await show("Gina");
+            assert.deepEqual(await rights(), {
+                "This server": [
+                    "Gina overrides take turns on This server: off",
+                    "Gina allows their own calls on This server: off",
+                ],
+                Laptop: [],
+            });
+
+            // On: her open session offers the wheel without a reload, and she takes it from the owner.
+            await flip("Gina overrides take turns on This server");
+            await until(async () => (await hers()).wheel, "her session to offer the wheel");
+            assert.deepEqual(await hers(), {
+                bar: ["Ask to drive", "Take the wheel"],
+                wheel: true,
+                own: false,
+            });
+            assert.deepEqual(app.config.server.wheel, [guest.id]);
+            assert.ok(
+                (await switches()).includes("Gina overrides take turns on This server: on"),
+                "the switch shows it",
+            );
+            await ginas.evaluate(
+                `[...document.querySelectorAll(".driver-bar button")].find((each) => each.textContent.trim() === "Take the wheel").click(); return JSON.stringify(true);`,
+            );
+            await until(
+                () =>
+                    (ownerTab.field("turns") as { driver?: string } | undefined)?.driver ===
+                    guest.id,
+                "Gina to drive",
+            );
+
+            // The other right is its own switch.
+            await flip("Gina allows their own calls on This server");
+            await until(async () => (await hers()).own, "her own calls to be hers to allow");
+            assert.deepEqual(app.config.server.allows, [guest.id]);
+
+            // Taken back, both: as before, without a reload. She keeps the wheel she took.
+            await flip("Gina overrides take turns on This server");
+            await flip("Gina allows their own calls on This server");
+            await until(async () => {
+                const now = await hers();
+
+                return !now.wheel && !now.own;
+            }, "her session to offer neither");
+            assert.equal(app.config.server.wheel, undefined);
+            assert.equal(app.config.server.allows, undefined);
+            assert.equal(
+                (ownerTab.field("turns") as { driver?: string } | undefined)?.driver,
+                guest.id,
+            );
+        } finally {
+            // The tests share one page: the owner's again, whatever happened.
+            page = owners;
+            app.detach(ownerTab.client);
+            await theirs.closeAll({ final: true });
+            app.config.setServerUsers(chosen);
+            app.config.setRunnerUsers(runnerId, there);
+            app.accessChanged();
+        }
     },
 );

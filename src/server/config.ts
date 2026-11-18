@@ -183,6 +183,16 @@ export interface StoredRunner {
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
     sees?: Record<string, string[]>;
+    /**
+     * The chosen people who may take the wheel from a driver here, and turn take turns off under them (`access.ts`
+     * `overridesTurns`), by person id. Who is in charge always may.
+     */
+    wheel?: string[];
+    /**
+     * The chosen people who may allow a call their own message led to here while approvals need someone else
+     * (`access.ts` `allowsOwn`), by person id. Who is in charge always may.
+     */
+    allows?: string[];
     /** When it last connected. */
     lastSeen?: number;
     /**
@@ -213,6 +223,16 @@ export interface StoredServer {
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
     sees?: Record<string, string[]>;
+    /**
+     * The chosen people who may take the wheel from a driver here, and turn take turns off under them (`access.ts`
+     * `overridesTurns`), by person id. Who is in charge always may.
+     */
+    wheel?: string[];
+    /**
+     * The chosen people who may allow a call their own message led to here while approvals need someone else
+     * (`access.ts` `allowsOwn`), by person id. Who is in charge always may.
+     */
+    allows?: string[];
     /** New sessions here start shared with its people. */
     shareNew?: true;
     /**
@@ -442,6 +462,27 @@ function setList(
         delete target[key];
     } else {
         target[key] = next;
+    }
+}
+
+/** A right one chosen person holds on one computer, set by who is in charge of it (`access.ts`). */
+export type ComputerRight = "wheel" | "allows";
+
+export const COMPUTER_RIGHTS: readonly ComputerRight[] = ["wheel", "allows"];
+
+/** What a computer's record keeps about those rights, and the people chosen for it. */
+type Rights = { users?: string[]; wheel?: string[]; allows?: string[] };
+
+/** Keep each right to the people `keep` names; a right nobody holds leaves no entry. */
+function trimRights(target: Rights, keep: (person: string) => boolean): void {
+    for (const right of COMPUTER_RIGHTS) {
+        const list = (target[right] ?? []).filter(keep);
+
+        if (list.length === 0) {
+            delete target[right];
+        } else {
+            target[right] = list;
+        }
     }
 }
 
@@ -976,6 +1017,7 @@ export class ConfigStore {
                 if (computer !== undefined) {
                     setList(computer, "given", id, []);
                     setList(computer, "sees", id, []);
+                    trimRights(computer, (each) => each !== id);
                 }
             }
 
@@ -1140,6 +1182,7 @@ export class ConfigStore {
         if (runner !== undefined) {
             runner.createdBy = linker;
             runner.users = runner.users?.filter((each) => each !== linker);
+            trimRights(runner, (each) => each !== linker);
             this.save();
         }
     }
@@ -1149,7 +1192,10 @@ export class ConfigStore {
         const runner = this.runnerById(id);
 
         if (runner !== undefined) {
-            runner.users = this.#choosable(users, (user) => user.id === runner.createdBy);
+            const chosen = this.#choosable(users, (user) => user.id === runner.createdBy);
+
+            runner.users = chosen;
+            trimRights(runner, (each) => chosen.includes(each));
             this.save();
         }
     }
@@ -1162,8 +1208,57 @@ export class ConfigStore {
     /** Choose the people who may use this server: anyone but the owner, who is in charge of it. */
     setServerUsers(users: string[]): void {
         this.#changeServer((server) => {
-            server.users = this.#choosable(users, (user) => user.role === "owner");
+            const chosen = this.#choosable(users, (user) => user.role === "owner");
+
+            server.users = chosen;
+            trimRights(server, (each) => chosen.includes(each));
         });
+    }
+
+    /** The people who hold `right` on computer `id` (undefined: this server): `StoredRunner.wheel`, `.allows`. */
+    rightHolders(id: string | undefined, right: ComputerRight): readonly string[] {
+        const computer = id === undefined ? this.#config.server : this.runnerById(id);
+
+        return computer?.[right] ?? [];
+    }
+
+    /**
+     * Give `person` `right` on computer `id` (undefined: this server), or take it back. Only someone chosen there: for
+     * anyone else nothing changes, and the answer is false.
+     */
+    setRight(id: string | undefined, person: string, right: ComputerRight, on: boolean): boolean {
+        const apply = (target: Rights): boolean => {
+            if (!(target.users ?? []).includes(person)) {
+                return false;
+            }
+
+            const rest = (target[right] ?? []).filter((each) => each !== person);
+
+            target[right] = on ? [...rest, person] : rest;
+            trimRights(target, () => true);
+
+            return true;
+        };
+
+        if (id === undefined) {
+            let done = false;
+
+            this.#changeServer((server) => {
+                done = apply(server);
+            });
+
+            return done;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner === undefined || !apply(runner)) {
+            return false;
+        }
+
+        this.save();
+
+        return true;
     }
 
     /**

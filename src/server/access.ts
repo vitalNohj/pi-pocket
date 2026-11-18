@@ -42,6 +42,10 @@ export type Computer = {
     given(person: string): readonly string[];
     /** Of those, the folders in which `person` sees every session, whoever started it (`seesFolder`). */
     sees(person: string): readonly string[];
+    /** The chosen people the one in charge lets take the wheel from a driver here (`overridesTurns`). */
+    wheel: readonly string[];
+    /** The chosen people the one in charge lets allow a call their own message led to here (`allowsOwn`). */
+    allows: readonly string[];
     /** Share new sessions with its chosen people. Off unless the linker turns it on. */
     shareNew: boolean;
 };
@@ -154,6 +158,50 @@ export class AccessPolicy {
     /** May `person` start sessions on computer `id`: they may use it, and they steer. */
     mayStart(person: Pick<Person, "id">, id: string): boolean {
         return this.mayUse(person, id) && this.#current(person)?.role !== "viewer";
+    }
+
+    /**
+     * Does `person` hold a right on computer `id` that who is in charge of it gives one person at a time: they are in
+     * charge of it themselves, or someone chosen there who prompts (not a viewer, not held to one session) and is in
+     * `list`.
+     */
+    #holds(
+        person: Pick<Person, "id">,
+        id: string,
+        list: (computer: Computer) => readonly string[],
+    ): boolean {
+        if (this.inCharge(person, id)) {
+            return true;
+        }
+
+        const current = this.#current(person);
+        const computer = this.#facts.computer(id);
+
+        return (
+            current !== undefined &&
+            computer !== undefined &&
+            current.role !== "viewer" &&
+            current.sessions === undefined &&
+            computer.chosen.includes(current.id) &&
+            list(computer).includes(current.id)
+        );
+    }
+
+    /**
+     * May `person` take the wheel from someone who is driving a session on computer `id`, hand it over for them, or turn
+     * take turns off under them: who is in charge of it, and the users they let. Whether they may change that session at
+     * all is `maySteer`.
+     */
+    overridesTurns(person: Pick<Person, "id">, id: string): boolean {
+        return this.#holds(person, id, (computer) => computer.wheel);
+    }
+
+    /**
+     * May `person` allow a call their own message led to on computer `id` while approvals need someone else: who is in
+     * charge of it, and the users they let. A call nobody is known to have asked for stays with who is in charge.
+     */
+    allowsOwn(person: Pick<Person, "id">, id: string): boolean {
+        return this.#holds(person, id, (computer) => computer.allows);
     }
 
     /** May `person` change computer `id`'s settings, choose its people, and give them folders: who is in charge of it. */
