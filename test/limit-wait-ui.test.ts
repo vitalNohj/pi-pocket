@@ -85,7 +85,7 @@ test(
         await until(() => app.limits.waitFor(Number(id)) !== undefined, "the wait");
         await page.navigate(`${base}/s/${id}`);
         await until(
-            async () => /Waiting for .*Retry now/s.test(await line()),
+            async () => /Waiting to retry.*Retry now/s.test(await line()),
             "the live line",
             20_000,
         );
