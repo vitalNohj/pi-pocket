@@ -16,6 +16,7 @@ import {
     type TaskId,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { THIS_SERVER } from "./access.ts";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import { ShellRequestsDoc } from "./docs.ts";
@@ -232,8 +233,9 @@ export class Shell {
     }
 
     /**
-     * Run a command someone typed. With Lancet Guard on, a command from anyone but the owner must be one the guard
-     * allows outright: nobody is asked about it, as nobody would be asked about Pi's own call without the guard.
+     * Run a command someone typed. With Lancet Guard on, a command from anyone but who is in charge of the session's
+     * computer (`access.ts` `inCharge`: the owner here, a runner's linker there) must be one the guard allows outright:
+     * nobody is asked about it, as nobody would be asked about Pi's own call without the guard.
      */
     async start(
         id: ConversationId,
@@ -272,7 +274,7 @@ export class Shell {
             );
         }
 
-        if (user.role !== "owner" && app.guardOn()) {
+        if (!app.policy.inCharge(user, app.runnerOf(id) ?? THIS_SERVER) && app.guardOn()) {
             const judged = await app.guard.judge("bash", { command }, app.cwdOf(id));
 
             if (judged !== undefined && judged.decision.action !== "allow") {

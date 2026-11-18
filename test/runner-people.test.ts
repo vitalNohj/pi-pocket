@@ -8,6 +8,7 @@ import {
     openApp,
     owner,
     answerRequests,
+    approveSession,
     linkAuthenticator,
     root,
     scriptedModel,
@@ -948,6 +949,162 @@ describe("review drill fixes for people on a computer", () => {
         await app.removeUser(owner(app), fellow.id);
         assert.deepEqual(app.config.seenFolders(theirs, fellow.id), []);
         assert.equal(app.config.runnerById(theirs)?.sees, undefined);
+    });
+
+    it("leaves Lancet Guard on a computer to who linked it: their own commands and calls are theirs, the owner's and everyone else's are checked", async () => {
+        const host = person("Guard host", "guest");
+        const theirs = app.config.addRunner("Guard laptop", host.id, newIdentity().publicKey).id;
+        const fellow = person("Guard fellow", "guest");
+        const { id: there } = await app.commands.createSession(owner(app), { cwd: root });
+        const { id: here } = await app.commands.createSession(owner(app), { cwd: root });
+
+        // A session on the host's computer, the host's own, shared with a person chosen there and with the owner.
+        app.config.setRunnerUsers(theirs, [fellow.id, owner(app).id]);
+        await app.harness.commit(async (tx) => {
+            const items = (await tx.doc(SessionsDoc)).items;
+
+            items[String(there)]!.runner = theirs;
+            items[String(there)]!.createdBy = host.id;
+            items[String(there)]!.sharedWith = [fellow.id, owner(app).id];
+            // And one on this server, the owner's, shared with the host.
+            items[String(here)]!.sharedWith = [host.id];
+        }, context);
+        app.accessChanged();
+        approveSession(app, there, fellow);
+        approveSession(app, here, host);
+
+        let calls = 0;
+        const call = (id: ConversationId, requestedBy?: string, form?: true) => ({
+            id: `guard-${++calls}`,
+            conversationId: id,
+            taskId: calls as never,
+            tool: "bash",
+            subject: "rm -rf build",
+            reason: "deletes files",
+            createdAt: Date.now(),
+            ...(requestedBy === undefined ? {} : { requestedBy }),
+            ...(form === undefined ? {} : { form: { title: "A key", fields: [], submit: "Send" } }),
+        });
+        const own = /^Someone else has to allow a call that your message led to\.$/;
+        const enabled = app.loader.enabled;
+        const judge = app.guard.judge;
+        const judged: string[] = [];
+        const tab = fakeTab(there, host);
+        const other = fakeTab(there, owner(app));
+
+        try {
+            await app.setApprovalRule(owner(app), "others");
+
+            // Their own call: the host allows it there, as the owner does on this server. Nobody else allows their own.
+            assert.equal(app.cannotAllow(host, call(there, host.id)), undefined);
+            assert.match(app.cannotAllow(fellow, call(there, fellow.id)) ?? "", own);
+            assert.match(app.cannotAllow(owner(app), call(there, owner(app).id)) ?? "", own);
+            // Someone else's call is anyone's to allow, as before.
+            assert.equal(app.cannotAllow(fellow, call(there, host.id)), undefined);
+            assert.equal(app.cannotAllow(owner(app), call(there, fellow.id)), undefined);
+
+            // A call nobody is known to have asked for is the host's there, by name; here it is the owner's.
+            const nobody =
+                /^Nobody is known to have asked for this call, so only Guard host, who is in charge of Guard laptop, can allow it\.$/;
+
+            assert.equal(app.cannotAllow(host, call(there)), undefined);
+            assert.match(app.cannotAllow(fellow, call(there)) ?? "", nobody);
+            assert.match(app.cannotAllow(owner(app), call(there)) ?? "", nobody);
+            assert.equal(app.cannotAllow(owner(app), call(here)), undefined);
+            assert.equal(
+                app.cannotAllow(host, call(here)),
+                "Nobody is known to have asked for this call, so only the owner can allow it.",
+            );
+            // On this server the host is no one special: their own call waits for someone else.
+            assert.match(app.cannotAllow(host, call(here, host.id)) ?? "", own);
+            assert.equal(app.cannotAllow(owner(app), call(here, owner(app).id)), undefined);
+
+            // An ask with nobody known is answered by who is in charge of that computer.
+            assert.equal(app.cannotAllow(host, call(there, undefined, true)), undefined);
+            assert.equal(
+                app.cannotAllow(owner(app), call(there, undefined, true)),
+                "Only the person Pi works for here can answer this.",
+            );
+            assert.equal(app.cannotAllow(owner(app), call(here, undefined, true)), undefined);
+            assert.equal(
+                app.cannotAllow(host, call(here, undefined, true)),
+                "Only the person Pi works for here can answer this.",
+            );
+
+            // The page learns it from the server: on the session's row, and in its view.
+            const row = (user: User, id: ConversationId) =>
+                (
+                    app.sessions(user).find((each) => each.id === Number(id)) as
+                        { inCharge?: true } | undefined
+                )?.inCharge;
+
+            assert.equal(row(host, there), true);
+            assert.equal(row(fellow, there), undefined);
+            assert.equal(row(owner(app), there), undefined);
+            assert.equal(row(owner(app), here), true);
+            assert.equal(row(host, here), undefined);
+            await app.attach(tab.client);
+            await app.attach(other.client);
+            await until(
+                () =>
+                    tab.field("conversation") !== undefined &&
+                    other.field("conversation") !== undefined,
+                "both views",
+            );
+            assert.equal((tab.field("conversation") as { inCharge?: true }).inCharge, true);
+            assert.equal((other.field("conversation") as { inCharge?: true }).inCharge, undefined);
+
+            // A typed `!` command there: the guard judges everyone's but the host's, the owner's included.
+            app.loader.enabled = (file: string) =>
+                file === "guard.ts" || enabled.call(app.loader, file);
+
+            app.guard.judge = async (_tool, args) => {
+                judged.push(String(args.command));
+
+                return {
+                    subject: String(args.command),
+                    decision: {
+                        action: "ask",
+                        reason: "deletes files",
+                        source: "rules",
+                        terminate: false,
+                    },
+                } as never;
+            };
+
+            const refused = {
+                status: 403,
+                message:
+                    /^Lancet Guard does not allow this command to run unasked: deletes files\. Ask Pi to run it instead\.$/,
+            };
+
+            await assert.rejects(app.shell.start(there, fellow, { command: "rm -rf a" }), refused);
+            await assert.rejects(
+                app.shell.start(there, owner(app), { command: "rm -rf b" }),
+                refused,
+            );
+            assert.deepEqual(judged, ["rm -rf a", "rm -rf b"]);
+
+            const { taskId } = await app.shell.start(there, host, {
+                command: "rm -rf c",
+                context: false,
+            });
+
+            assert.deepEqual(judged, ["rm -rf a", "rm -rf b"], "the host's own is not judged");
+            await app.shell.stop(there, host, taskId).catch(() => {});
+
+            // On this server it is the other way round: the owner's is free, the host's is judged.
+            await assert.rejects(app.shell.start(here, host, { command: "rm -rf d" }), refused);
+            assert.deepEqual(judged, ["rm -rf a", "rm -rf b", "rm -rf d"]);
+        } finally {
+            app.loader.enabled = enabled;
+            app.guard.judge = judge;
+            app.detach(tab.client);
+            app.detach(other.client);
+            await app.setApprovalRule(owner(app), "anyone");
+            app.config.setRunnerUsers(theirs, []);
+            app.accessChanged();
+        }
     });
 
     it("offers Share to who may share a session, and keeps listing someone it is shared with who is not chosen there", async () => {

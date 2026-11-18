@@ -4487,6 +4487,11 @@ export class PocketApp {
                     ...(user !== undefined && this.policy.mayShare(user, id)
                         ? { mayShare: true as const }
                         : {}),
+                    // Is this person in charge of its computer (`access.ts` `inCharge`): they allow any call there, and
+                    // answer what nobody is known to have asked for (`cannotAllow`).
+                    ...(user !== undefined && this.policy.inCharge(user, meta.runner ?? THIS_SERVER)
+                        ? { inCharge: true as const }
+                        : {}),
                 };
             })
             .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -4704,6 +4709,12 @@ export class PocketApp {
             ...(meta?.worktree === undefined
                 ? {}
                 : { worktree: { branch: meta.worktree.branch, source: meta.worktree.source } }),
+            // Is this person in charge of its computer (`access.ts` `inCharge`): they allow any call here, and answer
+            // what nobody is known to have asked for (`cannotAllow`).
+            ...(viewer !== undefined &&
+            this.policy.inCharge(viewer, this.runnerOf(room.id) ?? THIS_SERVER)
+                ? { inCharge: true as const }
+                : {}),
             // Whether a fork could get a worktree of its own.
             // A session on another computer: its folder and repository are read there, never here.
             ...(this.runnerOf(room.id) === undefined
@@ -4741,32 +4752,38 @@ export class PocketApp {
     }
 
     /**
-     * Why this person may not allow a call, or undefined when they may. With the "others" rule, a guest cannot allow a
-     * call their own message led to; the owner always can. Denying is open to anyone who can steer.
+     * Why this person may not allow a call, or undefined when they may. With the "others" rule, nobody can allow a call
+     * their own message led to, but who is in charge of the session's computer (`access.ts` `inCharge`: the owner here,
+     * a runner's linker there), who always can. Denying is open to anyone who can steer.
      */
     cannotAllow(user: User, request: ApprovalRequest): string | undefined {
         if (user.role === "viewer") {
             return "You can view this session but not steer Pi.";
         }
 
-        // An ask (`host.ask`) is answered by the person Pi works for: what it asks for is theirs. With nobody known, the
-        // owner answers it. Anyone who can steer can decline it.
+        const computer = this.runnerOf(request.conversationId) ?? THIS_SERVER;
+
+        // An ask (`host.ask`) is answered by the person Pi works for: what it asks for is theirs. With nobody known, who
+        // is in charge of the computer answers it. Anyone who can steer can decline it.
         if (request.form !== undefined) {
             const answerer =
-                request.requestedBy ?? this.config.users.find((each) => each.role === "owner")?.id;
+                request.requestedBy ??
+                this.policy.inChargeOf(String(this.rootOf(request.conversationId)));
 
             return answerer === user.id
                 ? undefined
                 : "Only the person Pi works for here can answer this.";
         }
 
-        if (this.config.approvalRule !== "others" || user.role === "owner") {
+        if (this.config.approvalRule !== "others" || this.policy.inCharge(user, computer)) {
             return undefined;
         }
 
         // Not knowing who asked is not knowing that it was someone else.
         if (request.requestedBy === undefined) {
-            return "Nobody is known to have asked for this call, so only the owner can allow it.";
+            return computer === THIS_SERVER
+                ? "Nobody is known to have asked for this call, so only the owner can allow it."
+                : `Nobody is known to have asked for this call, so only ${this.#inChargeName(request.conversationId)}, who is in charge of ${this.#computerName(computer)}, can allow it.`;
         }
 
         return request.requestedBy === user.id
