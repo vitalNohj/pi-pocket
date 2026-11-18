@@ -1,0 +1,241 @@
+/* Throwaway send preview. Keep the test controls out of the message box and away from the PiP sheet. */
+#app:has(.sending-demo-controls) {
+    --demo-bar: calc(56px + env(safe-area-inset-bottom));
+    height: calc(100dvh - var(--demo-bar));
+}
+
+#app:has(.sending-demo-controls) > .layout {
+    height: 100%;
+}
+
+#app:has(.sending-demo-controls) > .layout > .pane {
+    height: auto;
+}
+
+#app:has(.sending-demo-controls) .pip-panel {
+    bottom: calc(16px + var(--demo-bar));
+    max-height: calc(100dvh - var(--pip-top) - 16px - var(--demo-bar));
+}
+
+#app:has(.sending-demo-controls) .pip-bubble {
+    bottom: calc(104px + var(--demo-bar));
+}
+
+.sending-demo-controls {
+    position: fixed;
+    z-index: 35;
+    bottom: calc(6px + env(safe-area-inset-bottom));
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: calc(100% - 12px);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 6px 2px 10px;
+    border: 1px solid var(--hair-2);
+    border-radius: var(--r-sheet);
+    background: var(--card);
+    box-shadow: var(--shadow);
+    color: var(--text);
+    font: 600 12px / 1.15 var(--sans);
+}
+
+.sending-demo-tag {
+    color: var(--accent);
+    font: 600 10px / 1 var(--sans);
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+}
+
+.sending-demo-choices,
+.sending-demo-actions {
+    display: flex;
+    gap: 2px;
+    align-items: center;
+}
+
+.sending-demo-choices > span {
+    width: 96px;
+    text-align: center;
+}
+
+.sending-demo-controls button {
+    min-width: 40px;
+    min-height: 40px;
+    padding-inline: 6px;
+    border-radius: var(--r-row);
+}
+
+.sending-demo-choices button {
+    font-size: 22px;
+    font-weight: normal;
+}
+
+.sending-demo-controls button:hover {
+    background: var(--accent-soft);
+}
+
+.sending-demo-actions button:last-child {
+    color: var(--accent-ink);
+    background: var(--accent-fill);
+}
+
+.sending-demo-hint {
+    color: var(--muted);
+    font-weight: 400;
+    padding-right: 4px;
+}
+
+.sending-demo-row {
+    min-width: 0;
+}
+
+.sending-demo-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--accent);
+    font: 600 12px / 1.4 var(--sans);
+    white-space: nowrap;
+}
+
+.sending-demo-spinner {
+    width: 11px;
+    height: 11px;
+    display: inline-block;
+    flex: none;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: sending-demo-turn 1s linear infinite;
+}
+
+@keyframes sending-demo-turn {
+    to {
+        transform: rotate(1turn);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sending-demo-spinner {
+        animation: none;
+    }
+}
+
+.sending-demo-copy {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 11em;
+    overflow: auto;
+}
+
+.sending-demo-copy > small {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 0.85em;
+}
+
+.sending-demo-avatar {
+    --who: var(--accent);
+}
+
+.sending-demo-bubble > .prompt,
+.pip-you.sending-demo-bubble {
+    border: 1px dashed var(--accent-line);
+    background: color-mix(in oklab, var(--accent-soft) 36%, var(--card));
+}
+
+.sending-demo-bubble .sending-demo-copy {
+    color: var(--body);
+}
+
+.pip-you.sending-demo-bubble > .sending-demo-status {
+    margin-bottom: 5px;
+}
+
+.sending-demo-outbox {
+    border: 1px solid var(--hair-2);
+    border-radius: var(--r-row);
+    background: var(--card);
+}
+
+.sending-demo-outbox > summary {
+    display: flex;
+    align-items: center;
+    min-height: 42px;
+    gap: 10px;
+    padding: 6px 10px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.sending-demo-outbox > summary::-webkit-details-marker {
+    display: none;
+}
+
+.sending-demo-excerpt {
+    flex: 1;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sending-demo-outbox > .sending-demo-copy {
+    padding: 8px 12px 10px;
+    border-top: 1px solid var(--hair);
+}
+
+.sending-demo-chevron {
+    transform: translateY(-2px);
+    color: var(--faint);
+}
+
+.sending-demo-outbox[open] .sending-demo-chevron {
+    transform: rotate(180deg);
+}
+
+.sending-demo-marker {
+    align-self: stretch;
+    text-align: center;
+    color: var(--muted);
+}
+
+.sending-demo-marker > div {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.sending-demo-marker > div::before,
+.sending-demo-marker > div::after {
+    content: "";
+    flex: 1;
+    border-top: 1px dashed var(--hair-2);
+}
+
+.sending-demo-marker > small {
+    font-size: 11px;
+}
+
+@media (max-width: 699px) {
+    #app:has(.sending-demo-controls) .pip-panel {
+        bottom: var(--demo-bar);
+        max-height: calc(100dvh - env(safe-area-inset-top) - var(--demo-bar));
+        padding-bottom: 0;
+    }
+}
+
+@media (max-width: 380px) {
+    .sending-demo-controls {
+        gap: 5px;
+    }
+
+    .sending-demo-tag {
+        display: none;
+    }
+}

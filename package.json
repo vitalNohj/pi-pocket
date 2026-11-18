@@ -43,6 +43,7 @@
     "scripts": {
         "start": "node bin/pi-pocket.js",
         "dev": "node bin/pi-pocket.js --cwd .",
+        "preview:sending": "node test/serve-sending-prototype.ts",
         "check": "tsc --noEmit -p . && node test/types-file.ts && node docs-site/check-reference.mjs",
         "test": "node --test --test-concurrency=4 test/*.test.ts",
         "site:publish": "gh workflow run pages.yml",

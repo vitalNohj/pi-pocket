@@ -8,6 +8,7 @@ import { fingerprint } from "./text-hash.js";
 import * as disk from "./session-cache.js";
 import { personStorage } from "./person-storage.js";
 import { notesDrafts } from "./notes-drafts.js";
+import { previewFetch, sendingPrototype } from "./sending-prototype.js";
 import {
     keptLayout,
     layoutOf,
@@ -812,7 +813,9 @@ export async function api(path, body, options = {}) {
         }
     }
 
-    const response = await fetch(`/api/${path}`, init);
+    const response = await (sendingPrototype
+        ? previewFetch(path, body, init, store.state, () => store.set({}))
+        : fetch(`/api/${path}`, init));
     const text = await response.text();
     let data;
 

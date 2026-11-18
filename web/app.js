@@ -48,6 +48,7 @@ import "./rich.js";
 import { takeShare } from "./share.js";
 import { QuoteReplyButton } from "./quote-reply.js";
 import { Sheets } from "./sheets.js";
+import { SendingControls, sendingPrototype } from "./sending-prototype.js";
 import { defineItem, slotItems } from "./slots.js";
 import { branchAvailable, headLabel } from "./sheets/branch.js";
 import { SignIn } from "./signin.js";
@@ -643,6 +644,7 @@ function App() {
         <${LauncherHost} />
         <${FolderRequests} />
         <${Notices} />
+        ${sendingPrototype && html`<${SendingControls} person=${state.me?.id} redraw=${() => store.set({})} />`}
     </div>`;
 }
 

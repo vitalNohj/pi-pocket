@@ -11,6 +11,7 @@ import { useDragToClose } from "./gestures.js";
 import { createPipDraft } from "./pip-attachments.js";
 import { personStorage } from "./person-storage.js";
 import { splitQuote, withQuote } from "./quote-text.js";
+import { sendingIn, sendingPrototype, SendingRow } from "./sending-prototype.js";
 import { usePipResize } from "./pip-window.js";
 import {
     api,
@@ -1228,6 +1229,8 @@ function PipPanel({ leaving, scrim }) {
     const pinned = useRef(true);
     const id = pip?.id;
     const ready = id !== undefined && view.conversation?.id === id;
+    const outgoing = ready && sendingPrototype ? sendingIn(view, me?.id) : null;
+    const lastOutgoing = useRef(null);
     const live = ready ? view.live : { busy: false };
     const rows = ready
         ? view.order
@@ -1272,6 +1275,12 @@ function PipPanel({ leaving, scrim }) {
     // Stay at the newest words while they come, unless someone scrolled up to read.
     useLayoutEffect(() => {
         const box = body.current;
+
+        if (outgoing !== null && lastOutgoing.current !== outgoing) {
+            pinned.current = true;
+        }
+
+        lastOutgoing.current = outgoing;
 
         if (box && pinned.current) {
             box.scrollTop = box.scrollHeight;
@@ -1371,7 +1380,7 @@ function PipPanel({ leaving, scrim }) {
             ${
                 !ready
                     ? html`<div class="pip-loading"><${Spinner} label="Waking PiP" /></div>`
-                    : rows.length === 0 && !busy
+                    : rows.length === 0 && outgoing === null && !busy
                       ? html`<${Welcome}
                             id=${id}
                             name=${me?.name}
@@ -1398,6 +1407,7 @@ function PipPanel({ leaving, scrim }) {
                     <span>Thinking</span>
                 </div>`
             }
+            ${outgoing && html`<${SendingRow} request=${outgoing} floating=${true} />`}
             ${ready && html`<${Waiting} id=${id} view=${view} busy=${busy} />`}
         </div>
         ${

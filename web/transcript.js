@@ -22,6 +22,7 @@ import { markdownRevision } from "./markdown-ext.js";
 import { personStorage } from "./person-storage.js";
 import { quoteParts } from "./quote-text.js";
 import { fromServer } from "./seen.js";
+import { sendingIn, sendingPrototype, SendingRow } from "./sending-prototype.js";
 import { defineItem, slotItems, slotKey } from "./slots.js";
 import { Highlighted, InlineArtifact } from "./rich.js";
 import {
@@ -3557,7 +3558,9 @@ function placeOf(scroller, column, anchor) {
 }
 
 export function Transcript() {
-    const { view, missing, history, transcriptFrom, holding } = store.state;
+    const { view, missing, history, transcriptFrom, holding, me } = store.state;
+    const outgoing = sendingPrototype ? sendingIn(view, me?.id) : null;
+    const lastOutgoing = useRef(null);
     // A kept session that changed while the tab was away, behind the loading screen until its changes come.
     const held = holding !== null && holding === store.state.conversationId;
     const scroller = useRef(null);
@@ -3683,14 +3686,18 @@ export function Transcript() {
 
         const grew = rows.length > counted.current;
         const newest = rows.at(-1);
+        const sentHere = outgoing !== null && lastOutgoing.current !== outgoing;
+
+        lastOutgoing.current = outgoing;
 
         // A message of your own just sent: the reader goes down to it, from wherever they had scrolled to.
         if (
-            grew &&
-            counted.current > 0 &&
-            newest?.kind === "user" &&
-            view.authors?.[newest.id] === store.state.me?.id &&
-            !stick.current
+            !stick.current &&
+            (sentHere ||
+                (grew &&
+                    counted.current > 0 &&
+                    newest?.kind === "user" &&
+                    view.authors?.[newest.id] === me?.id))
         ) {
             stick.current = true;
             keep.current = null;
@@ -3723,7 +3730,7 @@ export function Transcript() {
         } else if (grew && stick.current && rows.length - start > 2 * TRANSCRIPT_ROWS) {
             store.set({ transcriptFrom: rows[rows.length - TRANSCRIPT_ROWS].id });
         }
-    }, [view, history, start]);
+    }, [view, history, start, outgoing]);
 
     /**
      * The catch-up's rows are drawn and the scroller is where it goes (above): what the reader looked at moves no more
@@ -4131,6 +4138,7 @@ export function Transcript() {
             }
             ${
                 entries.length === 0 &&
+                outgoing === null &&
                 !view.live.busy &&
                 html`<div class="empty hint">
                     <div class="pi">π</div>
@@ -4147,6 +4155,7 @@ export function Transcript() {
                 busy=${busy}
                 conversationId=${conversation.id}
             />
+            ${outgoing && html`<${SendingRow} request=${outgoing} />`}
             <${PendingShells} conversationId=${conversation.id} rows=${rows} />
             ${approvals.map(
                 (approval) => html`<${ApprovalCard} key=${approval.id} approval=${approval} />`,
