@@ -1261,6 +1261,31 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
+        // One chosen person may take the wheel from a driver on a computer, or allow their own calls there, or no longer
+        // (`app.ts` `setRight`).
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === "rights" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{
+                person?: unknown;
+                right?: unknown;
+                on?: unknown;
+            } | null>(request);
+
+            app.setRight(user, second, body?.person, body?.right, body?.on);
+
+            return json(
+                response,
+                200,
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
+            );
+        }
+
         // The folders on another computer, for the folder picker of a new session there.
         if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
             if (!app.policy.mayBrowse(user, second)) {

@@ -63,6 +63,8 @@ import {
     APP_ROOT,
     APPROVAL_DAYS,
     approvalDays,
+    COMPUTER_RIGHTS,
+    type ComputerRight,
     ConfigStore,
     helloUser,
     modulesWith,
@@ -325,6 +327,10 @@ export type ServerView = {
     given: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id. */
     sees: Record<string, string[]>;
+    /** The chosen people who may take the wheel from a driver here (`access.ts` `overridesTurns`). */
+    wheel: string[];
+    /** The chosen people who may allow a call their own message led to here (`access.ts` `allowsOwn`). */
+    allows: string[];
     shareNew: boolean;
 };
 
@@ -2883,6 +2889,8 @@ export class PocketApp {
                         chosen: server.users ?? [],
                         given: (person) => config.givenFolders(undefined, person),
                         sees: (person) => config.seenFolders(undefined, person),
+                        wheel: config.rightHolders(undefined, "wheel"),
+                        allows: config.rightHolders(undefined, "allows"),
                         shareNew: server.shareNew === true,
                     };
                 }
@@ -2899,6 +2907,8 @@ export class PocketApp {
                     chosen: runner.users ?? [],
                     given: (person) => config.givenFolders(id, person),
                     sees: (person) => config.seenFolders(id, person),
+                    wheel: config.rightHolders(id, "wheel"),
+                    allows: config.rightHolders(id, "allows"),
                     shareNew: runner.shareNew === true,
                 };
             },
@@ -2955,6 +2965,8 @@ export class PocketApp {
             sees: Object.fromEntries(
                 (server.users ?? []).map((id) => [id, [...this.config.seenFolders(undefined, id)]]),
             ),
+            wheel: [...this.config.rightHolders(undefined, "wheel")],
+            allows: [...this.config.rightHolders(undefined, "allows")],
             shareNew: server.shareNew === true,
         };
     }
@@ -3242,6 +3254,55 @@ export class PocketApp {
 
         if (!on) {
             await this.handOver(person, id);
+        }
+
+        this.accessChanged();
+    }
+
+    /**
+     * Who is in charge of computer `id` gives `person` one right there, or takes it back: to take the wheel from a
+     * driver (`wheel`, `access.ts` `overridesTurns`), or to allow a call their own message led to while approvals need
+     * someone else (`allows`, `allowsOwn`). Only someone chosen there who prompts. Taking it back undoes nothing done
+     * with it: who took the wheel keeps it, and a call they allowed stays allowed.
+     */
+    setRight(by: User, id: string, person: unknown, right: unknown, on: unknown): void {
+        if (id !== THIS_SERVER) {
+            this.runners.require(id);
+        }
+
+        this.policy.requireManage(by, id);
+
+        if (
+            typeof person !== "string" ||
+            !(COMPUTER_RIGHTS as readonly unknown[]).includes(right) ||
+            typeof on !== "boolean"
+        ) {
+            throw new HttpError(400, "Send person, right (wheel or allows), and on.");
+        }
+
+        const target = this.config.userById(person);
+
+        if (target === undefined || !this.policy.mayUse(target, id)) {
+            throw new HttpError(400, "Choose them for this computer first.");
+        }
+
+        if (this.policy.inCharge(target, id)) {
+            throw new HttpError(400, "Who is in charge of a computer needs no such right there.");
+        }
+
+        if (target.role === "viewer") {
+            throw new HttpError(400, "A viewer cannot prompt: make them a user first.");
+        }
+
+        if (
+            !this.config.setRight(
+                id === THIS_SERVER ? undefined : id,
+                person,
+                right as ComputerRight,
+                on,
+            )
+        ) {
+            throw new HttpError(400, "Choose them for this computer first.");
         }
 
         this.accessChanged();
@@ -4208,7 +4269,9 @@ export class PocketApp {
             user: {
                 ...helloUser(user),
                 // May they start sessions on this server (`access.ts` `mayStart`): the app offers New only then.
-                mayStart: this.#mayStartHere(user),
+                // And the computers where they may take the wheel from a driver (`wheel`), or allow a call their own
+                // message led to (`allows`): those they are in charge of, and those where they were given it.
+                ...this.#tellRights(user),
                 // May they link computers of their own (`access.ts` `mayLink`): the Runners sheet offers it.
                 mayLink: this.policy.mayLink(user),
                 // Does the owner let them invite people (`access.ts` `invites`): the app offers Invite someone only then.
@@ -4754,7 +4817,8 @@ export class PocketApp {
     /**
      * Why this person may not allow a call, or undefined when they may. With the "others" rule, nobody can allow a call
      * their own message led to, but who is in charge of the session's computer (`access.ts` `inCharge`: the owner here,
-     * a runner's linker there), who always can. Denying is open to anyone who can steer.
+     * a runner's linker there), who always can, and the people they let there (`allowsOwn`). A call nobody is known to
+     * have asked for stays with who is in charge. Denying is open to anyone who can steer.
      */
     cannotAllow(user: User, request: ApprovalRequest): string | undefined {
         if (user.role === "viewer") {
@@ -4786,7 +4850,7 @@ export class PocketApp {
                 : `Nobody is known to have asked for this call, so only ${this.#inChargeName(request.conversationId)}, who is in charge of ${this.#computerName(computer)}, can allow it.`;
         }
 
-        return request.requestedBy === user.id
+        return request.requestedBy === user.id && !this.policy.allowsOwn(user, computer)
             ? "Someone else has to allow a call that your message led to."
             : undefined;
     }
@@ -4970,11 +5034,12 @@ export class PocketApp {
         this.#pruneTrustRequests();
         this.#approvalsChanged();
 
-        // Someone chosen, or no longer, for this server: their tabs learn whether to offer New.
+        // Someone chosen, or no longer, for this server, or given a right on a computer, or no longer: their tabs learn
+        // whether to offer New, the wheel, and Allow on their own calls.
         for (const user of this.config.users) {
             if (
-                this.#startsHere.has(user.id) &&
-                this.#startsHere.get(user.id) !== this.policy.mayStart(user, THIS_SERVER)
+                this.#rightsTold.has(user.id) &&
+                this.#rightsTold.get(user.id) !== JSON.stringify(this.#rightsOf(user))
             ) {
                 void this.#refreshUser(user.id);
             }
@@ -5281,7 +5346,7 @@ export class PocketApp {
         }
 
         await this.handOver(userId);
-        this.#startsHere.delete(userId);
+        this.#rightsTold.delete(userId);
         this.folderRequests.prune((request) => request.person !== userId);
         this.#pruneTrustRequests();
         this.runners.changed();
@@ -5303,15 +5368,30 @@ export class PocketApp {
         this.#leaveRoom(client, id);
     }
 
-    /** What each person's last hello said of starting sessions here, to send a new one when it changes. */
-    readonly #startsHere = new Map<string, boolean>();
+    /** What each person's last hello said of their rights on computers, to send a new one when they change. */
+    readonly #rightsTold = new Map<string, string>();
 
-    #mayStartHere(user: User): boolean {
-        const may = this.policy.mayStart(user, THIS_SERVER);
+    /**
+     * What a hello tells `user` of computers: may they start sessions on this server, and the computers where they may
+     * take the wheel from a driver (`access.ts` `overridesTurns`) or allow their own calls (`allowsOwn`).
+     */
+    #rightsOf(user: User): { mayStart: boolean; wheel: string[]; allows: string[] } {
+        const computers = [THIS_SERVER, ...this.config.runners.map((each) => each.id)];
 
-        this.#startsHere.set(user.id, may);
+        return {
+            mayStart: this.policy.mayStart(user, THIS_SERVER),
+            wheel: computers.filter((id) => this.policy.overridesTurns(user, id)),
+            allows: computers.filter((id) => this.policy.allowsOwn(user, id)),
+        };
+    }
 
-        return may;
+    /** `#rightsOf` for a hello, remembered: `accessChanged` sends a new hello once it no longer holds. */
+    #tellRights(user: User): { mayStart: boolean; wheel: string[]; allows: string[] } {
+        const rights = this.#rightsOf(user);
+
+        this.#rightsTold.set(user.id, JSON.stringify(rights));
+
+        return rights;
     }
 
     /** Someone's rights changed: their tabs get a fresh hello and session list. */
