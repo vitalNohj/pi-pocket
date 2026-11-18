@@ -37,6 +37,8 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
         // The guest was given /given (and what is in it); no one else anything.
         given: (person) => (person === guest.id ? ["/given"] : []),
         sees: () => [],
+        wheel: [],
+        allows: [],
         shareNew: false,
         ...patch,
     };
@@ -565,6 +567,56 @@ describe("who may share a session", () => {
         assert.equal(policy.mayManageTask(viewer, guest.id, "11"), false);
         // A PiP is its person's alone.
         assert.equal(policy.mayManageTask(owner, guest.id, "40"), false);
+    });
+
+    it("lets who is in charge of a computer override take turns and allow their own calls there, and a chosen user only once given it there", () => {
+        const { policy } = world();
+
+        // In charge: the owner here, the linker on their runner. Nobody else until it is given.
+        for (const may of [policy.overridesTurns.bind(policy), policy.allowsOwn.bind(policy)]) {
+            assert.equal(may(owner, THIS_SERVER), true);
+            assert.equal(may(linker, "runner"), true);
+            assert.equal(
+                may(owner, "runner"),
+                false,
+                "the owner is not in charge of a guest's runner",
+            );
+            assert.equal(may(linker, THIS_SERVER), false);
+
+            for (const each of [guest, viewer, invited, stranger]) {
+                assert.equal(may(each, THIS_SERVER), false);
+                assert.equal(may(each, "runner"), false);
+            }
+
+            assert.equal(may(guest, "nowhere"), false, "no such computer");
+        }
+
+        // Given on this server, to everyone the list can name: only a chosen person who prompts holds it, and only here.
+        const everyone = [guest.id, viewer.id, stranger.id, invited.id];
+        const given = world([
+            computer(THIS_SERVER, { wheel: everyone }),
+            computer("runner", { allows: [guest.id] }),
+        ]).policy;
+
+        assert.equal(given.overridesTurns(guest, THIS_SERVER), true);
+        assert.equal(given.overridesTurns(viewer, THIS_SERVER), false, "a viewer prompts nowhere");
+        assert.equal(given.overridesTurns(stranger, THIS_SERVER), false, "not chosen here");
+        assert.equal(given.overridesTurns(invited, THIS_SERVER), false, "held to one session");
+        assert.equal(given.overridesTurns(guest, "runner"), false, "a right here is not one there");
+
+        // One right is not the other.
+        assert.equal(given.allowsOwn(guest, THIS_SERVER), false);
+        assert.equal(given.allowsOwn(guest, "runner"), true);
+        assert.equal(given.overridesTurns(guest, "runner"), false);
+
+        // The owner, chosen on a guest's runner as anyone is, holds it there once its linker gives it.
+        const chosen = world([
+            computer(THIS_SERVER),
+            computer("runner", { chosen: [owner.id], wheel: [owner.id] }),
+        ]).policy;
+
+        assert.equal(chosen.overridesTurns(owner, "runner"), true);
+        assert.equal(chosen.allowsOwn(owner, "runner"), false);
     });
 
     it("lets the owner invite, and nobody else until the owner lets them", () => {

@@ -1,7 +1,7 @@
 // Who may use a computer, in which folders, and which sessions they have there (`src/server/access.ts`): the parts the
 // Runners sheet (by computer) and the People sheet (by person) share, so a choice made in one is the same choice in the
 // other. Both change the one record kept on the server, over the same routes (`POST /api/runners/:id/users`,
-// `/given`, and `/sees`, `POST /api/sessions/:id/revoke`). One person on one computer is a switch and, under it, one
+// `/given`, `/sees`, and `/rights`, `POST /api/sessions/:id/revoke`). One person on one computer is a switch and, under it, one
 // tree with the rows of the Files panel's: the folders given to them there, and in each the sessions they have in it.
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, attempt, closeSheet, navigate, store } from "../store.js";
@@ -69,6 +69,64 @@ export function choosePerson(computer, person, on) {
 
         return true;
     });
+}
+
+/**
+ * Give `person` one right on `computer`, or take it back (`app.ts` `setRight`): `wheel`, to take the wheel from a
+ * driver there; `allows`, to allow a call their own message led to there. True when it was saved.
+ */
+export function setRight(computer, person, right, on) {
+    return attempt(async () => {
+        keep(await api(route(computer, "rights"), { person: person.id, right, on }));
+
+        return true;
+    });
+}
+
+/** Those rights, as their switches say them: under a person's switch for a computer, once they prompt there. */
+const RIGHTS = [
+    {
+        right: "wheel",
+        name: "Override take turns",
+        on: "On: they take the wheel from someone who is driving here, and turn take turns off.",
+        off: "Off: they ask to drive, and wait for the wheel.",
+        label: "overrides take turns on",
+    },
+    {
+        right: "allows",
+        name: "Allow their own calls",
+        on: "On: while approvals need someone else, they allow the calls their own messages led to here.",
+        off: "Off: while approvals need someone else, someone else allows their calls.",
+        label: "allows their own calls on",
+    },
+];
+
+function RightSwitch({ computer, person, each }) {
+    const [busy, setBusy] = useState(false);
+    const on = computer[each.right].includes(person.id);
+
+    const flip = async () => {
+        setBusy(true);
+
+        try {
+            await setRight(computer, person, each.right, !on);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return html`<div class="setting wrap" data-right=${each.right}>
+        <div class="grow">
+            <div class="small">${each.name}</div>
+            <div class="muted small">${on ? each.on : each.off}</div>
+        </div>
+        <${Switch}
+            on=${on}
+            disabled=${busy}
+            label=${`${person.name} ${each.label} ${computer.name}: ${on ? "on" : "off"}`}
+            onChange=${flip}
+        />
+    </div>`;
 }
 
 /**
@@ -473,6 +531,11 @@ export function AccessRow({ computer, person, lead, title }) {
     const sessions = sessionsOf(computer, person);
     // Folders are for those who start sessions: who steers, and is not held to one session.
     const starts = chosen && person.role === "guest" && !person.sessions;
+    // The rights given one person at a time are for those who prompt here; a server from before them names none.
+    const rights =
+        chosen && person.role !== "viewer" && !person.sessions && Array.isArray(computer.wheel)
+            ? RIGHTS.filter((each) => Array.isArray(computer[each.right]))
+            : [];
 
     const toggle = async () => {
         if (
@@ -523,6 +586,15 @@ export function AccessRow({ computer, person, lead, title }) {
                 onChange=${toggle}
             />
         </div>
+        ${rights.map(
+            (each) =>
+                html`<${RightSwitch}
+                    key=${each.right}
+                    computer=${computer}
+                    person=${person}
+                    each=${each}
+                />`,
+        )}
         ${
             (chosen || sessions.length > 0) &&
             html`<${AccessTree} computer=${computer} person=${person} starts=${starts} />`

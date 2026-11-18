@@ -21,6 +21,7 @@ import {
     attempt,
     canInvite,
     canStart,
+    allowsOwn,
     canSteer,
     chatReadStored,
     collab,
@@ -2317,8 +2318,9 @@ function AllSessions({ compact = false }) {
                 session.inCharge !== true &&
                 // Nobody known to have asked is not someone else: the server leaves that one to who is in charge of the
                 // session's computer.
+                // Their own call is theirs to allow where who is in charge lets them (`store.js` `allowsOwn`).
                 (session.approval.requestedBy === undefined ||
-                    session.approval.requestedBy === me?.id)
+                    (session.approval.requestedBy === me?.id && !allowsOwn(session)))
             }
             onReview=${onReview}
             onAnswer=${onAnswer}
