@@ -65,7 +65,10 @@ function GuardModel({ owner, model, onStart }) {
     </div>`;
 }
 
-/** Who may allow a risky call: anyone who can steer, or (for guests) someone other than whoever asked for it. */
+/**
+ * Who may allow a risky call: anyone who can steer, or someone other than whoever asked for it (who is in charge of the
+ * session's computer always may: `App.cannotAllow`).
+ */
 function ApprovalRule({ owner }) {
     const others = store.state.server?.approvalRule === "others";
     const change = () =>
@@ -75,7 +78,8 @@ function ApprovalRule({ owner }) {
         <div class="grow">
             <div class="small">Approvals need someone else</div>
             <div class="muted small">
-                A guest cannot allow a call that their own message led to. You always can.
+                Nobody can allow a call that their own message led to, except who is in charge of the
+                session's computer.
             </div>
         </div>
         <${Switch}
