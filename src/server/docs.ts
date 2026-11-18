@@ -37,7 +37,11 @@ export type SessionMeta = {
     /** The session this one was forked from, and the last entry it inherited; no entry: forked before the first message. */
     forkedFrom?: { id: number; entryId?: number };
     /** The session that started this one (`linked-sessions.ts`): a link only, which gives no access and owns nothing. */
-    linkedFrom?: { id: number };
+    linkedFrom?: {
+        id: number;
+        /** Automatic end-of-run reports to the session that started this one. Omission keeps all reports. */
+        report?: "all" | "none";
+    };
     /**
      * False: this session, as a lead, takes no run-end answers from the sessions it started (`linked-sessions.ts`,
      * `reports`), and a message from it asks the target to send its answer. Absent: it takes them.

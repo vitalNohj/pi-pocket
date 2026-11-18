@@ -404,6 +404,7 @@ interface HumanLinkedSessions {
             model?: string;
             thinking?: ModelThinkingLevel;
             cwd?: string;
+            report?: "all" | "none";
         },
         key: string,
     ): Promise<{ session: ConversationId; address: string }>;
@@ -415,6 +416,7 @@ Since 0.16.0 · Stable
 
 `cwd` is since 0.19.0. It names an existing folder for the new session, as in [`host.linkedSessions.start`](host.md#linkedsessions). A blank `cwd` counts as no `cwd`. A relative `cwd` resolves against the folder of the server process, not the folder of the source. An older Pi Pocket ignores it.
 
+- `report` (since 0.29.0) selects automatic end-of-run reports: `"all"` (the default) or `"none"`, as in [`host.linkedSessions.start`](host.md#linkedsessionsstart). The setting survives server restarts; a repeated start keeps its first setting. `"none"` suppresses done, failed, and aborted reports without hiding the session or stopping explicit messages. Older versions ignore it.
 - `start` acts as the authenticated person and bound source, never the source's last requester. There is no actor override. Current seeing, steering, turn, plan, spend, team, model allow-list, and provider checks apply. The person must see all sessions to start one.
 - Explicit `thinking` must be a level that the model has; it is never silently lowered. Omission inherits the level of the source, lowered to one that the model has. Use `host.modelInfo` for effective choices.
 - Use a stable, module-namespaced key. A receipt belongs to the same clicking person; a key recorded for someone else is a 409. Starts and their initial message reuse the existing linked-session receipt and request ids. No source message or source attribution is changed.

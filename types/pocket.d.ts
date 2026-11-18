@@ -1036,14 +1036,21 @@ export interface LinkedSessions {
             model?: string;
             thinking?: string;
             cwd?: string;
+            /**
+             * Automatic end-of-run reports to the source: all (default), or none. Kept across restarts.
+             * @since 0.29.0
+             * @experimental
+             */
+            report?: "all" | "none";
         },
         key: string,
     ): Promise<{ session: ConversationId; address: string; answers?: boolean }>;
     /**
      * Sends `message` to the linked session at the address `to`: at its next pause (since 0.28.0; before, only with
      * `steer: true`), or with `steer: false` after its run. `answers` (since 0.28.0) says whether its final answer comes
-     * back to the source by itself, which it does when the source started it; otherwise the message asks it to reply
-     * when an answer is needed. An older Pi Pocket does not return it.
+     * back to the source by itself, which it does when the source started it with reports on and did not turn its answers
+     * off with `reports`; otherwise the message asks it to reply when an answer is needed, or, for a session started with
+     * `report: "none"`, follows the starting extension's return instructions. An older Pi Pocket does not return it.
      * @since 0.14.0
      * @experimental
      */
@@ -1195,6 +1202,11 @@ export interface HumanLinkedSessions {
             model?: string;
             thinking?: ModelThinkingLevel;
             cwd?: string;
+            /**
+             * Automatic end-of-run reports to the source: all (default), or none. Kept across restarts.
+             * @since 0.29.0
+             */
+            report?: "all" | "none";
         },
         key: string,
     ): Promise<{ session: ConversationId; address: string }>;
