@@ -1278,7 +1278,7 @@ export class Commands {
             if (patch.keepWarm !== undefined) {
                 const current = meta.keepWarm;
 
-                app.keepWarm.applyChoice(user, id, patch.keepWarm, meta);
+                app.keepWarm.applyChoice(id, patch.keepWarm, meta, app.policy.keepsWarm(user));
                 warmText =
                     meta.keepWarm === current
                         ? undefined

@@ -7,7 +7,16 @@ import { keepWarmFrom } from "../src/server/config.ts";
 import { ChatDoc, type SessionMeta } from "../src/server/docs.ts";
 import { KeepWarm, type KeepWarmDeps, keepWarmLabel } from "../src/server/keep-warm.ts";
 import { cachePrices } from "../src/server/model-cache-facts.ts";
-import { cleanUp, context, newSession, openApp, owner, scriptedModel, work } from "./helpers.ts";
+import {
+    addPerson,
+    cleanUp,
+    context,
+    newSession,
+    openApp,
+    owner,
+    scriptedModel,
+    work,
+} from "./helpers.ts";
 
 const model = (api: string, cost: Partial<Model<Api>["cost"]>) =>
     ({ api, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...cost } }) as Model<Api>;
@@ -126,7 +135,7 @@ test("keep warm: session changes validate together, check permissions, and recor
     const app = await openApp(scriptedModel());
 
     try {
-        const guest = app.config.addUser("Alex", "guest").user;
+        const guest = (await addPerson(app, "Alex", "guest")).user;
         const id = await newSession(app);
         const before = structuredClone(app.sessionMeta(id));
         const activityBefore = await app.harness.snapshot(ChatDoc, id, context);
@@ -190,7 +199,7 @@ test("keep warm: session changes validate together, check permissions, and recor
         assert.equal(app.sessionMeta(id)?.keepWarm, 0.5);
 
         // A viewer cannot steer, and a guest with access to another session cannot change this one.
-        const viewer = app.config.addUser("Bea", "viewer").user;
+        const viewer = (await addPerson(app, "Bea", "viewer")).user;
         const stranger = app.config.addUser("Chris", "guest", []).user;
 
         await assert.rejects(app.commands.updateSession(id, viewer, { keepWarm: 0 }));
@@ -224,6 +233,86 @@ test("keep warm: session changes validate together, check permissions, and recor
             ],
         );
         assert.equal(lines[0]?.userId, guest.id);
+    } finally {
+        await app.close();
+        cleanUp();
+    }
+});
+
+test("keep warm: a user the owner lets turns a session on and picks its time; taken back, they only turn it off", async () => {
+    mkdirSync(work, { recursive: true });
+    const app = await openApp(scriptedModel());
+
+    try {
+        const guest = (await addPerson(app, "Alex", "guest")).user;
+        const other = (await addPerson(app, "Dana", "guest")).user;
+        const viewer = (await addPerson(app, "Bea", "viewer")).user;
+        const id = await newSession(app);
+        const refused = /Only the owner, or someone the owner lets, can keep a session warm/;
+        const told = async (user: typeof guest) => (await app.hello(user)).user.keepsWarm;
+        const shown = (to: typeof guest) =>
+            (
+                app.people(to).find((each) => each.id === guest.id) as
+                    { keepsWarm?: true } | undefined
+            )?.keepsWarm;
+
+        // Off until the owner turns it on: the page is told so, and the server refuses.
+        assert.equal(await told(owner(app)), true);
+        assert.equal(await told(guest), false);
+        assert.equal(shown(owner(app)), undefined);
+        await assert.rejects(app.commands.updateSession(id, guest, { keepWarm: 1 }), refused);
+
+        // Only the owner sets it, and never for themselves.
+        assert.throws(() => app.setKeepsWarm(guest, guest.id, true), /Only the owner can do that/);
+        assert.throws(() => app.setKeepsWarm(owner(app), owner(app).id, true), /No such person/);
+        assert.throws(() => app.setKeepsWarm(owner(app), "nobody", true), /No such person/);
+        assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
+
+        app.setKeepsWarm(owner(app), guest.id, true);
+        assert.equal(await told(guest), true);
+        assert.equal(shown(owner(app)), true, "the owner, who sets it, sees it");
+        assert.equal(shown(guest), true, "and so do they");
+        assert.equal(shown(other), undefined, "nobody else does");
+
+        // On for a session, another time, and the owner's default when that is on.
+        await app.commands.updateSession(id, guest, { keepWarm: 1 });
+        assert.equal(app.sessionMeta(id)?.keepWarm, 1);
+        await app.commands.updateSession(id, guest, { keepWarm: "break-even" });
+        assert.equal(app.sessionMeta(id)?.keepWarm, "break-even");
+        await app.keepWarm.setSettings(owner(app), { hours: 2 });
+        await app.commands.updateSession(id, guest, { keepWarm: 0 });
+        await app.commands.updateSession(id, guest, { keepWarm: "default" });
+        assert.equal(app.sessionMeta(id)?.keepWarm, undefined, "the default, which is on");
+
+        // It is each person's own: another user is still refused, and so is a viewer whatever their record says.
+        assert.equal(await told(other), false);
+        await assert.rejects(app.commands.updateSession(id, other, { keepWarm: 4 }), refused);
+        app.config.updateUser(viewer.id, { keepsWarm: true });
+        assert.equal(await told(viewer), false);
+        await assert.rejects(app.commands.updateSession(id, viewer, { keepWarm: 4 }));
+        assert.equal(app.sessionMeta(id)?.keepWarm, undefined);
+
+        // The Keep warm settings stay the owner's.
+        await assert.rejects(
+            app.keepWarm.setSettings(guest, { hours: 8 }),
+            /Only the owner can do that/,
+        );
+
+        // Taken back: what is on stays on, and they can only turn it off.
+        await app.commands.updateSession(id, guest, { keepWarm: 4 });
+        app.setKeepsWarm(owner(app), guest.id, false);
+        assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
+        assert.equal(await told(guest), false);
+        assert.equal(shown(owner(app)), undefined);
+        assert.equal(app.sessionMeta(id)?.keepWarm, 4, "the session keeps its time");
+        await assert.rejects(app.commands.updateSession(id, guest, { keepWarm: 8 }), refused);
+        await assert.rejects(
+            app.commands.updateSession(id, guest, { keepWarm: "default" }),
+            refused,
+        );
+        assert.equal(app.sessionMeta(id)?.keepWarm, 4);
+        await app.commands.updateSession(id, guest, { keepWarm: 0 });
+        assert.equal(app.sessionMeta(id)?.keepWarm, 0);
     } finally {
         await app.close();
         cleanUp();

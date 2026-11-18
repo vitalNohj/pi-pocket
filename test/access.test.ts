@@ -619,6 +619,33 @@ describe("who may share a session", () => {
         assert.equal(chosen.allowsOwn(owner, "runner"), false);
     });
 
+    it("lets the owner keep sessions warm, and a user only once the owner lets them; never a viewer", () => {
+        const { policy } = world();
+
+        assert.equal(policy.keepsWarm(owner), true);
+
+        // Off for everyone else until the owner turns it on.
+        for (const each of [guest, viewer, invited, stranger, linker]) {
+            assert.equal(policy.keepsWarm(each), false);
+        }
+
+        const let_ = (person: Person): Person => ({ ...person, keepsWarm: true });
+        const allowed = world(undefined, undefined, [
+            owner,
+            let_(guest),
+            let_(viewer),
+            stranger,
+            linker,
+            invited,
+        ]).policy;
+
+        assert.equal(allowed.keepsWarm(guest), true);
+        // The switch alone is not enough for a viewer, and it is each person's own.
+        assert.equal(allowed.keepsWarm(viewer), false);
+        assert.equal(allowed.keepsWarm(stranger), false);
+        assert.equal(allowed.keepsWarm(linker), false);
+    });
+
     it("lets the owner invite, and nobody else until the owner lets them", () => {
         const { policy } = world();
 
