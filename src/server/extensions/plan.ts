@@ -290,7 +290,9 @@ export function blockedInPlanMode(
         args.action === "navigate" &&
         /^\s*data:/i.test(String(args.url ?? ""));
 
-    if (tool === "browser" && BROWSER_LOOKS.has(String(args.action)) && !scripted) {
+    const saving = tool === "browser" && args.action === "screenshot" && args.path !== undefined;
+
+    if (tool === "browser" && BROWSER_LOOKS.has(String(args.action)) && !scripted && !saving) {
         return undefined;
     }
 
@@ -302,7 +304,9 @@ export function blockedInPlanMode(
         tool === "bash"
             ? "This command is not a simple read-only one"
             : tool === "browser"
-              ? `The browser's ${String(args.action)} can change things on the page`
+              ? saving
+                  ? "The browser's screenshot with a path writes a file"
+                  : `The browser's ${String(args.action)} can change things on the page`
               : `The ${tool} tool can change things`;
 
     return `Plan mode is on: ${what}, so it is blocked. Keep exploring with read and read-only commands, then propose your plan; a person approves it before anything changes.`;
