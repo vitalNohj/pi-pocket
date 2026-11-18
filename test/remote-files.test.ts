@@ -38,8 +38,9 @@ import { Workspace } from "../src/server/workspace.ts";
 
 const there = join(root, "computer");
 const outside = join(root, "server-only.png");
+// An RGBA pixel: Pi 1.5.2's read tool cannot prepare a grey-and-alpha PNG for the model.
 const PNG = Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=",
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
     "base64",
 );
 const SVG =

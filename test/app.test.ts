@@ -1750,7 +1750,7 @@ test("a composer Interrupt delivers several queued messages after its answer, in
 
 test("a composer Interrupt keeps everyone's queued modes, files, images and entries", async () => {
     const id = await newSession();
-    const guest = app.config.addUser("Alex", "guest").user;
+    const guest = app.config.addUser("Alex", "guest", [String(id)]).user;
     const png = Buffer.from(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
         "base64",
@@ -2082,7 +2082,7 @@ test("Stop holds queued follow-ups and steers, and sends nothing until someone s
 
 test("a held message is withdrawn by its sender or the driver, and edited by its sender only", async () => {
     const id = await newSession();
-    const guest = app.config.addUser("Held guest", "guest").user;
+    const guest = app.config.addUser("Held guest", "guest", [String(id)]).user;
 
     try {
         await app.commands.submit(id, owner(), { text: "stream a long answer", requestId: "hd-1" });
