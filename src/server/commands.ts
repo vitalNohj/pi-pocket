@@ -707,7 +707,7 @@ export class Commands {
         user: User,
         path: string,
         { runner, signal }: { runner?: string; signal?: AbortSignal } = {},
-    ): Promise<{ id: ConversationId }> {
+    ): Promise<{ id: ConversationId; notes?: string[] }> {
         const app = this.#app;
         let session: PiSession;
         let cwd: string;
@@ -811,6 +811,7 @@ export class Commands {
         const start = this.#defaultModel(session);
         const title = session.title.slice(0, MAX_TITLE);
         const now = Date.now();
+        let copies = new Map<EntryId, string>();
         const conversation = await app.harness.createConversation(
             {
                 ownership: { kind: "ownerless" },
@@ -835,7 +836,7 @@ export class Commands {
                         fromPi: { session: session.id, count: session.count },
                         ...(runner === undefined ? {} : { runner, runnerPermission }),
                     };
-                    await writePiSession(tx, id, session, {
+                    copies = await writePiSession(tx, id, session, {
                         session: session.id,
                         title: session.title,
                         file: path,
@@ -844,10 +845,16 @@ export class Commands {
             },
             context,
         );
+        // What extensions keep beside Pi's file comes along, before the person opens the session. Only a file on this
+        // machine: a path on a linked computer is not one here.
+        const notes =
+            runner === undefined
+                ? await app.piSessions.carryCompanions(path, conversation.id, copies, context)
+                : [];
 
         void this.recordRepo(conversation.id, cwd);
 
-        return { id: conversation.id };
+        return { id: conversation.id, ...(notes.length === 0 ? {} : { notes }) };
     }
 
     /**

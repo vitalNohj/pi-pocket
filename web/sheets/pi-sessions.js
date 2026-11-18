@@ -228,10 +228,15 @@ export function PiSessionSheet({ path, runner }) {
                     return;
                 }
 
-                open(result.id);
+                const { id, notes = [] } = result;
+
+                open(id);
                 notify(
                     "info",
-                    "Continued from Pi. Pi has the conversation as Pi left it; nothing it did runs again.",
+                    [
+                        "Continued from Pi. Pi has the conversation as Pi left it; nothing it did runs again.",
+                        ...notes,
+                    ].join(" "),
                 );
             } finally {
                 going.current = false;
@@ -267,6 +272,13 @@ export function PiSessionSheet({ path, runner }) {
                 <dt>Messages</dt>
                 <dd>${info.messages}</dd>
             </div>
+            ${
+                info.companions?.length > 0 &&
+                html`<div>
+                    <dt>Includes</dt>
+                    <dd>${info.companions.join(", ")}</dd>
+                </div>`
+            }
         </dl>
         ${
             !info.cwdExists &&

@@ -23,6 +23,7 @@ export const SIDEBAR = [
             ["docs/extensions/inbox.md", "Delivering outside data"],
             ["docs/extensions/relay.md", "Relay connectors"],
             ["docs/extensions/workspaces.md", "Execution environments for workspaces"],
+            ["docs/extensions/pi-session-companions.md", "Files that come with Pi's sessions"],
             ["docs/extensions/app.md", "Adding to the app"],
             ["docs/extensions/routes.md", "Routes"],
             ["docs/extensions/public-pages.md", "Public pages"],
