@@ -1,12 +1,25 @@
-// Project trust gates .agents/skills and model defaults from .pi/settings.json. The bar asks the owner when a
-// session's project has either and nobody decided yet; /trust shows and changes the decision shared with Pi's CLI.
+// Project trust gates .agents/skills and model defaults from .pi/settings.json. The bar asks who is in charge of the
+// session's computer when its project has either and nobody decided yet; /trust shows and changes the decision, which
+// on this server is the one Pi's CLI goes by. Anyone else who prompts there sees that it waits, and for whom; who is in
+// charge hears of it once (`src/server/trust-requests.ts`).
 // Trusting model defaults affects only later new sessions, never the open session.
-import { useEffect } from "preact/hooks";
-import { actions, attempt, closeSheet, notify, openSheet, store } from "./store.js";
+import { useEffect, useRef } from "preact/hooks";
+import { actions, attempt, canSteer, closeSheet, notify, openSheet, store } from "./store.js";
 import { html, Icon, Loader, Sheet, shortPath } from "./ui.js";
 
-/** Only the owner decides which projects Pi trusts: the answer goes into Pi's own settings. */
-export const trustAvailable = () => store.state.me?.role === "owner";
+/**
+ * Whether I decide which projects Pi trusts on the open session's computer: who is in charge of it (`access.ts`
+ * `inCharge`), the owner on this server (the answer goes into Pi's own settings) and a runner's linker there. With no
+ * session open, this server's.
+ */
+export function trustAvailable() {
+    const { me, runners, view } = store.state;
+    const runner = view.conversation?.runner;
+
+    return runner
+        ? runners.some((each) => each.id === runner && each.createdBy === me?.id)
+        : me?.role === "owner";
+}
 
 /** The folders whose question the owner put off in this tab ("Not now"): the sheet and `/trust` still answer it. */
 const LATER_KEY = "pocket.trustLater";
@@ -25,12 +38,26 @@ function putOff(folder) {
 }
 
 /** What the server said about the open conversation's project, when it was for its folder now. */
-export function currentTrust() {
+function answer() {
     const { trust, conversationId, view } = store.state;
 
     return trust?.conversationId === conversationId && trust.cwd === view.agent?.cwd
         ? trust.info
         : null;
+}
+
+/** The project's trust, for who decides it: null until the server said, and for anyone else. */
+export function currentTrust() {
+    const info = answer();
+
+    return info && "folder" in info ? info : null;
+}
+
+/** For anyone else: whether the project waits for a decision, whose, and whether they heard (`{ waiting, by, asked }`). */
+export function trustWait() {
+    const info = answer();
+
+    return info && "waiting" in info ? info : null;
 }
 
 /** Fetch whether Pi trusts the open conversation's project, unless that is known for its folder (or `force`). */
@@ -112,20 +139,71 @@ async function decide(choice) {
     notify("info", `Trusted ${where}.${skills}${defaults}`);
 }
 
-/** Above the message box, for the owner: this project's skills or settings wait for a trust decision. */
+/** The sessions whose project this tab told who is in charge about: once each. The server keeps one request for all. */
+const toldOf = new Set();
+
+/**
+ * Above the message box: this project's skills or settings wait for a trust decision. Who is in charge of the session's
+ * computer is asked; anyone else who prompts here sees that it waits for them.
+ */
 export function TrustBar() {
-    const { conversationId } = store.state;
+    const { conversationId, trustRequests } = store.state;
     const cwd = store.state.view.agent?.cwd;
     const mine = trustAvailable();
+    const reads = mine || canSteer();
+    const first = useRef(true);
 
     useEffect(() => {
-        if (mine) {
+        if (reads) {
             loadTrust();
         }
-    }, [conversationId, cwd, mine]);
+    }, [conversationId, cwd, reads]);
+    // A project was asked about, decided, or put away: what this session's project waits for may be different now.
+    useEffect(() => {
+        if (first.current) {
+            first.current = false;
+        } else if (reads) {
+            loadTrust({ force: true });
+        }
+    }, [trustRequests]);
     const info = currentTrust();
+    const wait = mine ? null : trustWait();
+    const tell = !mine && canSteer() && wait?.waiting === true && !wait.asked;
 
-    if (!mine || !info?.ask || later().has(info.folder)) {
+    useEffect(() => {
+        const key = `${conversationId}\n${cwd}`;
+
+        if (tell && !toldOf.has(key)) {
+            toldOf.add(key);
+            // Its `trust-requests` event brings the answer to every tab, this one too.
+            actions.askTrust().catch(() => {});
+        }
+    }, [tell, conversationId, cwd]);
+
+    if (!mine) {
+        if (!canSteer() || !wait?.waiting || later().has(cwd)) {
+            return null;
+        }
+
+        return html`<div class="trust-bar" data-part="trust-wait">
+            <span class="grow">
+                <strong>Waiting for ${wait.by} to trust this project.</strong>${" "}Until then, its own
+                skills and model defaults stay off.
+            </span>
+            <span class="trust-actions">
+                <button
+                    class="icon-button"
+                    aria-label="Hide"
+                    title="Hide: shown again in a new tab"
+                    onClick=${() => putOff(cwd)}
+                >
+                    <${Icon} name="close" size=${13} />
+                </button>
+            </span>
+        </div>`;
+    }
+
+    if (!info?.ask || later().has(info.folder)) {
         return null;
     }
 
@@ -238,6 +316,16 @@ export function TrustSheet() {
 
     useEffect(() => loadTrust({ force: true }), []);
     const info = currentTrust();
+    const wait = trustWait();
+
+    if (wait) {
+        return html`<${Sheet} title="Project trust" onClose=${closeSheet}>
+            <p>
+                ${wait.by} is in charge of this computer, and decides which projects Pi trusts on it.
+                ${wait.waiting ? ` This project waits for that: until then, its own skills and model defaults stay off.` : ""}
+            </p>
+        <//>`;
+    }
 
     if (!info) {
         return html`<${Sheet} title="Project trust" onClose=${closeSheet}>
@@ -267,7 +355,9 @@ export function TrustSheet() {
         </p>
         ${
             !trustAvailable()
-                ? html`<p class="muted small">Only the owner can change this.</p>`
+                ? html`<p class="muted small">
+                      Only who is in charge of this computer can change this.
+                  </p>`
                 : !info.unreadable &&
                   html`<div class="group">
                       <${Choice}

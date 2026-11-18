@@ -173,6 +173,7 @@ import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.t
 import { AccessPolicy, inFolder, THIS_SERVER } from "./access.ts";
 import { realFolder } from "../runner/folders.ts";
 import { FolderRequests } from "./folder-requests.ts";
+import { TrustRequests, type TrustWait } from "./trust-requests.ts";
 import { checkedContext } from "./admission.ts";
 import { type ApprovalView, DAY_MS, FolderApprovals } from "./folder-approvals.ts";
 import {
@@ -434,6 +435,8 @@ export class PocketApp {
     readonly policy: AccessPolicy;
     /** New folders on this server waiting for an approval (`folder-requests.ts`). */
     readonly folderRequests: FolderRequests;
+    /** Projects that wait for who is in charge of their computer to trust them (`trust-requests.ts`). */
+    readonly trustRequests: TrustRequests;
     /** Approvals of folders and shared sessions, for every computer (`folder-approvals.ts`). */
     readonly folderApprovals: FolderApprovals;
     /** Other computers that run sessions' tools (`runners.ts`): their links, keys, and environments. */
@@ -644,6 +647,17 @@ export class PocketApp {
                     request.computer === THIS_SERVER ? undefined : request.computerName,
                 ),
             now: () => this.now(),
+        });
+        this.trustRequests = new TrustRequests({
+            person: (id) => this.config.userById(id),
+            inCharge: (person, computer) => this.policy.inCharge(person, computer),
+            changed: () => this.#trustRequestsChanged(),
+            asked: (request) =>
+                this.alerts.trustRequest(
+                    request,
+                    this.policy.inChargeOf(request.session),
+                    request.computer === THIS_SERVER ? undefined : request.computerName,
+                ),
         });
         this.#lockFile = join(options.dataDir, "harness.lock");
         this.#log = options.log ?? ((line) => console.log(line));
@@ -3665,6 +3679,23 @@ export class PocketApp {
             client.send("folder-requests", this.folderRequests.list(client.user));
         }
     }
+
+    /**
+     * Each person's tabs hear the projects that wait for them to decide. Everyone hears, with an empty list too: a tab
+     * whose session waits reads its project's trust again.
+     */
+    #trustRequestsChanged(): void {
+        for (const client of this.#clients) {
+            client.send("trust-requests", this.trustRequests.list(client.user));
+        }
+    }
+
+    /** End the trust requests whose asker no longer prompts in their session: removed, a viewer now, or it is gone. */
+    #pruneTrustRequests(): void {
+        this.trustRequests.prune((request) =>
+            this.policy.maySteer({ id: request.person }, request.session),
+        );
+    }
     /**
      * May `user` browse this server's folders, to choose one for a new session (`access.ts` `mayBrowse`): whoever the
      * owner chose for this server, and steers. A session's own folder, in its Files panel, follows the session instead.
@@ -4090,6 +4121,7 @@ export class PocketApp {
         return {
             ...(thisServer === undefined ? {} : { thisServer }),
             folderRequests: this.folderRequests.list(user),
+            trustRequests: this.trustRequests.list(user),
             folderApprovals: this.sessionApprovals(user),
             user: {
                 id: user.id,
@@ -4837,6 +4869,7 @@ export class PocketApp {
                       request.folder,
                   ),
         );
+        this.#pruneTrustRequests();
         this.#approvalsChanged();
 
         // Someone chosen, or no longer, for this server: their tabs learn whether to offer New.
@@ -5152,6 +5185,7 @@ export class PocketApp {
         await this.handOver(userId);
         this.#startsHere.delete(userId);
         this.folderRequests.prune((request) => request.person !== userId);
+        this.#pruneTrustRequests();
         this.runners.changed();
         removeAvatar(this.dataDir, userId);
         this.pushStore?.removeUser(userId);
@@ -5402,27 +5436,99 @@ export class PocketApp {
     }
 
     /**
-     * Whether Pi trusts the project a conversation works in, and the project skills that wait for it. The owner's: the
-     * skills may be in folders above the session's, which someone invited to it cannot see.
+     * Whether Pi trusts the project a conversation works in, and the project skills that wait for it. For who is in
+     * charge of the conversation's computer alone (`access.ts` `inCharge`: the owner here, a runner's linker there): they
+     * decide which projects Pi trusts there, and the skills may be in folders above the session's, which someone given
+     * only that folder cannot see. Everyone else gets `trustFor`.
      */
     projectTrust(id: ConversationId, user: User): ProjectTrust {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner decides which projects Pi trusts.");
+        const computer = this.runnerOf(id) ?? THIS_SERVER;
+
+        if (!this.policy.inCharge(user, computer)) {
+            throw new HttpError(
+                403,
+                `Only ${this.#inChargeName(id)}, who is in charge of ${this.#computerName(computer)}, decides which projects Pi trusts there.`,
+            );
         }
 
+        return this.#trustOf(id).trust;
+    }
+
+    /** The name of who is in charge of a conversation's computer, for people. */
+    #inChargeName(id: ConversationId): string {
+        return (
+            this.config.userById(this.policy.inChargeOf(String(this.rootOf(id))))?.name ??
+            "the owner"
+        );
+    }
+
+    /**
+     * A conversation's computer and its project's trust there, as they are now. A project that no longer waits for a
+     * decision ends its request (`trust-requests.ts`): it was decided here, in Pi's CLI, or by Pi's settings.
+     */
+    #trustOf(id: ConversationId): { computer: string; trust: ProjectTrust } {
         const runner = this.runnerOf(id);
+        const computer = runner ?? THIS_SERVER;
+        let trust: ProjectTrust;
 
         if (runner !== undefined) {
-            return projectThere(this.#knownFolder(id), runner, this.#remoteDirs()).trust;
+            trust = projectThere(this.#knownFolder(id), runner, this.#remoteDirs()).trust;
+        } else {
+            const cwd = this.cwdOf(id);
+
+            if (this.workspaceScheme(cwd) !== undefined) {
+                throw new HttpError(400, "Project trust is not available for remote workspaces.");
+            }
+
+            trust = readProjectTrust(cwd, this.#skillSources());
         }
 
-        const cwd = this.cwdOf(id);
-
-        if (this.workspaceScheme(cwd) !== undefined) {
-            throw new HttpError(400, "Project trust is not available for remote workspaces.");
+        if (!trust.ask) {
+            this.trustRequests.decided(computer, trust.folder);
         }
 
-        return readProjectTrust(cwd, this.#skillSources());
+        return { computer, trust };
+    }
+
+    /**
+     * What `user` learns of a conversation's project trust: all of it for who is in charge of its computer, who
+     * decides. For anyone else who sees the session, only whether it waits and for whom (`TrustWait`): no folder and no
+     * skill, which may be above the folder they were given.
+     */
+    trustFor(id: ConversationId, user: User): ProjectTrust | TrustWait {
+        const { computer, trust } = this.#trustOf(id);
+
+        return this.policy.inCharge(user, computer)
+            ? trust
+            : {
+                  waiting: trust.ask,
+                  by: this.#inChargeName(id),
+                  asked: this.trustRequests.asked(computer, trust.folder),
+              };
+    }
+
+    /**
+     * `user` prompts in a session whose project waits for a decision that is not theirs: who is in charge hears of it,
+     * once for the project (`trust-requests.ts`). Asked for by the page, never by a read.
+     */
+    askProjectTrust(id: ConversationId, user: User): ProjectTrust | TrustWait {
+        this.requireSteer(user, id);
+
+        const { computer, trust } = this.#trustOf(id);
+
+        if (trust.ask) {
+            const root = this.rootOf(id);
+
+            this.trustRequests.ask(user, {
+                computer,
+                computerName: this.#computerName(computer),
+                folder: trust.folder,
+                session: String(root),
+                title: this.sessionMeta(root)?.title ?? "New session",
+            });
+        }
+
+        return this.trustFor(id, user);
     }
 
     /** Where trust decisions and Pi's settings are, for a folder on another computer (`remote-context.ts`). */
@@ -5459,9 +5565,13 @@ export class PocketApp {
         return scan;
     }
 
-    /** The owner's answer to "trust this project?", saved where Pi's CLI keeps its own, as its `/trust` does. */
+    /**
+     * The answer to "trust this project?" of who is in charge of the computer. On this server it is saved where Pi's CLI
+     * keeps its own, as its `/trust` does; for a runner, here. Reading it again ends the project's request, and everyone
+     * waiting on it hears.
+     */
     setProjectTrust(id: ConversationId, user: User, choice: TrustChoice): ProjectTrust {
-        // Before anything is saved: only the owner may read it, or answer.
+        // Before anything is saved: only who is in charge may read it, or answer.
         const now = this.projectTrust(id, user);
 
         if (now.unreadable) {

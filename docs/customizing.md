@@ -118,8 +118,9 @@ Use a provider and model ID that Pi's list of models knows. Pi Pocket limits thi
 Project defaults need trust:
 
 - Each project with a `.pi/settings.json` can ask, also when it has no model keys. The same decision controls what Pi's terminal app loads.
-- A project with only settings asks the owner above the message box. **Review**, or Menu → **Project trust**, explains the choice.
-- Until the owner trusts the project, the usual order applies.
+- A project with only settings asks above the message box. **Review**, or Menu → **Project trust**, explains the choice.
+- Whoever is in charge of the session's computer answers: the owner on this server, its linker on a runner. Someone else who prompts there sees that the project waits, and for whom.
+- Until the project is trusted, the usual order applies.
 - After trust, only new sessions use project defaults: the open session does not change.
 - No project setting can trust its own project. The decision is shared with Pi's terminal app. Pi Pocket reads `defaultProjectTrust` only from Pi's global settings.
 
