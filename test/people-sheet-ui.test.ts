@@ -277,9 +277,27 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "Gina can prompt: on",
         "Gina links runners: off",
         "Gina invites people: off",
+        "Gina keeps sessions warm: off",
         "Gina may use This server: off",
         "Gina may use Laptop: off",
     ]);
+
+    // Keep sessions warm: off until the owner turns it on, and off again.
+    await flip("Gina keeps sessions warm");
+    await until(
+        () => app.config.userById(guest.id)?.keepsWarm === true,
+        "the server to let Gina keep sessions warm",
+    );
+    await until(
+        async () => (await switches()).includes("Gina keeps sessions warm: on"),
+        "the switch to be on",
+    );
+    await flip("Gina keeps sessions warm");
+    await until(
+        async () => (await switches()).includes("Gina keeps sessions warm: off"),
+        "the switch to be off",
+    );
+    assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
     assert.deepEqual(await folds(), [], "nothing to list where she is not chosen");
     assert.equal(await has("Give Gina a folder on This server"), false);
 
@@ -1304,6 +1322,109 @@ test(
             page = owners;
             await theirs.closeAll({ final: true });
             app.setInvites(owner(app), guest.id, false);
+            app.config.setServerUsers(chosen);
+            app.accessChanged();
+        }
+    },
+);
+
+test(
+    "Keep sessions warm is off for a user until the owner turns it on: only then does a session's card let them turn it on or pick a time",
+    real,
+    async () => {
+        const chosen = app.config.server.users ?? [];
+        // A device of Gina's own, in a browser of its own: a login link in one signed in as someone else asks first.
+        const token = app.config.addDevice(guest.id);
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "people-sheet-warm-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+        // The session's card in its menu: whether the flame (on or off) and each time can be tapped.
+        const card = () =>
+            inPage<{ flame: boolean; times: string[] } | null>(
+                `const card = document.querySelector(".keep-warm-card"); return JSON.stringify(card === null ? null : { flame: card.querySelector(".keep-warm-flame").disabled !== true, times: [...card.querySelectorAll(".keep-warm-bar button")].filter((each) => !each.disabled).map((each) => each.textContent.trim()) })`,
+            );
+        const tap = (selector: string, label?: string) =>
+            inPage(
+                `[...document.querySelectorAll(${JSON.stringify(selector)})].find((each) => ${label === undefined ? "true" : `each.textContent.trim() === ${JSON.stringify(label)}`}).click(); return JSON.stringify(true);`,
+            );
+        const every = ["30 min", "1 h", "2 h", "4 h", "8 h", "Break-even"];
+
+        assert.ok(token !== undefined);
+        // A session of the owner's, shared with her: she prompts in it, and so may change it.
+        app.config.setServerUsers([...new Set([...chosen, guest.id])]);
+        app.setKeepsWarm(owner(app), guest.id, false);
+        app.accessChanged();
+
+        const id = await newSession(app);
+
+        await app.commands.shareSession(id, owner(app), [guest.id]);
+
+        try {
+            const ginas = await theirs.open(1);
+
+            page = ginas;
+            await page.setViewport(DESKTOP);
+            await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await page.navigate(`${base}/s/${String(id)}`);
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(document.querySelector('[data-part="app"]') !== null)`,
+                    ),
+                "the app",
+                20_000,
+            );
+            await inPage(
+                `const { openSheet } = await import("/store.js"); openSheet({ type: "menu" }); return JSON.stringify(true);`,
+            );
+            await until(async () => (await card()) !== null, "the session's keep warm card");
+            assert.equal(
+                await inPage<string>(
+                    `const { store } = await import("/store.js"); return JSON.stringify(store.state.me.id)`,
+                ),
+                guest.id,
+                "signed in as Gina",
+            );
+            assert.deepEqual(
+                await card(),
+                { flame: false, times: [] },
+                "off: she can neither turn it on nor pick a time",
+            );
+
+            // The owner turns it on for her: her card offers every time, without a reload.
+            app.setKeepsWarm(owner(app), guest.id, true);
+            await until(
+                async () => (await card())?.times.length === every.length,
+                "her card to offer the times",
+            );
+            assert.deepEqual(await card(), { flame: true, times: every });
+            await tap(".keep-warm-card .keep-warm-bar button", "1 h");
+            await until(() => app.sessionMeta(id)?.keepWarm === 1, "the session to be kept warm");
+
+            // Taken back: the session keeps its time, and she can only turn it off.
+            app.setKeepsWarm(owner(app), guest.id, false);
+            await until(
+                async () => (await card())?.times.length === 0,
+                "her card to offer no time",
+            );
+            assert.deepEqual(await card(), { flame: true, times: [] });
+            assert.equal(app.sessionMeta(id)?.keepWarm, 1);
+            await tap(".keep-warm-card .keep-warm-flame");
+            // Off is the owner's default here, so the session follows the default again: no time of its own.
+            await until(() => app.sessionMeta(id)?.keepWarm === undefined, "the session to be off");
+            assert.equal(app.keepWarm.policy(id), undefined, "nothing keeps it warm");
+            await until(
+                async () => (await card())?.flame === false,
+                "her card to offer nothing, now that it is off",
+            );
+        } finally {
+            // The tests share one page: the owner's again, whatever happened.
+            page = owners;
+            await theirs.closeAll({ final: true });
+            app.setKeepsWarm(owner(app), guest.id, false);
             app.config.setServerUsers(chosen);
             app.accessChanged();
         }

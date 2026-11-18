@@ -647,6 +647,28 @@ function Rights({ person }) {
         }
         ${
             steers &&
+            html`<${Setting}
+                label="Keep sessions warm"
+                hint=${
+                    person.keepsWarm
+                        ? "On: they turn keep warm on for a session and pick its time. Refreshes may be charged."
+                        : "Off: they can only turn keep warm off for a session."
+                }
+            >
+                <${Switch}
+                    on=${person.keepsWarm === true}
+                    label=${`${person.name} keeps sessions warm: ${person.keepsWarm ? "on" : "off"}`}
+                    onChange=${() =>
+                        attempt(() =>
+                            api(`users/${encodeURIComponent(person.id)}/keeps-warm`, {
+                                on: person.keepsWarm !== true,
+                            }),
+                        )}
+                />
+            <//>`
+        }
+        ${
+            steers &&
             person.approvalDays !== undefined &&
             html`<${Setting}
                 label="Approvals last"

@@ -17,7 +17,7 @@ export const THIS_SERVER = "this-server";
 
 /**
  * A person as the policy needs them. `linksRunners`: the owner let this guest link computers of their own. `invites`:
- * the owner let this guest invite people.
+ * the owner let this guest invite people. `keepsWarm`: the owner let this guest keep sessions warm.
  */
 export type Person = {
     id: string;
@@ -25,6 +25,7 @@ export type Person = {
     sessions?: readonly string[];
     linksRunners?: boolean;
     invites?: boolean;
+    keepsWarm?: boolean;
 };
 
 /** A computer: this server, or a linked runner. */
@@ -208,6 +209,20 @@ export class AccessPolicy {
         return (
             this.mayUse(current, THIS_SERVER) &&
             (access === "view" || (access === "steer" && current.role === "guest"))
+        );
+    }
+
+    /**
+     * May `person` turn keep warm on for a session, or pick its time: the owner always, and the guests the owner lets,
+     * since a refresh may be charged. Turning it off needs none of this; whether they may change that session at all
+     * is `maySteer`.
+     */
+    keepsWarm(person: Pick<Person, "id">): boolean {
+        const current = this.#current(person);
+
+        return (
+            current !== undefined &&
+            (current.role === "owner" || (current.role === "guest" && current.keepsWarm === true))
         );
     }
 

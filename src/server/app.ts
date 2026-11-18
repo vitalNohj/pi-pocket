@@ -2795,6 +2795,10 @@ export class PocketApp {
                 ...(each.invites === true && (viewer.role === "owner" || viewer.id === each.id)
                     ? { invites: true }
                     : {}),
+                // May they keep sessions warm, for the owner, who sets it, and for themselves.
+                ...(each.keepsWarm === true && (viewer.role === "owner" || viewer.id === each.id)
+                    ? { keepsWarm: true }
+                    : {}),
                 // A temporary account, for the owner, who can end that, and for themselves.
                 ...(each.temporary === true && (viewer.role === "owner" || viewer.id === each.id)
                     ? { temporary: true }
@@ -4192,6 +4196,9 @@ export class PocketApp {
                 mayLink: this.policy.mayLink(user),
                 // Does the owner let them invite people (`access.ts` `invites`): the app offers Invite someone only then.
                 invites: this.policy.invites(user),
+                // May they turn keep warm on for a session or pick its time (`access.ts` `keepsWarm`): the session's
+                // card offers those only then.
+                keepsWarm: this.policy.keepsWarm(user),
             },
             // "Tasks expire with the session", for the owner's switch (`tasksMayRun`).
             ...(user.role === "owner" && this.config.server.tasksExpire === true
@@ -5207,6 +5214,27 @@ export class PocketApp {
         }
 
         this.config.updateUser(person, { invites: on ? true : undefined });
+        void this.#refreshUser(person);
+        this.#peopleChanged();
+    }
+
+    /**
+     * The owner lets guest `person` keep sessions warm (turn it on for a session, pick its time), or takes that back.
+     * Off until the owner turns it on. Taking it back changes no session: one they turned on stays on until someone
+     * turns it off.
+     */
+    setKeepsWarm(owner: User, person: string, on: boolean): void {
+        if (owner.role !== "owner") {
+            throw new HttpError(403, "Only the owner can do that");
+        }
+
+        const target = this.config.userById(person);
+
+        if (target === undefined || target.role === "owner") {
+            throw new HttpError(404, "No such person");
+        }
+
+        this.config.updateUser(person, { keepsWarm: on ? true : undefined });
         void this.#refreshUser(person);
         this.#peopleChanged();
     }

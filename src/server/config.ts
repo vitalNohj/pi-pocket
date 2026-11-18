@@ -74,6 +74,11 @@ export interface User {
     /** The owner let this guest invite people (`access.ts` `mayInvite`). The owner always may. */
     invites?: true;
     /**
+     * The owner let this guest keep sessions warm: turn it on for a session and pick its time (`access.ts`
+     * `keepsWarm`). Without it they may only turn it off. The owner always may.
+     */
+    keepsWarm?: true;
+    /**
      * A temporary account, as its invite said: it links no authenticator, so it stays a viewer. Only the owner ends
      * that, and it never comes back (`app.ts` `setAccess`).
      */
@@ -867,6 +872,7 @@ export class ConfigStore {
                 | "approvalDays"
                 | "linksRunners"
                 | "invites"
+                | "keepsWarm"
             >
         > & {
             /** Only ever turned off: a temporary account becomes a full one, never the other way. */
@@ -916,6 +922,10 @@ export class ConfigStore {
 
         if (user.invites !== true) {
             delete user.invites;
+        }
+
+        if (user.keepsWarm !== true) {
+            delete user.keepsWarm;
         }
 
         if (user.temporary !== true) {

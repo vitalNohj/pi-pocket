@@ -308,10 +308,11 @@ export class KeepWarm {
 
     /**
      * Validate and write a session's choice in its update commit. The caller checks access before the commit. Anyone
-     * who can steer may turn it off; only the owner turns it on or picks a time, since a refresh may be charged.
-     * Another person's Default must not turn on a session that is off.
+     * who can steer may turn it off; only who `may` (the owner, and the people the owner lets: `access.ts`
+     * `keepsWarm`) turns it on or picks a time, since a refresh may be charged. Another person's Default must not turn
+     * on a session that is off.
      */
-    applyChoice(user: User, _id: ConversationId, choice: unknown, meta: SessionMeta): void {
+    applyChoice(_id: ConversationId, choice: unknown, meta: SessionMeta, may: boolean): void {
         if (meta.pip !== undefined) {
             throw new HttpError(404, "Not a session");
         }
@@ -323,15 +324,18 @@ export class KeepWarm {
             );
         }
 
-        // A person who is not the owner may only turn it off: "default" too, when the default is Off or is the
+        // Who may not keep sessions warm may only turn it off: "default" too, when the default is Off or is the
         // session's time already.
         const fallback = this.#deps.settings().hours;
         const current = meta.keepWarm ?? fallback;
         const allowed =
             choice === 0 || (choice === "default" && (fallback === 0 || fallback === current));
 
-        if (user.role !== "owner" && !allowed) {
-            throw new HttpError(403, "Only the owner can keep a session warm");
+        if (!may && !allowed) {
+            throw new HttpError(
+                403,
+                "Only the owner, or someone the owner lets, can keep a session warm",
+            );
         }
 
         if (choice === "default") {

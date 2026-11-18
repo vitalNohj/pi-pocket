@@ -650,6 +650,28 @@ describe("sharing and invites", () => {
         );
         assert.equal(app.config.userById(guest.id)?.invites, true);
 
+        // Keep sessions warm is set the same way, by the owner alone.
+        assert.equal((await call(guest, `users/${guest.id}/keeps-warm`, { on: true })).status, 403);
+        assert.equal(
+            (await call(viewer, `users/${guest.id}/keeps-warm`, { on: true })).status,
+            403,
+        );
+        assert.equal(
+            (await call(owner(app), `users/${guest.id}/keeps-warm`, { on: "yes" })).status,
+            400,
+        );
+        assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
+        assert.equal(
+            (await call(owner(app), `users/${guest.id}/keeps-warm`, { on: true })).status,
+            200,
+        );
+        assert.equal(app.config.userById(guest.id)?.keepsWarm, true);
+        assert.equal(
+            (await call(owner(app), `users/${guest.id}/keeps-warm`, { on: false })).status,
+            200,
+        );
+        assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
+
         // Off: no kind of invite, and the ones made before bring nobody in.
         assert.equal(
             (await call(owner(app), `users/${guest.id}/invites`, { on: false })).status,
