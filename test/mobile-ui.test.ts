@@ -1,4 +1,5 @@
 import {
+    addPerson,
     type App,
     cleanUp,
     lastText,
@@ -13,7 +14,7 @@ import {
     work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -1762,6 +1763,142 @@ test("a call's mark keeps its circle while it waits for an approval", real, asyn
         await app.setApprovalRule(owner(app), "anyone");
     }
 });
+
+test(
+    "a guest's `!` command Lancet Guard asks about waits on a card: its person cancels or denies it, and only the owner allows it",
+    real,
+    async () => {
+        // As in the test before: the guard is on, and asks about everything.
+        await app.setExtensionEnabled(owner(app), "guard.ts", true);
+        app.guard.judge = async (_tool, args) =>
+            ({
+                subject: String(args.command),
+                decision: { action: "ask", reason: "risky", source: "test", terminate: false },
+            }) as never;
+
+        const id = await newSession(app);
+        const { user: guest, token } = await addPerson(app, "Tess", "guest");
+        const ran = join(work, "typed.txt");
+        // A browser of her own: a login link in one signed in as someone else asks before it switches.
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "mobile-ui-guest-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+
+        type Shown = {
+            card: { title: string; buttons: string[]; note: boolean } | null;
+            waiting: string[] | null;
+            entries: string[];
+        };
+        const shown = `
+            const card = document.querySelector('[data-part="approval"]');
+            const waiting = document.querySelector(".shell-row.pending");
+
+            return JSON.stringify({
+                card: card && {
+                    title: card.querySelector(".approval-ask").textContent.trim(),
+                    buttons: [...card.querySelectorAll(".approval-actions button")].map((each) => each.textContent.trim()),
+                    note: /Only who is in charge of this computer can allow this/.test(card.textContent),
+                },
+                waiting: waiting && [waiting.querySelector(".muted").textContent.trim(), waiting.querySelector("button").textContent.trim()],
+                entries: [...document.querySelectorAll(".shell-row:not(.pending)")].map((each) => each.querySelector(".shell-head .muted").textContent.trim()),
+            });
+        `;
+
+        try {
+            const tess = await theirs.open(1);
+            const hers = async (): Promise<Shown> =>
+                JSON.parse(await tess.evaluate(shown).catch(() => "{}")) as Shown;
+
+            const run = async (command: string) => {
+                await tess.evaluate(`
+                    const box = document.querySelector(".composer-wrap .composer textarea");
+
+                    box.value = ${JSON.stringify(command)};
+                    box.dispatchEvent(new Event("input", { bubbles: true }));
+                `);
+                await until(
+                    async () =>
+                        (await tess.evaluate(
+                            `return JSON.stringify(document.querySelector('[data-part="send-button"]')?.dataset.state === "ready")`,
+                        )) === "true",
+                    "her Send button",
+                    20_000,
+                );
+                await tess.evaluate(`document.querySelector('[data-part="send-button"]').click()`);
+                await until(async () => (await hers()).card != null, "her card", 20_000);
+            };
+
+            await tess.setViewport(VIEWPORTS.mobile);
+            await tess.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await tess.navigate(`${base}/s/${String(id)}`);
+            await until(
+                async () =>
+                    (await tess
+                        .evaluate(
+                            `return JSON.stringify(document.querySelector(".composer-wrap .composer textarea") !== null)`,
+                        )
+                        .catch(() => "false")) === "true",
+                "her message box",
+                20_000,
+            );
+
+            // Her own command waits: she can cancel or deny it, and cannot allow it.
+            await run(`!echo typed >> ${ran}`);
+            assert.deepEqual(await hers(), {
+                card: {
+                    title: "Lancet Guard asks before your command",
+                    buttons: ["Deny"],
+                    note: true,
+                },
+                waiting: ["waiting for approval", "Cancel"],
+                entries: [],
+            });
+            assert.equal(existsSync(ran), false, "it has not run");
+
+            // The owner, who is in charge of this server, allows it.
+            await fresh();
+            await goTo(id);
+            await until(
+                async () => (await inPage<Shown>(shown).catch(() => undefined))?.card != null,
+                "the owner's card",
+                20_000,
+            );
+            assert.deepEqual(await inPage<Shown>(shown), {
+                card: {
+                    title: "Lancet Guard asks before Tess's command",
+                    buttons: ["Deny", "Allow"],
+                    note: false,
+                },
+                waiting: null,
+                entries: [],
+            });
+            await page.evaluate(
+                `document.querySelector('[data-part="approval"] .approval-actions .primary').click()`,
+            );
+            await until(() => existsSync(ran), "the command to run");
+            await until(async () => (await hers()).entries?.length === 1, "her entry", 20_000);
+            assert.deepEqual(await hers(), { card: null, waiting: null, entries: ["Tess"] });
+            assert.equal(readFileSync(ran, "utf8"), "typed\n");
+
+            // One she cancels from its row never ran, and its card goes.
+            await run(`!echo again >> ${ran}`);
+            await tess.evaluate(`document.querySelector(".shell-row.pending button").click()`);
+            await until(async () => (await hers()).entries?.length === 2, "the cancelled", 20_000);
+            await until(async () => (await hers()).card === null, "her card to go", 20_000);
+            assert.deepEqual(await hers(), {
+                card: null,
+                waiting: null,
+                entries: ["Tess", "Tess · stopped · not shown to Pi"],
+            });
+            assert.equal(readFileSync(ran, "utf8"), "typed\n", "the cancelled one did not run");
+        } finally {
+            await theirs.closeAll({ final: true });
+            app.config.removeUser(guest.id);
+        }
+    },
+);
 
 test("Pi's question shows its answers as buttons a thumb can tap", real, async () => {
     // The test before fakes a guard that asks about every call.

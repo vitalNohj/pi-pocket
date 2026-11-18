@@ -253,6 +253,7 @@ type SessionAsk = {
     subject: string;
     reason: string;
     requestedBy?: string;
+    typedBy?: string;
     form?: true;
     at: number;
     count: number;
@@ -4367,6 +4368,7 @@ export class PocketApp {
                 subject: request.subject.slice(0, ASK_SUBJECT),
                 reason: request.reason.slice(0, ASK_REASON),
                 ...(request.requestedBy === undefined ? {} : { requestedBy: request.requestedBy }),
+                ...(request.typedBy === undefined ? {} : { typedBy: request.typedBy }),
                 ...(request.form === undefined ? {} : { form: true as const }),
                 at: request.createdAt,
                 count: (kept?.count ?? 0) + 1,
@@ -4737,7 +4739,8 @@ export class PocketApp {
      * Why this person may not allow a call, or undefined when they may. With the "others" rule, nobody can allow a call
      * their own message led to, but who is in charge of the session's computer (`access.ts` `inCharge`: the owner here,
      * a runner's linker there), who always can, and the people they let there (`allowsOwn`). A call nobody is known to
-     * have asked for stays with who is in charge. Denying is open to anyone who can steer.
+     * have asked for stays with who is in charge. A command a person typed (`!`) that the guard holds is allowed by who
+     * is in charge alone, whatever the rule. Denying is open to anyone who can steer.
      */
     cannotAllow(user: User, request: ApprovalRequest): string | undefined {
         if (user.role === "viewer") {
@@ -4756,6 +4759,13 @@ export class PocketApp {
             return answerer === user.id
                 ? undefined
                 : "Only the person Pi works for here can answer this.";
+        }
+
+        // A person's own command is not Pi's call: who is in charge of the computer decides what runs on it unasked.
+        if (request.typedBy !== undefined && !this.policy.inCharge(user, computer)) {
+            return computer === THIS_SERVER
+                ? "Only the owner can allow a command someone typed."
+                : `Only ${this.#inChargeName(request.conversationId)}, who is in charge of ${this.#computerName(computer)}, can allow a command someone typed.`;
         }
 
         if (this.config.approvalRule !== "others" || this.policy.inCharge(user, computer)) {
@@ -4834,10 +4844,16 @@ export class PocketApp {
         }
 
         const form = request.form;
+        const typist =
+            request.typedBy === undefined
+                ? undefined
+                : (this.config.userById(request.typedBy)?.name ?? "someone");
         const what =
-            form === undefined
-                ? `${allow ? "allowed" : "denied"} the ${request.tool} call: ${request.subject}`
-                : `${allow ? "answered" : "declined"}: ${form.fields.some((field) => field.choices) ? request.reason : request.subject}`;
+            typist !== undefined
+                ? `${allow ? "allowed" : "denied"} ${typist}'s command: ${request.subject}`
+                : form === undefined
+                  ? `${allow ? "allowed" : "denied"} the ${request.tool} call: ${request.subject}`
+                  : `${allow ? "answered" : "declined"}: ${form.fields.some((field) => field.choices) ? request.reason : request.subject}`;
 
         await this.collab.activity(conversationId, user, snippet(what, 160));
 

@@ -158,6 +158,11 @@ export interface ApprovalRequest {
     /** Who Pi was working for when the call asked: set by `Approvals`, not by the asker. */
     requestedBy?: string;
     /**
+     * Not a call of Pi's: a command this person typed (`!`, `shell.ts`) that the guard holds. Only who is in charge of
+     * the session's computer allows it, whatever the approval rule; it counts as asked for by its person.
+     */
+    typedBy?: string;
+    /**
      * A question for a person instead of a call to allow (`host.ask`): what the card asks, and its fields. Only the
      * person Pi works for answers it; anyone who can steer can decline it. Its values go to the asker, never here.
      */
@@ -290,7 +295,7 @@ export class Approvals {
     request(asked: ApprovalRequest, context: Context): Promise<ApprovalAnswer> {
         // Who asked is fixed now: someone writing to Pi while the call waits does not become its requester.
         const { requestedBy: _ignored, ...rest } = asked;
-        const requestedBy = this.#requesterOf(asked.conversationId);
+        const requestedBy = asked.typedBy ?? this.#requesterOf(asked.conversationId);
         const request: ApprovalRequest =
             requestedBy === undefined ? rest : { ...rest, requestedBy };
         const existing = this.#pending.get(request.id);

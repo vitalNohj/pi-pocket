@@ -79,7 +79,8 @@ export type ShellData = {
     output: string;
     /** Absent when the command did not get to exit. */
     code?: number;
-    status: "done" | "timeout" | "failed" | "interrupted" | "stopped";
+    /** `denied`: the guard held it, and someone denied it: it did not run, and Pi is not told. */
+    status: "done" | "timeout" | "failed" | "interrupted" | "stopped" | "denied";
     /** The output was longer: this is its end. */
     clipped?: boolean;
     taskId: number;
