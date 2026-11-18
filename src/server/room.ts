@@ -125,6 +125,8 @@ export type PeekSummary = {
         subject: string;
         reason: string;
         requestedBy?: string;
+        /** A command this person typed (`!`), not a call of Pi's: who is in charge of the computer allows it. */
+        typedBy?: string;
         /** An extension's question (`host.ask`): answered on its card, where its fields are. */
         form?: true;
     }[];
@@ -1293,6 +1295,7 @@ export class Room {
                     ...(request.requestedBy === undefined
                         ? {}
                         : { requestedBy: request.requestedBy }),
+                    ...(request.typedBy === undefined ? {} : { typedBy: request.typedBy }),
                     ...(request.form === undefined ? {} : { form: true as const }),
                 })),
         };

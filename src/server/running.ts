@@ -216,6 +216,10 @@ async function describeTask(
         case "pocket.shell": {
             const command = await app.shell.describe(node.id);
 
+            if (app.shell.waits(node.id)) {
+                return { label: `waiting for approval to run ${command ?? "a command"}` };
+            }
+
             return { label: command === undefined ? "running a command" : `running ${command}` };
         }
 
