@@ -22,7 +22,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { parseControl, type RunnerPiSession } from "../src/runner/protocol.ts";
 import { Runner } from "../src/runner/runner.ts";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess, newIdentity } from "../src/runner/secure-link.ts";
 import { createHandler } from "../src/server/http.ts";
 import type { User } from "../src/server/config.ts";
 import type { PiSessionSummary } from "../src/server/pi-sessions.ts";
@@ -456,6 +456,35 @@ test("a person given one folder sees and previews only Pi's sessions in it, and 
         app.config.setGivenFolders(runnerId, user.id, []);
         rmSync(elsewhere.path);
     }
+});
+
+test("on a computer a guest linked, its linker reaches Pi's sessions there and the owner does not, unless chosen", async () => {
+    const host = app.config.addUser("Pi host", "guest");
+    const theirs = app.config.addRunner("Host laptop", host.user.id, newIdentity().publicKey).id;
+    const path = join(sessions, "none.jsonl");
+    // The list, a preview, and continuing: each checks who asks before it asks the computer.
+    const statuses = async (who?: string) => [
+        (await request(`?runner=${theirs}`, undefined, undefined, who)).status,
+        (
+            await request(
+                `/preview?${new URLSearchParams({ path, runner: theirs })}`,
+                undefined,
+                undefined,
+                who,
+            )
+        ).status,
+        (await request("/continue", { path, runner: theirs }, undefined, who)).status,
+    ];
+
+    // The owner is no one special on it (`access.ts` `inCharge`): refused, as anyone its linker did not choose.
+    assert.equal(app.policy.inCharge(owner(app), theirs), false);
+    assert.deepEqual(await statuses(), [403, 403, 403]);
+    // Its linker is let in. This computer never connected, so each request gets as far as asking it: 409.
+    assert.equal(app.policy.inCharge(host.user, theirs), true);
+    assert.deepEqual(await statuses(host.token), [409, 409, 409]);
+    // Chosen by its linker, the owner is let in as anyone chosen is.
+    app.config.setRunnerUsers(theirs, [owner(app).id]);
+    assert.deepEqual(await statuses(), [409, 409, 409]);
 });
 
 test("Pi session control messages reject oversized lists, invalid operations, and non-finite metadata", () => {
