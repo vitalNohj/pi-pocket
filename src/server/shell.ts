@@ -4,6 +4,10 @@
  * so it shows in Running now and can be stopped there. A restart while one runs does not run it again: it may have
  * done part of its work, so its entry says it was cut off. The entry goes in as a write submission, which Pi Durable
  * queues while Pi works and places where a message can go.
+ *
+ * With Lancet Guard on, a command from anyone but who is in charge of the session's computer is judged first. One the
+ * guard asks about waits, as a call of Pi's does, for who is in charge to allow it (`PocketApp.cannotAllow`); anyone who
+ * can steer can deny it. A denied command does not run, and Pi is not told of it.
  */
 import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -33,7 +37,15 @@ const MAX_COMMAND = 4000;
 /** Terminal escape codes (colors, cursor moves): some tools print them even when nobody reads a terminal. */
 const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g;
 
-export type ShellInput = { command: string; by: string; name: string; context: boolean };
+/** A command as typed: what its entry keeps. */
+type Typed = { command: string; by: string; name: string; context: boolean };
+/** `held`: why the guard asks about this command; it waits for an answer before it runs. */
+export type ShellInput = Typed & { held?: { reason: string; score?: number } };
+/** An approval's answer, as a command's memo keeps it. */
+type Answer = { allow: boolean; by: string };
+
+/** The id of the approval a held command waits on. */
+const approvalId = (taskId: number): string => `${taskId}:shell`;
 
 const finished = { status: "terminal", outcome: { status: "completed", result: null } } as const;
 
@@ -86,13 +98,54 @@ export class Shell {
             phases: {
                 run: async (task, runtime, context) => {
                     const taskId = Number(task.id);
+                    const { held, ...input } = task.input;
                     // Set before the command starts: finding it set means a restart cut the command off.
                     const started = await runtime.memo<number>("started", context);
-                    let data: ShellData;
+                    let data: ShellData | undefined;
 
                     if (started !== undefined) {
-                        data = { ...task.input, output: "", status: "interrupted", taskId };
-                    } else {
+                        data = { ...input, output: "", status: "interrupted", taskId };
+                    } else if (held !== undefined) {
+                        // It waits here, before it counts as started: a restart while it waits asks again, and one
+                        // after the answer does not.
+                        let answer = await runtime.memo<Answer>("approval", context);
+
+                        if (answer === undefined) {
+                            const scored =
+                                typeof held.score === "number"
+                                    ? ` (score ${held.score.toFixed(2)})`
+                                    : "";
+                            const asked = await this.#app.approvals.request(
+                                {
+                                    id: approvalId(taskId),
+                                    conversationId: runtime.conversationId,
+                                    taskId: task.id,
+                                    tool: "bash",
+                                    subject: input.command,
+                                    reason: `${held.reason}${scored}`,
+                                    ...(held.score === undefined ? {} : { score: held.score }),
+                                    createdAt: Date.now(),
+                                    typedBy: input.by,
+                                },
+                                context,
+                            );
+
+                            answer = await runtime.memo<Answer>(
+                                "approval",
+                                { allow: asked.allow, by: asked.by },
+                                context,
+                            );
+                        }
+
+                        data = this.#refused(
+                            runtime.conversationId,
+                            { ...input, taskId },
+                            held,
+                            answer,
+                        );
+                    }
+
+                    if (data === undefined) {
                         await runtime.memo("started", Date.now(), context);
                         // A workspace URI whose provider is off has no environment: the command fails, as Pi's do.
                         const env = await runtime.env(context).then(
@@ -102,8 +155,8 @@ export class Shell {
 
                         data =
                             "error" in env
-                                ? { ...task.input, output: env.error, status: "failed", taskId }
-                                : await this.#run(task.input, taskId, env.found, context);
+                                ? { ...input, output: env.error, status: "failed", taskId }
+                                : await this.#run(input, taskId, env.found, context);
                     }
 
                     await this.#record(runtime.conversationId, data, context);
@@ -115,13 +168,21 @@ export class Shell {
                 // Recorded once: a command that already wrote its entry keeps it. A stopped one keeps what it printed.
                 const taskId = Number(task.id);
                 const tail = this.#tails.get(taskId);
+                const { held, ...input } = task.input;
+                // Stopped while it waited for its answer: it never ran, so Pi is not told of it.
+                const waited =
+                    held !== undefined &&
+                    (await runtime.memo<number>("started", context)) === undefined;
 
                 this.#tails.delete(taskId);
                 await this.#record(
                     runtime.conversationId,
                     {
-                        ...task.input,
-                        output: tail?.output ?? "",
+                        ...input,
+                        ...(waited ? { context: false } : {}),
+                        output: waited
+                            ? "Stopped while it waited for approval. It did not run."
+                            : (tail?.output ?? ""),
                         ...(tail?.clipped ? { clipped: true } : {}),
                         status: "stopped",
                         taskId,
@@ -136,8 +197,60 @@ export class Shell {
         });
     }
 
+    /**
+     * Why a command the guard held does not run after its answer, as its entry, or undefined when it may run: it was
+     * denied, or its person may no longer run commands here. Pi is told of neither: nothing ran.
+     */
+    #refused(
+        id: ConversationId,
+        input: Typed & { taskId: number },
+        held: NonNullable<ShellInput["held"]>,
+        answer: Answer,
+    ): ShellData | undefined {
+        const app = this.#app;
+
+        if (!answer.allow) {
+            return {
+                ...input,
+                context: false,
+                output: `Lancet Guard asked before this command (${held.reason}), and ${answer.by} denied it. It did not run.`,
+                status: "denied",
+            };
+        }
+
+        // Time passed while it waited: it runs only for someone who may still run commands here.
+        const user = app.config.userById(input.by);
+        let why: string | undefined;
+
+        if (user === undefined) {
+            why = "they are no longer on this server";
+        } else {
+            try {
+                app.requireSee(user, id);
+                app.requireSteer(user, id);
+
+                const meta = app.sessionMeta(app.rootOf(id));
+
+                if (meta !== undefined) {
+                    app.requireRunnerAccess(meta);
+                }
+            } catch (error) {
+                why = describe(error);
+            }
+        }
+
+        return why === undefined
+            ? undefined
+            : {
+                  ...input,
+                  context: false,
+                  output: `${answer.by} allowed this command, but ${input.name} can no longer run commands here: ${why}. It did not run.`,
+                  status: "failed",
+              };
+    }
+
     async #run(
-        input: ShellInput,
+        input: Typed,
         taskId: number,
         env: ExecutionEnv | undefined,
         context: Context,
@@ -234,8 +347,8 @@ export class Shell {
 
     /**
      * Run a command someone typed. With Lancet Guard on, a command from anyone but who is in charge of the session's
-     * computer (`access.ts` `inCharge`: the owner here, a runner's linker there) must be one the guard allows outright:
-     * nobody is asked about it, as nobody would be asked about Pi's own call without the guard.
+     * computer (`access.ts` `inCharge`: the owner here, a runner's linker there) is judged first: one the guard blocks is
+     * refused here, and one it asks about is stored and waits for who is in charge to allow it.
      */
     async start(
         id: ConversationId,
@@ -274,14 +387,22 @@ export class Shell {
             );
         }
 
+        let held: ShellInput["held"];
+
         if (!app.policy.inCharge(user, app.runnerOf(id) ?? THIS_SERVER) && app.guardOn()) {
             const judged = await app.guard.judge("bash", { command }, app.cwdOf(id));
 
-            if (judged !== undefined && judged.decision.action !== "allow") {
+            if (judged?.decision.action === "block") {
                 throw new HttpError(
                     403,
-                    `Lancet Guard does not allow this command to run unasked: ${judged.decision.reason}. Ask Pi to run it instead.`,
+                    `Lancet Guard blocked this command: ${judged.decision.reason}.`,
                 );
+            }
+
+            if (judged?.decision.action === "ask") {
+                const { reason, score } = judged.decision;
+
+                held = { reason, ...(score === undefined ? {} : { score }) };
             }
         }
 
@@ -290,6 +411,7 @@ export class Shell {
             by: user.id,
             name: user.name,
             context: request.context !== false,
+            ...(held === undefined ? {} : { held }),
         };
         // The command and its request id go in one commit: a request sent again finds its command, after a restart too.
         const key =
@@ -378,5 +500,12 @@ export class Shell {
         const task = await this.#app.harness.getTask(taskId, BACKGROUND_CONTEXT);
 
         return task?.kind === TASK ? (task.input as ShellInput).command : undefined;
+    }
+
+    /** Whether a command waits for someone to allow it, and so has not started. */
+    waits(taskId: TaskId): boolean {
+        const id = approvalId(Number(taskId));
+
+        return this.#app.approvals.all().some((each) => each.id === id);
     }
 }

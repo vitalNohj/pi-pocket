@@ -2314,13 +2314,15 @@ function AllSessions({ compact = false }) {
             glow=${moved === session.id && group.slot !== "needs"}
             ownCall=${
                 session.approval !== undefined &&
-                server?.approvalRule === "others" &&
                 session.inCharge !== true &&
-                // Nobody known to have asked is not someone else: the server leaves that one to who is in charge of the
-                // session's computer.
-                // Their own call is theirs to allow where who is in charge lets them (`store.js` `allowsOwn`).
-                (session.approval.requestedBy === undefined ||
-                    (session.approval.requestedBy === me?.id && !allowsOwn(session)))
+                // A command someone typed (`!`) is allowed by who is in charge of the session's computer alone.
+                (session.approval.typedBy !== undefined ||
+                    (server?.approvalRule === "others" &&
+                        // Nobody known to have asked is not someone else: the server leaves that one to who is in
+                        // charge of the session's computer.
+                        // Their own call is theirs to allow where who is in charge lets them (`store.js` `allowsOwn`).
+                        (session.approval.requestedBy === undefined ||
+                            (session.approval.requestedBy === me?.id && !allowsOwn(session)))))
             }
             onReview=${onReview}
             onAnswer=${onAnswer}

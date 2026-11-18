@@ -396,6 +396,17 @@ export class Alerts {
                     people = new Set(app.config.users.map((each) => each.id));
                 }
 
+                // A command someone typed: who is in charge of the computer allows it, here or not; its person knows.
+                const typist =
+                    approval.typedBy === undefined
+                        ? undefined
+                        : (app.config.userById(approval.typedBy)?.name ?? "Someone");
+
+                if (approval.typedBy !== undefined) {
+                    people = new Set(people).add(app.policy.inChargeOf(String(root)));
+                    people.delete(approval.typedBy);
+                }
+
                 for (const userId of people) {
                     const user = app.config.userById(userId);
 
@@ -430,7 +441,10 @@ export class Alerts {
 
                     const may = app.cannotAllow(user, approval) === undefined;
                     const message: PushMessage = {
-                        title: `Pi needs approval · ${title}`,
+                        title:
+                            typist === undefined
+                                ? `Pi needs approval · ${title}`
+                                : `${typist}'s command needs approval · ${title}`,
                         body: snippet(call, 400),
                         url: `/s/${String(approval.conversationId)}`,
                         tag: `approval-${approval.id}`,

@@ -1072,18 +1072,50 @@ describe("review drill fixes for people on a computer", () => {
                 } as never;
             };
 
-            const refused = {
-                status: 403,
-                message:
-                    /^Lancet Guard does not allow this command to run unasked: deletes files\. Ask Pi to run it instead\.$/,
+            // One the guard asks about waits for an answer. Nothing here is ever allowed: it would run.
+            const waiting = (task: number) =>
+                app.approvals.all().find((each) => each.id === `${task}:shell`);
+
+            const held = async (session: ConversationId, user: User, command: string) => {
+                const started = await app.shell.start(session, user, { command, context: false });
+
+                await until(() => waiting(started.taskId) !== undefined, `${command} to wait`);
+
+                return { ...waiting(started.taskId)!, task: started.taskId };
             };
 
-            await assert.rejects(app.shell.start(there, fellow, { command: "rm -rf a" }), refused);
-            await assert.rejects(
-                app.shell.start(there, owner(app), { command: "rm -rf b" }),
-                refused,
-            );
+            const ended = (task: number) =>
+                until(
+                    async () =>
+                        (await app.harness.getTask(task as never, context))?.state.status ===
+                        "terminal",
+                    "the denied command to end",
+                );
+            const onlyHost =
+                /^Only Guard host, who is in charge of Guard laptop, can allow a command someone typed\.$/;
+            const first = await held(there, fellow, "rm -rf a");
+            const second = await held(there, owner(app), "rm -rf b");
+
             assert.deepEqual(judged, ["rm -rf a", "rm -rf b"]);
+            assert.equal(first.typedBy, fellow.id);
+            assert.equal(first.requestedBy, fellow.id, "it counts as its person's");
+            assert.equal(second.typedBy, owner(app).id);
+            // Only the host allows it there: not its person, not the owner, and not with the other rule either.
+            assert.equal(app.cannotAllow(host, first), undefined);
+            assert.equal(app.cannotAllow(host, second), undefined);
+            assert.match(app.cannotAllow(fellow, first) ?? "", onlyHost);
+            assert.match(app.cannotAllow(owner(app), first) ?? "", onlyHost);
+            assert.match(app.cannotAllow(owner(app), second) ?? "", onlyHost);
+            await app.setApprovalRule(owner(app), "anyone");
+            assert.match(app.cannotAllow(owner(app), first) ?? "", onlyHost);
+            await app.setApprovalRule(owner(app), "others");
+            await assert.rejects(app.answerApproval(first.id, true, owner(app)), { status: 403 });
+            assert.notEqual(waiting(first.task), undefined, "refused: it still waits");
+            // Anyone who can steer denies it.
+            assert.equal(await app.answerApproval(first.id, false, fellow), true);
+            assert.equal(await app.answerApproval(second.id, false, host), true);
+            await ended(first.task);
+            await ended(second.task);
 
             const { taskId } = await app.shell.start(there, host, {
                 command: "rm -rf c",
@@ -1094,8 +1126,16 @@ describe("review drill fixes for people on a computer", () => {
             await app.shell.stop(there, host, taskId).catch(() => {});
 
             // On this server it is the other way round: the owner's is free, the host's is judged.
-            await assert.rejects(app.shell.start(here, host, { command: "rm -rf d" }), refused);
+            const third = await held(here, host, "rm -rf d");
+
             assert.deepEqual(judged, ["rm -rf a", "rm -rf b", "rm -rf d"]);
+            assert.equal(
+                app.cannotAllow(host, third),
+                "Only the owner can allow a command someone typed.",
+            );
+            assert.equal(app.cannotAllow(owner(app), third), undefined);
+            assert.equal(await app.answerApproval(third.id, false, owner(app)), true);
+            await ended(third.task);
         } finally {
             app.loader.enabled = enabled;
             app.guard.judge = judge;
