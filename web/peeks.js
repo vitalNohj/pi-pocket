@@ -512,7 +512,7 @@ function PeekAsk({ approval, compact, who }) {
  * Allow or deny a call from its tile, as from its card: the same rules, the same request. A command that does not show
  * whole is not allowed from here: Open shows it on its card, in the conversation that asks (a subagent's, maybe).
  */
-function PeekApproval({ approval, me, rule, whole }) {
+function PeekApproval({ approval, me, rule, inCharge, whole }) {
     const [busy, setBusy] = useState(false);
 
     const answer = (allow) => {
@@ -520,7 +520,7 @@ function PeekApproval({ approval, me, rule, whole }) {
         attempt(() => actions.approve(approval.id, allow)).finally(() => setBusy(false));
     };
 
-    const ownCall = rule === "others" && me?.role !== "owner" && approval.requestedBy === me?.id;
+    const ownCall = rule === "others" && !inCharge && approval.requestedBy === me?.id;
 
     // An extension's question (`host.ask`) is answered on its card, where its fields are: from here, open it or decline.
     if (approval.form) {
@@ -774,6 +774,7 @@ class PeekTile extends Component {
                         approval=${approval}
                         me=${me}
                         rule=${rule}
+                        inCharge=${session.inCharge === true}
                         whole=${wholeOnTile(approval) && !this.state.clipped}
                     />`
                 }

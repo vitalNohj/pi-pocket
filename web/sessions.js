@@ -2314,8 +2314,9 @@ function AllSessions({ compact = false }) {
             ownCall=${
                 session.approval !== undefined &&
                 server?.approvalRule === "others" &&
-                me?.role !== "owner" &&
-                // Nobody known to have asked is not someone else: the server leaves that one to the owner.
+                session.inCharge !== true &&
+                // Nobody known to have asked is not someone else: the server leaves that one to who is in charge of the
+                // session's computer.
                 (session.approval.requestedBy === undefined ||
                     session.approval.requestedBy === me?.id)
             }

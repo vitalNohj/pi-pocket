@@ -1732,6 +1732,35 @@ test("a call's mark keeps its circle while it waits for an approval", real, asyn
         padding: "0px",
         border: "0px",
     });
+
+    // With approvals that need someone else, the owner still allows their own call here: the server tells the page that
+    // they are in charge of this computer (`conversation.inCharge`), and the card goes by that, not by their role.
+    await app.setApprovalRule(owner(app), "others");
+
+    try {
+        const card = () =>
+            inPage<{ rule: string; inCharge: boolean; buttons: string[]; note: boolean } | null>(`
+                const { store } = await import("/store.js");
+                const card = document.querySelector('[data-part="approval"]');
+
+                return JSON.stringify(card && {
+                    rule: store.state.server?.approvalRule ?? "",
+                    inCharge: store.state.view.conversation?.inCharge === true,
+                    buttons: [...card.querySelectorAll(".approval-actions button")].map((each) => each.textContent.trim()),
+                    note: /Someone else has to allow this/.test(card.textContent),
+                });
+            `);
+
+        await until(async () => (await card())?.rule === "others", "the rule in the page", 20_000);
+        assert.deepEqual(await card(), {
+            rule: "others",
+            inCharge: true,
+            buttons: ["Deny", "Allow"],
+            note: false,
+        });
+    } finally {
+        await app.setApprovalRule(owner(app), "anyone");
+    }
 });
 
 test("Pi's question shows its answers as buttons a thumb can tap", real, async () => {

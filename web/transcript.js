@@ -2092,8 +2092,11 @@ function savedAsk(form, approval) {
 function AskCard({ approval }) {
     const { me, users } = store.state;
     const form = approval.form;
-    const owner = users?.find?.((each) => each.role === "owner")?.id;
-    const mine = (approval.requestedBy ?? owner) === me?.id;
+    // With nobody known, who is in charge of this computer answers it: the server says whether that is me.
+    const mine =
+        approval.requestedBy === undefined
+            ? store.state.view.conversation?.inCharge === true
+            : approval.requestedBy === me?.id;
     const [values, setValues] = useState(() => {
         const saved = mine ? savedAsk(form, approval) : null;
 
@@ -2277,10 +2280,11 @@ function ApprovalCard({ approval }) {
         attempt(() => actions.approve(approval.id, allow)).finally(() => setBusy(false));
     };
 
-    // With approvals that need someone else, a guest cannot allow a call their own message led to (the server checks too).
+    // With approvals that need someone else, nobody can allow a call their own message led to, but who is in charge of
+    // this computer (the server says whether that is me, and checks too).
     const ownCall =
         server?.approvalRule === "others" &&
-        me?.role !== "owner" &&
+        store.state.view.conversation?.inCharge !== true &&
         approval.requestedBy === me?.id;
 
     return html`<div class="approval" data-part="approval">
@@ -3113,18 +3117,20 @@ function runStart(conversationId, entries, busy) {
 
 /** Whether this person can answer one of the approvals waiting: one who can steer, and for a call not of their own asking where that needs someone else. */
 function canAnswer(approvals) {
-    const { me, server, users } = store.state;
-    const owner = users?.find?.((each) => each.role === "owner")?.id;
+    const { me, server, view } = store.state;
+    const inCharge = view.conversation?.inCharge === true;
 
     return (
         canSteer() &&
         approvals.some((approval) =>
-            // An ask (`host.ask`) is for the person Pi works for, or the owner when nobody is known.
+            // An ask (`host.ask`) is for the person Pi works for, or who is in charge of this computer when nobody is known.
             approval.form
-                ? (approval.requestedBy ?? owner) === me?.id
+                ? approval.requestedBy === undefined
+                    ? inCharge
+                    : approval.requestedBy === me?.id
                 : !(
                       server?.approvalRule === "others" &&
-                      me?.role !== "owner" &&
+                      !inCharge &&
                       approval.requestedBy === me?.id
                   ),
         )
