@@ -99,6 +99,7 @@ import {
 import { type GuardStatus, LancetGuard } from "./lancet.ts";
 import { withReveal } from "./local-browser.ts";
 import { takeLock } from "./lock.ts";
+import { pendingApprovalsFor } from "./pending-approvals.ts";
 import { Memory } from "./memory.ts";
 import { isThinkingLevel, modelInfo, modelList, resolveModel, THINKING_LEVELS } from "./models.ts";
 import { Updates } from "./updates.ts";
@@ -990,6 +991,7 @@ export class PocketApp {
         const host: PocketHost = {
             guard: this.guard,
             approvals: this.approvals,
+            pendingApprovals: pendingApprovalsFor(this),
             agentDir: getAgentDir(),
             dataDir: this.dataDir,
             pocketVersion: pocketVersion(),
