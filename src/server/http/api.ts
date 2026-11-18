@@ -1017,6 +1017,22 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        /**
+         * Put away a project that waits for a trust decision (`trust-requests.ts`), without deciding: who is in charge of
+         * its computer alone. It is answered in its session (`POST /api/c/:id/trust`). Anyone else learns nothing (404).
+         */
+        if (first === "trust-requests" && second !== undefined && method === "POST") {
+            const body = await readJson<{ dismiss?: unknown } | null>(request);
+
+            if (body?.dismiss !== true) {
+                throw new HttpError(400, "Only dismissing a request is asked for here");
+            }
+
+            app.trustRequests.dismiss(user, second);
+
+            return json(response, 200, { ok: true });
+        }
+
         // This server's record (`ServerView`): its people, saved folders, and rules, for those who manage it.
         if (
             first === "runners" &&

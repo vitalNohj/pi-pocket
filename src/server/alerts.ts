@@ -14,6 +14,7 @@ import { span, type WaitView } from "./limit-gate.ts";
 import { DEFAULT_PREFS, type EmbedderMessage, type PushMessage, type PushPrefs } from "./push.ts";
 import type { Lockout } from "./approval-methods.ts";
 import type { FolderRequestView } from "./folder-requests.ts";
+import type { TrustRequestView } from "./trust-requests.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -159,6 +160,27 @@ export class Alerts {
                     : `${request.name} asks to start a session in ${place}.`,
             url: "/",
             tag: `folder-${request.id}`,
+        });
+    }
+
+    /**
+     * A project waits for a trust decision in someone's session (`trust-requests.ts`): who is in charge of its computer
+     * hears once, in their open tabs (a card that opens the session) and as a push. `where` names a runner.
+     */
+    trustRequest(
+        request: Pick<TrustRequestView, "id" | "person" | "name" | "folder" | "session" | "title">,
+        inCharge: string,
+        where?: string,
+    ): void {
+        if (inCharge === request.person) {
+            return;
+        }
+
+        this.#pushFolders(inCharge, {
+            title: "Trust a project",
+            body: `${request.name}'s session “${request.title}” waits for you to trust ${request.folder}${where === undefined ? "" : ` on ${where}`}.`,
+            url: `/s/${request.session}`,
+            tag: `trust-${request.id}`,
         });
     }
 

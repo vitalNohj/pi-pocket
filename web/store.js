@@ -274,6 +274,8 @@ export const store = {
         thisServer: null,
         /** New folders waiting for an approval (`folder-requests.js`): mine, and for the owner every one. */
         folderRequests: [],
+        /** Projects that wait for me to trust them, on a computer I am in charge of (`trust-requests.ts`). */
+        trustRequests: [],
         /** Approvals kept on the server (`folder-approvals.ts`): mine, and for the owner every one. */
         folderApprovals: [],
         models: [],
@@ -1934,6 +1936,7 @@ const handlers = {
             thisServer: kept(state.thisServer, data.thisServer ?? null),
             tasksExpire: data.tasksExpire === true,
             folderRequests: kept(state.folderRequests, data.folderRequests ?? []),
+            trustRequests: kept(state.trustRequests, data.trustRequests ?? []),
             folderApprovals: kept(state.folderApprovals, data.folderApprovals ?? []),
             models: kept(state.models, data.models),
             guard: kept(state.guard, data.guard),
@@ -2006,6 +2009,9 @@ const handlers = {
     "this-server": (thisServer) => store.set({ thisServer }),
     // New folders waiting for an approval came or went (`folder-requests.js`).
     "folder-requests": (folderRequests) => store.set({ folderRequests }),
+    // A project began to wait for who is in charge to trust it, or was decided or put away (`trust.js`): everyone
+    // hears, those not in charge with an empty list, and a session that waits reads its trust again.
+    "trust-requests": (trustRequests) => store.set({ trustRequests }),
     // Approvals kept on the server came, were used, or ended.
     "folder-approvals": (folderApprovals) => store.set({ folderApprovals }),
     // Pi's lessons changed somewhere: a Memory sheet or menu that shows them fetches them again (`sheets/memory.js`).
@@ -2877,6 +2883,8 @@ export const actions = {
     trust: () => api(`c/${current()}/trust`),
     /** `trust`, `trust-parent`, or `distrust`, as Pi's `/trust` offers them. */
     setTrust: (choice) => api(`c/${current()}/trust`, { choice }),
+    /** Tell who is in charge of the session's computer that its project waits for their decision: once for a project. */
+    askTrust: () => api(`c/${current()}/trust`, { ask: true }),
     /** Pi's sessions from the terminal on this machine; one of them to look at; and one continued as a new session. */
     piSessions: (query = "", runner) =>
         api(`pi-sessions?${new URLSearchParams({ q: query, ...(runner ? { runner } : {}) })}`),

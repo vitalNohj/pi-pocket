@@ -134,7 +134,7 @@ const KINDS = [
     [
         "folders",
         "Folder requests",
-        "when someone asks to start a session in a new folder here",
+        "when someone asks to start a session in a new folder here, or their project waits for you to trust it",
         "owner",
     ],
 ];

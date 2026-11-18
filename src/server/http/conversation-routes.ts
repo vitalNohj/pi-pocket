@@ -413,13 +413,19 @@ export async function conversationRoutes(
         return json(response, 200, { ok: true });
     }
 
-    // Whether Pi trusts the session's project, which its own skills wait for; only the owner answers.
+    // Whether Pi trusts the session's project, which its own skills wait for. Who is in charge of its computer reads all
+    // of it and answers; anyone else who sees the session learns only whether it waits, and for whom.
     if (third === "trust" && method === "GET") {
-        return json(response, 200, app.projectTrust(id, user));
+        return json(response, 200, app.trustFor(id, user));
     }
 
     if (third === "trust" && method === "POST") {
-        const body = await readJson<{ choice?: unknown }>(request);
+        const body = await readJson<{ choice?: unknown; ask?: unknown }>(request);
+
+        // Someone who prompts here and cannot answer: who is in charge hears, once for the project.
+        if (body.ask === true) {
+            return json(response, 200, app.askProjectTrust(id, user));
+        }
 
         if (
             body.choice !== "trust" &&

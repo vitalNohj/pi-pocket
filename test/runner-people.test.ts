@@ -862,6 +862,30 @@ describe("review drill fixes for people on a computer", () => {
         assert.equal(app.canSee(fellow, beside), false, "a folder whose name only starts the same");
         assert.equal(app.canSee(other, inside), false, "the switch is one person's");
         assert.equal(app.canSee(owner(app), inside), false, "and never the owner's by it");
+
+        // Which projects Pi trusts on that computer is its linker's to decide (`inCharge`), not the owner's and not a
+        // chosen person's: both are refused, by the linker's name. The linker is not refused: this computer never
+        // connected, so its folder is still unread (409).
+        const whose =
+            /^Only Folder host, who is in charge of Folder laptop, decides which projects Pi trusts there\.$/;
+
+        for (const user of [owner(app), fellow]) {
+            assert.throws(
+                () => app.projectTrust(inside, user),
+                (error: Error) => whose.test(error.message),
+                user.name,
+            );
+            assert.throws(
+                () => app.setProjectTrust(inside, user, "trust"),
+                (error: Error) => whose.test(error.message),
+                user.name,
+            );
+        }
+
+        assert.throws(
+            () => app.projectTrust(inside, host),
+            /Pi Pocket is still reading this folder on Folder laptop/,
+        );
         // The same folder on another computer is another folder.
         assert.equal(app.policy.seesFolder(fellow, runnerId, "/srv/app/api"), false);
         assert.equal(app.policy.seesFolder(fellow, "this-server", "/srv/app/api"), false);

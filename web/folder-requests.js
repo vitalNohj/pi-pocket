@@ -4,7 +4,7 @@
 // runner's linker there) allows or denies it from the app. Each tab gets only what its person may see: their own
 // requests, and every one on a computer they are in charge of.
 import { useEffect, useState } from "preact/hooks";
-import { api, attempt, store } from "./store.js";
+import { api, attempt, navigate, store } from "./store.js";
 import { html, Spinner } from "./ui.js";
 
 /** What a request asks for, for the one who allows it. */
@@ -135,16 +135,43 @@ function OwnerCard({ request }) {
 }
 
 /**
+ * A project that waits for me to trust it, asked from someone's session on a computer I am in charge of
+ * (`src/server/trust-requests.ts`). It is decided in that session, where its skills and settings are shown: Review goes
+ * there. Not now puts it away without deciding.
+ */
+function TrustCard({ request }) {
+    const review = () => navigate(Number(request.session), { sheet: { type: "trust" } });
+    const dismiss = () =>
+        attempt(() => api(`trust-requests/${encodeURIComponent(request.id)}`, { dismiss: true }));
+
+    return html`<div class="folder-request" role="alert" data-part="trust-request">
+        <div class="small">
+            <strong>${request.name}</strong>'s session <strong>${request.title}</strong> waits for you to
+            trust its project, <code>${request.folder}</code> on ${request.computerName}.
+        </div>
+        <div class="muted small">
+            Until you decide, the project's own skills and model defaults stay off.
+        </div>
+        <div class="row">
+            <button class="button small ghost" onClick=${dismiss}>Not now</button>
+            <button class="button small primary" onClick=${review}>Review</button>
+        </div>
+    </div>`;
+}
+
+/**
  * Every request this tab may see, on this server and on runners: mine as a dialog, others' (on a computer I am in
- * charge of) as cards.
+ * charge of) as cards, with the projects that wait for me to trust them.
  */
 export function FolderRequests() {
-    const { folderRequests, me } = store.state;
+    const { folderRequests, trustRequests, conversationId, me } = store.state;
     const requests = folderRequests ?? [];
+    // In its own session the bar above the message box asks.
+    const trusts = (trustRequests ?? []).filter((each) => Number(each.session) !== conversationId);
 
     useTick(requests.length > 0);
 
-    if (!me || requests.length === 0) {
+    if (!me || (requests.length === 0 && trusts.length === 0)) {
         return null;
     }
 
@@ -152,9 +179,10 @@ export function FolderRequests() {
     const others = requests.filter((each) => each.person !== me.id);
 
     return html`${
-        others.length > 0 &&
+        (others.length > 0 || trusts.length > 0) &&
         html`<div class="folder-requests">
             ${others.map((request) => html`<${OwnerCard} key=${request.id} request=${request} />`)}
+            ${trusts.map((request) => html`<${TrustCard} key=${request.id} request=${request} />`)}
         </div>`
     }
     ${
