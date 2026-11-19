@@ -3659,11 +3659,16 @@ export class Commands {
             throw new HttpError(400, "Undo works for sessions on this server only.");
         }
 
+        // It is made as a fork is: only who may start sessions here undoes, not a person invited to one session.
+        const starts = () => app.policy.requireStart(user, THIS_SERVER);
+
+        starts();
         await app.requireDriver(id, user);
         const entryId = entryIdOf(request.entryId);
 
-        // Where it is saved: the session is still theirs to steer, with the wheel, its approval live.
-        const saving = app.admission(id, user);
+        // Where it is saved: the session is still theirs to steer, with the wheel, its approval live, and they may
+        // still start sessions here.
+        const saving = app.admission(id, user, { also: starts });
         // Check the queue and newest message on the same commit that makes the fork and archives its source.
         const { forked, entry, wasArchived } = await app.harness.commit(async (tx) => {
             const live = await tx.doc(LiveDoc, id);

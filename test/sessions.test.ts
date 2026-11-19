@@ -246,9 +246,11 @@ test("Undo refuses older messages, replies, and people who cannot fork or drive"
         status: 403,
     });
     await app.collab.turns(id, user, { action: "on" });
-    await assert.rejects(app.commands.undo(id, guest("Not driving"), request), {
-        status: 409,
-    });
+    // Someone who may undo here, but for the wheel: chosen for this server, with the session shared with them.
+    await assert.rejects(
+        app.commands.undo(id, (await addPerson(app, "Not driving", "guest")).user, request),
+        { status: 409 },
+    );
     assert.equal(app.sessionMeta(id)?.archived, undefined);
     assert.equal(app.sessions().length, sessions, "refusals do not leave any forks");
 });

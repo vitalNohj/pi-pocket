@@ -184,12 +184,15 @@ describe("undoing the last message", () => {
         assert.equal(sent.status, 200);
     });
 
-    it("is refused to a viewer, to someone the session is not shared with, and replaces nothing", async () => {
+    it("is refused to a viewer, a person invited to that one session, and someone it is not shared with, and replaces nothing", async () => {
         const id = await sharedSession();
         const entryId = await lastPrompt(id);
+        // Invited to this session alone: they see it, and start nothing, so they undo nothing.
+        const invited = person("Only here", "guest", [String(id)]);
         const before = app.sessions().length;
 
         assert.equal((await call(viewer, `sessions/${id}/undo`, { entryId })).status, 403);
+        assert.equal((await call(invited, `sessions/${id}/undo`, { entryId })).status, 403);
         assert.equal((await call(other, `sessions/${id}/undo`, { entryId })).status, 404);
         assert.equal(app.sessions().length, before, "no session was made");
         assert.notEqual(meta(id)?.archived, true, "and the session is not archived");
