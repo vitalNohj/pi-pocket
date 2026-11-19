@@ -40,7 +40,8 @@ import {
     type UserInput,
 } from "@earendil-works/pi-durable";
 import type { SessionScope } from "../runner/protocol.ts";
-import type { PocketApp } from "./app.ts";
+import { checkedContext } from "./admission.ts";
+import type { Approved, PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import {
     AuthorsDoc,
@@ -71,6 +72,7 @@ import { attribute } from "./fence.ts";
 import { homePath } from "./paths.ts";
 import { localRepo, remoteRepo } from "./repo.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage, modelImageOf } from "./model-images.ts";
+import { THIS_SERVER } from "./access.ts";
 import { localAccess, Unreachable } from "./folder-access.ts";
 import { clearUploads, copyUploads, uploadedThere, uploadsFolder } from "./remote-context.ts";
 import { type FileView, mentionedPaths, viewFile } from "./files.ts";
@@ -581,25 +583,14 @@ export class Commands {
 
         // The linker and granted people run commands as this computer's user.
         app.runners.require(runner);
-
-        if (!app.runners.mayUse(runner, user)) {
-            throw new HttpError(
-                403,
-                "Only the person who linked this computer or the people they chose can start sessions on it.",
-            );
-        }
+        app.policy.requireStart(user, runner);
 
         const cwd = await app.runners.checkFolder(runner, optionalText(request.cwd, "cwd") ?? "~");
 
-        const runnerPermission = randomUUID();
+        // The server decides (`access.ts` `folder`): a folder given to them, approved by their code or who is in charge.
+        const approved = await app.approveStart(user, cwd, signal, runner);
 
-        await app.runners
-            .link(runner)
-            .confirm(
-                { kind: "new", person: user.name, folder: cwd, session: runnerPermission },
-                signal,
-                user.id,
-            );
+        const runnerPermission = randomUUID();
 
         const initial = this.#defaultModel();
         const now = Date.now();
@@ -629,6 +620,7 @@ export class Commands {
                                 createdAt: now,
                                 updatedAt: now,
                                 createdBy: user.id,
+                                ...app.initialShares(runner, user),
                                 runner,
                                 runnerPermission,
                                 title: label,
@@ -638,14 +630,16 @@ export class Commands {
                             };
                         },
                     },
-                    context,
+                    // Unchosen, or the folder taken back, while the worktree was made: no session is saved.
+                    checkedContext(context, approved.check),
                 );
 
+                approved.keep(conversation.id, cwd);
                 void this.recordRepo(conversation.id, place.cwd);
 
                 return { id: conversation.id };
             },
-            { runner, scope: { id: runnerPermission, folder: cwd, person: user.name } },
+            { runner, scope: { id: runnerPermission, folder: cwd } },
         );
     }
 
@@ -671,13 +665,7 @@ export class Commands {
         } = {},
     ): Promise<{ id: ConversationId }> {
         const app = this.#app;
-
-        app.requireSteer(user);
-
-        if (user.sessions !== undefined) {
-            throw new HttpError(403, "You were invited to one session and cannot start new ones.");
-        }
-
+        // Each computer's own `requireStart` decides who starts a session on it: here below, `#createRemote` there.
         const given = optionalText(request.title, "title");
         const title = (given === undefined ? undefined : oneLine(given)) || undefined;
         const runner = optionalText(request.runner, "runner");
@@ -686,6 +674,8 @@ export class Commands {
             return this.#createRemote(user, runner, request, title, signal);
         }
 
+        // Starting a session here: whoever the owner chose for this server, and steers.
+        app.policy.requireStart(user, THIS_SERVER);
         const requested = optionalText(request.cwd, "cwd") ?? app.defaultCwd;
 
         app.requireWorkspaceOwner(user, requested);
@@ -696,6 +686,11 @@ export class Commands {
         }
 
         const folder = await app.resolveCwd(requested);
+
+        // A folder here needs an approval unless the policy says it does not (`access.ts` `folder`). A workspace URI is
+        // the owner's alone, who needs none.
+        const approved = remote ? undefined : await app.approveStart(user, folder, signal);
+
         const now = Date.now();
 
         return this.#inPlace(
@@ -732,15 +727,18 @@ export class Commands {
                                 createdAt: now,
                                 updatedAt: now,
                                 createdBy: user.id,
+                                ...app.initialShares(undefined, user),
                                 ...(title === undefined ? {} : { title }),
                                 ...(worktree === undefined ? {} : { worktree }),
                             };
                             await init?.(tx, id);
                         },
                     },
-                    context,
+                    // Unchosen, or the folder taken back, while the approval or the worktree waited: nothing is saved.
+                    approved === undefined ? context : checkedContext(context, approved.check),
                 );
 
+                approved?.keep(conversation.id, folder);
                 void this.recordRepo(conversation.id, cwd);
 
                 return { id: conversation.id };
@@ -762,24 +760,11 @@ export class Commands {
         let cwd: string;
         let runnerPermission: string | undefined;
 
+        let approved: Approved | undefined;
+
         if (runner !== undefined) {
-            app.requireSteer(user);
-
-            if (user.sessions !== undefined) {
-                throw new HttpError(
-                    403,
-                    "You were invited to one session and cannot start new ones.",
-                );
-            }
-
             app.runners.require(runner);
-
-            if (!app.runners.mayUse(runner, user)) {
-                throw new HttpError(
-                    403,
-                    "Only the person who linked this computer or the people they chose can start sessions on it.",
-                );
-            }
+            app.policy.requireStart(user, runner);
 
             const info = (await app.piSessions.list(user, "", runner)).sessions.find(
                 (each) => each.path === path,
@@ -802,16 +787,13 @@ export class Commands {
                 );
             }
 
+            // As a new session in the Pi session's folder: one given to them, approved by their code or who is in
+            // charge (`access.ts` `folder`). Only then does the computer let the session read Pi's file.
+            approved = await app.approveStart(user, cwd, signal, runner);
             runnerPermission = randomUUID();
             const link = app.runners.link(runner);
-
-            await link.confirm(
-                { kind: "new", person: user.name, folder: cwd, session: runnerPermission },
-                signal,
-                user.id,
-            );
             const opened = await link.piSessions(
-                { op: "open", path, session: runnerPermission, person: user.name },
+                { op: "open", path, session: runnerPermission, folder: cwd },
                 signal,
             );
 
@@ -819,11 +801,7 @@ export class Commands {
                 throw new HttpError(409, "The computer did not return the Pi session file.");
             }
 
-            const env = app.runners.env(runner, cwd, {
-                id: runnerPermission,
-                folder: cwd,
-                person: user.name,
-            });
+            const env = app.runners.env(runner, cwd, { id: runnerPermission, folder: cwd });
             const text = await env.readTextFile(
                 opened.path,
                 signal === undefined ? context : withAbortSignal(signal, context),
@@ -882,6 +860,7 @@ export class Commands {
                         createdAt: now,
                         updatedAt: now,
                         createdBy: user.id,
+                        ...app.initialShares(runner, user),
                         fromPi: { session: session.id, count: session.count },
                         ...(runner === undefined ? {} : { runner, runnerPermission }),
                     };
@@ -892,7 +871,7 @@ export class Commands {
                     });
                 },
             },
-            context,
+            approved === undefined ? context : checkedContext(context, approved.check),
         );
         // What extensions keep beside Pi's file comes along, before the person opens the session. Only a file on this
         // machine: a path on a linked computer is not one here.
@@ -901,6 +880,7 @@ export class Commands {
                 ? await app.piSessions.carryCompanions(path, conversation.id, copies, context)
                 : [];
 
+        approved?.keep(conversation.id, cwd);
         void this.recordRepo(conversation.id, cwd);
 
         return { id: conversation.id, ...(notes.length === 0 ? {} : { notes }) };
@@ -1001,6 +981,8 @@ export class Commands {
             }
         }
 
+        // Checked again after the reads above: the worktree goes only for who still drives the session.
+        app.recheck(id, user);
         await removeWorktree(worktree, force === true, access);
 
         // The session and its subagents go back to the folders the worktree came from.
@@ -1109,6 +1091,164 @@ export class Commands {
         };
     }
 
+    /**
+     * Whom session `id` is shared with, and whom it can be: everyone who may use its computer, but who is in charge of
+     * it and its starter, who have it anyway. Someone it is shared with already who may not use the computer (they came
+     * with an invite, or are no longer chosen) is listed too, as `notChosen`: they keep it until taken off. Its starter's
+     * and the one in charge's to see (`access.ts` `mayShare`); to anyone else who sees it, 403; to whom it is hidden, 404.
+     */
+    sharing(
+        id: ConversationId,
+        user: User,
+    ): {
+        sharedWith: string[];
+        people: {
+            id: string;
+            name: string;
+            role: User["role"];
+            notChosen?: true;
+            /** They see it anyway: it is in a folder they see every session of (`access.ts` `seesFolder`). */
+            byFolder?: true;
+        }[];
+        computer: string;
+    } {
+        const app = this.#app;
+        const root = app.rootOf(id);
+        const meta = app.sessionMeta(root);
+
+        app.requireSee(user, root);
+
+        if (meta === undefined) {
+            throw new HttpError(404, "Not a session");
+        }
+
+        if (!app.policy.mayShare(user, String(root))) {
+            throw new HttpError(
+                403,
+                "Only the person who started this session, or who is in charge of its computer, can share it.",
+            );
+        }
+
+        const computer = meta.runner ?? THIS_SERVER;
+        const starter = app.policy.starter({ id: String(root), computer, ...meta });
+
+        const shared = meta.sharedWith ?? [];
+        const people = app.config.users
+            .filter(
+                (person) =>
+                    !app.policy.inCharge(person, computer) &&
+                    person.id !== starter &&
+                    (app.policy.mayUse(person, computer) || shared.includes(person.id)),
+            )
+            .map((person) => ({
+                id: person.id,
+                name: person.name,
+                role: person.role,
+                ...(app.policy.mayUse(person, computer) ? {} : { notChosen: true as const }),
+                ...(app.seesByFolder(person, root) ? { byFolder: true as const } : {}),
+            }));
+
+        return {
+            // Only the people listed: an id of someone who left, or who is in charge now, is not sent back on a save.
+            sharedWith: shared.filter((id) => people.some((person) => person.id === id)),
+            people,
+            computer: computer === THIS_SERVER ? "This server" : app.runners.name(computer),
+        };
+    }
+
+    /**
+     * Share session `id` with exactly `people` (person ids), one at a time: its starter and the owner may (`access.ts`
+     * `mayShare`). Each must be able to use the session's computer; who is in charge of it sees every session there
+     * anyway, and the starter has it, so neither is kept. Someone it is shared with already stays without that, until
+     * taken off. Someone taken off leaves it at once (`app.accessChanged`).
+     */
+    async shareSession(id: ConversationId, user: User, people: unknown): Promise<string[]> {
+        const app = this.#app;
+        const root = app.rootOf(id);
+        const meta = app.sessionMeta(root);
+
+        app.requireSee(user, root);
+
+        if (meta === undefined) {
+            throw new HttpError(404, "Not a session");
+        }
+
+        if (!app.policy.mayShare(user, String(root))) {
+            throw new HttpError(
+                403,
+                "Only the person who started this session, or who is in charge of its computer, can share it.",
+            );
+        }
+
+        if (
+            !Array.isArray(people) ||
+            people.length > 200 ||
+            !people.every((each): each is string => typeof each === "string")
+        ) {
+            throw new HttpError(400, "people must be a list of person ids.");
+        }
+
+        const computer = meta.runner ?? THIS_SERVER;
+        const starter = app.policy.starter({ id: String(root), computer, ...meta });
+        const shared: string[] = [];
+        const before = new Set(meta.sharedWith ?? []);
+
+        for (const each of new Set(people)) {
+            const person = app.config.userById(each);
+
+            if (person === undefined) {
+                throw new HttpError(400, "That person is not on this server.");
+            }
+
+            if (app.policy.inCharge(person, computer) || person.id === starter) {
+                continue;
+            }
+
+            if (!before.has(person.id) && !app.policy.mayUse(person, computer)) {
+                throw new HttpError(
+                    400,
+                    `${person.name} cannot use ${computer === THIS_SERVER ? "this server" : app.runners.name(computer)}: choose them for it first.`,
+                );
+            }
+
+            shared.push(person.id);
+        }
+
+        await app.harness.commit(async (tx) => {
+            const sessions = await tx.doc(SessionsDoc);
+            const item = sessions.items[String(root)];
+
+            if (item === undefined) {
+                throw new HttpError(404, "Not a session");
+            }
+
+            if (shared.length === 0) {
+                delete item.sharedWith;
+            } else {
+                item.sharedWith = shared;
+            }
+        }, context);
+
+        const added = shared.filter((each) => !before.has(each));
+        const removed = [...before].filter((each) => !shared.includes(each));
+        const names = (ids: string[]) =>
+            ids.map((each) => app.config.userById(each)?.name ?? "someone").join(", ");
+
+        if (added.length > 0) {
+            await app.collab.activity(root, user, `shared the session with ${names(added)}`);
+        }
+
+        if (removed.length > 0) {
+            await app.collab.activity(
+                root,
+                user,
+                `stopped sharing the session with ${names(removed)}`,
+            );
+        }
+
+        return shared;
+    }
+
     async updateSession(
         id: ConversationId,
         user: User,
@@ -1116,8 +1256,7 @@ export class Commands {
     ): Promise<{ repeating: number }> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         optionalText(patch.title, "title");
 
         if (patch.archived !== undefined && typeof patch.archived !== "boolean") {
@@ -1219,11 +1358,13 @@ export class Commands {
             beforeSubmit(): Promise<{ user: User; context: Context }>;
             afterSubmit(): void;
         },
+        task?: boolean,
     ): Promise<{ submissionId: SubmissionId; requestId: string }> {
         const app = this.#app;
 
         app.requireSee(user, id);
-        await app.requireDriver(id, user);
+        // A task's run follows the session's tasks rule (`app.ts` `tasksMayRun`), not a person's use of it.
+        await app.requireDriver(id, user, task);
 
         // PiP turned off takes nothing, from its person either: it would run without its rules, and be compacted without
         // its own summary (`pip-compact.ts`). What else goes to it (reports, schedules, watches) waits meanwhile.
@@ -1346,7 +1487,10 @@ export class Commands {
         // A failed subagent's failure as the person writes to it: what their message comes to settles it.
         const failure = await this.#failureOf(id);
 
-        let submitContext = context;
+        // Checked at the top, then prepared (the skill, the files, the model's images): where the message is saved, the
+        // person must still see and steer the session, have the wheel, and its approval be live (`app.ts` `admission`).
+        const how = task === true ? { task } : {};
+        let submitContext = app.admission(id, user, how);
 
         // Human extension starts acquire a short policy lease after preparation. Its context checks policy again
         // when durable admission reaches the mutation line, not just before it joins the queue.
@@ -1354,7 +1498,7 @@ export class Commands {
             const accepted = await admission.beforeSubmit();
 
             user = accepted.user;
-            submitContext = accepted.context;
+            submitContext = app.admission(id, user, { ...how, parent: accepted.context });
             submitContext.abortSignal?.throwIfAborted();
         }
 
@@ -1511,8 +1655,7 @@ export class Commands {
     async dismissSubagent(id: ConversationId, user: User, at: unknown): Promise<Dismissal> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         if (typeof at !== "number" || !Number.isFinite(at)) {
             throw new HttpError(400, "at must be the time of the failure seen");
@@ -1954,8 +2097,7 @@ export class Commands {
     async retryLimit(id: ConversationId, user: User): Promise<boolean> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         let sent = app.limits.retryNow(Number(id));
 
@@ -1976,8 +2118,7 @@ export class Commands {
     async abort(id: ConversationId, user: User): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const conversation = await app.conversation(id);
         const busy = app.isBusy(id);
         // People's waiting messages are held, before the stop can withdraw them: they wait until someone sends them. PiP's
@@ -2122,8 +2263,7 @@ export class Commands {
     async sendHeld(id: ConversationId, user: User): Promise<number> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         await app.requireDriver(id, user);
 
         if (app.pip.ownerOf(id) !== undefined && !app.pip.available(user)) {
@@ -2133,6 +2273,7 @@ export class Commands {
         app.spend.check(user, id);
         const conversation = await app.conversation(id);
         const held = (await app.harness.snapshot(HeldDoc, id, context))?.items ?? [];
+        const saving = app.admission(id, user);
 
         for (const item of held) {
             await conversation.submit(
@@ -2145,7 +2286,7 @@ export class Commands {
                         ? {}
                         : { entry: item.entry as unknown as InputEntry }),
                 },
-                context,
+                saving,
             );
         }
 
@@ -2172,12 +2313,12 @@ export class Commands {
     async dropHeld(id: ConversationId, user: User, key: string): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const item = await this.#heldItem(id, key);
 
+        // Someone else's: the driver's to drop. It stops work, so it never waits for the session's approval.
         if (item.by !== user.id) {
-            await app.requireDriver(id, user);
+            await app.requireTurn(id, user);
         }
 
         await this.#unhold(id, key);
@@ -2197,8 +2338,7 @@ export class Commands {
     ): Promise<{ text: string; attachments: Attachment[] }> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const item = await this.#heldItem(id, key);
 
         if (item.by !== user.id) {
@@ -2277,12 +2417,12 @@ export class Commands {
     async withdraw(id: ConversationId, user: User, submissionId: number): Promise<string> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const by = await app.attribution.submitter(submissionId);
 
+        // Someone else's: the driver's to take back. It stops work, so it never waits for the session's approval.
         if (by !== user.id) {
-            await app.requireDriver(id, user);
+            await app.requireTurn(id, user);
         }
 
         await this.#discardReports(id, submissionId);
@@ -2308,8 +2448,7 @@ export class Commands {
     ): Promise<{ text: string; attachments: Attachment[] }> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         if (!Number.isInteger(submissionId) || submissionId <= 0) {
             throw new HttpError(400, "Say which queued message to edit.");
@@ -2363,8 +2502,7 @@ export class Commands {
     ): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         if (!Number.isInteger(submissionId) || submissionId <= 0) {
             throw new HttpError(400, "Say which queued message to move.");
@@ -2386,19 +2524,22 @@ export class Commands {
         }
 
         if (mode !== "interrupt") {
-            const moved = await app.harness.commit(async (tx) => {
-                const item = (await tx.doc(InboxDoc, id)).items.find(
-                    (entry) => Number(entry.id) === submissionId,
-                );
+            const moved = await app.harness.commit(
+                async (tx) => {
+                    const item = (await tx.doc(InboxDoc, id)).items.find(
+                        (entry) => Number(entry.id) === submissionId,
+                    );
 
-                if (item === undefined || item.mode === "write") {
-                    return false;
-                }
+                    if (item === undefined || item.mode === "write") {
+                        return false;
+                    }
 
-                item.mode = mode;
+                    item.mode = mode;
 
-                return true;
-            }, context);
+                    return true;
+                },
+                mode === "followUp" ? context : app.admission(id, user),
+            );
 
             if (!moved) {
                 throw new HttpError(409, "That message has already gone to Pi.");
@@ -2407,10 +2548,11 @@ export class Commands {
             return;
         }
 
-        await this.#interrupt(id, {
-            submissionId,
-            requestId: ownRequest(user.id, `interrupt-${submissionId}`),
-        });
+        await this.#interrupt(
+            id,
+            { submissionId, requestId: ownRequest(user.id, `interrupt-${submissionId}`) },
+            app.admission(id, user),
+        );
         await app.collab.activity(id, user, "interrupted the run");
     }
 
@@ -2599,11 +2741,14 @@ export class Commands {
 
         optionalText(request.cwd, "cwd");
 
-        // Someone invited to one session sees files in its folder only: moving it would move what they see.
-        if (request.cwd !== undefined && user.sessions !== undefined) {
+        // A move picks another folder of the session's computer: only who may start sessions there may, as for a new
+        // one. Anyone else sees files in its folder only: moving it would move what they see.
+        if (request.cwd !== undefined && !app.policy.mayStartThere(user, String(id))) {
             throw new HttpError(
                 403,
-                "You were invited to one session and cannot move it to another folder.",
+                app.config.userById(user.id)?.sessions === undefined
+                    ? "Only people who may start sessions on this computer can move a session to another folder."
+                    : "You were invited to one session and cannot move it to another folder.",
             );
         }
 
@@ -2642,16 +2787,9 @@ export class Commands {
         const thinkingLevel = model === undefined ? wanted : clampThinkingLevel(model, wanted);
         const runner = app.runnerOf(id);
 
-        // A new folder on a computer is like a new session there: only its linker and the people they chose.
-        if (
-            runner !== undefined &&
-            request.cwd !== undefined &&
-            !app.runners.mayUse(runner, user)
-        ) {
-            throw new HttpError(
-                403,
-                "Only the person who linked this computer or the people they chose can move sessions on it.",
-            );
+        // A new folder on a computer is like a new session there: only the people who may start sessions on it.
+        if (runner !== undefined && request.cwd !== undefined) {
+            app.policy.requireStart(user, runner);
         }
 
         const cwd =
@@ -2661,18 +2799,19 @@ export class Commands {
                   ? await app.resolveCwd(request.cwd)
                   : await app.runners.checkFolder(runner, request.cwd);
 
-        if (runner !== undefined && cwd !== undefined && cwd !== (current?.cwd ?? app.cwdOf(id))) {
-            await app.runners.link(runner).confirm(
-                {
-                    kind: "move",
-                    person: user.name,
-                    folder: app.runnerScope(id, cwd).folder,
-                    session: app.runnerScope(id).id,
-                },
-                undefined,
-                user.id,
-            );
+        let moving: Approved | undefined;
+
+        // Moving to another folder: one given to them, under the session's own approval (renewed first when locked).
+        if (
+            cwd !== undefined &&
+            app.workspaceScheme(cwd) === undefined &&
+            cwd !== (current?.cwd ?? app.cwdOf(id))
+        ) {
+            moving = await app.approveFrom(user, id, cwd, runner);
         }
+
+        // Where the change is saved: they still drive the session, and the new folder is still theirs.
+        const saving = app.admission(id, user, moving === undefined ? {} : { also: moving.check });
 
         const change = {
             ...(request.model === undefined
@@ -2692,9 +2831,9 @@ export class Commands {
                 }
 
                 Object.assign(await tx.doc(AgentDoc, id), change);
-            }, context);
+            }, saving);
         } else {
-            await conversation.configure(change, context);
+            await conversation.configure(change, saving);
         }
 
         if (cwd !== undefined && app.sessionMeta(id) !== undefined) {
@@ -2705,6 +2844,7 @@ export class Commands {
                     meta.cwd = cwd;
                 }
             }, context);
+            app.folderApprovals.moved(String(app.rootOf(id)), cwd);
             void this.recordRepo(id, cwd);
         }
 
@@ -2750,7 +2890,7 @@ export class Commands {
             throw new HttpError(413, `Handoff notes are limited to ${MAX_HANDOFF} characters`);
         }
 
-        await (await app.conversation(id)).reset(handoff, context);
+        await (await app.conversation(id)).reset(handoff, app.admission(id, user));
         // The next request starts from nothing: the cache kept warm is not read again.
         app.cacheKeeper.forget(Number(id), "a new context started");
         await app.collab.activity(
@@ -2790,7 +2930,10 @@ export class Commands {
 
         await (
             await app.conversation(id)
-        ).configure({ instructions: instructions === "" ? null : instructions }, context);
+        ).configure(
+            { instructions: instructions === "" ? null : instructions },
+            app.admission(id, user),
+        );
         await app.collab.activity(
             id,
             user,
@@ -2855,30 +2998,33 @@ export class Commands {
 
     /** Set plan mode for a session and the subagents under it; true when that changed it. */
     #switchPlan(id: ConversationId, user: User, on: boolean): Promise<boolean> {
-        return this.#app.harness.commit(async (tx) => {
-            if ((await tx.doc(PlanDoc, id)).on === on) {
-                return false;
-            }
-
-            // Subagents follow their session: one already at work stops changing things too.
-            const conversations = [id];
-
-            for (let index = 0; index < conversations.length; index++) {
-                for (const agent of Object.values(
-                    (await tx.doc(SubagentsDoc, conversations[index]!)).agents,
-                )) {
-                    conversations.push(agent.conversationId);
+        return this.#app.harness.commit(
+            async (tx) => {
+                if ((await tx.doc(PlanDoc, id)).on === on) {
+                    return false;
                 }
-            }
 
-            const at = Date.now();
+                // Subagents follow their session: one already at work stops changing things too.
+                const conversations = [id];
 
-            for (const each of conversations) {
-                Object.assign(await tx.doc(PlanDoc, each), { on, by: user.id, at });
-            }
+                for (let index = 0; index < conversations.length; index++) {
+                    for (const agent of Object.values(
+                        (await tx.doc(SubagentsDoc, conversations[index]!)).agents,
+                    )) {
+                        conversations.push(agent.conversationId);
+                    }
+                }
 
-            return true;
-        }, context);
+                const at = Date.now();
+
+                for (const each of conversations) {
+                    Object.assign(await tx.doc(PlanDoc, each), { on, by: user.id, at });
+                }
+
+                return true;
+            },
+            this.#app.admission(id, user),
+        );
     }
 
     /** Set up a message to Pi for later, or on repeat: `when` is when, then what it says (`in 2h check the deploy`). */
@@ -2908,12 +3054,16 @@ export class Commands {
         const at = given ? this.#scheduleTime(request) : undefined;
 
         app.spend.check(user, id);
-        const schedule = await app.schedules.add(id, {
-            when: optionalText(request.when, "when") ?? "",
-            ...(at === undefined ? {} : { at, text: optionalText(request.text, "text") ?? "" }),
-            by: user,
-            ...(zone === undefined ? {} : { zone }),
-        });
+        const schedule = await app.schedules.add(
+            id,
+            {
+                when: optionalText(request.when, "when") ?? "",
+                ...(at === undefined ? {} : { at, text: optionalText(request.text, "text") ?? "" }),
+                by: user,
+                ...(zone === undefined ? {} : { zone }),
+            },
+            app.admission(id, user),
+        );
         const when =
             schedule.every === undefined
                 ? `for ${describeMoment(schedule.next, schedule.zone)}`
@@ -2954,13 +3104,19 @@ export class Commands {
         const at = this.#scheduleTime(request);
 
         app.spend.check(user, id);
-        const schedule = await app.schedules.update(id, scheduleId, {
-            text: optionalText(request.text, "text") ?? "",
-            ...at,
-            ...(zone === undefined ? {} : { zone }),
-            ...(version === undefined ? {} : { version }),
-            by: user,
-        });
+        const schedule = await app.schedules.update(
+            id,
+            scheduleId,
+            {
+                text: optionalText(request.text, "text") ?? "",
+                ...at,
+                ...(zone === undefined ? {} : { zone }),
+                ...(version === undefined ? {} : { version }),
+                by: user,
+            },
+            // Where it is saved: they still drive that session, its approval live.
+            app.admission(id, user),
+        );
         const when =
             schedule.every === undefined
                 ? `for ${describeMoment(schedule.next, schedule.zone)}`
@@ -3000,7 +3156,11 @@ export class Commands {
         }
     }
 
-    /** Pause a scheduled message, or resume it: paused, it sends nothing until someone resumes it. */
+    /**
+     * Pause a scheduled message, or resume it: paused, it sends nothing until someone resumes it. Pausing stops work,
+     * so it never waits for the session's approval (`requireTurn`); resuming makes Pi work again, so its approval is
+     * live or renewed first (`requireDriver`), and it is saved only for who still drives the session.
+     */
     async pauseSchedule(
         id: ConversationId,
         user: User,
@@ -3010,17 +3170,25 @@ export class Commands {
         const app = this.#app;
 
         app.requireSee(user, id);
-        await app.requireDriver(id, user);
 
         if (typeof paused !== "boolean") {
             throw new HttpError(400, "paused must be true or false");
         }
 
-        if (!paused) {
+        if (paused) {
+            await app.requireTurn(id, user);
+        } else {
+            await app.requireDriver(id, user);
             app.spend.check(user, id);
         }
 
-        const { schedule, changed } = await app.schedules.pause(id, scheduleId, paused, user);
+        const { schedule, changed } = await app.schedules.pause(
+            id,
+            scheduleId,
+            paused,
+            user,
+            paused ? undefined : app.admission(id, user),
+        );
 
         if (changed) {
             await app.collab.activity(
@@ -3033,11 +3201,12 @@ export class Commands {
         return schedule;
     }
 
+    /** Cancel a scheduled message. Stopping work: it never waits for the session's approval (`requireTurn`). */
     async cancelSchedule(id: ConversationId, user: User, scheduleId: string): Promise<void> {
         const app = this.#app;
 
         app.requireSee(user, id);
-        await app.requireDriver(id, user);
+        await app.requireTurn(id, user);
         const schedule = await app.schedules.cancel(id, scheduleId);
 
         if (schedule === undefined) {
@@ -3059,10 +3228,12 @@ export class Commands {
         await app.requireDriver(id, user);
         app.spend.check(user, id);
         const asked = optionalText(pr, "pr");
+        // Starting one asks GitHub first, which takes time: it is saved only for who still drives the session.
         const watch = await app.watches.start(
             id,
             user.id,
             asked === undefined ? {} : { pr: asked },
+            app.admission(id, user),
         );
 
         await app.collab.activity(
@@ -3074,12 +3245,15 @@ export class Commands {
         return { number: watch.number };
     }
 
-    /** Stop watching the session's pull request, or clear a watch that ended. */
+    /**
+     * Stop watching the session's pull request, or clear a watch that ended. Stopping work: it never waits for the
+     * session's approval (`requireTurn`).
+     */
     async unwatchPr(id: ConversationId, user: User): Promise<void> {
         const app = this.#app;
 
         app.requireSee(user, id);
-        await app.requireDriver(id, user);
+        await app.requireTurn(id, user);
         const watch = await app.watches.stop(id);
 
         if (watch?.status === "watching") {
@@ -3192,7 +3366,12 @@ export class Commands {
             throw new HttpError(400, "Only sessions can have a goal");
         }
 
-        const goal = await app.goals.set(id, user.id, optionalText(command, "command") ?? "");
+        const goal = await app.goals.set(
+            id,
+            user.id,
+            optionalText(command, "command") ?? "",
+            app.admission(id, user),
+        );
 
         await app.collab.activity(
             id,
@@ -3205,8 +3384,7 @@ export class Commands {
     async clearGoal(id: ConversationId, user: User): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const goal = await app.goals.get(id);
 
         if (!(await app.goals.clear(id)) || goal === undefined) {
@@ -3744,14 +3922,9 @@ export class Commands {
 
         if (target !== undefined) {
             app.runners.require(target);
-
-            if (!app.runners.mayUse(target, user)) {
-                throw new HttpError(
-                    403,
-                    "Only the person who linked this computer or the people they chose can start sessions on it.",
-                );
-            }
         }
+
+        app.policy.requireStart(user, target ?? THIS_SERVER);
 
         if (target === meta.runner) {
             return { cwd: app.cwdOf(id), reason: "current" };
@@ -3792,16 +3965,14 @@ export class Commands {
         };
     }
 
-    /** Forks are new sessions: who may start one may fork, from a session they can see. */
+    /**
+     * Forks are new sessions: who may start one may fork, from a session they can steer. Where the fork goes decides
+     * who may start it there (`#destination`, `copySuggestion`).
+     */
     #requireForkable(id: ConversationId, user: User): void {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
-
-        if (user.sessions !== undefined) {
-            throw new HttpError(403, "You were invited to one session and cannot start new ones.");
-        }
+        app.requireSteer(user, id);
 
         if (app.sessionMeta(id) === undefined) {
             throw new HttpError(400, "Only sessions can be forked");
@@ -3818,8 +3989,8 @@ export class Commands {
 
     /**
      * Where a copy of session `id` runs: on the computer and in the folder `place` names, else where the session runs.
-     * A copy is a new session there: on another computer, only its linker and granted people may start one (also when the
-     * owner shares these sessions, `sharedRunnerSessions`), and the folder must be there. A
+     * A copy is a new session there: only people who may start sessions on that computer may copy to it (`access.ts`
+     * `mayStart`), also from a session shared with them, and the folder must be there. A
      * computer that is gone or offline fails with its name; the copy is never made here instead.
      */
     async #destination(
@@ -3833,16 +4004,12 @@ export class Commands {
         const own = { runner: meta.runner, cwd: (await app.agentState(id))?.cwd ?? meta.cwd };
         const runner = place?.runner === undefined ? own.runner : (place.runner ?? undefined);
 
-        if (runner !== undefined) {
-            if (!app.runners.mayUse(runner, user)) {
-                throw new HttpError(
-                    403,
-                    app.runners.stored(runner) === undefined
-                        ? "That computer is not linked to this server."
-                        : "Only the person who linked this computer or the people they chose can start sessions on it, including forks.",
-                );
-            }
+        if (runner !== undefined && app.runners.stored(runner) === undefined) {
+            throw new HttpError(403, "That computer is not linked to this server.");
         }
+
+        // A copy is a new session there: who may start one there may copy to it.
+        app.policy.requireStart(user, runner ?? THIS_SERVER);
 
         const asked = place?.cwd?.trim() || undefined;
         const cwd =
@@ -3883,38 +4050,37 @@ export class Commands {
         const runner = destination.runner;
         const runnerPermission = runner === undefined ? undefined : randomUUID();
 
-        // Approve the source folder before git or copies use it. The worktree is this new permission's own folder.
-        if (runner !== undefined) {
-            await this.#app.runners.link(runner).confirm(
-                {
-                    kind: "fork",
-                    person: user.name,
-                    folder: destination.cwd,
-                    session: runnerPermission!,
-                },
-                signal,
-                user.id,
-            );
-        }
+        // Approve before git or copies use the folder: the copy inherits this session's approval (renewed first when
+        // locked); on another computer, it starts as a new session there would. The worktree is the copy's own folder.
+        const approved = await this.#app.approveFrom(user, id, destination.cwd, runner, signal);
+
+        // Given up while it waited: no copy is made.
+        signal?.throwIfAborted();
 
         return this.#inPlace(
             destination.cwd,
             branch.worktree,
             title,
-            (place) =>
-                this.#fork(id, user, {
+            async (place) => {
+                const copy = await this.#fork(id, user, {
                     ...branch,
                     title,
                     sourceTitle,
                     place,
                     destination,
                     runnerPermission,
-                }),
+                    check: approved.check,
+                });
+
+                approved.keep(copy, destination.cwd);
+
+                return copy;
+            },
             runner === undefined || runnerPermission === undefined
                 ? undefined
                 : {
                       runner,
-                      scope: { id: runnerPermission, folder: destination.cwd, person: user.name },
+                      scope: { id: runnerPermission, folder: destination.cwd },
                   },
         );
     }
@@ -3935,10 +4101,14 @@ export class Commands {
             destination: Destination;
             runnerPermission?: string;
             resend?: Resend;
+            /** What allowed the copy, checked again where it is saved (`app.ts` `Approved`). */
+            check: () => void;
         },
     ): Promise<ConversationId> {
         const app = this.#app;
         const source = await app.agentState(id);
+        // The worktree and the copied files took time: the copy is saved only for who may still make it.
+        const saving = checkedContext(context, fork.check);
         const { at, title, place, destination } = fork;
         // A copy runs on the computer it was sent to: one on another computer with the extensions that work there, one
         // here with all of them, also when its session ran elsewhere (the inherited list goes). A fresh one copies no
@@ -3962,6 +4132,8 @@ export class Commands {
                 title,
                 cwd: place.cwd,
                 worktree: place.worktree,
+                // A copy is a new session: it starts shared as its computer says, not as the one it came from.
+                ...app.initialShares(runner, user),
                 ...(runner === undefined ? {} : { runner, runnerPermission }),
                 fromRunner,
                 ...(moved === undefined ? {} : { moved }),
@@ -3988,11 +4160,11 @@ export class Commands {
                           },
                           init,
                       },
-                      context,
+                      saving,
                   )
                 : await (
                       await app.conversation(id)
-                  ).fork(at as unknown as EntryId, { ownership, agent, init }, context);
+                  ).fork(at as unknown as EntryId, { ownership, agent, init }, saving);
         const where =
             place.worktree !== undefined
                 ? ` into a worktree on ${place.worktree.branch}${place.skipped.length === 0 ? "" : ` (${place.skipped.length} big new files were not copied)`}`
@@ -4023,6 +4195,8 @@ export class Commands {
             title: string | undefined;
             cwd: string;
             worktree: Worktree | undefined;
+            /** Whom it starts shared with (`SessionMeta.sharedWith`); absent: no one. */
+            sharedWith?: string[];
             /** The computer it runs on, with its permission there; absent: this server. */
             runner?: string;
             runnerPermission?: string;
@@ -4044,6 +4218,7 @@ export class Commands {
             createdAt: now,
             updatedAt: now,
             createdBy: user.id,
+            ...(fork.sharedWith === undefined ? {} : { sharedWith: fork.sharedWith }),
             forkedFrom: { id: Number(id), ...(at === undefined ? {} : { entryId: at }) },
             ...(runner === undefined ? {} : { runner, runnerPermission }),
             ...(worktree === undefined ? {} : { worktree }),
@@ -4130,7 +4305,7 @@ export class Commands {
         // Compacting asks the model for a summary, which costs like any other request.
         app.spend.check(user, id);
         const conversation = await app.conversation(id);
-        const taskId = await conversation.compact(instructions, context);
+        const taskId = await conversation.compact(instructions, app.admission(id, user));
         const done = pip ? "PiP's context compacted." : "Compacted.";
 
         app.notice("info", pip ? "Compacting PiP's context…" : "Compacting…", id);

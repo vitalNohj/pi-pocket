@@ -917,8 +917,7 @@ export class Memory {
     ): Promise<Lesson> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         let text = request.text;
 
         if (request.copy !== undefined) {
@@ -960,8 +959,7 @@ export class Memory {
             this.#requirePendingOwner(this.#person(user), id);
         }
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         return this.change(
             id,

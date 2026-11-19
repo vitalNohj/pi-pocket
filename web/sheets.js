@@ -26,7 +26,9 @@ import { MemorySheet } from "./sheets/memory.js";
 import { MenuSheet, PlacesSheet } from "./sheets/menu.js";
 import { MessageSheet } from "./sheets/message.js";
 import { ModelPicker } from "./sheets/model.js";
+import { MyAuthenticator } from "./sheets/authenticator.js";
 import { InviteSheet, MyPhoto, PeopleSheet } from "./sheets/people.js";
+import { SessionShareSheet } from "./sheets/session-share.js";
 import { AuthDialog, ProvidersSheet } from "./sheets/providers.js";
 import { HooksSheet } from "./sheets/hooks.js";
 import { SchedulesSheet } from "./sheets/schedules.js";
@@ -278,6 +280,9 @@ function sheetBody(sheet) {
         case "computers":
             body = html`<${ComputersSheet} />`;
             break;
+        case "session-share":
+            body = html`<${SessionShareSheet} id=${sheet.id} />`;
+            break;
         case "people":
             body = html`<${PeopleSheet} />`;
             break;
@@ -422,7 +427,8 @@ function sheetBody(sheet) {
                 label="Shown on your messages to others"
                 initial=${me?.name ?? ""}
                 header=${html`<${MyPhoto} />`}
-                footer=${html`<button class="button ghost wide sheet-footer signout" onClick=${signOut}>
+                footer=${html`<${MyAuthenticator} />
+                <button class="button ghost wide sheet-footer signout" onClick=${signOut}>
                     <${Icon} name="logout" size=${16} /> Sign out
                 </button>`}
                 submit=${async (value) => {

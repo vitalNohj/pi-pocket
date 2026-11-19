@@ -27,7 +27,11 @@ export type PushPrefs = {
     mention: boolean;
     /** A run began to wait a long while for a provider's limit to clear (`limit-gate.ts`). */
     limit: boolean;
-    /** Work passed a hard limit with no progress (a stalled subagent): for the owner. */
+    /** The owner's alone: someone's authenticator codes were locked out after too many wrong ones. */
+    security: boolean;
+    /** The owner's alone: someone asks to start a session in a new folder on this server (`folder-requests.ts`). */
+    folders: boolean;
+    /** Work passed a hard limit with no progress (a stalled subagent): for who is in charge of its computer. */
     stalled: boolean;
 };
 export const DEFAULT_PREFS: PushPrefs = Object.freeze({
@@ -36,6 +40,8 @@ export const DEFAULT_PREFS: PushPrefs = Object.freeze({
     chat: true,
     mention: true,
     limit: true,
+    security: true,
+    folders: true,
     stalled: true,
 });
 export type StoredSubscription = PushSubscriptionJson & {

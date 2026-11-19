@@ -42,7 +42,13 @@ export class Goals {
      * Set a goal. With Lancet Guard on, it must allow the command outright: the check runs after every answer without
      * asking anyone, so it may not be a command the guard would have asked about or blocked.
      */
-    async set(id: ConversationId, by: string, command: string): Promise<Goal> {
+    async set(
+        id: ConversationId,
+        by: string,
+        command: string,
+        // The context of its save; a person's carries their check (`app.ts` `admission`).
+        saving: Context = context,
+    ): Promise<Goal> {
         const app = this.#app;
         const check = command.trim();
 
@@ -80,7 +86,7 @@ export class Goals {
 
         await app.harness.commit(async (tx) => {
             (await tx.doc(GoalDoc, id)).goal = goal;
-        }, context);
+        }, saving);
 
         return goal;
     }

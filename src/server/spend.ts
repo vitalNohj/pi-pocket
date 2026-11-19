@@ -404,10 +404,17 @@ export class Spend {
         }
     }
 
-    /** The owner limits what Pi may spend in a session (`null`: no limit). */
+    /**
+     * The owner limits what Pi may spend in a session (`null`: no limit): one they may see (`access.ts` `maySee`). A
+     * session on a computer someone else is in charge of answers as one that is not there, so its id says nothing.
+     */
     async setSessionBudget(user: User, id: ConversationId, budget: unknown): Promise<void> {
         requireOwner(user);
         const amount = budgetOf(budget);
+
+        if (!this.#app.canSee(user, id)) {
+            throw new HttpError(404, "Not a session");
+        }
 
         await this.#app.harness.commit(async (tx) => {
             const meta = (await tx.doc(SessionsDoc)).items[String(id)];

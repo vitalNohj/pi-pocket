@@ -1,6 +1,7 @@
 // Extensions' browser modules in a real Chromium: what they add shows in the app (the rail, a page in the conversation's
 // place), hears its module's events, fails alone, and goes when turned off.
 import {
+    addPerson,
     type App,
     cleanUp,
     newSession,
@@ -1026,7 +1027,7 @@ test(
         );
 
         // A guest has no PiP: a result, not an error.
-        const guest = app.config.addUser("Guest", "guest");
+        const guest = await addPerson(app, "Guest", "guest");
         const other = await browsers.open(2);
 
         try {

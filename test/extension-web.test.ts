@@ -12,6 +12,7 @@ import {
     root,
     scriptedModel,
     until,
+    addPerson,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import {
@@ -153,7 +154,7 @@ export default function(host, web) {
         ["Vic", "viewer", undefined],
         ["Sid", "guest", ["1"]],
     ] as const) {
-        const added = app.config.addUser(name, role, sessions ? [...sessions] : undefined);
+        const added = await addPerson(app, name, role, sessions ? [...sessions] : undefined);
 
         people[name] = { token: added.token, id: added.user.id };
     }
@@ -309,8 +310,8 @@ test("a same-name drop-in cannot use the session-only diagrams exception", async
     );
     const builtInDirectory = dirname(diagramsFile);
     const sessionUsers = [
-        { role: "guest" as const, sessions: ["1"] },
-        { role: "viewer" as const, sessions: ["1"] },
+        { id: "g", role: "guest" as const, sessions: ["1"] },
+        { id: "v", role: "viewer" as const, sessions: ["1"] },
     ];
     const builtInChanges: unknown[] = [];
     const builtIn = new ExtensionWebs({ changed: (access) => builtInChanges.push(access) });
@@ -430,8 +431,6 @@ test("an edit swaps the routes and cleans up the version before; a failed one ke
     assert.equal(seen.panelGone, gone + 3);
 });
 
-const OWNER = { role: "owner" as const };
-
 /** Run `act` with the clock `ms` ahead: how a test waits out the 30 s a tab far behind has to take something. */
 async function later<T>(ms: number, act: () => Promise<T> | T): Promise<T> {
     const realNow = Date.now;
@@ -543,7 +542,7 @@ test("a file is served only when what was opened is the file that was checked", 
 
     const checked = app.webs.file.bind(app.webs);
     // What the check saw: the module's own file, before its folder was swapped.
-    const real = app.webs.file("solo", ["solo.js"], OWNER)!;
+    const real = app.webs.file("solo", ["solo.js"], owner(app))!;
 
     app.webs.file = () => ({
         file: join(root, "swapped-link", "secret.json"),

@@ -1,7 +1,7 @@
 /** The pages outside the app: signing in with a link, joining with an invite, and a share that arrived too early. */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PocketApp } from "../app.ts";
-import { type Auth, quickTunnelHost, setAuthCookie } from "../auth.ts";
+import { type Auth, type Invite, quickTunnelHost, setAuthCookie } from "../auth.ts";
 import { HttpError } from "../errors.ts";
 import { conversationId, escapeHtml, readBody, send } from "./io.ts";
 
@@ -76,7 +76,55 @@ export async function login(
     return;
 }
 
-/** `/join/:code`: what an invite grants, and redeeming it with a name (or, for an owner invite, signing in as the owner). */
+/**
+ * A device link's page: who this device signs in as, a field for a code from their authenticator when they have one,
+ * and why the last try was refused.
+ */
+function devicePage(
+    auth: Auth,
+    request: IncomingMessage,
+    response: ServerResponse,
+    grant: Extract<Invite, { device: unknown }>,
+    refused?: HttpError,
+): void {
+    const person = grant.device;
+    const name = escapeHtml(person.name);
+    const current = auth.user(request);
+    // Signed in as someone else: say so, as switching accounts does.
+    const switching =
+        current !== undefined && current.id !== person.id
+            ? `<p>This browser is signed in as ${escapeHtml(current.name)}. It will change to ${name}.</p>`
+            : "";
+    const gets =
+        person.role === "owner"
+            ? "It gets full control of Pi Pocket and of this machine."
+            : "It sees and does all that they can here.";
+    const error =
+        refused === undefined
+            ? ""
+            : `<p class="error-box" role="alert">${escapeHtml(refused.message)}</p>`;
+    // The second code: the link's own is in the address already.
+    const code =
+        grant.code === true
+            ? `<label>Code from ${name}'s authenticator app<input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required autofocus placeholder="123456"></label>`
+            : "";
+
+    return send(
+        response,
+        refused?.status ?? 200,
+        page(
+            `Sign in as ${name} · Pi Pocket`,
+            `<h1>Sign in as ${name}</h1><p>This device will sign in as ${name}${person.role === "owner" ? ", the owner" : ""}. ${gets} Go on only if you are ${name}.</p>${switching}${error}<form method="post">${code}<button type="submit">Sign in as ${name}</button></form>`,
+        ),
+        "text/html; charset=utf-8",
+        { "referrer-policy": "no-referrer" },
+    );
+}
+
+/**
+ * `/join/:code`: what an invite grants, and redeeming it with a name; or, for a device link, who this device signs in
+ * as, and signing it in (with a code from their authenticator, when they have one).
+ */
 export async function join(
     app: PocketApp,
     auth: Auth,
@@ -90,7 +138,26 @@ export async function join(
         }
 
         const form = new URLSearchParams((await readBody(request, 10_000)).toString("utf8"));
-        const redeemed = auth.redeem(code, form.get("name") ?? "");
+        const tunnel = quickTunnelHost(request);
+        let redeemed: ReturnType<Auth["redeem"]>;
+
+        try {
+            redeemed = auth.redeem(
+                code,
+                form.get("name") ?? "",
+                tunnel,
+                (form.get("code") ?? "").replace(/\s+/g, ""),
+            );
+        } catch (error) {
+            const grant = auth.invite(code);
+
+            // A device link whose second code was missing or wrong stays: its page says why, for another try.
+            if (!(error instanceof HttpError) || grant === undefined || !("device" in grant)) {
+                throw error;
+            }
+
+            return devicePage(auth, request, response, grant, error);
+        }
 
         if (redeemed === undefined) {
             return send(
@@ -101,10 +168,13 @@ export async function join(
             );
         }
 
-        const tunnel = quickTunnelHost(request);
+        if (redeemed.invitedBy !== undefined) {
+            await app.welcome(redeemed.user.id, redeemed.invitedBy, redeemed.folder);
+        }
 
-        // The owner is never tied to one tunnel.
-        if (tunnel !== undefined && redeemed.user.role !== "owner") {
+        // Someone new is tied to the tunnel they joined through. Another device of someone here is tied to it alone
+        // (`redeem`), never the person.
+        if (tunnel !== undefined && redeemed.device !== true && redeemed.user.role !== "owner") {
             app.config.updateUser(redeemed.user.id, { tunnel });
         }
 
@@ -129,30 +199,16 @@ export async function join(
         );
     }
 
-    if (grant.role === "owner") {
-        const current = auth.user(request);
-        // Signed in as someone else: say so, as switching accounts does.
-        const switching =
-            current !== undefined && current.role !== "owner"
-                ? `<p>This browser is signed in as ${escapeHtml(current.name)}. It will change to the owner.</p>`
-                : "";
-
-        return send(
-            response,
-            200,
-            page(
-                "Sign in as owner · Pi Pocket",
-                `<h1>Sign in as owner</h1><p>This device will sign in as you, the owner. It gets full control of Pi Pocket and of this machine.</p>${switching}<form method="post"><button type="submit">Sign in as owner</button></form>`,
-            ),
-            "text/html; charset=utf-8",
-            { "referrer-policy": "no-referrer" },
-        );
+    if ("device" in grant) {
+        return devicePage(auth, request, response, grant);
     }
 
     const where =
-        grant.session === undefined
-            ? "every session on this server"
-            : `the session “${escapeHtml(await app.conversationTitle(conversationId(grant.session)))}”`;
+        grant.session !== undefined
+            ? `the session “${escapeHtml(await app.conversationTitle(conversationId(grant.session)))}”`
+            : grant.folder !== undefined
+              ? `the sessions shared with you in the folder ${escapeHtml(grant.folder.path)}`
+              : "the sessions shared with you on this server";
     const can =
         grant.role === "viewer"
             ? `read ${where} and chat with the people there, but not steer Pi`

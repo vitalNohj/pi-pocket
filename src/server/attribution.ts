@@ -275,4 +275,36 @@ export class Attribution {
     requesterOf(id: ConversationId): string | undefined {
         return this.#lastAuthor.get(id) ?? this.#lastAuthor.get(this.#app.rootOf(id));
     }
+
+    /**
+     * Session `root` went from `from` to `to` (`app.ts` `handOver`): where Pi worked for `from`, in it and its subagents,
+     * it now works for `to`, until someone writes. Who wrote each message stays as it was.
+     */
+    handedOver(root: ConversationId, from: string, to: string): void {
+        for (const id of this.#app.conversationsOf(root)) {
+            if (this.#lastAuthor.get(id) === from) {
+                this.#lastAuthor.set(id, to);
+            }
+        }
+    }
+
+    /**
+     * `person` is no longer here: wherever Pi still worked for them, it works for the session's starter now
+     * (`starterOf`), or for nobody when there is none.
+     */
+    forget(person: string, starterOf: (id: ConversationId) => string | undefined): void {
+        for (const [id, by] of this.#lastAuthor) {
+            if (by !== person) {
+                continue;
+            }
+
+            const starter = starterOf(id);
+
+            if (starter === undefined || starter === person) {
+                this.#lastAuthor.delete(id);
+            } else {
+                this.#lastAuthor.set(id, starter);
+            }
+        }
+    }
 }

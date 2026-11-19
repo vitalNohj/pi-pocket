@@ -134,6 +134,29 @@ function aborted(signal: AbortSignal | undefined): void {
     }
 }
 
+/**
+ * A page's title, from what Chromium reports as one. Until a document has a title, that is its address as a tab shows
+ * it: whole, or with no scheme, and then with no slash after a bare host ("localhost:5173" for
+ * "http://localhost:5173/"). `urls`: the addresses it may be.
+ */
+export function titleFrom(title: string, ...urls: string[]): string {
+    for (const url of urls) {
+        const shown = url.replace(/^https?:\/\//, "");
+
+        if (title === url || title === shown || title === shown.replace(/^([^/]+)\/$/, "$1")) {
+            return "";
+        }
+    }
+
+    return title;
+}
+
+/** What a loaded document tells of itself: the status it came with (0 when unknown), and its title. */
+const LOADED = `({
+    status: performance.getEntriesByType("navigation")[0]?.responseStatus ?? 0,
+    title: document.title,
+})`;
+
 /** A page script's result, or its exception as an error. */
 function evaluated(response: Json): Json {
     if (response.exceptionDetails !== undefined) {
@@ -365,6 +388,9 @@ export class BrowserPage {
 
                 this.#stopWaiters.clear();
                 this.#changed();
+                // The title, now that the document is whole: the read at the start of a load (`#navigated`) comes before
+                // a head that arrives later than that, and Chromium sends no event for a title.
+                void this.#refreshHistory();
 
                 return;
 
@@ -470,17 +496,10 @@ export class BrowserPage {
     targetEvent(method: string, info: Json): void {
         if (info?.targetId === this.#target) {
             if (method === "Target.targetInfoChanged") {
-                const title = String(info.title ?? "");
                 // Until a page has a title, Chromium reports its address as one.
-                const next =
-                    title === info.url || title === this.#url.replace(/^https?:\/\//, "")
-                        ? ""
-                        : title;
-
-                if (next !== this.#title) {
-                    this.#title = next;
-                    this.#changed();
-                }
+                this.#setTitle(
+                    titleFrom(String(info.title ?? ""), String(info.url ?? ""), this.#url),
+                );
             }
 
             return;
@@ -566,6 +585,13 @@ export class BrowserPage {
         this.#changed();
     }
 
+    #setTitle(title: string): void {
+        if (title !== this.#title) {
+            this.#title = title;
+            this.#changed();
+        }
+    }
+
     #navigated(): void {
         this.#changed();
         clearTimeout(this.#historyTimer);
@@ -597,7 +623,9 @@ export class BrowserPage {
             const entry = history.entries[history.currentIndex];
             // A page without a title has its address as one.
             const title =
-                entry === undefined || entry.title === entry.url ? "" : String(entry.title ?? "");
+                entry === undefined
+                    ? ""
+                    : titleFrom(String(entry.title ?? ""), String(entry.url ?? ""));
 
             if (
                 back !== this.#canGoBack ||
@@ -934,10 +962,18 @@ export class BrowserPage {
         aborted(options.signal);
         // Apps fetch their data after the load event; give them a moment.
         await wait(300);
-        const status = await this.#send("Runtime.evaluate", {
-            expression: `performance.getEntriesByType("navigation")[0]?.responseStatus ?? 0`,
+        // From the document itself, so the answer has the title it has now, whenever its head came.
+        const seen = await this.#send("Runtime.evaluate", {
+            expression: LOADED,
             returnByValue: true,
-        }).then(evaluated, () => 0);
+        })
+            .then(evaluated)
+            .catch(() => undefined);
+        const status = seen?.status;
+
+        if (typeof seen?.title === "string") {
+            this.#setTitle(seen.title);
+        }
 
         return {
             ...(typeof status === "number" && status > 0 ? { status } : {}),
@@ -963,6 +999,8 @@ export class BrowserPage {
 
         if (options.wait !== false) {
             await this.#settle(mark, 30_000, options.signal);
+            // Where it is now, title and all, before the answer.
+            await this.#refreshHistory();
         }
 
         return true;
@@ -977,6 +1015,7 @@ export class BrowserPage {
 
         if (options.wait !== false) {
             await this.#settle(mark, 30_000, options.signal, true);
+            await this.#refreshHistory();
         }
     }
 

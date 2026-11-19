@@ -2,6 +2,7 @@
 // connects over a real WebSocket to a real pi-env daemon, and Pi's tools in a session there run there. Here the "other
 // computer" is this one, in a folder of its own that the server's sessions never use.
 import assert from "node:assert/strict";
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -14,12 +15,7 @@ import {
     fauxToolCall,
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
-import {
-    Runner,
-    type RunnerOptions,
-    type SessionAnswer,
-    type SessionQuestion,
-} from "../src/runner/runner.ts";
+import { Runner, type RunnerOptions } from "../src/runner/runner.ts";
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
 import { AgentDoc } from "@earendil-works/pi-durable";
 import { SubagentsDoc } from "../src/server/docs.ts";
@@ -27,6 +23,7 @@ import type { Lesson } from "../src/server/docs.ts";
 import { ExtensionRequest } from "../src/server/extension-request.ts";
 import { createHandler } from "../src/server/http.ts";
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -39,7 +36,12 @@ import {
     say,
     scriptedModel,
     until,
+    answerRequests,
+    linkAuthenticator,
+    work,
 } from "./helpers.ts";
+import type { User } from "../src/server/config.ts";
+import type { FolderRequestView } from "../src/server/folder-requests.ts";
 
 /** The remote computer's folder: the server's own sessions work in `work`, never here. */
 const there = join(root, "there");
@@ -99,13 +101,36 @@ const route: FauxResponseStep = (context) => {
     return fauxAssistantMessage([fauxText("ok")]);
 };
 
-/** The runner's settings, as its link file would hold them. */
-const runnerSettings: { confirm?: boolean } = {};
+/**
+ * The approvals the server asked for (`folder-requests.ts`), and how the owner, in charge of the computer they linked,
+ * answers: yes, unless a test says otherwise. The runner asks nobody: the server decides. The owner is never asked on
+ * their own computer: `asking` runs a test's steps as a chosen guest, who is.
+ */
+const asked: FolderRequestView[] = [];
+let answer: (request: FolderRequestView) => boolean | undefined = () => true;
 
-/** What the computer was asked, and how its person answers: yes, unless a test says otherwise. */
-const asked: SessionQuestion[] = [];
-let answer: (question: SessionQuestion) => Promise<SessionAnswer> = () =>
-    Promise.resolve({ allow: true });
+let stopAnswering: () => void = () => {};
+
+/**
+ * A guest chosen for the computer, given its folders: they need an approval for each new session there, which the owner
+ * allows (or not) from the app. `run` gets them.
+ */
+async function asking<T>(run: (guest: User) => Promise<T>): Promise<T> {
+    const { user: guest } = await addPerson(app, "Gale", "guest");
+
+    // Their requests wait for the owner's answer: an approval time, not "never".
+    app.config.updateUser(guest.id, { approvalDays: 7 });
+
+    app.config.setRunnerUsers(runnerId, [guest.id]);
+    app.config.setGivenFolders(runnerId, guest.id, [root]);
+
+    try {
+        return await run(guest);
+    } finally {
+        app.config.setRunnerUsers(runnerId, []);
+        await app.removeUser(owner(app), guest.id);
+    }
+}
 
 /** The newest tool result's text in a conversation. */
 async function lastToolText(id: number): Promise<string> {
@@ -133,29 +158,25 @@ before(async () => {
 
     const { port } = server.address() as AddressInfo;
     const { code } = app.runners.makeCode("Laptop", owner(app).id);
-    const linked = app.runners.redeem(code);
+    const linked = linkInProcess((request) => app.runners.redeem(request), code);
 
     runnerId = linked.id;
+
     runnerOptions = {
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",
         cwd: there,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => runnerSettings,
-        // The person at the computer: asked before each session, answering as `answer` says.
-        ask: (question) => {
-            asked.push(question);
-
-            return answer(question);
-        },
     };
     runner = new Runner(runnerOptions);
+    stopAnswering = answerRequests(app, (request) => answer(request), asked);
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the runner to connect");
 });
 
 after(async () => {
+    stopAnswering();
     await runner?.stop();
     await app?.close();
     server?.closeAllConnections();
@@ -259,11 +280,11 @@ describe("a session on another computer", () => {
         assert.equal(app.workspace.head(id as never), undefined);
     });
 
-    it("is its creator's alone: others on the server neither see nor start, fork, or prompt one", async () => {
-        const { user: other } = app.config.addUser("Someone", "guest");
+    it("is private to its starter: someone not chosen neither sees nor starts, forks, or prompts one", async () => {
+        const { user: other } = await addPerson(app, "Someone", "guest");
         const { user: anotherOwner } = app.config.addUser("Co-owner", "owner");
 
-        for (const person of [other, anotherOwner]) {
+        for (const person of [other]) {
             assert.equal(app.canSee(person, id as never), false, `${person.name} cannot see it`);
             assert.ok(
                 !app.sessions(person).some((each) => each.id === Number(id)),
@@ -272,46 +293,55 @@ describe("a session on another computer", () => {
             assert.throws(() => app.requireSee(person, id as never), /not shared with you/);
             await assert.rejects(
                 app.commands.createSession(person, { cwd: there, runner: runnerId }),
-                /Only the person who linked this computer/,
+                /has not chosen you for it/,
             );
             await assert.rejects(
                 app.commands.fork(id as never, person, {}),
-                /not shared|Only the person/,
+                /not shared|not chosen you/,
             );
         }
 
+        // Who linked the computer (here the owner) sees every session on it; another owner record is no one special there.
         assert.equal(app.canSee(owner(app), id as never), true);
+        assert.equal(app.canSee(anotherOwner, id as never), false);
     });
 
-    it("follows the usual rules when the owner shares them, but starting one stays the linker's", async () => {
-        const other = app.config.users.find((each) => each.name === "Co-owner")!;
+    it("lets a shared person see it, but starting one there stays the chosen people's", async () => {
+        const other = app.config.users.find((each) => each.name === "Someone")!;
 
+        // Only its starter or an owner shares it, and only with people who may use its computer.
         await assert.rejects(
-            app.setSharedRunnerSessions(
-                app.config.users.find((each) => each.name === "Someone")!,
-                true,
-            ),
-            /Only the owner/,
+            app.commands.shareSession(id as never, other, [other.id]),
+            /not shared/,
         );
-        await app.setSharedRunnerSessions(owner(app), true);
+        await assert.rejects(
+            app.commands.shareSession(id as never, owner(app), [other.id]),
+            /choose them for it first/,
+        );
+        app.config.setRunnerUsers(runnerId, [other.id]);
+        app.setAccess(owner(app), other.id, { role: "viewer" });
+        await app.commands.shareSession(id as never, owner(app), [other.id]);
 
         try {
             assert.equal(app.canSee(other, id as never), true);
             assert.ok(app.sessions(other).some((each) => each.id === Number(id)));
             await assert.rejects(
                 app.commands.createSession(other, { cwd: there, runner: runnerId }),
-                /Only the person who linked this computer/,
+                /Viewers cannot start sessions/,
             );
             await assert.rejects(
                 app.commands.fork(id as never, other, {}),
-                /Only the person who linked/,
+                /Viewers cannot prompt/,
             );
         } finally {
-            await app.setSharedRunnerSessions(owner(app), false);
+            await app.commands.shareSession(id as never, owner(app), []);
+            app.config.setRunnerUsers(runnerId, []);
+            linkAuthenticator(app, other);
+            app.setAccess(owner(app), other.id, { role: "guest" });
         }
 
         assert.equal(app.canSee(other, id as never), false);
-        assert.equal(app.config.sharedRunnerSessions, false);
+        assert.equal(app.sessionMeta(id as never)?.sharedWith, undefined);
     });
 
     it("keeps the computer in a fork", async () => {
@@ -320,98 +350,111 @@ describe("a session on another computer", () => {
         assert.equal(app.runnerOf(fork.id), runnerId);
     });
 
-    it("asks the computer first, and does not start a session its person denies", async () => {
+    it("asks the server first, and does not start a session the owner denies", async () => {
         asked.length = 0;
-        answer = () =>
-            Promise.resolve({ allow: false, reason: "The person at this computer denied it." });
+        answer = () => false;
 
         try {
-            const before = app.sessions(owner(app)).length;
+            await asking(async (guest) => {
+                const before = app.sessions(owner(app)).length;
 
-            await assert.rejects(
-                app.commands.createSession(owner(app), { cwd: there, runner: runnerId }),
-                /denied it/,
-            );
-            await assert.rejects(app.commands.fork(id as never, owner(app), {}), /denied it/);
-            assert.equal(app.sessions(owner(app)).length, before, "no session was made");
-            assert.deepEqual(
-                asked.map((each) => [each.kind, each.person, each.folder]),
-                [
-                    ["new", "Owner", there],
-                    ["fork", "Owner", there],
-                ],
-            );
+                await assert.rejects(
+                    app.commands.createSession(guest, { cwd: there, runner: runnerId }),
+                    /was not allowed/,
+                );
+                assert.equal(app.sessions(owner(app)).length, before, "no session was made");
+                assert.deepEqual(
+                    asked.map((each) => [each.kind, each.name, each.computer]),
+                    [["new", "Gale", runnerId]],
+                );
+            });
         } finally {
-            answer = () => Promise.resolve({ allow: true });
+            answer = () => true;
         }
     });
 
-    it("cancels new sessions and whole-session forks, even when their person allows them late", async () => {
+    it("cancels new sessions and whole-session forks waiting for an approval", async () => {
+        // A copy from a session here to a folder on the computer asks as a new one there would.
+        const source = (await app.commands.createSession(owner(app), { cwd: work })).id;
+
         for (const kind of ["new", "fork"] as const) {
             const before = app.sessions(owner(app)).length;
             const controller = new AbortController();
-            let late!: (answer: SessionAnswer) => void;
 
             asked.length = 0;
-            answer = () =>
-                new Promise((resolve) => {
-                    late = resolve;
-                });
+            answer = () => undefined;
 
             try {
-                const result =
-                    kind === "new"
-                        ? app.commands.createSession(
-                              owner(app),
-                              { cwd: there, runner: runnerId },
-                              { signal: controller.signal },
-                          )
-                        : app.commands.fork(id as never, owner(app), {}, controller.signal);
-                const rejected = assert.rejects(result, { status: 409, message: "Cancelled." });
+                await asking(async (guest) => {
+                    await app.commands.shareSession(source, owner(app), [guest.id]);
 
-                await until(() => asked.length === 1, "the session question");
-                controller.abort();
-                await rejected;
-                await until(() => asked[0]!.signal.aborted, "the runner question to be withdrawn");
-                assert.equal(asked[0]!.signal.reason, "Withdrawn by the server.");
-                late({ allow: true });
-                await new Promise((resolve) => setTimeout(resolve, 50));
-                assert.equal(
-                    app.sessions(owner(app)).length,
-                    before,
-                    "no cancelled session was made",
-                );
+                    const result =
+                        kind === "new"
+                            ? app.commands.createSession(
+                                  guest,
+                                  { cwd: there, runner: runnerId },
+                                  { signal: controller.signal },
+                              )
+                            : app.commands.fork(
+                                  source,
+                                  guest,
+                                  { place: { runner: runnerId, cwd: there } },
+                                  controller.signal,
+                              );
+                    const rejected = assert.rejects(result, { status: 409 });
+
+                    await until(() => asked.length === 1, "the folder request");
+                    controller.abort();
+                    await rejected;
+                    await until(
+                        () => app.folderRequests.list(owner(app)).length === 0,
+                        "the request to end",
+                    );
+                    assert.equal(
+                        app.sessions(owner(app)).length,
+                        before,
+                        "no cancelled session was made",
+                    );
+                });
             } finally {
                 controller.abort();
-                answer = () => Promise.resolve({ allow: true });
+                answer = () => true;
             }
         }
     });
 
-    it("still starts a session when its person allows it immediately", async () => {
+    it("starts a session once the owner allows it, and keeps the approval for that session", async () => {
         asked.length = 0;
-        const before = app.sessions(owner(app)).length;
-        const created = await app.commands.createSession(owner(app), {
-            cwd: there,
-            runner: runnerId,
-        });
+        await asking(async (guest) => {
+            const before = app.sessions(owner(app)).length;
+            const created = await app.commands.createSession(guest, {
+                cwd: there,
+                runner: runnerId,
+            });
 
-        assert.equal(asked.length, 1);
-        assert.equal(app.runnerOf(created.id), runnerId);
-        assert.equal(app.sessions(owner(app)).length, before + 1);
+            assert.equal(asked.length, 1);
+            assert.equal(app.runnerOf(created.id), runnerId);
+            assert.equal(app.sessions(owner(app)).length, before + 1);
+            assert.equal(app.folderApprovals.live(String(created.id)), true);
+
+            // Each new session is its own approval.
+            await app.commands.createSession(guest, { cwd: there, runner: runnerId });
+            assert.equal(asked.length, 2, "a new session asks again");
+        });
     });
 
-    it("starts sessions without asking when its person turned asking off", async () => {
+    it("starts sessions on a computer its linker is in charge of without asking", async () => {
         asked.length = 0;
-        answer = () => Promise.reject(new Error("must not be asked"));
+
+        answer = () => {
+            throw new Error("must not be asked");
+        };
 
         try {
-            runnerSettings.confirm = false;
             await app.commands.createSession(owner(app), { cwd: there, runner: runnerId });
             assert.equal(asked.length, 0);
         } finally {
-            runnerSettings.confirm = true;
-            answer = () => Promise.resolve({ allow: true });
+            answer = () => true;
         }
     });
 
@@ -419,35 +462,40 @@ describe("a session on another computer", () => {
         const folder = join(root, "move-destination");
 
         mkdirSync(folder, { recursive: true });
-        const session = (
-            await app.commands.createSession(owner(app), { cwd: there, runner: runnerId })
-        ).id;
+        // A guest given the computer's folders, asked for each new one (the owner's one approval covers it all).
+        const { user: mover } = await addPerson(app, "Mover", "guest");
 
-        asked.length = 0;
-        await app.commands.configure(session as never, owner(app), { cwd: there });
-        assert.equal(asked.length, 0, "the same folder is not a move");
-        await assert.rejects(
-            app.commands.configure(session as never, owner(app), { cwd: join(folder, "missing") }),
-            /is not a folder on Laptop/,
-        );
-        assert.equal(asked.length, 0, "invalid folders do not ask");
-        answer = () => Promise.resolve({ allow: false, reason: "Move denied here." });
+        app.config.setRunnerUsers(runnerId, [mover.id]);
+        app.config.setGivenFolders(runnerId, mover.id, [root]);
 
         try {
+            const session = (
+                await app.commands.createSession(mover, { cwd: there, runner: runnerId })
+            ).id;
+
+            asked.length = 0;
+
+            // A move stays under the session's approval: a folder given to them, and no new question.
+            await app.commands.configure(session as never, mover, { cwd: there });
             await assert.rejects(
-                app.commands.configure(session as never, owner(app), { cwd: folder }),
-                /Move denied here/,
+                app.commands.configure(session as never, mover, { cwd: join(folder, "missing") }),
+                /is not a folder on Laptop/,
             );
-            assert.equal(app.cwdOf(session as never), there, "a denied move keeps the old folder");
-            assert.deepEqual(
-                asked.map((each) => [each.kind, each.person, each.folder]),
-                [["move", owner(app).name, folder]],
+            app.config.setGivenFolders(runnerId, mover.id, [there]);
+            await assert.rejects(
+                app.commands.configure(session as never, mover, { cwd: folder }),
+                /has not given you this folder/,
             );
-            answer = () => Promise.resolve({ allow: true });
-            await app.commands.configure(session as never, owner(app), { cwd: folder });
+            assert.equal(app.cwdOf(session as never), there, "a refused move keeps the old folder");
+            app.config.setGivenFolders(runnerId, mover.id, [root]);
+            await app.commands.configure(session as never, mover, { cwd: folder });
             assert.equal(app.cwdOf(session as never), folder);
+            assert.equal(asked.length, 0, "a move asks nothing");
+            assert.equal(app.folderApprovals.get(String(session))?.folder, folder);
         } finally {
-            answer = () => Promise.resolve({ allow: true });
+            answer = () => true;
+            app.config.setRunnerUsers(runnerId, []);
+            await app.removeUser(owner(app), mover.id);
         }
     });
 
@@ -617,22 +665,42 @@ describe("a session on another computer", () => {
             /missing-team-folder is not a folder on Laptop/,
         );
         assert.equal(asked.length, 0, "an invalid folder never asks");
-        answer = () => Promise.resolve({ allow: false, reason: "Team start denied." });
 
-        try {
+        // A guest's session: a linked one goes only to folders given to them, and asks nothing (it inherits).
+        await asking(async (guest) => {
+            app.config.setGivenFolders(runnerId, guest.id, [there]);
+
+            const source = (
+                await app.commands.createSession(guest, { cwd: there, runner: runnerId })
+            ).id;
+
+            // Pi works for the guest there once they sent something.
+            await app.commands.configure(source, guest, {
+                model: { provider: "faux", modelId: "faux-1" },
+                thinkingLevel: "off",
+            });
+            const { submissionId } = await app.commands.submit(source, guest, {
+                text: "hello",
+                requestId: crypto.randomUUID(),
+            });
+
+            await (await app.harness.submission(submissionId, context))!.wait(context);
+
+            const made = app.sessions(owner(app)).length;
+
+            asked.length = 0;
             await assert.rejects(
                 app.linkedSessions.start(
-                    id as never,
+                    source,
                     { cwd: otherFolder, message: "hello" },
                     crypto.randomUUID(),
                 ),
-                /Team start denied/,
+                /has not given you this folder/,
             );
-            assert.equal(asked.length, 1, "the computer was asked");
-            assert.equal(app.sessions(owner(app)).length, before, "no linked session was made");
-        } finally {
-            answer = () => Promise.resolve({ allow: true });
-        }
+            assert.equal(asked.length, 0, "a linked session never asks");
+            assert.equal(app.sessions(owner(app)).length, made, "no linked session was made");
+        });
+        assert.ok(app.sessions(owner(app)).length >= before);
     });
 
     it("keeps the runner for a human team start and restricts starts to people who may use it", async () => {
@@ -651,20 +719,18 @@ describe("a session on another computer", () => {
             actor.close();
         }
 
-        const other = app.config.users.find((each) => each.name === "Co-owner")!;
-
-        await app.setSharedRunnerSessions(owner(app), true);
-
-        // A session of its own, where the co-owner writes last: the linked session above answers its own session by
-        // itself (since 0.29.0), which would make the owner its last writer again.
+        // A session of its own, where someone invited to it alone writes last: they steer it, but may not start
+        // sessions on its computer. The linked session above answers its own session by itself (since 0.29.0), which
+        // would make the owner its last writer again.
         const shared = await app.commands.createSession(owner(app), {
             cwd: there,
             runner: runnerId,
         });
+        const { user: other } = app.config.addUser("Invited", "guest", [String(shared.id)]);
 
         try {
             const { submissionId } = await app.commands.submit(shared.id, other, {
-                text: "hello from a co-owner",
+                text: "hello from an invited person",
                 requestId: crypto.randomUUID(),
             });
 
@@ -675,12 +741,12 @@ describe("a session on another computer", () => {
             asked.length = 0;
             await assert.rejects(
                 app.linkedSessions.start(shared.id, { message: "hello" }, crypto.randomUUID()),
-                /Only the person who linked this computer or the people they chose can start sessions on it/,
+                /invited to one session and cannot start new ones/,
             );
-            assert.equal(asked.length, 0, "an ungranted person cannot ask the computer");
+            assert.equal(asked.length, 0, "an ungranted person cannot ask for the computer");
             assert.equal(app.sessions(owner(app)).length, before);
         } finally {
-            await app.setSharedRunnerSessions(owner(app), false);
+            await app.removeUser(owner(app), other.id);
         }
     });
 

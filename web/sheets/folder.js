@@ -8,18 +8,16 @@ import {
     actions,
     api,
     attempt,
-    canSteer,
+    canStart,
     closeSheet,
     navigate,
     notify,
     openSheet,
-    scoped,
     store,
 } from "../store.js";
 import { sessionStarted } from "../extension-ui.js";
 import { chooseFolder } from "../copy-draft.js";
 import { goBack } from "../back.js";
-import { waitOnComputer } from "../runner-wait.js";
 import {
     crumbsOf,
     isWholePath,
@@ -102,7 +100,13 @@ function LineInput({ value, placeholder, label, onSubmit, onCancel, class: class
  * Runners to link one (owners only). Each person sees the computers they may use.
  */
 function RunsOn({ runner, runners, onPick }) {
-    const choices = [{ id: null, name: "This server", online: true }, ...runners];
+    // Only computers this person may start sessions on: the owner also lists runners someone else linked, to unlink.
+    const choices = [
+        ...(store.state.me?.mayStart === false
+            ? []
+            : [{ id: null, name: "This server", online: true }]),
+        ...runners.filter((each) => each.mayStart !== false),
+    ];
 
     return html`<div class="fp-places-title">Runs on</div>
         ${choices.map(
@@ -336,11 +340,11 @@ export function CwdSheet({
                 await actions.configure({ cwd: path });
                 closeSheet();
             } else {
-                const created = await (runner
-                    ? waitOnComputer(runner, path, "new", (signal) =>
-                          actions.createSession(path, { runner, worktree }, signal),
-                      )
-                    : actions.createSession(path, { worktree }));
+                // A new folder waits for its approval in Pi Pocket (`folder-requests.js`), here as on a runner.
+                const created = await actions.createSession(
+                    path,
+                    runner ? { runner, worktree } : { worktree },
+                );
 
                 if (!created) {
                     return;
@@ -362,8 +366,7 @@ export function CwdSheet({
     };
 
     // Each person keeps favorites on the computers they may use.
-    const mayStar =
-        canSteer() && !scoped() && (!runner || runners.some((each) => each.id === runner));
+    const mayStar = canStart() && (!runner || runners.some((each) => each.id === runner));
     const starred = target !== null && favorites.includes(target);
 
     /** Star or unstar a folder. The list changes when the server says it did, on every device. */

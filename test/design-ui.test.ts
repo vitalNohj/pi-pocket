@@ -3,7 +3,17 @@
 // artifact viewer's "Open in Design" button, a viewer who cannot write, and the phone's layout. What needs the frame's
 // inspector (pointing, editing, tweaks, slides) runs when this copy has it (`attachBridge` in `web/artifact-bridge.js`).
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type App, cleanUp, openApp, owner, root, scriptedModel, until, work } from "./helpers.ts";
+import {
+    addPerson,
+    type App,
+    cleanUp,
+    openApp,
+    owner,
+    root,
+    scriptedModel,
+    until,
+    work,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -153,7 +163,7 @@ before(async () => {
     app.config.lastModel ??= { provider: "faux", modelId: "faux-1", thinkingLevel: "off" };
     ({ id: session } = await app.commands.createSession(owner(app), { cwd: work }));
     await publishAll(app, session);
-    viewerToken = app.config.addUser("Vic", "viewer").token;
+    viewerToken = (await addPerson(app, "Vic", "viewer")).token;
     server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
     );

@@ -433,13 +433,19 @@ export async function conversationRoutes(
         return json(response, 200, { ok: true });
     }
 
-    // Whether Pi trusts the session's project, which its own skills wait for; only the owner answers.
+    // Whether Pi trusts the session's project, which its own skills wait for. Who is in charge of its computer reads all
+    // of it and answers; anyone else who sees the session learns only whether it waits, and for whom.
     if (third === "trust" && method === "GET") {
-        return json(response, 200, app.projectTrust(id, user));
+        return json(response, 200, app.trustFor(id, user));
     }
 
     if (third === "trust" && method === "POST") {
-        const body = await readJson<{ choice?: unknown }>(request);
+        const body = await readJson<{ choice?: unknown; ask?: unknown }>(request);
+
+        // Someone who prompts here and cannot answer: who is in charge hears, once for the project.
+        if (body.ask === true) {
+            return json(response, 200, app.askProjectTrust(id, user));
+        }
 
         if (
             body.choice !== "trust" &&
@@ -593,8 +599,9 @@ export async function conversationRoutes(
             throw new HttpError(400, "path is required");
         }
 
-        // As the viewer's own route (`view`): reading a file whole takes the right to steer, not only to see.
-        app.requireSteer(user);
+        // As the viewer's own route (`view`): reading a file whole takes the right to steer this session, not only to
+        // see it.
+        app.requireSteer(user, id);
 
         if (app.runnerOf(id) !== undefined) {
             // Whom the file viewer lets read it there (`Workspace.remoteFile`): the folder, never the computer's secrets.
@@ -837,8 +844,7 @@ export async function conversationRoutes(
         parts[4] === "stop" &&
         method === "POST"
     ) {
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const item = await app.background.byTask(id, fourth);
 
         if (item === undefined) {
@@ -925,7 +931,7 @@ export async function conversationRoutes(
     }
 
     if (third === "upload" && method === "POST") {
-        app.requireSteer(user);
+        app.requireSteer(user, id);
 
         if (Number(request.headers["content-length"] ?? 0) > MAX_UPLOAD) {
             throw new HttpError(413, "Files can be up to 50 MB");

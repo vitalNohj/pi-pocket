@@ -4,6 +4,7 @@
 // for. Webhooks turn posts let in by their secret (or GitHub's signature) into one message each, trimmed and fenced,
 // to a session or PiP, and turn away everything else.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -16,6 +17,7 @@ import {
     say,
     scriptedModel,
     until,
+    work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -591,7 +593,7 @@ test("a watch waits while someone else drives, or Pi is busy, without counting i
     github = freshGithub();
     github.checks = [failedCheck("test", "7", "boom")];
     const id = await newSession(app);
-    const guest = app.config.addUser("Dee", "guest").user;
+    const guest = (await addPerson(app, "Dee", "guest")).user;
     const real = app.isBusy;
     // Pi is busy from the moment the watch has looked at the PR (the send that follows must wait), busy throughout, or
     // as it is.
@@ -657,6 +659,61 @@ test("a watch waits while someone else drives, or Pi is busy, without counting i
         (await tx.doc(TurnsDoc, id)).on = false;
     }, context);
     await app.commands.unwatchPr(id, owner(app));
+});
+
+test("a watch waits while its session's tasks are paused, without counting it a failure, and tells once it is renewed", async () => {
+    github = freshGithub();
+    const guest = (await addPerson(app, "Tess", "guest")).user;
+    const { id } = await app.commands.createSession(guest, { cwd: work });
+    const session = String(id);
+
+    await app.commands.configure(id, guest, {
+        model: { provider: "faux", modelId: "faux-1" },
+        thinkingLevel: "off",
+    });
+    await app.commands.watchPr(id, guest, undefined);
+    await looks();
+
+    // The owner has tasks expire with their session, and this one's approval ended more than a week ago.
+    const approval = app.folderApprovals.get(session)!;
+
+    app.config.setFolderApprovals([
+        ...app.config.folderApprovals.filter((each) => each.session !== session),
+        { ...approval, revokedAt: Date.now() - 8 * 86_400_000 },
+    ]);
+    app.setTasksExpire(owner(app), true);
+
+    try {
+        assert.equal(app.tasksMayRun(id), false);
+        // One more failure would end the watch: a paused session is none.
+        await app.harness.commit(async (tx) => {
+            (await tx.doc(WatchDoc, id)).watch!.errors = 11;
+        }, context);
+        github.checks = [failedCheck("test", "9", "boom")];
+        await until(
+            async () =>
+                (await watchOf(id))?.note === "Waits until this session's approval is renewed.",
+            "the watch to wait for a renewal",
+        );
+        await looks(3);
+        const waiting = await watchOf(id);
+
+        assert.equal(waiting?.status, "watching");
+        assert.equal(waiting?.errors, 0);
+        assert.equal(waiting?.sent, 0);
+        assert.deepEqual(await messages(id), [], "nothing goes while its tasks are paused");
+
+        // The owner renews it: what the watch found is told, once.
+        await app.renewApproval(owner(app), id);
+        await until(async () => (await watchOf(id))?.sent === 1, "the failure to be told");
+        await until(async () => !app.isBusy(id), "Pi to answer");
+        assert.equal((await messages(id)).length, 1);
+        assert.match((await messages(id))[0]!, /Checks failed on abcdef1: “test”/);
+        assert.equal((await watchOf(id))?.note, undefined);
+    } finally {
+        app.setTasksExpire(owner(app), false);
+        await app.commands.unwatchPr(id, guest);
+    }
 });
 
 test("Pi names a PR off github.com only on its folder's host, and only where gh is signed in", async () => {
@@ -728,7 +785,7 @@ test("starting a watch says what is wrong: no PR, one merged already, PiP, a vie
         /Only sessions can watch/,
     );
 
-    const viewer = app.config.addUser("Vic", "viewer").user;
+    const viewer = (await addPerson(app, "Vic", "viewer")).user;
 
     await assert.rejects(app.commands.watchPr(id, viewer, undefined));
     await assert.rejects(app.watches.start(id, viewer.id), /someone who can steer/);
@@ -876,7 +933,7 @@ test("a GitHub hook is signed: its address alone lets nothing in, and a new secr
     assert.notEqual(moved.path, plain.path);
     assert.equal((await post(plain.path)).status, 404);
     await assert.rejects(
-        app.hooks.rotate(app.config.addUser("Rae", "guest").user, plain.id),
+        app.hooks.rotate((await addPerson(app, "Rae", "guest")).user, plain.id),
         /No such webhook/,
     );
     await until(async () => !app.isBusy(id), "Pi to answer");
@@ -899,7 +956,7 @@ test("webhooks to PiP, and who may make, see, and remove them", async () => {
         /^\[via webhook Alerts\] Something happened[^\n]*\n\n<webhook-payload>\ndisk full on web-1\n<\/webhook-payload>/,
     );
 
-    const guest = app.config.addUser("Gus", "guest").user;
+    const guest = (await addPerson(app, "Gus", "guest")).user;
     const viewer = app.config.users.find((user) => user.role === "viewer")!;
     const session = await newSession(app);
 

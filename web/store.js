@@ -271,6 +271,14 @@ export const store = {
         users: [],
         /** Other computers that run sessions' tools: the owner's, from `GET /api/runners` and `runners` events. */
         runners: [],
+        /** This server's own record in the Runners sheet, for the owner alone (`this-server` events); else null. */
+        thisServer: null,
+        /** New folders waiting for an approval (`folder-requests.js`): mine, and for the owner every one. */
+        folderRequests: [],
+        /** Projects that wait for me to trust them, on a computer I am in charge of (`trust-requests.ts`). */
+        trustRequests: [],
+        /** Approvals kept on the server (`folder-approvals.ts`): mine, and for the owner every one. */
+        folderApprovals: [],
         models: [],
         /** This tab's shared model refresh state and last result (`model-refresh.js`). */
         modelRefresh: { loading: false, result: null, error: null },
@@ -627,7 +635,8 @@ export const canSteer = () => store.state.me?.role !== "viewer";
 
 /**
  * Whether this person may turn take turns on or off here, as the server decides: anyone who steers while it is off; the
- * driver, the owner, or anyone when nobody drives or the driver has left, while it is on.
+ * driver, who overrides take turns on this computer (`overridesTurns`), or anyone when nobody drives or the driver has
+ * left, while it is on.
  */
 export function canToggleTurns() {
     const { me, presence, view } = store.state;
@@ -637,7 +646,7 @@ export function canToggleTurns() {
         canSteer() &&
         (!turns?.on ||
             turns.driver === me?.id ||
-            me?.role === "owner" ||
+            overridesTurns(view.conversation) ||
             !turns.driver ||
             !presence.some((person) => person.id === turns.driver))
     );
@@ -645,6 +654,48 @@ export function canToggleTurns() {
 
 /** People invited to one session cannot start sessions or invite others. */
 export const scoped = () => Array.isArray(store.state.me?.sessions);
+
+/**
+ * May this person start sessions on this server, fork, and invite: the server says (`mayStart`, the access policy), as
+ * the owner chose them for it; a server from before it, by role.
+ */
+export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStart !== false;
+
+/**
+ * Does the owner let this person invite people (`access.ts` `invites`): the owner always, a user once the owner turns
+ * Invite people on for them. A server from before it does not say, so as before.
+ */
+export const canInvite = () => store.state.me?.invites !== false;
+
+/** The computer a session runs on, as the server names it (`access.ts` `THIS_SERVER`): a runner's id, or this server. */
+const computerOf = (session) => session?.runner ?? "this-server";
+
+/**
+ * May this person take the wheel from a driver in `session` (a session of the list, or the open one), and turn take
+ * turns off under them (`access.ts` `overridesTurns`): the server names the computers where they may, those they are in
+ * charge of and those where they were given it. A server from before it does not say: the owner, as before.
+ */
+export function overridesTurns(session) {
+    const { me } = store.state;
+
+    return Array.isArray(me?.wheel) ? me.wheel.includes(computerOf(session)) : me?.role === "owner";
+}
+
+/**
+ * May this person allow a call their own message led to in `session` while approvals need someone else (`access.ts`
+ * `allowsOwn`): the server names the computers where they may. A server from before it does not say: who is in charge
+ * of the session's computer, as before.
+ */
+export function allowsOwn(session) {
+    const { me } = store.state;
+
+    return Array.isArray(me?.allows)
+        ? me.allows.includes(computerOf(session))
+        : session?.inCharge === true;
+}
+
+/** May this person link computers of their own as runners: the owner, and the guests the owner lets (`mayLink`). */
+export const canLink = () => store.state.me?.mayLink === true;
 
 /** The notices that announce chat messages, here or a mention elsewhere, by id: their session's. Reading its chat takes them down. */
 const chatNotices = new Map();
@@ -1910,9 +1961,14 @@ const handlers = {
             me: kept(state.me, data.user),
             users: keptEach(state.users, data.users),
             folderFavorites: kept(state.folderFavorites, data.folderFavorites ?? []),
-            runnerFavorites: kept(state.runnerFavorites, data.runnerFavorites),
+            runnerFavorites: kept(state.runnerFavorites, data.runnerFavorites ?? {}),
             // Linked computers are omitted for people who have access to none.
             runners: kept(state.runners, data.runners ?? []),
+            thisServer: kept(state.thisServer, data.thisServer ?? null),
+            tasksExpire: data.tasksExpire === true,
+            folderRequests: kept(state.folderRequests, data.folderRequests ?? []),
+            trustRequests: kept(state.trustRequests, data.trustRequests ?? []),
+            folderApprovals: kept(state.folderApprovals, data.folderApprovals ?? []),
             models: kept(state.models, data.models),
             guard: kept(state.guard, data.guard),
             server: keptServer(state.server, data.server, asked),
@@ -1980,6 +2036,15 @@ const handlers = {
     users: (users) => setChanged({ users: keptEach(store.state.users, users) }),
     // The owner's computers came, went, or changed (`sheets/computers.js`).
     runners: (runners) => store.set({ runners }),
+    // This server's people, saved folders, or rules changed (`sheets/computers.js`): the owner's alone.
+    "this-server": (thisServer) => store.set({ thisServer }),
+    // New folders waiting for an approval came or went (`folder-requests.js`).
+    "folder-requests": (folderRequests) => store.set({ folderRequests }),
+    // A project began to wait for who is in charge to trust it, or was decided or put away (`trust.js`): everyone
+    // hears, those not in charge with an empty list, and a session that waits reads its trust again.
+    "trust-requests": (trustRequests) => store.set({ trustRequests }),
+    // Approvals kept on the server came, were used, or ended.
+    "folder-approvals": (folderApprovals) => store.set({ folderApprovals }),
     // Pi's lessons changed somewhere: a Memory sheet or menu that shows them fetches them again (`sheets/memory.js`).
     memory: () => store.set((state) => ({ memoryRev: (state.memoryRev ?? 0) + 1 })),
     // Not this person's to see (any more), or gone: nothing of it stays in this tab, kept or shown.
@@ -2855,6 +2920,8 @@ export const actions = {
     trust: () => api(`c/${current()}/trust`),
     /** `trust`, `trust-parent`, or `distrust`, as Pi's `/trust` offers them. */
     setTrust: (choice) => api(`c/${current()}/trust`, { choice }),
+    /** Tell who is in charge of the session's computer that its project waits for their decision: once for a project. */
+    askTrust: () => api(`c/${current()}/trust`, { ask: true }),
     /** Pi's sessions from the terminal on this machine; one of them to look at; and one continued as a new session. */
     piSessions: (query = "", runner) =>
         api(`pi-sessions?${new URLSearchParams({ q: query, ...(runner ? { runner } : {}) })}`),

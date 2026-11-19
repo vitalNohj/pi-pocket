@@ -1,5 +1,6 @@
 // Done when: Pi keeps going until a check passes, gives up after five, and a check cut off by a restart does not run again.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -199,7 +200,7 @@ test("past a spend limit Pi takes no more rounds toward the goal", async () => {
 
 test("a goal needs the right to drive, and Lancet Guard's leave for its check", async () => {
     const id = await sessionIn("rules");
-    const viewer = app.config.addUser("Vee", "viewer").user;
+    const viewer = (await addPerson(app, "Vee", "viewer")).user;
 
     await assert.rejects(app.commands.setGoal(id, viewer, "npm test"), { status: 403 });
     // With the guard on, a check it would ask about cannot run unasked after every answer.

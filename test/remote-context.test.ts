@@ -4,6 +4,7 @@
  * pi-env daemon on this machine, with its own home folder, so nothing comes from the server's.
  */
 import assert from "node:assert/strict";
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -20,6 +21,7 @@ import {
 import { Runner, type RunnerOptions } from "../src/runner/runner.ts";
 import { attachedFile } from "../src/server/commands.ts";
 import { attachmentsHeading, splitAttachments } from "../src/server/entry-format.ts";
+import { SessionsDoc } from "../src/server/docs.ts";
 import { readFolder, savedTrust, scanSettings, TRUST_FILE } from "../src/server/remote-context.ts";
 import {
     type App,
@@ -118,17 +120,16 @@ before(async () => {
 
     const { port } = server.address() as AddressInfo;
     const { code } = app.runners.makeCode("Laptop", owner(app).id);
-    const linked = app.runners.redeem(code);
+    const linked = linkInProcess((request) => app.runners.redeem(request), code);
 
     runnerId = linked.id;
+
     runnerOptions = {
         link: { server: `http://127.0.0.1:${port}`, ...linked },
         version: "test",
         cwd: remoteHome,
         log: () => {},
         retryMs: [50, 100, 200],
-        settings: () => ({ confirm: false }),
-        ask: () => Promise.resolve({ allow: true }),
     };
     runner = new Runner(runnerOptions);
     runner.start();
@@ -185,6 +186,57 @@ describe("a session on another computer", () => {
 
         assert.ok(names.includes("own-skill") && names.includes("laptop-skill"), String(names));
         assert.ok(!names.includes("team-skill"));
+    });
+
+    it("tells someone chosen there only that the project waits for its linker, who hears of it once and whose answer ends it", async () => {
+        // Chosen for the laptop, with the owner's session shared: they prompt in it, and are not in charge of it.
+        const fellow = app.config.addUser("Fellow", "guest").user;
+
+        app.config.setRunnerUsers(runnerId, [fellow.id]);
+        await app.harness.commit(async (tx) => {
+            (await tx.doc(SessionsDoc)).items[String(id)]!.sharedWith = [fellow.id];
+        }, context);
+        app.accessChanged();
+
+        try {
+            assert.deepEqual(app.trustFor(id as never, fellow), {
+                waiting: true,
+                by: "Owner",
+                asked: false,
+            });
+            assert.throws(
+                () => app.setProjectTrust(id as never, fellow, "trust"),
+                /Only Owner, who is in charge of Laptop, decides which projects Pi trusts there\./,
+            );
+            assert.deepEqual(app.askProjectTrust(id as never, fellow), {
+                waiting: true,
+                by: "Owner",
+                asked: true,
+            });
+
+            const [request, ...more] = app.trustRequests.list(owner(app));
+
+            assert.deepEqual(more, []);
+            assert.equal(request?.computer, runnerId);
+            assert.equal(request?.computerName, "Laptop");
+            assert.equal(request?.folder, folder);
+            assert.equal(request?.session, String(id));
+            assert.equal(request?.name, "Fellow");
+            assert.deepEqual(app.trustRequests.list(fellow), []);
+
+            // Their answer, which the next test gives again: the request ends, and nothing waits.
+            app.setProjectTrust(id as never, owner(app), "distrust");
+            assert.deepEqual(app.trustRequests.list(owner(app)), []);
+            assert.deepEqual(app.trustFor(id as never, fellow), {
+                waiting: false,
+                by: "Owner",
+                asked: false,
+            });
+        } finally {
+            // As it was for the tests after this one: nobody chosen, nothing shared, and no decision saved.
+            await app.removeUser(owner(app), fellow.id);
+            rmSync(join(app.dataDir, TRUST_FILE), { force: true });
+        }
     });
 
     it("asks whether to trust the project, and keeps the answer by computer and path", async () => {

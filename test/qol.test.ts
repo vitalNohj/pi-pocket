@@ -1,6 +1,7 @@
 // The message box's helpers on the server: `!` commands, mentioned files sent along, skills, the file viewer, undoing a
 // file from Changes, and session titles.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -22,6 +23,7 @@ import { after, before, test } from "node:test";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { ProviderDoc, UsageDoc } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "../src/server/access.ts";
 import type { ClientEntry } from "../src/server/projection.ts";
 import { cleanTitle, TITLE_PROMPT } from "../src/server/titles.ts";
 
@@ -90,7 +92,7 @@ test("`!` runs a command in the session's folder and Pi sees it; `!!` shows it t
 
 test("a `!` command Pi sees makes Pi work for its person, as a message does; one Pi does not see does not", async () => {
     const id = await newSession(app, folder);
-    const { user: guest } = app.config.addUser("Runner", "guest");
+    const { user: guest } = await addPerson(app, "Runner", "guest");
 
     try {
         await say(app, id, "hello from the owner");
@@ -144,12 +146,12 @@ test("a command that is stopped says so and keeps what it printed; a retried req
 
     assert.equal(stopped.length, 1);
     assert.equal(stopped[0]?.kind === "shell" && stopped[0].output, "before\n");
-    const { user: viewer } = app.config.addUser("Watcher", "viewer");
+    const { user: viewer } = await addPerson(app, "Watcher", "viewer");
 
     try {
         await assert.rejects(
             app.shell.start(id, viewer, { command: "echo hi" }),
-            /view this session but not steer/,
+            /Viewers cannot prompt/,
         );
     } finally {
         app.config.removeUser(viewer.id);
@@ -231,6 +233,224 @@ test("a command cut off by a restart is not run again, and its entry says so", a
     }
 });
 
+/** Run with Lancet Guard on and a verdict by the command's words: "forbidden" is blocked, "risky" is asked about. */
+async function guarded(target: App, run: () => Promise<void>): Promise<void> {
+    const enabled = target.loader.enabled;
+    const judge = target.guard.judge;
+
+    target.loader.enabled = (file: string) =>
+        file === "guard.ts" || enabled.call(target.loader, file);
+
+    target.guard.judge = async (_tool, args) => {
+        const command = String(args.command);
+
+        return {
+            subject: command,
+            decision: {
+                action: command.includes("forbidden")
+                    ? "block"
+                    : command.includes("risky")
+                      ? "ask"
+                      : "allow",
+                reason: "deletes files",
+                source: "rules",
+                terminate: false,
+            },
+        } as never;
+    };
+
+    try {
+        await run();
+    } finally {
+        target.loader.enabled = enabled;
+        target.guard.judge = judge;
+    }
+}
+
+/** The approval a held `!` command waits on, if it waits. */
+const heldFor = (target: App, taskId: number) =>
+    target.approvals.all().find((each) => each.id === `${taskId}:shell`);
+
+test("a `!` command Lancet Guard asks about waits for who is in charge: allowed, it runs; denied, it does not, and Pi is not told", async () => {
+    const id = await newSession(app, folder);
+    const { user: guest } = await addPerson(app, "Typist", "guest");
+    const { user: peer } = await addPerson(app, "Peer", "guest");
+    const marker = join(folder, "risky.txt");
+    const shells = async () => (await entries(id)).filter((entry) => entry.kind === "shell");
+    const onlyOwner = (whose: string) => `Only the owner can allow a command ${whose} typed.`;
+
+    try {
+        await guarded(app, async () => {
+            // One the guard blocks is refused at once, and one it allows runs as before.
+            await assert.rejects(app.shell.start(id, guest, { command: "echo forbidden" }), {
+                status: 403,
+                message: "Lancet Guard blocked this command: deletes files.",
+            });
+            await app.shell.start(id, guest, { command: "echo fine", context: false });
+            await until(async () => (await shells()).length === 1, "the allowed command's entry");
+
+            const first = await app.shell.start(id, guest, {
+                command: `echo risky >> ${marker}`,
+            });
+
+            await until(() => heldFor(app, first.taskId) !== undefined, "the command to wait");
+            const asked = heldFor(app, first.taskId)!;
+
+            assert.equal(asked.typedBy, guest.id);
+            assert.equal(asked.requestedBy, guest.id);
+            assert.equal(asked.tool, "bash");
+            assert.equal(asked.subject, `echo risky >> ${marker}`);
+            assert.equal(asked.reason, "deletes files");
+            assert.equal(existsSync(marker), false, "it has not run");
+            assert.equal((await shells()).length, 1, "and has no entry yet");
+            // Only the owner allows it: not its person, and not another guest, as they could one of Pi's calls.
+            assert.equal(app.cannotAllow(guest, asked), onlyOwner("you"));
+            assert.equal(app.cannotAllow(peer, asked), onlyOwner("someone else"));
+            assert.equal(app.cannotAllow(owner(app), asked), undefined);
+            await assert.rejects(app.answerApproval(asked.id, true, peer), {
+                status: 403,
+                message: onlyOwner("someone else"),
+            });
+            assert.notEqual(heldFor(app, first.taskId), undefined, "refused: it still waits");
+            assert.equal(await app.answerApproval(asked.id, true, owner(app)), true);
+            await until(async () => (await shells()).length === 2, "the command's entry");
+            assert.equal(readFileSync(marker, "utf8"), "risky\n");
+            assert.match((await modelTexts(app, id)).join("\n"), /echo risky >> /, "Pi sees it");
+
+            // Anyone who can steer denies one: it does not run, and Pi is not told.
+            const second = await app.shell.start(id, guest, {
+                command: `echo risky again >> ${marker}`,
+            });
+
+            await until(() => heldFor(app, second.taskId) !== undefined, "the second to wait");
+            assert.equal(await app.answerApproval(`${second.taskId}:shell`, false, peer), true);
+            await until(async () => (await shells()).length === 3, "the denied command's entry");
+            const denied = (await shells())[2];
+
+            assert.equal(denied?.kind === "shell" && denied.status, "denied");
+            assert.equal(
+                denied?.kind === "shell" && denied.output,
+                "Lancet Guard asked before this command (deletes files), and Peer denied it. It did not run.",
+            );
+            assert.equal(readFileSync(marker, "utf8"), "risky\n", "it did not run");
+            assert.doesNotMatch((await modelTexts(app, id)).join("\n"), /risky again/);
+            assert.equal(heldFor(app, second.taskId), undefined);
+
+            // With Allow their own calls on for them here, each allows their own: the guard still asks, and nobody but
+            // the owner allows someone else's.
+            app.setRight(owner(app), THIS_SERVER, guest.id, "allows", true);
+            app.setRight(owner(app), THIS_SERVER, peer.id, "allows", true);
+
+            const third = await app.shell.start(id, guest, {
+                command: `echo risky third >> ${marker}`,
+            });
+
+            await until(() => heldFor(app, third.taskId) !== undefined, "the third to wait");
+            const own = heldFor(app, third.taskId)!;
+
+            assert.equal(app.cannotAllow(peer, own), onlyOwner("someone else"));
+            assert.equal(app.cannotAllow(guest, own), undefined);
+            await assert.rejects(app.answerApproval(own.id, true, peer), { status: 403 });
+            assert.equal(readFileSync(marker, "utf8"), "risky\n", "it waits for its answer");
+            assert.equal(await app.answerApproval(own.id, true, guest), true);
+            await until(async () => (await shells()).length === 4, "the third's entry");
+            assert.equal(readFileSync(marker, "utf8"), "risky\nrisky third\n");
+            // Taken back, it is the owner's to allow again.
+            app.setRight(owner(app), THIS_SERVER, guest.id, "allows", false);
+
+            const fourth = await app.shell.start(id, guest, {
+                command: `echo risky fourth >> ${marker}`,
+            });
+
+            await until(() => heldFor(app, fourth.taskId) !== undefined, "the fourth to wait");
+            assert.equal(app.cannotAllow(guest, heldFor(app, fourth.taskId)!), onlyOwner("you"));
+            assert.equal(await app.answerApproval(`${fourth.taskId}:shell`, false, guest), true);
+            await until(async () => (await shells()).length === 5, "the fourth's entry");
+            assert.equal(readFileSync(marker, "utf8"), "risky\nrisky third\n", "denied: not run");
+        });
+    } finally {
+        app.config.removeUser(guest.id);
+        app.config.removeUser(peer.id);
+    }
+});
+
+test("a held `!` command: cancelled while it waits, it did not run; its person gone, it does not run; after a restart it asks again and runs once", async () => {
+    const data = join(root, "qol-held");
+    const marker = join(folder, "held.txt");
+    const first = await openApp(scriptedModel(route), data);
+    const id = await newSession(first, folder);
+    const { user: guest } = await addPerson(first, "Holder", "guest");
+    const { user: leaver } = await addPerson(first, "Leaver", "guest");
+    const shells = async (target: App) =>
+        (await target.transcripts.history(id, Number.MAX_SAFE_INTEGER)).filter(
+            (entry) => entry.kind === "shell",
+        );
+    let last = 0;
+
+    try {
+        await guarded(first, async () => {
+            const one = await first.shell.start(id, guest, {
+                command: `echo risky one >> ${marker}`,
+            });
+
+            await until(() => heldFor(first, one.taskId) !== undefined, "the first to wait");
+            await first.shell.stop(id, guest, one.taskId);
+            await until(async () => (await shells(first)).length === 1, "the cancelled entry");
+            const cancelled = (await shells(first))[0];
+
+            assert.equal(cancelled?.kind === "shell" && cancelled.status, "stopped");
+            assert.equal(
+                cancelled?.kind === "shell" && cancelled.output,
+                "Stopped while it waited for approval. It did not run.",
+            );
+            await until(() => heldFor(first, one.taskId) === undefined, "its question to go");
+
+            // Allowed after its person left: it does not run.
+            const two = await first.shell.start(id, leaver, {
+                command: `echo risky two >> ${marker}`,
+            });
+
+            await until(() => heldFor(first, two.taskId) !== undefined, "the second to wait");
+            first.config.removeUser(leaver.id);
+            assert.equal(
+                await first.answerApproval(`${two.taskId}:shell`, true, owner(first)),
+                true,
+            );
+            await until(async () => (await shells(first)).length === 2, "the second's entry");
+            const left = (await shells(first))[1];
+
+            assert.equal(left?.kind === "shell" && left.status, "failed");
+            assert.match(
+                (left?.kind === "shell" && left.output) || "",
+                /allowed this command, but Leaver can no longer run commands here: they are no longer on this server\. It did not run\.$/,
+            );
+
+            const three = await first.shell.start(id, guest, {
+                command: `echo risky three >> ${marker}`,
+            });
+
+            last = three.taskId;
+            await until(() => heldFor(first, last) !== undefined, "the third to wait");
+        });
+        assert.equal(existsSync(marker), false, "nothing ran");
+    } finally {
+        await first.close();
+    }
+
+    const second = await openApp(scriptedModel(route), data);
+
+    try {
+        // The guard is not asked again: its verdict is the command's. The question is.
+        await until(() => heldFor(second, last) !== undefined, "the question again");
+        assert.equal(existsSync(marker), false, "still not run");
+        assert.equal(await second.answerApproval(`${last}:shell`, true, owner(second)), true);
+        await until(async () => (await shells(second)).length === 3, "the third's entry");
+        assert.equal(readFileSync(marker, "utf8"), "risky three\n", "run once");
+    } finally {
+        await second.close();
+    }
+});
+
 test("after a restart, an older message settling does not take Pi back from the person of a newer `!` command", async () => {
     const data = join(root, "qol-attribution");
     // A long answer: the owner's message is still being answered when the guest's command comes in.
@@ -240,7 +460,7 @@ test("after a restart, an older message settling does not take Pi back from the 
             : fauxAssistantMessage([fauxText("word ".repeat(6000))]);
     const first = await openApp(scriptedModel(slow), data);
     const id = await newSession(first, folder);
-    const { user: guest } = first.config.addUser("Late", "guest");
+    const { user: guest } = await addPerson(first, "Late", "guest");
 
     await first.commands.submit(id, owner(first), { text: "write a lot", requestId: "slow-1" });
     await until(() => first.isBusy(id), "Pi to start answering");
@@ -273,7 +493,7 @@ test("after a restart, an older message settling does not take Pi back from the 
 
 test("only the owner may read Pi's folder and the app's data, but anyone who steers may read uploads", async () => {
     const id = await newSession(app, folder);
-    const { user: guest } = app.config.addUser("Guest", "guest");
+    const { user: guest } = await addPerson(app, "Guest", "guest");
 
     try {
         const agentFile = join(process.env.PI_CODING_AGENT_DIR!, "settings-test.json");

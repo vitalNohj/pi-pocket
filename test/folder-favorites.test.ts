@@ -1,5 +1,14 @@
 // Favorite folders are each person's own: read, changed, and sent only to them, with no star lost to another one.
-import { type App, cleanUp, fakeTab, openApp, owner, root, scriptedModel } from "./helpers.ts";
+import {
+    addPerson,
+    type App,
+    cleanUp,
+    fakeTab,
+    openApp,
+    owner,
+    root,
+    scriptedModel,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
@@ -17,7 +26,7 @@ after(async () => {
 
 test("each person reads, changes, and hears only their own favorites", async () => {
     const me = owner(app);
-    const guest = app.config.addUser("Guest", "guest").user;
+    const guest = (await addPerson(app, "Guest", "guest")).user;
     const mine = fakeTab(undefined, me);
     const theirs = fakeTab(undefined, guest);
 
@@ -49,7 +58,7 @@ test("stars at the same time keep one another", async () => {
 });
 
 test("only someone who may start sessions stars, and only a whole path", async () => {
-    const viewer = app.config.addUser("Viewer", "viewer").user;
+    const viewer = (await addPerson(app, "Viewer", "viewer")).user;
     const scoped = app.config.addUser("Scoped", "guest", ["1"]).user;
     const star = { path: root, starred: true };
 

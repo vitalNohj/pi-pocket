@@ -1,4 +1,5 @@
 import {
+    addPerson,
     type App,
     cleanUp,
     lastText,
@@ -13,13 +14,14 @@ import {
     work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "../src/server/access.ts";
 import { Browsers } from "../src/server/browser.ts";
 import { BrowserError, Chromium } from "../src/server/browser/cdp.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
@@ -470,27 +472,48 @@ test(
         await until(async () => (await code()) !== null, "the first invite");
         const first = await code();
 
-        await page.evaluate(
-            `[...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === "1 week").click()`,
-        );
+        const pick = (label: string) =>
+            page.evaluate(
+                `[...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === ${JSON.stringify(label)}).click()`,
+            );
+
+        await pick("1 week");
         await until(async () => ![null, first].includes(await code()), "the week's invite");
         const week = await code();
 
         assert.equal(await status(week), 200);
         await until(async () => (await status(first)) === 410, "the 15 minutes' invite, ended");
 
-        await tap('.sheet label.check input[type="checkbox"]');
-        await until(async () => ![null, week].includes(await code()), "the owner's invite");
-        await until(async () => (await status(week)) === 410, "the week's invite, ended");
-        await tap('.sheet label.check input[type="checkbox"]');
-        await until(async () => (await code()) !== null, "a guest's invite again");
-        const steer = await code();
+        // The sheet invites someone new only: it has no box that signs in a device of the owner's (that is in People).
+        assert.equal(
+            await inPage<number>(
+                `return JSON.stringify(document.querySelectorAll('.sheet input[type="checkbox"]').length)`,
+            ),
+            0,
+        );
 
-        // Not for a frame does the sheet show an invite made for other settings: View only shows no Steer invite.
+        await pick("1 day");
+        await until(async () => ![null, week].includes(await code()), "the day's invite");
+        const day = await code();
+
+        await until(async () => (await status(week)) === 410, "the week's invite, ended");
+        await pick("1 week");
+        await until(async () => ![null, day].includes(await code()), "a week's invite again");
+        const week2 = await code();
+
+        // Every invite starts as a viewer: the sheet offers no choice of what they can do.
+        assert.deepEqual(
+            await inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".sheet .segmented button")].map((each) => each.textContent.trim()).filter((label) => label === "Steer" || label === "View only"))`,
+            ),
+            [],
+        );
+
+        // Not for a frame does the sheet show an invite made for other settings: 1 hour shows no invite for a week.
         await page.evaluate(`
             window.frames = [];
             const watch = () => {
-                const on = document.querySelector(".sheet .segmented .on")?.textContent.trim();
+                const on = [...document.querySelectorAll(".sheet .segmented .on")].map((each) => each.textContent.trim()).join("|");
                 const code = document.querySelector(".invite-code-value")?.textContent.replace(/\\s/g, "");
 
                 window.frames.push([on, code ?? null]);
@@ -501,25 +524,25 @@ test(
             };
 
             requestAnimationFrame(watch);
-            [...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === "View only").click();
+            [...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === "1 hour").click();
         `);
-        await until(async () => ![null, steer].includes(await code()), "the view-only invite");
+        await until(async () => ![null, week2].includes(await code()), "the hour's invite");
         const frames = await inPage<[string, string | null][]>(
             `return JSON.stringify(window.frames)`,
         );
 
         assert.ok(
-            !frames.some(([on, shown]) => on === "View only" && shown === steer),
-            "no frame shows the Steer invite under View only",
+            !frames.some(([on, shown]) => on.includes("1 hour") && shown === week2),
+            "no frame shows the week's invite under 1 hour",
         );
-        const viewOnly = await code();
+        const hour = await code();
 
         // New invite makes another and leaves the one before working; closing leaves the last one working.
         await tap(".sheet .button.wide:last-of-type");
-        await until(async () => ![null, viewOnly].includes(await code()), "another invite");
+        await until(async () => ![null, hour].includes(await code()), "another invite");
         const another = await code();
 
-        assert.equal(await status(viewOnly), 200, "the one before New invite still works");
+        assert.equal(await status(hour), 200, "the one before New invite still works");
         await back();
         await reach({ sheet: null, layers: 0 }, "closed");
         assert.equal(await status(another), 200, "the last one shown still works");
@@ -1711,7 +1734,192 @@ test("a call's mark keeps its circle while it waits for an approval", real, asyn
         padding: "0px",
         border: "0px",
     });
+
+    // With approvals that need someone else, the owner still allows their own call here: the server tells the page that
+    // they are in charge of this computer (`conversation.inCharge`), and the card goes by that, not by their role.
+    await app.setApprovalRule(owner(app), "others");
+
+    try {
+        const card = () =>
+            inPage<{ rule: string; inCharge: boolean; buttons: string[]; note: boolean } | null>(`
+                const { store } = await import("/store.js");
+                const card = document.querySelector('[data-part="approval"]');
+
+                return JSON.stringify(card && {
+                    rule: store.state.server?.approvalRule ?? "",
+                    inCharge: store.state.view.conversation?.inCharge === true,
+                    buttons: [...card.querySelectorAll(".approval-actions button")].map((each) => each.textContent.trim()),
+                    note: /Someone else has to allow this/.test(card.textContent),
+                });
+            `);
+
+        await until(async () => (await card())?.rule === "others", "the rule in the page", 20_000);
+        assert.deepEqual(await card(), {
+            rule: "others",
+            inCharge: true,
+            buttons: ["Deny", "Allow"],
+            note: false,
+        });
+    } finally {
+        await app.setApprovalRule(owner(app), "anyone");
+    }
 });
+
+test(
+    "a guest's `!` command Lancet Guard asks about waits on a card: its person cancels or denies it, and only the owner allows it",
+    real,
+    async () => {
+        // As in the test before: the guard is on, and asks about everything.
+        await app.setExtensionEnabled(owner(app), "guard.ts", true);
+        app.guard.judge = async (_tool, args) =>
+            ({
+                subject: String(args.command),
+                decision: { action: "ask", reason: "risky", source: "test", terminate: false },
+            }) as never;
+
+        const id = await newSession(app);
+        const { user: guest, token } = await addPerson(app, "Tess", "guest");
+        const ran = join(work, "typed.txt");
+        // A browser of her own: a login link in one signed in as someone else asks before it switches.
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "mobile-ui-guest-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+
+        type Shown = {
+            card: { title: string; buttons: string[]; note: boolean } | null;
+            waiting: string[] | null;
+            entries: string[];
+        };
+        const shown = `
+            const card = document.querySelector('[data-part="approval"]');
+            const waiting = document.querySelector(".shell-row.pending");
+
+            return JSON.stringify({
+                card: card && {
+                    title: card.querySelector(".approval-ask").textContent.trim(),
+                    buttons: [...card.querySelectorAll(".approval-actions button")].map((each) => each.textContent.trim()),
+                    note: /Only who is in charge of this computer can allow your command\. You can deny it\./.test(card.textContent),
+                },
+                waiting: waiting && [waiting.querySelector(".muted").textContent.trim(), waiting.querySelector("button").textContent.trim()],
+                entries: [...document.querySelectorAll(".shell-row:not(.pending)")].map((each) => each.querySelector(".shell-head .muted").textContent.trim()),
+            });
+        `;
+
+        try {
+            const tess = await theirs.open(1);
+            const hers = async (): Promise<Shown> =>
+                JSON.parse(await tess.evaluate(shown).catch(() => "{}")) as Shown;
+
+            const run = async (command: string) => {
+                await tess.evaluate(`
+                    const box = document.querySelector(".composer-wrap .composer textarea");
+
+                    box.value = ${JSON.stringify(command)};
+                    box.dispatchEvent(new Event("input", { bubbles: true }));
+                `);
+                await until(
+                    async () =>
+                        (await tess.evaluate(
+                            `return JSON.stringify(document.querySelector('[data-part="send-button"]')?.dataset.state === "ready")`,
+                        )) === "true",
+                    "her Send button",
+                    20_000,
+                );
+                await tess.evaluate(`document.querySelector('[data-part="send-button"]').click()`);
+                await until(async () => (await hers()).card != null, "her card", 20_000);
+            };
+
+            await tess.setViewport(VIEWPORTS.mobile);
+            await tess.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await tess.navigate(`${base}/s/${String(id)}`);
+            await until(
+                async () =>
+                    (await tess
+                        .evaluate(
+                            `return JSON.stringify(document.querySelector(".composer-wrap .composer textarea") !== null)`,
+                        )
+                        .catch(() => "false")) === "true",
+                "her message box",
+                20_000,
+            );
+
+            // Her own command waits: she can cancel or deny it, and cannot allow it.
+            await run(`!echo typed >> ${ran}`);
+            assert.deepEqual(await hers(), {
+                card: {
+                    title: "Lancet Guard asks before your command",
+                    buttons: ["Deny"],
+                    note: true,
+                },
+                waiting: ["waiting for approval", "Cancel"],
+                entries: [],
+            });
+            assert.equal(existsSync(ran), false, "it has not run");
+
+            // The owner, who is in charge of this server, allows it.
+            await fresh();
+            await goTo(id);
+            await until(
+                async () => (await inPage<Shown>(shown).catch(() => undefined))?.card != null,
+                "the owner's card",
+                20_000,
+            );
+            assert.deepEqual(await inPage<Shown>(shown), {
+                card: {
+                    title: "Lancet Guard asks before Tess's command",
+                    buttons: ["Deny", "Allow"],
+                    note: false,
+                },
+                waiting: null,
+                entries: [],
+            });
+            await page.evaluate(
+                `document.querySelector('[data-part="approval"] .approval-actions .primary').click()`,
+            );
+            await until(() => existsSync(ran), "the command to run");
+            await until(async () => (await hers()).entries?.length === 1, "her entry", 20_000);
+            assert.deepEqual(await hers(), { card: null, waiting: null, entries: ["Tess"] });
+            assert.equal(readFileSync(ran, "utf8"), "typed\n");
+
+            // One she cancels from its row never ran, and its card goes.
+            await run(`!echo again >> ${ran}`);
+            await tess.evaluate(`document.querySelector(".shell-row.pending button").click()`);
+            await until(async () => (await hers()).entries?.length === 2, "the cancelled", 20_000);
+            await until(async () => (await hers()).card === null, "her card to go", 20_000);
+            assert.deepEqual(await hers(), {
+                card: null,
+                waiting: null,
+                entries: ["Tess", "Tess · stopped · not shown to Pi"],
+            });
+            assert.equal(readFileSync(ran, "utf8"), "typed\n", "the cancelled one did not run");
+
+            // With Allow their own calls on for her here, she allows her own: the guard still asks first.
+            app.setRight(owner(app), THIS_SERVER, guest.id, "allows", true);
+            await run(`!echo mine >> ${ran}`);
+            await until(
+                async () => (await hers()).card?.buttons.length === 2,
+                "her Allow button",
+                20_000,
+            );
+            assert.deepEqual((await hers()).card, {
+                title: "Lancet Guard asks before your command",
+                buttons: ["Deny", "Allow"],
+                note: false,
+            });
+            assert.equal(readFileSync(ran, "utf8"), "typed\n", "it waits for her answer");
+            await tess.evaluate(
+                `document.querySelector('[data-part="approval"] .approval-actions .primary').click()`,
+            );
+            await until(() => readFileSync(ran, "utf8") === "typed\nmine\n", "her command to run");
+            await until(async () => (await hers()).entries?.length === 3, "its entry", 20_000);
+        } finally {
+            await theirs.closeAll({ final: true });
+            app.config.removeUser(guest.id);
+        }
+    },
+);
 
 test("Pi's question shows its answers as buttons a thumb can tap", real, async () => {
     // The test before fakes a guard that asks about every call.

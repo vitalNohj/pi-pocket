@@ -12,6 +12,9 @@ import { describe } from "./errors.ts";
 import { entryText, projectEntry, snippet } from "./projection.ts";
 import { span, type WaitView } from "./limit-gate.ts";
 import { DEFAULT_PREFS, type EmbedderMessage, type PushMessage, type PushPrefs } from "./push.ts";
+import type { Lockout } from "./approval-methods.ts";
+import type { FolderRequestView } from "./folder-requests.ts";
+import type { TrustRequestView } from "./trust-requests.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -84,6 +87,141 @@ export class Alerts {
             urgency,
             ...(subject === undefined ? {} : { subject }),
         });
+    }
+
+    /**
+     * Too many wrong codes locked out someone's authenticator (`approval-methods.ts`): the owner hears at once, in their
+     * open tabs and as a push, whoever it was, themselves too. It names the person, not what they asked for.
+     */
+    lockout(lockout: Lockout): void {
+        const app = this.#app;
+        const person = app.config.userById(lockout.person);
+        const who =
+            person === undefined ? "Someone" : person.role === "owner" ? "You" : person.name;
+        const whose = person?.role === "owner" ? "your" : "their";
+        const time = span(lockout.until - app.now());
+        const again =
+            lockout.count > 1
+                ? ` This is lockout ${String(lockout.count)} today: each one lasts longer.`
+                : "";
+        const body = `${who} entered 5 wrong authenticator codes. Codes for ${whose} account are refused for ${time}.${again}`;
+
+        app.ownerNotice("warning", body);
+
+        const owner = app.config.users.find((each) => each.role === "owner");
+        const store = app.pushStore;
+
+        if (owner === undefined || !(store?.prefs(owner.id) ?? DEFAULT_PREFS).security) {
+            return;
+        }
+
+        const message = {
+            title: "Authenticator codes locked out",
+            body,
+            url: "/",
+            tag: `lockout-${lockout.person}`,
+        } satisfies PushMessage;
+
+        app.notifyEmbedders(owner.id, { ...message, urgency: "high" });
+
+        // Push services want a real contact; Apple rejects placeholders. A tunnel's https address will do.
+        const subject = app.access?.url?.startsWith("https://") ? app.access.url : undefined;
+
+        void store
+            ?.notify(owner.id, message, {
+                urgency: "high",
+                ...(subject === undefined ? {} : { subject }),
+            })
+            .catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
+    }
+
+    /**
+     * Someone asks for a session's approval (`folder-requests.ts`): to start one, or to renew a locked one. Who is in
+     * charge of its computer (`inCharge`: the owner here, a runner's linker there) hears at once, in their open tabs
+     * (where they allow or deny it) and as a push. Not for their own requests. `where` names a runner.
+     */
+    folderRequest(
+        request: Pick<FolderRequestView, "id" | "person" | "name" | "folder"> &
+            Partial<Pick<FolderRequestView, "kind" | "title">>,
+        inCharge: string,
+        where?: string,
+    ): void {
+        if (inCharge === request.person) {
+            return;
+        }
+
+        const place = `${request.folder}${where === undefined ? "" : ` on ${where}`}`;
+
+        this.#pushFolders(inCharge, {
+            title: request.kind === "renew" ? "Renew a session" : "New session",
+            body:
+                request.kind === "renew"
+                    ? `${request.name} asks to go on in “${request.title ?? "a session"}” (${place}).`
+                    : `${request.name} asks to start a session in ${place}.`,
+            url: "/",
+            tag: `folder-${request.id}`,
+        });
+    }
+
+    /**
+     * A project waits for a trust decision in someone's session (`trust-requests.ts`): who is in charge of its computer
+     * hears once, in their open tabs (a card that opens the session) and as a push. `where` names a runner.
+     */
+    trustRequest(
+        request: Pick<TrustRequestView, "id" | "person" | "name" | "folder" | "session" | "title">,
+        inCharge: string,
+        where?: string,
+    ): void {
+        if (inCharge === request.person) {
+            return;
+        }
+
+        this.#pushFolders(inCharge, {
+            title: "Trust a project",
+            body: `${request.name}'s session “${request.title}” waits for you to trust ${request.folder}${where === undefined ? "" : ` on ${where}`}.`,
+            url: `/s/${request.session}`,
+            tag: `trust-${request.id}`,
+        });
+    }
+
+    /**
+     * Session `title`'s approval ended while its tasks run on ("Tasks expire with the session"): its starter and who is in
+     * charge hear each day of its week of grace, until it is renewed or its tasks pause. `days` are left.
+     */
+    tasksEnding(people: readonly string[], session: string, title: string, days: number): void {
+        for (const person of new Set(people)) {
+            this.#pushFolders(person, {
+                title: "Renew a session",
+                body:
+                    days > 0
+                        ? `“${title}” needs renewing: its tasks pause in ${days} day${days === 1 ? "" : "s"}.`
+                        : `“${title}” was not renewed: its tasks paused until it is.`,
+                url: `/s/${session}`,
+                tag: `tasks-${session}`,
+            });
+        }
+    }
+
+    /** A push to `person` for approvals, while they allow them (`folders` pref), and to their embedding apps. */
+    #pushFolders(person: string, message: Omit<PushMessage, "approval">): void {
+        const app = this.#app;
+        const store = app.pushStore;
+
+        if (!(store?.prefs(person) ?? DEFAULT_PREFS).folders) {
+            return;
+        }
+
+        app.notifyEmbedders(person, { ...message, urgency: "high" });
+
+        // Push services want a real contact; Apple rejects placeholders. A tunnel's https address will do.
+        const subject = app.access?.url?.startsWith("https://") ? app.access.url : undefined;
+
+        void store
+            ?.notify(person, message, {
+                urgency: "high",
+                ...(subject === undefined ? {} : { subject }),
+            })
+            .catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
     }
 
     /**
@@ -205,15 +343,19 @@ export class Alerts {
         })().catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
     }
 
-    /** Work passed a hard limit: a notice in the owner's tabs, and one push to the owner, who decides what follows. */
+    /**
+     * Work passed a hard limit: a notice in the tabs of who is in charge of the session's computer, and one push to
+     * them; they decide what follows. That is the owner on this server and a runner's linker on a runner (`access.ts`
+     * `inChargeOf`): the owner does not see a session on a runner someone else linked, so they are not told of it.
+     */
     ownerAlert(conversationId: ConversationId, title: string, body: string): void {
         const app = this.#app;
         const root = app.rootOf(conversationId);
-        const ownerId = app.config.users.find((user) => user.role === "owner")?.id;
+        const ownerId = app.policy.inChargeOf(String(root));
 
-        app.ownerNotice("warning", `${title}: ${body}`);
+        app.noticeTo(ownerId, "warning", `${title}: ${body}`);
 
-        if (ownerId === undefined || this.#quiet() || app.sessionMeta(root) === undefined) {
+        if (this.#quiet() || app.sessionMeta(root) === undefined) {
             return;
         }
 
@@ -254,6 +396,17 @@ export class Alerts {
                     people = new Set(app.config.users.map((each) => each.id));
                 }
 
+                // A command someone typed: who is in charge of the computer allows it, here or not; its person knows.
+                const typist =
+                    approval.typedBy === undefined
+                        ? undefined
+                        : (app.config.userById(approval.typedBy)?.name ?? "Someone");
+
+                if (approval.typedBy !== undefined) {
+                    people = new Set(people).add(app.policy.inChargeOf(String(root)));
+                    people.delete(approval.typedBy);
+                }
+
                 for (const userId of people) {
                     const user = app.config.userById(userId);
 
@@ -288,7 +441,10 @@ export class Alerts {
 
                     const may = app.cannotAllow(user, approval) === undefined;
                     const message: PushMessage = {
-                        title: `Pi needs approval · ${title}`,
+                        title:
+                            typist === undefined
+                                ? `Pi needs approval · ${title}`
+                                : `${typist}'s command needs approval · ${title}`,
                         body: snippet(call, 400),
                         url: `/s/${String(approval.conversationId)}`,
                         tag: `approval-${approval.id}`,

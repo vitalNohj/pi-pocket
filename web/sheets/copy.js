@@ -4,19 +4,17 @@
 // from the session list (here). The rows choose where the copy runs (a computer and a folder there), with which model
 // and thinking level, and in a git worktree of its own. Unchanged rows copy as the session is.
 import { useEffect, useState } from "preact/hooks";
-import { chooseFolder, copyDraft, modelOf, updateDraft, useCopyDraft } from "../copy-draft.js";
+import { copyDraft, modelOf, updateDraft, useCopyDraft } from "../copy-draft.js";
 import { shortPath } from "../folder-paths.js";
-import { waitOnComputer } from "../runner-wait.js";
 import {
     actions,
     api,
     attempt,
-    canSteer,
+    canStart,
     closeSheet,
     navigate,
     notify,
     openSheet,
-    scoped,
     store,
 } from "../store.js";
 import { html, Icon, Sheet, Switch } from "../ui.js";
@@ -362,7 +360,7 @@ export function placeOf(draft) {
 let copying = false;
 
 /** Make the copy with `run` and open it. A second tap while the first is on its way does nothing. */
-export function startCopy(run, notice, draft) {
+export function startCopy(run, notice) {
     if (copying) {
         return Promise.resolve();
     }
@@ -370,9 +368,8 @@ export function startCopy(run, notice, draft) {
     copying = true;
 
     return attempt(async () => {
-        const created = await (draft?.runner
-            ? waitOnComputer(draft.runner, draft.cwd, "fork", run)
-            : run(undefined));
+        // A new folder waits for its approval in Pi Pocket (`folder-requests.js`), here as on a runner.
+        const created = await run(undefined);
 
         if (!created) {
             return;
@@ -413,7 +410,7 @@ export function ForkSessionSheet({ id }) {
     const session = store.state.sessions.find((each) => each.id === id);
     const draft = usePlace(id, `session:${id}`);
     const [busy, setBusy] = useState(false);
-    const starts = canSteer() && !scoped();
+    const starts = canStart();
 
     const go = () => {
         if (busy || !starts) {
@@ -424,7 +421,6 @@ export function ForkSessionSheet({ id }) {
         startCopy(
             (signal) => actions.forkSession(id, placeOf(draft), signal),
             "Opened the fork. The original is unchanged.",
-            draft,
         ).finally(() => setBusy(false));
     };
 

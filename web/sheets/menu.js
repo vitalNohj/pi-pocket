@@ -35,9 +35,10 @@ import { currentTrust, trustAvailable } from "../trust.js";
 import { branchAvailable } from "./branch.js";
 import { runnersHint } from "./computers.js";
 import { KeepWarmCard, keepWarmAvailable, keepWarmHint } from "./keep-warm.js";
+import { canShare, sharedHint } from "./session-share.js";
 import { memoryAvailable, memoryHint, useMemory } from "./memory.js";
 import { defaultLabel, defaultsKept } from "./model.js";
-import { copyText, html, Icon, item, PlaceTile, Sheet, shortPath } from "../ui.js";
+import { copyText, html, item, PlaceTile, Sheet, shortPath } from "../ui.js";
 
 // Key hints are for people with a keyboard: a touch screen has none.
 const touch = matchMedia("(pointer: coarse)").matches;
@@ -447,6 +448,16 @@ export function MenuSheet({ places = true }) {
                 )
             }
             ${session && steer && item("Rename", () => openSheet({ type: "rename" }))}
+            ${
+                session &&
+                collab() &&
+                canShare(store.state.sessions.find((each) => each.id === conversation.id)) &&
+                item(
+                    "Share",
+                    () => openSheet({ type: "session-share", id: conversation.id }),
+                    sharedHint(conversation.id),
+                )
+            }
             ${
                 session &&
                 item(

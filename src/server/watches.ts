@@ -346,6 +346,8 @@ export class Watches {
         asking: ConversationId,
         personId: string | undefined,
         request: WatchRequest = {},
+        // The context of its save; a person's carries their check (`app.ts` `admission`).
+        saving: Context = context,
     ): Promise<PrWatch> {
         const app = this.#app;
 
@@ -573,7 +575,7 @@ export class Watches {
             doc.watch = watch;
 
             return watch;
-        }, context);
+        }, saving);
     }
 
     /** Stop a session's watch, or clear one that ended (a subagent's session's). Returns it; undefined for none. */
@@ -987,12 +989,26 @@ export class Watches {
                 });
             }
 
+            // Its session's tasks are paused (its approval ended, `app.ts` `tasksMayRun`): the watch waits, and counts no
+            // failure, until someone renews it or two weeks pass with nothing told.
+            if (!app.tasksMayRun(id)) {
+                if (app.now() - watch.lastNewsAt > QUIET_MS) {
+                    return this.#end(runtime, "expired", context);
+                }
+
+                return this.#again(runtime, this.timing.retry, {}, context, {
+                    note: "Waits until this session's approval is renewed.",
+                });
+            }
+
             try {
                 await app.commands.submit(
                     id,
                     person,
                     { text: state.text, requestId: key },
                     WATCH_VIA,
+                    undefined,
+                    true,
                 );
             } catch (error) {
                 // Someone else's turn, a spend limit, no model: it may pass. The look runs again, and finds the same.

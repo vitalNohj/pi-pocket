@@ -6,13 +6,13 @@ import { updateDraft } from "../copy-draft.js";
 import {
     actions,
     attempt,
+    canStart,
     canSteer,
     closeSheet,
     insertIntoComposer,
     navigate,
     notify,
     openSheet,
-    scoped,
     store,
 } from "../store.js";
 import { copyText, html, replyText, Sheet, writtenText } from "../ui.js";
@@ -172,7 +172,7 @@ export function MessageSheet({ entryId }) {
     }
 
     // Copies are new sessions: who may start one may make one.
-    const canBranch = canSteer() && !scoped() && view.conversation?.kind === "session";
+    const canBranch = canStart() && view.conversation?.kind === "session";
 
     if (entry.kind === "assistant") {
         return html`<${ReplySheet} entry=${entry} canBranch=${canBranch} />`;
@@ -203,7 +203,6 @@ function ReplySheet({ entry, canBranch }) {
         startCopy(
             (signal) => actions.fork(entry.id, { place: placeOf(draft) }, signal),
             "Opened the fork. The original is unchanged.",
-            draft,
         ).finally(() => setBusy(false));
     }, [canBranch, busy, draft, entry.id]);
 
@@ -286,7 +285,6 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
                     signal,
                 ),
             "Opened the new session. The original is unchanged.",
-            draft,
         ).finally(() => setBusy(false));
     }, [again, busy, draft, edited, written, entry.id, filesAlone]);
 

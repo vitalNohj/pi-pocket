@@ -3,7 +3,9 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AuthenticatorStore, StoredAuthenticator } from "./approval-methods.ts";
 import type { StoredLinkLimits } from "./link-limits.ts";
+import { codeHash, newIdentity, type Identity } from "../runner/secure-link.ts";
 
 /** The repository root: `web/` and `src/` live here, and `node_modules/` too, except in an npx or local install. */
 export const APP_ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -57,6 +59,27 @@ export interface User {
     budget?: number;
     /** When their profile picture was set (`avatars.ts`); absent means they have none. */
     avatar?: number;
+    /**
+     * The authenticator app this person linked, to approve with its codes (`approval-methods.ts`). Its secret never
+     * leaves the server: nothing that sends a person's record to a browser may include it.
+     */
+    authenticator?: StoredAuthenticator;
+    /**
+     * How many days a session's approval lasts once this person last used it (`folder-approvals.ts`); 0: never ends.
+     * Absent: 7 days.
+     */
+    approvalDays?: number;
+    /** The owner let this guest link computers of their own (`access.ts` `mayLink`). */
+    linksRunners?: true;
+    /** The owner let this guest invite people (`access.ts` `mayInvite`). The owner always may. */
+    invites?: true;
+    /**
+     * A temporary account, as its invite said: it links no authenticator, so it stays a viewer. Only the owner ends
+     * that, and it never comes back (`app.ts` `setAccess`).
+     */
+    temporary?: true;
+    /** Their other devices, each signed in with a link from one of their own (`auth.ts` `createDeviceLink`). */
+    devices?: StoredDevice[];
 }
 
 /** Who is signed in, as `hello` says it to a tab, and as the app page carries it (`serveApp`). */
@@ -69,30 +92,112 @@ export function helloUser(user: User) {
     };
 }
 
-/** An invite not yet used, kept by its code's sha256 (the code itself is only shown to whoever made it). */
-export interface StoredInvite {
-    codeHash: string;
-    role: Role;
-    /** The one session it is for; absent means every session. Never set for an owner invite. */
-    session?: string;
-    expiresAt: number;
-    /** Who made it: it works only while they may still invite. */
-    createdBy: string;
+/**
+ * Another device of one person. It has a token of its own, kept by its hash, so signing it out, or the end of the
+ * tunnel it came through, ends that device alone.
+ */
+export interface StoredDevice {
+    tokenHash: string;
+    createdAt: number;
+    /** The Cloudflare quick tunnel host it signed in through: its cookie works only there (as `User.tunnel`). */
+    tunnel?: string;
+}
+
+/** The approval times on offer, in days; 0 is "never ends". */
+export const APPROVAL_DAYS = [1, 7, 14, 30, 0] as const;
+
+/** A person's approval time until the owner sets one: 7 days, the owner's too. */
+export function approvalDays(user: Pick<User, "approvalDays">): number {
+    return user.approvalDays ?? 7;
 }
 
 /**
+ * A session's approval, kept on the server (`folder-approvals.ts`): someone proved it was them before work there (their
+ * own code, or the Allow of who is in charge of its computer). It lasts while the session is used: each use resets its
+ * clock to the approval time of who used it, and it ends once unused that long.
+ */
+export interface StoredApproval {
+    /** The session's top id. */
+    session: string;
+    /** `THIS_SERVER` or a runner's id. */
+    computer: string;
+    /** The session's folder there, for the lists. */
+    folder: string;
+    /** How it was approved last: a code, or who is in charge from the app. */
+    method: "totp" | "owner";
+    /** Who approved it last, by id. */
+    by: string;
+    approvedAt: number;
+    /** When it was last used; its clock starts here. */
+    usedAt: number;
+    /** Who used it last: their approval time sets how long it lasts from `usedAt`. */
+    lastUser: string;
+    /** When it was revoked: it ended then, whatever its clock says, until it is renewed. */
+    revokedAt?: number;
+}
+
+/** An invite not yet used, kept by its code's sha256 (the code itself is only shown to whoever made it). */
+export type StoredInvite = {
+    codeHash: string;
+    expiresAt: number;
+    /** Who made it: it works only while they are still here and, for someone new, may still invite. */
+    createdBy: string;
+} & InviteFor;
+
+/** What an invite is for: someone new, or another device of the person who made it. */
+export type InviteFor =
+    | {
+          role: Exclude<Role, "owner">;
+          /** The one session it is for; absent means the sessions shared with them. */
+          session?: string;
+          /** The one folder it is for: its maker's sessions in it on that computer, not all of theirs. */
+          folder?: { computer: string; path: string };
+          /** The account it makes is temporary (`User.temporary`). */
+          temporary?: true;
+          device?: never;
+          person?: never;
+      }
+    | {
+          device: true;
+          /** Who the device signs in as, when not whoever made the link: the owner makes one for someone else. */
+          person?: string;
+          role?: never;
+          session?: never;
+          folder?: never;
+          temporary?: never;
+      };
+
+/**
  * A computer whose runner (`pi-pocket runner`) may connect, so sessions can run their tools there (`runners.ts`). Kept by
- * its key's sha256; the key itself is only on that computer.
+ * its public key: its private key is only on that computer, and proves each connection (`secure-link.ts`).
  */
 export interface StoredRunner {
     id: string;
     name: string;
-    keyHash: string;
+    /**
+     * The runner's Ed25519 public key, raw base64url. Absent: linked before the secure link, so it must link again (a
+     * code made for this computer keeps its id, and so its sessions).
+     */
+    publicKey?: string;
     createdAt: number;
     /** Who linked it: the owner, who changes its settings and access. */
     createdBy: string;
     /** People the owner granted access to start sessions on this computer. */
     users?: string[];
+    /** The folders the owner gave each chosen person here, by person id (`access.ts`). The owner needs none. */
+    given?: Record<string, string[]>;
+    /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
+    sees?: Record<string, string[]>;
+    /**
+     * The chosen people who may take the wheel from a driver here, and turn take turns off under them (`access.ts`
+     * `overridesTurns`), by person id. Who is in charge always may.
+     */
+    wheel?: string[];
+    /**
+     * The chosen people who may allow a call their own message led to here while approvals need someone else
+     * (`access.ts` `allowsOwn`), by person id. Who is in charge always may.
+     */
+    allows?: string[];
     /** When it last connected. */
     lastSeen?: number;
     /**
@@ -102,14 +207,60 @@ export interface StoredRunner {
     platform?: { os: string; arch: string; home: string; version: string; tmpdir?: string };
     /** Programs ready on this computer, as its runner last reported. */
     tools?: { git: boolean; gh: boolean; github: boolean };
+    /** New sessions on it start shared with its people (`access.ts` `initialShares`). Absent: with no one. */
+    shareNew?: true;
+    /**
+     * What its runner does for sessions, sent to it at each connection and on change (`runner-settings`): `network`
+     * false, its sessions' browsers do not use its network; `downloads`, an absolute folder there for their downloads.
+     */
+    settings?: { network?: false; downloads?: string };
+}
+
+/**
+ * This server as a computer (`access.ts` `THIS_SERVER`): the same settings a runner has, with the owner as its linker.
+ * Since the access policy; before it, everyone with access to the whole server could use it. Absent: no one chosen, no
+ * saved folders, asking on, new sessions shared with no one.
+ */
+export interface StoredServer {
+    /** The people the owner chose: they may use this server. Viewers among them only see. */
+    users?: string[];
+    /** The folders the owner gave each chosen person (real paths here), by person id (`access.ts`). */
+    given?: Record<string, string[]>;
+    /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
+    sees?: Record<string, string[]>;
+    /**
+     * The chosen people who may take the wheel from a driver here, and turn take turns off under them (`access.ts`
+     * `overridesTurns`), by person id. Who is in charge always may.
+     */
+    wheel?: string[];
+    /**
+     * The chosen people who may allow a call their own message led to here while approvals need someone else
+     * (`access.ts` `allowsOwn`), by person id. Who is in charge always may.
+     */
+    allows?: string[];
+    /** New sessions here start shared with its people. */
+    shareNew?: true;
+    /**
+     * Tasks that run on their own (webhooks, schedules, watches) stop with their session's approval: a week after it
+     * ends, with reminders, until someone renews it. Off (absent): they run for good once set up.
+     */
+    tasksExpire?: true;
+    /**
+     * When `tasksExpire` was turned on. A session with no approval at all (from before approvals) counts as ended then,
+     * so its tasks get their week too.
+     */
+    tasksExpireSince?: number;
 }
 
 /** A one-time code that links a computer, not yet used: kept by its sha256, for a few minutes. */
 export interface StoredRunnerCode {
+    /** The code's SHA-256 (`secure-link.ts` `codeHash`): the key of the runner's proof that it knows the code. */
     codeHash: string;
     name: string;
     createdBy: string;
     expiresAt: number;
+    /** A code to link a known computer again (a new key, the same id and sessions); absent: a new computer. */
+    runner?: string;
 }
 
 /** The theme (a theme folder's id, or "pocket") and the colors ("desktop", a palette's id, or a folder's) a browser
@@ -162,15 +313,29 @@ interface PocketConfig {
     runners?: StoredRunner[];
     /** One-time codes that link a computer, not yet used. */
     runnerCodes?: StoredRunnerCode[];
+    /**
+     * This server's own key for the runner link (`secure-link.ts`): made once, and pinned by every runner it links. A
+     * new one means every runner links again.
+     */
+    serverIdentity?: Identity;
     /** Wrong link codes (`link-limits.ts`): each address's lockouts toward a ban, and the banned addresses. */
     runnerLinkLimits?: StoredLinkLimits;
+    /** This server as a computer: its people, their folders, and rules (`access.ts`). */
+    server?: StoredServer;
+    /** Approvals of folders and shared sessions, on every computer (`folder-approvals.ts`). */
+    folderApprovals?: StoredApproval[];
     /**
-     * Sessions on a linked computer follow the usual sharing rules (others who can see a session can see and prompt
-     * it, so its tools run there for them too). Absent or false: each is its creator's alone. Starting one on a
-     * computer stays its linker's either way.
+     * When each session's starter and who is in charge last heard that its approval ended while its tasks run on, by
+     * the session's top id (`app.ts` `tasksMayRun`). Gone once it is renewed, or the owner turns `tasksExpire` off.
      */
-    sharedRunnerSessions?: boolean;
+    taskReminders?: Record<string, number>;
 }
+
+/**
+ * The parts of `StoredServer` and `StoredRunner` the owner can change. `network` and `downloads` are a runner's alone;
+ * `downloads` null puts its downloads back in its temporary folder.
+ */
+export type ComputerSettings = { shareNew?: boolean; network?: boolean; downloads?: string | null };
 
 /** The hours a run waits for a model's limit to clear, until the owner says otherwise. */
 export const DEFAULT_LIMIT_WAIT_HOURS = 6;
@@ -285,6 +450,47 @@ export function keepWarmFrom(raw: unknown): KeepWarmSettings {
 /** Who may allow a risky tool call: anyone who can steer, or (for guests) only someone other than who asked. */
 export type ApprovalRule = "anyone" | "others";
 
+/** What a computer's record keeps per person about folders: the ones given, and the ones they see every session in. */
+type FolderGrants = { given?: Record<string, string[]>; sees?: Record<string, string[]> };
+
+/** Keep `list` as `person`'s under `key`; an empty one leaves no entry, and no entries leave no record. */
+function setList(
+    target: FolderGrants,
+    key: keyof FolderGrants,
+    person: string,
+    list: readonly string[],
+): void {
+    const { [person]: _was, ...rest } = target[key] ?? {};
+    const next = list.length === 0 ? rest : { ...rest, [person]: [...list] };
+
+    if (Object.keys(next).length === 0) {
+        delete target[key];
+    } else {
+        target[key] = next;
+    }
+}
+
+/** A right one chosen person holds on one computer, set by who is in charge of it (`access.ts`). */
+export type ComputerRight = "wheel" | "allows";
+
+export const COMPUTER_RIGHTS: readonly ComputerRight[] = ["wheel", "allows"];
+
+/** What a computer's record keeps about those rights, and the people chosen for it. */
+type Rights = { users?: string[]; wheel?: string[]; allows?: string[] };
+
+/** Keep each right to the people `keep` names; a right nobody holds leaves no entry. */
+function trimRights(target: Rights, keep: (person: string) => boolean): void {
+    for (const right of COMPUTER_RIGHTS) {
+        const list = (target[right] ?? []).filter(keep);
+
+        if (list.length === 0) {
+            delete target[right];
+        } else {
+            target[right] = list;
+        }
+    }
+}
+
 function newToken(): string {
     return randomBytes(24).toString("base64url");
 }
@@ -303,6 +509,9 @@ function sameHash(a: string, b: string): boolean {
 /** The most invites one person keeps live at once. */
 export const MAX_INVITES = 50;
 
+/** The most other devices one person keeps signed in; one more signs out the one signed in longest ago. */
+export const MAX_DEVICES = 20;
+
 /** `config.json` in the data directory, written atomically with mode 0600. */
 export class ConfigStore {
     readonly file: string;
@@ -314,6 +523,7 @@ export class ConfigStore {
 
         if (existsSync(this.file)) {
             this.#config = JSON.parse(readFileSync(this.file, "utf8")) as PocketConfig;
+            this.#migrate();
         } else {
             const ownerToken = newToken();
 
@@ -330,6 +540,40 @@ export class ConfigStore {
                     },
                 ],
             };
+            this.save();
+        }
+    }
+
+    /**
+     * Bring an older file up to date. The one global switch that shared every runner session went with the access
+     * policy: each session now has its own share list, and every existing one starts private (the owner's choice). A
+     * computer linked before the secure link (`secure-link.ts`) loses its shared key, which no longer opens anything:
+     * it links again, keeping its id and sessions. Open link codes stay: they were kept by the same hash. An owner
+     * invite, which handed out the owner's token, is now a device link (`auth.ts`): one not yet used ends.
+     */
+    #migrate(): void {
+        const old = this.#config as PocketConfig & { sharedRunnerSessions?: boolean };
+        let changed = false;
+        const invites = old.invites?.filter((each) => (each.role as Role | undefined) !== "owner");
+
+        if (invites !== undefined && invites.length !== old.invites?.length) {
+            old.invites = invites;
+            changed = true;
+        }
+
+        if ("sharedRunnerSessions" in old) {
+            delete old.sharedRunnerSessions;
+            changed = true;
+        }
+
+        for (const runner of old.runners ?? []) {
+            if ("keyHash" in runner) {
+                delete (runner as StoredRunner & { keyHash?: string }).keyHash;
+                changed = true;
+            }
+        }
+
+        if (changed) {
             this.save();
         }
     }
@@ -465,21 +709,6 @@ export class ConfigStore {
         this.save();
     }
 
-    /** Whether sessions on linked computers are shared like any other (`sharedRunnerSessions`). Default: no. */
-    get sharedRunnerSessions(): boolean {
-        return this.#config.sharedRunnerSessions === true;
-    }
-
-    set sharedRunnerSessions(shared: boolean) {
-        if (shared) {
-            this.#config.sharedRunnerSessions = true;
-        } else {
-            delete this.#config.sharedRunnerSessions;
-        }
-
-        this.save();
-    }
-
     /** How sessions are kept warm once their run ends: a copy, every field set. */
     get keepWarm(): KeepWarmSettings {
         return keepWarmFrom(this.#config.keepWarm);
@@ -571,17 +800,97 @@ export class ConfigStore {
         this.save();
     }
 
+    /** Whose token this is: their first one, or one of their other devices'. */
     userByToken(token: string): User | undefined {
         const hash = hashToken(token);
 
-        return this.#config.users.find((user) => sameHash(user.tokenHash, hash));
+        return this.#config.users.find(
+            (user) =>
+                sameHash(user.tokenHash, hash) ||
+                user.devices?.some((each) => sameHash(each.tokenHash, hash)) === true,
+        );
+    }
+
+    /** Sign another device in as person `id`: its new token, or undefined when they are gone. */
+    addDevice(id: string, tunnel?: string): string | undefined {
+        const user = this.userById(id);
+
+        if (user === undefined) {
+            return undefined;
+        }
+
+        const token = newToken();
+
+        user.devices = [
+            ...(user.devices ?? []),
+            {
+                tokenHash: hashToken(token),
+                createdAt: Date.now(),
+                ...(tunnel === undefined ? {} : { tunnel }),
+            },
+        ].slice(-MAX_DEVICES);
+        this.save();
+
+        return token;
+    }
+
+    /** Whether `token` is one of someone's other devices', not their first one. */
+    isDevice(token: string): boolean {
+        const hash = hashToken(token);
+
+        return this.#config.users.some(
+            (user) => user.devices?.some((each) => sameHash(each.tokenHash, hash)) === true,
+        );
+    }
+
+    /** Sign out the device that holds `token`. A person's first token is not a device's: it stays. */
+    removeDevice(token: string): boolean {
+        const hash = hashToken(token);
+
+        return this.#endDevices((each) => sameHash(each.tokenHash, hash));
+    }
+
+    /** Sign out the devices that came through a Cloudflare quick tunnel other than `current`: its address is gone. */
+    endTunnelDevices(current: string | undefined): boolean {
+        return this.#endDevices((each) => each.tunnel !== undefined && each.tunnel !== current);
+    }
+
+    #endDevices(ending: (device: StoredDevice) => boolean): boolean {
+        let changed = false;
+
+        for (const user of this.#config.users) {
+            const kept = user.devices?.filter((each) => !ending(each));
+
+            if (kept === undefined || kept.length === user.devices?.length) {
+                continue;
+            }
+
+            if (kept.length === 0) {
+                delete user.devices;
+            } else {
+                user.devices = kept;
+            }
+
+            changed = true;
+        }
+
+        if (changed) {
+            this.save();
+        }
+
+        return changed;
     }
 
     userById(id: string): User | undefined {
         return this.#config.users.find((user) => user.id === id);
     }
 
-    addUser(name: string, role: Role, sessions?: string[]): { user: User; token: string } {
+    addUser(
+        name: string,
+        role: Role,
+        sessions?: string[],
+        temporary = false,
+    ): { user: User; token: string } {
         const token = newToken();
         const user: User = {
             id: randomUUID(),
@@ -590,6 +899,7 @@ export class ConfigStore {
             tokenHash: hashToken(token),
             createdAt: Date.now(),
             ...(sessions === undefined ? {} : { sessions: [...sessions] }),
+            ...(temporary ? { temporary: true } : {}),
         };
 
         this.#config.users.push(user);
@@ -601,8 +911,23 @@ export class ConfigStore {
     updateUser(
         id: string,
         patch: Partial<
-            Pick<User, "name" | "lastSeen" | "role" | "sessions" | "tunnel" | "budget" | "avatar">
-        >,
+            Pick<
+                User,
+                | "name"
+                | "lastSeen"
+                | "role"
+                | "sessions"
+                | "tunnel"
+                | "budget"
+                | "avatar"
+                | "approvalDays"
+                | "linksRunners"
+                | "invites"
+            >
+        > & {
+            /** Only ever turned off: a temporary account becomes a full one, never the other way. */
+            temporary?: false;
+        },
     ): void {
         const user = this.userById(id);
 
@@ -637,10 +962,51 @@ export class ConfigStore {
             delete user.avatar;
         }
 
+        if (user.approvalDays === undefined) {
+            delete user.approvalDays;
+        }
+
+        if (user.linksRunners !== true) {
+            delete user.linksRunners;
+        }
+
+        if (user.invites !== true) {
+            delete user.invites;
+        }
+
+        if (user.temporary !== true) {
+            delete user.temporary;
+        }
+
         this.save();
     }
 
-    /** Remove someone (never the owner), and the invites they made, which could no longer be used. */
+    /** Each person's linked authenticator, kept with their account. Setting one for someone removed does nothing. */
+    get authenticators(): AuthenticatorStore {
+        return {
+            get: (id) => this.userById(id)?.authenticator,
+            set: (id, authenticator) => {
+                const user = this.userById(id);
+
+                if (user === undefined) {
+                    return;
+                }
+
+                if (authenticator === undefined) {
+                    delete user.authenticator;
+                } else {
+                    user.authenticator = authenticator;
+                }
+
+                this.save();
+            },
+        };
+    }
+
+    /**
+     * Remove someone (never the owner), the invites they made, which could no longer be used, and the device links
+     * the owner made for them.
+     */
     removeUser(id: string): void {
         this.#config.users = this.#config.users.filter(
             (user) => user.id !== id || user.role === "owner",
@@ -648,15 +1014,31 @@ export class ConfigStore {
 
         if (!this.#config.users.some((user) => user.id === id)) {
             this.#config.invites = this.#config.invites?.filter(
-                (invite) => invite.createdBy !== id,
+                (invite) => invite.createdBy !== id && invite.person !== id,
             );
+
+            // Nothing they were given outlives them; their sessions and tasks move to who is in charge (`app.ts`).
+            for (const computer of [this.#config.server, ...(this.#config.runners ?? [])]) {
+                if (computer !== undefined) {
+                    setList(computer, "given", id, []);
+                    setList(computer, "sees", id, []);
+                    trimRights(computer, (each) => each !== id);
+                }
+            }
+
+            // Nor a link code they made and nobody used yet.
+            if (this.#config.runnerCodes?.some((code) => code.createdBy === id) === true) {
+                this.#config.runnerCodes = this.#config.runnerCodes.filter(
+                    (code) => code.createdBy !== id,
+                );
+            }
         }
 
         this.save();
     }
 
     /** Keep a new invite. A person keeps at most `MAX_INVITES` live: beyond that, their oldest ends. */
-    addInvite(code: string, invite: Omit<StoredInvite, "codeHash">): void {
+    addInvite(code: string, invite: { expiresAt: number; createdBy: string } & InviteFor): void {
         this.#pruneInvites();
         const theirs = (this.#config.invites ?? []).filter(
             (each) => each.createdBy === invite.createdBy,
@@ -703,8 +1085,8 @@ export class ConfigStore {
     }
 
     /**
-     * Replace the owner token, signing out every device that used the old one. Owner invites not yet used go too: one
-     * spent later would hand out the new token.
+     * Replace the owner token, signing out every device of the owner: the ones that used the old token, and the ones
+     * signed in with a device link. The device links the owner made and nobody used end too, also one for someone else.
      */
     rotateOwnerToken(): string {
         const token = newToken();
@@ -714,10 +1096,13 @@ export class ConfigStore {
 
         if (owner !== undefined) {
             owner.tokenHash = hashToken(token);
+            delete owner.devices;
         }
 
         if (this.#config.invites !== undefined) {
-            this.#config.invites = this.#config.invites.filter((invite) => invite.role !== "owner");
+            this.#config.invites = this.#config.invites.filter(
+                (invite) => !(invite.device === true && invite.createdBy === owner?.id),
+            );
         }
 
         this.save();
@@ -729,24 +1114,38 @@ export class ConfigStore {
         return this.#config.runners ?? [];
     }
 
-    /** The computer a runner key belongs to. */
-    runnerByKey(key: string): StoredRunner | undefined {
-        const hash = hashToken(key);
+    /** This server's key for the runner link: made the first time it is asked for, then kept. */
+    get serverIdentity(): Identity {
+        if (this.#config.serverIdentity === undefined) {
+            this.#config.serverIdentity = newIdentity();
+            this.save();
+        }
 
-        return this.#config.runners?.find((runner) => sameHash(runner.keyHash, hash));
+        return this.#config.serverIdentity;
     }
 
     runnerById(id: string): StoredRunner | undefined {
         return this.#config.runners?.find((runner) => runner.id === id);
     }
 
-    /** Add a computer; returns it and its key, which only its runner keeps. */
-    addRunner(name: string, createdBy: string): { runner: StoredRunner; key: string } {
-        const key = newToken();
+    /** Give a computer linked again its runner's new public key. */
+    relinkRunner(id: string, publicKey: string): StoredRunner | undefined {
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            runner.publicKey = publicKey;
+            this.save();
+        }
+
+        return runner;
+    }
+
+    /** Add a computer with its runner's public key; its private key stays on that computer. */
+    addRunner(name: string, createdBy: string, publicKey: string): StoredRunner {
         const runner: StoredRunner = {
             id: randomUUID(),
             name,
-            keyHash: hashToken(key),
+            publicKey,
             createdAt: Date.now(),
             createdBy,
         };
@@ -754,7 +1153,7 @@ export class ConfigStore {
         this.#config.runners = [...(this.#config.runners ?? []), runner];
         this.save();
 
-        return { runner, key };
+        return runner;
     }
 
     updateRunner(
@@ -769,18 +1168,308 @@ export class ConfigStore {
         }
     }
 
-    /** Grant access to existing people with access to the whole server, never to owners. */
+    /**
+     * The people who may be chosen for a computer: everyone but who is in charge of it (`inCharge`: they have it
+     * anyway) and people invited to one session. On a runner someone else linked, the owner is chosen as anyone is.
+     */
+    #choosable(users: readonly string[], inCharge: (user: User) => boolean): string[] {
+        return [...new Set(users)].filter((id) => {
+            const user = this.userById(id);
+
+            return user !== undefined && !inCharge(user) && user.sessions === undefined;
+        });
+    }
+
+    /** Runner `id`'s linker left: `linker` (the owner) is in charge of it now. */
+    setRunnerLinker(id: string, linker: string): void {
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            runner.createdBy = linker;
+            runner.users = runner.users?.filter((each) => each !== linker);
+            trimRights(runner, (each) => each !== linker);
+            this.save();
+        }
+    }
+
+    /** Choose the people who may use runner `id`: anyone but its linker, who is in charge of it. */
     setRunnerUsers(id: string, users: string[]): void {
         const runner = this.runnerById(id);
 
         if (runner !== undefined) {
-            runner.users = [...new Set(users)].filter((id) => {
-                const user = this.userById(id);
+            const chosen = this.#choosable(users, (user) => user.id === runner.createdBy);
 
-                return user !== undefined && user.role !== "owner" && user.sessions === undefined;
-            });
+            runner.users = chosen;
+            trimRights(runner, (each) => chosen.includes(each));
             this.save();
         }
+    }
+
+    /** This server as a computer (`StoredServer`): a copy, so a change goes through the setters below. */
+    get server(): Readonly<StoredServer> {
+        return this.#config.server ?? {};
+    }
+
+    /** Choose the people who may use this server: anyone but the owner, who is in charge of it. */
+    setServerUsers(users: string[]): void {
+        this.#changeServer((server) => {
+            const chosen = this.#choosable(users, (user) => user.role === "owner");
+
+            server.users = chosen;
+            trimRights(server, (each) => chosen.includes(each));
+        });
+    }
+
+    /** The people who hold `right` on computer `id` (undefined: this server): `StoredRunner.wheel`, `.allows`. */
+    rightHolders(id: string | undefined, right: ComputerRight): readonly string[] {
+        const computer = id === undefined ? this.#config.server : this.runnerById(id);
+
+        return computer?.[right] ?? [];
+    }
+
+    /**
+     * Give `person` `right` on computer `id` (undefined: this server), or take it back. Only someone chosen there: for
+     * anyone else nothing changes, and the answer is false.
+     */
+    setRight(id: string | undefined, person: string, right: ComputerRight, on: boolean): boolean {
+        const apply = (target: Rights): boolean => {
+            if (!(target.users ?? []).includes(person)) {
+                return false;
+            }
+
+            const rest = (target[right] ?? []).filter((each) => each !== person);
+
+            target[right] = on ? [...rest, person] : rest;
+            trimRights(target, () => true);
+
+            return true;
+        };
+
+        if (id === undefined) {
+            let done = false;
+
+            this.#changeServer((server) => {
+                done = apply(server);
+            });
+
+            return done;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner === undefined || !apply(runner)) {
+            return false;
+        }
+
+        this.save();
+
+        return true;
+    }
+
+    /**
+     * The folders the owner gave `person` on computer `id` (undefined: this server), real paths there. A folder given
+     * covers the folders in it.
+     */
+    givenFolders(id: string | undefined, person: string): readonly string[] {
+        const computer = id === undefined ? this.#config.server : this.runnerById(id);
+
+        return computer?.given?.[person] ?? [];
+    }
+
+    /**
+     * Set the folders given to `person` on computer `id` (undefined: this server); an empty list takes them all. A
+     * folder taken back is no longer one they see every session in (`setSeenFolder`).
+     */
+    setGivenFolders(id: string | undefined, person: string, folders: readonly string[]): void {
+        const apply = (target: FolderGrants): void => {
+            const unique = [...new Set(folders)];
+
+            setList(target, "given", person, unique);
+            setList(
+                target,
+                "sees",
+                person,
+                (target.sees?.[person] ?? []).filter((each) => unique.includes(each)),
+            );
+        };
+
+        if (id === undefined) {
+            this.#changeServer(apply);
+
+            return;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            apply(runner);
+            this.save();
+        }
+    }
+
+    /**
+     * Of the folders given to `person` on computer `id` (undefined: this server), the ones in which they see every
+     * session, their own or not (`access.ts` `seesFolder`).
+     */
+    seenFolders(id: string | undefined, person: string): readonly string[] {
+        const computer = id === undefined ? this.#config.server : this.runnerById(id);
+
+        return computer?.sees?.[person] ?? [];
+    }
+
+    /**
+     * `person` sees every session in `folder` on computer `id` (undefined: this server), or no longer. Only a folder
+     * given to them there, as it is written in that list: any other changes nothing, and the answer is false.
+     */
+    setSeenFolder(id: string | undefined, person: string, folder: string, on: boolean): boolean {
+        if (!this.givenFolders(id, person).includes(folder)) {
+            return false;
+        }
+
+        const apply = (target: FolderGrants): void => {
+            const rest = (target.sees?.[person] ?? []).filter((each) => each !== folder);
+
+            setList(target, "sees", person, on ? [...rest, folder] : rest);
+        };
+
+        if (id === undefined) {
+            this.#changeServer(apply);
+
+            return true;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner === undefined) {
+            return false;
+        }
+
+        apply(runner);
+        this.save();
+
+        return true;
+    }
+
+    /**
+     * The owner turns "Tasks expire with the session" on or off (`app.ts` `tasksMayRun`), at `now`. On while it was on
+     * changes nothing: the time it went on stays. Off forgets that time and every reminder.
+     */
+    setTasksExpire(on: boolean, now: number): void {
+        if (!on) {
+            delete this.#config.taskReminders;
+        }
+
+        this.#changeServer((server) => {
+            if (!on) {
+                delete server.tasksExpire;
+                delete server.tasksExpireSince;
+            } else if (server.tasksExpire !== true) {
+                server.tasksExpire = true;
+                server.tasksExpireSince = now;
+            }
+        });
+    }
+
+    /** Change a computer's rules (`id` undefined: this server). */
+    setComputerSettings(id: string | undefined, change: ComputerSettings): void {
+        const apply = (target: { shareNew?: true }): void => {
+            if (change.shareNew === true) {
+                target.shareNew = true;
+            } else if (change.shareNew === false) {
+                delete target.shareNew;
+            }
+        };
+
+        if (id === undefined) {
+            this.#changeServer(apply);
+
+            return;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            apply(runner);
+
+            const settings = { ...runner.settings };
+
+            if (change.network === false) {
+                settings.network = false;
+            } else if (change.network === true) {
+                delete settings.network;
+            }
+
+            if (typeof change.downloads === "string") {
+                settings.downloads = change.downloads;
+            } else if (change.downloads === null) {
+                delete settings.downloads;
+            }
+
+            if (Object.keys(settings).length === 0) {
+                delete runner.settings;
+            } else {
+                runner.settings = settings;
+            }
+
+            this.save();
+        }
+    }
+
+    /** Every approval kept (`folder-approvals.ts` reads and changes them through `setFolderApprovals`). */
+    get folderApprovals(): readonly StoredApproval[] {
+        return this.#config.folderApprovals ?? [];
+    }
+
+    setFolderApprovals(approvals: StoredApproval[]): void {
+        if (approvals.length === 0) {
+            delete this.#config.folderApprovals;
+        } else {
+            this.#config.folderApprovals = approvals;
+        }
+
+        this.save();
+    }
+
+    /** When each session's people were last reminded that its tasks run on an ended approval (`folder-approvals.ts`). */
+    get taskReminders(): Readonly<Record<string, number>> {
+        return this.#config.taskReminders ?? {};
+    }
+
+    /** Session `session`'s people were reminded at `at`; undefined forgets it (renewed). */
+    setTaskReminder(session: string, at: number | undefined): void {
+        const reminders = { ...this.#config.taskReminders };
+
+        if (at === undefined) {
+            delete reminders[session];
+        } else {
+            reminders[session] = at;
+        }
+
+        if (Object.keys(reminders).length === 0) {
+            delete this.#config.taskReminders;
+        } else {
+            this.#config.taskReminders = reminders;
+        }
+
+        this.save();
+    }
+
+    #changeServer(change: (server: StoredServer) => void): void {
+        const server: StoredServer = structuredClone(this.#config.server ?? {});
+
+        change(server);
+
+        if (server.users?.length === 0) {
+            delete server.users;
+        }
+
+        if (Object.keys(server).length === 0) {
+            delete this.#config.server;
+        } else {
+            this.#config.server = server;
+        }
+
+        this.save();
     }
 
     /** Forget a computer: its key stops working. */
@@ -799,12 +1488,26 @@ export class ConfigStore {
     }
 
     /** Keep a one-time code that links a computer named `name`, until `expiresAt`. */
-    addRunnerCode(code: string, name: string, createdBy: string, expiresAt: number): void {
+    addRunnerCode(
+        code: string,
+        name: string,
+        createdBy: string,
+        expiresAt: number,
+        runner?: string,
+    ): void {
         const now = Date.now();
 
         this.#config.runnerCodes = [
-            ...(this.#config.runnerCodes ?? []).filter((each) => each.expiresAt >= now),
-            { codeHash: hashToken(code), name, createdBy, expiresAt },
+            ...(this.#config.runnerCodes ?? []).filter(
+                (each) => each.expiresAt >= now && (runner === undefined || each.runner !== runner),
+            ),
+            {
+                codeHash: codeHash(code),
+                name,
+                createdBy,
+                expiresAt,
+                ...(runner === undefined ? {} : { runner }),
+            },
         ];
         this.save();
     }
@@ -827,12 +1530,14 @@ export class ConfigStore {
         }
     }
 
-    /** Use a one-time code: returns what it was for and forgets it; undefined when it is unknown or expired. */
-    takeRunnerCode(code: string): StoredRunnerCode | undefined {
-        const hash = hashToken(code);
+    /**
+     * Use a one-time code: returns what it was for and forgets it; undefined when none fits or it expired. The code
+     * itself never comes here: `proves(hash)` says whether the runner proved it knows the code kept as `hash`.
+     */
+    takeRunnerCode(proves: (hash: string) => boolean): StoredRunnerCode | undefined {
         const now = Date.now();
         const codes = this.#config.runnerCodes ?? [];
-        const found = codes.find((each) => sameHash(each.codeHash, hash));
+        const found = codes.find((each) => proves(each.codeHash));
         const left = codes.filter((each) => each !== found && each.expiresAt >= now);
 
         if (found !== undefined || left.length !== codes.length) {

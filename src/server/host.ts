@@ -195,7 +195,7 @@ export interface InboxDelivery {
 
 /**
  * Outside data delivered to sessions (`inbox.ts`). Throws an error whose `status` says why it did not go: 400 a delivery
- * that cannot be right, 410 the session is gone or its person cannot see it, 503 PiP is off, 429 the bucket's limit,
+ * that cannot be right, 410 the session is gone or its person cannot steer it, 503 PiP is off, 429 the bucket's limit,
  * 409 the session does not take messages now (try again later).
  */
 export interface InboxApi {
@@ -237,6 +237,12 @@ export interface ApprovalRequest {
     createdAt: number;
     /** Who Pi was working for when the call asked: set by `Approvals`, not by the asker. */
     requestedBy?: string;
+    /**
+     * Not a call of Pi's: a command this person typed (`!`, `shell.ts`) that the guard holds. Who is in charge of the
+     * session's computer allows it, and its person where they are let (`access.ts` `allowsOwn`), whatever the approval
+     * rule; it counts as asked for by its person.
+     */
+    typedBy?: string;
     /**
      * A question for a person instead of a call to allow (`host.ask`): what the card asks, and its fields. Only the
      * person Pi works for answers it; anyone who can steer can decline it. Its values go to the asker, never here.
@@ -371,7 +377,7 @@ export class Approvals {
     request(asked: ApprovalRequest, context: Context): Promise<ApprovalAnswer> {
         // Who asked is fixed now: someone writing to Pi while the call waits does not become its requester.
         const { requestedBy: _ignored, ...rest } = asked;
-        const requestedBy = this.#requesterOf(asked.conversationId);
+        const requestedBy = asked.typedBy ?? this.#requesterOf(asked.conversationId);
         const request: ApprovalRequest =
             requestedBy === undefined ? rest : { ...rest, requestedBy };
         const existing = this.#pending.get(request.id);
@@ -629,7 +635,10 @@ export interface PocketHost {
      * computer to be online again (`runners.ts`): no stall.
      */
     waitsForLimit(conversationId: ConversationId): boolean;
-    /** Tell the owner that work in a session passed a hard limit: a notice in their tabs, and a push notification. */
+    /**
+     * Tell who is in charge of a session's computer that work in it passed a hard limit: a notice in their tabs, and a
+     * push notification. That is the owner, or the linker of the runner the session is on.
+     */
     alertOwner(conversationId: ConversationId, title: string, body: string): void;
     /**
      * Why work Pi would start in a conversation with nobody asking (a subagent's report, say) may not start now: the

@@ -12,7 +12,17 @@
  * does not sign a browser out of a Pi Pocket on 127.0.0.1 or localhost.
  */
 // helpers.ts first: it points Pi's folder at a temporary one before anything from src/ loads.
-import { cleanUp, lastText, newSession, openApp, root, say, scriptedModel } from "./helpers.ts";
+import {
+    addPerson,
+    cleanUp,
+    lastText,
+    newSession,
+    openApp,
+    root,
+    say,
+    scriptedModel,
+} from "./helpers.ts";
+import { newIdentity } from "../src/runner/secure-link.ts";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -73,8 +83,22 @@ await new Promise<void>((resolve) => server.listen(port, host, resolve));
 const session = await newSession(app);
 
 await say(app, session, "Hello from the copy");
-const guest = app.config.addUser("Guest", "guest");
+const guest = await addPerson(app, "Guest", "guest");
 const base = `http://${host}:${port}`;
+
+// PI_POCKET_TEST_PEOPLE=1: more people, as invites leave them, and a linked computer that is not connected, to look at
+// the People sheet and the Runners sheet: a viewer nobody chose yet, someone invited to that one session, and a
+// computer the guest linked, which the owner only reads.
+if (process.env.PI_POCKET_TEST_PEOPLE) {
+    const viewer = app.config.addUser("Vera", "viewer");
+    const one = app.config.addUser("Sam", "viewer", [String(session)]);
+    const first = app.config.users.find((each) => each.role === "owner");
+
+    app.config.addRunner("Laptop", first?.id ?? "", newIdentity().publicKey);
+    app.config.addRunner("Guest's desktop", guest.user.id, newIdentity().publicKey);
+    console.log(`  viewer, not chosen: ${base}/login?token=${encodeURIComponent(viewer.token)}`);
+    console.log(`  invited to one session: ${base}/login?token=${encodeURIComponent(one.token)}`);
+}
 
 console.log(`A copy of Pi Pocket, with its own data in ${root}`);
 console.log(`  owner: ${base}/login?token=${encodeURIComponent(app.config.ownerToken)}`);

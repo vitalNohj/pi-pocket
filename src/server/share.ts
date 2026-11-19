@@ -47,18 +47,21 @@ export class Shares {
     }
 
     /**
-     * Whether someone may publish, end, and see the addresses of shares: only those who see every session and steer. A
-     * public page is out of the reach of whatever an invite to one session gave, and so is its address.
+     * Whether someone may publish, end, and see the addresses of shares of conversation `id`: who steers it and may
+     * start sessions on its computer (`access.ts` `mayStartThere`). A public page is out of the reach of whatever an
+     * invite to one session gave, and so is its address.
      */
-    mayManage(user: User): boolean {
-        return user.role !== "viewer" && user.sessions === undefined;
+    mayManage(user: User, id: ConversationId): boolean {
+        const policy = this.#app.policy;
+
+        return policy.maySteer(user, String(id)) && policy.mayStartThere(user, String(id));
     }
 
-    /** Refuse someone who may not publish or end a share (`mayManage`). */
-    #requireManage(user: User, message: string): void {
-        this.#app.requireSteer(user);
+    /** Refuse someone who may not publish or end a share of conversation `id` (`mayManage`). */
+    #requireManage(user: User, id: ConversationId, message: string): void {
+        this.#app.requireSteer(user, id);
 
-        if (!this.mayManage(user)) {
+        if (!this.mayManage(user, id)) {
             throw new HttpError(403, message);
         }
     }
@@ -70,7 +73,7 @@ export class Shares {
     async list(conversation: ConversationId, user: User): Promise<ShareView[]> {
         const app = this.#app;
 
-        if (!this.mayManage(user)) {
+        if (!this.mayManage(user, conversation)) {
             return [];
         }
 
@@ -108,8 +111,8 @@ export class Shares {
     }
 
     /**
-     * Publish one artifact version, or its newest, to anyone with the address. Only someone who sees every session may: a
-     * public page is out of the reach of whatever an invite to one session gave.
+     * Publish one artifact version, or its newest, to anyone with the address. Only someone who may manage this
+     * conversation's shares may (`mayManage`).
      */
     async create(
         conversation: ConversationId,
@@ -118,7 +121,11 @@ export class Shares {
     ): Promise<ShareView> {
         const app = this.#app;
 
-        this.#requireManage(user, "Only people who see every session can publish one to anyone.");
+        this.#requireManage(
+            user,
+            conversation,
+            "Only people who may start sessions on this computer can publish to anyone.",
+        );
 
         const id = String(request.id ?? "");
         const pinned = request.version !== undefined && request.version !== null;
@@ -189,11 +196,15 @@ export class Shares {
     }
 
     /**
-     * End a share of this conversation: its address answers nothing after. Only someone who sees every session may. A
-     * share of another conversation is not found here.
+     * End a share of this conversation: its address answers nothing after. Only someone who may manage its shares may
+     * (`mayManage`). A share of another conversation is not found here.
      */
     async revoke(user: User, conversation: ConversationId, token: string): Promise<void> {
-        this.#requireManage(user, "Only people who see every session end one.");
+        this.#requireManage(
+            user,
+            conversation,
+            "Only people who may start sessions on this computer end one.",
+        );
 
         const gone = await this.#app.harness.commit(async (tx) => {
             const doc = await tx.doc(ArtifactSharesDoc);

@@ -27,6 +27,7 @@ import { Highlighted, InlineArtifact } from "./rich.js";
 import {
     actions,
     attempt,
+    allowsOwn,
     canSteer,
     collab,
     discuss,
@@ -2085,8 +2086,11 @@ function savedAsk(form, approval) {
 function AskCard({ approval }) {
     const { me, users } = store.state;
     const form = approval.form;
-    const owner = users?.find?.((each) => each.role === "owner")?.id;
-    const mine = (approval.requestedBy ?? owner) === me?.id;
+    // With nobody known, who is in charge of this computer answers it: the server says whether that is me.
+    const mine =
+        approval.requestedBy === undefined
+            ? store.state.view.conversation?.inCharge === true
+            : approval.requestedBy === me?.id;
     const [values, setValues] = useState(() => {
         const saved = mine ? savedAsk(form, approval) : null;
 
@@ -2262,7 +2266,7 @@ function ApprovalCard({ approval }) {
         return html`<${AskCard} key=${askEntry(approval)} approval=${approval} />`;
     }
 
-    const { me, server } = store.state;
+    const { me, server, users } = store.state;
     const [busy, setBusy] = useState(false);
 
     const answer = (allow) => {
@@ -2270,17 +2274,33 @@ function ApprovalCard({ approval }) {
         attempt(() => actions.approve(approval.id, allow)).finally(() => setBusy(false));
     };
 
-    // With approvals that need someone else, a guest cannot allow a call their own message led to (the server checks too).
+    // A command a person typed (`!`), not a call of Pi's: who is in charge of this computer allows it, and its own
+    // person where they are let (`store.js` `allowsOwn`).
+    const typed = approval.typedBy !== undefined;
+    const mine = approval.typedBy === me?.id;
+    const notMine =
+        typed &&
+        store.state.view.conversation?.inCharge !== true &&
+        !(mine && allowsOwn(store.state.view.conversation));
+    const typist =
+        approval.typedBy === me?.id
+            ? "your"
+            : `${users?.find?.((each) => each.id === approval.typedBy)?.name ?? "someone"}'s`;
+    // With approvals that need someone else, nobody can allow a call their own message led to, but who is in charge of
+    // this computer and the people they let there (the server says whether that is me, and checks too).
     const ownCall =
+        !typed &&
         server?.approvalRule === "others" &&
-        me?.role !== "owner" &&
+        !allowsOwn(store.state.view.conversation) &&
         approval.requestedBy === me?.id;
 
     return html`<div class="approval" data-part="approval">
         <div class="approval-head">
             <span class="approval-shield" aria-hidden="true"><${Icon} name="shield" size=${16} /></span>
             <div class="approval-title">
-                <span class="approval-ask">Lancet Guard asks before this ${approval.tool} call</span>
+                <span class="approval-ask">
+                    ${typed ? `Lancet Guard asks before ${typist} command` : `Lancet Guard asks before this ${approval.tool} call`}
+                </span>
                 <span class="approval-reason">${approval.reason}</span>
             </div>
         </div>
@@ -2294,12 +2314,19 @@ function ApprovalCard({ approval }) {
                           Someone else has to allow this: it came from your message. You can deny it.
                       </div>`
                   }
+                  ${
+                      notMine &&
+                      html`<div class="muted small">
+                          ${`Only who is in charge of this computer can allow ${mine ? "your command" : "someone else's command"}. You can deny it.`}
+                      </div>`
+                  }
                 <div class="approval-actions">
                     <button class="button deny" disabled=${busy} onClick=${() => answer(false)}>
                         Deny
                     </button>
                     ${
                         !ownCall &&
+                        !notMine &&
                         html`<button
                             class="button primary"
                             disabled=${busy}
@@ -2415,7 +2442,7 @@ defineItem("reply", {
 
 /** Under Pi's answers: the message time, reactions, and ways to talk about it with the people here. */
 function AnswerActions({ entry }) {
-    const { view, me, users, server } = store.state;
+    const { view, me, users } = store.state;
     const [picking, setPicking] = useState(false);
     const reactions = view.reactions?.[entry.id] ?? {};
     const pinned = (view.pins ?? []).some((pin) => pin.entryId === entry.id);
@@ -2571,6 +2598,7 @@ const SHELL_ENDS = {
     failed: "could not run",
     interrupted: "cut off by a restart",
     stopped: "stopped",
+    denied: "denied",
 };
 
 /** How many of a command's last lines show before "Show all". */
@@ -2712,12 +2740,19 @@ function toBottom(element) {
     );
 }
 
-/** `!` commands this tab started that have no entry yet: still running, or waiting for Pi to finish its turn. */
-function PendingShells({ conversationId, rows }) {
+/** Whether a `!` command waits for someone to allow it: the guard holds it, and its card asks (`shell.ts`). */
+const shellWaits = (approvals, taskId) =>
+    approvals.some((approval) => approval.id === `${taskId}:shell`);
+
+/**
+ * `!` commands this tab started that have no entry yet: still running, waiting for Pi to finish its turn, or waiting
+ * for someone to allow them, however long that takes.
+ */
+function PendingShells({ conversationId, rows, approvals }) {
     const pending = store.state.pendingShells.filter(
         (each) =>
             each.conversationId === conversationId &&
-            Date.now() - each.at < PENDING_MS &&
+            (shellWaits(approvals, each.taskId) || Date.now() - each.at < PENDING_MS) &&
             !rows.some((row) => row.kind === "shell" && row.taskId === each.taskId),
     );
 
@@ -2726,12 +2761,14 @@ function PendingShells({ conversationId, rows }) {
             <div class="shell-card">
                 <div class="shell-head">
                     <span class="mono shell-command">$ ${each.command}</span>
-                    <span class="muted small"><${Spinner} /> running</span>
+                    <span class="muted small">
+                        ${shellWaits(approvals, each.taskId) ? "waiting for approval" : html`<${Spinner} /> running`}
+                    </span>
                     <button
                         class="link small"
                         onClick=${() => attempt(() => actions.stopShell(each.taskId))}
                     >
-                        Stop
+                        ${shellWaits(approvals, each.taskId) ? "Cancel" : "Stop"}
                     </button>
                 </div>
             </div>
@@ -3106,20 +3143,25 @@ function runStart(conversationId, entries, busy) {
 
 /** Whether this person can answer one of the approvals waiting: one who can steer, and for a call not of their own asking where that needs someone else. */
 function canAnswer(approvals) {
-    const { me, server, users } = store.state;
-    const owner = users?.find?.((each) => each.role === "owner")?.id;
+    const { me, server, view } = store.state;
+    const inCharge = view.conversation?.inCharge === true;
 
     return (
         canSteer() &&
         approvals.some((approval) =>
-            // An ask (`host.ask`) is for the person Pi works for, or the owner when nobody is known.
+            // An ask (`host.ask`) is for the person Pi works for, or who is in charge of this computer when nobody is known.
             approval.form
-                ? (approval.requestedBy ?? owner) === me?.id
-                : !(
-                      server?.approvalRule === "others" &&
-                      me?.role !== "owner" &&
-                      approval.requestedBy === me?.id
-                  ),
+                ? approval.requestedBy === undefined
+                    ? inCharge
+                    : approval.requestedBy === me?.id
+                : approval.typedBy !== undefined
+                  ? // A command someone typed: who is in charge of this computer allows it, and its person where let.
+                    inCharge || (approval.typedBy === me?.id && allowsOwn(view.conversation))
+                  : !(
+                        server?.approvalRule === "others" &&
+                        !allowsOwn(view.conversation) &&
+                        approval.requestedBy === me?.id
+                    ),
         )
     );
 }
@@ -3990,18 +4032,42 @@ export function Transcript() {
     // A `!` command whose entry arrived is no longer pending.
     const shells = useMemo(() => rows.filter((row) => row.kind === "shell").length, [rows]);
 
-    useEffect(() => {
-        const pending = store.state.pendingShells;
-        const left = pending.filter(
-            (each) =>
-                Date.now() - each.at < PENDING_MS &&
-                !rows.some((row) => row.kind === "shell" && row.taskId === each.taskId),
-        );
+    // One that waited for approval has its time to run from its answer on.
+    const typedWaiting = (view.approvals ?? [])
+        .filter((approval) => approval.typedBy !== undefined)
+        .map((approval) => approval.id)
+        .join(" ");
+    const typedWaited = useRef("");
 
-        if (left.length !== pending.length) {
+    useEffect(() => {
+        const was = new Set(typedWaited.current.split(" "));
+        const now = new Set(typedWaiting.split(" "));
+        const pending = store.state.pendingShells;
+        let changed = false;
+        const left = pending
+            .filter(
+                (each) =>
+                    (now.has(`${each.taskId}:shell`) ||
+                        was.has(`${each.taskId}:shell`) ||
+                        Date.now() - each.at < PENDING_MS) &&
+                    !rows.some((row) => row.kind === "shell" && row.taskId === each.taskId),
+            )
+            .map((each) => {
+                if (!was.has(`${each.taskId}:shell`) || now.has(`${each.taskId}:shell`)) {
+                    return each;
+                }
+
+                changed = true;
+
+                return { ...each, at: Date.now() };
+            });
+
+        typedWaited.current = typedWaiting;
+
+        if (changed || left.length !== pending.length) {
             store.set({ pendingShells: left });
         }
-    }, [shells]);
+    }, [shells, typedWaiting]);
 
     const onScroll = () => {
         const element = scroller.current;
@@ -4164,7 +4230,11 @@ export function Transcript() {
                 busy=${busy}
                 conversationId=${conversation.id}
             />
-            <${PendingShells} conversationId=${conversation.id} rows=${rows} />
+            <${PendingShells}
+                conversationId=${conversation.id}
+                rows=${rows}
+                approvals=${approvals}
+            />
             ${approvals.map(
                 (approval) => html`<${ApprovalCard} key=${approval.id} approval=${approval} />`,
             )}

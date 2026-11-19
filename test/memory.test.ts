@@ -2,6 +2,7 @@
 // prompt, and everywhere's reach every session and PiP; a guest's wait for the owner; a call run again saves once;
 // caps; and who may change what through the routes.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -295,7 +296,7 @@ test("lessons for everywhere reach every folder, and PiP, which has no project; 
 });
 
 test("a guest's lesson waits for the owner, and is used once approved", async () => {
-    const guest = app.config.addUser("Gina", "guest").user;
+    const guest = (await addPerson(app, "Gina", "guest")).user;
     const id = await newSession(app, repo);
 
     await sayAs(guest, id, "remember Always-deploy-to-moon.");
@@ -307,7 +308,7 @@ test("a guest's lesson waits for the owner, and is used once approved", async ()
     assert.ok(!(await given(repo, "Always-deploy-to-moon")), "not used while pending");
 
     // The guest sees their own; the owner sees it to approve; another guest does not see it.
-    const other = app.config.addUser("Otto", "guest").user;
+    const other = (await addPerson(app, "Otto", "guest")).user;
 
     assert.equal((await app.memory.view(id, guest)).lessons.length, 1);
     assert.equal((await app.memory.view(id, other)).lessons.length, 0);
@@ -368,7 +369,7 @@ test("Pi proposes, the owner approves: lessons, new text, and forgetting, also o
 test("Pi's list shows what is in force, and what waits only for whom it works for", async () => {
     await clear();
     const id = await newSession(app, repo);
-    const guest = app.config.addUser("Quinn", "guest").user;
+    const guest = (await addPerson(app, "Quinn", "guest")).user;
 
     await app.memory.add(
         id,
@@ -428,7 +429,7 @@ test("a project keeps so many lessons, and says to forget one first", async () =
     );
 
     // Lessons waiting for approval take no room from the owner's, and one person may have only so many.
-    const guest = app.config.addUser("Pat", "guest").user;
+    const guest = (await addPerson(app, "Pat", "guest")).user;
     const asGuest = { userId: guest.id, byPi: false, name: "Pat" };
 
     for (let index = 0; index < MAX_PENDING; index++) {
@@ -573,8 +574,8 @@ test("the owner's pending queue includes all projects and everywhere, and review
 test("all-project review refuses unprivileged people and Pi before reading or looking up lessons", async () => {
     await clear();
     const id = await newSession(app, repo);
-    const guest = app.config.addUser("Queue guest", "guest").user;
-    const viewer = app.config.addUser("Queue viewer", "viewer").user;
+    const guest = (await addPerson(app, "Queue guest", "guest")).user;
+    const viewer = (await addPerson(app, "Queue viewer", "viewer")).user;
     const limited = app.config.addUser("Queue limited", "guest", [String(id)]).user;
     const denied = (error: unknown) => error instanceof HttpError && error.status === 403;
 
@@ -670,8 +671,8 @@ test("the routes: viewers read, guests add (pending) and cannot remove the owner
 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
-    const viewer = app.config.addUser("Vic", "viewer");
-    const guest = app.config.addUser("Gus", "guest");
+    const viewer = await addPerson(app, "Vic", "viewer");
+    const guest = await addPerson(app, "Gus", "guest");
     const call = (token: string, path: string, body?: unknown) =>
         fetch(`http://127.0.0.1:${port}/api/${path}`, {
             method: body === undefined ? "GET" : "POST",

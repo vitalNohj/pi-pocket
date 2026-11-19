@@ -1,6 +1,7 @@
 // Linked sessions (`linked-sessions.ts`): a repeat acts once, a link shares nothing, and the checks of whom Pi works for
 // apply before anything is made or sent.
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -435,7 +436,7 @@ test("a start or send is refused in plan mode, past a spend limit, or without th
     await refused(/spend limit/);
     await app.spend.setSessionBudget(owner(app), id, null);
 
-    const driver = app.config.addUser("Driver", "guest").user;
+    const driver = (await addPerson(app, "Driver", "guest")).user;
 
     await app.harness.commit(async (tx) => {
         Object.assign(await tx.doc(TurnsDoc, id), { on: true, driver: driver.id, asks: [] });
@@ -728,7 +729,7 @@ test("stop and archive are refused in plan mode, past a spend limit, or without 
     await refused(/spend limit/);
     await app.spend.setSessionBudget(owner(app), id, null);
 
-    const driver = app.config.addUser("Stop driver", "guest").user;
+    const driver = (await addPerson(app, "Stop driver", "guest")).user;
 
     await app.harness.commit(async (tx) => {
         Object.assign(await tx.doc(TurnsDoc, id), { on: true, driver: driver.id, asks: [] });

@@ -19,6 +19,7 @@ import {
     ReactionsDoc,
     TurnsDoc,
 } from "./docs.ts";
+import { THIS_SERVER } from "./access.ts";
 import { describe, HttpError } from "./errors.ts";
 import { entryText, snippet } from "./projection.ts";
 import { clientKey } from "./requests.ts";
@@ -443,7 +444,11 @@ export class Collab {
         return saved;
     }
 
-    /** Take turns: turn it on or off, take the wheel, ask for it, hand it over, or let go. */
+    /**
+     * Take turns: turn it on or off, take the wheel, ask for it, hand it over, or let go. Taking it from a driver who is
+     * here, handing it over for them, or turning take turns off under them is for who is in charge of the session's
+     * computer and the people they let there (`access.ts` `overridesTurns`).
+     */
     async turns(
         id: ConversationId,
         user: User,
@@ -451,11 +456,11 @@ export class Collab {
     ): Promise<void> {
         const app = this.#app;
 
-        app.requireSee(user, id);
-        app.requireSteer(user);
+        app.requireSteer(user, id);
         const root = app.rootOf(id);
         const room = await app.room(root);
         const action = String(request.action ?? "");
+        const overrides = app.policy.overridesTurns(user, app.runnerOf(root) ?? THIS_SERVER);
         const name = (userId: string | undefined) =>
             userId === undefined ? "someone" : (app.config.userById(userId)?.name ?? "someone");
         let line: string | undefined;
@@ -481,7 +486,7 @@ export class Collab {
 
                     if (
                         !isDriver &&
-                        user.role !== "owner" &&
+                        !overrides &&
                         doc.driver !== undefined &&
                         room.has(doc.driver)
                     ) {
@@ -500,7 +505,7 @@ export class Collab {
                         return;
                     }
 
-                    if (doc.driver !== undefined && room.has(doc.driver) && user.role !== "owner") {
+                    if (doc.driver !== undefined && room.has(doc.driver) && !overrides) {
                         throw new HttpError(
                             409,
                             `${name(doc.driver)} is driving. Ask to drive instead.`,
@@ -530,7 +535,7 @@ export class Collab {
                         throw new HttpError(409, "Take turns is off");
                     }
 
-                    if (!isDriver && user.role !== "owner") {
+                    if (!isDriver && !overrides) {
                         throw new HttpError(403, "Only the driver can hand over the wheel");
                     }
 

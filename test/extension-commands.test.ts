@@ -1,4 +1,5 @@
 import {
+    addPerson,
     cleanUp,
     context,
     modelTexts,
@@ -132,8 +133,8 @@ test("a run that ended with no result answers that it failed, and runs again", a
 
 test("a viewer runs no command, and a global command is the owner's alone", async () => {
     const id = await newSession(app);
-    const viewer = app.config.addUser("Viewer", "viewer").user;
-    const guest = app.config.addUser("Guest", "guest").user;
+    const viewer = (await addPerson(app, "Viewer", "viewer")).user;
+    const guest = (await addPerson(app, "Guest", "guest")).user;
 
     await assert.rejects(app.extensionCommands.run(id, viewer, request("count-here")), {
         status: 403,
@@ -166,7 +167,7 @@ test("a viewer runs no command, and a global command is the owner's alone", asyn
 
 test("a card shows in the transcript, never in Pi's context, and does not change whom Pi works for", async () => {
     const id = await newSession(app);
-    const guest = app.config.addUser("Card guest", "guest").user;
+    const guest = (await addPerson(app, "Card guest", "guest")).user;
 
     await say(app, id, "Hello");
     assert.equal(

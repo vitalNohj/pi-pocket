@@ -20,7 +20,17 @@ import {
     type Reply,
     type RequestOptions,
 } from "@earendil-works/pi-env";
-import { type RawData, type WebSocket, WebSocketServer } from "ws";
+import { type RawData, WebSocketServer } from "ws";
+import {
+    checkLinkRequest,
+    CLOSE_IDENTITY,
+    fingerprint,
+    isPublicKey,
+    linkAnswerProof,
+    type LinkAnswer,
+    type LinkRequest,
+    ServerLinkSocket,
+} from "../runner/secure-link.ts";
 import {
     type ControlMessage,
     FRAME,
@@ -35,17 +45,14 @@ import {
     parseControl,
     readFrame,
     frame,
-    type Confirm,
-    type Confirmed,
     type Hello,
-    type ApprovalState,
-    type ApprovalNeeded,
+    type RunnerSettingsMessage,
     type SessionScope,
-    type RunnerAction,
-    type TaskRequest,
-    type TaskResult,
+    type Stop,
     type PiSessionsQuery,
     type PiSessionsResult,
+    type TaskRequest,
+    type TaskResult,
     SESSION_FIELD,
     readStreamData,
     STREAM_DATA,
@@ -116,20 +123,23 @@ const ACK_MS = 1000;
 const PING_MS = 10_000;
 const SILENT_MS = 30_000;
 
-/**
- * How long a session waits for its computer to allow it. The runner gives up 10 s sooner, so its answer (or its
- * "nobody answered") comes back before this.
- */
-const CONFIRM_MS = 120_000;
-
 /** How long a runner has to say hello after it connects. */
 const HELLO_MS = 10_000;
+/** How long the server waits for a computer to read its Pi sessions: a list of hundreds can take a few seconds. */
+const PI_SESSIONS_MS = 60_000;
+
+/** The link socket a runner talks over, sealed with the link's keys (`secure-link.ts`). */
+type WebSocket = ServerLinkSocket;
 
 /** A computer, as people see it. */
 export type RunnerView = {
     id: string;
     name: string;
     online: boolean;
+    /** Linked before the secure link: it must link again, with a code made for it (`makeCode` with its id). */
+    relink?: true;
+    /** Its runner's key, as a person can compare it with what `pi-pocket runner status` shows there. */
+    fingerprint?: string;
     /** Offline, with its work waiting for it (its daemon session is kept until it is back). */
     away: boolean;
     lastSeen?: number;
@@ -140,9 +150,25 @@ export type RunnerView = {
     tools?: Hello["tools"];
     createdBy: string;
     /** Granted people, visible only in the owner's list. */
-    users?: { id: string; name: string }[];
-    approvals?: ApprovalState;
-    questions?: ApprovalNeeded[];
+    users?: { id: string; name: string; role: "owner" | "guest" | "viewer" }[];
+    /** The folders given to each granted person there, by person id; only in the owner's list. */
+    given?: Record<string, string[]>;
+    /** Of those, the folders in which that person sees every session, by person id; only in the owner's list. */
+    sees?: Record<string, string[]>;
+    /** The granted people who may take the wheel from a driver there (`access.ts` `overridesTurns`); managers' list. */
+    wheel?: string[];
+    /** The granted people who may allow a call their own message led to there (`allowsOwn`); managers' list. */
+    allows?: string[];
+    /** New sessions there start shared with its people. */
+    shareNew?: true;
+    /** False when this person may not start sessions there: the owner sees a runner someone else linked, to unlink it. */
+    mayStart?: false;
+    /** Its sessions' browsers use its network (on unless turned off); only in the managers' list. */
+    network?: boolean;
+    /** Where its sessions' browser downloads go, when not its temporary folder; only in the managers' list. */
+    downloads?: string;
+    /** Its runner allows plain HTTP to this server (set when it was linked, there). */
+    allowHttp?: true;
 };
 
 function lost(message: string): RemoteError {
@@ -211,11 +237,8 @@ export class RunnerLink {
     #nextId = 1;
     #ackTimer: NodeJS.Timeout | undefined;
     #closed = false;
-    state: ApprovalState | undefined;
-    readonly questions = new Map<string, ApprovalNeeded>();
-    readonly #results = new Map<string, (message: ControlMessage) => void>();
-    readonly #piResults = new Map<string, (message: PiSessionsResult) => void>();
     /** Unlike daemon requests, these survive a reset of the daemon session. */
+    readonly #piResults = new Map<string, (message: PiSessionsResult) => void>();
     readonly #taskRequests = new Map<
         string,
         {
@@ -224,12 +247,10 @@ export class RunnerLink {
             reject: (error: Error) => void;
         }
     >();
-    /** Questions sent to its runner, waiting for `confirmed`. */
-    readonly #questions = new Map<string, (answer: Confirmed) => void>();
-    /** The network streams of the current connection. */
+    /** The network streams of the current connection. Its runner refuses them when its network is not shared. */
     #network: LinkNetwork | undefined;
-    /** The folder its runner keeps browser downloads in (`hello.downloads`); undefined: its temporary folder. */
-    downloads: string | undefined;
+    /** Whether its runner allows plain HTTP to this server (`hello.allowHttp`), for the Runners sheet. */
+    allowHttp = false;
     /** Who waits for the computer to be online with a daemon that said hello (`whenOnline`). */
     readonly #waiting = new Set<{ resolve: () => void; reject: (error: Error) => void }>();
 
@@ -247,6 +268,22 @@ export class RunnerLink {
         const platform = this.#runners.stored(this.id)?.platform;
 
         return platform === undefined ? {} : { os: platform.os, arch: platform.arch };
+    }
+
+    /** Where its sessions' browser downloads go (`StoredRunner.settings.downloads`); undefined: its temporary folder. */
+    get downloads(): string | undefined {
+        return this.#runners.stored(this.id)?.settings?.downloads;
+    }
+
+    /** Send its runner the settings the server keeps for it (`runner-settings`): at each welcome, and when they change. */
+    sendSettings(): void {
+        const settings = this.#runners.stored(this.id)?.settings;
+
+        this.#control({
+            type: "runner-settings",
+            network: settings?.network !== false,
+            ...(settings?.downloads === undefined ? {} : { downloads: settings.downloads }),
+        } satisfies RunnerSettingsMessage);
     }
 
     get online(): boolean {
@@ -364,6 +401,7 @@ export class RunnerLink {
         options: RequestOptions = {},
         scope?: SessionScope,
     ): Promise<Reply> {
+        // The runner keeps each request inside the folder of the session it names (`request-gate.ts`).
         if (scope !== undefined) {
             json = { ...json, [SESSION_FIELD]: scope };
         }
@@ -426,7 +464,7 @@ export class RunnerLink {
         }
 
         this.#taskRequests.clear();
-        this.#drop(CLOSE.removed, "This computer was removed from the server");
+        this.#drop(CLOSE.removed, "This computer was removed from the server", "removed");
     }
 
     /**
@@ -436,6 +474,14 @@ export class RunnerLink {
     shutdown(): void {
         this.#closed = true;
         this.#drop(1001, "The server is restarting");
+    }
+
+    /**
+     * Its computer was linked again: the runner with the old key is sent away for good; the new runner connects with
+     * its own.
+     */
+    relinked(): void {
+        this.#drop(1000, "This computer was linked again", "relinked");
     }
 
     /** The live session, after `info` waited for one; lost when its runner started over meanwhile. */
@@ -508,7 +554,7 @@ export class RunnerLink {
     /** A runner connected and said hello: resume its session, or start a new one. */
     attach(socket: WebSocket, hello: Hello): void {
         if (this.#closed) {
-            socket.close(CLOSE.removed, "Removed");
+            sendAway(socket, CLOSE.removed, "Removed", "removed");
 
             return;
         }
@@ -516,18 +562,15 @@ export class RunnerLink {
         if (this.#socket !== undefined && this.#socket !== socket) {
             // The same computer connected again before the old link was noticed gone: the new one wins. The old one's
             // close handler still runs, to stop its pings; it changes nothing else once this is no longer its socket.
-            this.#socket.close(CLOSE.replaced, "Replaced by a newer connection");
+            sendAway(this.#socket, CLOSE.replaced, "Replaced by a newer connection", "replaced");
         }
 
         this.#socket = socket;
+        this.allowHttp = hello.allowHttp === true;
         this.#runners.toolsSeen(this.id, hello.tools);
 
         this.#network?.drop();
         this.#network = this.#networkOf(socket);
-        this.downloads =
-            typeof hello.downloads === "string" && hello.downloads !== ""
-                ? hello.downloads
-                : undefined;
 
         const network = this.#network;
 
@@ -546,6 +589,7 @@ export class RunnerLink {
                 resume: true,
                 received: session.inbox.received,
             });
+            this.sendSettings();
 
             for (const message of resent) {
                 socket.send(message);
@@ -568,6 +612,7 @@ export class RunnerLink {
                 resume: false,
                 received: 0,
             });
+            this.sendSettings();
             session.ready = this.#send(session, "hello", { protocol: 1 }, {}).then((reply) => {
                 if (reply.json.protocol !== 1) {
                     throw lost(
@@ -664,7 +709,6 @@ export class RunnerLink {
 
             this.#socket = undefined;
             this.#network = undefined;
-            this.questions.clear();
             this.#runners.changed();
 
             if (!session.live || this.#session !== session) {
@@ -680,31 +724,10 @@ export class RunnerLink {
             if (!session.outbox.acknowledge(message.received)) {
                 this.#drop(1002, "Acknowledged bytes it was never sent");
             }
-        } else if (message?.type === "confirmed") {
-            this.questions.delete(message.id);
-            this.#questions.get(message.id)?.(message);
-            this.#runners.changed();
-        } else if (message?.type === "approval-needed") {
-            this.questions.set(message.id, message);
-            this.#runners.changed();
-        } else if (message?.type === "approval-ended") {
-            this.questions.delete(message.id);
-            this.#runners.changed();
-        } else if (message?.type === "runner-state") {
-            this.state = message.state;
-            this.downloads = message.state.settings.downloads ?? undefined;
-            this.#runners.changed();
         } else if (message?.type === "pi-sessions-result") {
             this.#piResults.get(message.id)?.(message);
         } else if (message?.type === "task-result") {
             this.#taskRequests.get(message.id)?.resolve(message);
-        } else if (message?.type === "code-result" || message?.type === "runner-result") {
-            if (message.type === "runner-result" && message.state !== undefined) {
-                this.state = message.state;
-            }
-
-            this.#results.get(message.id)?.(message);
-            this.#runners.changed();
         } else if (message?.type === "bye") {
             this.#runners.log(`${this.name} left: ${message.reason}`);
             this.#end(session, lost(`${this.name}: ${message.reason}`));
@@ -806,94 +829,11 @@ export class RunnerLink {
     }
 
     /**
-     * Ask the computer whether a session may start there: its runner asks its person, or answers at once as its
-     * settings say. Throws 403 with the computer's reason when it says no, and 409 when it is offline or does not
-     * answer in time (the person was away). `asker`: the id of the person whose start waits, who may see and answer
-     * its question (`Runners.mayAnswer`).
+     * Pi's terminal sessions on this computer (`pi-sessions.ts`): the list, one's last messages, or the one file a new
+     * session may read. The server decided who may; offline fails at once, and a computer that does not answer in time
+     * fails too.
      */
-    async confirm(
-        question: Omit<Confirm, "type" | "id">,
-        signal?: AbortSignal,
-        asker?: string,
-    ): Promise<void> {
-        if (signal?.aborted) {
-            throw new HttpError(409, "Cancelled.");
-        }
-
-        const asked = this.#runners.asking(question.session, asker);
-
-        try {
-            await this.#confirm(question, signal);
-        } finally {
-            asked();
-        }
-    }
-
-    async #confirm(question: Omit<Confirm, "type" | "id">, signal?: AbortSignal): Promise<void> {
-        if (this.#socket === undefined) {
-            throw new HttpError(
-                409,
-                `${this.name} is offline. Start Pi Pocket's runner there, then try again.`,
-            );
-        }
-
-        const id = randomUUID();
-        let timer: NodeJS.Timeout | undefined;
-        let cancelled: (() => void) | undefined;
-        const answer = await new Promise<Confirmed | undefined>((resolve, reject) => {
-            // The server stops waiting: the question goes on the computer too, so a late Allow saves nothing.
-            timer = setTimeout(
-                () => {
-                    this.#control({ type: "withdraw", id });
-                    resolve(undefined);
-                },
-                (this.state?.totp ? 300_000 : CONFIRM_MS) + 10_000,
-            );
-
-            cancelled = () => {
-                this.#questions.delete(id);
-
-                this.#control({ type: "withdraw", id });
-
-                reject(new HttpError(409, "Cancelled."));
-            };
-
-            signal?.addEventListener("abort", cancelled, { once: true });
-            this.#questions.set(id, resolve);
-            this.#control({ type: "confirm", id, ...question });
-        }).finally(() => {
-            clearTimeout(timer);
-            this.#questions.delete(id);
-            this.questions.delete(id);
-            this.#runners.changed();
-
-            if (cancelled !== undefined) {
-                signal?.removeEventListener("abort", cancelled);
-            }
-        });
-
-        if (signal?.aborted) {
-            throw new HttpError(409, "Cancelled.");
-        }
-
-        if (answer === undefined) {
-            throw new HttpError(
-                409,
-                `Nobody answered on ${this.name}. Approve the session there, or enter a code from your authenticator.`,
-            );
-        }
-
-        if (!answer.allow) {
-            throw new HttpError(403, answer.reason ?? `${this.name} did not allow the session.`);
-        }
-    }
-
-    /** Metadata, an approved preview, or the one file a new session may read. Offline fails immediately. */
-    async piSessions(
-        request: PiSessionsQuery,
-        signal?: AbortSignal,
-        asker?: string,
-    ): Promise<PiSessionsResult> {
+    async piSessions(request: PiSessionsQuery, signal?: AbortSignal): Promise<PiSessionsResult> {
         await this.infoNow();
 
         if (signal?.aborted) {
@@ -901,32 +841,20 @@ export class RunnerLink {
         }
 
         const id = randomUUID();
-        const asked = this.#runners.asking("pi-preview:" + id, asker);
         let timer: NodeJS.Timeout | undefined;
         let cancelled: (() => void) | undefined;
 
         try {
             const answer = await new Promise<PiSessionsResult>((resolve, reject) => {
-                cancelled = () => {
-                    this.#control({ type: "withdraw", id });
-                    reject(new HttpError(409, "Cancelled."));
-                };
-
+                cancelled = () => reject(new HttpError(409, "Cancelled."));
                 timer = setTimeout(
-                    () => {
-                        this.#control({ type: "withdraw", id });
-                        reject(new HttpError(409, `The computer ${this.name} did not answer.`));
-                    },
-                    (this.state?.totp ? 300_000 : CONFIRM_MS) + 10_000,
+                    () => reject(new HttpError(409, `The computer ${this.name} did not answer.`)),
+                    PI_SESSIONS_MS,
                 );
                 signal?.addEventListener("abort", cancelled, { once: true });
                 this.#piResults.set(id, resolve);
                 this.#control({ type: "pi-sessions", id, ...request });
             });
-
-            if (signal?.aborted) {
-                throw new HttpError(409, "Cancelled.");
-            }
 
             if (!answer.ok) {
                 throw new HttpError(
@@ -939,9 +867,6 @@ export class RunnerLink {
         } finally {
             clearTimeout(timer);
             this.#piResults.delete(id);
-            this.questions.delete(id);
-            asked();
-            this.#runners.changed();
 
             if (cancelled !== undefined) {
                 signal?.removeEventListener("abort", cancelled);
@@ -949,61 +874,21 @@ export class RunnerLink {
         }
     }
 
-    /** Codes are relayed only. Never keep them in config, session documents, or logs. */
-    async approveCode(id: string, code: string): Promise<void> {
-        const result = await this.#result(id, { type: "approval-code", id, code });
-
-        if (result.type !== "code-result" || !result.allow) {
-            throw new HttpError(400, "That code is wrong or used. Try the next one.");
-        }
-    }
-
-    async action(request: RunnerAction): Promise<void> {
-        const id = randomUUID();
-        const result = await this.#result(id, { type: "runner-action", id, request });
-
-        if (result.type !== "runner-result" || !result.ok) {
-            throw new HttpError(
-                400,
-                result.type === "runner-result"
-                    ? (result.reason ?? "The runner refused it.")
-                    : "The runner refused it.",
-            );
-        }
-    }
-
-    async #result(id: string, message: ControlMessage): Promise<ControlMessage> {
-        if (!this.online) {
-            throw new HttpError(409, "Connect the runner on this computer first.");
-        }
-
-        if (this.#results.has(id)) {
-            throw new HttpError(409, "A code is already being checked.");
-        }
-
-        let timer: NodeJS.Timeout | undefined;
-
-        return new Promise<ControlMessage>((resolve, reject) => {
-            timer = setTimeout(
-                () => reject(new HttpError(409, "The computer did not answer.")),
-                15_000,
-            );
-            this.#results.set(id, resolve);
-            this.#control(message);
-        }).finally(() => {
-            clearTimeout(timer);
-            this.#results.delete(id);
-        });
-    }
-
+    /** Start a background task for the session `scope` names, in its folder there (`tasks.ts`). */
     async taskStart(
-        request: Omit<Extract<TaskRequest, { op: "start" }>, "type" | "id" | "op">,
+        scope: SessionScope,
+        request: Omit<
+            Extract<TaskRequest, { op: "start" }>,
+            "type" | "id" | "op" | "permission" | "scope"
+        >,
     ): Promise<number> {
         const result = await this.#taskRequest({
             ...request,
             type: "task",
             id: randomUUID(),
             op: "start",
+            permission: scope.id,
+            scope,
         });
 
         if (result.pid === undefined) {
@@ -1015,24 +900,26 @@ export class RunnerLink {
 
     /** The runner's tasks of a session; `ended`: its shell ended, while what it started may still run. */
     async taskList(
-        permission: string,
+        scope: SessionScope,
     ): Promise<{ task: string; pid: number; ended?: boolean; left?: number[] }[]> {
         const result = await this.#taskRequest({
             type: "task",
             id: randomUUID(),
             op: "list",
-            permission,
+            permission: scope.id,
+            scope,
         });
 
         return result.tasks ?? [];
     }
 
-    async taskSignal(permission: string, task: string, signal: "TERM" | "KILL"): Promise<void> {
+    async taskSignal(scope: SessionScope, task: string, signal: "TERM" | "KILL"): Promise<void> {
         await this.#taskRequest({
             type: "task",
             id: randomUUID(),
             op: "signal",
-            permission,
+            permission: scope.id,
+            scope,
             task,
             signal,
         });
@@ -1056,16 +943,12 @@ export class RunnerLink {
         return result;
     }
 
-    withdraw(id: string): void {
-        this.#control({ type: "withdraw", id });
-    }
-
     /**
      * Open a TCP connection to `host`:`port` from the computer, and relay `socket` to it (`runner-network.ts`). Rejects
-     * with a `NetError` that names the computer when it is offline, or it refused or failed.
+     * with a `NetError` that names the computer when it is offline, its runner is too old, or it refused or failed.
      */
     openNetwork(host: string, port: number, socket: Duplex, options?: OpenOptions): Promise<void> {
-        if (this.#closed || this.#socket === undefined) {
+        if (this.#closed || this.#socket === undefined || this.#network === undefined) {
             return Promise.reject(
                 new NetError(
                     "offline",
@@ -1074,7 +957,7 @@ export class RunnerLink {
             );
         }
 
-        return this.#network!.open(host, port, socket, options);
+        return this.#network.open(host, port, socket, options);
     }
 
     /** Network streams over `socket`: their data waits behind pi-env's (`tunnels.ts`). */
@@ -1119,13 +1002,36 @@ export class RunnerLink {
         }
     }
 
-    #drop(code: number, reason: string): void {
+    /** End the connection. `stop`: its runner is sent away for good (`sendAway`); without it, the runner comes back. */
+    #drop(code: number, reason: string, stop?: Stop): void {
         const socket = this.#socket;
 
-        if (socket !== undefined) {
+        if (socket === undefined) {
+            return;
+        }
+
+        if (stop === undefined) {
             socket.close(code, reason);
+        } else {
+            sendAway(socket, code, reason, stop);
         }
     }
+}
+
+/**
+ * Send a runner away for good. What stops it is `stop`, in a `bye` sealed with the link's keys (`protocol.ts` `Bye`):
+ * only this server can say it. The close code after it is for logs; alone, it stops nothing. `said`: what the runner
+ * shows, when that is more than the close reason.
+ */
+function sendAway(
+    socket: WebSocket,
+    code: number,
+    reason: string,
+    stop: Stop,
+    said = reason,
+): void {
+    socket.send(JSON.stringify({ type: "bye", reason: said, stop } satisfies ControlMessage));
+    socket.close(code, reason);
 }
 
 function toBuffer(data: RawData): Buffer {
@@ -1140,6 +1046,8 @@ function toBuffer(data: RawData): Buffer {
 export class RunnerEnv extends RemoteExecutionEnv {
     readonly runner: string;
     readonly link: RunnerLink;
+    /** The session its requests name, so its runner keeps them inside its folder (`request-gate.ts`). */
+    readonly scope: SessionScope | undefined;
 
     constructor(link: RunnerLink, cwd: string, scope?: SessionScope) {
         const connection = {
@@ -1158,6 +1066,7 @@ export class RunnerEnv extends RemoteExecutionEnv {
         });
         this.runner = link.id;
         this.link = link;
+        this.scope = scope;
     }
 
     /** The computer, for the system prompt: its name, and its system as it last said. */
@@ -1172,8 +1081,17 @@ export class Runners {
     readonly #linkLimits: LinkLimits;
     readonly #log: (line: string) => void;
     readonly #onChange: () => void;
-    readonly #askerOf: (permission: string) => string | undefined;
-    readonly #asking = new Map<string, string>();
+    /**
+     * Whether the Runners sheet lists computer `id` for this person: the access policy's "may start sessions there"
+     * (`access.ts` `mayStart`). A viewer sees sessions shared with them in the session list, not the computer here.
+     */
+    readonly #mayList: (id: string, user: User) => boolean;
+    /** May this person change computer `id`'s people and settings (`access.ts` `mayManage`). */
+    readonly #mayManage: (id: string, user: User) => boolean;
+    readonly #mayStart: (id: string, user: User) => boolean;
+    readonly #mayUse: (id: string, user: User) => boolean;
+    /** May the person with this id still link a computer, or link `runner` again (`access.ts` `mayLink`, `mayManage`). */
+    readonly #mayLink: (by: string, runner?: string) => boolean;
     readonly #links = new Map<string, RunnerLink>();
     readonly #envs = new Map<string, RunnerEnv>();
     readonly #server = new WebSocketServer({
@@ -1187,18 +1105,33 @@ export class Runners {
         config: ConfigStore;
         log: (line: string) => void;
         onChange?: () => void;
-        /**
-         * The person who started the session a runner's question is about (its permission id, `SessionScope.id`):
-         * they see and answer it, with the computer's linker and the owner. Undefined: nobody else does.
-         */
-        askerOf?: (permission: string) => string | undefined;
         /** The clock for the wrong link code limits (tests give their own). */
         now?: () => number;
+        /** The access policy's "may start sessions there"; absent (tests of the link alone): the owner only. */
+        mayList?: (id: string, user: User) => boolean;
+        /** The access policy's "may manage"; absent: the owner only. */
+        mayManage?: (id: string, user: User) => boolean;
+        /** The access policy's "may start sessions there"; absent: as `mayList`. */
+        mayStart?: (id: string, user: User) => boolean;
+        /** The access policy's "may use it" (in charge of it, or chosen for it); absent: as `mayList`. */
+        mayUse?: (id: string, user: User) => boolean;
+        /**
+         * May the person with id `by` link a computer now, or link `runner` again: asked when their code is used, so a
+         * code does not outlive its maker's right. Absent (tests of the link alone): yes.
+         */
+        mayLink?: (by: string, runner?: string) => boolean;
     }) {
         this.#config = options.config;
         this.#log = options.log;
-        this.#askerOf = options.askerOf ?? (() => undefined);
         this.#onChange = options.onChange ?? (() => {});
+        const ownerOnly = (_id: string, user: User) =>
+            this.#config.userById(user.id)?.role === "owner";
+
+        this.#mayList = options.mayList ?? ownerOnly;
+        this.#mayManage = options.mayManage ?? ownerOnly;
+        this.#mayStart = options.mayStart ?? this.#mayList;
+        this.#mayUse = options.mayUse ?? this.#mayList;
+        this.#mayLink = options.mayLink ?? (() => true);
 
         const config = options.config;
 
@@ -1216,39 +1149,6 @@ export class Runners {
 
     changed(): void {
         this.#onChange();
-    }
-
-    /**
-     * Whether `user` may see and answer question `id` of computer `runner`: one waiting for a code, or a session's
-     * question they can withdraw. The owner and the computer's linker answer any; a person the linker chose only the
-     * questions of sessions they started, whose folders and sessions are theirs.
-     */
-    mayAnswer(runner: string, question: ApprovalNeeded | undefined, user: User): boolean {
-        if (user.role === "owner" || this.stored(runner)?.createdBy === user.id) {
-            return true;
-        }
-
-        if (question === undefined || !this.mayUse(runner, user)) {
-            return false;
-        }
-
-        // A session being started has no record yet: whoever's start waits on the question asked it.
-        return (this.#asking.get(question.session) ?? this.#askerOf(question.session)) === user.id;
-    }
-
-    /** While `confirm` waits, who asked about session permission `permission` (`mayAnswer`). */
-    asking(permission: string, asker: string | undefined): () => void {
-        if (asker === undefined) {
-            return () => {};
-        }
-
-        this.#asking.set(permission, asker);
-
-        return () => {
-            if (this.#asking.get(permission) === asker) {
-                this.#asking.delete(permission);
-            }
-        };
     }
 
     stored(id: string): StoredRunner | undefined {
@@ -1273,7 +1173,7 @@ export class Runners {
 
     /**
      * The system of computer `id` as it last said (`hello`), also while it is offline: its OS and temporary folder.
-     * Undefined before its runner first connected.
+     * Undefined before a runner that tells its temporary folder first connected.
      */
     system(id: string): { os: string; tmpdir: string } | undefined {
         const platform = this.stored(id)?.platform;
@@ -1360,19 +1260,32 @@ export class Runners {
         return { env, path: absolute.value, home: info.home, separator: info.separator };
     }
 
-    /** Check that `path` is a folder on computer `id`; its absolute path. */
+    /**
+     * Check that `path` is a folder on computer `id`; its real path there, links followed. The access policy compares
+     * that path with the folders given (`access.ts` `inFolder`), and the runner keeps a session in the real folder
+     * (`request-gate.ts`): a link in a given folder that leads out of it is outside it here as there.
+     */
     async checkFolder(id: string, path: string): Promise<string> {
         const { env, path: absolute } = await this.#resolve(id, path);
-        const info = await env.fileInfo(absolute, BACKGROUND);
+        const real = await env.canonicalPath(absolute, BACKGROUND);
+        const info = real.ok ? await env.fileInfo(real.value, BACKGROUND) : real;
 
-        if (!info.ok || info.value.kind !== "directory") {
+        if (!real.ok || !info.ok || info.value.kind !== "directory") {
             throw new HttpError(
                 400,
                 `${absolute} is not a folder on ${this.name(id)}${info.ok ? "" : `: ${info.error.message}`}`,
             );
         }
 
-        return absolute;
+        return real.value;
+    }
+
+    /** The real path of `path` on computer `id`, links followed; undefined when it does not exist there. */
+    async realPath(id: string, path: string): Promise<string | undefined> {
+        const { env, path: absolute } = await this.#resolve(id, path);
+        const real = await env.canonicalPath(absolute, BACKGROUND);
+
+        return real.ok ? real.value : undefined;
     }
 
     /** The folders in `path` on computer `id`, for the folder picker, as `GET /api/fs` lists this machine's. */
@@ -1458,78 +1371,97 @@ export class Runners {
         this.changed();
     }
 
-    /** A computer's linker and granted people may use it while they can steer on this server. */
-    mayUse(runnerId: string, user: User): boolean {
-        const runner = this.stored(runnerId);
-        const current = this.#config.userById(user.id);
-
-        return (
-            runner !== undefined &&
-            (runner.createdBy === user.id || runner.users?.includes(user.id) === true) &&
-            current !== undefined &&
-            current.sessions === undefined &&
-            current.role !== "viewer"
-        );
-    }
-
     /** With a person, only the computers they may use; owners see all, and the granted people. */
     list(user?: User): RunnerView[] {
         return this.#config.runners
-            .filter(
-                (runner) =>
-                    user === undefined || user.role === "owner" || this.mayUse(runner.id, user),
-            )
+            .filter((runner) => user === undefined || this.#mayList(runner.id, user))
             .map((runner) => {
                 const link = this.#links.get(runner.id);
+                // Its people, folders, and settings are the business of who is in charge of it: its linker.
+                const manages = user === undefined || this.#mayManage(runner.id, user);
+                // What the computer is (its system, home folder, runner version, and sign-ins) is for the people who
+                // may use it. The owner lists a computer someone else linked only to unlink it, and learns none of it.
+                const uses = user === undefined || this.#mayUse(runner.id, user);
 
                 return {
                     id: runner.id,
                     name: runner.name,
                     createdBy: runner.createdBy,
-                    ...(user?.role === "owner"
+                    ...(runner.publicKey === undefined
+                        ? { relink: true as const }
+                        : manages
+                          ? { fingerprint: fingerprint(runner.publicKey) }
+                          : {}),
+                    ...(manages
                         ? {
                               users: (runner.users ?? []).flatMap((id) => {
                                   const person = this.#config.userById(id);
 
-                                  return person === undefined ? [] : [{ id, name: person.name }];
+                                  return person === undefined
+                                      ? []
+                                      : [{ id, name: person.name, role: person.role }];
                               }),
+                              given: Object.fromEntries(
+                                  (runner.users ?? []).map((id) => [
+                                      id,
+                                      [...this.#config.givenFolders(runner.id, id)],
+                                  ]),
+                              ),
+                              sees: Object.fromEntries(
+                                  (runner.users ?? []).map((id) => [
+                                      id,
+                                      [...this.#config.seenFolders(runner.id, id)],
+                                  ]),
+                              ),
+                              wheel: [...this.#config.rightHolders(runner.id, "wheel")],
+                              allows: [...this.#config.rightHolders(runner.id, "allows")],
                           }
                         : {}),
-                    // The computer's approvals (every session's folder and person, its settings) are its
-                    // linker's and the owner's business; a granted person sees only that it is there.
-                    ...(link?.state === undefined || (user !== undefined && user.role !== "owner")
-                        ? {}
-                        : { approvals: link.state }),
-                    ...(link === undefined
-                        ? {}
-                        : {
-                              questions: [...link.questions.values()].filter(
-                                  (question) =>
-                                      user === undefined ||
-                                      this.mayAnswer(runner.id, question, user),
-                              ),
-                          }),
+                    // Its settings are its managers' business; a granted person sees only that it is there.
+                    ...(manages
+                        ? {
+                              network: runner.settings?.network !== false,
+                              ...(runner.settings?.downloads === undefined
+                                  ? {}
+                                  : { downloads: runner.settings.downloads }),
+                              ...(link?.allowHttp === true ? { allowHttp: true as const } : {}),
+                          }
+                        : {}),
+                    ...(runner.shareNew === true ? { shareNew: true as const } : {}),
+                    ...(user !== undefined && !this.#mayStart(runner.id, user)
+                        ? { mayStart: false as const }
+                        : {}),
                     online: link?.online === true,
                     away: link?.away === true,
                     ...(runner.lastSeen === undefined ? {} : { lastSeen: runner.lastSeen }),
-                    ...(runner.platform ?? {}),
-                    ...(runner.tools === undefined ? {} : { tools: runner.tools }),
+                    ...(uses ? (runner.platform ?? {}) : {}),
+                    ...(uses && runner.tools !== undefined ? { tools: runner.tools } : {}),
                 };
             });
     }
 
-    /** A one-time code that links a computer named `name`: `pi-pocket runner link <server> <code>` on it. */
+    /**
+     * A one-time code that links a computer named `name`: `pi-pocket runner link <server> <code>` on it. With `runner`, a
+     * code that links that computer again: its runner gets a new key, and it keeps its id, people, and sessions.
+     */
     makeCode(
         name: string,
         createdBy: string,
-    ): { code: string; expiresAt: number; package: string } {
-        const clean = name.replace(/\s+/g, " ").trim().slice(0, 60);
+        runner?: string,
+    ): { code: string; expiresAt: number; package: string; fingerprint: string } {
+        const again = runner === undefined ? undefined : this.#config.runnerById(runner);
+
+        if (runner !== undefined && again === undefined) {
+            throw new HttpError(404, "No such computer");
+        }
+
+        const clean = again?.name ?? name.replace(/\s+/g, " ").trim().slice(0, 60);
 
         if (clean === "") {
             throw new HttpError(400, "Give the computer a name.");
         }
 
-        if (this.#config.runners.some((runner) => runner.name === clean)) {
+        if (again === undefined && this.#config.runners.some((each) => each.name === clean)) {
             throw new HttpError(
                 409,
                 `A computer named ${clean} is already linked. Choose another name.`,
@@ -1542,21 +1474,34 @@ export class Runners {
         const code = `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
         const expiresAt = Date.now() + CODE_MINUTES * 60_000;
 
-        this.#config.addRunnerCode(code, clean, createdBy, expiresAt);
+        this.#config.addRunnerCode(code, clean, createdBy, expiresAt, again?.id);
 
-        return { code, expiresAt, package: runnerPackage() };
+        return {
+            code,
+            expiresAt,
+            package: runnerPackage(),
+            fingerprint: fingerprint(this.#config.serverIdentity.publicKey),
+        };
     }
 
     /**
-     * A runner gives its one-time code: it gets its computer's key, kept only there. `address`: the client's
+     * A runner proves it knows a one-time code and gives its public key (`secure-link.ts`): it gets this server's key
+     * and proof that this server knows the code too. The code never travels. `address`: the client's
      * (`link-limits.ts` `clientAddress`). Wrong codes are counted: too many from one address lock it out, and its
      * third lockout bans it; too many in all pause new linking and void the open codes. Linked computers and their keys
      * stay as they are.
      */
-    redeem(code: string, address = "unknown"): { id: string; name: string; key: string } {
+    redeem(request: LinkRequest, address = "unknown"): LinkAnswer {
         this.#linkLimits.check(address);
 
-        const found = this.#config.takeRunnerCode(code.trim().toUpperCase());
+        if (!isPublicKey(request.runnerKey) || typeof request.proof !== "string") {
+            throw new HttpError(
+                400,
+                "Update Pi Pocket's runner on this computer, then link it again.",
+            );
+        }
+
+        const found = this.#config.takeRunnerCode((hash) => checkLinkRequest(hash, request));
 
         if (found === undefined) {
             const result = this.#linkLimits.wrong(address);
@@ -1583,12 +1528,40 @@ export class Runners {
             throw new HttpError(403, WRONG_CODE);
         }
 
-        const { runner, key } = this.#config.addRunner(found.name, found.createdBy);
+        // A code is worth its maker's right to link, now: taken back, or the person removed, it links nothing. The code
+        // is used up, and this is no wrong code: the runner knew it.
+        if (!this.#mayLink(found.createdBy, found.runner)) {
+            this.log(
+                `A link code for ${found.name} was refused: the person who made it may no longer link it.`,
+            );
 
-        this.log(`${runner.name} was linked.`);
+            throw new HttpError(403, WRONG_CODE);
+        }
+
+        const again =
+            found.runner === undefined
+                ? undefined
+                : this.#config.relinkRunner(found.runner, request.runnerKey);
+
+        if (found.runner !== undefined && again === undefined) {
+            throw new HttpError(404, "That computer was removed. Make a new link code in Runners.");
+        }
+
+        const runner =
+            again ?? this.#config.addRunner(found.name, found.createdBy, request.runnerKey);
+
+        // Linked again: the old connection, with the old key, ends now.
+        if (again !== undefined) {
+            this.#links.get(runner.id)?.relinked();
+        }
+
+        this.log(`${runner.name} was ${again === undefined ? "linked" : "linked again"}.`);
         this.changed();
 
-        return { id: runner.id, name: runner.name, key };
+        const serverKey = this.#config.serverIdentity.publicKey;
+        const answer = { id: runner.id, name: runner.name, serverKey };
+
+        return { ...answer, proof: linkAnswerProof(found.codeHash, request.runnerKey, answer) };
     }
 
     /** Forget a computer: its runner is sent away, and its key stops working. */
@@ -1630,16 +1603,6 @@ export class Runners {
             );
         };
 
-        const auth = request.headers.authorization ?? "";
-        const key = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-        const runner = key === "" ? undefined : this.#config.runnerByKey(key);
-
-        if (runner === undefined) {
-            refuse(401, "Unknown runner key");
-
-            return true;
-        }
-
         const offered = String(request.headers["sec-websocket-protocol"] ?? "")
             .split(",")
             .map((each) => each.trim());
@@ -1650,15 +1613,38 @@ export class Runners {
             return true;
         }
 
-        this.#server.handleUpgrade(request, socket, head, (ws) => this.#accept(ws, runner));
+        this.#server.handleUpgrade(request, socket, head, (ws) => {
+            // Who it is comes from the handshake: the runner proves its computer's key (`secure-link.ts`).
+            const link = new ServerLinkSocket(ws, {
+                identity: this.#config.serverIdentity,
+                runnerKey: (id) => this.#config.runnerById(id)?.publicKey,
+                unknown: CLOSE.removed,
+            });
+
+            link.once("open", () => {
+                const runner = this.#config.runnerById(link.id!);
+
+                if (runner === undefined) {
+                    sendAway(link, CLOSE.removed, "Removed", "removed");
+                } else if (runner.publicKey !== link.key) {
+                    // Linked again while it proved the old key, which opens nothing now.
+                    sendAway(link, CLOSE_IDENTITY, "This computer was linked again", "relinked");
+                } else {
+                    this.#accept(link, runner, link.key);
+                }
+            });
+            link.on("error", () => {});
+        });
 
         return true;
     }
 
-    #accept(socket: WebSocket, runner: StoredRunner): void {
+    /** `key`: the public key the runner proved in the handshake (`ServerLinkSocket`). */
+    #accept(socket: WebSocket, runner: StoredRunner, key: string | undefined): void {
         const timer = setTimeout(() => socket.close(1002, "No hello"), HELLO_MS);
 
-        socket.once("message", (data, binary) => {
+        socket.once("close", () => clearTimeout(timer));
+        socket.once("message", (data: RawData, binary: boolean) => {
             clearTimeout(timer);
 
             const hello = binary ? undefined : parseControl(toBuffer(data).toString("utf8"));
@@ -1670,20 +1656,30 @@ export class Runners {
             }
 
             if (hello.protocol !== LINK_PROTOCOL) {
-                socket.send(
-                    JSON.stringify({
-                        type: "bye",
-                        reason: `This server speaks link protocol ${LINK_PROTOCOL}, the runner ${hello.protocol}: update the older one`,
-                    }),
+                sendAway(
+                    socket,
+                    CLOSE.protocol,
+                    "Protocol",
+                    "protocol",
+                    `This server speaks link protocol ${LINK_PROTOCOL}, the runner ${hello.protocol}`,
                 );
-                socket.close(CLOSE.protocol, "Protocol");
 
                 return;
             }
 
             // Still here: removed while it was saying hello.
-            if (this.#config.runnerById(runner.id) === undefined) {
-                socket.close(CLOSE.removed, "Removed");
+            const now = this.#config.runnerById(runner.id);
+
+            if (now === undefined) {
+                sendAway(socket, CLOSE.removed, "Removed", "removed");
+
+                return;
+            }
+
+            // Linked again while it was saying hello: linking again ends the connections it finds (`relinked`), and
+            // this one was not yet one. The key it proved is the old one, which opens nothing now.
+            if (now.publicKey !== key) {
+                sendAway(socket, CLOSE_IDENTITY, "This computer was linked again", "relinked");
 
                 return;
             }

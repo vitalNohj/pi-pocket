@@ -2,7 +2,7 @@
  * `/api`: the routes the web app calls. Each needs a signed-in person, and each but a GET needs the `X-Pocket` header,
  * which a form on another site cannot send. A conversation's routes are in `conversation-routes.ts`.
  */
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
@@ -19,7 +19,8 @@ import {
     parseCookies,
     quickTunnelHost,
 } from "../auth.ts";
-import type { User } from "../config.ts";
+import { inFolder, THIS_SERVER } from "../access.ts";
+import type { ComputerSettings, User } from "../config.ts";
 import { MAX_AVATAR, readAvatar } from "../avatars.ts";
 import { HttpError, optionalText } from "../errors.ts";
 import { isLocalRequest, withReveal } from "../local-browser.ts";
@@ -50,6 +51,144 @@ function lanAddresses(): string[] {
         .map((net) => net!.address);
 }
 
+/** A 6-digit code from a request body, or a 400 that says what to enter. */
+/** A folder's real path here, or the path as given when it cannot be read. */
+function realpathOrSelf(path: string): string {
+    try {
+        return realpathSync(path);
+    } catch {
+        return path;
+    }
+}
+
+/** A folder listing as the picker reads it (`GET /api/fs`, `/api/runners/:id/fs`). */
+type Listing = {
+    path: string;
+    parent: string | null;
+    home: string;
+    roots?: string[];
+    dirs: { name: string; path: string }[];
+};
+
+/**
+ * The picker's listing for someone given folders who asked for a place outside them: the folders given, and no way up.
+ */
+function givenListing(given: readonly string[]): Listing & { given: string[] } {
+    return {
+        path: "",
+        parent: null,
+        home: given[0] ?? "",
+        roots: [],
+        dirs: given.map((path) => ({ name: path, path })),
+        given: [...given],
+    };
+}
+
+/**
+ * Keep someone given folders inside them: no way up out of a given folder, no other top folders, and the given ones
+ * named so the picker can offer them. `given` undefined: the owner, who goes anywhere.
+ */
+function scopeListing<T extends Listing>(
+    listing: T,
+    given: readonly string[] | undefined,
+): T & { given?: string[] } {
+    if (given === undefined) {
+        return listing;
+    }
+
+    const top = given.some(
+        (each) => listing.path === each.replace(/[\\/]+$/, "") || listing.path === each,
+    );
+
+    // `home` stays the computer's own, so paths read as they are (`~/projects/app`, not `~/app`).
+    return {
+        ...listing,
+        parent: top ? null : listing.parent,
+        roots: [],
+        given: [...given],
+    };
+}
+
+function sixDigits(value: unknown): string {
+    if (typeof value !== "string" || !/^\d{6}$/.test(value)) {
+        throw new HttpError(400, "Enter the 6-digit code from your authenticator.");
+    }
+
+    return value;
+}
+
+/**
+ * `/api/me/authenticator[/action]`: a person's own authenticator app. Anyone signed in links one to their own account,
+ * viewers too; its secret is shown once, while linking, and never again.
+ *
+ * - GET: whether one is linked, and until when wrong codes locked it out.
+ * - POST `begin`: a new secret, its `otpauth:` link, and that link as a QR code; replaces one not yet confirmed.
+ * - POST `confirm` `{ code }`: the first code links it.
+ * - POST `remove` `{ code }`: one of its codes removes it; one not yet confirmed needs none.
+ */
+async function authenticatorRoute(
+    { app, request, user }: ApiRequest,
+    action: string | undefined,
+    method: string,
+): Promise<unknown> {
+    const status = () => {
+        const until = app.authenticators.lockedUntil(user.id);
+
+        return {
+            linked: app.authenticators.linked(user.id),
+            ...(until === undefined ? {} : { lockedUntil: until }),
+            // A temporary account links none (`config.ts` `User.temporary`): its page offers no way to.
+            ...(user.temporary === true ? { allowed: false } : {}),
+        };
+    };
+
+    if (action === undefined && method === "GET") {
+        return status();
+    }
+
+    if (method !== "POST") {
+        throw new HttpError(404, "Not found");
+    }
+
+    if ((action === "begin" || action === "confirm") && user.temporary === true) {
+        throw new HttpError(
+            403,
+            "A temporary account cannot link an authenticator. Ask the owner to allow you to become a user.",
+        );
+    }
+
+    if (action === "begin") {
+        const { secret, link } = app.authenticators.begin(user.id, user.name);
+        const svg = await QRCode.toString(link, {
+            type: "svg",
+            margin: 1,
+            color: { dark: "#000000", light: "#ffffff" },
+        });
+
+        return { secret, link, svg };
+    }
+
+    const body = await readJson<{ code?: unknown } | null>(request);
+
+    if (action === "confirm") {
+        app.authenticators.confirm(user.id, sixDigits(body?.code));
+
+        return status();
+    }
+
+    if (action === "remove") {
+        app.removeAuthenticator(
+            user.id,
+            user,
+            body?.code === undefined ? undefined : sixDigits(body.code),
+        );
+
+        return status();
+    }
+
+    throw new HttpError(404, "Not found");
+}
+
 /** The `/api` routes. Each HTTP handler makes its own, and its event streams live as long as it does. */
 export function createApi(options: HttpOptions, auth: Auth) {
     const { app } = options;
@@ -72,33 +211,76 @@ export function createApi(options: HttpOptions, auth: Auth) {
     };
 
     /**
-     * What an invite may grant: viewers and people invited to one session cannot invite anyone, and only the owner can
-     * sign a device in as the owner (never for one session).
+     * What an invite may grant (`access.ts` `mayInvite`): to this server, who may start sessions on it; to one session,
+     * who may share it. An invite is always for someone new: one's own other device takes a device link (`me/device`).
      */
-    const inviteGrant = (user: User, body: { role?: unknown; session?: unknown }): InviteGrant => {
+    const inviteGrant = (
+        user: User,
+        body: { role?: unknown; session?: unknown; folder?: unknown },
+    ): InviteGrant => {
+        // A page loaded before device links still asks for an owner invite, which handed out the owner's token.
         if (body.role === "owner") {
-            requireOwner(user);
-
-            return { role: "owner" };
+            throw new HttpError(
+                400,
+                "Reload Pi Pocket, then use Sign in another device on your own page in People.",
+            );
         }
 
-        if (user.role === "viewer" || user.sessions !== undefined) {
-            throw new HttpError(403, "Only people with access to every session can invite others.");
+        // Off for everyone but the owner, until the owner turns Invite people on for a user (`access.ts` `invites`).
+        if (!app.policy.invites(user)) {
+            throw new HttpError(
+                403,
+                "Only the owner, and the users the owner lets, can invite people.",
+            );
         }
 
-        const role = body.role === "viewer" ? "viewer" : "guest";
+        // Every invite starts as a viewer: steering comes later, once they link an authenticator, from who is in charge.
+        const role = "viewer";
 
         if (body.session === undefined || body.session === null) {
+            if (!app.policy.mayInvite(user)) {
+                throw new HttpError(
+                    403,
+                    "Only people who may start sessions on this server can invite others.",
+                );
+            }
+
             return { role };
         }
 
         const session = conversationId(String(body.session));
 
-        if (!app.sessions(user).some((each) => each.id === Number(session))) {
+        if (!app.canSee(user, session) || app.sessionMeta(session) === undefined) {
             throw new HttpError(400, "No such session");
         }
 
-        return { role, session: String(session) };
+        // To the folder of that session: the server names the folder, never the page. As an invite to every session,
+        // it shares only what its maker started, so the same people may make it.
+        if (body.folder === true) {
+            const folder = app.folderOf(session);
+
+            if (folder === undefined) {
+                throw new HttpError(400, "No such session");
+            }
+
+            if (!app.policy.mayInvite(user)) {
+                throw new HttpError(
+                    403,
+                    "Only people who may start sessions on this server can invite others.",
+                );
+            }
+
+            return { role, folder };
+        }
+
+        if (!app.policy.mayInvite(user, String(app.rootOf(session)))) {
+            throw new HttpError(
+                403,
+                "Only people who may share this session can invite others to it.",
+            );
+        }
+
+        return { role, session: String(app.rootOf(session)) };
     };
 
     /** How long an invite lasts, in minutes: one of `INVITE_MINUTES`, 15 when not said. */
@@ -116,12 +298,60 @@ export function createApi(options: HttpOptions, auth: Auth) {
         return minutes;
     };
 
+    /**
+     * An invite or a device link as its maker's page shows it: the link another device can open, its QR code, and the
+     * other addresses this server answers at.
+     */
+    const shownInvite = async (
+        request: IncomingMessage,
+        user: User,
+        invite: { code: string; expiresAt: number; minutes: InviteMinutes },
+    ) => {
+        const here = origin(request);
+        const loopback = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?$/.test(here);
+        const wildcard = options.listen.host === "0.0.0.0" || options.listen.host === "::";
+        const lan =
+            loopback && wildcard
+                ? lanAddresses().map((address) => `http://${address}:${options.listen.port}`)
+                : [];
+        // A tunnel the launcher started is the way in for other devices.
+        const tunnel = loopback ? app.access?.url : undefined;
+        const base = tunnel ?? lan[0] ?? here;
+        const link = `${base}/join/${invite.code}`;
+        // One whose QR code could not be made is never shown: it ends rather than stay live, unseen.
+        const svg = await QRCode.toString(link, {
+            type: "svg",
+            margin: 1,
+            color: { dark: "#000000", light: "#ffffff" },
+        }).catch((error: unknown) => {
+            auth.cancelInvite(invite.code, user);
+
+            throw error;
+        });
+
+        return {
+            ...invite,
+            url: link,
+            svg,
+            alternatives: (tunnel === undefined ? lan.slice(1) : lan).map(
+                (address) => `${address}/join/${invite.code}`,
+            ),
+            // Only this device can open a loopback link.
+            local: loopback && lan.length === 0 && tunnel === undefined,
+            ...(app.access === undefined ? {} : { access: app.access }),
+        };
+    };
+
     /** A guest signed in by a cookie set on a Cloudflare quick tunnel can only come back through it: remember which one. */
     const noteTunnel = (request: IncomingMessage, user: User): void => {
+        const cookie = parseCookies(request.headers.cookie)[COOKIE];
+
+        // Another device of theirs was tagged alone when it signed in (`auth.ts` `redeem`): never the person for it.
         if (
             user.role === "owner" ||
             user.tunnel !== undefined ||
-            !parseCookies(request.headers.cookie)[COOKIE]
+            !cookie ||
+            app.config.isDevice(cookie)
         ) {
             return;
         }
@@ -159,7 +389,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return poll(request, response, url, user);
         }
 
-        if (first === "me" && method === "GET") {
+        if (first === "me" && second === undefined && method === "GET") {
             return json(
                 response,
                 200,
@@ -198,6 +428,117 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // Session approvals (`folder-approvals.ts`): of the sessions a person started, and on computers they are in charge
+        // of. DELETE revokes one (the session locks); POST renews it: Allow by who is in charge, or the starter's code.
+        if (first === "session-approvals" && second !== undefined && method === "DELETE") {
+            app.revokeApproval(user, conversationId(second));
+
+            return json(response, 200, { ok: true });
+        }
+
+        if (first === "session-approvals" && second !== undefined && method === "POST") {
+            const body = await readJson<{ code?: unknown } | null>(request);
+
+            await app.renewApproval(
+                user,
+                conversationId(second),
+                body?.code === undefined ? undefined : sixDigits(body.code),
+            );
+
+            return json(response, 200, { ok: true });
+        }
+
+        // The owner lets a guest link computers of their own, or takes it back.
+        if (
+            first === "users" &&
+            second !== undefined &&
+            third === "links-runners" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ on?: unknown } | null>(request);
+
+            if (typeof body?.on !== "boolean") {
+                throw new HttpError(400, "on must be true or false.");
+            }
+
+            app.setLinksRunners(user, second, body.on);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // The owner lets a guest invite people, or takes it back.
+        if (first === "users" && second !== undefined && third === "invites" && method === "POST") {
+            const body = await readJson<{ on?: unknown } | null>(request);
+
+            if (typeof body?.on !== "boolean") {
+                throw new HttpError(400, "on must be true or false.");
+            }
+
+            app.setInvites(user, second, body.on);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // The owner turns "Tasks expire with the session" on or off.
+        if (first === "tasks-expire" && second === undefined && method === "POST") {
+            const body = await readJson<{ on?: unknown } | null>(request);
+
+            if (typeof body?.on !== "boolean") {
+                throw new HttpError(400, "on must be true or false.");
+            }
+
+            app.setTasksExpire(user, body.on);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // How long a person's approvals last once unused, on every computer (`config.ts` `approvalDays`): the owner's.
+        if (
+            first === "users" &&
+            second !== undefined &&
+            third === "approval-days" &&
+            method === "POST"
+        ) {
+            requireOwner(user);
+
+            const body = await readJson<{ days?: unknown } | null>(request);
+
+            app.setApprovalDays(second, body?.days);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // Each person's own authenticator app (`approval-methods.ts`): they approve their new folders with its codes.
+        // A device link: it signs another device in as this person, whoever they are, once, within 15 minutes.
+        if (first === "me" && second === "device" && third === undefined && method === "POST") {
+            return json(
+                response,
+                200,
+                await shownInvite(request, user, auth.createDeviceLink(user)),
+            );
+        }
+
+        // The owner makes one for someone else, who lost their device: it signs a device in as them, not as someone new.
+        if (first === "users" && second !== undefined && third === "device" && method === "POST") {
+            requireOwner(user);
+
+            const person = app.config.userById(second);
+
+            if (person === undefined) {
+                throw new HttpError(404, "No such person.");
+            }
+
+            return json(
+                response,
+                200,
+                await shownInvite(request, user, auth.createDeviceLink(user, person)),
+            );
+        }
+
+        if (first === "me" && second === "authenticator") {
+            return json(response, 200, await authenticatorRoute(route, third, method));
+        }
+
         // A picture of anyone this person may see in the people list.
         if (first === "avatar" && second !== undefined && method === "GET") {
             const picture = app.people(user).some((each) => each.id === second)
@@ -231,6 +572,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "logout" && method === "POST") {
+            // Another device of theirs has a token of its own, which ends with it. Their first one stays: it is all
+            // that the link they signed in with carries.
+            app.config.removeDevice(parseCookies(request.headers.cookie)[COOKIE] ?? "");
             clearAuthCookie(response);
 
             return json(response, 200, { ok: true });
@@ -241,9 +585,27 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "users" && second !== undefined && third === "remove" && method === "POST") {
-            app.removeUser(user, second);
+            await app.removeUser(user, second);
 
             return json(response, 200, { ok: true });
+        }
+
+        // The owner removes someone's authenticator, for a lost phone: they link a new one from their account.
+        if (
+            first === "users" &&
+            second !== undefined &&
+            third === "authenticator" &&
+            method === "DELETE"
+        ) {
+            requireOwner(user);
+
+            if (app.config.userById(second) === undefined) {
+                throw new HttpError(404, "No such person.");
+            }
+
+            app.removeAuthenticator(second, user);
+
+            return json(response, 200, app.people(user));
         }
 
         if (first === "users" && second !== undefined && third === undefined && method === "POST") {
@@ -625,15 +987,62 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
-        // Owners see every computer; other people see only the computers they may use.
+        // The computers a person may use; the owner also sees every runner, to unlink one.
         if (first === "runners" && second === undefined && method === "GET") {
-            const runners = app.runners.list(user);
+            return json(response, 200, app.runners.list(user));
+        }
 
-            if (runners.length === 0) {
-                requireOwner(user);
+        /**
+         * Answer a request for a new folder on this server (`folder-requests.ts`): its requester with their own code, or
+         * withdraws it; the owner approves or denies it from the app. Anyone else learns nothing of it (404).
+         */
+        if (first === "folder-requests" && second !== undefined && method === "POST") {
+            const body = await readJson<{
+                code?: unknown;
+                approve?: unknown;
+                deny?: unknown;
+            } | null>(request);
+
+            if (body?.deny === true) {
+                app.folderRequests.deny(user, second);
+            } else if (body?.approve === true) {
+                await app.folderRequests.approve(user, second, { method: "owner" });
+            } else {
+                await app.folderRequests.approve(user, second, {
+                    method: "totp",
+                    code: sixDigits(body?.code),
+                });
             }
 
-            return json(response, 200, runners);
+            return json(response, 200, { ok: true });
+        }
+
+        /**
+         * Put away a project that waits for a trust decision (`trust-requests.ts`), without deciding: who is in charge of
+         * its computer alone. It is answered in its session (`POST /api/c/:id/trust`). Anyone else learns nothing (404).
+         */
+        if (first === "trust-requests" && second !== undefined && method === "POST") {
+            const body = await readJson<{ dismiss?: unknown } | null>(request);
+
+            if (body?.dismiss !== true) {
+                throw new HttpError(400, "Only dismissing a request is asked for here");
+            }
+
+            app.trustRequests.dismiss(user, second);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // This server's record (`ServerView`): its people, saved folders, and rules, for those who manage it.
+        if (
+            first === "runners" &&
+            second === THIS_SERVER &&
+            third === undefined &&
+            method === "GET"
+        ) {
+            app.policy.requireManage(user, THIS_SERVER);
+
+            return json(response, 200, app.thisServer(user));
         }
 
         if (first === "runners" && second === "locks" && third === undefined && method === "GET") {
@@ -658,15 +1067,28 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // Who may link computers: the owner, and the guests the owner lets (`access.ts` `mayLink`). Linking one again is
+        // its linker's.
         if (first === "runners" && second === "code" && method === "POST") {
-            requireOwner(user);
+            if (!app.policy.mayLink(user)) {
+                throw new HttpError(403, "The owner has not let you link computers.");
+            }
 
-            const body = await readJson<{ name?: unknown }>(request);
+            const body = await readJson<{ name?: unknown; runner?: unknown }>(request);
+
+            if (typeof body.runner === "string") {
+                app.runners.require(body.runner);
+                app.policy.requireManage(user, body.runner);
+            }
 
             return json(
                 response,
                 200,
-                app.runners.makeCode(typeof body.name === "string" ? body.name : "", user.id),
+                app.runners.makeCode(
+                    typeof body.name === "string" ? body.name : "",
+                    user.id,
+                    typeof body.runner === "string" ? body.runner : undefined,
+                ),
             );
         }
 
@@ -676,131 +1098,224 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === undefined &&
             method === "DELETE"
         ) {
-            requireOwner(user);
-            app.runners.remove(second);
-
-            return json(response, 200, { ok: true });
-        }
-
-        if (
-            first === "runners" &&
-            second !== undefined &&
-            third === "approval" &&
-            method === "POST"
-        ) {
-            if (!app.runners.mayUse(second, user)) {
-                throw new HttpError(403, "You cannot use this computer.");
-            }
-
-            const body = await readJson<{ id?: unknown; code?: unknown; withdraw?: unknown }>(
-                request,
-            );
-
-            if (typeof body.id !== "string") {
-                throw new HttpError(400, "id is required");
-            }
-
-            // Only the person whose session waits (or the linker, or the owner) answers or cancels its question.
-            const question = app.runners.link(second).questions.get(body.id);
-
-            if (!app.runners.mayAnswer(second, question, user)) {
-                throw new HttpError(404, "No such question.");
-            }
-
-            if (body.withdraw === true) {
-                app.runners.link(second).withdraw(body.id);
-            } else if (typeof body.code === "string" && /^\d{6}$/.test(body.code)) {
-                await app.runners.link(second).approveCode(body.id, body.code);
-            } else {
-                throw new HttpError(400, "Enter the 6-digit code from your authenticator.");
-            }
-
-            return json(response, 200, { ok: true });
-        }
-
-        if (first === "runners" && second !== undefined && third === "users" && method === "POST") {
-            requireOwner(user);
-
-            if (app.runners.require(second).createdBy !== user.id) {
-                throw new HttpError(
-                    403,
-                    "Only the person who linked this computer can choose who may use it.",
-                );
-            }
-
-            const body = await readJson<{ users?: unknown } | null>(request);
-
-            if (!Array.isArray(body?.users) || !body.users.every((id) => typeof id === "string")) {
-                throw new HttpError(400, "users must be a list of person ids.");
-            }
-
-            app.config.setRunnerUsers(second, body.users);
-            app.runners.changed();
-
-            return json(
-                response,
-                200,
-                app.runners.list(user).find((runner) => runner.id === second),
-            );
-        }
-
-        if (
-            first === "runners" &&
-            second !== undefined &&
-            third === "permissions" &&
-            method === "POST"
-        ) {
-            requireOwner(user);
-            const body = await readJson<{ request?: unknown }>(request);
-            const action = body.request as Record<string, unknown> | undefined;
-
-            // Its settings, saved folders, and approved sessions: the linker's alone (`docs/runners.md`, Sharing).
-            if (app.runners.require(second).createdBy !== user.id) {
-                throw new HttpError(
-                    403,
-                    "Only the person who linked this computer can change its settings and approvals.",
-                );
-            }
-
-            if (
-                !(action?.action === "revoke" && typeof action.session === "string") &&
-                !(action?.action === "remove-folder" && typeof action.folder === "string") &&
-                !(
-                    action?.action === "settings" &&
-                    typeof action.code === "string" &&
-                    /^\d{6}$/.test(action.code) &&
-                    typeof action.change === "object" &&
-                    action.change !== null &&
-                    !Array.isArray(action.change)
-                )
-            ) {
-                throw new HttpError(400, "Invalid runner request.");
+            if (second === THIS_SERVER) {
+                throw new HttpError(400, "This server cannot be removed.");
             }
 
             app.runners.require(second);
-            await app.runners.link(second).action(action as never);
+            app.policy.requireUnlink(user, second);
+            await app.unlinkRunner(second);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // Who may use a computer: for who is in charge of it to choose (`access.ts` `mayManage`). Either the whole list
+        // (`users`), or one person chosen or no longer (`person` and `on`), which leaves the others as they are now.
+        if (first === "runners" && second !== undefined && third === "users" && method === "POST") {
+            if (second !== THIS_SERVER) {
+                app.runners.require(second);
+            }
+
+            app.policy.requireManage(user, second);
+
+            const body = await readJson<{
+                users?: unknown;
+                person?: unknown;
+                on?: unknown;
+            } | null>(request);
+
+            if (typeof body?.person === "string" && typeof body.on === "boolean") {
+                await app.choosePerson(second, body.person, body.on);
+            } else if (
+                Array.isArray(body?.users) &&
+                body.users.every((id) => typeof id === "string")
+            ) {
+                await app.choosePeople(second, body.users as string[]);
+            } else {
+                throw new HttpError(
+                    400,
+                    "users must be a list of person ids; or send person, with on true or false.",
+                );
+            }
 
             return json(
                 response,
                 200,
-                app.runners.list(user).find((runner) => runner.id === second),
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
+            );
+        }
+
+        /**
+         * A computer's settings kept here: "Default sharing" (`shareNew`) for any computer; for a runner, whether its
+         * sessions' browsers use its network, and where their downloads go there. Its linker's and the owner's. A runner
+         * gets its settings at once (`runner-settings`).
+         */
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === "settings" &&
+            method === "POST"
+        ) {
+            if (second !== THIS_SERVER) {
+                app.runners.require(second);
+            }
+
+            app.policy.requireManage(user, second);
+
+            const body = await readJson<{
+                shareNew?: unknown;
+                network?: unknown;
+                downloads?: unknown;
+            } | null>(request);
+            const change: ComputerSettings = {};
+
+            if (body?.shareNew !== undefined) {
+                if (typeof body.shareNew !== "boolean") {
+                    throw new HttpError(400, "shareNew must be true or false.");
+                }
+
+                change.shareNew = body.shareNew;
+            }
+
+            if (second !== THIS_SERVER && body?.network !== undefined) {
+                if (typeof body.network !== "boolean") {
+                    throw new HttpError(400, "network must be true or false.");
+                }
+
+                change.network = body.network;
+            }
+
+            if (second !== THIS_SERVER && body?.downloads !== undefined) {
+                // An absolute folder on that computer (POSIX or Windows), or null for its temporary folder.
+                if (
+                    body.downloads !== null &&
+                    (typeof body.downloads !== "string" ||
+                        body.downloads.length > 1024 ||
+                        !/^(\/|[A-Za-z]:[\\/])/.test(body.downloads))
+                ) {
+                    throw new HttpError(400, "downloads must be an absolute folder, or null.");
+                }
+
+                change.downloads = body.downloads;
+            }
+
+            app.config.setComputerSettings(second === THIS_SERVER ? undefined : second, change);
+
+            if (second !== THIS_SERVER) {
+                app.runners.link(second).sendSettings();
+                app.runners.changed();
+            }
+
+            app.accessChanged();
+
+            return json(
+                response,
+                200,
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
+            );
+        }
+
+        // The folders the owner gives one chosen person on a computer (`access.ts`): the whole list, replaced.
+        if (first === "runners" && second !== undefined && third === "given" && method === "POST") {
+            const body = await readJson<{ person?: unknown; folders?: unknown } | null>(request);
+
+            if (
+                typeof body?.person !== "string" ||
+                !Array.isArray(body.folders) ||
+                !body.folders.every((each) => typeof each === "string")
+            ) {
+                throw new HttpError(400, "Send person and folders, a list of paths.");
+            }
+
+            await app.giveFolders(user, second, body.person, body.folders as string[]);
+
+            return json(
+                response,
+                200,
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
+            );
+        }
+
+        // One chosen person sees every session in one of their folders on a computer, or no longer (`app.ts` `seeFolder`).
+        if (first === "runners" && second !== undefined && third === "sees" && method === "POST") {
+            const body = await readJson<{
+                person?: unknown;
+                folder?: unknown;
+                on?: unknown;
+            } | null>(request);
+
+            await app.seeFolder(user, second, body?.person, body?.folder, body?.on);
+
+            return json(
+                response,
+                200,
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
+            );
+        }
+
+        // One chosen person may take the wheel from a driver on a computer, or allow their own calls there, or no longer
+        // (`app.ts` `setRight`).
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === "rights" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{
+                person?: unknown;
+                right?: unknown;
+                on?: unknown;
+            } | null>(request);
+
+            app.setRight(user, second, body?.person, body?.right, body?.on);
+
+            return json(
+                response,
+                200,
+                second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second),
             );
         }
 
         // The folders on another computer, for the folder picker of a new session there.
         if (first === "runners" && second !== undefined && third === "fs" && method === "GET") {
-            if (!app.runners.mayUse(second, user)) {
+            if (!app.policy.mayBrowse(user, second)) {
                 throw new HttpError(403, "You cannot use this computer.");
             }
 
+            const given = app.policy.givenFolders(user, second);
+            const requested = url.searchParams.get("path") ?? "~";
+            // Someone given folders browses inside them only, judged by the real folder there: a link in a given folder
+            // that leads out of it lists nothing. Anywhere else, the picker lists the folders given.
+            const real =
+                given === undefined ? requested : await app.runners.realPath(second, requested);
+            const listing =
+                given === undefined ||
+                (real !== undefined && given.some((each) => inFolder(real, each)))
+                    ? await app.runners.folders(
+                          second,
+                          real ?? requested,
+                          url.searchParams.get("hidden") === "1",
+                      )
+                    : undefined;
+
             return json(response, 200, {
-                ...(await app.runners.folders(
-                    second,
-                    url.searchParams.get("path") ?? "~",
-                    url.searchParams.get("hidden") === "1",
-                )),
+                ...(listing === undefined
+                    ? givenListing(given ?? [])
+                    : scopeListing(listing, given)),
                 // The folders of this person's newest sessions on that computer.
-                recent: app.recentFolders(user, second),
+                recent: app
+                    .recentFolders(user, second)
+                    .filter((each) => app.policy.mayUseFolder(user, second, each)),
             });
         }
 
@@ -829,7 +1344,49 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
-        if (first === "sessions" && second !== undefined && method === "POST") {
+        // Whom a session is shared with, and whom it can be: its starter's and the owner's to see (`access.ts` `mayShare`).
+        if (first === "sessions" && second !== undefined && third === "share" && method === "GET") {
+            return json(response, 200, app.commands.sharing(conversationId(second), user));
+        }
+
+        // Whom a session is shared with: its starter's and the owner's to change (`access.ts` `mayShare`).
+        if (
+            first === "sessions" &&
+            second !== undefined &&
+            third === "share" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ people?: unknown }>(request);
+
+            return json(response, 200, {
+                sharedWith: await app.commands.shareSession(
+                    conversationId(second),
+                    user,
+                    body.people,
+                ),
+            });
+        }
+
+        // Who is in charge of a session's computer takes that one session from one person (`app.ts` `revokeSession`).
+        if (
+            first === "sessions" &&
+            second !== undefined &&
+            third === "revoke" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ person?: unknown } | null>(request);
+
+            await app.revokeSession(user, conversationId(second), body?.person);
+
+            return json(response, 200, { ok: true });
+        }
+
+        if (
+            first === "sessions" &&
+            second !== undefined &&
+            method === "POST" &&
+            (third === undefined || (third === "undo" && fourth === undefined))
+        ) {
             const id = conversationId(second);
 
             if (third === "undo" && fourth === undefined) {
@@ -878,14 +1435,25 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // This server's folders, for the folder picker: whoever may start sessions here (`access.ts` `mayBrowse`).
         if (first === "fs" && method === "GET") {
-            app.requireSteer(user);
+            app.requireBrowse(user);
 
-            if (user.sessions !== undefined) {
-                throw new HttpError(403, "You were invited to one session.");
+            const given = app.policy.givenFolders(user, THIS_SERVER);
+            const asked = url.searchParams.get("path") || "~";
+            const requested = given !== undefined && asked === "~" ? (given[0] ?? asked) : asked;
+            const real = realpathOrSelf(app.workspace.checkDirectory(requested));
+
+            // Someone given folders browses inside them only: anywhere else, the picker lists the folders given.
+            if (given !== undefined && !given.some((each) => inFolder(real, each))) {
+                return json(response, 200, {
+                    ...givenListing(given),
+                    recent: app
+                        .recentFolders(user, undefined)
+                        .filter((each) => app.policy.mayUseFolder(user, THIS_SERVER, each)),
+                });
             }
 
-            const requested = url.searchParams.get("path") || "~";
             const path = app.workspace.checkDirectory(requested);
             const showHidden = url.searchParams.get("hidden") === "1";
             const dirs: { name: string; path: string }[] = [];
@@ -925,15 +1493,22 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             dirs.sort((a, b) => a.name.localeCompare(b.name));
             // The folders of this person's newest sessions here: another computer's folders are not on this one.
-            const recent = app.recentFolders(user, undefined);
+            const recent = app
+                .recentFolders(user, undefined)
+                .filter((each) => app.policy.mayUseFolder(user, THIS_SERVER, each));
 
             return json(response, 200, {
-                path,
-                parent: parentFolder(path),
-                home: homedir(),
-                // This machine's top folders: `/`, or each Windows drive, as places to start from.
-                roots: await machineRoots(),
-                dirs: dirs.slice(0, 1000),
+                ...scopeListing(
+                    {
+                        path,
+                        parent: parentFolder(path),
+                        home: homedir(),
+                        // This machine's top folders: `/`, or each Windows drive, as places to start from.
+                        roots: await machineRoots(),
+                        dirs: dirs.slice(0, 1000),
+                    },
+                    given === undefined ? undefined : given.map(realpathOrSelf),
+                ),
                 recent,
             });
         }
@@ -952,7 +1527,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
         if (first === "settings" && method === "POST") {
             const body = await readJson<{
                 approvalRule?: unknown;
-                sharedRunnerSessions?: unknown;
                 defaultModel?: unknown;
                 pipCompactAt?: unknown;
                 subagentModels?: unknown;
@@ -963,7 +1537,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
             if (
                 [
                     body.approvalRule,
-                    body.sharedRunnerSessions,
                     body.defaultModel,
                     body.pipCompactAt,
                     body.subagentModels,
@@ -989,11 +1562,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             if (body.approvalRule !== undefined) {
                 await app.setApprovalRule(user, body.approvalRule);
-            }
-
-            // Sessions on linked computers shared like any other, or their creators' alone: the owner's.
-            if (body.sharedRunnerSessions !== undefined) {
-                await app.setSharedRunnerSessions(user, body.sharedRunnerSessions);
             }
 
             // Null clears it: new sessions start with the last model picked again.
@@ -1205,46 +1773,20 @@ export function createApi(options: HttpOptions, auth: Auth) {
             const body = (await readJson(request)) as {
                 role?: unknown;
                 session?: unknown;
+                folder?: unknown;
                 minutes?: unknown;
+                temporary?: unknown;
             };
-            const grant = inviteGrant(user, body);
+            // A temporary account, whatever the invite is to: whoever joins links no authenticator and stays a viewer.
+            // That is what an invite makes unless it says otherwise ("Allow viewer to become a user and prompt"), so
+            // one that says nothing gives the least.
+            const grant: InviteGrant = {
+                ...inviteGrant(user, body),
+                ...(body.temporary === false ? {} : { temporary: true }),
+            };
             const invite = auth.createInvite(user, grant, inviteMinutes(body));
-            const here = origin(request);
-            const loopback = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?$/.test(
-                here,
-            );
-            const wildcard = options.listen.host === "0.0.0.0" || options.listen.host === "::";
-            const lan =
-                loopback && wildcard
-                    ? lanAddresses().map((address) => `http://${address}:${options.listen.port}`)
-                    : [];
-            // A tunnel the launcher started is the way in for other devices.
-            const tunnel = loopback ? app.access?.url : undefined;
-            const base = tunnel ?? lan[0] ?? here;
-            const link = `${base}/join/${invite.code}`;
-            // An invite whose QR code could not be made is never shown: it ends rather than stay live, unseen.
-            const svg = await QRCode.toString(link, {
-                type: "svg",
-                margin: 1,
-                color: { dark: "#000000", light: "#ffffff" },
-            }).catch((error: unknown) => {
-                auth.cancelInvite(invite.code, user);
 
-                throw error;
-            });
-
-            return json(response, 200, {
-                ...invite,
-                grant,
-                url: link,
-                svg,
-                alternatives: (tunnel === undefined ? lan.slice(1) : lan).map(
-                    (address) => `${address}/join/${invite.code}`,
-                ),
-                // Only this device can open a loopback link.
-                local: loopback && lan.length === 0 && tunnel === undefined,
-                ...(app.access === undefined ? {} : { access: app.access }),
-            });
+            return json(response, 200, { ...(await shownInvite(request, user, invite)), grant });
         }
 
         if (first === "restart" && method === "POST") {

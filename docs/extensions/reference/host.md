@@ -572,7 +572,7 @@ Sends one message to `target`, as `[via <via>]`. Pi reads the person's `instruct
 - `sender`: who sent it. The name and the id go in the fence's tag, as `from` and `from-id`, because they came from outside. Outside the fence, one line says only whether the owner marked the id as trusted (`trusted: true`). This is guidance to the model, not a boundary: an id can be spoofed on some services.
 - `limit`: a cap of messages in an hour for one `bucket`, kept in memory. A restart resets it. The cap is 600 at most.
 
-It throws an error with a `status`: 400 for a delivery that cannot be right, 410 when the session is gone or its person cannot see it, 503 when PiP is off, 429 when the bucket's limit is reached, and 409 when the session does not take messages now. Try again later after a 409 or a 503, with the same key.
+It throws an error with a `status`: 400 for a delivery that cannot be right, 410 when the session is gone or its person cannot steer it, 503 when PiP is off, 429 when the bucket's limit is reached, and 409 when the session does not take messages now. Try again later after a 409 or a 503, with the same key.
 
 ## Linked sessions
 
@@ -969,6 +969,6 @@ The host has more members, for Pi Pocket's built-in modules only. They are not i
 - `pipCompaction`: PiP's own summaries when its context is compacted.
 - `gallery`: the extension gallery, for its own routes.
 - `toolNames`: the names of the tools that the modules that are on give now (built-in and drop-in), for codemode's Only mode.
-- `stopToolCall`, `waitsForLimit`, `alertOwner` (since 0.29.0): for the stall watches of Subagents and Agent Teams. They stop one running call, say whether a run waits for a provider's limit or for its linked computer to be online again, and tell the owner (a notice and a push).
+- `stopToolCall`, `waitsForLimit`, `alertOwner` (since 0.29.0): for the stall watches of Subagents and Agent Teams. They stop one running call, say whether a run waits for a provider's limit or for its linked computer to be online again, and tell who is in charge of the session's computer (a notice and a push): the owner, or the linker of the runner the session is on.
 - `linkedSessions.activity`, `linkedSessions.stopCall`, `linkedSessions.onLedRun` (since 0.29.0): for the stall watch of Agent Teams. They give the led sessions at work, stop a stuck call of a led session, and call back when a led session starts a run.
 - `updates`: updates of Pi Pocket itself, for the Updates module's routes. Its status says how the copy was installed (`installKind`: `git`, `npm-global`, `npm-local`, `npx`, or `unknown`) and what stands in the way of an update from the app.

@@ -1,5 +1,5 @@
 // The model and thinking level new sessions start with: the owner's choice, ahead of the last one picked.
-import { type App, cleanUp, openApp, owner, work } from "./helpers.ts";
+import { addPerson, type App, cleanUp, openApp, owner, work } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -79,7 +79,7 @@ test("the settings route sets and clears the default, for the owner only", async
 
     try {
         const choice = { provider: "faux", modelId: "other", thinkingLevel: "low" };
-        const guest = app.config.addUser("Bea", "guest").token;
+        const guest = (await addPerson(app, "Bea", "guest")).token;
 
         assert.equal((await settings(guest, choice)).status, 403);
         assert.equal(app.config.defaultModel, undefined);

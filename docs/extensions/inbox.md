@@ -78,7 +78,7 @@ Pi reads the instructions first, then who sent it, then the text between `<tell-
 
 `deliver` checks the delivery before it does anything. A delivery that cannot be right throws an error with `status` 400, whatever the session.
 
-- `by` is the id of a person of this app. The person must be able to see the session and steer in it, and must not be a viewer. Pi works for that person on the message, and that person's checks apply. Give the id of the owner or of the person who set the source up, never an id from the outside.
+- `by` is the id of a person of this app. The person must be able to see the session and steer in it, and must not be a viewer. Pi works for that person on the message, and that person's checks apply. A delivery is a task of the session, as a post to a webhook is. It asks nobody to renew the session's approval, and it follows the session's rule for tasks (**Tasks expire with the session**, in [Runners](../runners.md)). Give the id of the owner or of the person who set the source up, never an id from the outside.
 - `via` is a short label. Core removes brackets and control characters and cuts it to 80 characters.
 - `payload` is text. Core makes it safe between the tags (no closing tag survives) and cuts it to 8,000 characters.
 - `key` is 1 to 512 characters.

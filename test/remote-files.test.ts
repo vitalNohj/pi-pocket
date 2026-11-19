@@ -1,5 +1,7 @@
 // Artifacts and kept images across a real runner link. The server must not fall back to its disk for session files.
+import { linkInProcess } from "../src/runner/secure-link.ts";
 import {
+    addPerson,
     type App,
     cleanUp,
     context,
@@ -116,7 +118,7 @@ before(async () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const { code } = app.runners.makeCode("Image computer", owner(app).id);
-    const linked = app.runners.redeem(code);
+    const linked = linkInProcess((request) => app.runners.redeem(request), code);
 
     runner = new Runner({
         link: { server: base, ...linked },
@@ -124,16 +126,16 @@ before(async () => {
         cwd: there,
         log: () => {},
         retryMs: [50],
-        settings: () => ({ confirm: false, folders: [there] }),
-        ask: () => Promise.resolve({ allow: false }),
     });
     runner.start();
     await until(() => app.runners.list()[0]?.online === true, "the image runner to connect");
     id = (await app.commands.createSession(owner(app), { cwd: there, runner: linked.id })).id;
-    const guest = app.config.addUser("Image guest", "guest");
+    const guest = await addPerson(app, "Image guest", "guest");
 
     guestToken = guest.token;
-    await app.setSharedRunnerSessions(owner(app), true);
+    // A guest the owner chose for the computer, with this one session shared with them.
+    app.config.setRunnerUsers(linked.id, [guest.user.id]);
+    await app.commands.shareSession(id, owner(app), [guest.user.id]);
 });
 
 after(async () => {
@@ -174,10 +176,7 @@ describe("files from a session's computer", () => {
             { content: "small", assets: [{ name: "secret.png", path: "escape.png" }] },
         ]) {
             await call("artifact", { id: "not-allowed", title: "Not allowed", ...args });
-            assert.match(
-                await lastResult(),
-                /outside the session's approved folder|symbolic link|symlink/i,
-            );
+            assert.match(await lastResult(), /outside the session's folder|symbolic link|symlink/i);
         }
     });
 

@@ -1,7 +1,9 @@
 // Pi's skills: the places a session finds them, which of a name wins, project trust, and that it matches Pi's CLI.
 import {
+    addPerson,
     type App,
     cleanUp,
+    fakeTab,
     home,
     lastText,
     modelTexts,
@@ -41,6 +43,7 @@ import {
     type SkillSources,
     type TrustChoice,
 } from "../src/server/skills.ts";
+import type { TrustRequestView } from "../src/server/trust-requests.ts";
 
 /** The system prompt of the newest request to Pi, its sections as JSON. */
 let prompt = "";
@@ -345,7 +348,7 @@ test("a folder reached through a link is trusted as the folder it is", () => {
     assert.deepEqual(readProjectTrust(cwd, sources).saved, { path: repo, trusted: true });
 });
 
-test("the owner answers through the API, a guest cannot, and Pi has the skills from its next message", async () => {
+test("who is in charge answers through the API, anyone else learns only that it waits, and Pi has the skills from its next message", async () => {
     const app = await started();
     const project = realpathSync(mkdtempSync(join(root, "skills-asking-")));
 
@@ -358,7 +361,7 @@ test("the owner answers through the API, a guest cannot, and Pi has the skills f
 
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
-    const guest = app.config.addUser("Guest", "guest");
+    const guest = await addPerson(app, "Guest", "guest");
     const call = (token: string, body?: unknown) =>
         fetch(`http://127.0.0.1:${port}/api/c/${id}/trust`, {
             method: body === undefined ? "GET" : "POST",
@@ -379,12 +382,20 @@ test("the owner answers through the API, a guest cannot, and Pi has the skills f
 
         assert.equal(asked.status, 200);
         assert.equal(((await asked.json()) as { ask: boolean }).ask, true);
-        assert.equal(
-            (await call(guest.token)).status,
-            403,
-            "the skills may be in folders a guest cannot see",
+        // Someone who sees the session and is not in charge of its computer: that it waits and for whom, and nothing of
+        // the project (its skills may be in folders above the one they were given).
+        const waits = await call(guest.token);
+
+        assert.equal(waits.status, 200);
+        assert.deepEqual(await waits.json(), { waiting: true, by: "Owner", asked: false });
+
+        const refused = await call(guest.token, { choice: "trust" });
+
+        assert.equal(refused.status, 403);
+        assert.match(
+            ((await refused.json()) as { error: string }).error,
+            /^Only Owner, who is in charge of this server, decides which projects Pi trusts there\.$/,
         );
-        assert.equal((await call(guest.token, { choice: "trust" })).status, 403);
         assert.equal((await call(app.config.ownerToken, { choice: "maybe" })).status, 400);
         assert.equal(new ProjectTrustStore(process.env.PI_CODING_AGENT_DIR!).get(project), null);
 
@@ -402,10 +413,171 @@ test("the owner answers through the API, a guest cannot, and Pi has the skills f
         // At once, not when the prompt's copy of the skills grows stale.
         await say(app, id, "second");
         assert.match(prompt, /- waiting: The waiting skill\./);
+        assert.deepEqual(await (await call(guest.token)).json(), {
+            waiting: false,
+            by: "Owner",
+            asked: false,
+        });
     } finally {
         server.closeAllConnections();
         server.close();
         app.config.removeUser(guest.user.id);
+    }
+});
+
+test("someone who prompts in a session whose project waits tells who is in charge, once; they decide in the session or put it away", async () => {
+    const app = await started();
+    const projects = ["skills-told-", "skills-put-away-"].map((prefix) =>
+        realpathSync(mkdtempSync(join(root, prefix))),
+    );
+
+    for (const project of projects) {
+        mkdirSync(join(project, ".git"));
+        skill(join(project, ".agents", "skills"), "waiting");
+    }
+
+    const first = await newSession(app, projects[0]);
+    const second = await newSession(app, projects[1]);
+    const server = createServer(
+        createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
+    );
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    // Both see the two sessions; only Gale prompts.
+    const gale = await addPerson(app, "Gale", "guest");
+    const vera = await addPerson(app, "Vera", "viewer");
+    const call = (token: string, path: string, body?: unknown) =>
+        fetch(`http://127.0.0.1:${port}/api/${path}`, {
+            method: body === undefined ? "GET" : "POST",
+            headers: {
+                authorization: `Bearer ${token}`,
+                "x-pocket": "1",
+                "content-type": "application/json",
+            },
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        });
+    const ownerTab = fakeTab(undefined, owner(app));
+    const galeTab = fakeTab(undefined, gale.user);
+    const heard = (tab: typeof ownerTab) =>
+        tab.events
+            .filter((each) => each.event === "trust-requests")
+            .map((each) => each.data as unknown as TrustRequestView[]);
+
+    await app.attach(ownerTab.client);
+    await app.attach(galeTab.client);
+
+    try {
+        // A viewer reads that it waits, and tells no one: they make Pi do nothing here.
+        assert.deepEqual(await (await call(vera.token, `c/${first}/trust`)).json(), {
+            waiting: true,
+            by: "Owner",
+            asked: false,
+        });
+        assert.equal((await call(vera.token, `c/${first}/trust`, { ask: true })).status, 403);
+        // A read tells no one either.
+        assert.deepEqual(app.trustRequests.list(owner(app)), []);
+
+        const told = await call(gale.token, `c/${first}/trust`, { ask: true });
+
+        assert.equal(told.status, 200);
+        assert.deepEqual(await told.json(), { waiting: true, by: "Owner", asked: true });
+        // Again, and from the owner's own tab: the one request stands.
+        await call(gale.token, `c/${first}/trust`, { ask: true });
+        await call(app.config.ownerToken, `c/${first}/trust`, { ask: true });
+
+        const [request, ...more] = app.trustRequests.list(owner(app));
+
+        assert.deepEqual(more, []);
+        assert.deepEqual(
+            { ...request, id: "" },
+            {
+                id: "",
+                computer: "this-server",
+                computerName: "this server",
+                folder: projects[0],
+                session: String(first),
+                title: app.sessionMeta(first)?.title ?? "New session",
+                person: gale.user.id,
+                name: "Gale",
+            },
+        );
+        // Only who is in charge is shown it: in the welcome of a new tab, and in the open ones.
+        assert.deepEqual(
+            (await app.hello(owner(app))).trustRequests.map((each) => each.id),
+            [request!.id],
+        );
+        assert.deepEqual((await app.hello(gale.user)).trustRequests, []);
+        assert.deepEqual(heard(ownerTab).at(-1), [request]);
+        assert.deepEqual(heard(galeTab).at(-1), [], "told that something changed, shown nothing");
+        assert.equal(
+            (await call(gale.token, `trust-requests/${request!.id}`, { dismiss: true })).status,
+            404,
+        );
+
+        // Decided in the session: the request ends, and the tab that waited hears, to read its trust again.
+        const before = heard(galeTab).length;
+
+        assert.equal(
+            (await call(app.config.ownerToken, `c/${first}/trust`, { choice: "distrust" })).status,
+            200,
+        );
+        assert.deepEqual(app.trustRequests.list(owner(app)), []);
+        assert.ok(heard(galeTab).length > before);
+        assert.deepEqual(await (await call(gale.token, `c/${first}/trust`)).json(), {
+            waiting: false,
+            by: "Owner",
+            asked: false,
+        });
+
+        // Put away without deciding: the project still waits, and who is in charge is not asked again.
+        await call(gale.token, `c/${second}/trust`, { ask: true });
+
+        const [other] = app.trustRequests.list(owner(app));
+
+        assert.equal(other?.folder, projects[1]);
+        assert.equal(
+            (await call(app.config.ownerToken, `trust-requests/${other!.id}`, { nothing: true }))
+                .status,
+            400,
+        );
+        assert.equal(
+            (await call(app.config.ownerToken, `trust-requests/${other!.id}`, { dismiss: true }))
+                .status,
+            200,
+        );
+        assert.deepEqual(app.trustRequests.list(owner(app)), []);
+        assert.deepEqual(
+            await (await call(gale.token, `c/${second}/trust`, { ask: true })).json(),
+            { waiting: true, by: "Owner", asked: true },
+        );
+        assert.deepEqual(app.trustRequests.list(owner(app)), []);
+
+        // The asker is made a viewer: a request of theirs ends with their prompting, and may be asked again by another.
+        const third = realpathSync(mkdtempSync(join(root, "skills-no-longer-")));
+
+        mkdirSync(join(third, ".git"));
+        skill(join(third, ".agents", "skills"), "waiting");
+
+        // Started after Gale was added: new sessions here are shared with the people chosen (`addPerson`).
+        const last = await newSession(app, third);
+
+        assert.equal(
+            (await call(gale.token, `c/${last}/trust`, { ask: true })).status,
+            200,
+            "Gale sees the new session",
+        );
+        assert.equal(app.trustRequests.list(owner(app))[0]?.folder, third);
+        app.setAccess(owner(app), gale.user.id, { role: "viewer" });
+        assert.deepEqual(app.trustRequests.list(owner(app)), []);
+        assert.equal(app.trustRequests.asked("this-server", third), false);
+    } finally {
+        app.detach(ownerTab.client);
+        app.detach(galeTab.client);
+        server.closeAllConnections();
+        server.close();
+        app.config.removeUser(gale.user.id);
+        app.config.removeUser(vera.user.id);
     }
 });
 

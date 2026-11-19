@@ -3,7 +3,7 @@
 import { folderColor } from "./avatar.js";
 import { useEffect, useRef } from "preact/hooks";
 import { sessionMark } from "./sessions.js";
-import { canSteer, navigate, openSheet, scoped, store, workspaceOrder } from "./store.js";
+import { canStart, canSteer, navigate, openSheet, store, workspaceOrder } from "./store.js";
 import { lookLabel, prefs } from "./theme.js";
 import { html, Icon, Keys, shortPath, timeAgo } from "./ui.js";
 
@@ -94,7 +94,7 @@ export function Splash() {
         "--o-accent",
         "--o-fg",
     ];
-    const canStart = canSteer() && !scoped();
+    const starts = canStart();
     let line = 0;
 
     return html`<div class="splash" data-part="home" ref=${splash}>
@@ -135,7 +135,7 @@ export function Splash() {
         </div>
         <div class="splash-actions" data-part="home-actions">
             ${
-                canStart &&
+                starts &&
                 html`<button
                     class="button primary"
                     onClick=${() => openSheet({ type: "cwd", mode: "new" })}

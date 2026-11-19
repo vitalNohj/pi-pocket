@@ -165,11 +165,11 @@ export class Inbox {
         const person = app.config.userById(delivery.by);
         const meta = app.sessionMeta(target);
 
+        // Its person still steers that session (`access.ts` `maySteer`): sees it, and is no viewer.
         if (
             person === undefined ||
-            person.role === "viewer" ||
             meta === undefined ||
-            !app.canSee(person, target)
+            !app.policy.maySteer(person, String(target))
         ) {
             throw new HttpError(410, "This session is gone, or its person cannot reach it.");
         }
@@ -207,11 +207,15 @@ export class Inbox {
         }
 
         try {
+            // A task of the session, not a person at the keyboard: it follows the session's tasks rule and asks nobody
+            // for an approval (`app.ts` `tasksMayRun`), as a schedule does.
             await app.commands.submit(
                 target,
                 person,
                 { text: inboxText(delivery), requestId: key },
                 viaLabel(delivery.via),
+                undefined,
+                true,
             );
         } catch (error) {
             // A message that did not go gives its place in the hour back.

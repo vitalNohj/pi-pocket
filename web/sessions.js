@@ -19,6 +19,9 @@ import { sessionForest, unfolded } from "./session-tree.js";
 import {
     actions,
     attempt,
+    canInvite,
+    canStart,
+    allowsOwn,
     canSteer,
     chatReadStored,
     collab,
@@ -26,7 +29,6 @@ import {
     notify,
     isUnread,
     openSheet,
-    scoped,
     sessionUnread,
     setChatReadAt,
     setUnread,
@@ -1367,7 +1369,7 @@ const ROW_KEYS = [
 function AllSessions({ compact = false }) {
     const { sessions, sessionsLoaded, server, pinned } = store.state;
     const team = teamOf(sessions);
-    const canStart = canSteer() && !scoped();
+    const starts = canStart();
     const [query, setQueryState] = useState(() => (compact ? "" : listKept.query));
     const [tab, setTabState] = useState(() => tabOf(prefs().group));
     const [closed, setClosed] = useState(readClosed);
@@ -2311,11 +2313,17 @@ function AllSessions({ compact = false }) {
             glow=${moved === session.id && group.slot !== "needs"}
             ownCall=${
                 session.approval !== undefined &&
-                server?.approvalRule === "others" &&
-                me?.role !== "owner" &&
-                // Nobody known to have asked is not someone else: the server leaves that one to the owner.
-                (session.approval.requestedBy === undefined ||
-                    session.approval.requestedBy === me?.id)
+                session.inCharge !== true &&
+                // A command someone typed (`!`) is allowed by who is in charge of the session's computer, and by its own
+                // person where they are let (`store.js` `allowsOwn`), whatever the rule.
+                (session.approval.typedBy !== undefined
+                    ? !(session.approval.typedBy === me?.id && allowsOwn(session))
+                    : server?.approvalRule === "others" &&
+                      // Nobody known to have asked is not someone else: the server leaves that one to who is in
+                      // charge of the session's computer.
+                      // Their own call is theirs to allow where who is in charge lets them.
+                      (session.approval.requestedBy === undefined ||
+                          (session.approval.requestedBy === me?.id && !allowsOwn(session))))
             }
             onReview=${onReview}
             onAnswer=${onAnswer}
@@ -2461,7 +2469,7 @@ function AllSessions({ compact = false }) {
             <span class="sessions-name" data-part="session-list-title">Sessions</span>
             <span class="sessions-count">${sessionsLoaded ? count : ""}</span>
             ${
-                canStart &&
+                starts &&
                 html`<button
                     class="new-button"
                     title="New session (Alt+N)"
@@ -2585,7 +2593,7 @@ function AllSessions({ compact = false }) {
                 sessionsLoaded &&
                 shown.length === 0 &&
                 html`<div class="sessions-empty">
-                    ${kept !== null && !needle ? "No sessions match the filters." : archived ? "No archived sessions." : needle ? "No matches." : "No sessions yet. Start one with New."}
+                    ${kept !== null && !needle ? "No sessions match the filters." : archived ? "No archived sessions." : needle ? "No matches." : starts ? "No sessions yet. Start one with New." : "No sessions shared with you yet. The owner shares them, or chooses you for this server."}
                 </div>`
             }
             ${
@@ -2757,7 +2765,7 @@ function RailTiles() {
  */
 function Rail({ foldable = false, folded = false }) {
     const { sessions, board, me } = store.state;
-    const canStart = canSteer() && !scoped();
+    const starts = canStart();
     // Counted again only when the session list changes, not on each draw of the rail.
     const { busy, agents } = useMemo(
         () => ({
@@ -2824,7 +2832,7 @@ function Rail({ foldable = false, folded = false }) {
         ${!folded && html`<span class="rail-fill"></span>`}
         ${
             folded &&
-            canStart &&
+            starts &&
             html`<button
                 class="rail-button rail-new"
                 data-part="rail-button"
@@ -2890,7 +2898,7 @@ function Rail({ foldable = false, folded = false }) {
                 ? html`<button
                     class="rail-button"
                     data-part="rail-button"
-                    title=${canStart ? "People and invites" : "People"}
+                    title=${starts && canInvite() ? "People and invites" : "People"}
                     aria-label="People"
                     onClick=${() => openSheet({ type: "people" })}
                 >

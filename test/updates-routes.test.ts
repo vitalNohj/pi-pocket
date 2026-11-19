@@ -1,5 +1,5 @@
 // The Updates module's routes and browser module: on by default, and the owner's alone.
-import { cleanUp, openApp, root, scriptedModel } from "./helpers.ts";
+import { addPerson, cleanUp, openApp, root, scriptedModel } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
@@ -20,7 +20,7 @@ before(async () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     tokens.owner = app.config.ownerToken;
-    tokens.guest = app.config.addUser("Gale", "guest").token;
+    tokens.guest = (await addPerson(app, "Gale", "guest")).token;
 });
 
 after(async () => {

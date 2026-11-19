@@ -34,6 +34,7 @@ import {
     actions,
     attempt,
     canSteer,
+    overridesTurns,
     collab,
     drafts,
     navigateUp,
@@ -619,7 +620,8 @@ function DriverBar() {
     }
 
     const asked = turns.asks.includes(me?.id);
-    const canTake = !driverHere || me?.role === "owner";
+    // From a driver who is here: who overrides take turns on this computer (the server says, and checks too).
+    const canTake = !driverHere || overridesTurns(view.conversation);
 
     return html`<div class="driver-bar">
         <span class="driver-label">
