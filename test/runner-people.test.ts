@@ -1091,8 +1091,8 @@ describe("review drill fixes for people on a computer", () => {
                         "terminal",
                     "the denied command to end",
                 );
-            const onlyHost =
-                /^Only Guard host, who is in charge of Guard laptop, can allow a command someone typed\.$/;
+            const onlyHost = (whose: string) =>
+                `Only Guard host, who is in charge of Guard laptop, can allow a command ${whose} typed.`;
             const first = await held(there, fellow, "rm -rf a");
             const second = await held(there, owner(app), "rm -rf b");
 
@@ -1103,12 +1103,19 @@ describe("review drill fixes for people on a computer", () => {
             // Only the host allows it there: not its person, not the owner, and not with the other rule either.
             assert.equal(app.cannotAllow(host, first), undefined);
             assert.equal(app.cannotAllow(host, second), undefined);
-            assert.match(app.cannotAllow(fellow, first) ?? "", onlyHost);
-            assert.match(app.cannotAllow(owner(app), first) ?? "", onlyHost);
-            assert.match(app.cannotAllow(owner(app), second) ?? "", onlyHost);
+            assert.equal(app.cannotAllow(fellow, first), onlyHost("you"));
+            assert.equal(app.cannotAllow(owner(app), first), onlyHost("someone else"));
+            assert.equal(app.cannotAllow(owner(app), second), onlyHost("you"));
             await app.setApprovalRule(owner(app), "anyone");
-            assert.match(app.cannotAllow(owner(app), first) ?? "", onlyHost);
+            assert.equal(app.cannotAllow(owner(app), first), onlyHost("someone else"));
             await app.setApprovalRule(owner(app), "others");
+            // The host lets the fellow allow their own there (Allow their own calls): theirs alone, not the owner's.
+            app.setRight(host, theirs, fellow.id, "allows", true);
+            assert.equal(app.cannotAllow(fellow, first), undefined);
+            assert.equal(app.cannotAllow(fellow, second), onlyHost("someone else"));
+            assert.equal(app.cannotAllow(owner(app), second), onlyHost("you"));
+            app.setRight(host, theirs, fellow.id, "allows", false);
+            assert.equal(app.cannotAllow(fellow, first), onlyHost("you"));
             await assert.rejects(app.answerApproval(first.id, true, owner(app)), { status: 403 });
             assert.notEqual(waiting(first.task), undefined, "refused: it still waits");
             // Anyone who can steer denies it.
@@ -1131,7 +1138,7 @@ describe("review drill fixes for people on a computer", () => {
             assert.deepEqual(judged, ["rm -rf a", "rm -rf b", "rm -rf d"]);
             assert.equal(
                 app.cannotAllow(host, third),
-                "Only the owner can allow a command someone typed.",
+                "Only the owner can allow a command you typed.",
             );
             assert.equal(app.cannotAllow(owner(app), third), undefined);
             assert.equal(await app.answerApproval(third.id, false, owner(app)), true);
