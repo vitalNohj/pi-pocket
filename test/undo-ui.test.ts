@@ -189,10 +189,16 @@ test("Ctrl or Command plus Enter sends again, not Undo", real, async () => {
     await open(id);
     await openPrompt("send me again");
     assert.equal(await shown(undoButton), true);
-    await inPage<boolean>(`${selector(sheet)}.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "Enter", bubbles: true, cancelable: true,
-        [/Mac|iPhone|iPad/.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true,
-    }))`);
+    // The sheet takes the key once it is drawn (`useMainKey` binds after the paint): press until it does. A second
+    // press cannot come, since the first one it takes ends the wait.
+    await until(
+        () =>
+            inPage<boolean>(`!${selector(sheet)}.dispatchEvent(new KeyboardEvent("keydown", {
+                key: "Enter", bubbles: true, cancelable: true,
+                [/Mac|iPhone|iPad/.test(navigator.platform) ? "metaKey" : "ctrlKey"]: true,
+            }))`),
+        "the sheet to take Ctrl or Command plus Enter",
+    );
     const fork = await draftInNewSession(id, "");
 
     assert.equal(app.sessionMeta(id)?.archived, undefined);
