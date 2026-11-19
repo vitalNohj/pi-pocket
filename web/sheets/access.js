@@ -95,8 +95,8 @@ const RIGHTS = [
     {
         right: "allows",
         name: "Allow their own calls",
-        on: "On: while approvals need someone else, they allow the calls their own messages led to here.",
-        off: "Off: while approvals need someone else, someone else allows their calls.",
+        on: "On: they allow their own ! commands that Lancet Guard asks about here and, while approvals need someone else, the calls their own messages led to.",
+        off: "Off: who is in charge allows their ! commands that Lancet Guard asks about and, while approvals need someone else, someone else allows their calls.",
         label: "allows their own calls on",
     },
 ];

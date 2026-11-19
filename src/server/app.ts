@@ -4803,7 +4803,8 @@ export class PocketApp {
      * their own message led to, but who is in charge of the session's computer (`access.ts` `inCharge`: the owner here,
      * a runner's linker there), who always can, and the people they let there (`allowsOwn`). A call nobody is known to
      * have asked for stays with who is in charge. A command a person typed (`!`) that the guard holds is allowed by who
-     * is in charge alone, whatever the rule. Denying is open to anyone who can steer.
+     * is in charge, and by its own person where they are let (`allowsOwn`), whatever the rule. Denying is open to anyone
+     * who can steer.
      */
     cannotAllow(user: User, request: ApprovalRequest): string | undefined {
         if (user.role === "viewer") {
@@ -4824,11 +4825,20 @@ export class PocketApp {
                 : "Only the person Pi works for here can answer this.";
         }
 
-        // A person's own command is not Pi's call: who is in charge of the computer decides what runs on it unasked.
+        // A person's own command is not Pi's call: who is in charge of the computer decides what runs on it unasked, and
+        // lets a person decide for their own (`allowsOwn`). Nobody else allows it, whatever the rule.
         if (request.typedBy !== undefined && !this.policy.inCharge(user, computer)) {
+            const own = request.typedBy === user.id;
+
+            if (own && this.policy.allowsOwn(user, computer)) {
+                return undefined;
+            }
+
+            const whose = own ? "you" : "someone else";
+
             return computer === THIS_SERVER
-                ? "Only the owner can allow a command someone typed."
-                : `Only ${this.#inChargeName(request.conversationId)}, who is in charge of ${this.#computerName(computer)}, can allow a command someone typed.`;
+                ? `Only the owner can allow a command ${whose} typed.`
+                : `Only ${this.#inChargeName(request.conversationId)}, who is in charge of ${this.#computerName(computer)}, can allow a command ${whose} typed.`;
         }
 
         if (this.config.approvalRule !== "others" || this.policy.inCharge(user, computer)) {

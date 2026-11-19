@@ -23,6 +23,7 @@ import { after, before, test } from "node:test";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { ProviderDoc, UsageDoc } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "../src/server/access.ts";
 import type { ClientEntry } from "../src/server/projection.ts";
 import { cleanTitle, TITLE_PROMPT } from "../src/server/titles.ts";
 
@@ -276,7 +277,7 @@ test("a `!` command Lancet Guard asks about waits for who is in charge: allowed,
     const { user: peer } = await addPerson(app, "Peer", "guest");
     const marker = join(folder, "risky.txt");
     const shells = async () => (await entries(id)).filter((entry) => entry.kind === "shell");
-    const onlyOwner = "Only the owner can allow a command someone typed.";
+    const onlyOwner = (whose: string) => `Only the owner can allow a command ${whose} typed.`;
 
     try {
         await guarded(app, async () => {
@@ -303,12 +304,12 @@ test("a `!` command Lancet Guard asks about waits for who is in charge: allowed,
             assert.equal(existsSync(marker), false, "it has not run");
             assert.equal((await shells()).length, 1, "and has no entry yet");
             // Only the owner allows it: not its person, and not another guest, as they could one of Pi's calls.
-            assert.equal(app.cannotAllow(guest, asked), onlyOwner);
-            assert.equal(app.cannotAllow(peer, asked), onlyOwner);
+            assert.equal(app.cannotAllow(guest, asked), onlyOwner("you"));
+            assert.equal(app.cannotAllow(peer, asked), onlyOwner("someone else"));
             assert.equal(app.cannotAllow(owner(app), asked), undefined);
             await assert.rejects(app.answerApproval(asked.id, true, peer), {
                 status: 403,
-                message: onlyOwner,
+                message: onlyOwner("someone else"),
             });
             assert.notEqual(heldFor(app, first.taskId), undefined, "refused: it still waits");
             assert.equal(await app.answerApproval(asked.id, true, owner(app)), true);
@@ -334,6 +335,38 @@ test("a `!` command Lancet Guard asks about waits for who is in charge: allowed,
             assert.equal(readFileSync(marker, "utf8"), "risky\n", "it did not run");
             assert.doesNotMatch((await modelTexts(app, id)).join("\n"), /risky again/);
             assert.equal(heldFor(app, second.taskId), undefined);
+
+            // With Allow their own calls on for them here, each allows their own: the guard still asks, and nobody but
+            // the owner allows someone else's.
+            app.setRight(owner(app), THIS_SERVER, guest.id, "allows", true);
+            app.setRight(owner(app), THIS_SERVER, peer.id, "allows", true);
+
+            const third = await app.shell.start(id, guest, {
+                command: `echo risky third >> ${marker}`,
+            });
+
+            await until(() => heldFor(app, third.taskId) !== undefined, "the third to wait");
+            const own = heldFor(app, third.taskId)!;
+
+            assert.equal(app.cannotAllow(peer, own), onlyOwner("someone else"));
+            assert.equal(app.cannotAllow(guest, own), undefined);
+            await assert.rejects(app.answerApproval(own.id, true, peer), { status: 403 });
+            assert.equal(readFileSync(marker, "utf8"), "risky\n", "it waits for its answer");
+            assert.equal(await app.answerApproval(own.id, true, guest), true);
+            await until(async () => (await shells()).length === 4, "the third's entry");
+            assert.equal(readFileSync(marker, "utf8"), "risky\nrisky third\n");
+            // Taken back, it is the owner's to allow again.
+            app.setRight(owner(app), THIS_SERVER, guest.id, "allows", false);
+
+            const fourth = await app.shell.start(id, guest, {
+                command: `echo risky fourth >> ${marker}`,
+            });
+
+            await until(() => heldFor(app, fourth.taskId) !== undefined, "the fourth to wait");
+            assert.equal(app.cannotAllow(guest, heldFor(app, fourth.taskId)!), onlyOwner("you"));
+            assert.equal(await app.answerApproval(`${fourth.taskId}:shell`, false, guest), true);
+            await until(async () => (await shells()).length === 5, "the fourth's entry");
+            assert.equal(readFileSync(marker, "utf8"), "risky\nrisky third\n", "denied: not run");
         });
     } finally {
         app.config.removeUser(guest.id);

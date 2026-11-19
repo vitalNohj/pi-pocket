@@ -6,8 +6,8 @@
  * queues while Pi works and places where a message can go.
  *
  * With Lancet Guard on, a command from anyone but who is in charge of the session's computer is judged first. One the
- * guard asks about waits, as a call of Pi's does, for who is in charge to allow it (`PocketApp.cannotAllow`); anyone who
- * can steer can deny it. A denied command does not run, and Pi is not told of it.
+ * guard asks about waits, as a call of Pi's does, for who is in charge to allow it, or its own person where they are let
+ * (`PocketApp.cannotAllow`); anyone who can steer can deny it. A denied command does not run, and Pi is not told of it.
  */
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

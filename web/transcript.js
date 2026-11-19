@@ -2285,9 +2285,14 @@ function ApprovalCard({ approval }) {
         attempt(() => actions.approve(approval.id, allow)).finally(() => setBusy(false));
     };
 
-    // A command a person typed (`!`), not a call of Pi's: only who is in charge of this computer allows it.
+    // A command a person typed (`!`), not a call of Pi's: who is in charge of this computer allows it, and its own
+    // person where they are let (`store.js` `allowsOwn`).
     const typed = approval.typedBy !== undefined;
-    const notMine = typed && store.state.view.conversation?.inCharge !== true;
+    const mine = approval.typedBy === me?.id;
+    const notMine =
+        typed &&
+        store.state.view.conversation?.inCharge !== true &&
+        !(mine && allowsOwn(store.state.view.conversation));
     const typist =
         approval.typedBy === me?.id
             ? "your"
@@ -2323,7 +2328,7 @@ function ApprovalCard({ approval }) {
                   ${
                       notMine &&
                       html`<div class="muted small">
-                          Only who is in charge of this computer can allow this. You can deny it.
+                          ${`Only who is in charge of this computer can allow ${mine ? "your command" : "someone else's command"}. You can deny it.`}
                       </div>`
                   }
                 <div class="approval-actions">
@@ -3161,8 +3166,8 @@ function canAnswer(approvals) {
                     ? inCharge
                     : approval.requestedBy === me?.id
                 : approval.typedBy !== undefined
-                  ? // A command someone typed: who is in charge of this computer allows it.
-                    inCharge
+                  ? // A command someone typed: who is in charge of this computer allows it, and its person where let.
+                    inCharge || (approval.typedBy === me?.id && allowsOwn(view.conversation))
                   : !(
                         server?.approvalRule === "others" &&
                         !allowsOwn(view.conversation) &&
