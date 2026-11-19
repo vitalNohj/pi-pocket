@@ -158,8 +158,9 @@ export interface ApprovalRequest {
     /** Who Pi was working for when the call asked: set by `Approvals`, not by the asker. */
     requestedBy?: string;
     /**
-     * Not a call of Pi's: a command this person typed (`!`, `shell.ts`) that the guard holds. Only who is in charge of
-     * the session's computer allows it, whatever the approval rule; it counts as asked for by its person.
+     * Not a call of Pi's: a command this person typed (`!`, `shell.ts`) that the guard holds. Who is in charge of the
+     * session's computer allows it, and its person where they are let (`access.ts` `allowsOwn`), whatever the approval
+     * rule; it counts as asked for by its person.
      */
     typedBy?: string;
     /**

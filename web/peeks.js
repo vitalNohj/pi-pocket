@@ -522,10 +522,10 @@ function PeekApproval({ approval, me, rule, own, whole, inCharge }) {
     };
 
     // `own`: they may allow a call their own message led to on this computer (`store.js` `allowsOwn`).
-    // A command someone typed (`!`) is allowed by who is in charge of its computer alone.
+    // A command someone typed (`!`) is allowed by who is in charge of its computer, and by its person where let.
     const ownCall =
         approval.typedBy !== undefined
-            ? !inCharge
+            ? !inCharge && !(own && approval.typedBy === me?.id)
             : rule === "others" && !own && approval.requestedBy === me?.id;
 
     // An extension's question (`host.ask`) is answered on its card, where its fields are: from here, open it or decline.

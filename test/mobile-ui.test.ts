@@ -21,6 +21,7 @@ import { after, before, test } from "node:test";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "../src/server/access.ts";
 import { Browsers } from "../src/server/browser.ts";
 import { BrowserError, Chromium } from "../src/server/browser/cdp.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
@@ -1799,7 +1800,7 @@ test(
                 card: card && {
                     title: card.querySelector(".approval-ask").textContent.trim(),
                     buttons: [...card.querySelectorAll(".approval-actions button")].map((each) => each.textContent.trim()),
-                    note: /Only who is in charge of this computer can allow this/.test(card.textContent),
+                    note: /Only who is in charge of this computer can allow your command\. You can deny it\./.test(card.textContent),
                 },
                 waiting: waiting && [waiting.querySelector(".muted").textContent.trim(), waiting.querySelector("button").textContent.trim()],
                 entries: [...document.querySelectorAll(".shell-row:not(.pending)")].map((each) => each.querySelector(".shell-head .muted").textContent.trim()),
@@ -1893,6 +1894,26 @@ test(
                 entries: ["Tess", "Tess · stopped · not shown to Pi"],
             });
             assert.equal(readFileSync(ran, "utf8"), "typed\n", "the cancelled one did not run");
+
+            // With Allow their own calls on for her here, she allows her own: the guard still asks first.
+            app.setRight(owner(app), THIS_SERVER, guest.id, "allows", true);
+            await run(`!echo mine >> ${ran}`);
+            await until(
+                async () => (await hers()).card?.buttons.length === 2,
+                "her Allow button",
+                20_000,
+            );
+            assert.deepEqual((await hers()).card, {
+                title: "Lancet Guard asks before your command",
+                buttons: ["Deny", "Allow"],
+                note: false,
+            });
+            assert.equal(readFileSync(ran, "utf8"), "typed\n", "it waits for her answer");
+            await tess.evaluate(
+                `document.querySelector('[data-part="approval"] .approval-actions .primary').click()`,
+            );
+            await until(() => readFileSync(ran, "utf8") === "typed\nmine\n", "her command to run");
+            await until(async () => (await hers()).entries?.length === 3, "its entry", 20_000);
         } finally {
             await theirs.closeAll({ final: true });
             app.config.removeUser(guest.id);

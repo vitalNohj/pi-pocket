@@ -2315,14 +2315,16 @@ function AllSessions({ compact = false }) {
             ownCall=${
                 session.approval !== undefined &&
                 session.inCharge !== true &&
-                // A command someone typed (`!`) is allowed by who is in charge of the session's computer alone.
-                (session.approval.typedBy !== undefined ||
-                    (server?.approvalRule === "others" &&
-                        // Nobody known to have asked is not someone else: the server leaves that one to who is in
-                        // charge of the session's computer.
-                        // Their own call is theirs to allow where who is in charge lets them (`store.js` `allowsOwn`).
-                        (session.approval.requestedBy === undefined ||
-                            (session.approval.requestedBy === me?.id && !allowsOwn(session)))))
+                // A command someone typed (`!`) is allowed by who is in charge of the session's computer, and by its own
+                // person where they are let (`store.js` `allowsOwn`), whatever the rule.
+                (session.approval.typedBy !== undefined
+                    ? !(session.approval.typedBy === me?.id && allowsOwn(session))
+                    : server?.approvalRule === "others" &&
+                      // Nobody known to have asked is not someone else: the server leaves that one to who is in
+                      // charge of the session's computer.
+                      // Their own call is theirs to allow where who is in charge lets them.
+                      (session.approval.requestedBy === undefined ||
+                          (session.approval.requestedBy === me?.id && !allowsOwn(session))))
             }
             onReview=${onReview}
             onAnswer=${onAnswer}
