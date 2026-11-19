@@ -3662,6 +3662,8 @@ export class Commands {
         await app.requireDriver(id, user);
         const entryId = entryIdOf(request.entryId);
 
+        // Where it is saved: the session is still theirs to steer, with the wheel, its approval live.
+        const saving = app.admission(id, user);
         // Check the queue and newest message on the same commit that makes the fork and archives its source.
         const { forked, entry, wasArchived } = await app.harness.commit(async (tx) => {
             const live = await tx.doc(LiveDoc, id);
@@ -3728,13 +3730,23 @@ export class Commands {
                 title: source.title,
                 cwd,
                 worktree: source.worktree === undefined ? undefined : { ...source.worktree },
+                // It takes the session's place, so it stays its starter's, shared with the same people.
+                keeps: {
+                    createdBy: source.createdBy,
+                    sharedWith:
+                        source.sharedWith === undefined ? undefined : [...source.sharedWith],
+                },
             });
             const wasArchived = source.archived === true;
 
             source.archived = true;
 
             return { forked: fork.id, entry, wasArchived };
-        }, context);
+        }, saving);
+
+        // Nothing new is given: the session's approval and the people invited to it alone go with it.
+        app.replaced(id, forked, user);
+
         const message = entry.model?.[0];
         const original = userContent(message);
         const [text, files] = splitAttachments(original.text.replace(FROM_PREFIX, ""));
@@ -4197,6 +4209,11 @@ export class Commands {
             worktree: Worktree | undefined;
             /** Whom it starts shared with (`SessionMeta.sharedWith`); absent: no one. */
             sharedWith?: string[];
+            /**
+             * It takes the place of session `id` (Undo), and is no new session of `user`'s: it keeps that session's
+             * starter (none: the owner's, as any session without one) and the people it is shared with.
+             */
+            keeps?: { createdBy: string | undefined; sharedWith: string[] | undefined };
             /** The computer it runs on, with its permission there; absent: this server. */
             runner?: string;
             runnerPermission?: string;
@@ -4211,14 +4228,16 @@ export class Commands {
         const { at, title, cwd, worktree, runner, runnerPermission, moved, resend } = fork;
         const sessions = await tx.doc(SessionsDoc);
         const now = Date.now();
+        const starter = fork.keeps === undefined ? user.id : fork.keeps.createdBy;
+        const sharedWith = fork.keeps === undefined ? fork.sharedWith : fork.keeps.sharedWith;
 
         sessions.items[String(forked)] = {
             cwd,
             ...(title === undefined ? {} : { title }),
             createdAt: now,
             updatedAt: now,
-            createdBy: user.id,
-            ...(fork.sharedWith === undefined ? {} : { sharedWith: fork.sharedWith }),
+            ...(starter === undefined ? {} : { createdBy: starter }),
+            ...(sharedWith === undefined ? {} : { sharedWith }),
             forkedFrom: { id: Number(id), ...(at === undefined ? {} : { entryId: at }) },
             ...(runner === undefined ? {} : { runner, runnerPermission }),
             ...(worktree === undefined ? {} : { worktree }),

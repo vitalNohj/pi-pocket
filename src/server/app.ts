@@ -3536,6 +3536,39 @@ export class PocketApp {
     }
 
     /**
+     * Session `to` took session `from`'s place, as `user` asked (Undo: `commands.ts` `undo`). Nothing new is given, and
+     * nothing is lost: `to` gets `from`'s live approval, used now by `user`; the people invited to `from` alone are
+     * invited to `to` as well; and an invite to `from` that nobody used yet leads to `to`. Its starter and the people it
+     * is shared with are saved with it (`#initFork`).
+     */
+    replaced(from: ConversationId, to: ConversationId, user: User): void {
+        const old = String(from);
+        const next = String(to);
+
+        this.folderApprovals.inherit(
+            String(this.rootOf(from)),
+            next,
+            { computer: this.runnerOf(from) ?? THIS_SERVER, folder: this.#approvalFolder(from) },
+            user,
+        );
+
+        let changed = this.config.moveInvites(old, next);
+
+        for (const person of this.config.users) {
+            if (person.sessions?.includes(old) === true && !person.sessions.includes(next)) {
+                this.config.updateUser(person.id, { sessions: [...person.sessions, next] });
+                void this.#refreshUser(person.id);
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            this.accessChanged();
+            this.#peopleChanged();
+        }
+    }
+
+    /**
      * `by`, in charge of session `id`'s computer, takes that one session from `personId`, and nothing else of theirs:
      * shared with them, it is no longer; started by them, it moves to `by` with the tasks they set up in it
      * (`handOver`); invited to it alone, they are no longer. They leave it at once.

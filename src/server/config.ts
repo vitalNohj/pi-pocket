@@ -1052,6 +1052,27 @@ export class ConfigStore {
         this.save();
     }
 
+    /**
+     * Session `to` took session `from`'s place (`app.ts` `replaced`): an invite to `from` alone that nobody used yet is
+     * to `to`. Says whether there was one.
+     */
+    moveInvites(from: string, to: string): boolean {
+        let moved = false;
+
+        for (const invite of this.#config.invites ?? []) {
+            if (invite.device === undefined && invite.session === from) {
+                invite.session = to;
+                moved = true;
+            }
+        }
+
+        if (moved) {
+            this.save();
+        }
+
+        return moved;
+    }
+
     /** A live invite by its code, or undefined when there is none or it expired. */
     invite(code: string): StoredInvite | undefined {
         this.#pruneInvites();
