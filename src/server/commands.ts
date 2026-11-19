@@ -3825,23 +3825,28 @@ export class Commands {
         const lines = files?.split("\n") ?? [];
 
         if (lines.length > 0) {
-            // An inherited message's uploads belong to the session where the entry was written. Submit accepts only
-            // uploads of the new session, so restore them there rather than loosening that check.
+            // An inherited message's uploads belong to the session where the entry was written, and a message sent
+            // again keeps the paths of the session it came from. Submit accepts only uploads of the new session, so
+            // restore them there rather than loosening that check.
             try {
-                const from = app.workspace.uploadDirectory(entry.conversationId);
+                const sources = this.#uploadLineage(entry.conversationId, user);
                 const to = app.workspace.uploadDirectory(forked);
 
                 for (const line of lines) {
-                    const [file] = attachedFile(line, from);
+                    for (const from of sources) {
+                        const [file] = attachedFile(line, from);
 
-                    if (file === undefined || file.path !== join(from, basename(file.path))) {
-                        continue;
-                    }
+                        if (file === undefined || file.path !== join(from, basename(file.path))) {
+                            continue;
+                        }
 
-                    const restored = await restoreUpload(file, to);
+                        const restored = await restoreUpload(file, to);
 
-                    if (restored !== undefined) {
-                        attachments.push(restored);
+                        if (restored !== undefined) {
+                            attachments.push(restored);
+                        }
+
+                        break;
                     }
                 }
             } catch {
@@ -3873,6 +3878,27 @@ export class Commands {
                 inlineTextFiles ||
                 original.images.length > uploadedImages,
         };
+    }
+
+    /**
+     * The upload folders a message of session `id` can name: its own, then each session it was forked from, as long as
+     * `user` may see that session.
+     */
+    #uploadLineage(id: ConversationId, user: User): string[] {
+        const app = this.#app;
+        const folders: string[] = [];
+        const seen = new Set<number>();
+        let current: ConversationId | undefined = id;
+
+        while (current !== undefined && !seen.has(Number(current)) && app.canSee(user, current)) {
+            seen.add(Number(current));
+            folders.push(app.workspace.uploadDirectory(current));
+            const parent: number | undefined = app.sessionMeta(current)?.forkedFrom?.id;
+
+            current = parent === undefined ? undefined : (parent as unknown as ConversationId);
+        }
+
+        return folders;
     }
 
     /** Only the newest input can be undone; skip replies, tools and notes after it. */

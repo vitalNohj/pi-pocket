@@ -342,6 +342,33 @@ test("Undo restores available uploads and reports a missing file", async () => {
     assert.equal(readFileSync(path, "utf8"), "some notes");
 });
 
+test("Undo of a message sent again restores the uploads of the session it came from", async () => {
+    const id = await newSession(app);
+    const path = join(app.workspace.uploadDirectory(id), "id-plan.txt");
+
+    writeFileSync(path, "the plan");
+    await say(app, id, "read the plan", [{ path, name: "plan.txt", mime: "text/plain", size: 8 }]);
+    const [message] = await ofKind(id, "pi.user");
+    const { id: retry } = await app.commands.resend(id, owner(app), {
+        entryId: Number(message!.id),
+    });
+
+    await until(
+        async () => (await ofKind(retry, "pi.assistant")).length === 1,
+        "the retry to be answered",
+    );
+    const [resent] = await ofKind(retry, "pi.user");
+    const back = await app.commands.undo(retry, owner(app), { entryId: Number(resent!.id) });
+    const restored = join(app.workspace.uploadDirectory(back.id), "id-plan.txt");
+
+    assert.equal(back.text, "read the plan");
+    assert.equal(back.attachmentsOmitted, false);
+    assert.deepEqual(back.attachments, [
+        { path: restored, name: "plan.txt", mime: "text/plain", size: 8 },
+    ]);
+    assert.equal(readFileSync(restored, "utf8"), "the plan");
+});
+
 test("a message can be edited and sent again in a fork that ends just before it", async () => {
     const id = await newSession(app);
 
