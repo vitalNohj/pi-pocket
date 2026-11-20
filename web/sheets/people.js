@@ -33,6 +33,7 @@ const LASTS = [
     [60, "1 hour", "in an hour"],
     [24 * 60, "1 day", "in a day"],
     [7 * 24 * 60, "1 week", "in a week"],
+    [30 * 24 * 60, "1 month", "in a month"],
 ];
 
 /** End an invite or a device link nobody will see: one no longer shown, or one that answered too late to show. */

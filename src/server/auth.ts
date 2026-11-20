@@ -5,8 +5,11 @@ import { HttpError } from "./errors.ts";
 
 export const COOKIE = "pocket_auth";
 
-/** How long an invite may last, in minutes: 15 minutes (the default, and always for a device link), an hour, a day, or a week. */
-export const INVITE_MINUTES = [15, 60, 24 * 60, 7 * 24 * 60] as const;
+/**
+ * How long an invite may last, in minutes: 15 minutes (the default, and always for a device link), an hour, a day, a
+ * week, or a month (30 days).
+ */
+export const INVITE_MINUTES = [15, 60, 24 * 60, 7 * 24 * 60, 30 * 24 * 60] as const;
 export type InviteMinutes = (typeof INVITE_MINUTES)[number];
 
 export function parseCookies(header: string | undefined): Record<string, string> {
@@ -114,7 +117,7 @@ function newCode(): string {
     return code;
 }
 
-/** Invites live in `config.json` (by their codes' hashes), so one that lasts a day or a week outlives a restart. */
+/** Invites live in `config.json` (by their codes' hashes), so one that lasts a day, a week, or a month outlives a restart. */
 /**
  * May `creator` invite someone new, to session `session` alone or to this server: the app's access policy
  * (`access.ts` `mayInvite`). Without it, by role alone: the owner, and a guest the owner lets who is not invited to one

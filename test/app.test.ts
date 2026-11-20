@@ -2918,7 +2918,8 @@ test("an invite lasts as long as asked (a device link always 15 minutes), outliv
         for (const [path, body, minutes] of [
             ["invite", {}, 15],
             ["invite", { minutes: 60 }, 60],
-            ["me/device", { minutes: 7 * 24 * 60 }, 15],
+            ["invite", { minutes: 30 * 24 * 60 }, 30 * 24 * 60],
+            ["me/device", { minutes: 30 * 24 * 60 }, 15],
         ] as const) {
             const before = Date.now();
             const invite = (await (await call(app.config.ownerToken, path, body)).json()) as {
@@ -2931,6 +2932,17 @@ test("an invite lasts as long as asked (a device link always 15 minutes), outliv
                 invite.expiresAt >= before + minutes * MINUTE &&
                     invite.expiresAt <= Date.now() + minutes * MINUTE,
                 path,
+            );
+        }
+
+        // No other length: a month is the longest, and nothing between the choices.
+        for (const minutes of [31 * 24 * 60, 30 * 24 * 60 + 1, 30, 0, "60"]) {
+            const refused = await call(app.config.ownerToken, "invite", { minutes });
+
+            assert.equal(refused.status, 400, String(minutes));
+            assert.match(
+                ((await refused.json()) as { error: string }).error,
+                /15 minutes, an hour, a day, a week, or a month/,
             );
         }
 

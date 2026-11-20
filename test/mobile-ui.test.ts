@@ -492,11 +492,39 @@ test(
             0,
         );
 
+        // A month is the longest. Its button fits the phone's row beside the others, and the sheet says how long.
+        assert.deepEqual(
+            await inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".sheet .segmented button")].map((each) => each.textContent.trim()).filter((label) => /^(15 min|1 (hour|day|week|month))$/.test(label)))`,
+            ),
+            ["15 min", "1 hour", "1 day", "1 week", "1 month"],
+        );
+        await pick("1 month");
+        await until(async () => ![null, week].includes(await code()), "the month's invite");
+        const month = await code();
+
+        assert.equal(await status(month), 200);
+        await until(async () => (await status(week)) === 410, "the week's invite, ended");
+        assert.deepEqual(
+            await inPage<{ said: boolean; rows: number; fits: boolean }>(`
+                const last = [...document.querySelectorAll(".sheet .segmented button")].filter((each) => /^(15 min|1 (hour|day|week|month))$/.test(each.textContent.trim()));
+                const sheet = document.querySelector(".sheet").getBoundingClientRect();
+                const boxes = last.map((each) => each.getBoundingClientRect());
+
+                return JSON.stringify({
+                    said: document.querySelector(".sheet").textContent.includes("It works once and expires in a month."),
+                    rows: new Set(boxes.map((each) => Math.round(each.top))).size,
+                    fits: boxes.every((each) => each.left >= sheet.left && each.right <= sheet.right),
+                });
+            `),
+            { said: true, rows: 1, fits: true },
+        );
+
         await pick("1 day");
-        await until(async () => ![null, week].includes(await code()), "the day's invite");
+        await until(async () => ![null, month].includes(await code()), "the day's invite");
         const day = await code();
 
-        await until(async () => (await status(week)) === 410, "the week's invite, ended");
+        await until(async () => (await status(month)) === 410, "the month's invite, ended");
         await pick("1 week");
         await until(async () => ![null, day].includes(await code()), "a week's invite again");
         const week2 = await code();

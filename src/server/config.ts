@@ -306,7 +306,7 @@ interface PocketConfig {
     /** Printed in the login URL at every start. Keep this file private. */
     ownerToken: string;
     users: User[];
-    /** Invites not yet used: kept here so one that lasts a day or a week outlives a restart. */
+    /** Invites not yet used: kept here so one that lasts a day, a week, or a month outlives a restart. */
     invites?: StoredInvite[];
     lastModel?: ModelChoice;
     /** The model and thinking level new sessions start with, as the owner chose; absent: the last one picked. */

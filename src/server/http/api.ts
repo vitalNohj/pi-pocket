@@ -292,7 +292,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
         const minutes = INVITE_MINUTES.find((each) => each === body.minutes);
 
         if (minutes === undefined) {
-            throw new HttpError(400, "An invite lasts 15 minutes, an hour, a day, or a week.");
+            throw new HttpError(
+                400,
+                "An invite lasts 15 minutes, an hour, a day, a week, or a month.",
+            );
         }
 
         return minutes;
