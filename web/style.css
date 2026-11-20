@@ -10384,11 +10384,15 @@ button.choice-row:active {
     text-align: center;
 }
 
+/* The small actions share their row equally; anything else in it (Keep warm) wraps to a row of its own. */
 .copy-minors {
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
-    gap: 4px 18px;
+    gap: 4px;
+}
+
+.copy-minors > :not(.copy-minor) {
+    flex-basis: 100%;
 }
 
 .copy-minors:empty {
@@ -10397,9 +10401,12 @@ button.choice-row:active {
 
 .copy-minor {
     display: inline-flex;
+    flex: 1 1 0;
     flex-direction: column;
     align-items: center;
+    min-width: 0;
     padding: 6px 8px;
+    text-align: center;
     border-radius: var(--r-row);
     color: var(--accent);
     font-size: 13px;
