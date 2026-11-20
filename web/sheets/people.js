@@ -895,18 +895,20 @@ function Rights({ person, change }) {
             html`<${Setting}
                 label="Invite people"
                 hint=${
-                    person.invites
-                        ? "On: they invite people, who join as viewers and see what the invite shares."
-                        : inviteLocked
-                          ? NOT_YOURS
-                          : owner
-                            ? "Off: only you invite people."
-                            : "Off: they do not invite people."
+                    person.managesUsers
+                        ? "On with Manage users: they invite people, who join as viewers and see what the invite shares."
+                        : person.invites
+                          ? "On: they invite people, who join as viewers and see what the invite shares."
+                          : inviteLocked
+                            ? NOT_YOURS
+                            : owner
+                              ? "Off: only you invite people."
+                              : "Off: they do not invite people."
                 }
             >
                 <${Switch}
                     on=${person.invites === true}
-                    disabled=${inviteLocked}
+                    disabled=${inviteLocked || person.managesUsers === true}
                     label=${`${person.name} invites people: ${person.invites ? "on" : "off"}`}
                     onChange=${() =>
                         attempt(() =>
@@ -926,7 +928,7 @@ function Rights({ person, change }) {
                 label="Manage users"
                 hint=${
                     person.managesUsers
-                        ? "On: they change what other people may do, and remove them. Not you, themselves, or others who manage users."
+                        ? "On: they invite people, change what other people may do, remove them, and make a sign-in link for a viewer. Not you, themselves, or others who manage users."
                         : "Off: only you manage users."
                 }
             >
@@ -936,7 +938,7 @@ function Rights({ person, change }) {
                     onChange=${() =>
                         (person.managesUsers === true ||
                             confirm(
-                                `Let ${person.name} manage users? They can make viewers users, change what other people may do, and remove them.`,
+                                `Let ${person.name} manage users? They can invite people, make viewers users, change what other people may do, remove them, and sign a device in as a viewer.`,
                             )) &&
                         attempt(() =>
                             api(`users/${encodeURIComponent(person.id)}/manages-users`, {
@@ -1279,7 +1281,8 @@ function PersonPage({ person }) {
         ${myself && viewer && html`<${RequestAccess} person=${person} />`}
         ${
             collab() &&
-            (owner || (myself && !viewer)) &&
+            // One's own, the owner's for anyone, and for a viewer whoever manages them (`access.ts` `maySignInAs`).
+            (owner || (myself && !viewer) || (mine && viewer && !person.paused)) &&
             html`<${DeviceLink} key=${person.id} person=${person} />`
         }
         ${

@@ -132,17 +132,34 @@ export type MayInvite = (creator: User, session?: string) => boolean;
 
 const byRole: MayInvite = (creator) =>
     creator.role === "owner" ||
-    (creator.role === "guest" && creator.invites === true && creator.sessions === undefined);
+    (creator.role === "guest" &&
+        (creator.invites === true || creator.managesUsers === true) &&
+        creator.sessions === undefined);
+
+/**
+ * May `maker` make a sign-in link that signs a device in as `target`, someone else: the app's access policy
+ * (`access.ts` `maySignInAs`). Without it, the owner alone.
+ */
+export type MaySignInAs = (maker: User, target: User) => boolean;
+
+const ownerOnly: MaySignInAs = (maker) => maker.role === "owner";
 
 export class Auth {
     readonly #config: ConfigStore;
     readonly #mayInvite: MayInvite;
     readonly #codes: Codes | undefined;
+    readonly #maySignInAs: MaySignInAs;
 
-    constructor(config: ConfigStore, mayInvite: MayInvite = byRole, codes?: Codes) {
+    constructor(
+        config: ConfigStore,
+        mayInvite: MayInvite = byRole,
+        codes?: Codes,
+        maySignInAs: MaySignInAs = ownerOnly,
+    ) {
         this.#config = config;
         this.#mayInvite = mayInvite;
         this.#codes = codes;
+        this.#maySignInAs = maySignInAs;
     }
 
     user(request: IncomingMessage): User | undefined {
@@ -189,9 +206,9 @@ export class Auth {
 
     /**
      * A device link: it signs another device in as `target` and makes no one new. The owner and users make one for
-     * themselves; the owner makes one for someone else, who lost their device (`api.ts` checks who asks). It works
-     * once and lasts 15 minutes: whoever opens it gets all that `target` has, after a code from their authenticator
-     * when they have one (`redeem`).
+     * themselves; the owner makes one for someone else, who lost their device, and who manages users makes one for a
+     * viewer (`api.ts` checks who asks). It works once and lasts 15 minutes: whoever opens it gets all that `target`
+     * has, after a code from their authenticator when they have one (`redeem`).
      */
     createDeviceLink(
         by: User,
@@ -212,8 +229,9 @@ export class Auth {
     }
 
     /**
-     * Who a device link signs in: whoever made it, or the person the owner made it for. Undefined when either is gone,
-     * or when its maker is no longer the owner.
+     * Who a device link signs in: whoever made it, or the person it was made for. Undefined when either is gone, or
+     * when its maker may no longer make one for them (`MaySignInAs`): no longer the owner or managing users, or the
+     * person is no longer a viewer.
      */
     #devicePerson(invite: StoredInvite): User | undefined {
         const maker = this.#config.userById(invite.createdBy);
@@ -226,7 +244,9 @@ export class Auth {
             return maker;
         }
 
-        return maker.role === "owner" ? this.#config.userById(invite.person) : undefined;
+        const target = this.#config.userById(invite.person);
+
+        return target !== undefined && this.#maySignInAs(maker, target) ? target : undefined;
     }
 
     /** End an invite before its time, if `by` made it: when the sheet that showed it moves on to another. */

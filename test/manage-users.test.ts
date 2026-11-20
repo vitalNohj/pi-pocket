@@ -89,6 +89,34 @@ async function manager(name: string): Promise<User> {
     return user;
 }
 
+/** Post the page of a link or an invite as a browser does. `who`: whom the answer signs in, if anyone. */
+async function join(
+    code: string,
+    form: Record<string, string> = {},
+): Promise<{ status: number; who: string | undefined }> {
+    const response = await fetch(`${address}/join/${code}`, {
+        method: "POST",
+        redirect: "manual",
+        signal: AbortSignal.timeout(20_000),
+        body: new URLSearchParams(form).toString(),
+        headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "sec-fetch-site": "same-origin",
+        },
+    });
+    const cookie = /pocket_auth=([^;]+)/.exec(response.headers.get("set-cookie") ?? "")?.[1];
+
+    await response.text();
+
+    return {
+        status: response.status,
+        who:
+            cookie === undefined
+                ? undefined
+                : app.config.userByToken(decodeURIComponent(cookie))?.id,
+    };
+}
+
 before(async () => {
     app = await openApp(scriptedModel(), undefined, () => clock);
     server = createServer(
@@ -209,8 +237,82 @@ test("who manages users makes a viewer a user and back, removes their authentica
     await done(mona, `users/${vera.id}/remove`, {});
     assert.equal(kept(vera.id), undefined);
 
-    // A sign-in link for someone else signs a device in as them: the owner's alone.
-    await refused(mona, `users/${gil.id}/device`, {}, 403, /Only the owner can do that/);
+    // A sign-in link for a user signs a device in as them, with all they have: the owner's alone.
+    await refused(mona, `users/${gil.id}/device`, {}, 403, /only for a viewer/);
+});
+
+test("who manages users invites people, and signs a device in as a viewer and as nobody else", async () => {
+    const mona = await manager("Mona 7");
+    const max = await manager("Max 7");
+    const ivy = person("Ivy 7", "guest");
+    const gil = person("Gil 7", "guest");
+    const pia = person("Pia 7", "guest");
+    const vera = person("Vera 7", "viewer");
+    const only = /Who manages users makes a sign-in link only for a viewer/;
+    const link = (by: User, target: string) =>
+        call<{ code: string }>(by, `users/${target}/device`, {});
+
+    // Invite people comes with managing users: it has no switch of its own to turn on.
+    assert.equal(kept(mona.id)?.invites, undefined);
+    assert.equal((await app.hello(kept(mona.id)!)).user.invites, true);
+    assert.equal(told(owner(app), mona)?.invites, true);
+    assert.equal(told(mona, mona)?.invites, true);
+    assert.equal((await app.hello(gil)).user.invites, false);
+    assert.equal(told(owner(app), gil)?.invites, undefined);
+
+    // As for anyone who invites: to their own sessions, only where they start sessions.
+    await refused(mona, "invite", { minutes: 15 }, 403, /Only people who may start sessions here/);
+    app.config.setServerUsers([...(app.config.server.users ?? []), mona.id]);
+
+    const invite = await call<{ code: string }>(mona, "invite", { minutes: 15 });
+
+    assert.equal(invite.status, 200);
+
+    // Someone who only invites makes a sign-in link for nobody.
+    await done(owner(app), `users/${ivy.id}/invites`, { on: true });
+    await refused(ivy, `users/${vera.id}/device`, {}, 403, /Only the owner can do that/);
+
+    // For a viewer, who makes none themselves: it signs a device in as them.
+    const made = await link(mona, vera.id);
+
+    assert.equal(made.status, 200);
+    assert.equal((await join(made.body.code)).who, vera.id);
+
+    // Never for a user, another who manages users, the owner, or themselves.
+    for (const each of [gil, max, owner(app), mona]) {
+        await refused(mona, `users/${each.id}/device`, {}, 403, only);
+    }
+
+    await refused(mona, "users/nobody/device", {}, 404, /No such person/);
+
+    // Nor for a paused user, who is a user again once they link an authenticator. Kept as a viewer, they are one.
+    linkAuthenticator(app, pia);
+    await done(owner(app), `users/${pia.id}/authenticator`, undefined, "DELETE");
+    assert.equal(kept(pia.id)?.role, "viewer");
+    assert.ok(kept(pia.id)?.paused !== undefined);
+    await refused(mona, `users/${pia.id}/device`, {}, 403, only);
+    assert.equal((await link(owner(app), pia.id)).status, 200);
+    await done(mona, `users/${pia.id}`, { role: "viewer" });
+    assert.equal(kept(pia.id)?.paused, undefined);
+    assert.equal((await link(mona, pia.id)).status, 200);
+
+    // A link made for a viewer signs nobody in once they are a user.
+    const early = await link(mona, vera.id);
+
+    app.config.updateUser(vera.id, { role: "guest" });
+    assert.equal((await join(early.body.code)).who, undefined);
+    app.config.updateUser(vera.id, { role: "viewer" });
+
+    // Nor once its maker no longer manages users; the invite they made ends with it too.
+    const late = await link(mona, vera.id);
+
+    assert.equal(late.status, 200);
+    await done(owner(app), `users/${mona.id}/manages-users`, { on: false });
+    assert.equal((await join(late.body.code)).who, undefined);
+    assert.equal((await app.hello(kept(mona.id)!)).user.invites, false);
+    assert.equal(told(owner(app), mona)?.invites, undefined);
+    assert.equal((await join(invite.body.code, { name: "Nia 7" })).who, undefined);
+    await refused(mona, `users/${vera.id}/device`, {}, 403, /Only the owner can do that/);
 });
 
 test("who manages users changes neither themselves, the owner, nor another who manages users", async () => {
@@ -258,9 +360,14 @@ test("who manages users gives only what they have themselves, and takes back any
     const gil = person("Gil 5", "guest");
     const more = /You can only give what you have yourself/;
 
+    // Invite people they have with managing users (`access.ts` `invites`): they give it, and take it back.
+    await done(mona, `users/${gil.id}/invites`, { on: true });
+    assert.equal(kept(gil.id)?.invites, true);
+    await done(mona, `users/${gil.id}/invites`, { on: false });
+    assert.equal(kept(gil.id)?.invites, undefined);
+
     for (const [route, key] of [
         ["links-runners", "linksRunners"],
-        ["invites", "invites"],
         ["keeps-warm", "keepsWarm"],
     ] as const) {
         const path = `users/${gil.id}/${route}`;

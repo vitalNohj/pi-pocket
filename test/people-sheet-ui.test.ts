@@ -2586,10 +2586,13 @@ test(
             assert.match(await text(), /manages users/);
             assert.match(
                 await text(),
-                /On: they change what other people may do, and remove them\./,
+                /On: they invite people, change what other people may do, remove them, and make a sign-in link for a viewer\./,
             );
+            // Invite people comes with it: on, and not a switch of its own while she manages users.
+            assert.ok((await switches()).includes("Gina invites people: on (disabled)"));
+            assert.match(await text(), /On with Manage users: they invite people/);
 
-            // Her page for Vera shows what the owner's does, without a reload: but no link that signs in as Vera.
+            // Her page for Vera shows what the owner's does, without a reload, with the link that signs in as a viewer.
             page = ginas;
             await until(
                 async () =>
@@ -2601,34 +2604,33 @@ test(
                 "Vera's switches, for Gina",
             );
             assert.equal(await removable(), true);
-            assert.equal(
-                await inPage<boolean>(
-                    `return JSON.stringify(document.querySelector('.pages-detail [data-part="device-link"]') !== null)`,
-                ),
-                false,
-            );
 
-            // She has none of these herself, so they are not hers to turn on; and whether Uma manages users is the owner's.
+            const signsIn = () =>
+                inPage<boolean>(
+                    `return JSON.stringify(document.querySelector('.pages-detail [data-part="device-link"]') !== null)`,
+                );
+
+            assert.equal(await signsIn(), true);
+            assert.match(await text(), /Sign in a device of theirs/);
+
+            // She has neither of these herself, so they are not hers to turn on; and whether Uma manages users is the
+            // owner's. Inviting people she has with managing users. No link signs a device in as a user.
             await show("Uma");
             assert.deepEqual(await switches(), [
                 "Uma can prompt: on",
                 "Uma links runners: off (disabled)",
-                "Uma invites people: off (disabled)",
+                "Uma invites people: off",
                 "Uma keeps sessions warm: off (disabled)",
             ]);
             assert.equal(
                 (await text()).split("Off: you can only give what you have yourself.").length - 1,
-                3,
+                2,
             );
+            assert.equal(await signsIn(), false);
             // No approval time longer than her own.
             assert.deepEqual(await times(), ["1 day", "7 days"]);
 
-            // Once she invites people herself, she lets Uma.
-            app.setInvites(owner(app), guest.id, true);
-            await until(
-                async () => (await switches()).includes("Uma invites people: off"),
-                "the switch to be hers to turn on",
-            );
+            // She invites people herself, so she lets Uma.
             assert.match(await text(), /Off: they do not invite people\./);
             await flip("Uma invites people");
             await until(

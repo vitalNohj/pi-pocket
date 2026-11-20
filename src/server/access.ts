@@ -22,7 +22,8 @@ export const BLOCKED =
 /**
  * A person as the policy needs them. `linksRunners`: the owner let this guest link computers of their own. `invites`:
  * the owner let this guest invite people. `keepsWarm`: the owner let this guest keep sessions warm. `managesUsers`:
- * the owner let this guest manage people.
+ * the owner let this guest manage people. `paused`: they were a user until their authenticator was removed, and are
+ * one again when they link one (`config.ts` `User.paused`).
  */
 export type Person = {
     id: string;
@@ -32,6 +33,7 @@ export type Person = {
     invites?: boolean;
     keepsWarm?: boolean;
     managesUsers?: boolean;
+    paused?: object;
 };
 
 /** A computer: this server, or a linked runner. */
@@ -313,6 +315,28 @@ export class AccessPolicy {
     }
 
     /**
+     * May `by` make a sign-in link that signs a device in as `target`, someone else (`auth.ts` `createDeviceLink`): it
+     * gives whoever opens it all that `target` has. The owner, for anyone. Who manages people, only for a viewer they
+     * may change, who makes no such link themselves: never for a user, whose sessions and computers are their own, and
+     * so not for a paused one, who is a user again once they link an authenticator.
+     */
+    maySignInAs(by: Pick<Person, "id">, target: Pick<Person, "id">): boolean {
+        const current = this.#current(by);
+        const other = this.#current(target);
+
+        if (current === undefined || other === undefined) {
+            return false;
+        }
+
+        return (
+            current.role === "owner" ||
+            (this.mayManagePerson(current, other) &&
+                other.role === "viewer" &&
+                other.paused === undefined)
+        );
+    }
+
+    /**
      * May `person` use a workspace a provider module opens (a URI, not a folder on a computer): the owner alone, as its
      * provider, not this policy, decides what it reaches.
      */
@@ -357,13 +381,18 @@ export class AccessPolicy {
         );
     }
 
-    /** Does the owner let `person` invite people at all: the owner always, and the guests the owner lets. */
+    /**
+     * Does the owner let `person` invite people at all: the owner always, the guests the owner lets, and who manages
+     * people (`managesPeople`), who has it with that.
+     */
     invites(person: Pick<Person, "id">): boolean {
         const current = this.#current(person);
 
         return (
             current !== undefined &&
-            (current.role === "owner" || (current.role === "guest" && current.invites === true))
+            (current.role === "owner" ||
+                (current.role === "guest" && current.invites === true) ||
+                this.managesPeople(current))
         );
     }
 

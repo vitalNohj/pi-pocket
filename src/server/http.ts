@@ -56,6 +56,7 @@ export function createHandler(options: HttpOptions) {
         app.config,
         (creator, session) => app.policy.mayInvite(creator, session),
         app.authenticators,
+        (maker, target) => app.policy.maySignInAs(maker, target),
     );
     const api = createApi(options, auth);
 

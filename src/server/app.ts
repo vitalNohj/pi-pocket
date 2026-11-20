@@ -3057,8 +3057,11 @@ export class PocketApp {
                 ...(each.linksRunners === true && (manages || viewer.id === each.id)
                     ? { linksRunners: true }
                     : {}),
-                // May they invite people, for the owner, who sets it, and for themselves.
-                ...(each.invites === true && (manages || viewer.id === each.id)
+                // May they invite people, for the owner, who sets it, and for themselves. Who manages users has it with
+                // that (`access.ts` `invites`).
+                ...((each.invites === true ||
+                    (each.role !== "owner" && this.policy.managesPeople(each))) &&
+                (manages || viewer.id === each.id)
                     ? { invites: true }
                     : {}),
                 // Do they manage people, for the owner, who sets it, for who manages people (they leave such a person

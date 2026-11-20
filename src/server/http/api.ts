@@ -627,13 +627,23 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         // The owner makes one for someone else, who lost their device: it signs a device in as them, not as someone new.
+        // Who manages users makes one for a viewer, who makes none themselves (`access.ts` `maySignInAs`).
         if (first === "users" && second !== undefined && third === "device" && method === "POST") {
-            requireOwner(user);
+            if (!app.policy.managesPeople(user)) {
+                requireOwner(user);
+            }
 
             const person = app.config.userById(second);
 
             if (person === undefined) {
                 throw new HttpError(404, "No such person.");
+            }
+
+            if (!app.policy.maySignInAs(user, person)) {
+                throw new HttpError(
+                    403,
+                    "Who manages users makes a sign-in link only for a viewer.",
+                );
             }
 
             return json(
