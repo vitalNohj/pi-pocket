@@ -50,8 +50,22 @@ test("first useful text goes early; later text is coalesced and based on what th
     const partial = async (text: string) => {
         await app.harness.commit(async (tx) => {
             const live = await tx.doc(LiveDoc, id);
+            const { role, api, provider, model, usage, stopReason, timestamp } =
+                fauxAssistantMessage([]);
 
-            live.generation = { attempt: 1, message: fauxAssistantMessage([fauxText(text)]) };
+            live.generation = {
+                attempt: 1,
+                message: {
+                    role,
+                    api,
+                    provider,
+                    model,
+                    usage,
+                    stopReason,
+                    timestamp,
+                    content: [fauxText(text)],
+                },
+            };
         }, context);
         await setImmediate();
     };
