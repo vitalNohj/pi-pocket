@@ -4,7 +4,7 @@
 // `/given`, `/sees`, and `/rights`, `POST /api/sessions/:id/revoke`). One person on one computer is a switch and, under it, one
 // tree with the rows of the Files panel's: the folders given to them there, and in each the sessions they have in it.
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, attempt, closeSheet, navigate, store } from "../store.js";
+import { api, attempt, closeSheet, declaredRights, navigate, store } from "../store.js";
 import { html, Icon, Switch } from "../ui.js";
 import { accessFolder, below, inFolder, leaving, placed, seenBy } from "./access-tree.js";
 
@@ -86,47 +86,33 @@ export function setRight(computer, person, right, on) {
     });
 }
 
-/** Those rights, as their switches say them: under a person's switch for a computer, once they prompt there. */
-const RIGHTS = [
-    {
-        right: "wheel",
-        name: "Override take turns",
-        on: "On: they take the wheel from someone who is driving here, and turn take turns off.",
-        off: "Off: they ask to drive, and wait for the wheel.",
-        label: "overrides take turns on",
-    },
-    {
-        right: "allows",
-        name: "Allow their own calls",
-        on: "On: they allow their own ! commands that Lancet Guard asks about here and, while approvals need someone else, the calls their own messages led to.",
-        off: "Off: who is in charge allows their ! commands that Lancet Guard asks about and, while approvals need someone else, someone else allows their calls.",
-        label: "allows their own calls on",
-    },
-];
-
+/**
+ * One of those rights, as the server declares it (`each`: `rights.ts`, `store.js` `declaredRights`): under a person's
+ * switch for a computer, once they prompt there.
+ */
 function RightSwitch({ computer, person, each }) {
     const [busy, setBusy] = useState(false);
-    const on = computer[each.right].includes(person.id);
+    const on = computer.rights[each.key].includes(person.id);
 
     const flip = async () => {
         setBusy(true);
 
         try {
-            await setRight(computer, person, each.right, !on);
+            await setRight(computer, person, each.key, !on);
         } finally {
             setBusy(false);
         }
     };
 
-    return html`<div class="setting wrap" data-right=${each.right}>
+    return html`<div class="setting wrap" data-right=${each.key}>
         <div class="grow">
-            <div class="small">${each.name}</div>
-            <div class="muted small">${on ? each.on : each.off}</div>
+            <div class="small">${each.label}</div>
+            <div class="muted small">${on ? each.on : (each.off ?? each.on)}</div>
         </div>
         <${Switch}
             on=${on}
             disabled=${busy}
-            label=${`${person.name} ${each.label} ${computer.name}: ${on ? "on" : "off"}`}
+            label=${`${person.name} ${each.says} ${computer.name}: ${on ? "on" : "off"}`}
             onChange=${flip}
         />
     </div>`;
@@ -534,10 +520,11 @@ export function AccessRow({ computer, person, lead, title }) {
     const sessions = sessionsOf(computer, person);
     // Folders are for those who start sessions: who steers, and is not held to one session.
     const starts = chosen && person.role === "guest" && !person.sessions;
-    // The rights given one person at a time are for those who prompt here; a server from before them names none.
+    // The rights given one person at a time are for those who prompt here. A computer's view names who holds each
+    // only for who manages it.
     const rights =
-        chosen && person.role !== "viewer" && !person.sessions && Array.isArray(computer.wheel)
-            ? RIGHTS.filter((each) => Array.isArray(computer[each.right]))
+        chosen && person.role !== "viewer" && !person.sessions && computer.rights
+            ? declaredRights("computer").filter((each) => Array.isArray(computer.rights[each.key]))
             : [];
 
     const toggle = async () => {
@@ -592,7 +579,7 @@ export function AccessRow({ computer, person, lead, title }) {
         ${rights.map(
             (each) =>
                 html`<${RightSwitch}
-                    key=${each.right}
+                    key=${each.key}
                     computer=${computer}
                     person=${person}
                     each=${each}

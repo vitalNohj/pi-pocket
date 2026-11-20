@@ -249,12 +249,12 @@ test("keep warm: a user the owner lets turns a session on and picks its time; ta
         const viewer = (await addPerson(app, "Bea", "viewer")).user;
         const id = await newSession(app);
         const refused = /Only the owner, or someone the owner lets, can keep a session warm/;
-        const told = async (user: typeof guest) => (await app.hello(user)).user.keepsWarm;
+        const told = async (user: typeof guest) => (await app.hello(user)).user.rights.keepsWarm;
         const shown = (to: typeof guest) =>
             (
                 app.people(to).find((each) => each.id === guest.id) as
-                    { keepsWarm?: true } | undefined
-            )?.keepsWarm;
+                    { rights?: string[] } | undefined
+            )?.rights?.includes("keepsWarm") === true || undefined;
 
         // Off until the owner turns it on: the page is told so, and the server refuses.
         assert.equal(await told(owner(app)), true);
@@ -263,12 +263,21 @@ test("keep warm: a user the owner lets turns a session on and picks its time; ta
         await assert.rejects(app.commands.updateSession(id, guest, { keepWarm: 1 }), refused);
 
         // Only the owner sets it, and never for themselves.
-        assert.throws(() => app.setKeepsWarm(guest, guest.id, true), /Only the owner can do that/);
-        assert.throws(() => app.setKeepsWarm(owner(app), owner(app).id, true), /No such person/);
-        assert.throws(() => app.setKeepsWarm(owner(app), "nobody", true), /No such person/);
-        assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
+        assert.throws(
+            () => app.setRight(guest, { person: guest.id, right: "keepsWarm", on: true }),
+            /Only the owner can do that/,
+        );
+        assert.throws(
+            () => app.setRight(owner(app), { person: owner(app).id, right: "keepsWarm", on: true }),
+            /No such person/,
+        );
+        assert.throws(
+            () => app.setRight(owner(app), { person: "nobody", right: "keepsWarm", on: true }),
+            /No such person/,
+        );
+        assert.notEqual(app.config.userById(guest.id)?.rights?.includes("keepsWarm"), true);
 
-        app.setKeepsWarm(owner(app), guest.id, true);
+        app.setRight(owner(app), { person: guest.id, right: "keepsWarm", on: true });
         assert.equal(await told(guest), true);
         assert.equal(shown(owner(app)), true, "the owner, who sets it, sees it");
         assert.equal(shown(guest), true, "and so do they");
@@ -287,7 +296,7 @@ test("keep warm: a user the owner lets turns a session on and picks its time; ta
         // It is each person's own: another user is still refused, and so is a viewer whatever their record says.
         assert.equal(await told(other), false);
         await assert.rejects(app.commands.updateSession(id, other, { keepWarm: 4 }), refused);
-        app.config.updateUser(viewer.id, { keepsWarm: true });
+        app.config.updateUser(viewer.id, { rights: ["keepsWarm"] });
         assert.equal(await told(viewer), false);
         await assert.rejects(app.commands.updateSession(id, viewer, { keepWarm: 4 }));
         assert.equal(app.sessionMeta(id)?.keepWarm, undefined);
@@ -300,8 +309,8 @@ test("keep warm: a user the owner lets turns a session on and picks its time; ta
 
         // Taken back: what is on stays on, and they can only turn it off.
         await app.commands.updateSession(id, guest, { keepWarm: 4 });
-        app.setKeepsWarm(owner(app), guest.id, false);
-        assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
+        app.setRight(owner(app), { person: guest.id, right: "keepsWarm", on: false });
+        assert.notEqual(app.config.userById(guest.id)?.rights?.includes("keepsWarm"), true);
         assert.equal(await told(guest), false);
         assert.equal(shown(owner(app)), undefined);
         assert.equal(app.sessionMeta(id)?.keepWarm, 4, "the session keeps its time");

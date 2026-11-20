@@ -157,7 +157,7 @@ before(async () => {
     }
 
     // The owner lets the guest invite people: off until then (`access.ts` `invites`).
-    app.setInvites(owner(app), guest.id, true);
+    app.setRight(owner(app), { person: guest.id, right: "invites", on: true });
     stopAnswering = answerRequests(app, () => true);
     app.accessChanged();
     await app.commands.shareSession(shared, owner(app), [guest.id, viewer.id]);
@@ -749,7 +749,7 @@ describe("sharing and invites", () => {
             403,
         );
         // Someone not chosen does not see the session, so learns nothing of its folder, also when they may invite.
-        app.setInvites(owner(app), stranger.id, true);
+        app.setRight(owner(app), { person: stranger.id, right: "invites", on: true });
 
         try {
             assert.equal(
@@ -757,7 +757,7 @@ describe("sharing and invites", () => {
                 400,
             );
         } finally {
-            app.setInvites(owner(app), stranger.id, false);
+            app.setRight(owner(app), { person: stranger.id, right: "invites", on: false });
         }
     });
 
@@ -789,42 +789,59 @@ describe("sharing and invites", () => {
         }
 
         // Only the owner sets it.
-        assert.equal((await call(guest, `users/${guest.id}/invites`, { on: true })).status, 403);
-        assert.equal((await call(viewer, `users/${guest.id}/invites`, { on: false })).status, 403);
         assert.equal(
-            (await call(owner(app), `users/${guest.id}/invites`, { on: "yes" })).status,
-            400,
-        );
-        assert.equal(app.config.userById(guest.id)?.invites, true);
-
-        // Keep sessions warm is set the same way, by the owner alone.
-        assert.equal((await call(guest, `users/${guest.id}/keeps-warm`, { on: true })).status, 403);
-        assert.equal(
-            (await call(viewer, `users/${guest.id}/keeps-warm`, { on: true })).status,
+            (await call(guest, `users/${guest.id}/rights`, { right: "invites", on: true })).status,
             403,
         );
         assert.equal(
-            (await call(owner(app), `users/${guest.id}/keeps-warm`, { on: "yes" })).status,
+            (await call(viewer, `users/${guest.id}/rights`, { right: "invites", on: false }))
+                .status,
+            403,
+        );
+        assert.equal(
+            (await call(owner(app), `users/${guest.id}/rights`, { right: "invites", on: "yes" }))
+                .status,
             400,
         );
-        assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
+        assert.equal(app.config.userById(guest.id)?.rights?.includes("invites"), true);
+
+        // Keep sessions warm is set the same way, by the owner alone.
         assert.equal(
-            (await call(owner(app), `users/${guest.id}/keeps-warm`, { on: true })).status,
+            (await call(guest, `users/${guest.id}/rights`, { right: "keepsWarm", on: true }))
+                .status,
+            403,
+        );
+        assert.equal(
+            (await call(viewer, `users/${guest.id}/rights`, { right: "keepsWarm", on: true }))
+                .status,
+            403,
+        );
+        assert.equal(
+            (await call(owner(app), `users/${guest.id}/rights`, { right: "keepsWarm", on: "yes" }))
+                .status,
+            400,
+        );
+        assert.notEqual(app.config.userById(guest.id)?.rights?.includes("keepsWarm"), true);
+        assert.equal(
+            (await call(owner(app), `users/${guest.id}/rights`, { right: "keepsWarm", on: true }))
+                .status,
             200,
         );
-        assert.equal(app.config.userById(guest.id)?.keepsWarm, true);
+        assert.equal(app.config.userById(guest.id)?.rights?.includes("keepsWarm"), true);
         assert.equal(
-            (await call(owner(app), `users/${guest.id}/keeps-warm`, { on: false })).status,
+            (await call(owner(app), `users/${guest.id}/rights`, { right: "keepsWarm", on: false }))
+                .status,
             200,
         );
-        assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
+        assert.notEqual(app.config.userById(guest.id)?.rights?.includes("keepsWarm"), true);
 
         // Off: no kind of invite, and the ones made before bring nobody in.
         assert.equal(
-            (await call(owner(app), `users/${guest.id}/invites`, { on: false })).status,
+            (await call(owner(app), `users/${guest.id}/rights`, { right: "invites", on: false }))
+                .status,
             200,
         );
-        assert.equal(app.config.userById(guest.id)?.invites, undefined);
+        assert.notEqual(app.config.userById(guest.id)?.rights?.includes("invites"), true);
 
         try {
             for (const each of kinds) {
@@ -853,7 +870,8 @@ describe("sharing and invites", () => {
             );
         } finally {
             assert.equal(
-                (await call(owner(app), `users/${guest.id}/invites`, { on: true })).status,
+                (await call(owner(app), `users/${guest.id}/rights`, { right: "invites", on: true }))
+                    .status,
                 200,
             );
         }
@@ -878,8 +896,8 @@ describe("sharing and invites", () => {
             meta.createdBy = linker.id;
             meta.runner = laptop;
         }, context);
-        app.setInvites(owner(app), linker.id, true);
-        app.setInvites(owner(app), nowhere.id, true);
+        app.setRight(owner(app), { person: linker.id, right: "invites", on: true });
+        app.setRight(owner(app), { person: nowhere.id, right: "invites", on: true });
         app.accessChanged();
 
         try {
@@ -931,8 +949,8 @@ describe("sharing and invites", () => {
             assert.equal(app.canSee(lou, shared), false);
             assert.deepEqual(listed(lou), [String(hers)]);
         } finally {
-            app.setInvites(owner(app), linker.id, false);
-            app.setInvites(owner(app), nowhere.id, false);
+            app.setRight(owner(app), { person: linker.id, right: "invites", on: false });
+            app.setRight(owner(app), { person: nowhere.id, right: "invites", on: false });
         }
     });
 

@@ -6,6 +6,14 @@ import { fileURLToPath } from "node:url";
 import type { AuthenticatorStore, StoredAuthenticator } from "./approval-methods.ts";
 import type { AccountMinutes } from "./auth.ts";
 import type { StoredLinkLimits } from "./link-limits.ts";
+import {
+    COMPUTER_RIGHTS,
+    PERSON_RIGHTS,
+    canHold,
+    declared,
+    type ComputerRight,
+    type PersonRight,
+} from "./rights.ts";
 import { codeHash, newIdentity, type Identity } from "../runner/secure-link.ts";
 
 /** The repository root: `web/` and `src/` live here, and `node_modules/` too, except in an npx or local install. */
@@ -70,27 +78,20 @@ export interface User {
      * link one again, and then are a user again, with what is kept here. A change of their role by who manages them
      * ends it.
      */
-    paused?: { managesUsers?: true };
+    paused?: { rights?: PersonRight[] };
     /**
      * How many days a session's approval lasts once this person last used it (`folder-approvals.ts`); 0: never ends.
      * Absent: 7 days.
      */
     approvalDays?: number;
-    /** The owner let this guest link computers of their own (`access.ts` `mayLink`). */
-    linksRunners?: true;
-    /** The owner let this guest invite people (`access.ts` `mayInvite`). The owner always may. */
-    invites?: true;
     /**
-     * The owner let this guest manage people (`access.ts` `managesPeople`): they see on a person's page what the owner
-     * sees, and change what that person may do. Only the owner sets it. It ends when they are made a viewer or limited
-     * to one session (`updateUser`). A pause saves it for when they link an authenticator again (`paused`).
+     * The rights this person was given beyond their role, each declared in `rights.ts`: to link computers of their
+     * own, invite people, manage people, keep sessions warm. The owner has them all and keeps none here. Whether one
+     * counts now is the policy's to say (`access.ts` `has`): a right stays kept while its person cannot hold it, and
+     * counts again when they can, unless it lapses (`rights.ts` `lapses`: `updateUser` drops it). A pause saves such a
+     * one for when they link an authenticator again (`paused`).
      */
-    managesUsers?: true;
-    /**
-     * The owner let this guest keep sessions warm: turn it on for a session and pick its time (`access.ts`
-     * `keepsWarm`). Without it they may only turn it off. The owner always may.
-     */
-    keepsWarm?: true;
+    rights?: PersonRight[];
     /**
      * A temporary account, as its invite said: it links no authenticator, so it stays a viewer. Only the owner ends
      * that, and it never comes back (`app.ts` `setAccess`).
@@ -234,15 +235,12 @@ export interface StoredRunner {
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
     sees?: Record<string, string[]>;
     /**
-     * The chosen people who may take the wheel from a driver here, and turn take turns off under them (`access.ts`
-     * `overridesTurns`), by person id. Who is in charge always may.
+     * The chosen people who hold each right given one person at a time here (`rights.ts`), by person id: `wheel`, to
+     * take the wheel from a driver and turn take turns off under them (`access.ts` `overridesTurns`); `allows`, to
+     * allow a call their own message led to while approvals need someone else (`allowsOwn`). Who is in charge always
+     * may.
      */
-    wheel?: string[];
-    /**
-     * The chosen people who may allow a call their own message led to here while approvals need someone else
-     * (`access.ts` `allowsOwn`), by person id. Who is in charge always may.
-     */
-    allows?: string[];
+    rights?: Partial<Record<ComputerRight, string[]>>;
     /** When it last connected. */
     lastSeen?: number;
     /**
@@ -277,16 +275,8 @@ export interface StoredServer {
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
     sees?: Record<string, string[]>;
-    /**
-     * The chosen people who may take the wheel from a driver here, and turn take turns off under them (`access.ts`
-     * `overridesTurns`), by person id. Who is in charge always may.
-     */
-    wheel?: string[];
-    /**
-     * The chosen people who may allow a call their own message led to here while approvals need someone else
-     * (`access.ts` `allowsOwn`), by person id. Who is in charge always may.
-     */
-    allows?: string[];
+    /** The chosen people who hold each right given one person at a time here, as for a runner (`StoredRunner.rights`). */
+    rights?: Partial<Record<ComputerRight, string[]>>;
     /** New sessions here start shared with its people. */
     shareNew?: true;
     /**
@@ -538,10 +528,7 @@ const ACCESS_KEYS = ["server", "folderApprovals", "taskReminders", "serverIdenti
 const ACCESS_PERSON_KEYS = [
     "authenticator",
     "approvalDays",
-    "linksRunners",
-    "invites",
-    "managesUsers",
-    "keepsWarm",
+    "rights",
     "temporary",
     "devices",
     "accessRequest",
@@ -584,19 +571,73 @@ function keepAccess(config: PocketConfig): string[] {
     }
 
     for (const guest of guests) {
-        guest.invites = true;
+        guest.rights = ["invites"];
     }
 
     return people.map((user) => user.id);
 }
 
-/** A right one chosen person holds on one computer, set by who is in charge of it (`access.ts`). */
-export type ComputerRight = "wheel" | "allows";
+/**
+ * A file from before `rights.ts` kept each right in a field of its own: on a person (`linksRunners: true` and the
+ * like, also inside `paused`), and on a computer (`wheel`, `allows`: lists of people). Each field had the name its
+ * right has now, so they are gathered into `rights` by name. Whether anything changed.
+ */
+function gatherRights(config: PocketConfig): boolean {
+    let changed = false;
 
-export const COMPUTER_RIGHTS: readonly ComputerRight[] = ["wheel", "allows"];
+    const gather = (target: { rights?: PersonRight[] }): void => {
+        const old = target as unknown as Record<string, unknown>;
 
-/** What a computer's record keeps about those rights, and the people chosen for it. */
-type Rights = { users?: string[]; wheel?: string[]; allows?: string[] };
+        for (const key of PERSON_RIGHTS) {
+            if (!(key in old)) {
+                continue;
+            }
+
+            if (old[key] === true && target.rights?.includes(key) !== true) {
+                target.rights = [...(target.rights ?? []), key];
+            }
+
+            delete old[key];
+            changed = true;
+        }
+    };
+
+    for (const user of config.users) {
+        gather(user);
+
+        if (user.paused !== undefined) {
+            gather(user.paused);
+        }
+    }
+
+    for (const computer of [config.server, ...(config.runners ?? [])]) {
+        if (computer === undefined) {
+            continue;
+        }
+
+        const old = computer as unknown as Record<string, unknown>;
+
+        for (const key of COMPUTER_RIGHTS) {
+            if (!(key in old)) {
+                continue;
+            }
+
+            const list = old[key];
+
+            if (Array.isArray(list) && list.length > 0 && computer.rights?.[key] === undefined) {
+                computer.rights = { ...computer.rights, [key]: list as string[] };
+            }
+
+            delete old[key];
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+/** What a computer's record keeps about the rights held on it (`StoredRunner.rights`), and the people chosen for it. */
+type Rights = { users?: string[]; rights?: Partial<Record<ComputerRight, string[]>> };
 
 /** What a computer's record keeps about the people chosen for it, and those leaving it (`StoredRunner.leaving`). */
 type Leaving = { users?: string[]; leaving?: string[] };
@@ -650,14 +691,20 @@ function dropOwed(target: Owed, people: readonly string[]): boolean {
 
 /** Keep each right to the people `keep` names; a right nobody holds leaves no entry. */
 function trimRights(target: Rights, keep: (person: string) => boolean): void {
-    for (const right of COMPUTER_RIGHTS) {
-        const list = (target[right] ?? []).filter(keep);
+    const rights: Partial<Record<ComputerRight, string[]>> = {};
 
-        if (list.length === 0) {
-            delete target[right];
-        } else {
-            target[right] = list;
+    for (const right of COMPUTER_RIGHTS) {
+        const list = (target.rights?.[right] ?? []).filter(keep);
+
+        if (list.length > 0) {
+            rights[right] = list;
         }
+    }
+
+    if (Object.keys(rights).length === 0) {
+        delete target.rights;
+    } else {
+        target.rights = rights;
     }
 }
 
@@ -724,10 +771,13 @@ export class ConfigStore {
      *
      * A file from before the access rules (`knowsAccess`) gives its people what that server gave them (`keepAccess`),
      * in this one save. Any other older file keeps who is chosen as it is.
+     *
+     * A file that kept each right in a field of its own has them gathered into `rights` (`gatherRights`), before the
+     * file is asked whether it knows the access rules: a right is one of their signs.
      */
     #migrate(): void {
         const old = this.#config as PocketConfig & { sharedRunnerSessions?: boolean };
-        let changed = false;
+        let changed = gatherRights(old);
 
         if (old.access === undefined) {
             if (!knowsAccess(old)) {
@@ -1109,10 +1159,7 @@ export class ConfigStore {
                 | "budget"
                 | "avatar"
                 | "approvalDays"
-                | "linksRunners"
-                | "invites"
-                | "managesUsers"
-                | "keepsWarm"
+                | "rights"
                 | "setupDismissed"
                 | "accessRequest"
                 | "paused"
@@ -1146,6 +1193,10 @@ export class ConfigStore {
 
         if (user.paused === undefined || user.role !== "viewer") {
             delete user.paused;
+        } else {
+            const kept = PERSON_RIGHTS.filter((key) => user.paused?.rights?.includes(key) === true);
+
+            user.paused = kept.length === 0 ? {} : { rights: kept };
         }
 
         if (user.sessions === undefined) {
@@ -1164,21 +1215,19 @@ export class ConfigStore {
             delete user.approvalDays;
         }
 
-        if (user.linksRunners !== true) {
-            delete user.linksRunners;
-        }
+        // Only the rights declared (`rights.ts`), each once, in their order. One that lapses goes when its person can
+        // no longer hold it: only a user who is not limited to one session manages people. The owner keeps none.
+        const rights = PERSON_RIGHTS.filter(
+            (key) =>
+                user.role !== "owner" &&
+                user.rights?.includes(key) === true &&
+                (declared(key).lapses !== true || canHold(user, key)),
+        );
 
-        if (user.invites !== true) {
-            delete user.invites;
-        }
-
-        // Only a user who is not limited to one session manages people.
-        if (user.managesUsers !== true || user.role !== "guest" || user.sessions !== undefined) {
-            delete user.managesUsers;
-        }
-
-        if (user.keepsWarm !== true) {
-            delete user.keepsWarm;
+        if (rights.length === 0) {
+            delete user.rights;
+        } else {
+            user.rights = rights;
         }
 
         if (user.temporary !== true) {
@@ -1533,26 +1582,45 @@ export class ConfigStore {
         }
     }
 
-    /** The people who hold `right` on computer `id` (undefined: this server): `StoredRunner.wheel`, `.allows`. */
+    /** Give person `id` right `right` everywhere, or take it back (`User.rights`): what `updateUser` keeps of it. */
+    setPersonRight(id: string, right: PersonRight, on: boolean): void {
+        const rest = (this.userById(id)?.rights ?? []).filter((each) => each !== right);
+
+        this.updateUser(id, { rights: on ? [...rest, right] : rest });
+    }
+
+    /** Every right held on computer `id` (undefined: this server), each with its people: its managers' view of it. */
+    rightsOn(id: string | undefined): Record<ComputerRight, string[]> {
+        return Object.fromEntries(
+            COMPUTER_RIGHTS.map((right) => [right, [...this.rightHolders(id, right)]]),
+        ) as Record<ComputerRight, string[]>;
+    }
+
+    /** The people who hold `right` on computer `id` (undefined: this server): `StoredRunner.rights`. */
     rightHolders(id: string | undefined, right: ComputerRight): readonly string[] {
         const computer = id === undefined ? this.#config.server : this.runnerById(id);
 
-        return computer?.[right] ?? [];
+        return computer?.rights?.[right] ?? [];
     }
 
     /**
      * Give `person` `right` on computer `id` (undefined: this server), or take it back. Only someone chosen there: for
      * anyone else nothing changes, and the answer is false.
      */
-    setRight(id: string | undefined, person: string, right: ComputerRight, on: boolean): boolean {
+    setComputerRight(
+        id: string | undefined,
+        person: string,
+        right: ComputerRight,
+        on: boolean,
+    ): boolean {
         const apply = (target: Rights): boolean => {
             if (!(target.users ?? []).includes(person)) {
                 return false;
             }
 
-            const rest = (target[right] ?? []).filter((each) => each !== person);
+            const rest = (target.rights?.[right] ?? []).filter((each) => each !== person);
 
-            target[right] = on ? [...rest, person] : rest;
+            target.rights = { ...target.rights, [right]: on ? [...rest, person] : rest };
             trimRights(target, () => true);
 
             return true;

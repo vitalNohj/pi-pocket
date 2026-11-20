@@ -78,13 +78,13 @@ const kept = (id: string) => app.config.userById(id);
 /** What `viewer` is told of `target` in the people list. */
 const told = (viewer: User, target: User) =>
     app.people(kept(viewer.id) ?? viewer).find((each) => each.id === target.id) as
-        Record<string, unknown> | undefined;
+        (Record<string, unknown> & { rights?: string[] }) | undefined;
 
 /** A user who manages users, made so by the owner. */
 async function manager(name: string): Promise<User> {
     const user = person(name, "guest");
 
-    await done(owner(app), `users/${user.id}/manages-users`, { on: true });
+    await done(owner(app), `users/${user.id}/rights`, { right: "managesUsers", on: true });
 
     return user;
 }
@@ -138,38 +138,92 @@ test("only the owner lets someone manage users, and only a user who is not limit
     const gil = person("Gil", "guest");
     const vera = person("Vera", "viewer");
     const sam = person("Sam", "guest", ["1"]);
-    const path = (user: User) => `users/${user.id}/manages-users`;
+    const path = (user: User) => `users/${user.id}/rights`;
 
     // Off for everyone but the owner.
-    assert.equal((await app.hello(owner(app))).user.managesUsers, true);
-    assert.equal((await app.hello(mona)).user.managesUsers, false);
+    assert.equal((await app.hello(owner(app))).user.rights.managesUsers, true);
+    assert.equal((await app.hello(mona)).user.rights.managesUsers, false);
 
-    await refused(mona, path(gil), { on: true }, 403, /Only the owner can do that/);
-    await refused(mona, path(mona), { on: true }, 403, /Only the owner can do that/);
-    await refused(owner(app), path(vera), { on: true }, 400, /must be a user who is not limited/);
-    await refused(owner(app), path(sam), { on: true }, 400, /must be a user who is not limited/);
-    await refused(owner(app), path(owner(app)), { on: true }, 404, /No such person/);
-    await refused(owner(app), "users/nobody/manages-users", { on: true }, 404, /No such person/);
-    await refused(owner(app), path(mona), { on: "yes" }, 400, /on must be true or false/);
-    assert.equal(kept(mona.id)?.managesUsers, undefined);
+    await refused(
+        mona,
+        path(gil),
+        { right: "managesUsers", on: true },
+        403,
+        /Only the owner can do that/,
+    );
+    await refused(
+        mona,
+        path(mona),
+        { right: "managesUsers", on: true },
+        403,
+        /Only the owner can do that/,
+    );
+    await refused(
+        owner(app),
+        path(vera),
+        { right: "managesUsers", on: true },
+        400,
+        /must be a user who is not limited/,
+    );
+    await refused(
+        owner(app),
+        path(sam),
+        { right: "managesUsers", on: true },
+        400,
+        /must be a user who is not limited/,
+    );
+    await refused(
+        owner(app),
+        path(owner(app)),
+        { right: "managesUsers", on: true },
+        404,
+        /No such person/,
+    );
+    await refused(
+        owner(app),
+        "users/nobody/rights",
+        { right: "managesUsers", on: true },
+        404,
+        /No such person/,
+    );
+    await refused(
+        owner(app),
+        path(mona),
+        { right: "managesUsers", on: "yes" },
+        400,
+        /on must be true or false/,
+    );
+    assert.notEqual(kept(mona.id)?.rights?.includes("managesUsers"), true);
 
-    await done(owner(app), path(mona), { on: true });
-    assert.equal(kept(mona.id)?.managesUsers, true);
-    assert.equal((await app.hello(kept(mona.id)!)).user.managesUsers, true);
-    assert.equal((await app.hello(gil)).user.managesUsers, false);
+    await done(owner(app), path(mona), { right: "managesUsers", on: true });
+    assert.equal(kept(mona.id)?.rights?.includes("managesUsers"), true);
+    assert.equal((await app.hello(kept(mona.id)!)).user.rights.managesUsers, true);
+    assert.equal((await app.hello(gil)).user.rights.managesUsers, false);
 
     // The owner and they themselves read it, and so does who manages users. Nobody else.
-    assert.equal(told(owner(app), mona)?.managesUsers, true);
-    assert.equal(told(mona, mona)?.managesUsers, true);
-    assert.equal(told(gil, mona)?.managesUsers, undefined);
+    assert.equal(told(owner(app), mona)?.rights?.includes("managesUsers"), true);
+    assert.equal(told(mona, mona)?.rights?.includes("managesUsers"), true);
+    assert.notEqual(told(gil, mona)?.rights?.includes("managesUsers"), true);
 
     // Even with it, they do not give it to anyone, and do not take it from themselves.
-    await refused(mona, path(gil), { on: true }, 403, /Only the owner can do that/);
-    await refused(mona, path(mona), { on: false }, 403, /Only the owner can do that/);
+    await refused(
+        mona,
+        path(gil),
+        { right: "managesUsers", on: true },
+        403,
+        /Only the owner can do that/,
+    );
+    await refused(
+        mona,
+        path(mona),
+        { right: "managesUsers", on: false },
+        403,
+        /Only the owner can do that/,
+    );
 
-    await done(owner(app), path(mona), { on: false });
-    assert.equal(kept(mona.id)?.managesUsers, undefined);
-    assert.equal((await app.hello(kept(mona.id)!)).user.managesUsers, false);
+    await done(owner(app), path(mona), { right: "managesUsers", on: false });
+    assert.notEqual(kept(mona.id)?.rights?.includes("managesUsers"), true);
+    assert.equal((await app.hello(kept(mona.id)!)).user.rights.managesUsers, false);
 });
 
 test("who manages users reads of a person what the owner reads, and nobody else does", async () => {
@@ -253,12 +307,12 @@ test("who manages users invites people, and signs a device in as a viewer and as
         call<{ code: string }>(by, `users/${target}/device`, {});
 
     // Invite people comes with managing users: it has no switch of its own to turn on.
-    assert.equal(kept(mona.id)?.invites, undefined);
-    assert.equal((await app.hello(kept(mona.id)!)).user.invites, true);
-    assert.equal(told(owner(app), mona)?.invites, true);
-    assert.equal(told(mona, mona)?.invites, true);
-    assert.equal((await app.hello(gil)).user.invites, false);
-    assert.equal(told(owner(app), gil)?.invites, undefined);
+    assert.notEqual(kept(mona.id)?.rights?.includes("invites"), true);
+    assert.equal((await app.hello(kept(mona.id)!)).user.rights.invites, true);
+    assert.equal(told(owner(app), mona)?.rights?.includes("invites"), true);
+    assert.equal(told(mona, mona)?.rights?.includes("invites"), true);
+    assert.equal((await app.hello(gil)).user.rights.invites, false);
+    assert.notEqual(told(owner(app), gil)?.rights?.includes("invites"), true);
 
     // As for anyone who invites: to their own sessions, only where they start sessions.
     await refused(mona, "invite", { minutes: 15 }, 403, /Only people who may start sessions here/);
@@ -269,7 +323,7 @@ test("who manages users invites people, and signs a device in as a viewer and as
     assert.equal(invite.status, 200);
 
     // Someone who only invites makes a sign-in link for nobody.
-    await done(owner(app), `users/${ivy.id}/invites`, { on: true });
+    await done(owner(app), `users/${ivy.id}/rights`, { right: "invites", on: true });
     await refused(ivy, `users/${vera.id}/device`, {}, 403, /Only the owner can do that/);
 
     // For a viewer, who makes none themselves: it signs a device in as them.
@@ -307,10 +361,10 @@ test("who manages users invites people, and signs a device in as a viewer and as
     const late = await link(mona, vera.id);
 
     assert.equal(late.status, 200);
-    await done(owner(app), `users/${mona.id}/manages-users`, { on: false });
+    await done(owner(app), `users/${mona.id}/rights`, { right: "managesUsers", on: false });
     assert.equal((await join(late.body.code)).who, undefined);
-    assert.equal((await app.hello(kept(mona.id)!)).user.invites, false);
-    assert.equal(told(owner(app), mona)?.invites, undefined);
+    assert.equal((await app.hello(kept(mona.id)!)).user.rights.invites, false);
+    assert.notEqual(told(owner(app), mona)?.rights?.includes("invites"), true);
     assert.equal((await join(invite.body.code, { name: "Nia 7" })).who, undefined);
     await refused(mona, `users/${vera.id}/device`, {}, 403, /Only the owner can do that/);
 });
@@ -332,23 +386,41 @@ test("who manages users changes neither themselves, the owner, nor another who m
     ] as const) {
         await refused(mona, `users/${target.id}`, { role: "viewer" }, 403, said);
         await refused(mona, `users/${target.id}/remove`, {}, 403, said);
-        await refused(mona, `users/${target.id}/links-runners`, { on: false }, 403, said);
-        await refused(mona, `users/${target.id}/invites`, { on: false }, 403, said);
-        await refused(mona, `users/${target.id}/keeps-warm`, { on: false }, 403, said);
+        await refused(
+            mona,
+            `users/${target.id}/rights`,
+            { right: "linksRunners", on: false },
+            403,
+            said,
+        );
+        await refused(
+            mona,
+            `users/${target.id}/rights`,
+            { right: "invites", on: false },
+            403,
+            said,
+        );
+        await refused(
+            mona,
+            `users/${target.id}/rights`,
+            { right: "keepsWarm", on: false },
+            403,
+            said,
+        );
         await refused(mona, `users/${target.id}/approval-days`, { days: 1 }, 403, said);
         await refused(mona, `users/${target.id}/authenticator`, undefined, 403, said, "DELETE");
     }
 
     assert.equal(kept(mona.id)?.role, "guest");
     assert.equal(kept(max.id)?.role, "guest");
-    assert.equal(kept(max.id)?.managesUsers, true);
+    assert.equal(kept(max.id)?.rights?.includes("managesUsers"), true);
     assert.equal(app.authenticators.linked(max.id), true);
     assert.equal(app.authenticators.linked(mona.id), true, "their own takes their own code");
     assert.notEqual(kept(owner(app).id), undefined);
 
     // The owner changes them as anyone else.
-    await done(owner(app), `users/${max.id}/invites`, { on: true });
-    assert.equal(kept(max.id)?.invites, true);
+    await done(owner(app), `users/${max.id}/rights`, { right: "invites", on: true });
+    assert.equal(kept(max.id)?.rights?.includes("invites"), true);
     await done(owner(app), `users/${max.id}/approval-days`, { days: 1 });
     assert.equal(kept(max.id)?.approvalDays, 1);
     await done(owner(app), `users/${max.id}/remove`, {});
@@ -361,29 +433,26 @@ test("who manages users gives only what they have themselves, and takes back any
     const more = /You can only give what you have yourself/;
 
     // Invite people they have with managing users (`access.ts` `invites`): they give it, and take it back.
-    await done(mona, `users/${gil.id}/invites`, { on: true });
-    assert.equal(kept(gil.id)?.invites, true);
-    await done(mona, `users/${gil.id}/invites`, { on: false });
-    assert.equal(kept(gil.id)?.invites, undefined);
+    await done(mona, `users/${gil.id}/rights`, { right: "invites", on: true });
+    assert.equal(kept(gil.id)?.rights?.includes("invites"), true);
+    await done(mona, `users/${gil.id}/rights`, { right: "invites", on: false });
+    assert.notEqual(kept(gil.id)?.rights?.includes("invites"), true);
 
-    for (const [route, key] of [
-        ["links-runners", "linksRunners"],
-        ["keeps-warm", "keepsWarm"],
-    ] as const) {
-        const path = `users/${gil.id}/${route}`;
+    for (const right of ["linksRunners", "keepsWarm"] as const) {
+        const path = `users/${gil.id}/rights`;
 
-        await refused(mona, path, { on: true }, 403, more);
-        assert.equal(kept(gil.id)?.[key], undefined, route);
+        await refused(mona, path, { right, on: true }, 403, more);
+        assert.notEqual(kept(gil.id)?.rights?.includes(right), true, right);
 
         // What the owner gave someone, they take back without having it.
-        await done(owner(app), path, { on: true });
-        await done(mona, path, { on: false });
-        assert.equal(kept(gil.id)?.[key], undefined, route);
+        await done(owner(app), path, { right, on: true });
+        await done(mona, path, { right, on: false });
+        assert.notEqual(kept(gil.id)?.rights?.includes(right), true, right);
 
         // With it themselves, they give it.
-        await done(owner(app), `users/${mona.id}/${route}`, { on: true });
-        await done(mona, path, { on: true });
-        assert.equal(kept(gil.id)?.[key], true, route);
+        await done(owner(app), `users/${mona.id}/rights`, { right, on: true });
+        await done(mona, path, { right, on: true });
+        assert.equal(kept(gil.id)?.rights?.includes(right), true, right);
     }
 
     // Approvals: no longer than their own (7 days until the owner says otherwise; 0 never ends, the longest).
@@ -420,41 +489,41 @@ test("managing users ends when they are made a viewer or limited to one session,
 
     // Made a viewer, and a user again: it is off, until the owner turns it on again.
     await done(owner(app), `users/${mona.id}`, { role: "viewer" });
-    assert.equal(kept(mona.id)?.managesUsers, undefined);
+    assert.notEqual(kept(mona.id)?.rights?.includes("managesUsers"), true);
     await done(owner(app), `users/${mona.id}`, { role: "guest" });
     assert.equal(kept(mona.id)?.role, "guest");
-    assert.equal(kept(mona.id)?.managesUsers, undefined);
-    assert.equal((await app.hello(kept(mona.id)!)).user.managesUsers, false);
+    assert.notEqual(kept(mona.id)?.rights?.includes("managesUsers"), true);
+    assert.equal((await app.hello(kept(mona.id)!)).user.rights.managesUsers, false);
     await refused(mona, `users/${gil.id}/remove`, {}, 403, /Only the owner can do that/);
     assert.equal(told(mona, vera)?.approvalDays, undefined);
 
     // Their authenticator removed: a viewer, so it ends too.
     await done(owner(app), `users/${lena.id}/authenticator`, undefined, "DELETE");
     assert.equal(kept(lena.id)?.role, "viewer");
-    assert.equal(kept(lena.id)?.managesUsers, undefined);
+    assert.notEqual(kept(lena.id)?.rights?.includes("managesUsers"), true);
 
     // Limited to one session.
     app.config.updateUser(max.id, { sessions: ["1"] });
-    assert.equal(kept(max.id)?.managesUsers, undefined);
+    assert.notEqual(kept(max.id)?.rights?.includes("managesUsers"), true);
     app.config.updateUser(max.id, { sessions: undefined });
-    assert.equal(kept(max.id)?.managesUsers, undefined);
+    assert.notEqual(kept(max.id)?.rights?.includes("managesUsers"), true);
     await refused(max, `users/${gil.id}/remove`, {}, 403, /Only the owner can do that/);
 
     // It is not kept for a viewer, or for someone limited.
     const sam = person("Sam 6", "guest", ["1"]);
 
-    app.config.updateUser(vera.id, { managesUsers: true });
-    assert.equal(kept(vera.id)?.managesUsers, undefined);
-    app.config.updateUser(sam.id, { managesUsers: true });
-    assert.equal(kept(sam.id)?.managesUsers, undefined);
+    app.config.updateUser(vera.id, { rights: ["managesUsers"] });
+    assert.notEqual(kept(vera.id)?.rights?.includes("managesUsers"), true);
+    app.config.updateUser(sam.id, { rights: ["managesUsers"] });
+    assert.notEqual(kept(sam.id)?.rights?.includes("managesUsers"), true);
 
     // And a file edited by hand that says so of one of them counts for nothing: the policy reads who they are now.
     for (const each of [vera, sam]) {
-        Object.assign(kept(each.id)!, { managesUsers: true });
-        assert.equal(kept(each.id)?.managesUsers, true, each.name);
+        Object.assign(kept(each.id)!, { rights: ["managesUsers"] });
+        assert.equal(kept(each.id)?.rights?.includes("managesUsers"), true, each.name);
         assert.equal(app.policy.managesPeople(each), false, each.name);
         assert.equal(app.policy.mayManagePerson(each, gil), false, each.name);
-        assert.equal((await app.hello(kept(each.id)!)).user.managesUsers, false, each.name);
+        assert.equal((await app.hello(kept(each.id)!)).user.rights.managesUsers, false, each.name);
         assert.equal(told(each, gil)?.approvalDays, undefined, each.name);
         await refused(each, `users/${gil.id}/remove`, {}, 403, /Only the owner can do that/);
     }

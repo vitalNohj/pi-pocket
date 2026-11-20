@@ -1494,7 +1494,7 @@ test("a rename and keep warm follow the wheel and the lock; archiving and turnin
     const meta = () => app.sessionMeta(id)!;
     const first = { ...meta() };
 
-    app.setKeepsWarm(owner(app), gale.id, true);
+    app.setRight(owner(app), { person: gale.id, right: "keepsWarm", on: true });
 
     try {
         // Take turns: Alex drives, so Gale changes nothing of the session, and stops nothing.
@@ -1587,6 +1587,6 @@ test("a rename and keep warm follow the wheel and the lock; archiving and turnin
         assert.notEqual(meta().archived, true);
     } finally {
         t.mock.restoreAll();
-        app.setKeepsWarm(owner(app), gale.id, false);
+        app.setRight(owner(app), { person: gale.id, right: "keepsWarm", on: false });
     }
 });

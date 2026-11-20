@@ -60,6 +60,7 @@ import {
 import { LinkNetwork, NetError, type OpenOptions } from "./runner-network.ts";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import type { ConfigStore, StoredRunner, User } from "./config.ts";
+import type { ComputerRight } from "./rights.ts";
 import { HttpError } from "./errors.ts";
 import { LinkLimits, type LinkLocks, WRONG_CODE } from "./link-limits.ts";
 
@@ -155,10 +156,12 @@ export type RunnerView = {
     given?: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id; only in the owner's list. */
     sees?: Record<string, string[]>;
-    /** The granted people who may take the wheel from a driver there (`access.ts` `overridesTurns`); managers' list. */
-    wheel?: string[];
-    /** The granted people who may allow a call their own message led to there (`allowsOwn`); managers' list. */
-    allows?: string[];
+    /**
+     * The granted people who hold each right given one person at a time there (`rights.ts`): `wheel`, to take the
+     * wheel from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to
+     * (`allowsOwn`). Managers' list.
+     */
+    rights?: Record<ComputerRight, string[]>;
     /** New sessions there start shared with its people. */
     shareNew?: true;
     /** False when this person may not start sessions there: the owner sees a runner someone else linked, to unlink it. */
@@ -1513,8 +1516,7 @@ export class Runners {
                                       [...this.#config.seenFolders(runner.id, id)],
                                   ]),
                               ),
-                              wheel: [...this.#config.rightHolders(runner.id, "wheel")],
-                              allows: [...this.#config.rightHolders(runner.id, "allows")],
+                              rights: this.#config.rightsOn(runner.id),
                           }
                         : {}),
                     // Its settings are its managers' business; a granted person sees only that it is there.

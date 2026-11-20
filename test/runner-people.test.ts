@@ -1127,11 +1127,11 @@ describe("review drill fixes for people on a computer", () => {
             assert.equal(app.cannotAllow(owner(app), first), onlyHost("someone else"));
             await app.setApprovalRule(owner(app), "others");
             // The host lets the fellow allow their own there (Allow their own calls): theirs alone, not the owner's.
-            app.setRight(host, theirs, fellow.id, "allows", true);
+            app.setRight(host, { computer: theirs, person: fellow.id, right: "allows", on: true });
             assert.equal(app.cannotAllow(fellow, first), undefined);
             assert.equal(app.cannotAllow(fellow, second), onlyHost("someone else"));
             assert.equal(app.cannotAllow(owner(app), second), onlyHost("you"));
-            app.setRight(host, theirs, fellow.id, "allows", false);
+            app.setRight(host, { computer: theirs, person: fellow.id, right: "allows", on: false });
             assert.equal(app.cannotAllow(fellow, first), onlyHost("you"));
             await assert.rejects(app.answerApproval(first.id, true, owner(app)), { status: 403 });
             assert.notEqual(waiting(first.task), undefined, "refused: it still waits");
@@ -1256,7 +1256,7 @@ describe("review drill fixes for people on a computer", () => {
             (await request<{ code: string }>(linker, "runners/code", { name })).body.code;
         const link = (with_: string) => linkInProcess((each) => app.runners.redeem(each), with_);
 
-        app.setLinksRunners(owner(app), linker.id, true);
+        app.setRight(owner(app), { person: linker.id, right: "linksRunners", on: true });
 
         // Allowed: their code links a computer of their own.
         const first = link(await code("Linker's laptop"));
@@ -1266,11 +1266,11 @@ describe("review drill fixes for people on a computer", () => {
         // The owner takes the right back while a code waits: it links nothing.
         const waiting = await code("Linker's desktop");
 
-        app.setLinksRunners(owner(app), linker.id, false);
+        app.setRight(owner(app), { person: linker.id, right: "linksRunners", on: false });
         assert.throws(() => link(waiting), /wrong, already used, or expired/);
         assert.deepEqual(named("Linker's desktop"), []);
         // Used up: giving the right back does not bring the code back.
-        app.setLinksRunners(owner(app), linker.id, true);
+        app.setRight(owner(app), { person: linker.id, right: "linksRunners", on: true });
         assert.throws(() => link(waiting), /wrong, already used, or expired/);
 
         // A code to link their computer again is worth no more.
@@ -1279,12 +1279,12 @@ describe("review drill fixes for people on a computer", () => {
         ).body.code;
         const key = app.config.runnerById(first.id)?.publicKey;
 
-        app.setLinksRunners(owner(app), linker.id, false);
+        app.setRight(owner(app), { person: linker.id, right: "linksRunners", on: false });
         assert.throws(() => link(again), /wrong, already used, or expired/);
         assert.equal(app.config.runnerById(first.id)?.publicKey, key, "its key stays");
 
         // Removed while a code waits: no computer of nobody appears.
-        app.setLinksRunners(owner(app), linker.id, true);
+        app.setRight(owner(app), { person: linker.id, right: "linksRunners", on: true });
         const last = await code("Linker's phone");
 
         await app.removeUser(owner(app), linker.id);

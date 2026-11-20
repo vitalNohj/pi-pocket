@@ -103,8 +103,7 @@ test("the owner sees this server as a computer they linked, with nobody chosen a
         users: [],
         given: {},
         sees: {},
-        wheel: [],
-        allows: [],
+        rights: { wheel: [], allows: [] },
         shareNew: false,
     });
     assert.deepEqual((await app.hello(owner(app))).thisServer, shown.body);

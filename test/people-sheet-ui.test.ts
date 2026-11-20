@@ -307,7 +307,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
     // Keep sessions warm: off until the owner turns it on, and off again.
     await flip("Gina keeps sessions warm");
     await until(
-        () => app.config.userById(guest.id)?.keepsWarm === true,
+        () => app.config.userById(guest.id)?.rights?.includes("keepsWarm") === true,
         "the server to let Gina keep sessions warm",
     );
     await until(
@@ -319,7 +319,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
         async () => (await switches()).includes("Gina keeps sessions warm: off"),
         "the switch to be off",
     );
-    assert.equal(app.config.userById(guest.id)?.keepsWarm, undefined);
+    assert.notEqual(app.config.userById(guest.id)?.rights?.includes("keepsWarm"), true);
     assert.deepEqual(await folds(), [], "nothing to list where she is not chosen");
     assert.equal(await has("Give Gina a folder on This server"), false);
 
@@ -2071,7 +2071,7 @@ test(
         assert.ok(token !== undefined);
         // Chosen for this server, so that starting sessions here is not what keeps her from inviting.
         app.config.setServerUsers([...new Set([...chosen, guest.id])]);
-        app.setInvites(owner(app), guest.id, false);
+        app.setRight(owner(app), { person: guest.id, right: "invites", on: false });
         app.accessChanged();
 
         try {
@@ -2102,7 +2102,7 @@ test(
                 async () => (await switches()).includes("Gina invites people: on"),
                 "the switch to be on",
             );
-            assert.equal(app.config.userById(guest.id)?.invites, true);
+            assert.equal(app.config.userById(guest.id)?.rights?.includes("invites"), true);
             assert.match(await hint(), /On: they invite people, who join as viewers/);
 
             // Her own page offers it now, without a reload.
@@ -2122,7 +2122,7 @@ test(
             // The tests share one page: the owner's again, whatever happened.
             page = owners;
             await theirs.closeAll({ final: true });
-            app.setInvites(owner(app), guest.id, false);
+            app.setRight(owner(app), { person: guest.id, right: "invites", on: false });
             app.config.setServerUsers(chosen);
             app.accessChanged();
         }
@@ -2156,7 +2156,7 @@ test(
         assert.ok(token !== undefined);
         // A session of the owner's, shared with her: she prompts in it, and so may change it.
         app.config.setServerUsers([...new Set([...chosen, guest.id])]);
-        app.setKeepsWarm(owner(app), guest.id, false);
+        app.setRight(owner(app), { person: guest.id, right: "keepsWarm", on: false });
         app.accessChanged();
 
         const id = await newSession(app);
@@ -2196,7 +2196,7 @@ test(
             );
 
             // The owner turns it on for her: her card offers every time, without a reload.
-            app.setKeepsWarm(owner(app), guest.id, true);
+            app.setRight(owner(app), { person: guest.id, right: "keepsWarm", on: true });
             await until(
                 async () => (await card())?.times.length === every.length,
                 "her card to offer the times",
@@ -2206,7 +2206,7 @@ test(
             await until(() => app.sessionMeta(id)?.keepWarm === 1, "the session to be kept warm");
 
             // Taken back: the session keeps its time, and she can only turn it off.
-            app.setKeepsWarm(owner(app), guest.id, false);
+            app.setRight(owner(app), { person: guest.id, right: "keepsWarm", on: false });
             await until(
                 async () => (await card())?.times.length === 0,
                 "her card to offer no time",
@@ -2225,7 +2225,7 @@ test(
             // The tests share one page: the owner's again, whatever happened.
             page = owners;
             await theirs.closeAll({ final: true });
-            app.setKeepsWarm(owner(app), guest.id, false);
+            app.setRight(owner(app), { person: guest.id, right: "keepsWarm", on: false });
             app.config.setServerUsers(chosen);
             app.accessChanged();
         }
@@ -2455,7 +2455,7 @@ test(
                 wheel: true,
                 own: false,
             });
-            assert.deepEqual(app.config.server.wheel, [guest.id]);
+            assert.deepEqual(app.config.server.rights?.wheel, [guest.id]);
             assert.ok(
                 (await switches()).includes("Gina overrides take turns on This server: on"),
                 "the switch shows it",
@@ -2473,7 +2473,7 @@ test(
             // The other right is its own switch.
             await flip("Gina allows their own calls on This server");
             await until(async () => (await hers()).own, "her own calls to be hers to allow");
-            assert.deepEqual(app.config.server.allows, [guest.id]);
+            assert.deepEqual(app.config.server.rights?.allows, [guest.id]);
 
             // Taken back, both: as before, without a reload. She keeps the wheel she took.
             await flip("Gina overrides take turns on This server");
@@ -2483,8 +2483,8 @@ test(
 
                 return !now.wheel && !now.own;
             }, "her session to offer neither");
-            assert.equal(app.config.server.wheel, undefined);
-            assert.equal(app.config.server.allows, undefined);
+            assert.equal(app.config.server.rights?.wheel, undefined);
+            assert.equal(app.config.server.rights?.allows, undefined);
             assert.equal(
                 (ownerTab.field("turns") as { driver?: string } | undefined)?.driver,
                 guest.id,
@@ -2549,10 +2549,10 @@ test(
 
         assert.ok(token !== undefined);
         // Gina has none of what a person can be given, and the usual approval time.
-        app.setManagesUsers(owner(app), guest.id, false);
-        app.setLinksRunners(owner(app), guest.id, false);
-        app.setInvites(owner(app), guest.id, false);
-        app.setKeepsWarm(owner(app), guest.id, false);
+        app.setRight(owner(app), { person: guest.id, right: "managesUsers", on: false });
+        app.setRight(owner(app), { person: guest.id, right: "linksRunners", on: false });
+        app.setRight(owner(app), { person: guest.id, right: "invites", on: false });
+        app.setRight(owner(app), { person: guest.id, right: "keepsWarm", on: false });
         app.setApprovalDays(owner(app), guest.id, null);
 
         try {
@@ -2590,7 +2590,7 @@ test(
                 "the switch to be on",
             );
             assert.match((await asked())[0] ?? "", /^Let Gina manage users\?/);
-            assert.equal(app.config.userById(guest.id)?.managesUsers, true);
+            assert.equal(app.config.userById(guest.id)?.rights?.includes("managesUsers"), true);
             assert.match(await text(), /manages users/);
             assert.match(
                 await text(),
@@ -2642,7 +2642,7 @@ test(
             assert.match(await text(), /Off: they do not invite people\./);
             await flip("Uma invites people");
             await until(
-                () => app.config.userById(uma.id)?.invites === true,
+                () => app.config.userById(uma.id)?.rights?.includes("invites") === true,
                 "Uma to invite people",
             );
 
@@ -2668,7 +2668,7 @@ test(
             assert.match((await asked())[0] ?? "", /^Remove Tom\?/);
 
             // Another who manages users is the owner's alone to change.
-            app.setManagesUsers(owner(app), uma.id, true);
+            app.setRight(owner(app), { person: uma.id, right: "managesUsers", on: true });
             await show("Uma");
             await until(async () => (await switches()).length === 0, "Uma's switches to go");
             assert.equal(await removable(), false);
@@ -2687,7 +2687,7 @@ test(
 
             // Taken back: her view of Vera is anyone's again, at once.
             page = ginas;
-            app.setManagesUsers(owner(app), guest.id, false);
+            app.setRight(owner(app), { person: guest.id, right: "managesUsers", on: false });
             await until(async () => (await switches()).length === 0, "Vera's switches to go");
             assert.equal(await removable(), false);
         } finally {
@@ -2701,8 +2701,8 @@ test(
                 }
             }
 
-            app.setManagesUsers(owner(app), guest.id, false);
-            app.setInvites(owner(app), guest.id, false);
+            app.setRight(owner(app), { person: guest.id, right: "managesUsers", on: false });
+            app.setRight(owner(app), { person: guest.id, right: "invites", on: false });
             app.accessChanged();
         }
     },

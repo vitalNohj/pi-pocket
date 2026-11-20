@@ -227,7 +227,7 @@ test("a viewer asks for access with a few words; who manages people reads it on 
     const mona = person("Mona", "guest");
     const path = (user: User) => `users/${user.id}/access-request`;
 
-    await done(boss, `users/${mona.id}/manages-users`, { on: true });
+    await done(boss, `users/${mona.id}/rights`, { right: "managesUsers", on: true });
 
     // Only a viewer asks, with nothing or a short text.
     await refused(guy, "me/access-request", {}, 403, /Only a viewer asks for access/);

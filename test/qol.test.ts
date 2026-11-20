@@ -338,8 +338,18 @@ test("a `!` command Lancet Guard asks about waits for who is in charge: allowed,
 
             // With Allow their own calls on for them here, each allows their own: the guard still asks, and nobody but
             // the owner allows someone else's.
-            app.setRight(owner(app), THIS_SERVER, guest.id, "allows", true);
-            app.setRight(owner(app), THIS_SERVER, peer.id, "allows", true);
+            app.setRight(owner(app), {
+                computer: THIS_SERVER,
+                person: guest.id,
+                right: "allows",
+                on: true,
+            });
+            app.setRight(owner(app), {
+                computer: THIS_SERVER,
+                person: peer.id,
+                right: "allows",
+                on: true,
+            });
 
             const third = await app.shell.start(id, guest, {
                 command: `echo risky third >> ${marker}`,
@@ -356,7 +366,12 @@ test("a `!` command Lancet Guard asks about waits for who is in charge: allowed,
             await until(async () => (await shells()).length === 4, "the third's entry");
             assert.equal(readFileSync(marker, "utf8"), "risky\nrisky third\n");
             // Taken back, it is the owner's to allow again.
-            app.setRight(owner(app), THIS_SERVER, guest.id, "allows", false);
+            app.setRight(owner(app), {
+                computer: THIS_SERVER,
+                person: guest.id,
+                right: "allows",
+                on: false,
+            });
 
             const fourth = await app.shell.start(id, guest, {
                 command: `echo risky fourth >> ${marker}`,

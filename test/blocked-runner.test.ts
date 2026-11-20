@@ -120,7 +120,7 @@ before(async () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     address = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     // The owner lets Lina link a computer of her own, and she does.
-    app.setLinksRunners(owner(app), lina.id, true);
+    app.setRight(owner(app), { person: lina.id, right: "linksRunners", on: true });
 
     const { code } = app.runners.makeCode("Lina's laptop", lina.id);
     const linked = linkInProcess((each) => app.runners.redeem(each), code);

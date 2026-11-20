@@ -22,13 +22,19 @@ import {
 } from "../src/server/approval-methods.ts";
 import { HttpError } from "../src/server/errors.ts";
 import { STEP_MS, totp } from "../src/server/totp.ts";
+import type { ComputerRight } from "../src/server/rights.ts";
 
 const owner: Person = { id: "owner", role: "owner" };
 const guest: Person = { id: "guest", role: "guest" };
 const viewer: Person = { id: "viewer", role: "viewer" };
 const stranger: Person = { id: "stranger", role: "guest" };
-const linker: Person = { id: "linker", role: "guest", linksRunners: true };
+const linker: Person = { id: "linker", role: "guest", rights: ["linksRunners"] };
 const invited: Person = { id: "invited", role: "guest", sessions: ["30"] };
+
+/** On a computer, `people` hold `right`, and nobody the other one. */
+const held = (right: ComputerRight, people: string[]): Pick<Computer, "holders"> => ({
+    holders: (asked) => (asked === right ? people : []),
+});
 
 function computer(id: string, patch: Partial<Computer> = {}): Computer {
     return {
@@ -39,8 +45,7 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
         // The guest was given /given (and what is in it); no one else anything.
         given: (person) => (person === guest.id ? ["/given"] : []),
         sees: () => [],
-        wheel: [],
-        allows: [],
+        holders: () => [],
         shareNew: false,
         ...patch,
     };
@@ -188,7 +193,11 @@ describe("may this person use this computer", () => {
         assert.equal(policy.mayLink(linker), true);
         assert.equal(policy.mayLink(guest), false);
         assert.equal(policy.mayLink(viewer), false);
-        const invitedLinker: Person = { ...invited, id: "invited-linker", linksRunners: true };
+        const invitedLinker: Person = {
+            ...invited,
+            id: "invited-linker",
+            rights: ["linksRunners"],
+        };
 
         assert.equal(
             world(undefined, undefined, [invitedLinker]).policy.mayLink(invitedLinker),
@@ -635,8 +644,8 @@ describe("who may share a session", () => {
         // Given on this server, to everyone the list can name: only a chosen person who prompts holds it, and only here.
         const everyone = [guest.id, viewer.id, stranger.id, invited.id];
         const given = world([
-            computer(THIS_SERVER, { wheel: everyone }),
-            computer("runner", { allows: [guest.id] }),
+            computer(THIS_SERVER, held("wheel", everyone)),
+            computer("runner", held("allows", [guest.id])),
         ]).policy;
 
         assert.equal(given.overridesTurns(guest, THIS_SERVER), true);
@@ -653,7 +662,7 @@ describe("who may share a session", () => {
         // The owner, chosen on a guest's runner as anyone is, holds it there once its linker gives it.
         const chosen = world([
             computer(THIS_SERVER),
-            computer("runner", { chosen: [owner.id], wheel: [owner.id] }),
+            computer("runner", { chosen: [owner.id], ...held("wheel", [owner.id]) }),
         ]).policy;
 
         assert.equal(chosen.overridesTurns(owner, "runner"), true);
@@ -670,7 +679,7 @@ describe("who may share a session", () => {
             assert.equal(policy.keepsWarm(each), false);
         }
 
-        const let_ = (person: Person): Person => ({ ...person, keepsWarm: true });
+        const let_ = (person: Person): Person => ({ ...person, rights: ["keepsWarm"] });
         const allowed = world(undefined, undefined, [
             owner,
             let_(guest),
@@ -704,7 +713,7 @@ describe("who may share a session", () => {
     });
 
     it("lets a user the owner lets invite: to their sessions when they start sessions somewhere, to a session they may share; never a viewer", () => {
-        const let_ = (person: Person): Person => ({ ...person, invites: true });
+        const let_ = (person: Person): Person => ({ ...person, rights: ["invites"] });
         const { policy } = world(undefined, undefined, [
             owner,
             let_(guest),
@@ -733,7 +742,7 @@ describe("who may share a session", () => {
     });
 
     it("lets nobody invite from a computer where they start nothing: a blocked runner, one they are not chosen for", () => {
-        const let_ = (person: Person): Person => ({ ...person, invites: true });
+        const let_ = (person: Person): Person => ({ ...person, rights: ["invites"] });
         // The linker was made a viewer, so the runner is blocked; the guest is chosen for it alone.
         const { policy } = world(
             [computer(THIS_SERVER, { chosen: [] }), computer("runner")],

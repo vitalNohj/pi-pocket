@@ -1926,7 +1926,12 @@ test(
             assert.equal(readFileSync(ran, "utf8"), "typed\n", "the cancelled one did not run");
 
             // With Allow their own calls on for her here, she allows her own: the guard still asks first.
-            app.setRight(owner(app), THIS_SERVER, guest.id, "allows", true);
+            app.setRight(owner(app), {
+                computer: THIS_SERVER,
+                person: guest.id,
+                right: "allows",
+                on: true,
+            });
             await run(`!echo mine >> ${ran}`);
             await until(
                 async () => (await hers()).card?.buttons.length === 2,

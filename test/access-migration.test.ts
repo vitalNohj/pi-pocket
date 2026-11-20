@@ -35,15 +35,7 @@ const WITH_RULES = [
     "taskReminders",
     "serverIdentity",
 ];
-const WITH_RULES_PERSON = [
-    "authenticator",
-    "approvalDays",
-    "linksRunners",
-    "invites",
-    "keepsWarm",
-    "temporary",
-    "devices",
-];
+const WITH_RULES_PERSON = ["authenticator", "approvalDays", "rights", "temporary", "devices"];
 const DAY = 86_400_000;
 
 /** Make the saved `file` one a server from before the access rules kept, then change it as `change` says. */
@@ -222,7 +214,7 @@ test("a person held to one session keeps it and nothing more, and is not locked 
     assert.equal(app.canSee(person(invited), heldSession), true);
     assert.equal(app.canSee(person(invited), ownersSession), false);
     assert.deepEqual(listed(invited), [Number(heldSession)]);
-    assert.equal(person(invited).invites, undefined);
+    assert.notEqual(person(invited).rights?.includes("invites"), true);
     // Though nobody used it for a month.
     assert.equal(app.policy.steer(person(invited), String(heldSession)), "allow");
 });
@@ -318,9 +310,11 @@ test("a server that had the rules already keeps who is chosen: any sign of them,
             void (old.serverIdentity = { publicKey: "k", privateKey: "k" }),
         "a person's authenticator": (old) => void (of(old).authenticator = { secret: "s" }),
         "a person's approval time": (old) => void (of(old).approvalDays = 7),
-        "a person who links runners": (old) => void (of(old).linksRunners = true),
-        "a person who invites": (old) => void (of(old).invites = true),
-        "a person who keeps warm": (old) => void (of(old).keepsWarm = true),
+        "a person who links runners": (old) => void (of(old).rights = ["linksRunners"]),
+        // Kept in a field of its own, as before `rights.ts`: gathered at load, it is the same sign.
+        "a right kept in a field of its own": (old) => void (of(old).linksRunners = true),
+        "a person who invites": (old) => void (of(old).rights = ["invites"]),
+        "a person who keeps warm": (old) => void (of(old).rights = ["keepsWarm"]),
         "a temporary person": (old) => void (of(old).temporary = true),
         "a person's devices": (old) => void (of(old).devices = []),
     };
@@ -348,7 +342,7 @@ test("a server that had the rules already keeps who is chosen: any sign of them,
         assert.equal(next.canSee(now, session), false);
         assert.deepEqual(next.sessions(now), []);
         assert.equal(next.sessionMeta(session)?.sharedWith, undefined);
-        assert.equal(now.invites, undefined);
+        assert.notEqual(now.rights?.includes("invites"), true);
     } finally {
         await next.close();
     }

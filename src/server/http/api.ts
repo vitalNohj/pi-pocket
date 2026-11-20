@@ -474,38 +474,12 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
-        // The owner lets a guest link computers of their own, or takes it back.
-        if (
-            first === "users" &&
-            second !== undefined &&
-            third === "links-runners" &&
-            method === "POST"
-        ) {
-            const body = await readJson<{ on?: unknown } | null>(request);
+        // Who manages a person gives them one right, or takes it back: to link computers of their own, invite people,
+        // manage people, or keep sessions warm (`rights.ts`; `app.ts` `setRight` says who gives which).
+        if (first === "users" && second !== undefined && third === "rights" && method === "POST") {
+            const body = await readJson<{ right?: unknown; on?: unknown } | null>(request);
 
-            if (typeof body?.on !== "boolean") {
-                throw new HttpError(400, "on must be true or false.");
-            }
-
-            app.setLinksRunners(user, second, body.on);
-
-            return json(response, 200, { ok: true });
-        }
-
-        // The owner lets a user manage people, or takes it back.
-        if (
-            first === "users" &&
-            second !== undefined &&
-            third === "manages-users" &&
-            method === "POST"
-        ) {
-            const body = await readJson<{ on?: unknown } | null>(request);
-
-            if (typeof body?.on !== "boolean") {
-                throw new HttpError(400, "on must be true or false.");
-            }
-
-            app.setManagesUsers(user, second, body.on);
+            app.setRight(user, { person: second, right: body?.right, on: body?.on });
 
             return json(response, 200, { ok: true });
         }
@@ -527,37 +501,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             // The people as they are now, as the other changes to a person answer.
             return json(response, 200, app.people(user));
-        }
-
-        // The owner lets a guest invite people, or takes it back.
-        if (first === "users" && second !== undefined && third === "invites" && method === "POST") {
-            const body = await readJson<{ on?: unknown } | null>(request);
-
-            if (typeof body?.on !== "boolean") {
-                throw new HttpError(400, "on must be true or false.");
-            }
-
-            app.setInvites(user, second, body.on);
-
-            return json(response, 200, { ok: true });
-        }
-
-        // The owner lets a guest keep sessions warm, or takes it back.
-        if (
-            first === "users" &&
-            second !== undefined &&
-            third === "keeps-warm" &&
-            method === "POST"
-        ) {
-            const body = await readJson<{ on?: unknown } | null>(request);
-
-            if (typeof body?.on !== "boolean") {
-                throw new HttpError(400, "on must be true or false.");
-            }
-
-            app.setKeepsWarm(user, second, body.on);
-
-            return json(response, 200, { ok: true });
         }
 
         // The owner turns "Tasks expire with the session" on or off.
@@ -1455,7 +1398,12 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 on?: unknown;
             } | null>(request);
 
-            app.setRight(user, second, body?.person, body?.right, body?.on);
+            app.setRight(user, {
+                computer: second,
+                person: body?.person,
+                right: body?.right,
+                on: body?.on,
+            });
 
             return json(
                 response,

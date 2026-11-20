@@ -2925,7 +2925,7 @@ test("an invite lasts as long as asked (a device link always 15 minutes), outliv
     const MINUTE = 60_000;
 
     // The owner lets Gil invite people: off until then.
-    app.setInvites(owner(), guest.user.id, true);
+    app.setRight(owner(), { person: guest.user.id, right: "invites", on: true });
 
     try {
         // As long as asked, 15 minutes when not said; a device link, 15 whatever is asked.
@@ -3518,7 +3518,7 @@ test("an invite stops working when its creator loses the right to invite", async
 
     try {
         // Let by the owner, so the invite would work; then made a viewer, who invites nobody.
-        app.setInvites(owner(), guest.id, true);
+        app.setRight(owner(), { person: guest.id, right: "invites", on: true });
 
         const { code } = auth.createInvite(guest, { role: "guest" });
 

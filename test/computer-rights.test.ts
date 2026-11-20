@@ -132,9 +132,13 @@ after(async () => {
 test("the owner gives a chosen user a right on this server, and takes it back; nobody else does, and nobody else gets one", async () => {
     const rights = `runners/${THIS_SERVER}/rights`;
 
-    assert.deepEqual((await app.hello(alex)).user.wheel, [], "none until it is given");
-    assert.deepEqual((await app.hello(alex)).user.allows, []);
-    assert.deepEqual((await app.hello(owner(app))).user.wheel, [THIS_SERVER], "theirs: in charge");
+    assert.deepEqual((await app.hello(alex)).user.rights.wheel, [], "none until it is given");
+    assert.deepEqual((await app.hello(alex)).user.rights.allows, []);
+    assert.deepEqual(
+        (await app.hello(owner(app))).user.rights.wheel,
+        [THIS_SERVER],
+        "theirs: in charge",
+    );
 
     // Refused: a user gives none, also not to themselves.
     for (const by of [alex, bea, vera, host]) {
@@ -155,7 +159,7 @@ test("the owner gives a chosen user a right on this server, and takes it back; n
         assert.equal((await call(owner(app), rights, body)).status, 400, who);
     }
 
-    assert.deepEqual(app.config.server.wheel, undefined, "a refusal saved nothing");
+    assert.deepEqual(app.config.server.rights?.wheel, undefined, "a refusal saved nothing");
 
     const given = await call<ServerView>(owner(app), rights, {
         person: alex.id,
@@ -164,17 +168,17 @@ test("the owner gives a chosen user a right on this server, and takes it back; n
     });
 
     assert.equal(given.status, 200);
-    assert.deepEqual(given.body.wheel, [alex.id], "the answer is the computer as it is now");
-    assert.deepEqual(given.body.allows, [], "one right is not the other");
+    assert.deepEqual(given.body.rights.wheel, [alex.id], "the answer is the computer as it is now");
+    assert.deepEqual(given.body.rights.allows, [], "one right is not the other");
     assert.equal(app.policy.overridesTurns(alex, THIS_SERVER), true);
     assert.equal(app.policy.allowsOwn(alex, THIS_SERVER), false);
     assert.equal(app.policy.overridesTurns(bea, THIS_SERVER), false, "and it is each person's own");
-    assert.deepEqual((await app.hello(alex)).user.wheel, [THIS_SERVER]);
-    assert.deepEqual((await app.hello(bea)).user.wheel, []);
+    assert.deepEqual((await app.hello(alex)).user.rights.wheel, [THIS_SERVER]);
+    assert.deepEqual((await app.hello(bea)).user.rights.wheel, []);
 
     // Given twice is given once.
     await call(owner(app), rights, { person: alex.id, right: "wheel", on: true });
-    assert.deepEqual(app.config.server.wheel, [alex.id]);
+    assert.deepEqual(app.config.server.rights?.wheel, [alex.id]);
 
     const taken = await call<ServerView>(owner(app), rights, {
         person: alex.id,
@@ -182,8 +186,8 @@ test("the owner gives a chosen user a right on this server, and takes it back; n
         on: false,
     });
 
-    assert.deepEqual(taken.body.wheel, []);
-    assert.equal(app.config.server.wheel, undefined, "nobody holds it: no entry is kept");
+    assert.deepEqual(taken.body.rights.wheel, []);
+    assert.equal(app.config.server.rights?.wheel, undefined, "nobody holds it: no entry is kept");
     assert.equal(app.policy.overridesTurns(alex, THIS_SERVER), false);
 });
 
@@ -206,18 +210,18 @@ test("on a runner someone else linked, its linker gives the rights, and the owne
         );
     }
 
-    const given = await call<{ wheel: string[]; allows: string[] }>(host, rights, {
+    const given = await call<{ rights: { wheel: string[]; allows: string[] } }>(host, rights, {
         person: owner(app).id,
         right: "allows",
         on: true,
     });
 
     assert.equal(given.status, 200);
-    assert.deepEqual(given.body.allows, [owner(app).id]);
-    assert.deepEqual(given.body.wheel, []);
+    assert.deepEqual(given.body.rights.allows, [owner(app).id]);
+    assert.deepEqual(given.body.rights.wheel, []);
     assert.equal(app.policy.allowsOwn(owner(app), laptop), true);
     assert.equal(app.policy.overridesTurns(owner(app), laptop), false);
-    assert.deepEqual((await app.hello(owner(app))).user.allows, [THIS_SERVER, laptop]);
+    assert.deepEqual((await app.hello(owner(app))).user.rights.allows, [THIS_SERVER, laptop]);
     assert.equal(app.policy.allowsOwn(alex, laptop), false, "chosen there too, and not given it");
 
     // A right there is not one here, nor the other way.
@@ -225,7 +229,7 @@ test("on a runner someone else linked, its linker gives the rights, and the owne
 
     // No longer chosen there, the owner holds nothing there; chosen again, still nothing.
     await app.choosePerson(laptop, owner(app).id, false);
-    assert.equal(app.config.runnerById(laptop)?.allows, undefined);
+    assert.equal(app.config.runnerById(laptop)?.rights?.allows, undefined);
     assert.equal(app.policy.allowsOwn(owner(app), laptop), false);
     await app.choosePerson(laptop, owner(app).id, true);
     assert.equal(app.policy.allowsOwn(owner(app), laptop), false);
@@ -257,7 +261,12 @@ test("take turns: a user takes the wheel from a driver who is here only once who
             message: "Only the driver can hand over the wheel",
         });
 
-        app.setRight(owner(app), THIS_SERVER, alex.id, "wheel", true);
+        app.setRight(owner(app), {
+            computer: THIS_SERVER,
+            person: alex.id,
+            right: "wheel",
+            on: true,
+        });
 
         // Allowed now, each of the three.
         await app.collab.turns(id, alex, { action: "claim" });
@@ -280,7 +289,12 @@ test("take turns: a user takes the wheel from a driver who is here only once who
         // Taken back: as before.
         await app.collab.turns(id, bea, { action: "on" });
         await until(() => driver()?.driver === bea.id, "Bea to drive a last time");
-        app.setRight(owner(app), THIS_SERVER, alex.id, "wheel", false);
+        app.setRight(owner(app), {
+            computer: THIS_SERVER,
+            person: alex.id,
+            right: "wheel",
+            on: false,
+        });
         await assert.rejects(app.collab.turns(id, alex, { action: "claim" }), /Bea is driving/);
 
         // The owner, in charge here, needs nobody's leave.
@@ -308,10 +322,20 @@ test("with approvals that need someone else, a user allows their own call only o
         });
 
         // The other right does not count for it.
-        app.setRight(owner(app), THIS_SERVER, alex.id, "wheel", true);
+        app.setRight(owner(app), {
+            computer: THIS_SERVER,
+            person: alex.id,
+            right: "wheel",
+            on: true,
+        });
         await assert.rejects(app.answerApproval(first.request.id, true, alex), { status: 403 });
 
-        app.setRight(owner(app), THIS_SERVER, alex.id, "allows", true);
+        app.setRight(owner(app), {
+            computer: THIS_SERVER,
+            person: alex.id,
+            right: "allows",
+            on: true,
+        });
         assert.equal(await app.answerApproval(first.request.id, true, alex), true);
         assert.deepEqual(await first.answered, { allow: true, by: "Alex" });
 
@@ -337,7 +361,12 @@ test("with approvals that need someone else, a user allows their own call only o
         await third.answered;
 
         // Taken back: as before.
-        app.setRight(owner(app), THIS_SERVER, alex.id, "allows", false);
+        app.setRight(owner(app), {
+            computer: THIS_SERVER,
+            person: alex.id,
+            right: "allows",
+            on: false,
+        });
         await sayAs(alex, id, "and the tmp folder");
 
         const fourth = ask(id, "rm -rf tmp");
@@ -358,14 +387,14 @@ test("with approvals that need someone else, a user allows their own call only o
 });
 
 test("no longer chosen for a computer, a person keeps no right there, also when chosen again; a removed person none anywhere", async () => {
-    app.setRight(owner(app), THIS_SERVER, alex.id, "wheel", true);
-    app.setRight(owner(app), THIS_SERVER, alex.id, "allows", true);
-    app.setRight(owner(app), THIS_SERVER, bea.id, "wheel", true);
-    assert.deepEqual(app.config.server.wheel, [alex.id, bea.id]);
+    app.setRight(owner(app), { computer: THIS_SERVER, person: alex.id, right: "wheel", on: true });
+    app.setRight(owner(app), { computer: THIS_SERVER, person: alex.id, right: "allows", on: true });
+    app.setRight(owner(app), { computer: THIS_SERVER, person: bea.id, right: "wheel", on: true });
+    assert.deepEqual(app.config.server.rights?.wheel, [alex.id, bea.id]);
 
     await app.choosePerson(THIS_SERVER, alex.id, false);
-    assert.deepEqual(app.config.server.wheel, [bea.id], "Bea's stays");
-    assert.equal(app.config.server.allows, undefined);
+    assert.deepEqual(app.config.server.rights?.wheel, [bea.id], "Bea's stays");
+    assert.equal(app.config.server.rights?.allows, undefined);
     await app.choosePerson(THIS_SERVER, alex.id, true);
     assert.equal(app.policy.overridesTurns(alex, THIS_SERVER), false);
     assert.equal(app.policy.allowsOwn(alex, THIS_SERVER), false);
@@ -377,5 +406,5 @@ test("no longer chosen for a computer, a person keeps no right there, also when 
     assert.equal(app.policy.overridesTurns(bea, THIS_SERVER), true);
 
     await app.removeUser(owner(app), bea.id);
-    assert.equal(app.config.server.wheel, undefined);
+    assert.equal(app.config.server.rights?.wheel, undefined);
 });

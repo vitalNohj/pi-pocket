@@ -13,6 +13,7 @@ import {
     canInviteNew,
     closeSheet,
     collab,
+    declaredRights,
     managesPeople,
     notify,
     openId,
@@ -776,8 +777,43 @@ function PinSync() {
     <//>`;
 }
 
-/** What a user who manages users reads under a switch they cannot turn on (`app.ts` `setLinksRunners`). */
+/** What a user who manages users reads under a switch they cannot turn on (`access.ts` `offer`: "lacking"). */
 const NOT_YOURS = "Off: you can only give what you have yourself.";
+
+/**
+ * One right a person is given everywhere (to link runners, invite people, manage users, keep sessions warm), as the
+ * server declares it (`each`: `rights.ts`, `store.js` `declaredRights`) and offers it to me for this person
+ * (`person.offer`, `access.ts` `offer`): "open", mine to turn on and off; "lacking", only to take back, since I lack it
+ * myself; "with", on with another right they hold. The rules are the server's: this draws what it says.
+ */
+function PersonRight({ person, each }) {
+    const offer = person.offer[each.key];
+    const on = person.rights?.includes(each.key) === true;
+    const owner = store.state.me?.role === "owner";
+    const hint =
+        offer === "with"
+            ? (each.withHint ?? each.on)
+            : on
+              ? each.on
+              : offer === "lacking"
+                ? NOT_YOURS
+                : ((owner ? each.offOwner : undefined) ?? each.off ?? each.on);
+
+    const flip = () =>
+        (on || !each.confirm || confirm(each.confirm.replaceAll("{name}", person.name))) &&
+        attempt(() =>
+            api(`users/${encodeURIComponent(person.id)}/rights`, { right: each.key, on: !on }),
+        );
+
+    return html`<${Setting} label=${each.label} hint=${hint}>
+        <${Switch}
+            on=${on}
+            disabled=${offer !== "open"}
+            label=${`${person.name} ${each.says}: ${on ? "on" : "off"}`}
+            onChange=${flip}
+        />
+    <//>`;
+}
 
 /**
  * What a person is let do everywhere: steer Pi (which takes their own authenticator), link computers of their own, how
@@ -788,14 +824,6 @@ function Rights({ person, change }) {
     const sessionTitle = (id) =>
         store.state.sessions.find((each) => each.id === id)?.title ?? `session ${id}`;
     const steers = person.role === "guest";
-    const { me } = store.state;
-    const owner = me?.role === "owner";
-    // A user who manages users gives only what they have themselves (`app.ts` `setLinksRunners`), and takes back
-    // anything: a switch that is off, for something they lack, is not theirs to turn on.
-    const locked = (theirs, own) => !owner && !theirs && !own;
-    const linkLocked = locked(person.linksRunners === true, me?.mayLink === true);
-    const inviteLocked = locked(person.invites === true, me?.invites === true);
-    const warmLocked = locked(person.keepsWarm === true, me?.keepsWarm === true);
     const only =
         person.sessions &&
         (person.sessions.length > 0
@@ -865,114 +893,11 @@ function Rights({ person, change }) {
                 onChange=${() => change({ role: steers ? "viewer" : "guest" })}
             />
         <//>
-        ${
-            steers &&
-            !person.sessions &&
-            html`<${Setting}
-                label="Link runners"
-                hint=${
-                    linkLocked
-                        ? NOT_YOURS
-                        : "On: they link computers of their own as runners, which they are in charge of."
-                }
-            >
-                <${Switch}
-                    on=${person.linksRunners === true}
-                    disabled=${linkLocked}
-                    label=${`${person.name} links runners: ${person.linksRunners ? "on" : "off"}`}
-                    onChange=${() =>
-                        attempt(() =>
-                            api(`users/${encodeURIComponent(person.id)}/links-runners`, {
-                                on: person.linksRunners !== true,
-                            }),
-                        )}
-                />
-            <//>`
-        }
-        ${
-            steers &&
-            !person.sessions &&
-            html`<${Setting}
-                label="Invite people"
-                hint=${
-                    person.managesUsers
-                        ? "On with Manage users: they invite people, who join as viewers and see what the invite shares."
-                        : person.invites
-                          ? "On: they invite people, who join as viewers and see what the invite shares."
-                          : inviteLocked
-                            ? NOT_YOURS
-                            : owner
-                              ? "Off: only you invite people."
-                              : "Off: they do not invite people."
-                }
-            >
-                <${Switch}
-                    on=${person.invites === true}
-                    disabled=${inviteLocked || person.managesUsers === true}
-                    label=${`${person.name} invites people: ${person.invites ? "on" : "off"}`}
-                    onChange=${() =>
-                        attempt(() =>
-                            api(`users/${encodeURIComponent(person.id)}/invites`, {
-                                on: person.invites !== true,
-                            }),
-                        )}
-                />
-            <//>`
-        }
-        ${
-            // The owner's alone to set: who manages users never gives it, to anyone.
-            owner &&
-            steers &&
-            !person.sessions &&
-            html`<${Setting}
-                label="Manage users"
-                hint=${
-                    person.managesUsers
-                        ? "On: they invite people, change what other people may do, remove them, and make a sign-in link for a viewer. Not you, themselves, or others who manage users."
-                        : "Off: only you manage users."
-                }
-            >
-                <${Switch}
-                    on=${person.managesUsers === true}
-                    label=${`${person.name} manages users: ${person.managesUsers ? "on" : "off"}`}
-                    onChange=${() =>
-                        (person.managesUsers === true ||
-                            confirm(
-                                `Let ${person.name} manage users? They can invite people, make viewers users, change what other people may do, remove them, and sign a device in as a viewer.`,
-                            )) &&
-                        attempt(() =>
-                            api(`users/${encodeURIComponent(person.id)}/manages-users`, {
-                                on: person.managesUsers !== true,
-                            }),
-                        )}
-                />
-            <//>`
-        }
-        ${
-            steers &&
-            html`<${Setting}
-                label="Keep sessions warm"
-                hint=${
-                    person.keepsWarm
-                        ? "On: they turn keep warm on for a session and pick its time. Refreshes may be charged."
-                        : warmLocked
-                          ? NOT_YOURS
-                          : "Off: they can only turn keep warm off for a session."
-                }
-            >
-                <${Switch}
-                    on=${person.keepsWarm === true}
-                    disabled=${warmLocked}
-                    label=${`${person.name} keeps sessions warm: ${person.keepsWarm ? "on" : "off"}`}
-                    onChange=${() =>
-                        attempt(() =>
-                            api(`users/${encodeURIComponent(person.id)}/keeps-warm`, {
-                                on: person.keepsWarm !== true,
-                            }),
-                        )}
-                />
-            <//>`
-        }
+        ${declaredRights("person").map(
+            (each) =>
+                person.offer?.[each.key] !== undefined &&
+                html`<${PersonRight} key=${each.key} person=${person} each=${each} />`,
+        )}
         ${
             steers &&
             person.approvalDays !== undefined &&
@@ -1211,7 +1136,7 @@ function PersonPage({ person }) {
     const mine =
         managesPeople() &&
         person.role !== "owner" &&
-        (owner || (!myself && person.managesUsers !== true));
+        (owner || (!myself && person.rights?.includes("managesUsers") !== true));
     // What is decided for a person; the owner themselves can do everything.
     const rules = mine && collab();
     // Where a person may work, on the computers I am in charge of. A runner's linker who manages nobody sets it under
@@ -1252,8 +1177,10 @@ function PersonPage({ person }) {
                 person.sessions && "one session only",
                 person.temporary && "temporary account",
                 lastSeen(person),
-                person.linksRunners && "links runners",
-                person.managesUsers && "manages users",
+                // The rights said in this line (`rights.ts` `line`): links runners, manages users.
+                ...declaredRights("person")
+                    .filter((each) => each.line && person.rights?.includes(each.key))
+                    .map((each) => each.says),
             ]
                 .filter(Boolean)
                 .join(" · ")}

@@ -101,21 +101,21 @@ test("owner removal pauses prompting and relinking restores Manage users", async
     const { user, token } = await addPerson(app, "Morgan", "guest");
 
     await link(token);
-    app.setManagesUsers(owner(app), user.id, true);
+    app.setRight(owner(app), { person: user.id, right: "managesUsers", on: true });
     await removeByOwner(user);
 
     assert.equal(current(user).role, "viewer");
-    assert.equal(current(user).managesUsers, undefined);
+    assert.notEqual(current(user).rights?.includes("managesUsers"), true);
     const saved = JSON.parse(readFileSync(app.config.file, "utf8")) as { users: User[] };
 
     assert.deepEqual(saved.users.find((each) => each.id === user.id)?.paused, {
-        managesUsers: true,
+        rights: ["managesUsers"],
     });
     await assert.rejects(submit(id, user), { status: 403, message: /Viewers cannot prompt/ });
 
     await link(token);
     assert.equal(current(user).role, "guest");
-    assert.equal(current(user).managesUsers, true);
+    assert.equal(current(user).rights?.includes("managesUsers"), true);
     assert.equal(Object.hasOwn(current(user), "paused"), false);
     const { submissionId } = await submit(id, user);
 
@@ -127,18 +127,18 @@ test("self-removal with a code pauses a user until they relink", async () => {
     const { user, token } = app.config.addUser("Jordan", "guest");
     const secret = await link(token);
 
-    app.setManagesUsers(owner(app), user.id, true);
+    app.setRight(owner(app), { person: user.id, right: "managesUsers", on: true });
     ahead += STEP_MS; // A code is used once; the next one can remove the authenticator.
     assert.deepEqual(await call(token, "me/authenticator/remove", { code: codeOf(secret) }), {
         linked: false,
     });
     assert.equal(current(user).role, "viewer");
-    assert.equal(current(user).managesUsers, undefined);
-    assert.deepEqual(current(user).paused, { managesUsers: true });
+    assert.notEqual(current(user).rights?.includes("managesUsers"), true);
+    assert.deepEqual(current(user).paused, { rights: ["managesUsers"] });
 
     await link(token);
     assert.equal(current(user).role, "guest");
-    assert.equal(current(user).managesUsers, true);
+    assert.equal(current(user).rights?.includes("managesUsers"), true);
     assert.equal(Object.hasOwn(current(user), "paused"), false);
 });
 
@@ -146,13 +146,13 @@ test("a real demotion survives removing and relinking an authenticator", async (
     const { user, token } = app.config.addUser("Robin", "guest");
 
     await link(token);
-    app.setManagesUsers(owner(app), user.id, true);
+    app.setRight(owner(app), { person: user.id, right: "managesUsers", on: true });
     app.setAccess(owner(app), user.id, { role: "viewer" });
     await removeByOwner(user);
     await link(token);
 
     assert.equal(current(user).role, "viewer");
-    assert.equal(current(user).managesUsers, undefined);
+    assert.notEqual(current(user).rights?.includes("managesUsers"), true);
     assert.equal(Object.hasOwn(current(user), "paused"), false);
 });
 
@@ -343,7 +343,7 @@ test("the people view shows only a pause flag, to the owner and the paused perso
     const other = app.config.addUser("Jean", "guest");
 
     await link(token);
-    app.setManagesUsers(owner(app), user.id, true);
+    app.setRight(owner(app), { person: user.id, right: "managesUsers", on: true });
     await removeByOwner(user);
 
     const person = async (token: string) => {

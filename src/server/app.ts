@@ -67,13 +67,20 @@ import {
     APP_ROOT,
     APPROVAL_DAYS,
     approvalDays,
-    COMPUTER_RIGHTS,
-    type ComputerRight,
     ConfigStore,
     helloUser,
     modulesWith,
     type User,
 } from "./config.ts";
+import {
+    COMPUTER_RIGHTS,
+    PERSON_RIGHTS,
+    declared,
+    isRight,
+    toldRights,
+    type ComputerRight,
+    type PersonRight,
+} from "./rights.ts";
 import {
     type AccessMeta,
     ArtifactAssetDoc,
@@ -342,10 +349,11 @@ export type ServerView = {
     given: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id. */
     sees: Record<string, string[]>;
-    /** The chosen people who may take the wheel from a driver here (`access.ts` `overridesTurns`). */
-    wheel: string[];
-    /** The chosen people who may allow a call their own message led to here (`access.ts` `allowsOwn`). */
-    allows: string[];
+    /**
+     * The chosen people who hold each right given one person at a time here (`rights.ts`): `wheel`, to take the wheel
+     * from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to (`allowsOwn`).
+     */
+    rights: Record<ComputerRight, string[]>;
     shareNew: boolean;
 };
 
@@ -542,8 +550,18 @@ export interface OpenOptions {
     appRoot?: string;
 }
 
-/** What a hello tells a person of their rights on computers (`PocketApp` `#rightsOf`). */
-type Rights = { mayStart: boolean; mayInvite: boolean; wheel: string[]; allows: string[] };
+/**
+ * What a hello tells a person of what they may do (`PocketApp` `#rightsOf`). `rights`: each right given one person at
+ * a time (`rights.ts`): whether they hold a person's right, and the computers where they hold a computer's.
+ */
+type Rights = {
+    mayStart: boolean;
+    mayInvite: boolean;
+    rights: Record<PersonRight, boolean> & Record<ComputerRight, string[]>;
+};
+
+/** What a right's switch offers whoever may change it (`access.ts` `offer`). */
+type Offer = "open" | "lacking" | "with";
 
 export class PocketApp {
     readonly config: ConfigStore;
@@ -3002,6 +3020,36 @@ export class PocketApp {
         }
     }
 
+    /**
+     * What `viewer` is told of `person`'s rights (`rights.ts`): the ones they hold now beyond their role, and, where
+     * `viewer` may change them, what each one's switch offers (`access.ts` `offer`): People draws a switch for each
+     * right offered, and holds no rule of its own. Nothing of the owner, who has them all.
+     */
+    #rightsSaid(
+        viewer: User,
+        person: User,
+    ): { rights?: PersonRight[]; offer?: Partial<Record<PersonRight, Offer>> } {
+        if (person.role === "owner") {
+            return {};
+        }
+
+        const held = PERSON_RIGHTS.filter((right) => this.policy.has(person, right));
+        const offer: Partial<Record<PersonRight, Offer>> = {};
+
+        for (const right of PERSON_RIGHTS) {
+            const said = this.policy.offer(viewer, person, right);
+
+            if (said !== undefined) {
+                offer[right] = said;
+            }
+        }
+
+        return {
+            ...(held.length === 0 ? {} : { rights: held }),
+            ...(Object.keys(offer).length === 0 ? {} : { offer }),
+        };
+    }
+
     /** The people list each viewer's tab last got (`#peopleChanged`, `#scheduleSessions`), as JSON. */
     readonly #peopleTold = new WeakMap<Client, string>();
 
@@ -3054,25 +3102,10 @@ export class PocketApp {
                 each.authenticator?.confirmedAt !== undefined
                     ? { hasCode: true }
                     : {}),
-                ...(each.linksRunners === true && (manages || viewer.id === each.id)
-                    ? { linksRunners: true }
-                    : {}),
-                // May they invite people, for the owner, who sets it, and for themselves. Who manages users has it with
-                // that (`access.ts` `invites`).
-                ...((each.invites === true ||
-                    (each.role !== "owner" && this.policy.managesPeople(each))) &&
-                (manages || viewer.id === each.id)
-                    ? { invites: true }
-                    : {}),
-                // Do they manage people, for the owner, who sets it, for who manages people (they leave such a person
-                // alone), and for themselves.
-                ...(each.managesUsers === true && (manages || viewer.id === each.id)
-                    ? { managesUsers: true }
-                    : {}),
-                // May they keep sessions warm, for the owner, who sets it, and for themselves.
-                ...(each.keepsWarm === true && (manages || viewer.id === each.id)
-                    ? { keepsWarm: true }
-                    : {}),
+                // The rights they hold beyond their role (to link computers, invite people, manage people, keep sessions
+                // warm), for who manages people and for themselves; and what each one's switch offers who may change
+                // them.
+                ...(manages || viewer.id === each.id ? this.#rightsSaid(viewer, each) : {}),
                 // A temporary account and its end, for who manages them, and for themselves.
                 ...(each.temporary === true && (manages || viewer.id === each.id)
                     ? {
@@ -3174,8 +3207,7 @@ export class PocketApp {
                         leaving: server.leaving ?? [],
                         given: (person) => config.givenFolders(undefined, person),
                         sees: (person) => config.seenFolders(undefined, person),
-                        wheel: config.rightHolders(undefined, "wheel"),
-                        allows: config.rightHolders(undefined, "allows"),
+                        holders: (right) => config.rightHolders(undefined, right),
                         shareNew: server.shareNew === true,
                     };
                 }
@@ -3193,8 +3225,7 @@ export class PocketApp {
                     leaving: runner.leaving ?? [],
                     given: (person) => config.givenFolders(id, person),
                     sees: (person) => config.seenFolders(id, person),
-                    wheel: config.rightHolders(id, "wheel"),
-                    allows: config.rightHolders(id, "allows"),
+                    holders: (right) => config.rightHolders(id, right),
                     shareNew: runner.shareNew === true,
                 };
             },
@@ -3253,8 +3284,7 @@ export class PocketApp {
             sees: Object.fromEntries(
                 (server.users ?? []).map((id) => [id, [...this.config.seenFolders(undefined, id)]]),
             ),
-            wheel: [...this.config.rightHolders(undefined, "wheel")],
-            allows: [...this.config.rightHolders(undefined, "allows")],
+            rights: this.config.rightsOn(undefined),
             shareNew: server.shareNew === true,
         };
     }
@@ -3577,24 +3607,93 @@ export class PocketApp {
     }
 
     /**
+     * Give `person` one right, or take it back: the one setter for every right given one person at a time
+     * (`rights.ts`). With `computer`, a right held on that computer (`#setComputerRight`); without, one held
+     * everywhere (`#setPersonRight`).
+     */
+    setRight(
+        by: User,
+        change: { person: unknown; right: unknown; on: unknown; computer?: string },
+    ): void {
+        if (change.computer === undefined) {
+            this.#setPersonRight(by, change.person, change.right, change.on);
+        } else {
+            this.#setComputerRight(by, change.computer, change.person, change.right, change.on);
+        }
+    }
+
+    /**
+     * Who manages `person` gives them one right everywhere, or takes it back: to link computers of their own, invite
+     * people, manage people, or keep sessions warm. One that only the owner gives (`rights.ts` `gives`), only the
+     * owner. Only to someone who can hold it; and a user who manages people gives only what they have themselves, else
+     * a second account of theirs would get more than they have (`access.ts` `offer`, which says the same to People).
+     * Taking it back needs none of that. It changes nothing done with it but what asks again: an invite they made
+     * stops working (`auth.ts` `redeem`); a session they keep warm stays so until someone turns it off.
+     */
+    #setPersonRight(by: User, person: unknown, right: unknown, on: unknown): void {
+        if (typeof person !== "string" || !isRight(right, "person")) {
+            throw new HttpError(400, `Send right (${PERSON_RIGHTS.join(", ")}) and on.`);
+        }
+
+        if (typeof on !== "boolean") {
+            throw new HttpError(400, "on must be true or false.");
+        }
+
+        if (declared(right).gives === "owner" && by.role !== "owner") {
+            throw new HttpError(403, "Only the owner can do that");
+        }
+
+        const target = this.config.userById(person);
+
+        this.#requireManages(by, target);
+
+        if (target === undefined || target.role === "owner") {
+            throw new HttpError(404, "No such person");
+        }
+
+        if (on) {
+            const offer = this.policy.offer(by, target, right);
+
+            if (offer === undefined) {
+                const { label, whole } = declared(right);
+
+                throw new HttpError(
+                    400,
+                    `${target.name} must be a user${whole === true ? " who is not limited to one session" : ""} to ${label.toLowerCase()}.`,
+                );
+            }
+
+            // Not more than their own.
+            if (offer === "lacking") {
+                throw new HttpError(403, "You can only give what you have yourself.");
+            }
+        }
+
+        this.config.setPersonRight(person, right, on);
+        void this.#refreshUser(person);
+        this.#peopleChanged();
+        // Who links computers changes what the Runners sheet offers them.
+        this.runners.changed();
+    }
+
+    /**
      * Who is in charge of computer `id` gives `person` one right there, or takes it back: to take the wheel from a
      * driver (`wheel`, `access.ts` `overridesTurns`), or to allow a call their own message led to while approvals need
      * someone else (`allows`, `allowsOwn`). Only someone chosen there who prompts. Taking it back undoes nothing done
      * with it: who took the wheel keeps it, and a call they allowed stays allowed.
      */
-    setRight(by: User, id: string, person: unknown, right: unknown, on: unknown): void {
+    #setComputerRight(by: User, id: string, person: unknown, right: unknown, on: unknown): void {
         if (id !== THIS_SERVER) {
             this.runners.require(id);
         }
 
         this.policy.requireManage(by, id);
 
-        if (
-            typeof person !== "string" ||
-            !(COMPUTER_RIGHTS as readonly unknown[]).includes(right) ||
-            typeof on !== "boolean"
-        ) {
-            throw new HttpError(400, "Send person, right (wheel or allows), and on.");
+        if (typeof person !== "string" || !isRight(right, "computer") || typeof on !== "boolean") {
+            throw new HttpError(
+                400,
+                `Send person, right (${COMPUTER_RIGHTS.join(" or ")}), and on.`,
+            );
         }
 
         const target = this.config.userById(person);
@@ -3611,14 +3710,7 @@ export class PocketApp {
             throw new HttpError(400, "A viewer cannot prompt: make them a user first.");
         }
 
-        if (
-            !this.config.setRight(
-                id === THIS_SERVER ? undefined : id,
-                person,
-                right as ComputerRight,
-                on,
-            )
-        ) {
+        if (!this.config.setComputerRight(id === THIS_SERVER ? undefined : id, person, right, on)) {
             throw new HttpError(400, "Choose them for this computer first.");
         }
 
@@ -4985,17 +5077,13 @@ export class PocketApp {
                 // they invite someone new (`mayInvite`): it offers Invite someone only then. And the computers where
                 // they may take the wheel from a driver (`wheel`), or allow a call their own message led to
                 // (`allows`): those they are in charge of, and those where they were given it.
+                // In `rights`, each right given one person at a time (`rights.ts`), as the policy answers for them now
+                // (`access.ts` `has`). May they link computers of their own (`linksRunners`): the Runners sheet offers
+                // it. Does the owner let them invite people (`invites`): a session's menu offers an invite to it alone
+                // only then, to who may share it. Do they manage people (`managesUsers`): People shows them each
+                // person's settings. May they turn keep warm on for a session or pick its time (`keepsWarm`): the
+                // session's card offers those only then. And the computers of `wheel` and `allows`.
                 ...this.#tellRights(user),
-                // May they link computers of their own (`access.ts` `mayLink`): the Runners sheet offers it.
-                mayLink: this.policy.mayLink(user),
-                // Does the owner let them invite people (`access.ts` `invites`): a session's menu offers an invite to
-                // it alone only then, to who may share it.
-                invites: this.policy.invites(user),
-                // Do they manage people (`access.ts` `managesPeople`): People shows them each person's settings.
-                managesUsers: this.policy.managesPeople(user),
-                // May they turn keep warm on for a session or pick its time (`access.ts` `keepsWarm`): the session's
-                // card offers those only then.
-                keepsWarm: this.policy.keepsWarm(user),
                 // The owner's first start: the app asks them once a page load to link an authenticator, until one is
                 // linked or they say "Not now" (`POST /api/me/setup`).
                 ...(user.role === "owner" &&
@@ -5020,6 +5108,9 @@ export class PocketApp {
                 extensions: this.loader.extensionNames(),
                 // The shortest repeat, so the Schedules sheet's editor keeps Save off for one the server refuses.
                 scheduleRepeatMinutes: this.schedules.limits.repeatMinutes,
+                // Every right given one person at a time, as its switch says it (`rights.ts`): People and Runners draw
+                // their switches from this.
+                rights: toldRights(),
                 // The browser modules this person's tabs load (`extension-ui.js`), each with the tools its module
                 // installs: the only ones whose calls it may describe (`pocket.toolCall`).
                 ui: this.#browserModules(user),
@@ -6037,11 +6128,12 @@ export class PocketApp {
         const target = this.config.userById(person);
 
         if (target?.role === "guest") {
-            const { managesUsers } = target;
+            // A right that lapses once they are a viewer (`rights.ts` `lapses`) is kept for when they link one again.
+            const lapsing = (target.rights ?? []).filter((each) => declared(each).lapses === true);
 
             this.config.updateUser(person, {
                 role: "viewer",
-                paused: { ...(managesUsers === true ? { managesUsers: true } : {}) },
+                paused: lapsing.length === 0 ? {} : { rights: lapsing },
             });
             void this.#refreshUser(person);
             this.accessChanged();
@@ -6064,7 +6156,7 @@ export class PocketApp {
         this.config.updateUser(user.id, {
             role: "guest",
             paused: undefined,
-            ...(paused.managesUsers === true ? { managesUsers: true } : {}),
+            rights: [...(person.rights ?? []), ...(paused.rights ?? [])],
         });
         void this.#refreshUser(user.id);
         this.accessChanged();
@@ -6398,30 +6490,6 @@ export class PocketApp {
     }
 
     /**
-     * Who manages guest `person` lets them link computers of their own, or takes that back. A user who manages people
-     * gives only what they have themselves, here and in `setInvites` and `setKeepsWarm`: else a second account of
-     * theirs would get more than they have.
-     */
-    setLinksRunners(by: User, person: string, on: boolean): void {
-        const target = this.config.userById(person);
-
-        this.#requireManages(by, target);
-
-        if (target === undefined || target.role === "owner") {
-            throw new HttpError(404, "No such person");
-        }
-
-        // Not more than their own.
-        if (on && !this.policy.mayLink(by)) {
-            throw new HttpError(403, "You can only give what you have yourself.");
-        }
-
-        this.config.updateUser(person, { linksRunners: on ? true : undefined });
-        this.#peopleChanged();
-        this.runners.changed();
-    }
-
-    /**
      * Viewer `person` asks for access, with a few words if they like: People shows it to who manages people, on that
      * person's row. One at a time: asking again replaces what they asked. Only a viewer asks; anyone else has what a
      * viewer asks for, or asks the owner for a right in words.
@@ -6463,80 +6531,6 @@ export class PocketApp {
         }
 
         this.config.updateUser(person, { accessRequest: undefined });
-        this.#peopleChanged();
-    }
-
-    /**
-     * The owner lets user `person` manage people (`access.ts` `managesPeople`), or takes that back: the owner alone,
-     * never someone who manages people. Only a user who is not limited to one session can.
-     */
-    setManagesUsers(owner: User, person: string, on: boolean): void {
-        if (owner.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
-
-        const target = this.config.userById(person);
-
-        if (target === undefined || target.role === "owner") {
-            throw new HttpError(404, "No such person");
-        }
-
-        if (on && (target.role !== "guest" || target.sessions !== undefined)) {
-            throw new HttpError(
-                400,
-                `${target.name} must be a user who is not limited to one session to manage users.`,
-            );
-        }
-
-        this.config.updateUser(person, { managesUsers: on ? true : undefined });
-        void this.#refreshUser(person);
-        this.#peopleChanged();
-    }
-
-    /**
-     * The owner lets guest `person` invite people, or takes that back. Off until the owner turns it on; an invite they
-     * made before stops working with it (`auth.ts` `redeem`).
-     */
-    setInvites(by: User, person: string, on: boolean): void {
-        const target = this.config.userById(person);
-
-        this.#requireManages(by, target);
-
-        if (target === undefined || target.role === "owner") {
-            throw new HttpError(404, "No such person");
-        }
-
-        // Not more than their own.
-        if (on && !this.policy.invites(by)) {
-            throw new HttpError(403, "You can only give what you have yourself.");
-        }
-
-        this.config.updateUser(person, { invites: on ? true : undefined });
-        void this.#refreshUser(person);
-        this.#peopleChanged();
-    }
-
-    /**
-     * The owner lets guest `person` keep sessions warm (turn it on for a session, pick its time), or takes that back.
-     * Off until the owner turns it on. Taking it back changes no session: one they turned on stays on until someone
-     * turns it off.
-     */
-    setKeepsWarm(by: User, person: string, on: boolean): void {
-        const target = this.config.userById(person);
-
-        this.#requireManages(by, target);
-
-        if (target === undefined || target.role === "owner") {
-            throw new HttpError(404, "No such person");
-        }
-
-        // Not more than their own.
-        if (on && !this.policy.keepsWarm(by)) {
-            throw new HttpError(403, "You can only give what you have yourself.");
-        }
-
-        this.config.updateUser(person, { keepsWarm: on ? true : undefined });
-        void this.#refreshUser(person);
         this.#peopleChanged();
     }
 
@@ -6623,8 +6617,17 @@ export class PocketApp {
         return {
             mayStart: this.policy.mayStart(user, THIS_SERVER),
             mayInvite: this.policy.mayInvite(user),
-            wheel: computers.filter((id) => this.policy.overridesTurns(user, id)),
-            allows: computers.filter((id) => this.policy.allowsOwn(user, id)),
+            rights: {
+                ...Object.fromEntries(
+                    PERSON_RIGHTS.map((right) => [right, this.policy.has(user, right)]),
+                ),
+                ...Object.fromEntries(
+                    COMPUTER_RIGHTS.map((right) => [
+                        right,
+                        computers.filter((id) => this.policy.has(user, right, id)),
+                    ]),
+                ),
+            } as Rights["rights"],
         };
     }
 

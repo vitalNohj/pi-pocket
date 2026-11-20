@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ConfigStore, Role, StoredInvite, User } from "./config.ts";
 import { HttpError } from "./errors.ts";
+import { holds } from "./rights.ts";
 
 export const COOKIE = "pocket_auth";
 
@@ -130,11 +131,7 @@ function newCode(): string {
  */
 export type MayInvite = (creator: User, session?: string) => boolean;
 
-const byRole: MayInvite = (creator) =>
-    creator.role === "owner" ||
-    (creator.role === "guest" &&
-        (creator.invites === true || creator.managesUsers === true) &&
-        creator.sessions === undefined);
+const byRole: MayInvite = (creator) => holds(creator, "invites");
 
 /**
  * May `maker` make a sign-in link that signs a device in as `target`, someone else: the app's access policy

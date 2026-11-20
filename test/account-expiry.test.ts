@@ -221,7 +221,7 @@ test("People sends expiresAt only to the person and those who manage them", asyn
     const other = app.config.addUser("Other", "guest");
     const manager = app.config.addUser("Manager", "guest");
 
-    app.config.updateUser(manager.user.id, { managesUsers: true });
+    app.config.updateUser(manager.user.id, { rights: ["managesUsers"] });
 
     for (const [as, visible] of [
         [app.config.ownerToken, true],

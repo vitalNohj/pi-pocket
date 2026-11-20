@@ -10,6 +10,15 @@
  */
 import { HttpError } from "./errors.ts";
 import type { Role } from "./config.ts";
+import {
+    canHold,
+    comesWith,
+    declared,
+    holds,
+    type ComputerRight,
+    type PersonRight,
+    type RightKey,
+} from "./rights.ts";
 import type { WebAccess } from "./host.ts";
 
 /** The id of this server's own computer record, as `SessionMeta.runner` is absent for its sessions. */
@@ -20,19 +29,15 @@ export const BLOCKED =
     "This computer is blocked: the person who linked it is a viewer now. It works again when they are made a user.";
 
 /**
- * A person as the policy needs them. `linksRunners`: the owner let this guest link computers of their own. `invites`:
- * the owner let this guest invite people. `keepsWarm`: the owner let this guest keep sessions warm. `managesUsers`:
- * the owner let this guest manage people. `paused`: they were a user until their authenticator was removed, and are
- * one again when they link one (`config.ts` `User.paused`).
+ * A person as the policy needs them. `rights`: what they were given beyond their role, each declared in `rights.ts`
+ * (to link computers of their own, invite people, manage people, keep sessions warm). `paused`: they were a user
+ * until their authenticator was removed, and are one again when they link one (`config.ts` `User.paused`).
  */
 export type Person = {
     id: string;
     role: Role;
     sessions?: readonly string[];
-    linksRunners?: boolean;
-    invites?: boolean;
-    keepsWarm?: boolean;
-    managesUsers?: boolean;
+    rights?: readonly PersonRight[];
     paused?: object;
 };
 
@@ -56,10 +61,11 @@ export type Computer = {
     given(person: string): readonly string[];
     /** Of those, the folders in which `person` sees every session, whoever started it (`seesFolder`). */
     sees(person: string): readonly string[];
-    /** The chosen people the one in charge lets take the wheel from a driver here (`overridesTurns`). */
-    wheel: readonly string[];
-    /** The chosen people the one in charge lets allow a call their own message led to here (`allowsOwn`). */
-    allows: readonly string[];
+    /**
+     * The chosen people the one in charge gave `right` here (`rights.ts`): to take the wheel from a driver
+     * (`overridesTurns`), or to allow a call their own message led to (`allowsOwn`).
+     */
+    holders(right: ComputerRight): readonly string[];
     /** Share new sessions with its chosen people. Off unless the linker turns it on. */
     shareNew: boolean;
 };
@@ -212,30 +218,80 @@ export class AccessPolicy {
     }
 
     /**
-     * Does `person` hold a right on computer `id` that who is in charge of it gives one person at a time: they are in
-     * charge of it themselves, or someone chosen there who prompts (not a viewer, not held to one session) and is in
-     * `list`.
+     * Does `person` hold `right`: the one check for every right given one person at a time (`rights.ts`). The methods
+     * that name a right (`mayLink`, `managesPeople`, `invites`, `keepsWarm`, `overridesTurns`, `allowsOwn`) ask here.
+     *
+     * A person's right, held everywhere: the owner has them all; a user has one they were given, or one that comes
+     * with another they hold, while they can hold it at all (`rights.ts` `holds`).
+     *
+     * A computer's right, held on computer `computer`: who is in charge of it has them all; else someone chosen there
+     * who prompts (not a viewer, not held to one session) and was given it.
      */
-    #holds(
-        person: Pick<Person, "id">,
-        id: string,
-        list: (computer: Computer) => readonly string[],
-    ): boolean {
-        if (this.inCharge(person, id)) {
+    has(person: Pick<Person, "id">, right: PersonRight): boolean;
+    has(person: Pick<Person, "id">, right: ComputerRight, computer: string): boolean;
+    has(person: Pick<Person, "id">, right: RightKey, computer?: string): boolean {
+        if (declared(right).scope === "person") {
+            const current = this.#current(person);
+
+            return current !== undefined && holds(current, right as PersonRight);
+        }
+
+        if (computer === undefined) {
+            return false;
+        }
+
+        if (this.inCharge(person, computer)) {
             return true;
         }
 
         const current = this.#current(person);
-        const computer = this.#facts.computer(id);
+        const there = this.#facts.computer(computer);
 
         return (
             current !== undefined &&
-            computer !== undefined &&
+            there !== undefined &&
             current.role !== "viewer" &&
             current.sessions === undefined &&
-            computer.chosen.includes(current.id) &&
-            list(computer).includes(current.id)
+            there.chosen.includes(current.id) &&
+            there.holders(right as ComputerRight).includes(current.id)
         );
+    }
+
+    /**
+     * What `by` may do with `target`'s right `right`: the one rule for giving a person's right, asked for its switch
+     * (`app.ts` `people`) and by the setter (`setRight`), so that the app holds no rule of its own. Undefined: it is
+     * not theirs to change (`mayManagePerson`; a right only the owner gives), or `target` cannot hold it: no switch.
+     * "with": `target` has it with another right, so it stays on. "lacking": `by` lacks it themselves, and gives only
+     * what they have, else a second account of theirs would get more than they have: they take it back, and do not
+     * turn it on. "open": theirs to turn on and off.
+     */
+    offer(
+        by: Pick<Person, "id">,
+        target: Pick<Person, "id">,
+        right: PersonRight,
+    ): "open" | "lacking" | "with" | undefined {
+        const current = this.#current(by);
+        const other = this.#current(target);
+
+        if (
+            current === undefined ||
+            other === undefined ||
+            !this.mayManagePerson(current, other) ||
+            (declared(right).gives === "owner" && current.role !== "owner") ||
+            !canHold(other, right)
+        ) {
+            return undefined;
+        }
+
+        if (comesWith(right).some((each) => holds(other, each))) {
+            return "with";
+        }
+
+        return current.role === "owner" ||
+            other.rights?.includes(right) === true ||
+            holds(current, right)
+            ? "open"
+            : "lacking";
     }
 
     /**
@@ -244,7 +300,7 @@ export class AccessPolicy {
      * all is `maySteer`.
      */
     overridesTurns(person: Pick<Person, "id">, id: string): boolean {
-        return this.#holds(person, id, (computer) => computer.wheel);
+        return this.has(person, "wheel", id);
     }
 
     /**
@@ -252,7 +308,7 @@ export class AccessPolicy {
      * charge of it, and the users they let. A call nobody is known to have asked for stays with who is in charge.
      */
     allowsOwn(person: Pick<Person, "id">, id: string): boolean {
-        return this.#holds(person, id, (computer) => computer.allows);
+        return this.has(person, "allows", id);
     }
 
     /** May `person` change computer `id`'s settings, choose its people, and give them folders: who is in charge of it. */
@@ -270,14 +326,7 @@ export class AccessPolicy {
 
     /** May `person` link computers of their own: the owner, and the guests the owner lets. */
     mayLink(person: Pick<Person, "id">): boolean {
-        const current = this.#current(person);
-
-        return (
-            current !== undefined &&
-            current.sessions === undefined &&
-            (current.role === "owner" ||
-                (current.role === "guest" && current.linksRunners === true))
-        );
+        return this.has(person, "linksRunners");
     }
 
     /**
@@ -285,15 +334,7 @@ export class AccessPolicy {
      * someone invited to one session. They see on a person's page what the owner sees.
      */
     managesPeople(person: Pick<Person, "id">): boolean {
-        const current = this.#current(person);
-
-        return (
-            current !== undefined &&
-            (current.role === "owner" ||
-                (current.role === "guest" &&
-                    current.sessions === undefined &&
-                    current.managesUsers === true))
-        );
+        return this.has(person, "managesUsers");
     }
 
     /**
@@ -373,27 +414,15 @@ export class AccessPolicy {
      * is `maySteer`.
      */
     keepsWarm(person: Pick<Person, "id">): boolean {
-        const current = this.#current(person);
-
-        return (
-            current !== undefined &&
-            (current.role === "owner" || (current.role === "guest" && current.keepsWarm === true))
-        );
+        return this.has(person, "keepsWarm");
     }
 
     /**
      * Does the owner let `person` invite people at all: the owner always, the guests the owner lets, and who manages
-     * people (`managesPeople`), who has it with that.
+     * people (`managesPeople`), who has it with that. Never someone invited to one session.
      */
     invites(person: Pick<Person, "id">): boolean {
-        const current = this.#current(person);
-
-        return (
-            current !== undefined &&
-            (current.role === "owner" ||
-                (current.role === "guest" && current.invites === true) ||
-                this.managesPeople(current))
-        );
+        return this.has(person, "invites");
     }
 
     /**

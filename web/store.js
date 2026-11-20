@@ -667,10 +667,28 @@ export const scoped = () => Array.isArray(store.state.me?.sessions);
 export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStart !== false;
 
 /**
- * Does the owner let this person invite people (`access.ts` `invites`): the owner always, a user once the owner turns
- * Invite people on for them. A server from before it does not say, so as before.
+ * Does this person hold right `key` (`rights.ts`), as the server's hello says (`me.rights`: the access policy's answer,
+ * `access.ts` `has`): a person's right (to link runners, invite people, manage users, keep sessions warm) everywhere,
+ * or a computer's (`wheel`, `allows`) on computer `computer`. Undefined: the server has not said yet.
  */
-export const canInvite = () => store.state.me?.invites !== false;
+export function hasRight(key, computer) {
+    const said = store.state.me?.rights?.[key];
+
+    return Array.isArray(said) ? said.includes(computer) : said;
+}
+
+/**
+ * The rights of `scope` ("person" or "computer") as their switches say them, in the order they are shown: the server
+ * declares them (`rights.ts`, `hello.server.rights`), and People and Runners draw their switches from this.
+ */
+export const declaredRights = (scope) =>
+    (store.state.server?.rights ?? []).filter((each) => each.scope === scope);
+
+/**
+ * Does the owner let this person invite people (`access.ts` `invites`): the owner always, a user once the owner turns
+ * Invite people on for them, and who manages users.
+ */
+export const canInvite = () => hasRight("invites") !== false;
 
 /**
  * May this person invite someone new to their own sessions, or a folder's (`access.ts` `mayInvite`): the owner lets
@@ -681,9 +699,9 @@ export const canInviteNew = () => store.state.me?.mayInvite ?? (canStart() && ca
 
 /**
  * Does this person manage people (`access.ts` `managesPeople`): the owner, and a user the owner lets. People shows them
- * each person's settings. A server from before it does not say: the owner, as before.
+ * each person's settings.
  */
-export const managesPeople = () => store.state.me?.managesUsers ?? store.state.me?.role === "owner";
+export const managesPeople = () => hasRight("managesUsers") ?? store.state.me?.role === "owner";
 
 /** The computer a session runs on, as the server names it (`access.ts` `THIS_SERVER`): a runner's id, or this server. */
 const computerOf = (session) => session?.runner ?? "this-server";
@@ -691,29 +709,20 @@ const computerOf = (session) => session?.runner ?? "this-server";
 /**
  * May this person take the wheel from a driver in `session` (a session of the list, or the open one), and turn take
  * turns off under them (`access.ts` `overridesTurns`): the server names the computers where they may, those they are in
- * charge of and those where they were given it. A server from before it does not say: the owner, as before.
+ * charge of and those where they were given it.
  */
-export function overridesTurns(session) {
-    const { me } = store.state;
-
-    return Array.isArray(me?.wheel) ? me.wheel.includes(computerOf(session)) : me?.role === "owner";
-}
+export const overridesTurns = (session) =>
+    hasRight("wheel", computerOf(session)) ?? store.state.me?.role === "owner";
 
 /**
  * May this person allow a call their own message led to in `session` while approvals need someone else (`access.ts`
- * `allowsOwn`): the server names the computers where they may. A server from before it does not say: who is in charge
- * of the session's computer, as before.
+ * `allowsOwn`): the server names the computers where they may.
  */
-export function allowsOwn(session) {
-    const { me } = store.state;
-
-    return Array.isArray(me?.allows)
-        ? me.allows.includes(computerOf(session))
-        : session?.inCharge === true;
-}
+export const allowsOwn = (session) =>
+    hasRight("allows", computerOf(session)) ?? session?.inCharge === true;
 
 /** May this person link computers of their own as runners: the owner, and the guests the owner lets (`mayLink`). */
-export const canLink = () => store.state.me?.mayLink === true;
+export const canLink = () => hasRight("linksRunners") === true;
 
 /** The notices that announce chat messages, here or a mention elsewhere, by id: their session's. Reading its chat takes them down. */
 const chatNotices = new Map();

@@ -1,7 +1,7 @@
 // Keep warm: the owner's settings for keeping a session's prompt cache warm once its run ends, and the row a session
 // chooses its own time with.
 import { useEffect, useRef, useState } from "preact/hooks";
-import { actions, api, attempt, canSteer, closeSheet, store } from "../store.js";
+import { actions, api, attempt, canSteer, closeSheet, hasRight, store } from "../store.js";
 import { html, Icon, Loader, Sheet, Switch } from "../ui.js";
 
 /** The times on offer: off, hours (0.5: 30 minutes), or Break-even. The server takes these only. */
@@ -740,10 +740,10 @@ export function KeepWarmCard({ compact = false }) {
     // The same times as the owner's, the session's own (or the owner's default) selected. Picking the owner's default
     // follows it again ("default"), so a later change of the default reaches this session too.
     const valueOf = (value) => (value === fallback ? "default" : value);
-    // Only the owner, and the people the owner lets (`me.keepsWarm`; a server from before that says nothing, and then
-    // it is the owner alone), turn a session on or pick another time; anyone who can steer may turn it off, or back to
-    // the default when the default is Off or is the session's time already (the server checks it too).
-    const owner = store.state.me?.keepsWarm ?? store.state.me?.role === "owner";
+    // Only the owner, and the people the owner lets (the right `keepsWarm`, `store.js` `hasRight`), turn a session on
+    // or pick another time; anyone who can steer may turn it off, or back to the default when the default is Off or is
+    // the session's time already (the server checks it too).
+    const owner = hasRight("keepsWarm") ?? store.state.me?.role === "owner";
     const allowed = (value) =>
         owner || value === 0 || (value === fallback && (fallback === 0 || chosen === fallback));
 
