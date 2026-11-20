@@ -200,7 +200,11 @@ test("all sessions in a folder, turned off and cut short by a restart: the next 
     assert.equal(await hookBy("vera-on-theirs"), vera.id, "her task on it is not handed over yet");
     await restart();
 
-    assert.equal(await hookBy("vera-on-theirs"), owner(app).id, "the task is its starter's");
+    assert.equal(
+        await hookBy("vera-on-theirs"),
+        owner(app).id,
+        "the task goes to who is in charge",
+    );
     assert.equal(await hookBy("vera-on-hers"), vera.id, "her own session's task stays hers");
     assert.equal(starterOf(hers), vera.id);
     assert.deepEqual(owed(), []);

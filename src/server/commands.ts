@@ -1230,7 +1230,8 @@ export class Commands {
      * Share session `id` with exactly `people` (person ids), one at a time: its starter and the owner may (`access.ts`
      * `mayShare`). Each must be able to use the session's computer; who is in charge of it sees every session there
      * anyway, and the starter has it, so neither is kept. Someone it is shared with already stays without that, until
-     * taken off. Someone taken off leaves it at once (`app.accessChanged`).
+     * taken off. Someone taken off leaves it at once (`app.accessChanged`), and the tasks they set up on it go to who is
+     * in charge of its computer, in the same save.
      */
     async shareSession(id: ConversationId, user: User, people: unknown): Promise<string[]> {
         const app = this.#app;
@@ -1293,6 +1294,7 @@ export class Commands {
         }
 
         let saved: string[] = shared;
+        let handed: [string, Map<string, string>][] = [];
 
         await app.harness.commit(async (tx) => {
             const sessions = await tx.doc(SessionsDoc);
@@ -1304,7 +1306,7 @@ export class Commands {
 
             // Checked again here, as it is saved: someone no longer chosen for its computer since the check above is
             // not shared with anew, and never someone who is leaving it.
-            const now = item.sharedWith ?? [];
+            const now = [...(item.sharedWith ?? [])];
 
             saved = shared.filter(
                 (each) =>
@@ -1317,7 +1319,27 @@ export class Commands {
             } else {
                 item.sharedWith = saved;
             }
+
+            // Whoever this save takes off hands the tasks they set up on the session to who is in charge of its
+            // computer, in this same save: nothing that cuts it short leaves a task with someone who lost the session.
+            // Who still has it another way (by its folder, or invited to it) keeps theirs (`app.ts` `handTasks`).
+            const lost: [string, Map<string, string>][] = [];
+
+            for (const each of now) {
+                if (!saved.includes(each)) {
+                    lost.push([
+                        each,
+                        await app.handTasks(tx, sessions, each, { only: String(root) }),
+                    ]);
+                }
+            }
+
+            handed = lost;
         }, context);
+
+        for (const [person, lost] of handed) {
+            app.worksFor(person, lost);
+        }
 
         const added = saved.filter((each) => !before.has(each));
         const removed = [...before].filter((each) => !saved.includes(each));

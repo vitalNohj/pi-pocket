@@ -42,6 +42,7 @@ import {
     type Registry,
     type Storage,
     type SubmissionRecord,
+    type Tx,
     UsageDoc,
     type UsageState,
 } from "@earendil-works/pi-durable";
@@ -3773,8 +3774,8 @@ export class PocketApp {
      * `person` leaves computer `computer` (undefined: every one): removed, no longer chosen there, or no longer given a
      * folder. Their sessions there that they may no longer use move to who is in charge of it, and so does each task they
      * set up on a session there that they may no longer steer: on their own sessions and on sessions shared with them
-     * alike. One commit moves both, so a restart never leaves a task with someone who left (`#handOverGone` finishes one
-     * that removing a person began). Nothing stops.
+     * alike (`handTasks`). One commit moves both, so a restart never leaves a task with someone who left
+     * (`#handOverGone` finishes one that removing a person began). Nothing stops.
      *
      * With `only` (a top session there), that session alone is taken from them (`revokeSession`): it is no longer
      * shared with them, and one they started moves although they may still use its folder.
@@ -3783,6 +3784,7 @@ export class PocketApp {
         const gone = this.config.userById(person) === undefined;
         const on = (where: string) => computer === undefined || where === computer;
         const moved = new Map<string, string>();
+        let lost = new Map<string, string>();
 
         await this.harness.commit(async (tx) => {
             const sessions = await tx.doc(SessionsDoc);
@@ -3824,104 +3826,157 @@ export class PocketApp {
                 moved.set(id, to);
             }
 
-            // Each task on a session there that they may no longer steer: the session is no longer theirs (moved
-            // above, in this same commit), or no longer shared with them. With `only`, the tasks on that session alone:
-            // taking one session from a person touches nothing else of theirs.
-            const owner = (target: number): string | undefined => {
-                const root = this.rootOf(target as unknown as ConversationId);
-                const meta = sessions.items[String(root)];
-
-                if (
-                    meta === undefined ||
-                    meta.pip !== undefined ||
-                    !on(meta.runner ?? THIS_SERVER) ||
-                    (only !== undefined && String(root) !== only)
-                ) {
-                    return undefined;
-                }
-
-                // Whether the session is still theirs is the policy's to say, by its one rule (`access.ts`
-                // `seesWith`), over the session as this commit leaves it: a share counts for someone not chosen
-                // there, and a person invited to sessions alone has exactly those. Their role is not asked: made a
-                // viewer, they keep their tasks, and prompt again with them.
-                const folder = (): string => this.#accessFolder(meta);
-                const steers =
-                    !gone &&
-                    !moved.has(String(root)) &&
-                    this.policy.seesWith(
-                        { id: person },
-                        {
-                            id: String(root),
-                            computer: meta.runner ?? THIS_SERVER,
-                            ...(meta.createdBy === undefined ? {} : { createdBy: meta.createdBy }),
-                            ...(meta.sharedWith === undefined
-                                ? {}
-                                : { sharedWith: [...meta.sharedWith] }),
-                            get folder() {
-                                return folder();
-                            },
-                        },
-                    );
-
-                return steers
-                    ? undefined
-                    : (moved.get(String(root)) ?? meta.createdBy ?? this.#ownerId());
-            };
-
-            const swap = (target: number, item: { by?: string; requestedBy?: string }): void => {
-                if (item.by !== person && item.requestedBy !== person) {
-                    return;
-                }
-
-                const to = owner(target);
-
-                if (to === undefined) {
-                    return;
-                }
-
-                if (item.by === person) {
-                    item.by = to;
-                }
-
-                if (item.requestedBy === person) {
-                    item.requestedBy = to;
-                }
-            };
-
-            for (const hook of Object.values((await tx.doc(HooksDoc)).items)) {
-                swap(hook.target, hook);
-            }
-
-            for (const watch of Object.values((await tx.doc(RepoWatchesDoc)).items)) {
-                swap(watch.target, watch);
-            }
-
-            for (const key of only === undefined ? Object.keys(sessions.items) : [only]) {
-                const root = Number(key) as unknown as ConversationId;
-
-                for (const conversation of this.conversationsOf(root)) {
-                    const watch = (await tx.doc(WatchDoc, conversation)).watch;
-
-                    if (watch !== undefined) {
-                        swap(Number(conversation), watch);
-                    }
-
-                    for (const schedule of Object.values(
-                        (await tx.doc(ScheduleDoc, conversation)).items,
-                    )) {
-                        swap(Number(conversation), schedule);
-                    }
-                }
-            }
+            lost = await this.handTasks(tx, sessions, person, {
+                ...(computer === undefined ? {} : { computer }),
+                ...(only === undefined ? {} : { only }),
+                moved,
+            });
         }, context);
 
         // Pi worked for them in a session that is no longer theirs: it now works for who has it, until someone writes.
-        for (const [id, to] of moved) {
-            this.attribution.handedOver(Number(id) as unknown as ConversationId, person, to);
-        }
+        this.worksFor(person, lost);
 
         if (gone) {
             this.attribution.forget(person, (id) => this.sessionMeta(this.rootOf(id))?.createdBy);
+        }
+    }
+
+    /**
+     * In an open commit: each task `person` set up on a session they no longer have goes to who is in charge of that
+     * session's computer (the owner for this server, a runner's linker): its webhooks, its repository and pull request
+     * watches, its schedules, and the background commands Pi runs for them there. One rule for every way of losing a
+     * session: it is no longer shared with them, it was taken from them, they left its computer or its folder, or they
+     * were removed. Whether they still have a session is the policy's to say, by its one rule (`access.ts` `seesWith`),
+     * over the session as this commit leaves it (`sessions`): a share counts for someone not chosen there, and a person
+     * invited to sessions alone has exactly those. Their role is not asked: made a viewer, they keep their tasks, and
+     * prompt again with them.
+     *
+     * `scope`: only the sessions on `computer`; only the top session `only`; `moved`: the sessions this commit already
+     * took from them, with who has each now. Returns each top session they lost, with who has its tasks now, for
+     * `worksFor` once the commit is saved.
+     */
+    async handTasks(
+        tx: Tx,
+        sessions: { items: Record<string, SessionMeta> },
+        person: string,
+        scope: { computer?: string; only?: string; moved?: ReadonlyMap<string, string> } = {},
+    ): Promise<Map<string, string>> {
+        const gone = this.config.userById(person) === undefined;
+        const lost = new Map<string, string>();
+
+        for (const [id, meta] of Object.entries(sessions.items)) {
+            const computer = meta.runner ?? THIS_SERVER;
+
+            if (
+                meta.pip !== undefined ||
+                (scope.computer !== undefined && computer !== scope.computer) ||
+                (scope.only !== undefined && id !== scope.only)
+            ) {
+                continue;
+            }
+
+            const folder = (): string => this.#accessFolder(meta);
+            const has =
+                !gone &&
+                scope.moved?.has(id) !== true &&
+                this.policy.seesWith(
+                    { id: person },
+                    {
+                        id,
+                        computer,
+                        ...(meta.createdBy === undefined ? {} : { createdBy: meta.createdBy }),
+                        ...(meta.sharedWith === undefined
+                            ? {}
+                            : { sharedWith: [...meta.sharedWith] }),
+                        get folder() {
+                            return folder();
+                        },
+                    },
+                );
+
+            if (has) {
+                continue;
+            }
+
+            // Who is in charge there; the owner, where that is someone no longer here.
+            const charge = scope.moved?.get(id) ?? this.policy.inChargeOf(id);
+            const to = this.config.userById(charge) === undefined ? this.#ownerId() : charge;
+
+            if (to !== person) {
+                lost.set(id, to);
+            }
+        }
+
+        if (lost.size === 0) {
+            return lost;
+        }
+
+        const swap = (target: number, item: { by?: string; requestedBy?: string }): void => {
+            const to = lost.get(String(this.rootOf(target as unknown as ConversationId)));
+
+            if (to === undefined) {
+                return;
+            }
+
+            if (item.by === person) {
+                item.by = to;
+            }
+
+            if (item.requestedBy === person) {
+                item.requestedBy = to;
+            }
+        };
+
+        for (const hook of Object.values((await tx.doc(HooksDoc)).items)) {
+            swap(hook.target, hook);
+        }
+
+        for (const watch of Object.values((await tx.doc(RepoWatchesDoc)).items)) {
+            swap(watch.target, watch);
+        }
+
+        for (const [key, to] of lost) {
+            const root = Number(key) as unknown as ConversationId;
+
+            for (const conversation of this.conversationsOf(root)) {
+                const watch = (await tx.doc(WatchDoc, conversation)).watch;
+
+                if (watch !== undefined) {
+                    swap(Number(conversation), watch);
+                }
+
+                for (const schedule of Object.values(
+                    (await tx.doc(ScheduleDoc, conversation)).items,
+                )) {
+                    swap(Number(conversation), schedule);
+                }
+
+                // A command Pi runs for them in the background: Pi is told of its end as the work of who has its
+                // tasks now. One whose message is already saved to go (`batch`) goes as it was.
+                for (const task of Object.values(
+                    (await tx.doc(BackgroundDoc, conversation)).items,
+                )) {
+                    if (
+                        task.requestedBy === person &&
+                        task.toldAt === undefined &&
+                        task.batch === undefined
+                    ) {
+                        task.requestedBy = to;
+                    }
+                }
+            }
+        }
+
+        return lost;
+    }
+
+    /**
+     * After the commit of `handTasks`: where Pi worked for `person` in a session they lost, in it and its subagents, it
+     * now works for who has its tasks, until someone writes.
+     */
+    worksFor(person: string, lost: ReadonlyMap<string, string>): void {
+        for (const [id, to] of lost) {
+            this.attribution.handedOver(Number(id) as unknown as ConversationId, person, to);
         }
     }
 

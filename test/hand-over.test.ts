@@ -1,6 +1,8 @@
 // A person who leaves a computer (removed, no longer chosen, or no longer given a folder) hands their sessions and tasks
 // there to who is in charge (`app.ts` `handOver`): their own sessions, and the tasks they set up on sessions shared with
-// them; in one commit, so a restart finishes a removal it cut short; and Pi then works for who has the session.
+// them; in one commit, so a restart finishes a removal it cut short; and Pi then works for who has the session. The
+// same for a session that is no longer shared with them (`commands.ts` `shareSession`): one rule (`app.ts`
+// `handTasks`), and the tasks always go to who is in charge of the session's computer, never to its starter.
 import {
     type App,
     cleanUp,
@@ -10,13 +12,15 @@ import {
     owner,
     root,
     scriptedModel,
+    work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { newIdentity } from "../src/runner/secure-link.ts";
 import { THIS_SERVER } from "../src/server/access.ts";
-import { HooksDoc, ScheduleDoc, SessionsDoc } from "../src/server/docs.ts";
+import { BackgroundDoc, HooksDoc, ScheduleDoc, SessionsDoc } from "../src/server/docs.ts";
 
 const data = join(root, "hand-over-data");
 let app: App;
@@ -59,6 +63,38 @@ async function scheduleOf(id: string, by: string, target: ConversationId): Promi
     }, context);
 }
 
+/**
+ * A command Pi ran in the background in `target` for `by`, as `background.ts` saves one. It ended and tells nobody, so
+ * nothing acts on it here.
+ */
+async function commandOf(
+    id: string,
+    by: string,
+    target: ConversationId,
+    more: { toldAt?: number } = {},
+): Promise<void> {
+    await app.harness.commit(async (tx) => {
+        (await tx.doc(BackgroundDoc, target)).items[id] = {
+            id,
+            command: "true",
+            cwd: work,
+            pid: 0,
+            startedAt: Date.now(),
+            status: "exited",
+            code: 0,
+            endedAt: Date.now(),
+            notify: false,
+            requestedBy: by,
+            taskId: `${id}-task`,
+            ...more,
+        } as never;
+    }, context);
+}
+
+async function commandBy(target: ConversationId, id: string): Promise<string | undefined> {
+    return (await app.harness.snapshot(BackgroundDoc, target, context))?.items[id]?.requestedBy;
+}
+
 async function hookBy(id: string): Promise<string | undefined> {
     return (await app.harness.snapshot(HooksDoc, context))?.items[id]?.by;
 }
@@ -98,10 +134,14 @@ test("a person no longer chosen hands over the tasks they set up on a session sh
     // Bea's own hook stays hers.
     await hookOf("bea-own", bea.id, beas);
 
-    // Alex is taken off this server: the tasks go to the session's starter, Bea.
+    // Alex is taken off this server: the tasks go to who is in charge of it, the owner; not to the session's starter.
     await app.choosePeople(THIS_SERVER, [bea.id]);
-    assert.equal(await hookBy("alex-on-beas"), bea.id, "the hook is the session's starter's");
-    assert.equal(await scheduleBy(beas, "alex-schedule"), bea.id, "and so is the schedule");
+    assert.equal(await hookBy("alex-on-beas"), owner(app).id, "the hook goes to who is in charge");
+    assert.equal(
+        await scheduleBy(beas, "alex-schedule"),
+        owner(app).id,
+        "and so does the schedule",
+    );
     assert.equal(await hookBy("bea-own"), bea.id);
 
     // A task on a session still shared with the person stays theirs.
@@ -187,7 +227,7 @@ test("taking one session from a person leaves the tasks on their other sessions 
 
     await app.revokeSession(owner(app), taken, pat.id);
     assert.equal(app.canSee(pat, taken), false);
-    assert.equal(await hookBy("pat-taken"), owner(app).id, "its tasks go to its starter");
+    assert.equal(await hookBy("pat-taken"), owner(app).id, "its tasks go to who is in charge");
     assert.equal(await scheduleBy(taken, "pat-taken-schedule"), owner(app).id);
     assert.equal(app.policy.maySteer(pat, String(kept)), true, "she still steers the other");
     assert.equal(await hookBy("pat-kept"), pat.id, "and its tasks stay hers");
@@ -221,4 +261,83 @@ test("taking one session from a person leaves the tasks on their other sessions 
     );
     await app.handOver(ivy.id, THIS_SERVER);
     assert.equal(await hookBy("ivy-second"), ivy.id);
+});
+
+test("a session no longer shared with a person: the tasks they set up on it go to who is in charge of its computer", async () => {
+    const ana = app.config.addUser("Ana", "guest").user;
+    const bo = app.config.addUser("Bo", "guest").user;
+    const cy = app.config.addUser("Cy", "guest").user;
+
+    app.config.setServerUsers([...(app.config.server.users ?? []), ana.id, bo.id, cy.id]);
+
+    // On this server the owner is in charge. Bo's session, shared with Ana, who set up tasks on it.
+    const here = await newSession(app);
+    const other = await newSession(app);
+
+    await sessionOf(here, bo.id, [ana.id]);
+    await sessionOf(other, bo.id, [ana.id]);
+    await hookOf("ana-here", ana.id, here);
+    await scheduleOf("ana-here-schedule", ana.id, here);
+    await commandOf("ana-here-command", ana.id, here);
+    await commandOf("ana-here-told", ana.id, here, { toldAt: 1 });
+    await hookOf("bo-here", bo.id, here);
+    await hookOf("ana-other", ana.id, other);
+    // Ana wrote last: Pi works for her there.
+    await app.commands.submit(here, ana, { text: "Do the thing", requestId: "ana-1" });
+
+    for (let tries = 0; tries < 50 && app.attribution.requesterOf(here) !== ana.id; tries++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    assert.equal(app.attribution.requesterOf(here), ana.id);
+
+    // Bo, its starter, stops sharing it.
+    assert.deepEqual(await app.commands.shareSession(here, bo, []), []);
+    assert.equal(app.canSee(ana, here), false);
+    assert.equal(
+        await hookBy("ana-here"),
+        owner(app).id,
+        "to who is in charge of this server, not to the session's starter",
+    );
+    assert.equal(await scheduleBy(here, "ana-here-schedule"), owner(app).id);
+    assert.equal(await commandBy(here, "ana-here-command"), owner(app).id, "a background command");
+    assert.equal(await commandBy(here, "ana-here-told"), ana.id, "one Pi was told of is as it was");
+    assert.equal(await hookBy("bo-here"), bo.id, "the starter's own tasks stay");
+    assert.equal(await hookBy("ana-other"), ana.id, "and hers on a session she still has");
+    assert.equal(app.attribution.requesterOf(here), owner(app).id, "Pi works for them now");
+
+    // Who still has the session another way keeps their tasks: Cy accesses all sessions in its folder.
+    await app.giveFolders(owner(app), THIS_SERVER, cy.id, [work]);
+    await app.seeFolder(owner(app), THIS_SERVER, cy.id, work, true);
+    assert.deepEqual(await app.commands.shareSession(other, bo, [ana.id, cy.id]), [ana.id, cy.id]);
+    await hookOf("cy-other", cy.id, other);
+    assert.deepEqual(await app.commands.shareSession(other, bo, [ana.id]), [ana.id]);
+    assert.equal(app.canSee(cy, other), true, "by its folder");
+    assert.equal(await hookBy("cy-other"), cy.id);
+    assert.equal(await hookBy("ana-other"), ana.id, "nobody else's is touched");
+    await app.seeFolder(owner(app), THIS_SERVER, cy.id, work, false);
+
+    // On a linked computer, who linked it is in charge: not the owner, and not the session's starter.
+    const lin = app.config.addUser("Lin", "guest").user;
+    const laptop = app.config.addRunner("Laptop", lin.id, newIdentity().publicKey).id;
+
+    await app.choosePerson(laptop, ana.id, true);
+    await app.choosePerson(laptop, bo.id, true);
+
+    const there = await newSession(app);
+
+    await app.harness.commit(async (tx) => {
+        const meta = (await tx.doc(SessionsDoc)).items[String(there)]!;
+
+        meta.runner = laptop;
+        meta.createdBy = bo.id;
+        meta.sharedWith = [ana.id];
+    }, context);
+    await hookOf("ana-there", ana.id, there);
+    await scheduleOf("ana-there-schedule", ana.id, there);
+    assert.equal(app.policy.maySteer(ana, String(there)), true);
+
+    assert.deepEqual(await app.commands.shareSession(there, bo, []), []);
+    assert.equal(await hookBy("ana-there"), lin.id, "to who linked it");
+    assert.equal(await scheduleBy(there, "ana-there-schedule"), lin.id);
 });
