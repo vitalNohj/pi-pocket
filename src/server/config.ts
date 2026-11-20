@@ -85,6 +85,11 @@ export interface User {
     temporary?: true;
     /** Their other devices, each signed in with a link from one of their own (`auth.ts` `createDeviceLink`). */
     devices?: StoredDevice[];
+    /**
+     * The owner said "Not now" to the first-start prompt (`app.ts` `hello`'s `setup`), which asks them to link an
+     * authenticator: it does not come again.
+     */
+    setupDismissed?: true;
 }
 
 /** Who is signed in, as `hello` says it to a tab, and as the app page carries it (`serveApp`). */
@@ -1078,6 +1083,7 @@ export class ConfigStore {
                 | "linksRunners"
                 | "invites"
                 | "keepsWarm"
+                | "setupDismissed"
             >
         > & {
             /** Only ever turned off: a temporary account becomes a full one, never the other way. */
@@ -1135,6 +1141,10 @@ export class ConfigStore {
 
         if (user.temporary !== true) {
             delete user.temporary;
+        }
+
+        if (user.setupDismissed !== true) {
+            delete user.setupDismissed;
         }
 
         this.save();

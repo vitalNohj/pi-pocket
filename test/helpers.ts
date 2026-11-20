@@ -85,7 +85,8 @@ export function scriptedModel(route: FauxResponseStep = echo) {
 /** Open the app on `dataDir` with the scripted model. Opening the same folder again is a restart; `now` moves its clock. */
 /**
  * Open the app for a test. The owner is never asked for an approval (`config.ts` `approvalDays` 0), so tests of
- * something else start sessions on runners without waiting; tests of approvals set the time they need.
+ * something else start sessions on runners without waiting; tests of approvals set the time they need. The owner's
+ * first-start prompt is dismissed (`setupDismissed`), so no browser test finds it over the app; its own test clears it.
  */
 export async function openApp(
     model: ReturnType<typeof scriptedModel>,
@@ -106,7 +107,7 @@ export async function openApp(
     const first = app.config.users.find((each) => each.role === "owner");
 
     if (first !== undefined && first.approvalDays === undefined) {
-        app.config.updateUser(first.id, { approvalDays: 0 });
+        app.config.updateUser(first.id, { approvalDays: 0, setupDismissed: true });
     }
 
     return app;
@@ -239,7 +240,7 @@ export function approveSession(
 }
 
 /**
- * Link an authenticator to `person`'s account, as they would under their name (`approval-methods.ts`): steering needs
+ * Link an authenticator to `person`'s account, as they would on their page in People (`approval-methods.ts`): steering needs
  * one. Returns its secret, for codes.
  */
 export function linkAuthenticator(app: App, person: Pick<User, "id" | "name">): string {

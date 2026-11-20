@@ -1095,41 +1095,158 @@ test(
     },
 );
 
-test("People opens on one's own page for a viewer too, not on the owner's", real, async () => {
-    const { user, token } = app.config.addUser("Nora", "viewer");
-    // A browser of their own: a login link in one signed in as someone else asks before it switches.
-    const theirs = new Browsers({
-        dataDir: mkdtempSync(join(root, "people-sheet-viewer-")),
-        load: async () => undefined,
-        save: () => {},
-    });
-    const owners = page;
+test(
+    "People opens on one's own page for a viewer too, not on the owner's: their account is there, and only there",
+    real,
+    async () => {
+        const { user, token } = app.config.addUser("Nora", "viewer");
+        /** The rows of one's own account on the page shown: their labels, in order. */
+        const rows = () =>
+            inPage<string[]>(`
+            const detail = document.querySelector(".pages-detail");
 
-    try {
-        page = await theirs.open(1);
-        await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
-        await open("people");
-        assert.equal(
-            await inPage<string>(
-                `const { store } = await import("/store.js"); return JSON.stringify(store.state.me.id)`,
-            ),
-            user.id,
-            "signed in as the viewer",
-        );
-        assert.ok(
-            (
+            return JSON.stringify([
+                detail.querySelector(".my-photo") && "photo",
+                detail.querySelector(".my-name") && "name",
+                detail.querySelector(".device-link") && "device",
+                detail.querySelector(".my-authenticator") && "authenticator",
+                detail.querySelector(".my-signout") && "sign out",
+            ].filter(Boolean));
+        `);
+        const title = () =>
+            inPage<string>(
+                `return JSON.stringify(document.querySelector(".sheet-page-title").textContent.replace(/\\s+/g, " ").trim())`,
+            );
+        const listed = () =>
+            inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".pages-item-title")].map((each) => each.textContent.trim()))`,
+            );
+        // A browser of their own: a login link in one signed in as someone else asks before it switches.
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "people-sheet-viewer-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+
+        try {
+            page = await theirs.open(1);
+            await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await open("people");
+            assert.equal(
                 await inPage<string>(
-                    `return JSON.stringify(document.querySelector(".sheet-page-title").textContent.trim())`,
-                )
-            ).startsWith("Nora"),
-            "their own page",
-        );
-    } finally {
-        // The tests share one page: the owner's again, whatever happened.
-        page = owners;
-        await theirs.closeAll({ final: true });
-    }
-});
+                    `const { store } = await import("/store.js"); return JSON.stringify(store.state.me.id)`,
+                ),
+                user.id,
+                "signed in as the viewer",
+            );
+            assert.ok(
+                (
+                    await inPage<string>(
+                        `return JSON.stringify(document.querySelector(".sheet-page-title").textContent.trim())`,
+                    )
+                ).startsWith("Nora"),
+                "their own page",
+            );
+            await until(async () => (await rows()).length === 5, "the rows of their account");
+            assert.deepEqual(await rows(), [
+                "photo",
+                "name",
+                "device",
+                "authenticator",
+                "sign out",
+            ]);
+            assert.deepEqual(
+                await inPage<string[]>(
+                    `return JSON.stringify([...document.querySelectorAll(".pages-detail .my-photo button")].map((each) => each.textContent.trim()))`,
+                ),
+                ["Add photo"],
+            );
+
+            // Nobody else's page has them.
+            await show("Owner");
+            assert.deepEqual(await rows(), []);
+            await show("Nora");
+            await until(async () => (await rows()).includes("name"), "their own page again");
+
+            // A new name: Save is offered only for a change, and the list and the page head show it.
+            const field = (value: string) =>
+                inPage(`
+                const input = document.querySelector(".pages-detail .my-name input");
+
+                input.value = ${JSON.stringify(value)};
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+
+                return JSON.stringify(true);
+            `);
+            const saveOff = () =>
+                inPage<boolean>(
+                    `return JSON.stringify(document.querySelector(".pages-detail .my-name button").disabled)`,
+                );
+
+            assert.equal(await saveOff(), true, "the same name");
+            await field("   ");
+            assert.equal(await saveOff(), true, "no name");
+            await field(" Nora B ");
+            assert.equal(await saveOff(), false);
+            await inPage(
+                `document.querySelector(".pages-detail .my-name button").click(); return JSON.stringify(true);`,
+            );
+            await until(
+                async () => (await title()).startsWith("Nora B (you)"),
+                "the new name on the page",
+            );
+            await until(
+                async () => (await listed()).includes("Nora B (you)"),
+                "the new name in the list",
+            );
+            assert.equal(app.config.userById(user.id)?.name, "Nora B");
+            assert.equal(await saveOff(), true, "saved: nothing more to save");
+
+            // The round button at the bottom of the rail opens People on their own page.
+            await inPage(
+                `const { closeSheet } = await import("/store.js"); closeSheet(); return JSON.stringify(true);`,
+            );
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(document.querySelector(".sheet") === null)`,
+                    ),
+                "People to close",
+            );
+            assert.equal(
+                await inPage<string>(
+                    `return JSON.stringify(document.querySelector(".rail-me").getAttribute("aria-label"))`,
+                ),
+                "Your account",
+            );
+            await inPage(
+                `document.querySelector(".rail-me").click(); return JSON.stringify(true);`,
+            );
+            await until(
+                async () => (await rows()).includes("sign out"),
+                "their own page from the rail",
+            );
+            assert.ok((await title()).startsWith("Nora B"));
+
+            // Sign out signs this device out.
+            await inPage(
+                `document.querySelector(".pages-detail .my-signout button").click(); return JSON.stringify(true);`,
+            );
+            await until(
+                async () =>
+                    inPage<boolean>(`return JSON.stringify(document.readyState === "complete" &&
+                    (await import("/store.js")).store.state.me === null &&
+                    (await fetch("/api/me")).status === 401)`).catch(() => false),
+                "signed out",
+            );
+        } finally {
+            // The tests share one page: the owner's again, whatever happened.
+            page = owners;
+            await theirs.closeAll({ final: true });
+        }
+    },
+);
 
 test(
     "an invite makes a temporary account unless it allows more: no authenticator and no Can prompt for it, until the owner allows it",
@@ -1249,19 +1366,19 @@ test(
         try {
             const tias = await theirs.open(1);
 
-            /** Their own sheet with their name: what it says of an authenticator, or null when it offers none. */
+            /** Their own page in People: what it says of an authenticator, or null when it offers none. */
             const authenticator = async () => {
                 await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
                 await ready();
                 await inPage(
-                    `const { openSheet } = await import("/store.js"); openSheet({ type: "name" }); return JSON.stringify(true);`,
+                    `const { openSheet } = await import("/store.js"); openSheet({ type: "people" }); return JSON.stringify(true);`,
                 );
                 await until(
                     async () =>
                         await inPage<boolean>(
-                            `return JSON.stringify(document.querySelector(".sheet") !== null)`,
+                            `return JSON.stringify(document.querySelector(".pages-detail .my-name") !== null)`,
                         ),
-                    "the sheet with their name",
+                    "their own page in People",
                 );
 
                 // Once the server has answered what the sheet itself asked.

@@ -26,8 +26,8 @@ import { MemorySheet } from "./sheets/memory.js";
 import { MenuSheet, PlacesSheet } from "./sheets/menu.js";
 import { MessageSheet } from "./sheets/message.js";
 import { ModelPicker } from "./sheets/model.js";
-import { MyAuthenticator } from "./sheets/authenticator.js";
-import { InviteSheet, MyPhoto, PeopleSheet } from "./sheets/people.js";
+import { OwnerSetupSheet } from "./sheets/owner-setup.js";
+import { InviteSheet, PeopleSheet } from "./sheets/people.js";
 import { SessionShareSheet } from "./sheets/session-share.js";
 import { AuthDialog, ProvidersSheet } from "./sheets/providers.js";
 import { HooksSheet } from "./sheets/hooks.js";
@@ -46,8 +46,8 @@ import { PiSessionSheet, PiSessionsSheet, piSessionsAvailable } from "./sheets/p
 import { WorktreeSheet } from "./sheets/worktree.js";
 import { TrustSheet } from "./trust.js";
 import { addLayer, goBack, removeLayer } from "./back.js";
-import { actions, api, signOut, store } from "./store.js";
-import { Boundary, html, Icon, SheetBack, SheetInfo, usePresence } from "./ui.js";
+import { actions, store } from "./store.js";
+import { Boundary, html, SheetBack, SheetInfo, usePresence } from "./ui.js";
 
 // ─── Back ─────────────────────────────────────────────────────────────────────────
 
@@ -187,7 +187,7 @@ export function Sheets() {
 }
 
 function sheetBody(sheet) {
-    const { view, me } = store.state;
+    const { view } = store.state;
     let body = null;
 
     switch (sheet.type) {
@@ -282,6 +282,9 @@ function sheetBody(sheet) {
             break;
         case "session-share":
             body = html`<${SessionShareSheet} id=${sheet.id} />`;
+            break;
+        case "owner-setup":
+            body = html`<${OwnerSetupSheet} />`;
             break;
         case "people":
             body = html`<${PeopleSheet} />`;
@@ -419,24 +422,6 @@ function sheetBody(sheet) {
                 multiline=${true}
                 button="Compact"
                 submit=${(value) => actions.compact(value)}
-            />`;
-            break;
-        case "name":
-            body = html`<${TextSheet}
-                title="Your name"
-                label="Shown on your messages to others"
-                initial=${me?.name ?? ""}
-                header=${html`<${MyPhoto} />`}
-                footer=${html`<${MyAuthenticator} />
-                <button class="button ghost wide sheet-footer signout" onClick=${signOut}>
-                    <${Icon} name="logout" size=${16} /> Sign out
-                </button>`}
-                submit=${async (value) => {
-                    await api("me", { name: value });
-                    const hello = await api("me");
-
-                    store.set({ me: hello.user, users: hello.users });
-                }}
             />`;
             break;
     }

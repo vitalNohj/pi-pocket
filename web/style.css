@@ -7922,7 +7922,7 @@ div.group-head {
     gap: 14px;
 }
 
-/* The owner's choice of how long a person's approvals last, under their name in People. */
+/* The owner's choice of how long a person's approvals last, on their page in People. */
 .approval-time {
     display: inline-flex;
     align-items: center;
@@ -23403,15 +23403,36 @@ pre.gallery-code {
     }
 }
 
-/* Your picture in the name sheet: a preview and its buttons. */
+/* Your picture on your own page in People: only its buttons, as the page head shows the face. */
 .my-photo {
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0 0 1rem;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
-/* Your authenticator in the name sheet: its state, or the steps to link or remove it. */
+/* Your name on your own page in People: the field takes the room there is, and Save stays beside it. */
+.my-name {
+    display: flex;
+    flex: 1 1 14rem;
+    gap: 8px;
+    min-width: 0;
+}
+
+.my-name input {
+    flex: 1;
+    min-width: 0;
+}
+
+.my-name .button {
+    flex: none;
+}
+
+/* Sign out, last on your own page in People: apart from the rest, and only as wide as its words. */
+.my-signout {
+    padding-top: 0.5rem;
+}
+
+/* Your authenticator on your own page in People: its state, or the steps to link or remove it. */
 .my-authenticator {
     padding-top: 1rem;
 }

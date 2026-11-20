@@ -512,3 +512,53 @@ test("an invite makes a temporary account unless it says otherwise: it links no 
     app.setAccess(owner(app), tess.id, { role: "guest" });
     assert.equal(app.config.userById(tess.id)?.role, "guest");
 });
+
+test("the owner's first start: hello asks them to link an authenticator until one is linked or they say Not now", async () => {
+    const boss = owner(app);
+    const setup = async (user: User) =>
+        (await call<{ user: { setup?: true } }>(user, "me")).body.user.setup;
+
+    // `openApp` dismisses it for every test; this one starts from a new owner's account.
+    app.config.updateUser(boss.id, { setupDismissed: undefined });
+    assert.equal(app.authenticators.linked(boss.id), false);
+    assert.equal(await setup(boss), true);
+
+    // Never for anyone else, with or without one.
+    for (const each of [alex, vera, sam]) {
+        assert.equal(await setup(each), undefined, each.name);
+    }
+
+    // Not now: it does not come again.
+    const dismissed = await call(boss, "me/setup", { dismissed: true });
+
+    assert.equal(dismissed.status, 200);
+    assert.equal(app.config.userById(boss.id)?.setupDismissed, true);
+    assert.equal(await setup(boss), undefined);
+    assert.equal((await call(boss, "me/setup", {})).status, 400, "only `dismissed: true`");
+
+    // Linked: it does not come either, also with Not now never said.
+    app.config.updateUser(boss.id, { setupDismissed: undefined });
+    assert.equal(await setup(boss), true);
+    clock += STEP_MS;
+
+    const secret = await link(boss);
+
+    assert.equal(await setup(boss), undefined);
+
+    // Leave the owner as the other tests had them.
+    clock += STEP_MS;
+    assert.equal(
+        (await call(boss, "me/authenticator/remove", { code: codeOf(secret) })).status,
+        200,
+    );
+    app.config.updateUser(boss.id, { setupDismissed: true });
+});
+
+test("only the owner says Not now to the first-start prompt", async () => {
+    for (const each of [alex, vera, sam]) {
+        const refused = await call(each, "me/setup", { dismissed: true });
+
+        assert.equal(refused.status, 403, each.name);
+        assert.equal(app.config.userById(each.id)?.setupDismissed, undefined);
+    }
+});

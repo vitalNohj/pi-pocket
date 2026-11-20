@@ -2939,8 +2939,8 @@ function Rail({ foldable = false, folded = false }) {
             class="rail-button rail-me"
             data-part="rail-button"
             title=${`${me?.name ?? ""} · ${role}`}
-            aria-label="Your name"
-            onClick=${() => openSheet({ type: "name" })}
+            aria-label="Your account"
+            onClick=${() => openSheet({ type: "people" })}
         >
             ${me && html`<${Avatar} person=${store.state.users.find((each) => each.id === me.id) ?? me} size=${30} />`}
         </button>

@@ -68,6 +68,7 @@ import {
     openSheet,
     panelsBeside,
     peopleDocked,
+    skipSetupPrompt,
     start,
     store,
     workspaceOrder,
@@ -996,12 +997,14 @@ render(html`<${App} />`, root);
 
 // A notification's link can ask for the chat: `/s/12?chat=1`.
 if (new URLSearchParams(location.search).has("chat")) {
+    skipSetupPrompt();
     replaceAddress(location.pathname);
     openSheet({ type: "chat" });
 }
 
 // PiP's notifications open its panel, over whatever was open: `/?pip=1`. Opened once the server says PiP is here.
 if (new URLSearchParams(location.search).has("pip")) {
+    skipSetupPrompt();
     replaceAddress(location.pathname);
     const stop = store.subscribe(() => {
         if (store.state.server) {
@@ -1019,6 +1022,7 @@ start();
 const shared = new URLSearchParams(location.search).get("share");
 
 if (shared !== null) {
+    skipSetupPrompt();
     replaceAddress(location.pathname);
     takeShare(shared).then(
         (share) =>

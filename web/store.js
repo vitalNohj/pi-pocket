@@ -2720,6 +2720,17 @@ onRoute(() => {
 // A failed `/api/me` leaves this device snapshot on screen; its original provenance follows the next attempt.
 let shownEarly = null;
 
+/**
+ * The owner's first-start prompt (`sheets/owner-setup.js`) may still open on this page load: at most once, at the first
+ * `/api/me`, and not when the address asked for something else to show (`app.js`).
+ */
+let offerSetup = true;
+
+/** The address asked for a sheet or a panel (`?chat`, `?pip`, a share): the owner's prompt waits for the next load. */
+export function skipSetupPrompt() {
+    offerSetup = false;
+}
+
 export async function start() {
     const generation = accountGeneration;
     const retained = shownEarly;
@@ -2792,6 +2803,12 @@ export async function start() {
             }
         }
 
+        // Over nothing else: a sheet opened meanwhile is what the person wants now, and the prompt comes next load.
+        if (offerSetup && hello.user.setup === true && !store.state.sheet) {
+            openSheet({ type: "owner-setup" });
+        }
+
+        offerSetup = false;
         shownEarly = null;
         connect();
     } catch (error) {

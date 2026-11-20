@@ -15,12 +15,14 @@ import {
     collab,
     notify,
     openSheet,
+    signOut,
     store,
 } from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
 import { accessFolder } from "./access-tree.js";
 import { AccessRow, choosable, computers, inCharge, loadComputers } from "./access.js";
 import { ApprovalTime, TasksExpire } from "./approvals.js";
+import { MyAuthenticator } from "./authenticator.js";
 import { PageItem, Pages } from "./pages.js";
 import { canShare } from "./session-share.js";
 
@@ -478,8 +480,11 @@ function lastSeen(person) {
     return `seen ${timeAgo(person.lastSeen)}${timeAgo(person.lastSeen) === "now" ? "" : " ago"}`;
 }
 
-/** Your own picture: choose one (cropped and shrunk here before it is sent), or take it away. */
-export function MyPhoto() {
+/**
+ * Your own picture, on your own page in People: choose one (cropped and shrunk here before it is sent), or take it
+ * away. The page head beside it shows the face, so here are only its buttons.
+ */
+function MyPhoto() {
     const { me, users } = store.state;
     const person = users.find((each) => each.id === me?.id) ?? me;
     const input = useRef(null);
@@ -494,22 +499,61 @@ export function MyPhoto() {
         }
     };
 
-    return html`<div class="my-photo">
-        <${Avatar} person=${person} size=${48} />
-        <input ref=${input} type="file" accept="image/*" hidden onChange=${choose} />
-        <button class="button" onClick=${() => input.current.click()}>
-            ${person.avatar ? "Change photo" : "Add photo"}
-        </button>
-        ${
-            person.avatar &&
-            html`<button
-                class="button ghost"
-                onClick=${() => attempt(() => api("me/avatar", undefined, { method: "DELETE" }))}
-            >
-                Remove photo
-            </button>`
-        }
-    </div>`;
+    return html`<${Setting} label="Photo" hint="Shown in place of your initials, to everyone who can see you.">
+        <div class="my-photo">
+            <input ref=${input} type="file" accept="image/*" hidden onChange=${choose} />
+            <button class="button small" onClick=${() => input.current.click()}>
+                ${person.avatar ? "Change photo" : "Add photo"}
+            </button>
+            ${
+                person.avatar &&
+                html`<button
+                    class="button small ghost"
+                    onClick=${() => attempt(() => api("me/avatar", undefined, { method: "DELETE" }))}
+                >
+                    Remove photo
+                </button>`
+            }
+        </div>
+    <//>`;
+}
+
+/** Your own name, on your own page in People: as others see it on your messages. */
+function MyName({ person }) {
+    const [value, setValue] = useState(person.name);
+    const [busy, setBusy] = useState(false);
+    const name = value.trim();
+    const unchanged = name === "" || name === person.name;
+
+    const save = () =>
+        !unchanged &&
+        attempt(async () => {
+            setBusy(true);
+
+            try {
+                await api("me", { name });
+                const hello = await api("me");
+
+                store.set({ me: hello.user, users: hello.users });
+                // As the server keeps it: spaces folded, odd characters taken out.
+                setValue(hello.user.name);
+            } finally {
+                setBusy(false);
+            }
+        });
+
+    return html`<${Setting} label="Name" hint="Shown on your messages to others">
+        <div class="my-name">
+            <input
+                aria-label="Name"
+                maxlength="40"
+                value=${value}
+                onInput=${(event) => setValue(event.currentTarget.value)}
+                onKeyDown=${(event) => event.key === "Enter" && save()}
+            />
+            <button class="button small" disabled=${busy || unchanged} onClick=${save}>Save</button>
+        </div>
+    <//>`;
 }
 
 /** Everyone with access, as the list on the left orders them: who is here first, then who was here last. */
@@ -733,10 +777,10 @@ function Authenticator({ person }) {
             label="Authenticator"
             hint=${
                 person.authenticator
-                    ? "Linked. For a lost phone, remove it: they link a new one under their name."
+                    ? "Linked. For a lost phone, remove it: they link a new one on their page in People."
                     : person.temporary
                       ? "None: a temporary account cannot link one."
-                      : "None linked. They link one under their name: Menu → their name → Authenticator."
+                      : "None linked. They link one on their page in People."
             }
         >
             ${
@@ -767,8 +811,8 @@ function Authenticator({ person }) {
 /**
  * One person: who they are, then, for the owner, everything about them: what they may do, where they may work (each
  * computer, with their folders and their sessions there as two lists, as in Runners), and their sign-in. Anyone else
- * reads who they are. One's own page also signs in another device of one's own; for the owner, anyone's page signs in
- * a device of theirs.
+ * reads who they are. One's own page is one's account: photo, name, another device of one's own, the authenticator,
+ * and Sign out; for the owner, anyone's page signs in a device of theirs.
  */
 function PersonPage({ person }) {
     const { me } = store.state;
@@ -798,12 +842,6 @@ function PersonPage({ person }) {
             </h3>
             <div class="sheet-page-actions">
                 ${
-                    myself &&
-                    html`<button class="button small" onClick=${() => openSheet({ type: "name" })}>
-                        Name and photo
-                    </button>`
-                }
-                ${
                     owner &&
                     person.role !== "owner" &&
                     html`<button class="button small ghost danger" onClick=${remove}>Remove</button>`
@@ -821,6 +859,8 @@ function PersonPage({ person }) {
                 .filter(Boolean)
                 .join(" · ")}
         </div>
+        ${myself && html`<${MyPhoto} />`}
+        ${myself && html`<${MyName} key=${person.name} person=${person} />`}
         ${
             collab() &&
             (myself || owner) &&
@@ -835,6 +875,10 @@ function PersonPage({ person }) {
             >
                 <${ApprovalTime} person=${person} plain=${true} />
             <//>`
+        }
+        ${
+            // A temporary account gets nothing here: it links none.
+            myself && html`<${MyAuthenticator} />`
         }
         ${
             (rules || places) &&
@@ -858,6 +902,15 @@ function PersonPage({ person }) {
                           : `${myself ? "You prompt" : "They prompt"} and start sessions in ${myself ? "your" : "their"} folders.`
                 }
             </p>`
+        }
+        ${
+            // Last, away from the rest, in the color of what signs this device out.
+            myself &&
+            html`<div class="my-signout">
+                <button class="button ghost sheet-footer signout" onClick=${signOut}>
+                    <${Icon} name="logout" size=${16} /> Sign out
+                </button>
+            </div>`
         }
     </div>`;
 }

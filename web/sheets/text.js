@@ -1,4 +1,4 @@
-// One text field and a button: renaming, resetting, instructions, compacting, and your name.
+// One text field and a button: renaming, resetting, instructions, and compacting.
 import { useState } from "preact/hooks";
 import { attempt, closeSheet } from "../store.js";
 import { html, Sheet } from "../ui.js";
@@ -12,8 +12,6 @@ export function TextSheet({
     submit,
     multiline = false,
     button = "Save",
-    header = null,
-    footer = null,
 }) {
     const [value, setValue] = useState(initial);
     const save = () =>
@@ -23,7 +21,6 @@ export function TextSheet({
         });
 
     return html`<${Sheet} title=${title} onClose=${closeSheet}>
-        ${header}
         ${hint && html`<p class="muted small">${hint}</p>`}
         <div class="field">
             <div class="label">${label}</div>
@@ -50,6 +47,5 @@ export function TextSheet({
             <button class="button" onClick=${closeSheet}>Cancel</button>
             <button class="button primary" onClick=${save}>${button}</button>
         </div>
-        ${footer}
     <//>`;
 }

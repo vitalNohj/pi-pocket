@@ -557,6 +557,21 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, await authenticatorRoute(route, third, method));
         }
 
+        // The owner's "Not now" to the first-start prompt (`hello`'s `user.setup`): it does not come again.
+        if (first === "me" && second === "setup" && third === undefined && method === "POST") {
+            requireOwner(user);
+
+            const body = await readJson<{ dismissed?: unknown } | null>(request);
+
+            if (body?.dismissed !== true) {
+                throw new HttpError(400, "dismissed must be true.");
+            }
+
+            app.config.updateUser(user.id, { setupDismissed: true });
+
+            return json(response, 200, { ok: true });
+        }
+
         // A picture of anyone this person may see in the people list.
         if (first === "avatar" && second !== undefined && method === "GET") {
             const picture = app.people(user).some((each) => each.id === second)

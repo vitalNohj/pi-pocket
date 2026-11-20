@@ -4667,6 +4667,13 @@ export class PocketApp {
                 // May they turn keep warm on for a session or pick its time (`access.ts` `keepsWarm`): the session's
                 // card offers those only then.
                 keepsWarm: this.policy.keepsWarm(user),
+                // The owner's first start: the app asks them once a page load to link an authenticator, until one is
+                // linked or they say "Not now" (`POST /api/me/setup`).
+                ...(user.role === "owner" &&
+                !this.authenticators.linked(user.id) &&
+                user.setupDismissed !== true
+                    ? { setup: true as const }
+                    : {}),
             },
             // "Tasks expire with the session", for the owner's switch (`tasksMayRun`).
             ...(user.role === "owner" && this.config.server.tasksExpire === true
@@ -5401,7 +5408,7 @@ export class PocketApp {
             ) {
                 throw new HttpError(
                     409,
-                    `${target.name} must link an authenticator first: in Pi Pocket, under their name.`,
+                    `${target.name} must link an authenticator first: on their page in People.`,
                 );
             }
 

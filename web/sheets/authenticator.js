@@ -19,7 +19,7 @@ function CodeField({ code, setCode, label }) {
     />`;
 }
 
-/** Link, check, or remove your authenticator, in the sheet with your name and photo. */
+/** Link, check, or remove your authenticator, on your own page in People. */
 export function MyAuthenticator() {
     const [status, setStatus] = useState(null);
     // While linking: the new secret, its link, and its QR code.
@@ -67,6 +67,12 @@ export function MyAuthenticator() {
             setStatus(next);
             setLinking(null);
             setCode("");
+            // The account as the server has it now: for the owner, without the first-start prompt (`user.setup`).
+            await attempt(async () => {
+                const hello = await api("me");
+
+                store.set({ me: hello.user, users: hello.users });
+            });
         }
     };
 

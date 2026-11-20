@@ -46,7 +46,7 @@ function myText(request) {
 
     return request.code
         ? `Enter a code from your authenticator to start here, or wait for ${who} to allow it.`
-        : `Wait for ${who} to allow it. To approve yourself, link an authenticator in Menu → Your name.`;
+        : `Wait for ${who} to allow it. To approve yourself, link an authenticator on your page in People.`;
 }
 
 /** My own request: the code field (when a code can answer it), and Cancel. */

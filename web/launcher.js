@@ -528,10 +528,12 @@ function actionItems() {
             run: () => openSheet({ type: "shortcuts" }),
         },
         {
-            label: "Your name",
+            label: "Your account",
             detail: me?.name,
+            keywords: "name photo sign out authenticator",
             icon: "users",
-            run: () => openSheet({ type: "name" }),
+            // Your own page in People, which opens on it.
+            run: () => openSheet({ type: "people" }),
         },
         me?.role === "owner" &&
             server?.supervised && {
