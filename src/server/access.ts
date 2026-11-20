@@ -508,10 +508,19 @@ export class AccessPolicy {
      * given to see all of (`seesFolder`).
      */
     maySee(person: Pick<Person, "id">, id: string): boolean {
-        const current = this.#current(person);
         const facts = this.#facts.session(id);
 
-        if (current === undefined || facts === undefined) {
+        return facts !== undefined && this.seesWith(person, facts);
+    }
+
+    /**
+     * `maySee` for a top session as `facts` say it is: the one rule, also for a save that changes a session and asks
+     * what follows before the change is stored (`app.ts` `handOver`).
+     */
+    seesWith(person: Pick<Person, "id">, facts: SessionFacts): boolean {
+        const current = this.#current(person);
+
+        if (current === undefined) {
             return false;
         }
 

@@ -3825,7 +3825,8 @@ export class PocketApp {
             }
 
             // Each task on a session there that they may no longer steer: the session is no longer theirs (moved
-            // above, in this same commit), or no longer shared with them.
+            // above, in this same commit), or no longer shared with them. With `only`, the tasks on that session alone:
+            // taking one session from a person touches nothing else of theirs.
             const owner = (target: number): string | undefined => {
                 const root = this.rootOf(target as unknown as ConversationId);
                 const meta = sessions.items[String(root)];
@@ -3833,18 +3834,34 @@ export class PocketApp {
                 if (
                     meta === undefined ||
                     meta.pip !== undefined ||
-                    !on(meta.runner ?? THIS_SERVER)
+                    !on(meta.runner ?? THIS_SERVER) ||
+                    (only !== undefined && String(root) !== only)
                 ) {
                     return undefined;
                 }
 
-                const there = meta.runner ?? THIS_SERVER;
+                // Whether the session is still theirs is the policy's to say, by its one rule (`access.ts`
+                // `seesWith`), over the session as this commit leaves it: a share counts for someone not chosen
+                // there, and a person invited to sessions alone has exactly those. Their role is not asked: made a
+                // viewer, they keep their tasks, and prompt again with them.
+                const folder = (): string => this.#accessFolder(meta);
                 const steers =
                     !gone &&
                     !moved.has(String(root)) &&
-                    (((meta.createdBy === person || meta.sharedWith?.includes(person) === true) &&
-                        this.policy.mayUse({ id: person }, there)) ||
-                        this.policy.seesFolder({ id: person }, there, this.#accessFolder(meta)));
+                    this.policy.seesWith(
+                        { id: person },
+                        {
+                            id: String(root),
+                            computer: meta.runner ?? THIS_SERVER,
+                            ...(meta.createdBy === undefined ? {} : { createdBy: meta.createdBy }),
+                            ...(meta.sharedWith === undefined
+                                ? {}
+                                : { sharedWith: [...meta.sharedWith] }),
+                            get folder() {
+                                return folder();
+                            },
+                        },
+                    );
 
                 return steers
                     ? undefined
@@ -3879,7 +3896,7 @@ export class PocketApp {
                 swap(watch.target, watch);
             }
 
-            for (const key of Object.keys(sessions.items)) {
+            for (const key of only === undefined ? Object.keys(sessions.items) : [only]) {
                 const root = Number(key) as unknown as ConversationId;
 
                 for (const conversation of this.conversationsOf(root)) {

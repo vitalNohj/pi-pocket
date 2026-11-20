@@ -160,3 +160,65 @@ test("Pi works for who has the session now, and a linked session still starts", 
         "Pi now works for who has the session",
     );
 });
+
+test("taking one session from a person leaves the tasks on their other sessions with them", async () => {
+    // Pat was never chosen for this server: two of the owner's sessions are shared with her, one at a time.
+    const pat = app.config.addUser("Pat", "guest").user;
+    const taken = await newSession(app);
+    const kept = await newSession(app);
+    const never = await newSession(app);
+
+    await sessionOf(taken, owner(app).id, [pat.id]);
+    await sessionOf(kept, owner(app).id, [pat.id]);
+    await sessionOf(never, owner(app).id);
+    assert.equal(app.policy.mayUse(pat, THIS_SERVER), false);
+    assert.equal(
+        app.policy.maySteer(pat, String(kept)),
+        true,
+        "a share counts without being chosen",
+    );
+
+    await hookOf("pat-taken", pat.id, taken);
+    await scheduleOf("pat-taken-schedule", pat.id, taken);
+    await hookOf("pat-kept", pat.id, kept);
+    await scheduleOf("pat-kept-schedule", pat.id, kept);
+    // A task of hers on a session she does not have: for a hand-over of everything, not for this.
+    await hookOf("pat-never", pat.id, never);
+
+    await app.revokeSession(owner(app), taken, pat.id);
+    assert.equal(app.canSee(pat, taken), false);
+    assert.equal(await hookBy("pat-taken"), owner(app).id, "its tasks go to its starter");
+    assert.equal(await scheduleBy(taken, "pat-taken-schedule"), owner(app).id);
+    assert.equal(app.policy.maySteer(pat, String(kept)), true, "she still steers the other");
+    assert.equal(await hookBy("pat-kept"), pat.id, "and its tasks stay hers");
+    assert.equal(await scheduleBy(kept, "pat-kept-schedule"), pat.id);
+    assert.equal(await hookBy("pat-never"), pat.id, "nothing else of hers is touched");
+
+    // A hand-over of everything of hers here follows the same rule as what she may steer.
+    await app.handOver(pat.id, THIS_SERVER);
+    assert.equal(
+        await hookBy("pat-kept"),
+        pat.id,
+        "a session shared with her is still hers to steer",
+    );
+    assert.equal(await scheduleBy(kept, "pat-kept-schedule"), pat.id);
+    assert.equal(await hookBy("pat-never"), owner(app).id, "one she does not have is not");
+
+    // Ivy is invited to two sessions alone.
+    const first = await newSession(app);
+    const second = await newSession(app);
+    const ivy = app.config.addUser("Ivy", "guest", [String(first), String(second)]).user;
+
+    await hookOf("ivy-first", ivy.id, first);
+    await hookOf("ivy-second", ivy.id, second);
+    await app.revokeSession(owner(app), first, ivy.id);
+    assert.deepEqual(app.config.userById(ivy.id)?.sessions, [String(second)]);
+    assert.equal(await hookBy("ivy-first"), owner(app).id);
+    assert.equal(
+        await hookBy("ivy-second"),
+        ivy.id,
+        "the task on the session she is still invited to",
+    );
+    await app.handOver(ivy.id, THIS_SERVER);
+    assert.equal(await hookBy("ivy-second"), ivy.id);
+});
