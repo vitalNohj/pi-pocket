@@ -330,7 +330,7 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
                 canUndo &&
                 html`<${Minor}
                     label="Undo"
-                    hint="Without this message"
+                    hint="Unsend and edit"
                     run=${() => undo(entry.id)}
                 />`
             }
