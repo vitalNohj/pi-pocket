@@ -182,11 +182,13 @@ Updates to tabs are coalesced:
 
 | What                                                                       | How often, at most |
 | -------------------------------------------------------------------------- | ------------------ |
-| A room's changes                                                           | Every 90 ms        |
+| A room's ordinary changes                                                  | Every 90 ms        |
 | Peek tiles                                                                 | Once a second      |
 | The session list, and every subagent to tabs that show the subagents board | Every 400 ms       |
 
-Each room update sends a tab its new entries, the live run, and some small fields. The fields that grow with the session, such as the queue, authors, reactions, and pins, go again only when they differ from what the tab has, because a turn sends an update every 90 ms. The queue sends the first 500 characters of each waiting message's own text (not the files it mentions, and not images: a message of images alone says how many), and the names of the subagents in a message of reports. Its row shows one line, and a paste or a batch of reports can be megabytes.
+When its watch sees the first non-blank reply text in a generation or a newly stored tool result entry, the room starts a 25 ms timer too. The first timer to fire sends the pending update and clears both timers.
+
+Each room update sends a tab its new entries, the live run, and some small fields. The fields that grow with the session, such as the queue, authors, reactions, and pins, go again only when they differ from what the tab has. The queue sends the first 500 characters of each waiting message's own text (not the files it mentions, and not images: a message of images alone says how many), and the names of the subagents in a message of reports. Its row shows one line, and a paste or a batch of reports can be megabytes.
 
 The message Pi is writing goes as what changed since the tab's last update (`liveMessageDelta` in `projection.ts`, put together by `web/live.js`): the blocks the tab has stay, and the block that grows sends only its new characters. A whole message each time made a long answer cost its length squared. The server keeps the blocks each tab has (`Client.liveBlocks`) and forgets them with each full view, which sends the whole message. Events reach a tab in order on one connection (long polling sends again what a lost answer carried), and a new connection starts with a full view, so a change always fits. One that does not, which should not happen, makes the tab connect again.
 
