@@ -23,7 +23,7 @@ import { markdownRevision } from "./markdown-ext.js";
 import { personStorage } from "./person-storage.js";
 import { quoteParts } from "./quote-text.js";
 import { fromServer } from "./seen.js";
-import { defineItem, slotItems, slotKey } from "./slots.js";
+import { arranged, defineItem, slotItems, slotKey } from "./slots.js";
 import { Highlighted, InlineArtifact } from "./rich.js";
 import {
     actions,
@@ -2480,13 +2480,22 @@ function AnswerActions({ entry }) {
 function AnswerEnd({ entry }) {
     // A final answer (not a step between tool calls) with something to say gets reactions and the discuss row.
     const answer = collab() && entry.stopReason !== "toolUse" && entry.blocks.some(says);
+    const failed = entry.stopReason === "error";
+
+    // A failed request with no actions still shows its time, unless the person hid it in Layout.
+    const time =
+        failed && !answer
+            ? arranged("reply")
+                  .find(({ item, hidden }) => item.id === "core:time" && !hidden)
+                  ?.item.render({ entry })
+            : null;
 
     return html`${
-        entry.stopReason === "error" &&
-        html`<div class="error-box">${entry.error ?? "The model request failed."}</div>`
+        failed && html`<div class="error-box">${entry.error ?? "The model request failed."}</div>`
     }
     ${entry.stopReason === "aborted" && html`<div class="muted small">Stopped.</div>`}
-    ${answer && html`<${AnswerActions} entry=${entry} />`}`;
+    ${answer && html`<${AnswerActions} entry=${entry} />`}
+    ${time && html`<div class="answer-actions" data-part="reply-actions">${time}</div>`}`;
 }
 
 /** A run of Pi's words: plain prose, and how the answer ended when they are its last. */
