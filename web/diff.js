@@ -785,106 +785,173 @@ function writeViewed(id, viewed) {
     personStorage.set(`${VIEWED_KEY}.${id}`, JSON.stringify(viewed));
 }
 
-/** How long after the conversation moves on the changes are read again: soon when quiet, less often while Pi works. */
+/** Quiet turns with tools can change files; show those changes sooner than after a text-only reply. */
+const TOOL_QUIET_WAIT = 250;
 const QUIET_WAIT = 1200;
 const BUSY_WAIT = 4000;
-/** While Pi works, the longest the changes go without being read again. */
+/** While Pi works, the longest new entries can put off another read. */
 const BUSY_MAX = 8000;
 
-/** What changed, per conversation: the last answer, and the request on its way, shared by everything that shows it. */
+/** What changed, per conversation: the last answer, and one read on its way, shared by everything that shows it. */
 const changesCache = new Map();
+
+function changesFor(id) {
+    let known = changesCache.get(id);
+
+    if (!known) {
+        known = { data: null, error: null, pending: null, trailing: null };
+        changesCache.set(id, known);
+    }
+
+    return known;
+}
 
 /** Ask again for what changed in a conversation's folder, at most once at a time. */
 export function reloadChanges(id = store.state.conversationId) {
-    const known = changesCache.get(id) ?? { data: null, error: null, pending: null };
+    const known = changesFor(id);
 
     if (known.pending) {
         return known.pending;
     }
 
-    // The conversation's newest entry when it asked: nothing newer, and Pi quiet, what it said still holds.
-    const entry = id === store.state.conversationId ? store.state.view.order?.at(-1) : undefined;
+    // Keep the view from the start of the read. An answer must not mark a newer entry or the end of a run as read.
+    const view = id === store.state.conversationId ? store.state.view : null;
+    const entry = view?.order.at(-1);
+    const busy = view?.live.busy;
     // What shows now: an answer the same as it draws nothing again (each draw is the whole app's).
     const shown = JSON.stringify([known.data, known.error]);
 
-    known.pending = actions.changes(id).then(
-        (data) => {
-            // The same answer keeps its object, so what is built from it is not built again.
-            const same = JSON.stringify(data) === JSON.stringify(known.data);
+    known.at = Date.now();
+    known.pending = actions
+        .changes(id)
+        .then(
+            (data) => {
+                // The same answer keeps its object, so what is built from it is not built again.
+                const same = JSON.stringify(data) === JSON.stringify(known.data);
 
-            Object.assign(known, {
-                data: same ? known.data : data,
-                error: null,
-                pending: null,
-                at: Date.now(),
-                entry,
-            });
-        },
-        (failure) => Object.assign(known, { error: failure.message, pending: null }),
-    );
-    changesCache.set(id, known);
-    known.pending.finally(() => {
-        if (JSON.stringify([known.data, known.error]) !== shown) {
-            store.set({});
-        }
-    });
+                Object.assign(known, { data: same ? known.data : data, error: null, entry, busy });
+            },
+            (failure) => {
+                known.error = failure.message;
+            },
+        )
+        .finally(() => {
+            const trailing = known.trailing;
+
+            known.pending = null;
+            known.trailing = null;
+
+            if (
+                id === store.state.conversationId &&
+                JSON.stringify([known.data, known.error]) !== shown
+            ) {
+                store.set({});
+            }
+
+            trailing?.();
+        });
 
     return known.pending;
 }
 
-/**
- * What changed in this conversation's folder, `{ changes, error }`, fetched when first wanted and again a moment after
- * the conversation moves on (Pi's edits show up on their own) while `live`. A tab out of sight waits until it shows
- * again; with nothing new since the last answer and Pi quiet, the answer holds (Refresh asks again).
- */
-export function useChanges(live = true) {
-    const id = store.state.conversationId;
+function lastTurnUsedTools(view) {
+    for (let index = view.order.length - 1; index >= 0; index--) {
+        const kind = view.entries.get(view.order[index])?.kind;
+
+        if (kind === "toolResult") {
+            return true;
+        }
+
+        if (kind === "user" || kind === "reset" || kind === "compaction" || kind === undefined) {
+            break;
+        }
+    }
+
+    return false;
+}
+
+/** Badges can load a first count, but only the Changes tab follows the conversation as it runs. */
+export function useChanges({ live = false, refresh = false } = {}) {
+    const { conversationId: id, view } = store.state;
+    const ready = view.conversation?.id === id;
     const known = changesCache.get(id);
-    const lastEntry = store.state.view.order?.at(-1);
-    const busy = store.state.view.live?.busy;
+    const lastEntry = view.order.at(-1);
+    const busy = view.live.busy;
+    const opened = useRef(null);
 
     useEffect(() => {
-        if (!changesCache.get(id)?.data) {
+        if (ready && !document.hidden && !live && (refresh || !changesCache.get(id)?.data)) {
             reloadChanges(id);
         }
-    }, [id]);
-    // The first look after it shows (or turns live) always asks: the folder can have changed outside the conversation
-    // (an editor, a terminal, another session), and so can it while the tab was out of sight.
-    const first = useRef(true);
+    }, [id, ready, live, refresh]);
 
-    useEffect(() => {
-        if (!live) {
-            first.current = true;
+    useLayoutEffect(() => {
+        if (!live || !ready) {
+            opened.current = null;
 
             return;
         }
 
-        const look = (always) => {
-            const known = changesCache.get(id);
+        const known = changesFor(id);
+        let force = opened.current !== id;
+        let timer;
 
-            if (document.hidden || (!always && !busy && known?.data && known.entry === lastEntry)) {
+        const look = () => {
+            if (
+                document.hidden ||
+                id !== store.state.conversationId ||
+                id !== store.state.view.conversation?.id
+            ) {
                 return;
             }
 
-            reloadChanges(id);
+            if (known.pending) {
+                // At most one more read is due. On completion, check what was actually read against this view.
+                known.trailing = look;
+
+                return;
+            }
+
+            if (force || busy || !known.data || known.entry !== lastEntry || known.busy) {
+                force = false;
+                reloadChanges(id);
+            }
         };
 
-        const shown = () => !document.hidden && look(true);
-        // While Pi works, entries come quickly: look less often then, but at least every few seconds.
-        const since = Date.now() - (changesCache.get(id)?.at ?? 0);
-        const wait = busy ? Math.max(0, Math.min(BUSY_WAIT, BUSY_MAX - since)) : QUIET_WAIT;
-        const timer = setTimeout(() => {
-            look(first.current);
-            first.current = false;
-        }, wait);
+        const cancel = () => {
+            clearTimeout(timer);
+
+            if (known.trailing === look) {
+                known.trailing = null;
+            }
+        };
+
+        const shown = () => {
+            cancel();
+            force = true;
+            look();
+        };
+
+        opened.current = id;
+
+        if (force) {
+            // The folder can change in an editor, terminal, or another session while this tab is away.
+            look();
+        } else {
+            const since = Date.now() - (known.at ?? 0);
+            const quiet = !busy && lastTurnUsedTools(view) ? TOOL_QUIET_WAIT : QUIET_WAIT;
+            const wait = busy ? Math.max(0, Math.min(BUSY_WAIT, BUSY_MAX - since)) : quiet;
+
+            timer = setTimeout(look, wait);
+        }
 
         document.addEventListener("visibilitychange", shown);
 
         return () => {
-            clearTimeout(timer);
+            cancel();
             document.removeEventListener("visibilitychange", shown);
         };
-    }, [lastEntry, busy, live, id]);
+    }, [lastEntry, busy, live, ready, id]);
 
     return { changes: known?.data ?? null, error: known?.error ?? null };
 }
@@ -1263,7 +1330,7 @@ export function DiffReview({ active = true, autoFocus = false, covering = false 
     const id = store.state.conversationId;
     const { server, view } = store.state;
     const cwd = view.agent?.cwd ?? view.conversation?.cwd ?? "";
-    const { changes, error } = useChanges(active);
+    const { changes, error } = useChanges({ live: active });
     const load = () => reloadChanges(id);
 
     const refresh = () => {

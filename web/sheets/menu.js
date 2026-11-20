@@ -81,7 +81,7 @@ function Places() {
 
 /** Only people who can open Files request its shared changes data, just as the top bar does. */
 function PlacesWithChanges() {
-    const { changes } = useChanges();
+    const { changes } = useChanges({ refresh: true });
 
     return html`<${PlacesGrid} changes=${changes} />`;
 }
