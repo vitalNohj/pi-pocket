@@ -82,15 +82,23 @@ async function open(type: "people" | "computers", viewport = DESKTOP, path = "/"
     );
 }
 
-/** Tap the row of the list on the left that names `name`, and wait for its page. */
+/**
+ * Tap the row of the list on the left that names `name`, and wait for its page. The row of someone just added reaches
+ * the list a moment after the server has them, so the tap waits for it.
+ */
 async function show(name: string): Promise<void> {
-    await inPage(`
-        [...document.querySelectorAll(".pages-item")]
-            .find((each) => each.querySelector(".pages-item-title").textContent.startsWith(${JSON.stringify(name)}))
-            .click();
+    await until(
+        async () =>
+            await inPage<boolean>(`
+                const row = [...document.querySelectorAll(".pages-item")]
+                    .find((each) => each.querySelector(".pages-item-title")?.textContent.startsWith(${JSON.stringify(name)}));
 
-        return JSON.stringify(true);
-    `);
+                row?.click();
+
+                return JSON.stringify(row !== undefined);
+            `),
+        `${name}'s row in the list`,
+    );
     await until(
         async () =>
             await inPage<boolean>(
