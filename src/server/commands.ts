@@ -3253,6 +3253,9 @@ export class Commands {
             ...(cwd === undefined ? {} : { cwd }),
         };
 
+        // Who had the session by its folder alone and loses it by this move, with the tasks they hand over.
+        let handed: [string, Map<string, string>][] = [];
+
         // One save: where Pi works and the session's record of it change together. Access is judged by the record, so
         // nothing that cuts a move short leaves a session judged by a folder it no longer works in.
         await app.commit(async (tx) => {
@@ -3270,13 +3273,21 @@ export class Commands {
             }
 
             if (cwd !== undefined) {
-                const meta = (await app.sessionsIn(tx)).items[String(id)];
+                const sessions = await app.sessionsIn(tx);
+                const meta = sessions.items[String(id)];
 
                 if (meta !== undefined) {
                     meta.cwd = cwd;
+                    // Moved out of a folder someone accesses all sessions in, it leaves them: the tasks they set up
+                    // on it go to who is in charge of its computer, in this same save (`app.ts` `handMoved`).
+                    handed = await app.handMoved(tx, sessions, String(id));
                 }
             }
         }, saving);
+
+        for (const [person, lost] of handed) {
+            app.worksFor(person, lost);
+        }
 
         if (cwd !== undefined && app.sessionMeta(id) !== undefined) {
             app.folderApprovals.moved(String(app.rootOf(id)), cwd);

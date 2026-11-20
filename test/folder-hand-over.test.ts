@@ -210,6 +210,87 @@ test("all sessions in a folder, turned off and cut short by a restart: the next 
     assert.deepEqual(owed(), []);
 });
 
+test("a session moved out of a folder someone accesses all sessions in: their tasks on it go to who is in charge, in the save of the move", async () => {
+    const deeper = folder("hand-over-second/deeper");
+    const out = await sessionIn(second, owner(app));
+    const inside = await sessionIn(second, owner(app));
+    const shared = await sessionIn(second, owner(app));
+
+    await app.seeFolder(owner(app), THIS_SERVER, vera.id, second, true);
+    await app.commands.shareSession(shared, owner(app), [vera.id]);
+
+    for (const [name, target] of [
+        ["vera-out", out],
+        ["vera-inside", inside],
+        ["vera-shared", shared],
+    ] as const) {
+        assert.equal(app.canSee(vera, target), true, `${name}: by its folder`);
+        await hookOf(name, vera, target);
+    }
+
+    // Every save of the move: never one that leaves the session in the other folder with her task still hers.
+    let record = app.sessionMeta(out)?.cwd;
+    let by: string | undefined = vera.id;
+    const apart: string[] = [];
+    const watching = app.harness.observeCommits({
+        advance: (publication) => {
+            for (const change of publication.changes) {
+                const each = change as unknown as {
+                    type: string;
+                    record?: { kind: string };
+                    value?: { items?: Record<string, { cwd?: string; by?: string }> };
+                };
+
+                if (each.type !== "document" || each.value === undefined) {
+                    continue;
+                }
+
+                if (each.record?.kind === SessionsDoc.definition.kind) {
+                    record = each.value.items?.[String(out)]?.cwd;
+                } else if (each.record?.kind === HooksDoc.definition.kind) {
+                    by = each.value.items?.["vera-out"]?.by;
+                }
+            }
+
+            if (record === first && by === vera.id) {
+                apart.push("the session moved, and her task on it is still hers");
+            }
+        },
+        end: () => {},
+    });
+
+    try {
+        await app.commands.configure(out, owner(app), { cwd: first });
+    } finally {
+        watching.detach();
+    }
+
+    assert.equal(app.sessionMeta(out)?.cwd, first);
+    assert.equal(app.canSee(vera, out), false, "it left her with its folder");
+    assert.equal(
+        await hookBy("vera-out"),
+        owner(app).id,
+        "her task on it goes to who is in charge",
+    );
+    assert.deepEqual(apart, [], "in the save of the move");
+
+    // Moved to a folder inside the one she accesses all sessions in, it stays hers, and so does her task.
+    await app.commands.configure(inside, owner(app), { cwd: deeper });
+    assert.equal(app.sessionMeta(inside)?.cwd, deeper);
+    assert.equal(app.canSee(vera, inside), true);
+    assert.equal(await hookBy("vera-inside"), vera.id);
+
+    // One shared with her too: she still has it after the move, another way, and keeps her task.
+    await app.commands.configure(shared, owner(app), { cwd: first });
+    assert.equal(app.canSee(vera, shared), true, "shared with her");
+    assert.equal(await hookBy("vera-shared"), vera.id);
+
+    await app.seeFolder(owner(app), THIS_SERVER, vera.id, second, false);
+    assert.deepEqual(owed(), []);
+    assert.equal(await hookBy("vera-inside"), owner(app).id, "off, the rest follows as before");
+    assert.equal(await hookBy("vera-shared"), vera.id);
+});
+
 test("a move is one save: where Pi works and the session's record never differ", async () => {
     const id = await sessionIn(first, owner(app));
     const { moves, apart } = await watched(id, () =>

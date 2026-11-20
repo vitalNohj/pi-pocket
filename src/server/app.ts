@@ -4183,6 +4183,51 @@ export class PocketApp {
     }
 
     /**
+     * In an open commit that moved top session `id` to another folder (`sessions`: as this commit leaves them): whoever
+     * had it by its folder alone (`access.ts` `seesFolder`) and no longer does hands the tasks they set up on it to who
+     * is in charge of its computer (`handTasks`), in this same save: nothing that cuts a move short leaves a task with
+     * someone who lost the session. Who still has it another way, or by its new folder too, keeps theirs. Returns, for
+     * each such person, what `handTasks` does, for `worksFor` once the commit is saved.
+     */
+    async handMoved(
+        tx: Tx,
+        sessions: { items: Record<string, SessionMeta> },
+        id: string,
+    ): Promise<[string, Map<string, string>][]> {
+        const was = this.#sessions[id];
+        const now = sessions.items[id];
+        const handed: [string, Map<string, string>][] = [];
+
+        if (
+            was === undefined ||
+            now === undefined ||
+            was.pip !== undefined ||
+            this.#accessFolder(was) === this.#accessFolder(now)
+        ) {
+            return handed;
+        }
+
+        for (const person of this.config.users) {
+            // Only someone who accesses all sessions in a folder there can lose a session by its move. Whether they had
+            // it is asked of the record as it is published: the move is not saved yet.
+            if (
+                this.config.seenFolders(was.runner, person.id).length === 0 ||
+                !this.policy.maySee(person, id)
+            ) {
+                continue;
+            }
+
+            const lost = await this.handTasks(tx, sessions, person.id, { only: id });
+
+            if (lost.size > 0) {
+                handed.push([person.id, lost]);
+            }
+        }
+
+        return handed;
+    }
+
+    /**
      * After the commit of `handTasks`: where Pi worked for `person` in a session they lost, in it and its subagents, it
      * now works for who has its tasks, until someone writes.
      */
