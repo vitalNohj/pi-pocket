@@ -604,6 +604,17 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // Every signed-in person keeps their own synced pins, viewers too.
+        if (first === "pinned-sessions" && second === undefined && method === "GET") {
+            return json(response, 200, { pinned: (await app.pinnedSessions.list(user)) ?? null });
+        }
+
+        if (first === "pinned-sessions" && second === undefined && method === "POST") {
+            await app.pinnedSessions.set(user, await readJson(request));
+
+            return json(response, 200, { ok: true });
+        }
+
         if (first === "logout" && method === "POST") {
             // Another device of theirs has a token of its own, which ends with it. Their first one stays: it is all
             // that the link they signed in with carries.

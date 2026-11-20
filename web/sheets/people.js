@@ -18,6 +18,7 @@ import {
     signOut,
     store,
 } from "../store.js";
+import { pinsSynced, syncPins } from "../theme.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
 import { accessFolder } from "./access-tree.js";
 import { AccessRow, choosable, computers, inCharge, loadComputers } from "./access.js";
@@ -589,6 +590,29 @@ function Setting({ label, hint, children }) {
     </div>`;
 }
 
+/** Keep pinned sessions synced on this browser (`theme.js`): one's own, on one's own page, for every role. */
+function PinSync() {
+    const on = pinsSynced();
+    const label = "Keep pinned sessions synced on this browser";
+
+    return html`<${Setting}
+        label=${label}
+        hint=${
+            on
+                ? "On: pins are the same in every browser where this is on."
+                : Array.isArray(store.state.pinnedSynced)
+                  ? "Off: pins stay in this browser. On: this browser shows your synced pins, in place of its own."
+                  : "Off: pins stay in this browser. On: this browser's pins become your synced pins."
+        }
+    >
+        <${Switch}
+            on=${on}
+            label=${`${label}: ${on ? "on" : "off"}`}
+            onChange=${() => syncPins(!on)}
+        />
+    <//>`;
+}
+
 /**
  * What the owner lets a person do everywhere: steer Pi (which takes their own authenticator), link computers of their
  * own, how long their sessions' approvals last, and get in past the one session they were invited to.
@@ -876,6 +900,7 @@ function PersonPage({ person }) {
                 <${ApprovalTime} person=${person} plain=${true} />
             <//>`
         }
+        ${myself && html`<${PinSync} />`}
         ${
             // A temporary account gets nothing here: it links none.
             myself && html`<${MyAuthenticator} />`

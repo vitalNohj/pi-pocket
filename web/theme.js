@@ -5,12 +5,14 @@
 import { applyIcons, reportIconsAs } from "./app-icon.js";
 import { THEMES } from "./themes.js";
 import { onSafeModeEnd, safeMode } from "./safe-mode.js";
-import { api, store } from "./store.js";
+import { api, notify, store } from "./store.js";
 
 const KEY = "pocket.appearance";
 const CACHE = "pocket.themeCache";
 const DESKTOP_CACHE = "pocket.desktopTheme";
 const PINNED = "pocket.pinned";
+/** The person whose synced pins this browser shows (`pinned-sessions.ts`): syncing is on only for them. */
+const PIN_SYNC = "pocket.pinned.synced";
 const FALLBACK = "tokyo-night";
 
 /** The app's own look, which every theme builds on: it loads no stylesheet. */
@@ -197,6 +199,7 @@ store.set({
     appearance: inForce(),
     desktopTheme: readJson(DESKTOP_CACHE, null),
     pinned: readJson(PINNED, []),
+    pinSyncFor: localStorage.getItem(PIN_SYNC),
 });
 
 export const prefs = () => store.state.appearance;
@@ -271,7 +274,11 @@ export function setPrefs(patch) {
 /** The owner's default for browsers that have not chosen (`hello`), or null. */
 export const themeDefault = () => store.state.server?.themeDefault ?? null;
 
-// ─── Pinned sessions (this browser) ──────────────────────────────────────────────
+// ─── Pinned sessions (this browser, or synced) ────────────────────────────────────
+//
+// Pins are this browser's own, unless its person turned on "Keep pinned sessions synced on this browser" (People): then
+// they mirror the person's list on the server, which every browser with the switch on shows. The list is also kept in
+// `PINNED`, so a reload shows it before the server answers, and turning the switch off keeps what is on the screen.
 
 /** The pinned ids as a set, made again only when the list changes: rows ask for each session as they draw. */
 let pinnedSet = { list: null, set: new Set() };
@@ -291,8 +298,7 @@ export function togglePin(id) {
         ? store.state.pinned.filter((each) => each !== id)
         : [...store.state.pinned, id];
 
-    localStorage.setItem(PINNED, JSON.stringify(pinned));
-    store.set({ pinned });
+    changePins(pinned);
 }
 
 export function movePin(id, last) {
@@ -303,9 +309,150 @@ export function movePin(id, last) {
     const others = store.state.pinned.filter((each) => each !== id);
     const pinned = last ? [...others, id] : [id, ...others];
 
+    changePins(pinned);
+}
+
+/** Pins change at once on the screen; with syncing on, the whole list goes to the server after. */
+function changePins(pinned) {
+    showPins(pinned);
+
+    if (pinsSynced()) {
+        sendPins(pinned);
+    }
+}
+
+function showPins(pinned) {
     localStorage.setItem(PINNED, JSON.stringify(pinned));
     store.set({ pinned });
 }
+
+/** Does this browser keep its pins synced: only for the person who turned it on here. */
+export function pinsSynced(state = store.state) {
+    return state.me != null && state.pinSyncFor === state.me.id;
+}
+
+/**
+ * Turn syncing on or off for this browser. On: the person's synced list replaces this browser's pins, or, while they
+ * have none, this browser's pins become it (`followPins`). Off: the pins on the screen stay, as this browser's own.
+ */
+export function syncPins(on) {
+    const person = store.state.me?.id;
+
+    if (person === undefined) {
+        return;
+    }
+
+    if (on) {
+        localStorage.setItem(PIN_SYNC, person);
+        refused = false;
+    } else {
+        localStorage.removeItem(PIN_SYNC);
+    }
+
+    store.set({ pinSyncFor: on ? person : null });
+}
+
+/** A POST of pins is on its way; the list to send once it ends; the server's list changed meanwhile. */
+let posting = false;
+let waiting;
+let heard = false;
+/** The server refused this browser's pins: no offer again of itself until the person changes them or turns syncing on. */
+let refused = false;
+
+/**
+ * Send the whole list. One POST at a time, the newest list after it: two on their way at once could arrive in the other
+ * order, and the older list would win. Meanwhile, the server's lists wait, as one from before this change would show
+ * for a moment; once the last POST ends, the newest list the server sent shows. A refused list shows the error, and the
+ * server's list again.
+ */
+async function sendPins(pinned) {
+    waiting = pinned;
+
+    if (posting) {
+        return;
+    }
+
+    posting = true;
+
+    try {
+        while (waiting !== undefined) {
+            const list = waiting;
+
+            waiting = undefined;
+
+            try {
+                await api("pinned-sessions", { pinned: list });
+                refused = false;
+            } catch (error) {
+                notify("error", error.message ?? String(error));
+                refused = true;
+                waiting = undefined;
+                heard = true;
+
+                try {
+                    store.set({ pinnedSynced: (await api("pinned-sessions")).pinned });
+                } catch (again) {
+                    notify("error", again.message ?? String(again));
+                }
+            }
+        }
+    } finally {
+        posting = false;
+
+        if (heard) {
+            heard = false;
+            followPins(store.state.pinnedSynced);
+        }
+    }
+}
+
+/**
+ * Show the server's list (`hello`, `pinned-sessions` events), with syncing on. A person with no list yet gets this
+ * browser's pins: the first browser where they turn syncing on gives its own.
+ */
+function followPins(list) {
+    if (!pinsSynced()) {
+        return;
+    }
+
+    if (Array.isArray(list)) {
+        if (JSON.stringify(list) !== JSON.stringify(store.state.pinned)) {
+            showPins(list);
+        }
+    } else if (list === null && !refused) {
+        sendPins(store.state.pinned);
+    }
+}
+
+/** What was last followed: the switch, and the server's list. */
+let followed = { on: false, list: undefined };
+
+store.subscribe((state) => {
+    const on = pinsSynced(state);
+
+    if (on === followed.on && state.pinnedSynced === followed.list) {
+        return;
+    }
+
+    followed = { on, list: state.pinnedSynced };
+
+    if (!on) {
+        return;
+    }
+
+    if (posting) {
+        heard = true;
+    } else {
+        followPins(state.pinnedSynced);
+    }
+});
+
+// Another tab of this browser turned the switch on or off.
+addEventListener("storage", (event) => {
+    if (event.key === PIN_SYNC) {
+        store.set({ pinSyncFor: event.newValue });
+    }
+});
 
 // ─── Palettes ───────────────────────────────────────────────────────────────────
 

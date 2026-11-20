@@ -289,6 +289,11 @@ export const store = {
         folderFavorites: [],
         /** Their favorite folders on each computer they linked, by the computer's id (`folder-favorites.ts`). */
         runnerFavorites: {},
+        /**
+         * This person's synced pinned sessions, as the server last said (`pinned-sessions.ts`): null while they have
+         * none, undefined before the first `hello`. Only browsers with syncing on show them (`theme.js`).
+         */
+        pinnedSynced: undefined,
         /** False until the server's first session list arrives: an empty list until then means "not here yet". */
         sessionsLoaded: false,
         /** Sessions on their way into the archive (true) or out of it (false), by id, until the list catches up (`sessions.js`). */
@@ -1962,6 +1967,8 @@ const handlers = {
             users: keptEach(state.users, data.users),
             folderFavorites: kept(state.folderFavorites, data.folderFavorites ?? []),
             runnerFavorites: kept(state.runnerFavorites, data.runnerFavorites ?? {}),
+            // Left out while the person has no synced pins.
+            pinnedSynced: kept(state.pinnedSynced, data.pinnedSessions ?? null),
             // Linked computers are omitted for people who have access to none.
             runners: kept(state.runners, data.runners ?? []),
             thisServer: kept(state.thisServer, data.thisServer ?? null),
@@ -2005,6 +2012,8 @@ const handlers = {
         setChanged({ folderFavorites: kept(store.state.folderFavorites, folderFavorites) }),
     "runner-favorites": (runnerFavorites) =>
         setChanged({ runnerFavorites: kept(store.state.runnerFavorites, runnerFavorites) }),
+    "pinned-sessions": (pinned) =>
+        setChanged({ pinnedSynced: kept(store.state.pinnedSynced, pinned) }),
     models: (models) => setChanged({ models: kept(store.state.models, models) }),
     // A theme folder came, went, or changed (`theme.js` loads its new version).
     themes: (themeList) => setChanged({ themeList: kept(store.state.themeList, themeList) }),
