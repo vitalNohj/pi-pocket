@@ -1,6 +1,8 @@
 import {
     addPerson,
+    answerRequests,
     type App,
+    approveSession,
     cleanUp,
     fakeTab,
     lastText,
@@ -29,7 +31,9 @@ import { BrowserPage, SHOT_MAX, titleFrom } from "../src/server/browser/page.ts"
 import { SCREENSHOT_BYTES, SCREENSHOT_MAX } from "../src/server/browser/screenshots.ts";
 import { VIEWPORTS } from "../src/server/browser/viewport.ts";
 import { normalizeUrl } from "../src/server/browser/urls.ts";
+import { SessionsDoc } from "../src/server/docs.ts";
 import { blockedInPlanMode } from "../src/server/extensions/plan.ts";
+import type { FolderRequestView } from "../src/server/folder-requests.ts";
 
 /** A JPEG's size in pixels, from its first frame header. */
 function jpegSize(data: string): { width: number; height: number } {
@@ -686,6 +690,93 @@ test(
         }
     },
 );
+
+test("browser updates skip a tab that lost access before eviction", real, async () => {
+    const app = await openApp(scriptedModel(), join(root, "browser-access"));
+    const accessChanged = app.accessChanged;
+
+    try {
+        const id = await newSession(app);
+        const { user: guest } = await addPerson(app, "Guest", "guest");
+        const mine = fakeTab(id, owner(app));
+        const theirs = fakeTab(id, guest);
+
+        await app.attach(mine.client);
+        await app.attach(theirs.client);
+        assert.equal(theirs.last("browser")?.open, false);
+
+        // Keep both tabs in the room after ending the share in the record.
+        app.accessChanged = () => {};
+
+        await app.harness.commit(async (tx) => {
+            delete (await tx.doc(SessionsDoc)).items[String(id)]!.sharedWith;
+        }, BACKGROUND_CONTEXT);
+        assert.equal(app.canSee(guest, id), false);
+        assert.equal(theirs.client.conversationId, id);
+        const heard = theirs.events.length;
+
+        await app.browsers.open(Number(id), { restore: false });
+        await until(() => mine.last("browser")?.open === true, "the owner's browser update");
+        assert.ok(!theirs.events.slice(heard).some((each) => each.event === "browser"));
+    } finally {
+        app.accessChanged = accessChanged;
+        await app.close();
+    }
+});
+
+test("Browser Stop does not ask for renewal, but Clear does", real, async () => {
+    const { createHandler } = await import("../src/server/http.ts");
+    const app = await openApp(scriptedModel(), join(root, "browser-stop"));
+    const server = createServer(
+        createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
+    );
+    const denied: FolderRequestView[] = [];
+    const stopAnswering = answerRequests(app, () => false, denied);
+
+    try {
+        const { user: guest, token } = app.config.addUser("Guest", "guest");
+        const id = await newSession(app);
+
+        app.config.setServerUsers([guest.id]);
+        await app.commands.shareSession(id, owner(app), [guest.id]);
+        await app.browsers.open(Number(id), { restore: false });
+        approveSession(app, id, guest);
+        app.folderApprovals.revoke(String(id), true);
+        assert.equal(app.policy.steer(guest, String(id)), "locked");
+
+        await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+        const port = (server.address() as { port: number }).port;
+        const post = (action: string) =>
+            fetch(`http://127.0.0.1:${port}/api/c/${id}/browser/${action}`, {
+                method: "POST",
+                signal: AbortSignal.timeout(20_000),
+                headers: {
+                    authorization: `Bearer ${token}`,
+                    "X-Pocket": "1",
+                    "content-type": "application/json",
+                },
+                body: "{}",
+            });
+        const stopped = await post("stop");
+
+        assert.equal(stopped.status, 200, await stopped.text());
+        assert.deepEqual(denied, [], "Stop asked nobody");
+        assert.equal(app.policy.steer(guest, String(id)), "locked", "Stop renewed nothing");
+
+        const cleared = await post("clear");
+
+        assert.equal(cleared.status, 403);
+        assert.deepEqual(
+            denied.map(({ kind, session }) => ({ kind, session })),
+            [{ kind: "renew", session: String(id) }],
+        );
+    } finally {
+        stopAnswering();
+        server.closeAllConnections();
+        server.close();
+        await app.close();
+    }
+});
 
 test(
     "Pi uses the browser tool, and people watch and use the same page in the panel",

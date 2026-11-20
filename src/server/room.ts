@@ -144,7 +144,9 @@ export interface Client {
     readonly user: User;
     /** The conversation this tab watches; cleared when the person may not (or no longer may) see it. */
     conversationId: ConversationId | undefined;
-    send(event: string, data: unknown): void;
+    send(event: string, data: unknown, conversation?: ConversationId): void;
+    /** Drop events waiting for this tab about a conversation it may no longer see. */
+    forget?(conversation: ConversationId): void;
     /** End this tab's connection, for someone who was removed. */
     close?(): void;
     /** False while the tab is hidden: the person is away, and push notifications may reach them. */
@@ -515,7 +517,7 @@ export class Room {
 
             if (added.length > 0) {
                 for (const client of this.#allowed()) {
-                    client.send("chat", { conversationId: this.id, messages: added });
+                    client.send("chat", { conversationId: this.id, messages: added }, this.id);
                 }
             }
 
@@ -526,7 +528,7 @@ export class Room {
             this.notes = { ...((value as Notes | null) ?? { text: "", rev: 0 }) };
 
             for (const client of this.#allowed()) {
-                client.send("notes", { conversationId: this.id, ...this.notes });
+                client.send("notes", { conversationId: this.id, ...this.notes }, this.id);
             }
 
             return;
@@ -952,25 +954,29 @@ export class Room {
             fields.inbox = queue;
         }
 
-        client.send("view", {
-            full,
-            conversation: this.#app.conversationInfo(this, client.user),
-            entries,
-            ...(orderChanged || full ? orderPart : {}),
-            // Last, so that nothing that throws before the send leaves the server thinking the tab has these blocks.
-            live: this.#liveFor(client, view.docs["pi.live"] as LiveState | undefined),
-            agent: agentInfo(
-                this.#app.models,
-                agentState,
-                this.#app.defaultCwd,
-                this.#app.signInNeeded,
-            ),
-            stats: projectStats(view.docs["pi.usage"] as UsageState | undefined, view.entries),
-            clients: [...new Set([...this.clients].map((each) => each.id))].length,
-            viewers: [...new Set([...this.clients].map((each) => each.user.name))],
-            approvals: this.#app.approvals.forConversation(this.id),
-            ...fields,
-        });
+        client.send(
+            "view",
+            {
+                full,
+                conversation: this.#app.conversationInfo(this, client.user),
+                entries,
+                ...(orderChanged || full ? orderPart : {}),
+                // Last, so that nothing that throws before the send leaves the server thinking the tab has these blocks.
+                live: this.#liveFor(client, view.docs["pi.live"] as LiveState | undefined),
+                agent: agentInfo(
+                    this.#app.models,
+                    agentState,
+                    this.#app.defaultCwd,
+                    this.#app.signInNeeded,
+                ),
+                stats: projectStats(view.docs["pi.usage"] as UsageState | undefined, view.entries),
+                clients: [...new Set([...this.clients].map((each) => each.id))].length,
+                viewers: [...new Set([...this.clients].map((each) => each.user.name))],
+                approvals: this.#app.approvals.forConversation(this.id),
+                ...fields,
+            },
+            this.id,
+        );
     }
 
     /**
@@ -1259,7 +1265,7 @@ export class Room {
         }
 
         this.#peekSent.set(client, json);
-        client.send("peek", summary);
+        client.send("peek", summary, this.id);
     }
 
     /** This session as a peek tile shows it, from the newest few entries: cheap however long the session is. */
@@ -1390,7 +1396,7 @@ export class Room {
         const presence = this.presence();
 
         for (const client of this.#allowed()) {
-            client.send("presence", presence);
+            client.send("presence", presence, this.id);
         }
     }
 

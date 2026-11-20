@@ -1358,7 +1358,13 @@ export class PocketApp {
             void this.#rooms.get(conversationId)?.then(
                 (room) => {
                     for (const client of room.clients) {
-                        client.send("browser", this.#browserEvent(conversationId, state));
+                        if (this.canSee(client.user, conversationId)) {
+                            client.send(
+                                "browser",
+                                this.#browserEvent(conversationId, state),
+                                conversationId,
+                            );
+                        }
                     }
                 },
                 () => {},
@@ -2485,12 +2491,17 @@ export class PocketApp {
             room.keepOpen();
             room.clients.add(client);
             room.push(client, true);
-            client.send("chat", { conversationId: room.id, full: true, messages: room.chat });
-            client.send("notes", { conversationId: room.id, ...room.notes });
+            client.send(
+                "chat",
+                { conversationId: room.id, full: true, messages: room.chat },
+                room.id,
+            );
+            client.send("notes", { conversationId: room.id, ...room.notes }, room.id);
             // Also while the browser is off: turned on later, the panel has its state at once.
             client.send(
                 "browser",
                 this.#browserEvent(room.id, this.browsers.state(Number(room.id))),
+                room.id,
             );
 
             for (const other of room.clients) {
@@ -4996,7 +5007,7 @@ export class PocketApp {
                 const failedAgents = failedSubagents(subagents.get(id) ?? []);
                 const ask = asks.get(id);
                 // Which of Pi's sessions it continues is the owner's to know (the Pi sessions sheet), not the list's.
-                const { fromPi: _fromPi, linkedFrom, ...shown } = meta;
+                const { fromPi: _fromPi, forkedFrom, linkedFrom, ...shown } = meta;
                 // Linking does not share the origin: do not leak its id to someone who only sees the new chat.
                 const origin =
                     linkedFrom === undefined ? undefined : this.#sessions[String(linkedFrom.id)];
@@ -5016,6 +5027,16 @@ export class PocketApp {
                 return {
                     id: Number(id),
                     ...shown,
+                    // As in the room view: a copy does not give access to its source.
+                    ...(forkedFrom === undefined
+                        ? {}
+                        : {
+                              forkedFrom:
+                                  user === undefined ||
+                                  this.canSee(user, forkedFrom.id as unknown as ConversationId)
+                                      ? forkedFrom
+                                      : {},
+                          }),
                     ...linkage,
                     busy,
                     waiting: waiting.has(id),
@@ -5602,6 +5623,8 @@ export class PocketApp {
             for (const id of client.peeks ?? []) {
                 if (!this.canSee(client.user, id)) {
                     client.peeks?.delete(id);
+                    // Its tiles still waiting for the tab go too, as a session's events do for a tab moved out of it.
+                    client.forget?.(id);
                     this.#unpeek(client, id);
                 }
             }
@@ -6150,6 +6173,7 @@ export class PocketApp {
         }
 
         client.conversationId = undefined;
+        client.forget?.(id);
         client.send("missing", { conversationId: id, message });
         this.#leaveRoom(client, id);
     }

@@ -194,6 +194,27 @@ describe("the session list", () => {
         assert.deepEqual((await call<unknown[]>(stranger, "sessions")).body, []);
         assert.deepEqual(listed(invited), [String(shared)]);
     });
+
+    it("hides a fork's source in the list from someone who sees only the copy", async () => {
+        const source = await newSession(app);
+
+        await say(app, source, "a reply to fork from");
+        const { id: copy } = await app.commands.fork(source, owner(app), {});
+
+        await app.commands.shareSession(copy, owner(app), [guest.id]);
+        assert.equal(app.canSee(guest, source), false);
+
+        type Row = { id: number; forkedFrom?: { id?: number; entryId?: number } };
+        const theirs = await call<Row[]>(guest, "sessions");
+        const mine = await call<Row[]>(owner(app), "sessions");
+        const forkedFrom = mine.body.find((row) => row.id === Number(copy))?.forkedFrom;
+
+        assert.equal(theirs.status, 200);
+        assert.equal(mine.status, 200);
+        assert.deepEqual(theirs.body.find((row) => row.id === Number(copy))?.forkedFrom, {});
+        assert.equal(forkedFrom?.id, Number(source));
+        assert.deepEqual(forkedFrom, app.sessionMeta(copy)?.forkedFrom);
+    });
 });
 
 describe("live updates", () => {
@@ -242,6 +263,117 @@ describe("live updates", () => {
             assert.equal(tab.client.conversationId, undefined);
         } finally {
             app.detach(tab.client);
+        }
+    });
+    it("drops a lost session's queued long-poll events but keeps app-wide events", async () => {
+        const fresh = await newSession(app);
+
+        await app.commands.shareSession(fresh, owner(app), [guest.id]);
+
+        type Poll = {
+            session: string;
+            events: { seq: number; event: string; data: unknown }[];
+        };
+        const first = await call<Poll>(guest, `poll?c=${fresh}`);
+        const { session, events } = first.body;
+
+        try {
+            assert.equal(first.status, 200);
+            const sessions = events.find((item) => item.event === "sessions");
+
+            assert.ok(sessions);
+            assert.ok(events.some((item) => item.event === "view"));
+
+            // No new poll takes this chat, and the first answer is still unacknowledged.
+            const room = await app.room(fresh);
+
+            await app.collab.postChat(fresh, owner(app), {
+                text: "unpolled chat",
+                requestId: "unpolled-chat",
+            });
+            await until(
+                () => room.chat.some((message) => message.text === "unpolled chat"),
+                "the chat reaching the room",
+            );
+            await app.commands.shareSession(fresh, owner(app), []);
+
+            const next = await call<Poll>(guest, `poll?session=${session}&ack=0`);
+
+            assert.equal(next.status, 200);
+            assert.equal(next.body.session, session);
+            const missing = next.body.events.find((item) => item.event === "missing");
+
+            assert.ok(missing);
+            assert.ok(missing.seq > events.at(-1)!.seq, "event numbers are not reused");
+            assert.equal(
+                (missing.data as { conversationId: number }).conversationId,
+                Number(fresh),
+            );
+            assert.deepEqual(
+                next.body.events.find((item) => item.seq === sessions.seq),
+                sessions,
+            );
+            const scoped = new Set(["view", "chat", "notes", "browser", "peek", "presence"]);
+
+            assert.deepEqual(
+                next.body.events.map((item) => item.event).filter((event) => scoped.has(event)),
+                [],
+                "nothing queued by the room or Browser panel remains",
+            );
+        } finally {
+            await call(guest, `poll?session=${session}&close=1`);
+        }
+    });
+
+    it("drops the queued peek tiles of a session a long-poll tab may no longer see", async () => {
+        const fresh = await newSession(app);
+
+        await say(app, fresh, "something for a tile to show");
+        await app.commands.shareSession(fresh, owner(app), [guest.id]);
+
+        type Item = { seq: number; event: string; data: { conversationId?: number } };
+        type Poll = { session: string; events: Item[] };
+        const first = await call<Poll>(guest, "poll");
+        const { session } = first.body;
+        // Nothing is acknowledged, so every answer has all that still waits for the tab.
+        const waiting = async () =>
+            (await call<Poll>(guest, `poll?session=${session}&ack=0`)).body.events;
+        const tiles = (events: Item[]) =>
+            events.filter(
+                (item) => item.event === "peek" && item.data.conversationId === Number(fresh),
+            );
+
+        try {
+            assert.equal(first.status, 200);
+            const hello = first.body.events.find((item) => item.event === "hello");
+            const connection = (hello?.data as { connection?: string } | undefined)?.connection;
+
+            assert.equal(typeof connection, "string");
+            assert.equal(
+                (await call(guest, "peeks", { connection, ids: [Number(fresh)] })).status,
+                200,
+            );
+
+            let queued: Item[] = [];
+
+            await until(async () => {
+                queued = tiles(await waiting());
+
+                return queued.length > 0;
+            }, "the tile waiting for the tab");
+
+            await app.commands.shareSession(fresh, owner(app), []);
+            assert.equal(app.canSee(guest, fresh), false);
+
+            const after = await waiting();
+
+            assert.deepEqual(tiles(after), [], "no tile of it still waits");
+            assert.ok(
+                after.some((item) => item.event === "hello"),
+                "what is not about that session still waits",
+            );
+        } finally {
+            await call(guest, `poll?session=${session}&close=1`);
         }
     });
 });

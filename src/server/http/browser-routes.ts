@@ -132,12 +132,23 @@ export async function browserRoutes(
         throw new HttpError(404, "Unknown browser route");
     }
 
-    await app.requireDriver(id, user);
+    const stop = action === "stop";
+
+    if (stop) {
+        await app.requireTurn(id, user);
+    } else {
+        await app.requireDriver(id, user);
+    }
+
     await app.conversation(id);
     const body = await readJson<Record<string, unknown>>(request);
 
     // The body took time to arrive: the page is driven only by who still drives the session.
-    app.recheck(id, user);
+    if (stop) {
+        app.recheck(id, user, undefined, true);
+    } else {
+        app.recheck(id, user);
+    }
 
     // Typing into, stopping, or clearing a page that is not open opens nothing.
     if (action === "input" || action === "stop" || action === "clear") {

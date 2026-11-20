@@ -4,6 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import type { PocketApp } from "../app.ts";
 import type { User } from "../config.ts";
 import { isLocalRequest } from "../local-browser.ts";
@@ -38,7 +39,13 @@ interface Poller {
     id: string;
     userId: string;
     client: Client;
-    queue: { seq: number; event: string; data: unknown; size: number }[];
+    queue: {
+        seq: number;
+        event: string;
+        data: unknown;
+        size: number;
+        conversation?: ConversationId;
+    }[];
     /** The queue's events, as JSON, in bytes. */
     bytes: number;
     /** When the tab last took something: its poll acknowledged events, or nothing waited for it. */
@@ -325,7 +332,7 @@ export function createEventStreams(app: PocketApp) {
                 expiry: undefined,
             };
 
-            created.client = newClient(request, url, user, (event, data) => {
+            created.client = newClient(request, url, user, (event, data, conversation) => {
                 let size = 0;
 
                 try {
@@ -334,7 +341,7 @@ export function createEventStreams(app: PocketApp) {
                     // Not JSON: its answer would fail as it is, and it weighs nothing here.
                 }
 
-                created.queue.push({ seq: ++created.seq, event, data, size });
+                created.queue.push({ seq: ++created.seq, event, data, size, conversation });
                 created.bytes += size;
 
                 // A tab far behind that took nothing for long, or one too far behind: its session ends, and its next
@@ -353,6 +360,12 @@ export function createEventStreams(app: PocketApp) {
                     created.timer = setTimeout(() => answerPoll(created), 30);
                 }
             });
+
+            created.client.forget = (conversation) => {
+                created.queue = created.queue.filter((item) => item.conversation !== conversation);
+                created.bytes = created.queue.reduce((sum, item) => sum + item.size, 0);
+            };
+
             created.client.close = () => closePoller(created);
             pollers.set(created.id, created);
             // Its time runs while its first view is built, however long that takes, as long as the tab waits for it: a

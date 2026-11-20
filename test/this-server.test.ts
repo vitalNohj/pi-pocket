@@ -612,35 +612,47 @@ test("a copy tells where it was forked from only to those who may see that sessi
 test("a tab whose person can no longer see a session gets none of its live events, before it is moved out", async () => {
     const { id } = await app.commands.createSession(owner(app), { cwd: project });
 
+    app.config.setServerUsers([alex.id, vera.id]);
     await app.commands.shareSession(id, owner(app), [alex.id]);
 
     const alexTab = fakeTab(id, alex);
+    const accessChanged = app.accessChanged;
 
     await app.attach(alexTab.client);
 
     try {
+        const room = await app.room(id);
+        const attached = alexTab.events.length;
+
         await app.collab.postChat(id, owner(app), { text: "before", requestId: "c1" });
         await until(
-            () => alexTab.events.some((each) => each.event === "chat"),
-            "the shared tab hears the chat",
+            () => alexTab.events.slice(attached).some((each) => each.event === "chat"),
+            "the shared tab hears the live chat",
         );
 
-        // The share ends in the record, and nothing has told the tabs yet: the room checks each send itself.
+        // End the share but hold back eviction: the room must check for itself.
+        app.accessChanged = () => {};
+
         await app.harness.commit(async (tx) => {
             delete (await tx.doc(SessionsDoc)).items[String(id)]!.sharedWith;
         }, context);
         assert.equal(app.canSee(alex, id), false);
+        assert.equal(alexTab.client.conversationId, id);
 
         const heard = alexTab.events.length;
 
         await app.collab.postChat(id, owner(app), { text: "secret after", requestId: "c2" });
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await until(
+            () => room.chat.some((message) => message.text === "secret after"),
+            "the chat reaching the room",
+        );
         assert.doesNotMatch(
             JSON.stringify(alexTab.events.slice(heard)),
             /secret after/,
             "nothing of the session reaches them",
         );
     } finally {
+        app.accessChanged = accessChanged;
         app.detach(alexTab.client);
     }
 });
