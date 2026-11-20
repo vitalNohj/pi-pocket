@@ -663,7 +663,11 @@ function ordered(users) {
 
 /** What a person may do, in a word or two. */
 function roleText(person) {
-    return person.role === "owner" ? "owner" : person.role === "viewer" ? "viewer" : "user";
+    if (person.role === "viewer") {
+        return person.paused ? "paused" : "viewer";
+    }
+
+    return person.role === "owner" ? "owner" : "user";
 }
 
 /** A person's picture with the mark that says whether they are here now. */
@@ -716,11 +720,9 @@ const NOT_YOURS = "Off: you can only give what you have yourself.";
  * long their sessions' approvals last, and get in past the one session they were invited to. The owner sets it, or a
  * user who manages users; whether they manage users themselves is the owner's alone.
  */
-function Rights({ person }) {
+function Rights({ person, change }) {
     const sessionTitle = (id) =>
         store.state.sessions.find((each) => each.id === id)?.title ?? `session ${id}`;
-    const change = (patch) =>
-        attempt(async () => store.set({ users: await actions.setAccess(person.id, patch) }));
     const steers = person.role === "guest";
     const { me } = store.state;
     const owner = me?.role === "owner";
@@ -1082,9 +1084,10 @@ function Authenticator({ person }) {
                 person.authenticator &&
                 html`<button
                     class="button small ghost"
+                    aria-label="Remove authenticator"
                     onClick=${() =>
                         confirm(
-                            `Remove ${person.name}'s authenticator? They are a viewer until they link a new one and are made a user again.`,
+                            `Remove ${person.name}'s authenticator?${person.role === "guest" ? " They can only view until they link a new one. Then they are a user again." : ""}`,
                         ) &&
                         attempt(async () =>
                             store.set({
@@ -1131,6 +1134,8 @@ function PersonPage({ person }) {
     const asked = owner && myself && computers().some((each) => !inCharge(each));
     // What I do with them: for whoever prompts and starts sessions, on someone else's page.
     const reach = !myself && collab() && (owner || me?.role === "guest") && !me?.sessions;
+    const change = (patch) =>
+        attempt(async () => store.set({ users: await actions.setAccess(person.id, patch) }));
 
     const remove = () =>
         confirm(
@@ -1166,6 +1171,17 @@ function PersonPage({ person }) {
                 .filter(Boolean)
                 .join(" · ")}
         </div>
+        ${
+            mine &&
+            person.paused &&
+            html`<${Setting}
+                label="Paused: their authenticator was removed. They are a user again when they link one."
+            >
+                <button class="button small ghost" onClick=${() => change({ role: "viewer" })}>
+                    Keep as viewer
+                </button>
+            <//>`
+        }
         ${mine && person.request && html`<${Asked} person=${person} />`}
         ${reach && html`<${Reach} person=${person} placed=${places} />`}
         ${myself && !viewer && html`<${MyPhoto} />`}
@@ -1188,13 +1204,20 @@ function PersonPage({ person }) {
         }
         ${myself && !viewer && html`<${PinSync} />`}
         ${
+            myself &&
+            person.paused &&
+            html`<p class="muted small">
+                Link an authenticator to prompt again. You get back what you had.
+            </p>`
+        }
+        ${
             // A temporary account gets nothing here: it links none.
-            myself && html`<${MyAuthenticator} />`
+            myself && html`<${MyAuthenticator} paused=${person.paused} />`
         }
         ${
             (rules || places) &&
             html`<div class="sheet-pane">
-                ${rules && html`<${Rights} person=${person} />`}
+                ${rules && html`<${Rights} person=${person} change=${change} />`}
                 ${places && html`<${Places} person=${person} />`}
                 ${rules && html`<${Authenticator} person=${person} />`}
             </div>`

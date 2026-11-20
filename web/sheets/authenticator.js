@@ -20,7 +20,7 @@ function CodeField({ code, setCode, label }) {
 }
 
 /** Link, check, or remove your authenticator, on your own page in People. */
-export function MyAuthenticator() {
+export function MyAuthenticator({ paused }) {
     const [status, setStatus] = useState(null);
     // While linking: the new secret, its link, and its QR code.
     const [linking, setLinking] = useState(null);
@@ -158,7 +158,7 @@ export function MyAuthenticator() {
                                 ${
                                     status.linked
                                         ? "You approve your new folders with its codes."
-                                        : owner
+                                        : owner || paused
                                           ? "Link an authenticator app to approve your new folders with its codes."
                                           : "Link an authenticator app to be made a user, who can prompt."
                                 }

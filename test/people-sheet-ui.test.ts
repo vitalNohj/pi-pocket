@@ -11,6 +11,7 @@ import {
     context,
     fakeTab,
     home,
+    linkAuthenticator,
     newSession,
     openApp,
     owner,
@@ -1431,6 +1432,79 @@ test("a viewer's own page shows only their account essentials on a phone", real,
         await app.removeUser(owner(app), temporary.user.id);
     }
 });
+
+test(
+    "removing a user's authenticator shows paused until Keep as viewer is pressed",
+    real,
+    async () => {
+        const { user } = app.config.addUser("Remy", "guest");
+
+        linkAuthenticator(app, user);
+        const role = () =>
+            inPage<string>(`
+            const row = [...document.querySelectorAll(".pages-item")]
+                .find((each) => each.querySelector(".pages-item-title").textContent.trim() === "Remy");
+
+            return JSON.stringify(row?.querySelector(".pages-item-text .small").textContent.trim().split(" · ")[0]);
+        `);
+        const text = () =>
+            inPage<string>(
+                `return JSON.stringify(document.querySelector(".pages-detail").textContent.replace(/\\s+/g, " "))`,
+            );
+        const paused =
+            "Paused: their authenticator was removed. They are a user again when they link one.";
+
+        /** Tap a button of the page shown. One that shows while its page still saves takes no click: wait for it. */
+        const tap = async (label: string) => {
+            const found = `[...document.querySelectorAll(".pages-detail button")].find((each) => (each.getAttribute("aria-label") ?? each.textContent.trim()) === ${JSON.stringify(label)} && !each.disabled)`;
+
+            await until(
+                () => inPage<boolean>(`return JSON.stringify(${found} !== undefined)`),
+                `${label} taking a click`,
+            );
+            await inPage(`${found}.click(); return JSON.stringify(true);`);
+        };
+
+        try {
+            await open("people");
+            await show("Remy");
+            assert.equal(await role(), "user");
+            await inPage(`window.confirm = () => true; return JSON.stringify(true);`);
+            await tap("Remove authenticator");
+            await until(async () => (await role()) === "paused", "paused on Remy's row");
+            assert.ok((await text()).includes(paused));
+
+            await page.setViewport({ width: 390, height: 844, scale: 2, mobile: true });
+            await until(
+                () => inPage<boolean>(`return JSON.stringify(innerWidth === 390)`),
+                "the phone viewport",
+            );
+            assert.deepEqual(
+                await inPage<string[]>(`
+                const button = [...document.querySelectorAll(".pages-detail button")]
+                    .find((each) => each.textContent.trim() === "Keep as viewer");
+                const setting = button.closest(".setting");
+
+                return JSON.stringify([setting, ...setting.querySelectorAll("*"), ...document.querySelectorAll(".pages-item")]
+                    .filter((each) => each.getBoundingClientRect().right > innerWidth + 0.5 || each.getBoundingClientRect().left < -0.5)
+                    .map((each) => each.className || each.tagName));
+            `),
+                [],
+                "the paused row and setting fit the phone",
+            );
+
+            await tap("Keep as viewer");
+            await until(async () => (await role()) === "viewer", "viewer on Remy's row");
+            const detail = await text();
+
+            assert.ok(!detail.includes(paused));
+            assert.ok(!detail.includes("Keep as viewer"));
+            assert.equal(app.config.userById(user.id)?.paused, undefined);
+        } finally {
+            await app.removeUser(owner(app), user.id);
+        }
+    },
+);
 
 test(
     "a viewer asks for access on their own page; who manages people sees Request on their row, reads it, and clears it",

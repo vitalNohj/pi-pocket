@@ -945,6 +945,19 @@ export class Watches {
             return runtime.commit(() => finished, context);
         }
 
+        const waitForAccess = (note: string) =>
+            this.#again(runtime, this.timing.retry, {}, context, { note });
+
+        // Its person is paused (`app.ts` `pausedPerson`: their authenticator was removed): the watch waits for them to
+        // link one, and counts no failure, until they do or two weeks pass with nothing told, as for an approval.
+        if (app.pausedPerson(watch.by)) {
+            if (app.now() - watch.lastNewsAt > QUIET_MS) {
+                return this.#end(runtime, "expired", context);
+            }
+
+            return waitForAccess("Waits until its person links an authenticator.");
+        }
+
         const person = app.config.userById(watch.by);
 
         if (person === undefined || person.role === "viewer" || !app.canSee(person, id)) {
@@ -996,9 +1009,9 @@ export class Watches {
                     return this.#end(runtime, "expired", context);
                 }
 
-                return this.#again(runtime, this.timing.retry, {}, context, {
-                    note: app.blockedOf(id) ?? "Waits until this session's approval is renewed.",
-                });
+                return waitForAccess(
+                    app.blockedOf(id) ?? "Waits until this session's approval is renewed.",
+                );
             }
 
             try {

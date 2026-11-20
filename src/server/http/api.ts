@@ -171,7 +171,7 @@ async function authenticatorRoute(
     const body = await readJson<{ code?: unknown } | null>(request);
 
     if (action === "confirm") {
-        app.authenticators.confirm(user.id, sixDigits(body?.code));
+        app.confirmAuthenticator(user, sixDigits(body?.code));
 
         return status();
     }
@@ -708,7 +708,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
-        // The owner removes someone's authenticator, for a lost phone: they link a new one from their account.
+        // Who manages them can remove an authenticator for a lost phone. A user is paused until they link again.
         if (
             first === "users" &&
             second !== undefined &&

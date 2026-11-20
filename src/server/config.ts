@@ -65,6 +65,12 @@ export interface User {
      */
     authenticator?: StoredAuthenticator;
     /**
+     * They were a user until their authenticator was removed (`app.ts` `removeAuthenticator`). They view until they
+     * link one again, and then are a user again, with what is kept here. A change of their role by who manages them
+     * ends it.
+     */
+    paused?: { managesUsers?: true };
+    /**
      * How many days a session's approval lasts once this person last used it (`folder-approvals.ts`); 0: never ends.
      * Absent: 7 days.
      */
@@ -76,7 +82,7 @@ export interface User {
     /**
      * The owner let this guest manage people (`access.ts` `managesPeople`): they see on a person's page what the owner
      * sees, and change what that person may do. Only the owner sets it. It ends when they are made a viewer or limited
-     * to one session (`updateUser`), so it never comes back unasked.
+     * to one session (`updateUser`). A pause saves it for when they link an authenticator again (`paused`).
      */
     managesUsers?: true;
     /**
@@ -1099,6 +1105,7 @@ export class ConfigStore {
                 | "keepsWarm"
                 | "setupDismissed"
                 | "accessRequest"
+                | "paused"
             >
         > & {
             /** Only ever turned off: a temporary account becomes a full one, never the other way. */
@@ -1126,6 +1133,10 @@ export class ConfigStore {
 
         Object.assign(user, patch);
 
+        if (user.paused === undefined || user.role !== "viewer") {
+            delete user.paused;
+        }
+
         if (user.sessions === undefined) {
             delete user.sessions;
         }
@@ -1150,7 +1161,7 @@ export class ConfigStore {
             delete user.invites;
         }
 
-        // Only a user who is not limited to one session manages people: made a viewer, or limited, they stop for good.
+        // Only a user who is not limited to one session manages people.
         if (user.managesUsers !== true || user.role !== "guest" || user.sessions !== undefined) {
             delete user.managesUsers;
         }

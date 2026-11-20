@@ -194,7 +194,7 @@ test("too many wrong codes lock it out, and the status says until when", async (
     assert.match(locked.body.error, /Try again in 10 minutes/);
 });
 
-test("removing a guest's authenticator ends their steering until the owner lets them steer again", async () => {
+test("removing a guest's authenticator ends their steering until they link one again", async () => {
     const gina = person("Gina", "viewer");
 
     clock += STEP_MS;
@@ -216,10 +216,10 @@ test("removing a guest's authenticator ends their steering until the owner lets 
         /must link an authenticator first/,
     );
 
-    // Linked again and let steer; then the owner removes it for a lost phone: a viewer again.
+    // Linked again, she can steer; then the owner removes it for a lost phone: a viewer again.
     clock += STEP_MS;
     await link(gina);
-    app.setAccess(owner(app), gina.id, { role: "guest" });
+    assert.equal(app.config.userById(gina.id)?.role, "guest");
     assert.equal(
         (await call(owner(app), `users/${gina.id}/authenticator`, undefined, "DELETE")).status,
         200,

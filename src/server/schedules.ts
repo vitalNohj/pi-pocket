@@ -244,10 +244,15 @@ export class Schedules {
             }, context);
         }
 
-        // PiP's conversation while PiP is off would run without PiP's rules: its schedule waits, and goes out once PiP
-        // is back. A session whose tasks paused (its approval ended, `app.ts` `tasksMayRun`) waits until it is renewed.
+        const userId = schedule.by ?? schedule.requestedBy;
+
+        // Wait while PiP is off, the session's tasks are paused, or its person needs to link an authenticator again.
         // Its `runs` stays, so a sending this replaces keeps its request id.
-        if (this.#waitsForPip(conversationId) || !this.#app.tasksMayRun(conversationId)) {
+        if (
+            this.#waitsForPip(conversationId) ||
+            !this.#app.tasksMayRun(conversationId) ||
+            (userId !== undefined && this.#app.pausedPerson(userId))
+        ) {
             return runtime.commit(async (tx) => {
                 const item = (await tx.doc(ScheduleDoc, conversationId)).items[id];
 
@@ -399,8 +404,8 @@ export class Schedules {
     }
 
     /**
-     * Why a schedule may not go out anymore, and who set it up: the person it is for can no longer steer here, or a
-     * spend limit is reached. Undefined when it may go out.
+     * Why a schedule may not go out now, and who set it up: the person it is for is paused or can no longer steer
+     * here, or a spend limit is reached. Undefined when it may go out.
      */
     #stopped(
         conversationId: ConversationId,
@@ -424,6 +429,10 @@ export class Schedules {
         };
         const who = schedule.by === undefined ? pi : named;
 
+        if (app.pausedPerson(userId)) {
+            return { who, why: "they link an authenticator first" };
+        }
+
         if (
             person === undefined ||
             person.role === "viewer" ||
@@ -440,7 +449,7 @@ export class Schedules {
         return why === undefined ? undefined : { who, why };
     }
 
-    /** Why a schedule would not go out now, were it its time: a spend limit, or nobody left to steer. */
+    /** Why a schedule would not go out now, were it its time. */
     held(conversationId: ConversationId, schedule: Schedule): string | undefined {
         return this.#stopped(conversationId, schedule)?.why;
     }

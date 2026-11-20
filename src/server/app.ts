@@ -3061,6 +3061,10 @@ export class PocketApp {
                 ...(each.temporary === true && (manages || viewer.id === each.id)
                     ? { temporary: true }
                     : {}),
+                // A user paused until they link an authenticator; never send the rights saved inside `paused`.
+                ...(each.paused !== undefined && (manages || viewer.id === each.id)
+                    ? { paused: true }
+                    : {}),
                 // What this viewer asked for access with (`requestAccess`), for who manages people, who answers it, and
                 // for themselves.
                 ...(each.accessRequest !== undefined && (manages || viewer.id === each.id)
@@ -5757,6 +5761,7 @@ export class PocketApp {
             role?: "guest" | "viewer";
             sessions?: string[] | undefined;
             temporary?: false;
+            paused?: undefined;
         } = {};
 
         // A temporary account becomes a full one, never the other way: an invite alone makes one temporary.
@@ -5794,6 +5799,7 @@ export class PocketApp {
             }
 
             change.role = patch.role;
+            change.paused = undefined;
         }
 
         if (patch.sessions !== undefined) {
@@ -5879,10 +5885,16 @@ export class PocketApp {
         this.#scheduleSessions();
     }
 
+    /** Whether a person is a viewer until they link an authenticator again. */
+    pausedPerson(id: string): boolean {
+        const person = this.config.userById(id);
+
+        return person?.role === "viewer" && person.paused !== undefined;
+    }
+
     /**
-     * Remove `person`'s authenticator (`by`: themselves with a code, or the owner). Steering needs one (`setAccess`), so a
-     * guest goes back to viewing: their tabs, requests, and lists follow at once, and the owner lets them steer again
-     * once they link a new one.
+     * Remove `person`'s authenticator (`by`: themselves with a code, or who manages them). Steering needs one
+     * (`setAccess`), so a guest views until they link a new one. Their tabs, requests, and lists follow at once.
      */
     removeAuthenticator(person: string, by: User, code?: string): void {
         this.authenticators.remove(
@@ -5895,11 +5907,37 @@ export class PocketApp {
         const target = this.config.userById(person);
 
         if (target?.role === "guest") {
-            this.config.updateUser(person, { role: "viewer" });
+            const { managesUsers } = target;
+
+            this.config.updateUser(person, {
+                role: "viewer",
+                paused: { ...(managesUsers === true ? { managesUsers: true } : {}) },
+            });
             void this.#refreshUser(person);
             this.accessChanged();
         }
 
+        this.#peopleChanged();
+    }
+
+    /** Confirm their authenticator and restore a paused user with what was saved when it was removed. */
+    confirmAuthenticator(user: User, code: string): void {
+        this.authenticators.confirm(user.id, code);
+
+        const person = this.config.userById(user.id);
+        const paused = person?.paused;
+
+        if (person?.role !== "viewer" || paused === undefined || person.temporary === true) {
+            return;
+        }
+
+        this.config.updateUser(user.id, {
+            role: "guest",
+            paused: undefined,
+            ...(paused.managesUsers === true ? { managesUsers: true } : {}),
+        });
+        void this.#refreshUser(user.id);
+        this.accessChanged();
         this.#peopleChanged();
     }
 
