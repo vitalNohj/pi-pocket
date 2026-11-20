@@ -358,7 +358,7 @@ test("no longer chosen, a person loses the sessions shared with them there, also
     assert.equal(app.canSee(alex, id), false, "the old share does not come back");
 });
 
-test("an invite to every session passes on only the sessions its maker may see", async () => {
+test("an invite to every session passes on only the sessions its maker started", async () => {
     // Gina linked her own computer and chose Alex there; a session of hers is shared with everyone chosen on it.
     const gina = person("Gina", "guest");
     const ginas = app.config.addRunner("Gina's laptop", gina.id, newIdentity().publicKey).id;
@@ -380,11 +380,23 @@ test("an invite to every session passes on only the sessions its maker may see",
     }, context);
     assert.equal(app.canSee(owner(app), hers), false, "the owner sees nothing on Gina's computer");
 
-    // The owner's invite: the server's session shared with everyone here, never Gina's.
+    // A session Alex started on this server, which everyone chosen here has: the owner sees it, and did not start it.
+    const { id: alexs } = await app.commands.createSession(owner(app), { cwd: project });
+
+    await app.harness.commit(async (tx) => {
+        const meta = (await tx.doc(SessionsDoc)).items[String(alexs)]!;
+
+        meta.createdBy = alex.id;
+        meta.sharedWith = [vera.id];
+    }, context);
+    assert.equal(app.canSee(owner(app), alexs), true);
+
+    // The owner's invite: the session the owner started, never Alex's, never Gina's.
     const fromOwner = person("Olive", "viewer");
 
     await app.welcome(fromOwner.id, owner(app).id);
-    assert.equal(app.canSee(fromOwner, local), true, "shared with everyone chosen here");
+    assert.equal(app.canSee(fromOwner, local), true, "the inviter's own session");
+    assert.equal(app.canSee(fromOwner, alexs), false, "not a session someone else started");
     assert.equal(app.canSee(fromOwner, hers), false, "not a session the inviter may not see");
 
     // The owner is in charge of this server, so who joins is chosen for it: its switch says what they have. They are
@@ -399,11 +411,14 @@ test("an invite to every session passes on only the sessions its maker may see",
     assert.equal(chosenFor(runnerId, fromOwner), false, "not where none did");
     assert.equal(chosenFor(ginas, fromOwner), false);
 
-    // Alex's invite: Gina's session, which Alex may see.
+    // Alex's invite: Alex's own session. Not Gina's, which is shared with Alex and is not Alex's to share, and not
+    // the owner's, shared with Alex too.
     const fromAlex = person("Abe", "viewer");
 
     await app.welcome(fromAlex.id, alex.id);
-    assert.equal(app.canSee(fromAlex, hers), true, "a session the inviter may see");
+    assert.equal(app.canSee(fromAlex, alexs), true, "the inviter's own session");
+    assert.equal(app.canSee(fromAlex, hers), false, "not a session shared with the inviter");
+    assert.equal(app.canSee(fromAlex, local), false, "nor the owner's");
     // Alex is in charge of neither computer: the sessions are shared, and the choice stays with who is.
     assert.equal(chosenFor(ginas, fromAlex), false, "not chosen by someone not in charge");
     assert.equal(chosenFor(THIS_SERVER, fromAlex), false);

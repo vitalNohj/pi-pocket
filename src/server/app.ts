@@ -5321,9 +5321,10 @@ export class PocketApp {
     }
 
     /**
-     * Someone joined with `inviter`'s invite to every session: they see the sessions `inviter` started, and those shared
-     * with everyone chosen on their computer, as they are now. Sessions started later are not theirs to see unless shared.
-     * Only sessions `inviter` may see: an invite never passes on what its maker could not open.
+     * Someone joined with `inviter`'s invite to every session: they see the sessions `inviter` started, as they are now.
+     * Sessions started later are not theirs to see unless shared. Only the inviter's own: a session someone else
+     * started is not the inviter's to give, also when it is shared with them, or with everyone on its computer
+     * (`access.ts` `mayShare`). And only sessions `inviter` may still see.
      *
      * With `folder`, the invite was to one folder: only the sessions `inviter` started in it on that computer.
      *
@@ -5357,23 +5358,11 @@ export class PocketApp {
                 }
 
                 const computer = meta.runner ?? THIS_SERVER;
-                const chosen =
-                    computer === THIS_SERVER
-                        ? (this.config.server.users ?? [])
-                        : (this.config.runnerById(computer)?.users ?? []);
-                const starter = meta.createdBy ?? this.#ownerId();
-                const everyone =
-                    chosen.length > 0 &&
-                    chosen.every(
-                        (each) => each === starter || meta.sharedWith?.includes(each) === true,
-                    );
-
                 const given =
-                    folder === undefined
-                        ? starter === inviter || everyone
-                        : starter === inviter &&
-                          computer === folder.computer &&
-                          inFolder(this.#accessFolder(meta), folder.path);
+                    (meta.createdBy ?? this.#ownerId()) === inviter &&
+                    (folder === undefined ||
+                        (computer === folder.computer &&
+                            inFolder(this.#accessFolder(meta), folder.path)));
 
                 if (given) {
                     meta.sharedWith = [...new Set([...(meta.sharedWith ?? []), person])];
@@ -5384,7 +5373,6 @@ export class PocketApp {
 
         const joined = this.config.userById(person);
 
-        // After the shares are saved: "everyone chosen" above is who was chosen before they came.
         for (const computer of computers) {
             if (
                 joined !== undefined &&
