@@ -278,6 +278,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "Gina can prompt: on",
         "Gina links runners: off",
         "Gina invites people: off",
+        "Gina manages users: off",
         "Gina keeps sessions warm: off",
         "Gina may use This server: off",
         "Gina may use Laptop: off",
@@ -1951,6 +1952,211 @@ test(
             await theirs.closeAll({ final: true });
             app.config.setServerUsers(chosen);
             app.config.setRunnerUsers(runnerId, there);
+            app.accessChanged();
+        }
+    },
+);
+
+test(
+    "Manage users is the owner's to give: a user who has it gets the owner's view of the people they may change, and gives only what they have",
+    real,
+    async () => {
+        // A device of Gina's own, in a browser of its own, as in the tests above.
+        const token = app.config.addDevice(guest.id);
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "people-sheet-manages-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+        const uma = app.config.addUser("Uma", "guest").user;
+        const tom = app.config.addUser("Tom", "viewer").user;
+        const text = () =>
+            inPage<string>(
+                `return JSON.stringify(document.querySelector(".pages-detail").textContent.replace(/\\s+/g, " "))`,
+            );
+        const yes = () =>
+            inPage(`
+                window.asked = [];
+                window.confirm = (text) => {
+                    window.asked.push(text);
+
+                    return true;
+                };
+
+                return JSON.stringify(true);
+            `);
+        const removable = () =>
+            inPage<boolean>(
+                `return JSON.stringify([...document.querySelectorAll(".pages-detail .sheet-page-actions button")].some((each) => each.textContent.trim() === "Remove"))`,
+            );
+        const times = () =>
+            inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".pages-detail .approval-time option")].map((each) => each.textContent.trim()))`,
+            );
+        const wider = () =>
+            inPage<string[]>(`
+                return JSON.stringify(
+                    [...document.querySelectorAll(".sheet-body *")]
+                        .filter((each) => each.getBoundingClientRect().right > innerWidth + 1)
+                        .map((each) => each.className),
+                );
+            `);
+
+        assert.ok(token !== undefined);
+        // Gina has none of what a person can be given, and the usual approval time.
+        app.setManagesUsers(owner(app), guest.id, false);
+        app.setLinksRunners(owner(app), guest.id, false);
+        app.setInvites(owner(app), guest.id, false);
+        app.setKeepsWarm(owner(app), guest.id, false);
+        app.setApprovalDays(owner(app), guest.id, null);
+
+        try {
+            // The owner's page for her: off, and it says who manages users then. Every approval time is the owner's to give.
+            await open("people");
+            await show("Gina");
+            assert.ok((await switches()).includes("Gina manages users: off"));
+            assert.match(await text(), /Off: only you manage users\./);
+            await show("Uma");
+            assert.deepEqual(await times(), [
+                "1 day",
+                "7 days",
+                "14 days",
+                "30 days",
+                "never ends",
+            ]);
+
+            // Her own browser: someone else's page says who they are, and no more.
+            const ginas = await theirs.open(1);
+
+            page = ginas;
+            await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await open("people");
+            await show("Vera");
+            assert.deepEqual(await switches(), []);
+            assert.equal(await removable(), false);
+
+            // The owner turns it on, after a question.
+            page = owners;
+            await show("Gina");
+            await yes();
+            await flip("Gina manages users");
+            await until(
+                async () => (await switches()).includes("Gina manages users: on"),
+                "the switch to be on",
+            );
+            assert.match((await asked())[0] ?? "", /^Let Gina manage users\?/);
+            assert.equal(app.config.userById(guest.id)?.managesUsers, true);
+            assert.match(await text(), /manages users/);
+            assert.match(
+                await text(),
+                /On: they change what other people may do, and remove them\./,
+            );
+
+            // Her page for Vera shows what the owner's does, without a reload: but no link that signs in as Vera.
+            page = ginas;
+            await until(
+                async () =>
+                    JSON.stringify(await switches()) ===
+                    JSON.stringify([
+                        "Vera may become a user and prompt: on (disabled)",
+                        "Vera can prompt: off (disabled)",
+                    ]),
+                "Vera's switches, for Gina",
+            );
+            assert.equal(await removable(), true);
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify(document.querySelector('.pages-detail [data-part="device-link"]') !== null)`,
+                ),
+                false,
+            );
+
+            // She has none of these herself, so they are not hers to turn on; and whether Uma manages users is the owner's.
+            await show("Uma");
+            assert.deepEqual(await switches(), [
+                "Uma can prompt: on",
+                "Uma links runners: off (disabled)",
+                "Uma invites people: off (disabled)",
+                "Uma keeps sessions warm: off (disabled)",
+            ]);
+            assert.equal(
+                (await text()).split("Off: you can only give what you have yourself.").length - 1,
+                3,
+            );
+            // No approval time longer than her own.
+            assert.deepEqual(await times(), ["1 day", "7 days"]);
+
+            // Once she invites people herself, she lets Uma.
+            app.setInvites(owner(app), guest.id, true);
+            await until(
+                async () => (await switches()).includes("Uma invites people: off"),
+                "the switch to be hers to turn on",
+            );
+            assert.match(await text(), /Off: they do not invite people\./);
+            await flip("Uma invites people");
+            await until(
+                () => app.config.userById(uma.id)?.invites === true,
+                "Uma to invite people",
+            );
+
+            // Her own page has no such switches: nobody changes themselves.
+            await show("Gina");
+            assert.deepEqual(
+                (await switches()).filter((each) => each.startsWith("Gina ")),
+                [],
+            );
+            assert.equal(await removable(), false);
+
+            // She removes someone.
+            await show("Tom");
+            await yes();
+            await inPage(`
+                [...document.querySelectorAll(".pages-detail .sheet-page-actions button")]
+                    .find((each) => each.textContent.trim() === "Remove")
+                    .click();
+
+                return JSON.stringify(true);
+            `);
+            await until(() => app.config.userById(tom.id) === undefined, "Tom to be removed");
+            assert.match((await asked())[0] ?? "", /^Remove Tom\?/);
+
+            // Another who manages users is the owner's alone to change.
+            app.setManagesUsers(owner(app), uma.id, true);
+            await show("Uma");
+            await until(async () => (await switches()).length === 0, "Uma's switches to go");
+            assert.equal(await removable(), false);
+            assert.match(await text(), /manages users/);
+
+            // On a phone, her page for Vera and the owner's for her fit the screen.
+            await open("people", VIEWPORTS.mobile);
+            await show("Vera");
+            assert.equal((await switches()).length, 2);
+            assert.deepEqual(await wider(), []);
+            page = owners;
+            await open("people", VIEWPORTS.mobile);
+            await show("Gina");
+            assert.ok((await switches()).includes("Gina manages users: on"));
+            assert.deepEqual(await wider(), []);
+
+            // Taken back: her view of Vera is anyone's again, at once.
+            page = ginas;
+            app.setManagesUsers(owner(app), guest.id, false);
+            await until(async () => (await switches()).length === 0, "Vera's switches to go");
+            assert.equal(await removable(), false);
+        } finally {
+            // The tests share one page: the owner's again, whatever happened.
+            page = owners;
+            await theirs.closeAll({ final: true });
+
+            for (const each of [uma, tom]) {
+                if (app.config.userById(each.id) !== undefined) {
+                    app.config.removeUser(each.id);
+                }
+            }
+
+            app.setManagesUsers(owner(app), guest.id, false);
+            app.setInvites(owner(app), guest.id, false);
             app.accessChanged();
         }
     },

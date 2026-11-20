@@ -672,6 +672,12 @@ export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStar
  */
 export const canInvite = () => store.state.me?.invites !== false;
 
+/**
+ * Does this person manage people (`access.ts` `managesPeople`): the owner, and a user the owner lets. People shows them
+ * each person's settings. A server from before it does not say: the owner, as before.
+ */
+export const managesPeople = () => store.state.me?.managesUsers ?? store.state.me?.role === "owner";
+
 /** The computer a session runs on, as the server names it (`access.ts` `THIS_SERVER`): a runner's id, or this server. */
 const computerOf = (session) => session?.runner ?? "this-server";
 

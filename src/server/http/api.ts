@@ -469,6 +469,24 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // The owner lets a user manage people, or takes it back.
+        if (
+            first === "users" &&
+            second !== undefined &&
+            third === "manages-users" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ on?: unknown } | null>(request);
+
+            if (typeof body?.on !== "boolean") {
+                throw new HttpError(400, "on must be true or false.");
+            }
+
+            app.setManagesUsers(user, second, body.on);
+
+            return json(response, 200, { ok: true });
+        }
+
         // The owner lets a guest invite people, or takes it back.
         if (first === "users" && second !== undefined && third === "invites" && method === "POST") {
             const body = await readJson<{ on?: unknown } | null>(request);
@@ -513,18 +531,17 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
-        // How long a person's approvals last once unused, on every computer (`config.ts` `approvalDays`): the owner's.
+        // How long a person's approvals last once unused, on every computer (`config.ts` `approvalDays`): for who
+        // manages them to set (`app.ts` `setApprovalDays`).
         if (
             first === "users" &&
             second !== undefined &&
             third === "approval-days" &&
             method === "POST"
         ) {
-            requireOwner(user);
-
             const body = await readJson<{ days?: unknown } | null>(request);
 
-            app.setApprovalDays(second, body?.days);
+            app.setApprovalDays(user, second, body?.days);
 
             return json(response, 200, { ok: true });
         }
@@ -644,7 +661,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === "authenticator" &&
             method === "DELETE"
         ) {
-            requireOwner(user);
+            app.requireManages(user, second);
 
             if (app.config.userById(second) === undefined) {
                 throw new HttpError(404, "No such person.");

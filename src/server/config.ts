@@ -74,6 +74,12 @@ export interface User {
     /** The owner let this guest invite people (`access.ts` `mayInvite`). The owner always may. */
     invites?: true;
     /**
+     * The owner let this guest manage people (`access.ts` `managesPeople`): they see on a person's page what the owner
+     * sees, and change what that person may do. Only the owner sets it. It ends when they are made a viewer or limited
+     * to one session (`updateUser`), so it never comes back unasked.
+     */
+    managesUsers?: true;
+    /**
      * The owner let this guest keep sessions warm: turn it on for a session and pick its time (`access.ts`
      * `keepsWarm`). Without it they may only turn it off. The owner always may.
      */
@@ -517,6 +523,7 @@ const ACCESS_PERSON_KEYS = [
     "approvalDays",
     "linksRunners",
     "invites",
+    "managesUsers",
     "keepsWarm",
     "temporary",
     "devices",
@@ -1082,6 +1089,7 @@ export class ConfigStore {
                 | "approvalDays"
                 | "linksRunners"
                 | "invites"
+                | "managesUsers"
                 | "keepsWarm"
                 | "setupDismissed"
             >
@@ -1133,6 +1141,11 @@ export class ConfigStore {
 
         if (user.invites !== true) {
             delete user.invites;
+        }
+
+        // Only a user who is not limited to one session manages people: made a viewer, or limited, they stop for good.
+        if (user.managesUsers !== true || user.role !== "guest" || user.sessions !== undefined) {
+            delete user.managesUsers;
         }
 
         if (user.keepsWarm !== true) {

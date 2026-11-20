@@ -21,7 +21,8 @@ export const BLOCKED =
 
 /**
  * A person as the policy needs them. `linksRunners`: the owner let this guest link computers of their own. `invites`:
- * the owner let this guest invite people. `keepsWarm`: the owner let this guest keep sessions warm.
+ * the owner let this guest invite people. `keepsWarm`: the owner let this guest keep sessions warm. `managesUsers`:
+ * the owner let this guest manage people.
  */
 export type Person = {
     id: string;
@@ -30,6 +31,7 @@ export type Person = {
     linksRunners?: boolean;
     invites?: boolean;
     keepsWarm?: boolean;
+    managesUsers?: boolean;
 };
 
 /** A computer: this server, or a linked runner. */
@@ -265,6 +267,40 @@ export class AccessPolicy {
             current.sessions === undefined &&
             (current.role === "owner" ||
                 (current.role === "guest" && current.linksRunners === true))
+        );
+    }
+
+    /**
+     * Does `person` manage people: the owner, and the users the owner lets (`managesUsers`). Never a viewer, and never
+     * someone invited to one session. They see on a person's page what the owner sees.
+     */
+    managesPeople(person: Pick<Person, "id">): boolean {
+        const current = this.#current(person);
+
+        return (
+            current !== undefined &&
+            (current.role === "owner" ||
+                (current.role === "guest" &&
+                    current.sessions === undefined &&
+                    current.managesUsers === true))
+        );
+    }
+
+    /**
+     * May `by` change what `target` may do, or remove them. Nobody changes the owner. The owner changes everyone else.
+     * A user who manages people changes nobody who manages people, which they do themselves: only the owner does, so
+     * that nobody raises their own rights or takes another manager's away.
+     */
+    mayManagePerson(by: Pick<Person, "id">, target: Pick<Person, "id">): boolean {
+        const current = this.#current(by);
+        const other = this.#current(target);
+
+        if (current === undefined || other === undefined || other.role === "owner") {
+            return false;
+        }
+
+        return (
+            current.role === "owner" || (this.managesPeople(current) && !this.managesPeople(other))
         );
     }
 

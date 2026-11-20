@@ -2875,6 +2875,8 @@ export class PocketApp {
      */
     people(viewer: User) {
         const scope = viewer.sessions;
+        // Who manages people reads of everyone what the owner reads.
+        const manages = this.policy.managesPeople(viewer);
 
         return this.config.users
             .filter(
@@ -2900,31 +2902,34 @@ export class PocketApp {
                               .map(Number),
                       }),
                 // For the owner, who can remove it (a lost phone): that one is linked, never what it holds.
-                ...(viewer.role === "owner" && each.authenticator?.confirmedAt !== undefined
+                ...(manages && each.authenticator?.confirmedAt !== undefined
                     ? { authenticator: true }
                     : {}),
                 // How long a session's approval lasts after they used it (0: never ends), for the owner and themselves.
-                ...(viewer.role === "owner" || viewer.id === each.id
-                    ? { approvalDays: approvalDays(each) }
-                    : {}),
+                ...(manages || viewer.id === each.id ? { approvalDays: approvalDays(each) } : {}),
                 // Whether they have an authenticator linked (steering needs one), and may link computers.
-                ...((viewer.role === "owner" || viewer.id === each.id) &&
+                ...((manages || viewer.id === each.id) &&
                 each.authenticator?.confirmedAt !== undefined
                     ? { hasCode: true }
                     : {}),
-                ...(each.linksRunners === true && (viewer.role === "owner" || viewer.id === each.id)
+                ...(each.linksRunners === true && (manages || viewer.id === each.id)
                     ? { linksRunners: true }
                     : {}),
                 // May they invite people, for the owner, who sets it, and for themselves.
-                ...(each.invites === true && (viewer.role === "owner" || viewer.id === each.id)
+                ...(each.invites === true && (manages || viewer.id === each.id)
                     ? { invites: true }
                     : {}),
+                // Do they manage people, for the owner, who sets it, for who manages people (they leave such a person
+                // alone), and for themselves.
+                ...(each.managesUsers === true && (manages || viewer.id === each.id)
+                    ? { managesUsers: true }
+                    : {}),
                 // May they keep sessions warm, for the owner, who sets it, and for themselves.
-                ...(each.keepsWarm === true && (viewer.role === "owner" || viewer.id === each.id)
+                ...(each.keepsWarm === true && (manages || viewer.id === each.id)
                     ? { keepsWarm: true }
                     : {}),
                 // A temporary account, for the owner, who can end that, and for themselves.
-                ...(each.temporary === true && (viewer.role === "owner" || viewer.id === each.id)
+                ...(each.temporary === true && (manages || viewer.id === each.id)
                     ? { temporary: true }
                     : {}),
             }));
@@ -3436,9 +3441,14 @@ export class PocketApp {
         this.accessChanged();
     }
 
-    /** The owner sets how long a session's approval lasts after `person` last used it (`APPROVAL_DAYS`); null: 7 days. */
-    setApprovalDays(person: string, days: unknown): void {
+    /**
+     * Who manages `person` sets how long a session's approval lasts after they last used it (`APPROVAL_DAYS`); null: 7
+     * days. The owner sets their own too. A user who manages people gives no longer a time than their own.
+     */
+    setApprovalDays(by: User, person: string, days: unknown): void {
         const target = this.config.userById(person);
+
+        this.#requireManages(by, target);
 
         if (target === undefined) {
             throw new HttpError(404, "No such person");
@@ -3446,6 +3456,16 @@ export class PocketApp {
 
         if (days !== null && !(APPROVAL_DAYS as readonly unknown[]).includes(days)) {
             throw new HttpError(400, `days must be one of ${APPROVAL_DAYS.join(", ")}, or null.`);
+        }
+
+        // 0 is "never ends": the longest there is.
+        const length = (value: number) => (value === 0 ? Infinity : value);
+
+        if (
+            by.role !== "owner" &&
+            length(days === null ? approvalDays({}) : (days as number)) > length(approvalDays(by))
+        ) {
+            throw new HttpError(403, "You can only give what you have yourself.");
         }
 
         this.config.updateUser(person, {
@@ -4672,6 +4692,8 @@ export class PocketApp {
                 mayLink: this.policy.mayLink(user),
                 // Does the owner let them invite people (`access.ts` `invites`): the app offers Invite someone only then.
                 invites: this.policy.invites(user),
+                // Do they manage people (`access.ts` `managesPeople`): People shows them each person's settings.
+                managesUsers: this.policy.managesPeople(user),
                 // May they turn keep warm on for a session or pick its time (`access.ts` `keepsWarm`): the session's
                 // card offers those only then.
                 keepsWarm: this.policy.keepsWarm(user),
@@ -5362,17 +5384,48 @@ export class PocketApp {
         return true;
     }
 
-    /** The owner changes what someone may do: their role, or which session they may open. */
-    setAccess(
-        owner: User,
-        userId: string,
-        patch: { role?: unknown; sessions?: unknown; temporary?: unknown },
-    ): void {
-        if (owner.role !== "owner") {
+    /**
+     * `by` may change what `target` may do, or remove them (`access.ts` `mayManagePerson`): the owner, or a user the
+     * owner lets manage people, who changes neither themselves nor another who manages people. What is said of the
+     * owner as a target is each caller's own.
+     */
+    #requireManages(by: User, target: User | undefined): void {
+        if (!this.policy.managesPeople(by)) {
             throw new HttpError(403, "Only the owner can do that");
         }
 
+        if (
+            by.role === "owner" ||
+            target === undefined ||
+            this.policy.mayManagePerson(by, target)
+        ) {
+            return;
+        }
+
+        throw new HttpError(
+            403,
+            target.id === by.id
+                ? "You cannot change your own access."
+                : target.role === "owner"
+                  ? "Only the owner can do that"
+                  : "Only the owner changes someone who manages users.",
+        );
+    }
+
+    /** As `#requireManages`, for a route that changes `person` through something else (`http/api.ts`). */
+    requireManages(by: User, person: string): void {
+        this.#requireManages(by, this.config.userById(person));
+    }
+
+    /** Who manages them changes what someone may do: their role, or which session they may open. */
+    setAccess(
+        by: User,
+        userId: string,
+        patch: { role?: unknown; sessions?: unknown; temporary?: unknown },
+    ): void {
         const target = this.config.userById(userId);
+
+        this.#requireManages(by, target);
 
         if (target === undefined) {
             throw new HttpError(404, "No such person");
@@ -5436,7 +5489,7 @@ export class PocketApp {
                     (each) =>
                         this.#sessions[String(each)] !== undefined &&
                         (target.sessions?.includes(String(each)) === true ||
-                            this.policy.mayShare(owner, String(each))),
+                            this.policy.mayShare(by, String(each))),
                 )
             ) {
                 change.sessions = patch.sessions.map(String);
@@ -5512,7 +5565,12 @@ export class PocketApp {
      * once they link a new one.
      */
     removeAuthenticator(person: string, by: User, code?: string): void {
-        this.authenticators.remove(person, by, code);
+        this.authenticators.remove(
+            person,
+            by,
+            code,
+            by.role === "owner" || this.policy.mayManagePerson(by, { id: person }),
+        );
 
         const target = this.config.userById(person);
 
@@ -5525,10 +5583,8 @@ export class PocketApp {
         this.#peopleChanged();
     }
 
-    async removeUser(owner: User, userId: string): Promise<void> {
-        if (owner.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
+    async removeUser(by: User, userId: string): Promise<void> {
+        this.#requireManages(by, this.config.userById(userId));
 
         if (this.config.userById(userId)?.role === "owner") {
             throw new HttpError(400, "The owner cannot be removed");
@@ -5834,16 +5890,23 @@ export class PocketApp {
         this.accessChanged();
     }
 
-    /** The owner lets guest `person` link computers of their own, or takes that back. */
-    setLinksRunners(owner: User, person: string, on: boolean): void {
-        if (owner.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
-
+    /**
+     * Who manages guest `person` lets them link computers of their own, or takes that back. A user who manages people
+     * gives only what they have themselves, here and in `setInvites` and `setKeepsWarm`: else a second account of
+     * theirs would get more than they have.
+     */
+    setLinksRunners(by: User, person: string, on: boolean): void {
         const target = this.config.userById(person);
+
+        this.#requireManages(by, target);
 
         if (target === undefined || target.role === "owner") {
             throw new HttpError(404, "No such person");
+        }
+
+        // Not more than their own.
+        if (on && !this.policy.mayLink(by)) {
+            throw new HttpError(403, "You can only give what you have yourself.");
         }
 
         this.config.updateUser(person, { linksRunners: on ? true : undefined });
@@ -5852,10 +5915,10 @@ export class PocketApp {
     }
 
     /**
-     * The owner lets guest `person` invite people, or takes that back. Off until the owner turns it on; an invite they
-     * made before stops working with it (`auth.ts` `redeem`).
+     * The owner lets user `person` manage people (`access.ts` `managesPeople`), or takes that back: the owner alone,
+     * never someone who manages people. Only a user who is not limited to one session can.
      */
-    setInvites(owner: User, person: string, on: boolean): void {
+    setManagesUsers(owner: User, person: string, on: boolean): void {
         if (owner.role !== "owner") {
             throw new HttpError(403, "Only the owner can do that");
         }
@@ -5864,6 +5927,36 @@ export class PocketApp {
 
         if (target === undefined || target.role === "owner") {
             throw new HttpError(404, "No such person");
+        }
+
+        if (on && (target.role !== "guest" || target.sessions !== undefined)) {
+            throw new HttpError(
+                400,
+                `${target.name} must be a user who is not limited to one session to manage users.`,
+            );
+        }
+
+        this.config.updateUser(person, { managesUsers: on ? true : undefined });
+        void this.#refreshUser(person);
+        this.#peopleChanged();
+    }
+
+    /**
+     * The owner lets guest `person` invite people, or takes that back. Off until the owner turns it on; an invite they
+     * made before stops working with it (`auth.ts` `redeem`).
+     */
+    setInvites(by: User, person: string, on: boolean): void {
+        const target = this.config.userById(person);
+
+        this.#requireManages(by, target);
+
+        if (target === undefined || target.role === "owner") {
+            throw new HttpError(404, "No such person");
+        }
+
+        // Not more than their own.
+        if (on && !this.policy.invites(by)) {
+            throw new HttpError(403, "You can only give what you have yourself.");
         }
 
         this.config.updateUser(person, { invites: on ? true : undefined });
@@ -5876,15 +5969,18 @@ export class PocketApp {
      * Off until the owner turns it on. Taking it back changes no session: one they turned on stays on until someone
      * turns it off.
      */
-    setKeepsWarm(owner: User, person: string, on: boolean): void {
-        if (owner.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
-
+    setKeepsWarm(by: User, person: string, on: boolean): void {
         const target = this.config.userById(person);
+
+        this.#requireManages(by, target);
 
         if (target === undefined || target.role === "owner") {
             throw new HttpError(404, "No such person");
+        }
+
+        // Not more than their own.
+        if (on && !this.policy.keepsWarm(by)) {
+            throw new HttpError(403, "You can only give what you have yourself.");
         }
 
         this.config.updateUser(person, { keepsWarm: on ? true : undefined });

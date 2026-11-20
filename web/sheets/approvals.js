@@ -15,8 +15,21 @@ export function daysText(days) {
     return days === 0 ? "never ends" : days === 1 ? "1 day" : `${days} days`;
 }
 
-/** The owner picks how long a session's approval lasts after `person` used it. `plain`: the choice without its words. */
+/**
+ * Who manages `person` picks how long a session's approval lasts after they used it. `plain`: the choice without its
+ * words. A user who manages users is offered no longer a time than their own (`app.ts` `setApprovalDays`), beside the
+ * time the person has now.
+ */
 export function ApprovalTime({ person, plain = false }) {
+    const { me, users } = store.state;
+    const now = person.approvalDays ?? 7;
+    // 0 is "never ends": the longest there is.
+    const length = (days) => (days === 0 ? Infinity : days);
+    const own = length(users.find((each) => each.id === me?.id)?.approvalDays ?? 7);
+    const offered =
+        me?.role === "owner"
+            ? APPROVAL_DAYS
+            : APPROVAL_DAYS.filter((days) => days === now || length(days) <= own);
     const set = (days) =>
         attempt(() =>
             api(`users/${encodeURIComponent(person.id)}/approval-days`, { days: Number(days) }),
@@ -25,13 +38,11 @@ export function ApprovalTime({ person, plain = false }) {
     return html`<label class="approval-time small">
         ${!plain && html`<span class="muted">Approvals last</span>`}
         <select
-            value=${String(person.approvalDays ?? 7)}
+            value=${String(now)}
             aria-label=${`How long a session's approval lasts after ${person.name} used it`}
             onChange=${(event) => set(event.currentTarget.value)}
         >
-            ${APPROVAL_DAYS.map(
-                (days) => html`<option value=${String(days)}>${daysText(days)}</option>`,
-            )}
+            ${offered.map((days) => html`<option value=${String(days)}>${daysText(days)}</option>`)}
         </select>
     </label>`;
 }

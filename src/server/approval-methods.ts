@@ -143,9 +143,12 @@ export class Authenticators {
         }
     }
 
-    /** Remove `person`'s authenticator: they need a code to remove it, as to approve. The owner removes anyone's. */
-    remove(person: string, by: Person, code?: string): void {
-        if (by.role !== "owner" || by.id === person) {
+    /**
+     * Remove `person`'s authenticator: they need a code to remove it, as to approve. Who manages them (`manages`: the
+     * owner, when not said) removes it without one, for a lost phone.
+     */
+    remove(person: string, by: Person, code?: string, manages = by.role === "owner"): void {
+        if (!manages || by.id === person) {
             if (this.linked(person) && (code === undefined || !this.check(person, code))) {
                 throw this.refusal(person);
             }

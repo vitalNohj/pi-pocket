@@ -1,7 +1,8 @@
 // People with access to this server, and invites for more. The People sheet is laid out as the Runners sheet is
 // (`pages.js`): everyone on the left, the chosen person's page beside it. The owner manages a person there: what they
 // may do, where they may work (their folders and their sessions on each computer, as in Runners: `access.js`), and
-// their sign-in. Anyone else reads who is here, and has their own things.
+// their sign-in. A user the owner lets manage users (`store.js` `managesPeople`) does the same for the people they may
+// change. Anyone else reads who is here, and has their own things.
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Avatar, avatarBlob } from "../avatar.js";
 import { shortPath } from "../folder-paths.js";
@@ -13,6 +14,7 @@ import {
     canStart,
     closeSheet,
     collab,
+    managesPeople,
     notify,
     openSheet,
     signOut,
@@ -170,9 +172,9 @@ export function InviteSheet({ session = null }) {
               ? `the sessions you started in ${folder} so far, and later ones only when they are shared with them`
               : "the sessions you started so far, and later ones only when they are shared with them";
     // An invite to all of its maker's sessions is the widest there is: the sheet says so, and what follows for an
-    // account that is not temporary. Only the owner makes someone a user (`app.ts` `setAccess`), never they themselves.
+    // account that is not temporary. Who manages users makes someone a user (`app.ts` `setAccess`), never they themselves.
     const all = what === "mine" || !here;
-    const makes = store.state.me?.role === "owner" ? "you make" : "the owner makes";
+    const makes = managesPeople() ? "you make" : "the owner makes";
     // As long as the invite shown lasts (a server that does not say: 15 minutes), or, while one is made, as chosen.
     const lasting = LASTS.find(
         ([each]) => each === (invite ? (invite.minutes ?? 15) : minutes),
@@ -614,9 +616,13 @@ function PinSync() {
     <//>`;
 }
 
+/** What a user who manages users reads under a switch they cannot turn on (`app.ts` `setLinksRunners`). */
+const NOT_YOURS = "Off: you can only give what you have yourself.";
+
 /**
- * What the owner lets a person do everywhere: steer Pi (which takes their own authenticator), link computers of their
- * own, how long their sessions' approvals last, and get in past the one session they were invited to.
+ * What a person is let do everywhere: steer Pi (which takes their own authenticator), link computers of their own, how
+ * long their sessions' approvals last, and get in past the one session they were invited to. The owner sets it, or a
+ * user who manages users; whether they manage users themselves is the owner's alone.
  */
 function Rights({ person }) {
     const sessionTitle = (id) =>
@@ -624,6 +630,14 @@ function Rights({ person }) {
     const change = (patch) =>
         attempt(async () => store.set({ users: await actions.setAccess(person.id, patch) }));
     const steers = person.role === "guest";
+    const { me } = store.state;
+    const owner = me?.role === "owner";
+    // A user who manages users gives only what they have themselves (`app.ts` `setLinksRunners`), and takes back
+    // anything: a switch that is off, for something they lack, is not theirs to turn on.
+    const locked = (theirs, own) => !owner && !theirs && !own;
+    const linkLocked = locked(person.linksRunners === true, me?.mayLink === true);
+    const inviteLocked = locked(person.invites === true, me?.invites === true);
+    const warmLocked = locked(person.keepsWarm === true, me?.keepsWarm === true);
     const only =
         person.sessions &&
         (person.sessions.length > 0
@@ -677,10 +691,15 @@ function Rights({ person }) {
             !person.sessions &&
             html`<${Setting}
                 label="Link runners"
-                hint="On: they link computers of their own as runners, which they are in charge of."
+                hint=${
+                    linkLocked
+                        ? NOT_YOURS
+                        : "On: they link computers of their own as runners, which they are in charge of."
+                }
             >
                 <${Switch}
                     on=${person.linksRunners === true}
+                    disabled=${linkLocked}
                     label=${`${person.name} links runners: ${person.linksRunners ? "on" : "off"}`}
                     onChange=${() =>
                         attempt(() =>
@@ -699,16 +718,50 @@ function Rights({ person }) {
                 hint=${
                     person.invites
                         ? "On: they invite people, who join as viewers and see what the invite shares."
-                        : "Off: only you invite people."
+                        : inviteLocked
+                          ? NOT_YOURS
+                          : owner
+                            ? "Off: only you invite people."
+                            : "Off: they do not invite people."
                 }
             >
                 <${Switch}
                     on=${person.invites === true}
+                    disabled=${inviteLocked}
                     label=${`${person.name} invites people: ${person.invites ? "on" : "off"}`}
                     onChange=${() =>
                         attempt(() =>
                             api(`users/${encodeURIComponent(person.id)}/invites`, {
                                 on: person.invites !== true,
+                            }),
+                        )}
+                />
+            <//>`
+        }
+        ${
+            // The owner's alone to set: who manages users never gives it, to anyone.
+            owner &&
+            steers &&
+            !person.sessions &&
+            html`<${Setting}
+                label="Manage users"
+                hint=${
+                    person.managesUsers
+                        ? "On: they change what other people may do, and remove them. Not you, themselves, or others who manage users."
+                        : "Off: only you manage users."
+                }
+            >
+                <${Switch}
+                    on=${person.managesUsers === true}
+                    label=${`${person.name} manages users: ${person.managesUsers ? "on" : "off"}`}
+                    onChange=${() =>
+                        (person.managesUsers === true ||
+                            confirm(
+                                `Let ${person.name} manage users? They can make viewers users, change what other people may do, and remove them.`,
+                            )) &&
+                        attempt(() =>
+                            api(`users/${encodeURIComponent(person.id)}/manages-users`, {
+                                on: person.managesUsers !== true,
                             }),
                         )}
                 />
@@ -721,11 +774,14 @@ function Rights({ person }) {
                 hint=${
                     person.keepsWarm
                         ? "On: they turn keep warm on for a session and pick its time. Refreshes may be charged."
-                        : "Off: they can only turn keep warm off for a session."
+                        : warmLocked
+                          ? NOT_YOURS
+                          : "Off: they can only turn keep warm off for a session."
                 }
             >
                 <${Switch}
                     on=${person.keepsWarm === true}
+                    disabled=${warmLocked}
                     label=${`${person.name} keeps sessions warm: ${person.keepsWarm ? "on" : "off"}`}
                     onChange=${() =>
                         attempt(() =>
@@ -837,16 +893,24 @@ function Authenticator({ person }) {
  * One person: who they are, then, for the owner, everything about them: what they may do, where they may work (each
  * computer, with their folders and their sessions there as two lists, as in Runners), and their sign-in. Anyone else
  * reads who they are. One's own page is one's account: photo, name, another device of one's own, the authenticator,
- * and Sign out; for the owner, anyone's page signs in a device of theirs.
+ * and Sign out; for the owner, anyone's page signs in a device of theirs. A user who manages users gets the owner's
+ * view of the people they may change (`mine`), without that sign-in link.
  */
 function PersonPage({ person }) {
     const { me } = store.state;
     const owner = me?.role === "owner";
     const myself = person.id === me?.id;
-    // What the owner decides for a person; the owner themselves can do everything.
-    const rules = owner && person.role !== "owner" && collab();
-    // Where a person may work is the owner's to set here. A runner's linker sets it under their computer, in Runners.
-    const places = owner && placesFor(person).length > 0;
+    // Is this person mine to change (`access.ts` `mayManagePerson`): the owner changes everyone else; a user who manages
+    // users changes neither themselves nor another who manages users.
+    const mine =
+        managesPeople() &&
+        person.role !== "owner" &&
+        (owner || (!myself && person.managesUsers !== true));
+    // What is decided for a person; the owner themselves can do everything.
+    const rules = mine && collab();
+    // Where a person may work, on the computers I am in charge of. A runner's linker who manages nobody sets it under
+    // their computer, in Runners.
+    const places = (owner || mine) && placesFor(person).length > 0;
     // One's own approval time counts only on a computer someone else is in charge of.
     const asked = owner && myself && computers().some((each) => !inCharge(each));
 
@@ -867,8 +931,7 @@ function PersonPage({ person }) {
             </h3>
             <div class="sheet-page-actions">
                 ${
-                    owner &&
-                    person.role !== "owner" &&
+                    mine &&
                     html`<button class="button small ghost danger" onClick=${remove}>Remove</button>`
                 }
             </div>
@@ -880,6 +943,7 @@ function PersonPage({ person }) {
                 person.temporary && "temporary account",
                 lastSeen(person),
                 person.linksRunners && "links runners",
+                person.managesUsers && "manages users",
             ]
                 .filter(Boolean)
                 .join(" · ")}
