@@ -55,6 +55,7 @@ import {
     PinsDoc,
     PlanDoc,
     type Schedule,
+    type SessionMeta,
     SessionsDoc,
     STOPPED,
     type SubagentRecord,
@@ -422,6 +423,26 @@ function settle(
 
     return cleared;
 }
+
+/** One session `user` may share, with how one person has it now (`Commands` `sharingWith`). */
+export type SharingRow = {
+    id: number;
+    title: string;
+    computer: string;
+    /** Its computer's name, as the sheets show it. */
+    computerName: string;
+    cwd: string;
+    archived?: true;
+    /**
+     * How they have it: they started it; they were invited to it alone; it is shared with them; they see every session
+     * in its folder; they cannot have it (`reason`); or they do not have it.
+     */
+    state: "started" | "invited" | "shared" | "folder" | "blocked" | "none";
+    /** Can it be shared with them now, and can it be taken back from them by whoever asks. */
+    give: boolean;
+    take: boolean;
+    reason?: string;
+};
 
 /**
  * What a person's message (`requestId`) to subagent `id` came to; undefined when it is not there, or is left in the
@@ -1293,7 +1314,27 @@ export class Commands {
             shared.push(person.id);
         }
 
-        let saved: string[] = shared;
+        return await this.#saveShares(root, user, meta.runner, () => shared);
+    }
+
+    /**
+     * Save whom session `root` is shared with: `next` gives the new list from the list as it is when this is saved, so a
+     * change of one person and a change of another made at the same moment both count. Who is leaving its computer, or
+     * may no longer use it, is not shared with anew. Whoever it takes off hands the tasks they set up on the session to
+     * who is in charge of its computer, in the same save. The checks of who may share, and with whom, are the caller's.
+     */
+    async #saveShares(
+        root: ConversationId,
+        user: User,
+        runner: string | undefined,
+        next: (now: readonly string[]) => string[],
+    ): Promise<string[]> {
+        const app = this.#app;
+        const computer = runner ?? THIS_SERVER;
+        const leaving = (): readonly string[] => app.config.leaving(runner);
+        let saved: string[] = [];
+        // Whom it was shared with as this change was saved, but who is leaving its computer.
+        let was: string[] = [];
         let handed: [string, Map<string, string>][] = [];
 
         await app.harness.commit(async (tx) => {
@@ -1307,8 +1348,11 @@ export class Commands {
             // Checked again here, as it is saved: someone no longer chosen for its computer since the check above is
             // not shared with anew, and never someone who is leaving it.
             const now = [...(item.sharedWith ?? [])];
+            const wanted = next(now);
 
-            saved = shared.filter(
+            was = now.filter((each) => !leaving().includes(each));
+
+            saved = wanted.filter(
                 (each) =>
                     !leaving().includes(each) &&
                     (now.includes(each) || app.policy.mayUse({ id: each }, computer)),
@@ -1341,8 +1385,8 @@ export class Commands {
             app.worksFor(person, lost);
         }
 
-        const added = saved.filter((each) => !before.has(each));
-        const removed = [...before].filter((each) => !saved.includes(each));
+        const added = saved.filter((each) => !was.includes(each));
+        const removed = was.filter((each) => !saved.includes(each));
         const names = (ids: string[]) =>
             ids.map((each) => app.config.userById(each)?.name ?? "someone").join(", ");
 
@@ -1359,6 +1403,247 @@ export class Commands {
         }
 
         return saved;
+    }
+
+    /**
+     * Whom `user` shares sessions with one person at a time: `personId`, as `user` sees them in People. A viewer shares
+     * nothing, and is told so before the person is looked up; someone not in their People is no person to them.
+     */
+    #sharee(user: User, personId: string): User {
+        const app = this.#app;
+
+        if (user.role === "viewer") {
+            throw new HttpError(403, "Viewers cannot share sessions. Ask to be made a user.");
+        }
+
+        const person = app.people(user).some((each) => each.id === personId)
+            ? app.config.userById(personId)
+            : undefined;
+
+        if (person === undefined) {
+            throw new HttpError(404, "No such person.");
+        }
+
+        if (person.id === user.id) {
+            throw new HttpError(400, "That is you: your sessions are yours already.");
+        }
+
+        return person;
+    }
+
+    /** Session `id` when it is `user`'s to share (`access.ts` `mayShare`); one hidden from them is no session to them. */
+    #sharable(user: User, id: ConversationId): { root: ConversationId; meta: SessionMeta } {
+        const app = this.#app;
+        const root = app.rootOf(id);
+        const meta = app.sessionMeta(root);
+
+        if (
+            meta === undefined ||
+            !app.canSee(user, root) ||
+            !app.policy.mayShare(user, String(root))
+        ) {
+            throw new HttpError(404, "Not a session you can share.");
+        }
+
+        return { root, meta };
+    }
+
+    /**
+     * The sessions `user` may share (`access.ts` `mayShare`), each with how `personId` has it now: to share several with
+     * one person at once, and to take several back (`shareWith`). A session on a computer that person is in charge of
+     * is left out: every one there is theirs.
+     */
+    sharingWith(
+        user: User,
+        personId: string,
+    ): { person: { id: string; name: string }; sessions: SharingRow[] } {
+        const app = this.#app;
+        const person = this.#sharee(user, personId);
+
+        return {
+            person: { id: person.id, name: person.name },
+            sessions: app.sessions(user).flatMap((row): SharingRow[] => {
+                const id = row.id as unknown as ConversationId;
+                const meta = app.sessionMeta(id);
+                const computer = row.runner ?? THIS_SERVER;
+
+                if (
+                    row.mayShare !== true ||
+                    meta === undefined ||
+                    app.policy.inCharge(person, computer)
+                ) {
+                    return [];
+                }
+
+                const mine = app.policy.inCharge(user, computer);
+                const name = computer === THIS_SERVER ? "This server" : app.runners.name(computer);
+                const state: SharingRow["state"] =
+                    person.sessions?.includes(String(id)) === true
+                        ? "invited"
+                        : app.policy.starter({ id: String(id), computer, ...meta }) === person.id
+                          ? "started"
+                          : meta.sharedWith?.includes(person.id) === true &&
+                              !app.config.leaving(meta.runner).includes(person.id)
+                            ? "shared"
+                            : app.seesByFolder(person, id)
+                              ? "folder"
+                              : app.policy.mayUse(person, computer)
+                                ? "none"
+                                : "blocked";
+
+                return [
+                    {
+                        id: row.id,
+                        title: meta.title ?? "New session",
+                        computer,
+                        computerName: name,
+                        cwd: meta.cwd,
+                        ...(meta.archived === true ? { archived: true as const } : {}),
+                        state,
+                        // One they have by its folder can be shared with them as well: it stays when the folder goes.
+                        give: state === "none" || state === "folder",
+                        // A share ends for who shared it; one they started, or were invited to alone, only for who is
+                        // in charge of its computer (`app.ts` `revokeSession`).
+                        take:
+                            state === "shared" ||
+                            (mine && (state === "started" || state === "invited")),
+                        ...(state === "blocked"
+                            ? {
+                                  reason:
+                                      person.sessions === undefined
+                                          ? `cannot use ${name}`
+                                          : "invited to one session only",
+                              }
+                            : {}),
+                    },
+                ];
+            }),
+        };
+    }
+
+    /**
+     * `user` shares the sessions in `share` with `personId`, and takes the ones in `revoke` back, each alone: one that is
+     * refused (not theirs to share, a person who cannot use its computer) is named in `refused` with the reason, and the
+     * others are done. Sharing is `shareSession`'s, for that one person, with the others it is shared with left as they
+     * are at that moment. Taking back is `app.ts` `revokeSession` for who is in charge of the session's computer (also
+     * one they started, or were invited to alone); its starter, who is not, ends only a share.
+     */
+    async shareWith(
+        user: User,
+        personId: string,
+        body: { share?: unknown; revoke?: unknown } | null,
+    ): Promise<{
+        person: { id: string; name: string };
+        sessions: SharingRow[];
+        refused: { id: number; reason: string }[];
+    }> {
+        const app = this.#app;
+        const person = this.#sharee(user, personId);
+
+        const ids = (value: unknown, name: string): ConversationId[] => {
+            if (value === undefined) {
+                return [];
+            }
+
+            if (
+                !Array.isArray(value) ||
+                value.length > 500 ||
+                !value.every((each) => Number.isInteger(each) && each >= 0)
+            ) {
+                throw new HttpError(400, `${name} must be a list of session ids.`);
+            }
+
+            return [...new Set(value as number[])] as unknown as ConversationId[];
+        };
+
+        const share = ids(body?.share, "share");
+        const revoke = ids(body?.revoke, "revoke");
+
+        if (share.length + revoke.length === 0) {
+            throw new HttpError(400, "Name the sessions to share, or to revoke.");
+        }
+
+        if (share.some((each) => revoke.includes(each))) {
+            throw new HttpError(400, "A session is either shared or revoked, not both.");
+        }
+
+        const refused: { id: number; reason: string }[] = [];
+        const place = (meta: SessionMeta): string =>
+            meta.runner === undefined ? "this server" : app.runners.name(meta.runner);
+
+        const each = async (id: ConversationId, change: () => Promise<void>): Promise<void> => {
+            try {
+                await change();
+            } catch (error) {
+                if (!(error instanceof HttpError)) {
+                    throw error;
+                }
+
+                refused.push({ id: Number(id), reason: error.message });
+            }
+        };
+
+        for (const id of share) {
+            await each(id, async () => {
+                const { root, meta } = this.#sharable(user, id);
+                const computer = meta.runner ?? THIS_SERVER;
+
+                // Theirs already: every session on a computer they are in charge of, one they started, one shared.
+                if (
+                    app.policy.inCharge(person, computer) ||
+                    app.policy.starter({ id: String(root), computer, ...meta }) === person.id ||
+                    (meta.sharedWith?.includes(person.id) === true &&
+                        !app.config.leaving(meta.runner).includes(person.id))
+                ) {
+                    return;
+                }
+
+                const cannot = new HttpError(
+                    400,
+                    `${person.name} cannot use ${place(meta)}: choose them for it first.`,
+                );
+
+                if (!app.policy.mayUse(person, computer)) {
+                    throw cannot;
+                }
+
+                const saved = await this.#saveShares(root, user, meta.runner, (now) =>
+                    now.includes(person.id) ? [...now] : [...now, person.id],
+                );
+
+                // No longer chosen for it as it was saved.
+                if (!saved.includes(person.id)) {
+                    throw cannot;
+                }
+            });
+        }
+
+        for (const id of revoke) {
+            await each(id, async () => {
+                const { root, meta } = this.#sharable(user, id);
+
+                if (app.policy.inCharge(user, meta.runner ?? THIS_SERVER)) {
+                    await app.revokeSession(user, root, person.id);
+
+                    return;
+                }
+
+                if (meta.sharedWith?.includes(person.id) !== true) {
+                    throw new HttpError(
+                        400,
+                        person.sessions?.includes(String(root)) === true
+                            ? `Only who is in charge of ${place(meta)} takes a session from someone invited to it alone.`
+                            : `${person.name} does not have that session from you.`,
+                    );
+                }
+
+                await this.#saveShares(root, user, meta.runner, (now) =>
+                    now.filter((other) => other !== person.id),
+                );
+            });
+        }
+
+        return { ...this.sharingWith(user, personId), refused };
     }
 
     /**

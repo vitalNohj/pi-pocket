@@ -715,6 +715,24 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, app.people(user));
         }
 
+        // The sessions I may share, each with how one person has it now: to share several with them at once, or take
+        // several back (`commands.ts` `sharingWith`, `shareWith`). For whoever prompts; a viewer shares nothing.
+        if (first === "users" && second !== undefined && third === "sharing" && method === "GET") {
+            return json(response, 200, app.commands.sharingWith(user, second));
+        }
+
+        if (first === "users" && second !== undefined && third === "sharing" && method === "POST") {
+            return json(
+                response,
+                200,
+                await app.commands.shareWith(
+                    user,
+                    second,
+                    await readJson<{ share?: unknown; revoke?: unknown } | null>(request),
+                ),
+            );
+        }
+
         if (first === "users" && second !== undefined && third === undefined && method === "POST") {
             app.setAccess(user, second, await readJson(request));
 

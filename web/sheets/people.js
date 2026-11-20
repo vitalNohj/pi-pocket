@@ -27,6 +27,7 @@ import { AccessRow, choosable, computers, inCharge, loadComputers } from "./acce
 import { ApprovalTime, TasksExpire } from "./approvals.js";
 import { MyAuthenticator } from "./authenticator.js";
 import { PageItem, Pages } from "./pages.js";
+import { PersonSessions } from "./person-sessions.js";
 import { canShare } from "./session-share.js";
 
 /** How long an invite may last: minutes, its button, and how the help text says it. */
@@ -922,11 +923,12 @@ function placesFor(person) {
 /**
  * Where a person may work, for the owner: each computer, whether they may use it, and under it the folders given to
  * them there and the sessions they have there, as two lists (`access.js` `AccessRow`). The same record as that
- * computer's People in Runners: a change in one is a change in the other.
+ * computer's People in Runners: a change in one is a change in the other. A runner's linker who manages nobody gets
+ * the same of their own runners, from Invite to your runner (`Reach`).
  */
-function Places({ person }) {
+function Places({ person, title = "Where they may work" }) {
     return html`<div class="group">
-        <div class="group-title">Where they may work</div>
+        <div class="group-title">${title}</div>
         ${placesFor(person).map(
             (computer) => html`<${AccessRow}
                 key=${computer.id}
@@ -939,6 +941,50 @@ function Places({ person }) {
                 ></span>`}
             />`,
         )}
+    </div>`;
+}
+
+/**
+ * What whoever prompts does with another person, on that person's page: Invite to your session opens the sessions that
+ * are theirs to share, to check several and share them at once or take them back (`person-sessions.js`); Invite to your
+ * runner opens the runners they are in charge of, with that person's switch for each (`Places`). A button with nothing
+ * behind it is greyed out, and a line says why. `placed`: the page shows Where they may work already, so the second
+ * button would only repeat it.
+ */
+function Reach({ person, placed }) {
+    const [open, setOpen] = useState(null);
+    const sessions = store.state.sessions.some((each) => each.mayShare === true);
+    const runners = placesFor(person).length > 0;
+    const none = [
+        !sessions && "You have no session of your own to share.",
+        !placed && !runners && "You have no runner of your own.",
+    ].filter(Boolean);
+
+    const button = (which, label, enabled) =>
+        html`<button
+            class="button small"
+            aria-expanded=${open === which}
+            disabled=${!enabled}
+            onClick=${() => setOpen(open === which ? null : which)}
+        >
+            ${label}
+        </button>`;
+
+    return html`<div class="reach">
+        <div class="row reach-buttons">
+            ${button("sessions", "Invite to your session", sessions)}
+            ${!placed && button("runner", "Invite to your runner", runners)}
+        </div>
+        ${none.length > 0 && html`<div class="muted small">${none.join(" ")}</div>`}
+        ${
+            open === "sessions" &&
+            sessions &&
+            html`<${PersonSessions}
+                person=${person}
+                turnOn=${placed ? "under Where they may work" : "with Invite to your runner"}
+            />`
+        }
+        ${open === "runner" && runners && html`<${Places} person=${person} title="Your runners" />`}
     </div>`;
 }
 
@@ -986,7 +1032,8 @@ function Authenticator({ person }) {
  * computer, with their folders and their sessions there as two lists, as in Runners), and their sign-in. Anyone else
  * reads who they are. One's own page is one's account: photo, name, another device of one's own, the authenticator,
  * and Sign out; for the owner, anyone's page signs in a device of theirs. A user who manages users gets the owner's
- * view of the people they may change (`mine`), without that sign-in link.
+ * view of the people they may change (`mine`), without that sign-in link. Whoever prompts gets, on another person's
+ * page, what they do with them (`Reach`): their own sessions and runners, for that person.
  */
 function PersonPage({ person }) {
     const { me } = store.state;
@@ -1005,6 +1052,8 @@ function PersonPage({ person }) {
     const places = (owner || mine) && placesFor(person).length > 0;
     // One's own approval time counts only on a computer someone else is in charge of.
     const asked = owner && myself && computers().some((each) => !inCharge(each));
+    // What I do with them: for whoever prompts and starts sessions, on someone else's page.
+    const reach = !myself && collab() && (owner || me?.role === "guest") && !me?.sessions;
 
     const remove = () =>
         confirm(
@@ -1041,6 +1090,7 @@ function PersonPage({ person }) {
                 .join(" · ")}
         </div>
         ${mine && person.request && html`<${Asked} person=${person} />`}
+        ${reach && html`<${Reach} person=${person} placed=${places} />`}
         ${myself && html`<${MyPhoto} />`}
         ${myself && html`<${MyName} key=${person.name} person=${person} />`}
         ${myself && person.role === "viewer" && html`<${RequestAccess} person=${person} />`}
