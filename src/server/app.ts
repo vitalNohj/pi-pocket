@@ -4151,10 +4151,17 @@ export class PocketApp {
      * What `requireDriver` allowed, checked again now, without a read or a wait: `user` still sees and steers session
      * `id`, has the wheel, and its approval is live (a task: its tasks may run). A command prepares between its check and
      * its save, and the person can lose any of these meanwhile; this runs where the save happens (`admission`).
+     * `stop`: what `requireTurn` allowed instead, for a save that stops work: who steers and has the wheel, with no
+     * approval asked, also on a blocked computer.
      */
-    recheck(id: ConversationId, user: User, task?: boolean): void {
+    recheck(id: ConversationId, user: User, task?: boolean, stop?: boolean): void {
         this.requireSteer(user, id);
         this.#requireWheel(this.#turns.get(String(this.rootOf(id))), user);
+
+        if (stop === true) {
+            return;
+        }
+
         this.#requireUnblocked(id);
 
         if (task !== true) {
@@ -4171,15 +4178,15 @@ export class PocketApp {
      * The context for a save that `user` makes in session `id`: Pi Durable reads its signal where the queued save
      * changes anything, and `recheck` (then `also`) runs on that read (`admission.ts`). Refused there, nothing is saved.
      * Only for the save itself: what follows it (waiting for the run, a second save that completes the first) uses the
-     * plain context.
+     * plain context. `stop`: the save stops work, so it follows `requireTurn`, not `requireDriver`.
      */
     admission(
         id: ConversationId,
         user: User,
-        options: { task?: boolean; parent?: Context; also?: () => void } = {},
+        options: { task?: boolean; stop?: boolean; parent?: Context; also?: () => void } = {},
     ): Context {
         return checkedContext(options.parent ?? context, () => {
-            this.recheck(id, user, options.task);
+            this.recheck(id, user, options.task, options.stop);
             options.also?.();
         });
     }

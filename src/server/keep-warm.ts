@@ -306,23 +306,39 @@ export class KeepWarm {
         await this.#deps.settingsChanged();
     }
 
-    /**
-     * Validate and write a session's choice in its update commit. The caller checks access before the commit. Anyone
-     * who can steer may turn it off; only who `may` (the owner, and the people the owner lets: `access.ts`
-     * `keepsWarm`) turns it on or picks a time, since a refresh may be charged. Another person's Default must not turn
-     * on a session that is off.
-     */
-    applyChoice(_id: ConversationId, choice: unknown, meta: SessionMeta, may: boolean): void {
-        if (meta.pip !== undefined) {
-            throw new HttpError(404, "Not a session");
-        }
-
+    /** A session's choice as asked: Default or one of the times. Anything else is refused. */
+    choiceOf(choice: unknown): KeepWarmTime | "default" {
         if (choice !== "default" && !isKeepWarmTime(choice)) {
             throw new HttpError(
                 400,
                 'keepWarm must be "default", 0, "break-even", 0.5, 1, 2, 4, or 8',
             );
         }
+
+        return choice;
+    }
+
+    /**
+     * Does a session's `choice` only stop its refreshes: Off, or Default while the default is Off. Stopping spends
+     * nothing and makes Pi do nothing, so it needs no approval (`commands.ts` `updateSession`); any other choice is a
+     * change of the session's settings.
+     */
+    stops(choice: KeepWarmTime | "default"): boolean {
+        return choice === 0 || (choice === "default" && this.#deps.settings().hours === 0);
+    }
+
+    /**
+     * Validate and write a session's choice in its update commit. The caller checks access before the commit. Anyone
+     * who can steer may turn it off; only who `may` (the owner, and the people the owner lets: `access.ts`
+     * `keepsWarm`) turns it on or picks a time, since a refresh may be charged. Another person's Default must not turn
+     * on a session that is off.
+     */
+    applyChoice(_id: ConversationId, asked: unknown, meta: SessionMeta, may: boolean): void {
+        if (meta.pip !== undefined) {
+            throw new HttpError(404, "Not a session");
+        }
+
+        const choice = this.choiceOf(asked);
 
         // Who may not keep sessions warm may only turn it off: "default" too, when the default is Off or is the
         // session's time already.

@@ -1415,3 +1415,130 @@ test("turning on tasks expire gives a session that never had an approval its wee
     assert.deepEqual(app.config.taskReminders, {});
     assert.equal(app.tasksMayRun(id), true);
 });
+
+/** Hold the next call of `app[method]` after its own check passed, until `go`: what changes meanwhile meets the save. */
+function pauseAfter(
+    t: TestContext,
+    method: "requireDriver" | "requireTurn",
+): { reached: Promise<void>; go: () => void } {
+    const original = app[method].bind(app) as (...args: unknown[]) => Promise<void>;
+    let go!: () => void;
+    let reach!: () => void;
+    const gate = new Promise<void>((resolve) => (go = resolve));
+    const reached = new Promise<void>((resolve) => (reach = resolve));
+    let held = false;
+
+    t.mock.method(app, method, async (...args: unknown[]) => {
+        await original(...args);
+
+        if (!held) {
+            held = true;
+            reach();
+            await gate;
+        }
+    });
+
+    return { reached, go };
+}
+
+test("a rename and keep warm follow the wheel and the lock; archiving and turning keep warm off need the wheel and never wait", async (t) => {
+    const id = await sharedSession();
+    const meta = () => app.sessionMeta(id)!;
+    const first = { ...meta() };
+
+    app.setKeepsWarm(owner(app), gale.id, true);
+
+    try {
+        // Take turns: Alex drives, so Gale changes nothing of the session, and stops nothing.
+        await app.collab.turns(id, alex, { action: "on" });
+
+        for (const patch of [
+            { title: "Hers" },
+            { keepWarm: 1 },
+            { keepWarm: 0 },
+            { archived: true },
+        ]) {
+            await assert.rejects(
+                app.commands.updateSession(id, gale, patch),
+                /Alex is driving/,
+                JSON.stringify(patch),
+            );
+        }
+
+        assert.equal((await call(gale, `sessions/${id}`, { title: "Hers" })).status, 409);
+        assert.equal(meta().title, first.title);
+        assert.equal(meta().keepWarm, first.keepWarm);
+        assert.notEqual(meta().archived, true);
+        // Who drives does.
+        await app.commands.updateSession(id, alex, { title: "His" });
+        assert.equal(meta().title, "His");
+        await app.collab.turns(id, alex, { action: "off" });
+
+        // Locked: a rename is a change of the session's settings, and waits for a renewal.
+        app.folderApprovals.revoke(String(id), true);
+        assert.equal(app.policy.steer(gale, String(id)), "locked");
+
+        const renaming = app.commands.updateSession(id, gale, { title: "Hers" });
+        const forName = await renewing(gale);
+
+        assert.equal(meta().title, "His", "not renamed while it waits");
+        await app.folderRequests.approve(owner(app), forName.id, { method: "owner" });
+        await renaming;
+        assert.equal(meta().title, "Hers");
+
+        // And so does keeping it warm, which spends.
+        app.folderApprovals.revoke(String(id), true);
+
+        const warming = app.commands.updateSession(id, gale, { keepWarm: 1 });
+        const forWarm = await renewing(gale);
+
+        assert.notEqual(meta().keepWarm, 1, "not kept warm while it waits");
+        await app.folderRequests.approve(owner(app), forWarm.id, { method: "owner" });
+        await warming;
+        assert.equal(meta().keepWarm, 1);
+
+        // Locked again: turning keep warm off and archiving stop things, so they wait for nothing and ask nobody.
+        app.folderApprovals.revoke(String(id), true);
+        await app.commands.updateSession(id, gale, { keepWarm: 0 });
+        assert.equal(meta().keepWarm, 0);
+        await app.commands.updateSession(id, gale, { archived: true });
+        assert.equal(meta().archived, true);
+        await app.commands.updateSession(id, gale, { archived: false });
+        assert.notEqual(meta().archived, true);
+        assert.deepEqual(app.folderRequests.list(owner(app)), [], "stopping asked nobody");
+        assert.equal(app.policy.steer(gale, String(id)), "locked", "and renewed nothing");
+
+        // Checked again where it is saved. The wheel goes to Alex while Gale's rename prepares: it is not saved.
+        await app.renewApproval(alex, id, nextCode(alexSecret));
+
+        const wheel = pauseAfter(t, "requireDriver");
+        const late = assert.rejects(
+            app.commands.updateSession(id, gale, { title: "Late" }),
+            /Alex is driving/,
+        );
+
+        await wheel.reached;
+        await app.collab.turns(id, alex, { action: "on" });
+        wheel.go();
+        await late;
+        assert.equal(meta().title, "Hers");
+        await app.collab.turns(id, alex, { action: "off" });
+        t.mock.restoreAll();
+
+        // The session stops being shared with Gale while her archive prepares: it is not archived.
+        const share = pauseAfter(t, "requireTurn");
+        const gone = assert.rejects(
+            app.commands.updateSession(id, gale, { archived: true }),
+            /not shared with you/,
+        );
+
+        await share.reached;
+        await app.commands.shareSession(id, alex, []);
+        share.go();
+        await gone;
+        assert.notEqual(meta().archived, true);
+    } finally {
+        t.mock.restoreAll();
+        app.setKeepsWarm(owner(app), gale.id, false);
+    }
+});

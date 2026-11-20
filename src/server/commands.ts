@@ -1335,6 +1335,13 @@ export class Commands {
         return saved;
     }
 
+    /**
+     * Rename a session, archive it or bring it back, or set its keep warm time. A new name and a keep warm time are
+     * changes of the session's settings: only who drives makes them while people take turns, and a locked session's
+     * approval is renewed first (`requireDriver`). Archiving, bringing back, and turning keep warm off stop things and
+     * make Pi do nothing: they need the wheel, and never wait for an approval (`requireTurn`). Either way it is saved
+     * only for who may still do it then.
+     */
     async updateSession(
         id: ConversationId,
         user: User,
@@ -1349,7 +1356,20 @@ export class Commands {
             throw new HttpError(400, "archived must be true or false");
         }
 
+        // A choice that is none is refused before anything waits.
+        const warm =
+            patch.keepWarm === undefined ? undefined : app.keepWarm.choiceOf(patch.keepWarm);
+        const stops = patch.title === undefined && (warm === undefined || app.keepWarm.stops(warm));
+
+        if (stops) {
+            await app.requireTurn(id, user);
+        } else {
+            await app.requireDriver(id, user);
+        }
+
         const before = app.sessionMeta(id);
+        // Checked again where it is saved, as the kind of change it is.
+        const saving = app.admission(id, user, { stop: stops });
         let warmText: string | undefined;
 
         await app.harness.commit(async (tx) => {
@@ -1384,7 +1404,7 @@ export class Commands {
             if (patch.archived !== undefined) {
                 meta.archived = patch.archived;
             }
-        }, context);
+        }, saving);
         const title = patch.title === undefined ? undefined : oneLine(patch.title);
 
         if (warmText !== undefined) {
