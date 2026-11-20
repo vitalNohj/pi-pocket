@@ -291,6 +291,85 @@ test("a session moved out of a folder someone accesses all sessions in: their ta
     assert.equal(await hookBy("vera-shared"), vera.id);
 });
 
+test("a session moved by someone else out of its starter's folders is no longer theirs, with their tasks on it, in the save of the move", async () => {
+    const deeper = folder("hand-over-second/deeper");
+    const third = folder("hand-over-third");
+
+    assert.deepEqual(given(vera), [second], "the one folder given to her");
+
+    const out = await sessionIn(second, vera);
+    const inside = await sessionIn(second, vera);
+    // One in a folder that was never hers to work in: a move is not what takes it.
+    const stray = await sessionIn(first, vera);
+
+    await hookOf("hers-out", vera, out);
+    await hookOf("hers-inside", vera, inside);
+    await hookOf("hers-stray", vera, stray);
+    assert.equal(app.policy.maySteer(vera, String(out)), true);
+
+    // Every save of the move: never one that leaves it in the other folder and still hers, or her task still hers.
+    let record: { cwd?: string; createdBy?: string } | undefined = app.sessionMeta(out);
+    let by: string | undefined = vera.id;
+    const apart: string[] = [];
+    const watching = app.harness.observeCommits({
+        advance: (publication) => {
+            for (const change of publication.changes) {
+                const each = change as unknown as {
+                    type: string;
+                    record?: { kind: string };
+                    value?: {
+                        items?: Record<string, { cwd?: string; createdBy?: string; by?: string }>;
+                    };
+                };
+
+                if (each.type !== "document" || each.value === undefined) {
+                    continue;
+                }
+
+                if (each.record?.kind === SessionsDoc.definition.kind) {
+                    record = each.value.items?.[String(out)];
+                } else if (each.record?.kind === HooksDoc.definition.kind) {
+                    by = each.value.items?.["hers-out"]?.by;
+                }
+            }
+
+            if (record?.cwd === first && (record.createdBy === vera.id || by === vera.id)) {
+                apart.push("the session moved, and it or her task on it is still hers");
+            }
+        },
+        end: () => {},
+    });
+
+    try {
+        await app.commands.configure(out, owner(app), { cwd: first });
+    } finally {
+        watching.detach();
+    }
+
+    assert.equal(app.sessionMeta(out)?.cwd, first);
+    assert.equal(starterOf(out), owner(app).id, "it is who is in charge's");
+    assert.equal(app.canSee(vera, out), false, "she left it");
+    assert.equal(await hookBy("hers-out"), owner(app).id, "and so did her task on it");
+    assert.deepEqual(apart, [], "in the save of the move");
+    assert.deepEqual(owed(), [], "nothing is left for a later start");
+
+    // Moved inside the folder given to her, it stays hers.
+    await app.commands.configure(inside, owner(app), { cwd: deeper });
+    assert.equal(starterOf(inside), vera.id);
+    assert.equal(app.policy.maySteer(vera, String(inside)), true);
+    assert.equal(await hookBy("hers-inside"), vera.id);
+
+    // One she could not work in before the move either keeps what it had: the move took nothing from her.
+    await app.commands.configure(stray, owner(app), { cwd: third });
+    assert.equal(starterOf(stray), vera.id);
+    assert.equal(await hookBy("hers-stray"), vera.id);
+
+    // Moved by herself, to a folder that is hers: nothing changes hands.
+    await app.commands.configure(inside, vera, { cwd: second });
+    assert.equal(starterOf(inside), vera.id);
+    assert.equal(await hookBy("hers-inside"), vera.id);
+});
+
 test("a move is one save: where Pi works and the session's record never differ", async () => {
     const id = await sessionIn(first, owner(app));
     const { moves, apart } = await watched(id, () =>

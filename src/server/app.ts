@@ -4031,11 +4031,7 @@ export class PocketApp {
                     continue;
                 }
 
-                const to = this.policy.inChargeOf(id);
-
-                meta.createdBy = to;
-                meta.sharedWith = meta.sharedWith?.filter((each) => each !== to && each !== person);
-                moved.set(id, to);
+                moved.set(id, this.#takeFrom(meta, id, person));
             }
 
             lost = await this.handTasks(tx, sessions, person, {
@@ -4183,11 +4179,31 @@ export class PocketApp {
     }
 
     /**
-     * In an open commit that moved top session `id` to another folder (`sessions`: as this commit leaves them): whoever
-     * had it by its folder alone (`access.ts` `seesFolder`) and no longer does hands the tasks they set up on it to who
-     * is in charge of its computer (`handTasks`), in this same save: nothing that cuts a move short leaves a task with
-     * someone who lost the session. Who still has it another way, or by its new folder too, keeps theirs. Returns, for
-     * each such person, what `handTasks` does, for `worksFor` once the commit is saved.
+     * In an open commit: session `id` (`meta`, its record there) is no longer `person`'s, who started it. It is now
+     * that of who is in charge of its computer, who is returned, and it is shared with neither of them.
+     */
+    #takeFrom(meta: SessionMeta, id: string, person: string): string {
+        const to = this.policy.inChargeOf(id);
+
+        meta.createdBy = to;
+        meta.sharedWith = meta.sharedWith?.filter((each) => each !== to && each !== person);
+
+        return to;
+    }
+
+    /**
+     * In an open commit that moved top session `id` to another folder (`sessions`: as this commit leaves them), what
+     * follows from its folder, in this same save: nothing that cuts a move short leaves a session or a task with
+     * someone who lost it.
+     *
+     * Its starter, moved by someone else out of the folders given to them: the session is no longer theirs to use, as
+     * with a folder taken back (`handOver`), so it and their tasks on it go to who is in charge of its computer. Only
+     * when the move is what took it: a starter who could not work in its folder before either keeps what they had.
+     *
+     * Whoever had it by its folder alone (`access.ts` `seesFolder`) and no longer does hands the tasks they set up on
+     * it to who is in charge (`handTasks`). Who still has it another way, or by its new folder too, keeps theirs.
+     *
+     * Returns, for each such person, what `handTasks` does, for `worksFor` once the commit is saved.
      */
     async handMoved(
         tx: Tx,
@@ -4198,19 +4214,43 @@ export class PocketApp {
         const now = sessions.items[id];
         const handed: [string, Map<string, string>][] = [];
 
-        if (
-            was === undefined ||
-            now === undefined ||
-            was.pip !== undefined ||
-            this.#accessFolder(was) === this.#accessFolder(now)
-        ) {
+        if (was === undefined || now === undefined || was.pip !== undefined) {
             return handed;
+        }
+
+        const computer = was.runner ?? THIS_SERVER;
+        const from = this.#accessFolder(was);
+        const to = this.#accessFolder(now);
+
+        if (from === to) {
+            return handed;
+        }
+
+        const starter = now.createdBy;
+
+        if (
+            starter !== undefined &&
+            this.policy.mayUseFolder({ id: starter }, computer, from) &&
+            !this.policy.mayUseFolder({ id: starter }, computer, to)
+        ) {
+            const charge = this.#takeFrom(now, id, starter);
+
+            if (charge !== starter) {
+                handed.push([
+                    starter,
+                    await this.handTasks(tx, sessions, starter, {
+                        only: id,
+                        moved: new Map([[id, charge]]),
+                    }),
+                ]);
+            }
         }
 
         for (const person of this.config.users) {
             // Only someone who accesses all sessions in a folder there can lose a session by its move. Whether they had
             // it is asked of the record as it is published: the move is not saved yet.
             if (
+                person.id === starter ||
                 this.config.seenFolders(was.runner, person.id).length === 0 ||
                 !this.policy.maySee(person, id)
             ) {
