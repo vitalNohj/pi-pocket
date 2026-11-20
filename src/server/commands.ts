@@ -435,9 +435,10 @@ export type SharingRow = {
     archived?: true;
     /**
      * How they have it: they started it; they were invited to it alone; it is shared with them; they see every session
-     * in its folder; they cannot have it (`reason`); or they do not have it.
+     * in its folder; they are in charge of its computer, where every session is theirs (told only of the one session
+     * asked for); they cannot have it (`reason`); or they do not have it.
      */
-    state: "started" | "invited" | "shared" | "folder" | "blocked" | "none";
+    state: "started" | "invited" | "shared" | "folder" | "charge" | "blocked" | "none";
     /** Can it be shared with them now, and can it be taken back from them by whoever asks. */
     give: boolean;
     take: boolean;
@@ -1451,14 +1452,18 @@ export class Commands {
     /**
      * The sessions `user` may share (`access.ts` `mayShare`), each with how `personId` has it now: to share several with
      * one person at once, and to take several back (`shareWith`). A session on a computer that person is in charge of
-     * is left out: every one there is theirs.
+     * is left out: every one there is theirs. `only`: the one session asked about (its top session), as a person's page
+     * in People asks about the session open behind it: no other is told, and that one is told also when the person is
+     * in charge of its computer (`charge`), so the page can say why it has nothing to give.
      */
     sharingWith(
         user: User,
         personId: string,
+        only?: ConversationId,
     ): { person: { id: string; name: string }; sessions: SharingRow[] } {
         const app = this.#app;
         const person = this.#sharee(user, personId);
+        const one = only === undefined ? undefined : Number(app.rootOf(only));
 
         return {
             person: { id: person.id, name: person.name },
@@ -1466,30 +1471,33 @@ export class Commands {
                 const id = row.id as unknown as ConversationId;
                 const meta = app.sessionMeta(id);
                 const computer = row.runner ?? THIS_SERVER;
+                const theirs = app.policy.inCharge(person, computer);
 
                 if (
+                    (one !== undefined && row.id !== one) ||
                     row.mayShare !== true ||
                     meta === undefined ||
-                    app.policy.inCharge(person, computer)
+                    (theirs && one === undefined)
                 ) {
                     return [];
                 }
 
                 const mine = app.policy.inCharge(user, computer);
                 const name = computer === THIS_SERVER ? "This server" : app.runners.name(computer);
-                const state: SharingRow["state"] =
-                    person.sessions?.includes(String(id)) === true
-                        ? "invited"
-                        : app.policy.starter({ id: String(id), computer, ...meta }) === person.id
-                          ? "started"
-                          : meta.sharedWith?.includes(person.id) === true &&
-                              !app.config.leaving(meta.runner).includes(person.id)
-                            ? "shared"
-                            : app.seesByFolder(person, id)
-                              ? "folder"
-                              : app.policy.mayUse(person, computer)
-                                ? "none"
-                                : "blocked";
+                const state: SharingRow["state"] = theirs
+                    ? "charge"
+                    : person.sessions?.includes(String(id)) === true
+                      ? "invited"
+                      : app.policy.starter({ id: String(id), computer, ...meta }) === person.id
+                        ? "started"
+                        : meta.sharedWith?.includes(person.id) === true &&
+                            !app.config.leaving(meta.runner).includes(person.id)
+                          ? "shared"
+                          : app.seesByFolder(person, id)
+                            ? "folder"
+                            : app.policy.mayUse(person, computer)
+                              ? "none"
+                              : "blocked";
 
                 return [
                     {
@@ -1526,12 +1534,14 @@ export class Commands {
      * refused (not theirs to share, a person who cannot use its computer) is named in `refused` with the reason, and the
      * others are done. Sharing is `shareSession`'s, for that one person, with the others it is shared with left as they
      * are at that moment. Taking back is `app.ts` `revokeSession` for who is in charge of the session's computer (also
-     * one they started, or were invited to alone); its starter, who is not, ends only a share.
+     * one they started, or were invited to alone); its starter, who is not, ends only a share. `only`: the answer tells
+     * of that one session, as `sharingWith` does.
      */
     async shareWith(
         user: User,
         personId: string,
         body: { share?: unknown; revoke?: unknown } | null,
+        only?: ConversationId,
     ): Promise<{
         person: { id: string; name: string };
         sessions: SharingRow[];
@@ -1643,7 +1653,7 @@ export class Commands {
             });
         }
 
-        return { ...this.sharingWith(user, personId), refused };
+        return { ...this.sharingWith(user, personId, only), refused };
     }
 
     /**

@@ -449,6 +449,9 @@ export interface OpenOptions {
     appRoot?: string;
 }
 
+/** What a hello tells a person of their rights on computers (`PocketApp` `#rightsOf`). */
+type Rights = { mayStart: boolean; mayInvite: boolean; wheel: string[]; allows: string[] };
+
 export class PocketApp {
     readonly config: ConfigStore;
     /** Each person's own authenticator app, and the ways to approve with it (`approval-methods.ts`). */
@@ -3035,6 +3038,7 @@ export class PocketApp {
                 return ownerId();
             },
             person: (id) => this.config.userById(id),
+            computers: () => [THIS_SERVER, ...this.config.runners.map((each) => each.id)],
             computer: (id) => {
                 if (id === THIS_SERVER) {
                     const server = this.config.server;
@@ -4738,13 +4742,15 @@ export class PocketApp {
             folderApprovals: this.sessionApprovals(user),
             user: {
                 ...helloUser(user),
-                // May they start sessions on this server (`access.ts` `mayStart`): the app offers New only then.
-                // And the computers where they may take the wheel from a driver (`wheel`), or allow a call their own
-                // message led to (`allows`): those they are in charge of, and those where they were given it.
+                // May they start sessions on this server (`access.ts` `mayStart`): the app offers New only then. May
+                // they invite someone new (`mayInvite`): it offers Invite someone only then. And the computers where
+                // they may take the wheel from a driver (`wheel`), or allow a call their own message led to
+                // (`allows`): those they are in charge of, and those where they were given it.
                 ...this.#tellRights(user),
                 // May they link computers of their own (`access.ts` `mayLink`): the Runners sheet offers it.
                 mayLink: this.policy.mayLink(user),
-                // Does the owner let them invite people (`access.ts` `invites`): the app offers Invite someone only then.
+                // Does the owner let them invite people (`access.ts` `invites`): a session's menu offers an invite to
+                // it alone only then, to who may share it.
                 invites: this.policy.invites(user),
                 // Do they manage people (`access.ts` `managesPeople`): People shows them each person's settings.
                 managesUsers: this.policy.managesPeople(user),
@@ -6183,21 +6189,24 @@ export class PocketApp {
     readonly #rightsTold = new Map<string, string>();
 
     /**
-     * What a hello tells `user` of computers: may they start sessions on this server, and the computers where they may
-     * take the wheel from a driver (`access.ts` `overridesTurns`) or allow their own calls (`allowsOwn`).
+     * What a hello tells `user` of computers: may they start sessions on this server, may they invite someone new to
+     * their sessions (`access.ts` `mayInvite`: they start sessions on some computer, and the owner lets them invite),
+     * and the computers where they may take the wheel from a driver (`overridesTurns`) or allow their own calls
+     * (`allowsOwn`).
      */
-    #rightsOf(user: User): { mayStart: boolean; wheel: string[]; allows: string[] } {
+    #rightsOf(user: User): Rights {
         const computers = [THIS_SERVER, ...this.config.runners.map((each) => each.id)];
 
         return {
             mayStart: this.policy.mayStart(user, THIS_SERVER),
+            mayInvite: this.policy.mayInvite(user),
             wheel: computers.filter((id) => this.policy.overridesTurns(user, id)),
             allows: computers.filter((id) => this.policy.allowsOwn(user, id)),
         };
     }
 
     /** `#rightsOf` for a hello, remembered: `accessChanged` sends a new hello once it no longer holds. */
-    #tellRights(user: User): { mayStart: boolean; wheel: string[]; allows: string[] } {
+    #tellRights(user: User): Rights {
         const rights = this.#rightsOf(user);
 
         this.#rightsTold.set(user.id, JSON.stringify(rights));

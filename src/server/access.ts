@@ -87,6 +87,8 @@ export interface AccessFacts {
     /** The current record of a person; undefined once removed. */
     person(id: string): Person | undefined;
     computer(id: string): Computer | undefined;
+    /** The id of every computer: `THIS_SERVER`, then each linked runner. */
+    computers(): readonly string[];
     /** The facts of the top session of `id`, whichever session of its tree `id` names. */
     session(id: string): SessionFacts | undefined;
     /** Whether session `id`'s approval (`folder-approvals.ts`) is live: someone used it within their approval time. */
@@ -367,9 +369,11 @@ export class AccessPolicy {
 
     /**
      * May `person` invite someone new: only who the owner lets (`invites`), and then to session `session` alone, who
-     * may share it (`mayShare`); to every session, who steers on this server or a runner they link. Every invite starts
-     * as a viewer (`auth.ts`), so it gives no more. Another device of one's own takes a device link (`auth.ts`
-     * `createDeviceLink`), which anyone makes for themselves.
+     * may share it (`mayShare`); to their own sessions, or a folder's, who may start sessions on some computer: this
+     * server or a runner, their own or one they were chosen for. Not on this server alone: an invite gives only what
+     * its maker has (`app.ts` `welcome`: the sessions they started, and a computer only where they are in charge of
+     * it), wherever that is. Every invite starts as a viewer (`auth.ts`), so it gives no more. Another device of
+     * one's own takes a device link (`auth.ts` `createDeviceLink`), which anyone makes for themselves.
      */
     mayInvite(person: Pick<Person, "id">, session?: string): boolean {
         const current = this.#current(person);
@@ -386,7 +390,8 @@ export class AccessPolicy {
             current !== undefined &&
             current.sessions === undefined &&
             current.role !== "viewer" &&
-            (current.role === "owner" || this.mayStart(current, THIS_SERVER))
+            (current.role === "owner" ||
+                this.#facts.computers().some((id) => this.mayStart(current, id)))
         );
     }
 

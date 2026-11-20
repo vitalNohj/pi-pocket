@@ -19,7 +19,7 @@ import { sessionForest, unfolded } from "./session-tree.js";
 import {
     actions,
     attempt,
-    canInvite,
+    canInviteNew,
     canStart,
     allowsOwn,
     canSteer,
@@ -2898,7 +2898,7 @@ function Rail({ foldable = false, folded = false }) {
                 ? html`<button
                     class="rail-button"
                     data-part="rail-button"
-                    title=${starts && canInvite() ? "People and invites" : "People"}
+                    title=${canInviteNew() ? "People and invites" : "People"}
                     aria-label="People"
                     onClick=${() => openSheet({ type: "people" })}
                 >

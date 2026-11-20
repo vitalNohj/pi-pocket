@@ -23462,18 +23462,21 @@ pre.gallery-code {
 }
 
 /* What whoever prompts does with another person, on that person's page in People (`people.js` `Reach`): two buttons,
- * and under them what the pressed one opens. */
-.reach,
-.person-sessions {
+ * a line that says what the first one does or why it does nothing, and under them what the second one opens. */
+.reach {
     display: flex;
     flex-direction: column;
     gap: 8px;
     min-width: 0;
 }
 
-.reach-buttons,
-.sp-actions {
+.reach-buttons {
     flex-wrap: wrap;
+}
+
+/* The line names a session, whose title can be long. */
+.reach > .muted {
+    overflow-wrap: anywhere;
 }
 
 /* The button whose panel is open under it. */
@@ -23481,129 +23484,6 @@ pre.gallery-code {
     border-color: var(--accent-fill);
     background: var(--accent-soft);
     color: var(--accent);
-}
-
-/* Sessions to check (`person-sessions.js` `SessionPicker`): Select all and the count over a list that scrolls, each
- * session a row under the name of its computer. */
-.session-picker {
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--hair);
-    border-radius: var(--r-card);
-    background: var(--bg);
-    min-width: 0;
-}
-
-.sp-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px;
-    border-bottom: 1px solid var(--hair);
-}
-
-.sp-head > .sp-row {
-    flex: 1 1 0;
-}
-
-.sp-count {
-    flex: none;
-    padding-right: 8px;
-    color: var(--muted);
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
-}
-
-.sp-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    max-height: min(46vh, 22rem);
-    padding: 4px;
-    overflow-y: auto;
-}
-
-.sp-group {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-}
-
-.sp-group-title {
-    padding: 4px 8px 0;
-    color: var(--faint);
-    font-size: 11.5px;
-    font-weight: 500;
-}
-
-/* A row is its whole label: the box, the session's name, then how they have it and where it works, which give way to
- * the name where room is short. */
-.check.sp-row {
-    gap: 8px;
-    min-width: 0;
-    min-height: 28px;
-    margin: 0;
-    padding: 2px 8px;
-    border-radius: var(--r-seg);
-    color: var(--body);
-    cursor: pointer;
-}
-
-.check.sp-row.off {
-    cursor: default;
-}
-
-@media (hover: hover) {
-    .check.sp-row:not(.off):hover {
-        background: var(--hover);
-    }
-}
-
-.sp-title {
-    flex: 0 1 auto;
-    min-width: 2.5rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.sp-row.off .sp-title {
-    color: var(--muted);
-}
-
-.sp-about {
-    flex: 1 1 0;
-    min-width: 0;
-    overflow: hidden;
-    color: var(--muted);
-    font-size: 11.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* On a phone a row is two lines: its name, and under it the rest, set in past the box. */
-@media (max-width: 699px) {
-    .check.sp-row {
-        flex-wrap: wrap;
-        row-gap: 0;
-        padding: 6px 8px;
-    }
-
-    .sp-title {
-        flex: 1 1 0;
-    }
-
-    .sp-about {
-        flex: 1 1 100%;
-        padding-left: 22px;
-    }
-}
-
-@media (pointer: coarse) {
-    .check.sp-row {
-        min-height: 40px;
-    }
 }
 
 /* Sign out, last on your own page in People: apart from the rest, and only as wide as its words. */

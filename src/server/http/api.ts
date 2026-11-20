@@ -211,8 +211,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
     };
 
     /**
-     * What an invite may grant (`access.ts` `mayInvite`): to this server, who may start sessions on it; to one session,
-     * who may share it. An invite is always for someone new: one's own other device takes a device link (`me/device`).
+     * What an invite may grant (`access.ts` `mayInvite`): its maker's own sessions, or a folder's, for who may start
+     * sessions on some computer; one session, for who may share it. An invite is always for someone new: one's own other device takes a device link (`me/device`).
      */
     const inviteGrant = (
         user: User,
@@ -241,7 +241,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             if (!app.policy.mayInvite(user)) {
                 throw new HttpError(
                     403,
-                    "Only people who may start sessions on this server can invite others.",
+                    "Only people who may start sessions here can invite others.",
                 );
             }
 
@@ -266,7 +266,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             if (!app.policy.mayInvite(user)) {
                 throw new HttpError(
                     403,
-                    "Only people who may start sessions on this server can invite others.",
+                    "Only people who may start sessions here can invite others.",
                 );
             }
 
@@ -728,20 +728,32 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // The sessions I may share, each with how one person has it now: to share several with them at once, or take
         // several back (`commands.ts` `sharingWith`, `shareWith`). For whoever prompts; a viewer shares nothing.
-        if (first === "users" && second !== undefined && third === "sharing" && method === "GET") {
-            return json(response, 200, app.commands.sharingWith(user, second));
-        }
+        // `?session=`: the answer tells of that one session alone, as a person's page asks about the open one.
+        if (first === "users" && second !== undefined && third === "sharing") {
+            const asked = url.searchParams.get("session");
 
-        if (first === "users" && second !== undefined && third === "sharing" && method === "POST") {
-            return json(
-                response,
-                200,
-                await app.commands.shareWith(
-                    user,
-                    second,
-                    await readJson<{ share?: unknown; revoke?: unknown } | null>(request),
-                ),
-            );
+            if (asked !== null && !/^\d{1,15}$/.test(asked)) {
+                throw new HttpError(400, "session must be a session id.");
+            }
+
+            const only = asked === null ? undefined : conversationId(asked);
+
+            if (method === "GET") {
+                return json(response, 200, app.commands.sharingWith(user, second, only));
+            }
+
+            if (method === "POST") {
+                return json(
+                    response,
+                    200,
+                    await app.commands.shareWith(
+                        user,
+                        second,
+                        await readJson<{ share?: unknown; revoke?: unknown } | null>(request),
+                        only,
+                    ),
+                );
+            }
         }
 
         if (first === "users" && second !== undefined && third === undefined && method === "POST") {

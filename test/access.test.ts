@@ -69,6 +69,7 @@ function world(
     const facts: AccessFacts = {
         ownerId: owner.id,
         person: (id) => byId.get(id),
+        computers: () => computers.map((each) => each.id),
         computer: (id) => computers.find((each) => each.id === id),
         session: (id) => sessions.find((each) => each.id === (parents.get(id) ?? id)),
         approved: (id) => approved.has(id),
@@ -702,16 +703,22 @@ describe("who may share a session", () => {
         assert.equal(policy.mayInvite(guest, "10"), false);
     });
 
-    it("lets a user the owner lets invite: to their sessions when they steer here, to a session they may share; never a viewer", () => {
+    it("lets a user the owner lets invite: to their sessions when they start sessions somewhere, to a session they may share; never a viewer", () => {
         const let_ = (person: Person): Person => ({ ...person, invites: true });
         const { policy } = world(undefined, undefined, [
             owner,
             let_(guest),
             let_(viewer),
             let_(stranger),
-            linker,
+            let_(linker),
             let_(invited),
         ]);
+
+        // Not on this server alone: a runner's linker, whom the owner did not choose for this server, invites to
+        // what they have on their runner.
+        assert.equal(policy.mayUse(linker, THIS_SERVER), false);
+        assert.equal(policy.mayInvite(linker), true);
+        assert.equal(policy.mayInvite(linker, "21"), true);
 
         assert.equal(policy.invites(guest), true);
         assert.equal(policy.mayInvite(guest), true);
@@ -723,6 +730,32 @@ describe("who may share a session", () => {
         assert.equal(policy.mayInvite(viewer), false);
         assert.equal(policy.mayInvite(invited), false);
         assert.equal(policy.mayInvite(stranger), false);
+    });
+
+    it("lets nobody invite from a computer where they start nothing: a blocked runner, one they are not chosen for", () => {
+        const let_ = (person: Person): Person => ({ ...person, invites: true });
+        // The linker was made a viewer, so the runner is blocked; the guest is chosen for it alone.
+        const { policy } = world(
+            [computer(THIS_SERVER, { chosen: [] }), computer("runner")],
+            undefined,
+            [owner, let_(guest), let_(stranger), { ...linker, role: "viewer" }],
+        );
+
+        assert.equal(policy.blocked("runner"), true);
+        assert.equal(policy.mayUse(guest, "runner"), true);
+        assert.equal(policy.mayInvite(guest), false);
+        assert.equal(policy.mayInvite(stranger), false);
+
+        // The same guest, once its linker prompts again.
+        const open = world([computer(THIS_SERVER, { chosen: [] }), computer("runner")], undefined, [
+            owner,
+            let_(guest),
+            let_(stranger),
+            linker,
+        ]).policy;
+
+        assert.equal(open.mayInvite(guest), true);
+        assert.equal(open.mayInvite(stranger), false);
     });
 });
 

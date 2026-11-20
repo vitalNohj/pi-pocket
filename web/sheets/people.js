@@ -10,12 +10,12 @@ import {
     actions,
     api,
     attempt,
-    canInvite,
-    canStart,
+    canInviteNew,
     closeSheet,
     collab,
     managesPeople,
     notify,
+    openId,
     openSheet,
     signOut,
     store,
@@ -27,7 +27,6 @@ import { AccessRow, choosable, computers, inCharge, loadComputers } from "./acce
 import { ApprovalTime, TasksExpire } from "./approvals.js";
 import { MyAuthenticator } from "./authenticator.js";
 import { PageItem, Pages } from "./pages.js";
-import { PersonSessions } from "./person-sessions.js";
 import { canShare } from "./session-share.js";
 
 /** How long an invite may last: minutes, its button, and how the help text says it. */
@@ -945,46 +944,123 @@ function Places({ person, title = "Where they may work" }) {
 }
 
 /**
- * What whoever prompts does with another person, on that person's page: Invite to your session opens the sessions that
- * are theirs to share, to check several and share them at once or take them back (`person-sessions.js`); Invite to your
- * runner opens the runners they are in charge of, with that person's switch for each (`Places`). A button with nothing
- * behind it is greyed out, and a line says why. `placed`: the page shows Where they may work already, so the second
- * button would only repeat it.
+ * What whoever prompts does with another person, on that person's page: two buttons, and no list. Invite to your
+ * session shares the session open behind People with them, at once (`commands.ts` `shareWith`); once they have it from
+ * a share, the same button takes it back. Invite to your runner opens the runners I am in charge of, with that
+ * person's switch for each (`Places`). A button with nothing behind it is greyed out, and a line says why: no session
+ * is open, the open one is not mine to share, or they have it already another way. `placed`: the page shows Where
+ * they may work already, so the second button would only repeat it.
  */
 function Reach({ person, placed }) {
-    const [open, setOpen] = useState(null);
-    const sessions = store.state.sessions.some((each) => each.mayShare === true);
-    const runners = placesFor(person).length > 0;
-    const none = [
-        !sessions && "You have no session of your own to share.",
-        !placed && !runners && "You have no runner of your own.",
-    ].filter(Boolean);
+    const [open, setOpen] = useState(false);
+    const [data, setData] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [said, setSaid] = useState("");
+    // The session in the session's place, under this sheet; the server answers for its top session.
+    const id = openId();
+    const path =
+        id === null ? null : `users/${encodeURIComponent(person.id)}/sharing?session=${id}`;
+    const here = store.state.sessions.find((each) => each.id === id);
+    // Asked again when what the answer stands on changes: whom it is shared with, who they are, where they are chosen.
+    const stamp = JSON.stringify([
+        here?.sharedWith,
+        here?.createdBy,
+        here?.mayShare,
+        person.role,
+        person.sessions,
+        computers().map((each) => [each.id, (each.users ?? []).map((user) => user.id)]),
+    ]);
 
-    const button = (which, label, enabled) =>
-        html`<button
-            class="button small"
-            aria-expanded=${open === which}
-            disabled=${!enabled}
-            onClick=${() => setOpen(open === which ? null : which)}
-        >
-            ${label}
-        </button>`;
+    useEffect(() => {
+        if (path === null) {
+            return undefined;
+        }
+
+        let live = true;
+
+        api(path).then(
+            (answer) => live && setData({ path, row: answer.sessions[0] ?? null }),
+            (failure) => live && setData({ path, row: null, error: failure.message }),
+        );
+
+        return () => {
+            live = false;
+        };
+    }, [path, stamp]);
+
+    // Undefined while the server has not answered for this session; null when it is not mine to share.
+    const row = path === null ? null : data?.path === path ? data.row : undefined;
+    const runners = placesFor(person).length > 0;
+    // Theirs from a share: mine to take back.
+    const remove = row?.state === "shared" && row.take;
+    const give = row?.give === true;
+    const mine = row && computers().some((each) => each.id === row.computer && inCharge(each));
+    const about =
+        path === null
+            ? "Open a session to invite them to it."
+            : row === undefined
+              ? ""
+              : row === null
+                ? (data.error ?? "The open session is not yours to share.")
+                : remove
+                  ? `${person.name} has “${row.title}” from you.`
+                  : give
+                    ? `Shares “${row.title}” with ${person.name}.`
+                    : row.state === "started"
+                      ? `${person.name} started “${row.title}”.`
+                      : row.state === "invited"
+                        ? `${person.name} was invited to “${row.title}” alone.`
+                        : row.state === "charge"
+                          ? `${person.name} is in charge of ${row.computerName}: every session there is theirs.`
+                          : /^cannot use /.test(row.reason ?? "")
+                            ? `${person.name} cannot use ${row.computerName} yet. ${
+                                  mine
+                                      ? `Turn it on for them first, ${placed ? "under Where they may work" : "with Invite to your runner"}.`
+                                      : "Whoever is in charge of it turns it on for them first."
+                              }`
+                            : `${person.name} is invited to one session only.`;
+    const lines = [about, !placed && !runners && "You have no runner of your own."].filter(Boolean);
+
+    const change = async () => {
+        if (remove && !confirm(`Stop sharing “${row.title}” with ${person.name}?`)) {
+            return;
+        }
+
+        setBusy(true);
+        setSaid("");
+
+        try {
+            const answer = await api(path, remove ? { revoke: [row.id] } : { share: [row.id] });
+
+            setData({ path, row: answer.sessions[0] ?? null });
+            setSaid(answer.refused[0]?.reason ?? "");
+        } catch (failure) {
+            setSaid(failure.message);
+        } finally {
+            setBusy(false);
+        }
+    };
 
     return html`<div class="reach">
         <div class="row reach-buttons">
-            ${button("sessions", "Invite to your session", sessions)}
-            ${!placed && button("runner", "Invite to your runner", runners)}
+            <button class="button small" disabled=${busy || !(give || remove)} onClick=${change}>
+                ${remove ? "Remove from your session" : "Invite to your session"}
+            </button>
+            ${
+                !placed &&
+                html`<button
+                    class="button small"
+                    aria-expanded=${open}
+                    disabled=${!runners}
+                    onClick=${() => setOpen(!open)}
+                >
+                    Invite to your runner
+                </button>`
+            }
         </div>
-        ${none.length > 0 && html`<div class="muted small">${none.join(" ")}</div>`}
-        ${
-            open === "sessions" &&
-            sessions &&
-            html`<${PersonSessions}
-                person=${person}
-                turnOn=${placed ? "under Where they may work" : "with Invite to your runner"}
-            />`
-        }
-        ${open === "runner" && runners && html`<${Places} person=${person} title="Your runners" />`}
+        ${lines.length > 0 && html`<div class="muted small">${lines.join(" ")}</div>`}
+        ${said && html`<div class="runner-note warning" role="alert">${said}</div>`}
+        ${open && runners && html`<${Places} person=${person} title="Your runners" />`}
     </div>`;
 }
 
@@ -1209,8 +1285,7 @@ export function PeopleSheet() {
             />`,
         )}
         ${
-            canStart() &&
-            canInvite() &&
+            canInviteNew() &&
             html`<${PageItem}
                 onSelect=${() => openSheet({ type: "invite" })}
                 lead=${html`<${Icon} name="plus" size=${16} />`}

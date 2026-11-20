@@ -25,8 +25,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
+import { newIdentity } from "../src/runner/secure-link.ts";
+import { THIS_SERVER } from "../src/server/access.ts";
 import type { User } from "../src/server/config.ts";
-import { SubagentsDoc } from "../src/server/docs.ts";
+import { SessionsDoc, SubagentsDoc } from "../src/server/docs.ts";
 import createArtifacts from "../src/server/extensions/artifacts.ts";
 import type { PocketHost } from "../src/server/host.ts";
 import { createHandler } from "../src/server/http.ts";
@@ -862,6 +864,76 @@ describe("sharing and invites", () => {
         assert.equal(again.status, 200);
         assert.equal(await join(again.body.code, "Intime"), 303);
         assert.ok(app.config.users.some((each) => each.name === "Intime"));
+    });
+
+    it("lets a runner's linker invite to what is theirs there, without being chosen for this server; nobody who starts sessions nowhere", async () => {
+        const linker = person("Runner Lin", "guest");
+        const nowhere = person("Nowhere Ned", "guest");
+        const laptop = app.config.addRunner("Lin's laptop", linker.id, newIdentity().publicKey).id;
+        const hers = await newSession(app);
+
+        await app.harness.commit(async (tx) => {
+            const meta = (await tx.doc(SessionsDoc)).items[String(hers)]!;
+
+            meta.createdBy = linker.id;
+            meta.runner = laptop;
+        }, context);
+        app.setInvites(owner(app), linker.id, true);
+        app.setInvites(owner(app), nowhere.id, true);
+        app.accessChanged();
+
+        try {
+            // Neither was chosen for this server: one is in charge of a runner, the other starts sessions nowhere.
+            assert.equal(app.policy.mayUse(linker, THIS_SERVER), false);
+            assert.equal(app.policy.mayStart(linker, laptop), true);
+            assert.equal((await app.hello(linker)).user.mayInvite, true);
+            assert.equal((await app.hello(nowhere)).user.mayInvite, false);
+
+            for (const each of [{}, { session: String(hers), folder: true }]) {
+                const refused = await call<{ error?: string }>(nowhere, "invite", each);
+
+                // The session is not theirs to see, so its folder is no session to them.
+                assert.equal(refused.status, "session" in each ? 400 : 403, JSON.stringify(each));
+
+                if (!("session" in each)) {
+                    assert.equal(
+                        refused.body.error,
+                        "Only people who may start sessions here can invite others.",
+                    );
+                }
+
+                assert.equal(
+                    (await call(linker, "invite", each)).status,
+                    200,
+                    JSON.stringify(each),
+                );
+            }
+
+            // Whoever joins gets what the linker has: the session they started, on the runner they are in charge of.
+            const made = await call<{ code: string }>(linker, "invite", {});
+            const joined = await fetch(`${address}/join/${made.body.code}`, {
+                method: "POST",
+                body: "name=Laptop%20Lou",
+                headers: { "content-type": "application/x-www-form-urlencoded" },
+                redirect: "manual",
+            });
+
+            assert.equal(joined.status, 303);
+
+            const lou = app.config.users.find((each) => each.name === "Laptop Lou")!;
+
+            assert.equal(lou.role, "viewer");
+            assert.deepEqual(app.sessionMeta(hers)?.sharedWith, [lou.id]);
+            assert.equal(app.canSee(lou, hers), true);
+            assert.equal(app.policy.mayUse(lou, laptop), true);
+            // Not this server, which is not the linker's to give, and nothing of anyone else's.
+            assert.equal(app.policy.mayUse(lou, THIS_SERVER), false);
+            assert.equal(app.canSee(lou, shared), false);
+            assert.deepEqual(listed(lou), [String(hers)]);
+        } finally {
+            app.setInvites(owner(app), linker.id, false);
+            app.setInvites(owner(app), nowhere.id, false);
+        }
     });
 
     it("shows a session's starter whom it is shared with, and whom it can be: the people chosen for its computer", async () => {

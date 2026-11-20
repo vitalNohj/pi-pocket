@@ -673,6 +673,13 @@ export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStar
 export const canInvite = () => store.state.me?.invites !== false;
 
 /**
+ * May this person invite someone new to their own sessions, or a folder's (`access.ts` `mayInvite`): the owner lets
+ * them invite, and they start sessions on some computer, this server or a runner. People offers Invite someone only
+ * then. A server from before it does not say: who starts sessions on this server and may invite, as before.
+ */
+export const canInviteNew = () => store.state.me?.mayInvite ?? (canStart() && canInvite());
+
+/**
  * Does this person manage people (`access.ts` `managesPeople`): the owner, and a user the owner lets. People shows them
  * each person's settings. A server from before it does not say: the owner, as before.
  */

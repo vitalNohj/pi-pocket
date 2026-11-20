@@ -53,10 +53,10 @@ async function inPage<T>(script: string): Promise<T> {
     return JSON.parse(await page.evaluate(script)) as T;
 }
 
-/** Open sheet `type` on a fresh page, signed in as the owner. */
-async function open(type: "people" | "computers", viewport = DESKTOP): Promise<void> {
+/** Open sheet `type` on a fresh page, signed in as the owner: over home, or over the session at `path`. */
+async function open(type: "people" | "computers", viewport = DESKTOP, path = "/"): Promise<void> {
     await page.setViewport(viewport);
-    await page.navigate(`${base}/`);
+    await page.navigate(`${base}${path}`);
     await until(
         async () =>
             await inPage<boolean>(
@@ -2466,7 +2466,7 @@ test(
 );
 
 test(
-    "on another person's page a user invites them to their sessions, several at once, and to their runner; a button with nothing behind it is greyed out",
+    "on another person's page a user invites them to the session open behind People, and to their runner; no session is listed, and a button with nothing behind it is greyed out",
     real,
     async () => {
         const dee = app.config.addUser("Dee", "guest");
@@ -2497,15 +2497,15 @@ test(
             return opened;
         };
 
-        /** A session here that Dee started. */
-        const hers = async (title: string) => {
+        /** A session here that `starter` started. */
+        const session = async (title: string, starter: string) => {
             const id = await newSession(app);
 
             await app.harness.commit(async (tx) => {
                 const meta = (await tx.doc(SessionsDoc)).items[String(id)]!;
 
                 meta.title = title;
-                meta.createdBy = dee.user.id;
+                meta.createdBy = starter;
             }, context);
 
             return id;
@@ -2516,94 +2516,96 @@ test(
             inPage<string[]>(
                 `return JSON.stringify([...document.querySelectorAll(".pages-detail button:not([role=switch])")].map((each) => each.textContent.trim() + (each.disabled ? " (disabled)" : "") + (each.getAttribute("aria-expanded") === "true" ? " (open)" : "")))`,
             );
-        const tap = (label: string) =>
-            inPage(`
+
+        /** Tap a button of the page shown, once it takes a click; what it asks is kept, and answered with yes. */
+        const tap = async (label: string) => {
+            const found = `[...document.querySelectorAll(".pages-detail button:not([role=switch])")].find((each) => each.textContent.trim() === ${JSON.stringify(label)} && !each.disabled)`;
+
+            await until(
+                () => inPage<boolean>(`return JSON.stringify(${found} !== undefined)`),
+                `${label} taking a click`,
+            );
+            await inPage(`
+                window.asked = null;
                 window.confirm = (text) => {
                     window.asked = text;
 
                     return true;
                 };
-                [...document.querySelectorAll(".pages-detail button:not([role=switch])")]
-                    .find((each) => each.textContent.trim() === ${JSON.stringify(label)})
-                    .click();
+                ${found}.click();
 
                 return JSON.stringify(true);
             `);
-        /** The sessions to check, as they read: checked or not, the name, and what stands after it. */
-        const rows = () =>
-            inPage<string[]>(`
-                return JSON.stringify(
-                    [...document.querySelectorAll(".pages-detail .sp-row")].map((each) => {
-                        const box = each.querySelector("input");
+        };
 
-                        return (box.checked ? "[x] " : "[ ] ") +
-                            each.querySelector(".sp-title").textContent.trim() +
-                            (each.querySelector(".sp-about") ? " | " + each.querySelector(".sp-about").textContent.trim().split(" · ")[0] : "") +
-                            (box.disabled ? " (disabled)" : "");
-                    }).sort(),
-                );
-            `);
         const text = () =>
             inPage<string>(
                 `return JSON.stringify(document.querySelector(".pages-detail .reach").textContent.replace(/\\s+/g, " "))`,
             );
-        const all = () =>
-            inPage(
-                `document.querySelector(".pages-detail .sp-all input").click(); return JSON.stringify(true);`,
-            );
-        const shared = (id: Awaited<ReturnType<typeof hers>>) =>
+
+        /** Eli's page in People, opened over `path`: home, or a session. */
+        const eliOver = async (path: string) => {
+            await open("people", DESKTOP, path);
+            await show("Eli");
+        };
+
+        const shared = (id: Awaited<ReturnType<typeof session>>) =>
             app.sessionMeta(id)?.sharedWith ?? [];
 
         try {
             await app.choosePerson(THIS_SERVER, dee.user.id, true);
             await app.choosePerson(THIS_SERVER, eli.user.id, true);
 
-            const first = await hers("reach: first");
-            const second = await hers("reach: second");
+            const first = await session("reach: first", dee.user.id);
+            const second = await session("reach: second", dee.user.id);
+            const elis = await session("reach: Eli's own", eli.user.id);
+            const owned = await session("reach: the owner's", owner(app).id);
 
-            // Dee has sessions of her own and no runner: the second button is greyed out, and a line says why.
+            await app.commands.shareSession(owned, owner(app), [dee.user.id]);
+
+            // Dee is on no session, and has no runner: both buttons are greyed out, and a line says why.
             page = await browserOf(dee.token);
-            await open("people");
-            await show("Eli");
+            await eliOver("/");
+            await until(async () => /Open a session/.test(await text()), "the line for no session");
+            assert.deepEqual(await buttons(), [
+                "Invite to your session (disabled)",
+                "Invite to your runner (disabled)",
+            ]);
+            assert.match(
+                await text(),
+                /Open a session to invite them to it\. You have no runner of your own\./,
+            );
+
+            // On one of her sessions: the button is for that session, by name. No session is listed, to check or not.
+            await eliOver(`/s/${String(first)}`);
+            await until(
+                async () => /Shares “reach: first” with Eli\./.test(await text()),
+                "the line naming the open session",
+            );
             assert.deepEqual(await buttons(), [
                 "Invite to your session",
                 "Invite to your runner (disabled)",
             ]);
-            assert.match(await text(), /You have no runner of your own\./);
+            assert.equal(
+                await inPage<number>(
+                    `return JSON.stringify(document.querySelectorAll(".pages-detail .reach input, .pages-detail .session-picker, .pages-detail .sp-row").length)`,
+                ),
+                0,
+                "no list of sessions",
+            );
+            assert.doesNotMatch(await text(), /reach: second/);
 
-            // Her own sessions, and not the owner's; all of them checked at once, and shared with one button.
+            // One click shares it, and only it; the button then takes it back.
             await tap("Invite to your session");
-            await until(async () => (await rows()).length === 3, "her sessions to check");
-            assert.deepEqual(await rows(), [
-                "[ ] Select all",
-                "[ ] reach: first | " + work,
-                "[ ] reach: second | " + work,
-            ]);
-            assert.deepEqual(await buttons(), [
-                "Invite to your session (open)",
-                "Invite to your runner (disabled)",
-                "Share (disabled)",
-                "Revoke (disabled)",
-            ]);
-            await all();
-            await until(async () => /2 selected/.test(await text()), "both checked");
-            assert.match(await text(), /2 sessions to share, 0 sessions to take back\./);
-            await tap("Share");
+            await until(() => shared(first).includes(eli.user.id), "the open session shared");
             await until(
-                () => shared(first).includes(eli.user.id) && shared(second).includes(eli.user.id),
-                "both shared with Eli",
+                async () => (await buttons())[0] === "Remove from your session",
+                "the button to take it back",
             );
-            await until(
-                async () =>
-                    (await rows()).join() ===
-                    [
-                        "[ ] Select all",
-                        "[ ] reach: first | shared with them",
-                        "[ ] reach: second | shared with them",
-                    ].join(),
-                "the rows saying that he has them, with nothing checked",
-            );
+            assert.match(await text(), /Eli has “reach: first” from you\./);
+            assert.deepEqual(shared(second), []);
             assert.equal(app.canSee(app.config.userById(eli.user.id)!, first), true);
+            assert.equal(app.canSee(app.config.userById(eli.user.id)!, second), false);
 
             // On a phone nothing of it is wider than the screen.
             await page.setViewport({ width: 390, height: 844, scale: 2, mobile: true });
@@ -2620,39 +2622,41 @@ test(
                     );
                 `),
                 [],
-                "nothing of the sessions to check is wider than the phone",
+                "nothing of the buttons and their line is wider than the phone",
             );
             await page.setViewport(DESKTOP);
 
-            // Both taken back with the other button, after it asks.
-            await all();
-            await until(async () => /2 selected/.test(await text()), "both checked again");
-            assert.match(await text(), /0 sessions to share, 2 sessions to take back\./);
-            await tap("Revoke");
-            await until(
-                () => shared(first).length === 0 && shared(second).length === 0,
-                "both taken back",
-            );
+            // Taken back with the same button, after it asks.
+            await tap("Remove from your session");
+            await until(() => shared(first).length === 0, "the share taken back");
             assert.equal(
                 await inPage<string>(`return JSON.stringify(window.asked)`),
-                "Stop sharing 2 sessions with Eli?",
+                "Stop sharing “reach: first” with Eli?",
             );
             await until(
-                async () => !(await rows()).some((each) => each.includes("shared with them")),
-                "the rows saying so",
+                async () => (await buttons())[0] === "Invite to your session",
+                "the button to share it again",
             );
             assert.equal(app.canSee(app.config.userById(eli.user.id)!, first), false);
 
-            // Lin linked a runner and started nothing: the first button is greyed out, and the second turns her runner
-            // on for him, with the switch Runners has.
+            // A session shared with her is not hers to share: greyed out, and said.
+            await eliOver(`/s/${String(owned)}`);
+            await until(
+                async () => /The open session is not yours to share\./.test(await text()),
+                "the line for a session of someone else",
+            );
+            assert.equal((await buttons())[0], "Invite to your session (disabled)");
+
+            // Lin linked a runner and is on no session: the first button is greyed out, and the second turns her
+            // runner on for him, with the switch Runners has.
             page = await browserOf(lin.token);
-            await open("people");
-            await show("Eli");
+            await eliOver("/");
+            await until(async () => /Open a session/.test(await text()), "the line for no session");
             assert.deepEqual(await buttons(), [
                 "Invite to your session (disabled)",
                 "Invite to your runner",
             ]);
-            assert.match(await text(), /You have no session of your own to share\./);
+            assert.doesNotMatch(await text(), /You have no runner of your own/);
             await tap("Invite to your runner");
             await until(
                 async () => (await switches()).includes("Eli may use Lin's laptop: off"),
@@ -2667,14 +2671,24 @@ test(
                 "the switch on",
             );
 
-            // The owner has Where they may work on the page already: the sessions button alone.
+            // The owner has Where they may work on the page already: the sessions button alone. On a session Eli
+            // started, there is nothing to give him: he has it.
             page = owners;
-            await open("people");
-            await show("Eli");
-            assert.deepEqual(
-                (await buttons()).filter((each) => each.startsWith("Invite to your")),
-                ["Invite to your session"],
+            await eliOver(`/s/${String(elis)}`);
+            await until(
+                async () => /Eli started “reach: Eli's own”\./.test(await text()),
+                "the line for a session he started",
             );
+            assert.deepEqual(
+                (await buttons()).filter((each) => /your (session|runner)/.test(each)),
+                ["Invite to your session (disabled)"],
+            );
+
+            // And on one of the owner's own, the owner invites him to it.
+            await eliOver(`/s/${String(owned)}`);
+            await tap("Invite to your session");
+            await until(() => shared(owned).includes(eli.user.id), "the owner's session shared");
+            assert.deepEqual([...shared(owned)].sort(), [dee.user.id, eli.user.id].sort());
         } finally {
             // The tests share one page: the owner's again, at its usual size, whatever happened.
             page = owners;

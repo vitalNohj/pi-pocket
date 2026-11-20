@@ -328,6 +328,61 @@ test("two people shared with at the same moment both have the session", async ()
     assert.deepEqual(sharedWith(id), [ana.id, dee.id, eve.id].sort());
 });
 
+test("asked about one session, the answer tells of that one alone: also why a person in charge of its computer needs none", async () => {
+    const boss = owner(app);
+    const gina = await person("One Gina", "guest");
+    const eli = await person("One Eli", "guest");
+    const open = await session("one: open", gina);
+    const other = await session("one: other", gina);
+    const bosses = await session("one: the owner's");
+    const one = (id: ConversationId) => `${sharing(eli)}?session=${String(id)}`;
+    const told = (answer: { body: Answer }) =>
+        answer.body.sessions?.map((each) => [each.title, each.state, each.give, each.take]);
+
+    // Her open session, and not her other one.
+    assert.deepEqual(told(await call(gina, one(open))), [["one: open", "none", true, false]]);
+    assert.equal((await call(gina, sharing(eli))).body.sessions?.length, 2);
+
+    // A session that is not hers to share is no row: she is told nothing of it.
+    assert.deepEqual(told(await call(gina, one(bosses))), []);
+    assert.deepEqual(told(await call(gina, `${sharing(eli)}?session=99999`)), []);
+
+    // Shared from there, the answer is that one row again, as it is now; taken back the same way.
+    const shared = await call(gina, one(open), { share: [Number(open)] });
+
+    assert.deepEqual(shared.body.refused, []);
+    assert.deepEqual(told(shared), [["one: open", "shared", false, true]]);
+    assert.deepEqual(sharedWith(open), [eli.id]);
+    assert.deepEqual(sharedWith(other), []);
+    assert.deepEqual(told(await call(gina, one(open), { revoke: [Number(open)] })), [
+        ["one: open", "none", true, false],
+    ]);
+    assert.deepEqual(sharedWith(open), []);
+
+    // Not an id: refused, for reading and for changing.
+    for (const bad of ["x", "-1", "1.5", ""]) {
+        const path = `${sharing(eli)}?session=${bad}`;
+
+        assert.equal((await call(gina, path)).status, 400, bad);
+        assert.equal((await call(gina, path)).body.error, "session must be a session id.");
+        assert.equal((await call(gina, path, { share: [Number(open)] })).status, 400, bad);
+    }
+
+    assert.deepEqual(sharedWith(open), []);
+
+    // A viewer is told nothing this way either.
+    const vera = await person("One Vera", "viewer");
+
+    assert.equal((await call(vera, one(open))).status, 403);
+
+    // Someone in charge of the session's computer has every session there: the one row says so, and gives nothing.
+    // Without a session asked about, theirs are left out, as before.
+    assert.deepEqual(told(await call(gina, `${sharing(boss)}?session=${String(open)}`)), [
+        ["one: open", "charge", false, false],
+    ]);
+    assert.deepEqual((await call(gina, sharing(boss))).body.sessions, []);
+});
+
 test("who is in charge takes back what a person started or was invited to; a starter only what they shared", async () => {
     const boss = owner(app);
     const gina = await person("Take Gina", "guest");
