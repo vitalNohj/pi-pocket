@@ -26,13 +26,17 @@ const chromium = findBrowser();
 const real = { skip: chromium === undefined ? "no Chromium-based browser on this machine" : false };
 const box = ".composer textarea";
 const card = ".inbox .queued";
+const mode = `${card} .queued-mode`;
+const edit = `${card} .queued-actions button:nth-child(1)`;
 const move = `${card} .queued-actions button:nth-child(2)`;
+const interrupt = `${card} .queued-actions button:nth-child(3)`;
+const queuedText = "Please wait for the answer";
 let app: App;
 let server: Server;
 let browsers: Browsers;
 let page: BrowserPage;
 let base: string;
-const moves = new Map<string, number>();
+const responses = new Map<string, number>();
 
 before(async () => {
     if (chromium === undefined) {
@@ -63,8 +67,8 @@ before(async () => {
     server = createServer((request, response) => {
         const path = request.url;
 
-        if (request.method === "POST" && path?.endsWith("/move")) {
-            response.once("finish", () => moves.set(path, response.statusCode));
+        if (request.method === "POST" && path !== undefined && /\/(move|edit-queued)$/.test(path)) {
+            response.once("finish", () => responses.set(path, response.statusCode));
         }
 
         void handler(request, response);
@@ -95,7 +99,7 @@ function textOf(selector: string): Promise<string> {
     );
 }
 
-async function send(text: string): Promise<void> {
+async function send(text: string, keys = "Enter"): Promise<void> {
     await page.type({ selector: box }, text);
     await until(
         async () =>
@@ -104,11 +108,28 @@ async function send(text: string): Promise<void> {
             )) === "true",
         "the Send button to enable",
     );
-    await page.press("Enter");
+    await page.press(keys);
 }
 
-/** Send a Steer from the message box while a real Bash tool waits. The test decides when Bash finishes. */
-async function startSteer(t: TestContext) {
+async function click(selector: string): Promise<void> {
+    assert.equal((await page.click({ selector })).covered, undefined);
+}
+
+async function interruptNow(): Promise<void> {
+    await click(interrupt);
+    await until(async () => (await textOf(interrupt)) === "Interrupt now?", "the confirmation");
+    await click(interrupt);
+}
+
+async function posted(id: ConversationId, endpoint: string, status: number): Promise<void> {
+    const path = `/api/c/${id}/${endpoint}`;
+
+    await until(() => responses.has(path), `the ${endpoint} response`);
+    assert.equal(responses.get(path), status);
+}
+
+/** Queue a message while a real Bash tool waits. The test decides when Bash finishes. */
+async function startQueued(t: TestContext, label = "Steer") {
     const cwd = mkdtempSync(join(work, "queue-"));
     const id = await newSession(app, cwd);
     const releaseBash = () => writeFileSync(join(cwd, "release-bash"), "");
@@ -123,15 +144,12 @@ async function startSteer(t: TestContext) {
     await send("Start Bash");
     await until(() => existsSync(join(cwd, "bash-started")), "Bash to start");
     await until(async () => (await textOf(".scroller")).includes("bash"), "Bash in the browser");
-    await send("Please wait for the answer");
-    await until(
-        async () => (await textOf(`${card} .queued-mode`)).startsWith("Steer"),
-        "a Steer card",
-    );
-    assert.equal((await page.click({ selector: `${card} .queued-text` })).covered, undefined);
-    await until(async () => (await textOf(move)) === "Move to queue", "the Move to queue button");
+    await send(queuedText, label === "Queue" ? "Control+Enter" : "Enter");
+    await until(async () => (await textOf(mode)).startsWith(label), `a ${label} card`);
+    await click(`${card} .queued-text`);
+    await until(async () => (await textOf(edit)) === "Edit", "the queued actions");
 
-    return { id, releaseBash, path: `/api/c/${id}/move` };
+    return { id, releaseBash };
 }
 
 /** Delay the tab's view events, not its HTTP requests or the queue changes on the server. */
@@ -175,15 +193,16 @@ test(
     "a successful move to Queue shows on the card before the view update arrives",
     real,
     async (t) => {
-        const { id, releaseBash, path } = await startSteer(t);
+        const { id, releaseBash } = await startQueued(t);
         const releaseViews = delayViews(t, id);
 
-        assert.equal((await page.click({ selector: move })).covered, undefined);
-        assert.equal(moves.get(path), 200);
+        assert.equal(await textOf(move), "Move to queue");
+        await click(move);
+        await posted(id, "move", 200);
         assert.equal((await inbox(id))[0]?.mode, "followUp");
         assert.equal(app.isBusy(id), true);
         await until(
-            async () => (await textOf(`${card} .queued-mode`)).startsWith("Queue"),
+            async () => (await textOf(mode)).startsWith("Queue"),
             "the Queue label with view events still delayed",
             2500,
         );
@@ -199,23 +218,105 @@ test(
     },
 );
 
-test("a move from a stale card says when the Steer has already gone to Pi", real, async (t) => {
-    const { id, releaseBash, path } = await startSteer(t);
+test("Steer now shows on the card before the view update arrives", real, async (t) => {
+    const { id, releaseBash } = await startQueued(t, "Queue");
     const releaseViews = delayViews(t, id);
 
-    releaseBash();
+    assert.equal(await textOf(move), "Steer now");
+    await click(move);
+    await posted(id, "move", 200);
+    assert.equal((await inbox(id))[0]?.mode, "steer");
+    assert.equal(app.isBusy(id), true);
     await until(
-        async () => (await inbox(id)).length === 0,
-        "Pi to take the Steer at the tool boundary",
+        async () => (await textOf(mode)).startsWith("Steer"),
+        "the Steer label with view events still delayed",
+        2500,
     );
-    assert.equal((await page.click({ selector: move })).covered, undefined);
-    assert.equal(moves.get(path), 409);
+    assert.equal(await textOf(move), "Move to queue");
+    releaseViews();
+    releaseBash();
+    await until(() => !app.isBusy(id), "Pi to finish both messages");
+});
+
+test(
+    "Edit returns the text and removes the card before the view update arrives",
+    real,
+    async (t) => {
+        const { id, releaseBash } = await startQueued(t);
+        const releaseViews = delayViews(t, id);
+
+        await click(edit);
+        await posted(id, "edit-queued", 200);
+        assert.equal((await inbox(id)).length, 0);
+        assert.equal(app.isBusy(id), true);
+        await until(
+            async () =>
+                (await page.evaluate(`document.querySelector(${JSON.stringify(box)}).value`)) ===
+                queuedText,
+            "the edited text in the message box",
+        );
+        assert.equal(await textOf(card), "", "the card without a view update");
+        releaseViews();
+        releaseBash();
+        await until(() => !app.isBusy(id), "Bash to finish");
+    },
+);
+
+test("Interrupt now shows Sending before the view update removes the card", real, async (t) => {
+    const { id } = await startQueued(t);
+    const releaseViews = delayViews(t, id);
+
+    await interruptNow();
+    await posted(id, "move", 200);
     await until(
-        async () =>
-            (await textOf(".notice.error .notice-text")) === "That message has already gone to Pi.",
-        "the failed move's reason",
+        async () => (await textOf(mode)).startsWith("Sending..."),
+        "the Sending label with view events still delayed",
+        2500,
+    );
+    assert.equal(await textOf(`${card} .queued-actions`), "");
+    assert.equal(
+        await page.evaluate(`!!document.querySelector('${card} .queued-remove')`),
+        "false",
     );
     releaseViews();
     await until(async () => (await textOf(card)) === "", "the sent card to leave the queue");
+    await until(
+        async () => (await textOf(".scroller")).includes(`echo: ${queuedText}`),
+        "the interrupted message's answer",
+    );
     await until(() => !app.isBusy(id), "Pi to finish answering");
 });
+
+for (const [label, endpoint, act] of [
+    ["Move to queue", "move", () => click(move)],
+    ["Edit", "edit-queued", () => click(edit)],
+    ["Interrupt now", "move", interruptNow],
+] as const) {
+    test(`${label} on a stale card keeps it and says it has gone to Pi`, real, async (t) => {
+        const { id, releaseBash } = await startQueued(t);
+        const releaseViews = delayViews(t, id);
+
+        releaseBash();
+        await until(
+            async () => (await inbox(id)).length === 0,
+            "Pi to take the Steer at the tool boundary",
+        );
+        await act();
+        await posted(id, endpoint, 409);
+        await until(
+            async () =>
+                (await textOf(".notice.error .notice-text")) ===
+                "That message has already gone to Pi.",
+            `the failed ${label}'s reason`,
+        );
+        assert.ok((await textOf(mode)).startsWith("Steer"), "the card is still queued in the tab");
+        assert.equal(await textOf(edit), "Edit", "the queued actions are still available");
+        assert.equal(
+            await page.evaluate(`document.querySelector(${JSON.stringify(box)}).value`),
+            "",
+        );
+        releaseViews();
+        await until(async () => (await textOf(card)) === "", "the sent card to leave the queue");
+        await until(() => !app.isBusy(id), "Pi to finish answering");
+    });
+}
