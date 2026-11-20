@@ -1022,6 +1022,7 @@ export function signOut() {
         // What this browser kept of this person's sessions goes with their sign-in, and nothing saves it again: not a save
         // of this tab still to come, nor one of the other tabs, which hear of it through the storage event.
         deviceCacheStopped = true;
+        dropTabPlaces();
         dispatchEvent(new Event("pocket:signedOut"));
 
         try {
@@ -1122,6 +1123,8 @@ export const viewSynced = (id) => synced === id && store.state.view.conversation
 /** Keep the view of the session this tab leaves, to show it again at once (`keptView`), here and on the device. */
 function keepView(view) {
     const id = view.conversation?.id;
+
+    flushTabPlace();
 
     if (id === undefined) {
         return;
@@ -1226,6 +1229,7 @@ function newestOf(view) {
 function forgetKept() {
     keptViews.clear();
     unsaved.clear();
+    dropTabPlaces();
     lastSaved = null;
     // A read ahead from the device that is under way keeps nothing it read before this.
     warmedFor = null;
@@ -1278,6 +1282,7 @@ let deviceCacheStopped = false;
 addEventListener("storage", (event) => {
     if (event.key === SIGNED_OUT_KEY) {
         deviceCacheStopped = true;
+        dropTabPlaces();
         dispatchEvent(new Event("pocket:signedOut"));
     }
 });
@@ -1287,6 +1292,143 @@ addEventListener("storage", (event) => {
  * another, or before this person's rights changed, is not shown.
  */
 const ownerOf = (me) => fingerprint(JSON.stringify([me.id, me.role, me.sessions ?? null]));
+
+// A tab's reading places survive reload without writing another whole view. The shared cache is still a fallback.
+const TAB_PLACES = "pocket.transcriptPlaces";
+const TAB_PLACE_LIMIT = 32;
+let pendingTabPlace;
+let savingTabPlace;
+
+function tabPlaces() {
+    try {
+        const places = JSON.parse(sessionStorage.getItem(TAB_PLACES) ?? "[]");
+
+        return Array.isArray(places) ? places : [];
+    } catch {
+        return [];
+    }
+}
+
+function tabPlaceOwner(view, { me, server }) {
+    return onDevice() &&
+        !changingAccount &&
+        !signingOut &&
+        me &&
+        view.build != null &&
+        view.build === server?.build
+        ? ownerOf(me)
+        : null;
+}
+
+/** A pixel distance only makes sense with the same rows below it, and with the saved first row still loaded. */
+function placeWindow(view, from) {
+    return isLoaded(view, from)
+        ? fingerprint(view.order.slice(view.order.indexOf(from)).join(","))
+        : null;
+}
+
+/** Undefined means no compatible bookmark; a bookmark with `keep: null` explicitly follows the bottom. */
+function tabPlace(view, identity) {
+    const owner = tabPlaceOwner(view, identity);
+
+    if (owner === null) {
+        return undefined;
+    }
+
+    const place = tabPlaces().find(
+        (each) =>
+            each?.id === view.conversation.id && each.owner === owner && each.build === view.build,
+    );
+
+    if (place?.keep === null) {
+        return { from: null, keep: null };
+    }
+
+    if (
+        Number.isFinite(place?.keep) &&
+        place.keep > 0 &&
+        typeof place.window === "string" &&
+        place.window === placeWindow(view, place.from)
+    ) {
+        return { from: place.from, keep: place.keep };
+    }
+
+    return undefined;
+}
+
+/** Remember the last measured scroll, after the reader pauses. Hiding flushes it without measuring again. */
+export function noteTabPlace(view, from, keep) {
+    pendingTabPlace = { view, from, keep };
+    clearTimeout(savingTabPlace);
+    savingTabPlace = setTimeout(flushTabPlace, 200);
+}
+
+function flushTabPlace() {
+    clearTimeout(savingTabPlace);
+    const pending = pendingTabPlace;
+
+    pendingTabPlace = undefined;
+
+    if (pending === undefined) {
+        return;
+    }
+
+    const { view, from, keep } = pending;
+    const known = store.state.me === undefined ? knownFromPage() : null;
+    const owner = tabPlaceOwner(
+        view,
+        known === null ? store.state : { me: known.user, server: known },
+    );
+
+    if (owner === null) {
+        return;
+    }
+
+    const id = view.conversation.id;
+    const window = keep === null ? null : placeWindow(view, from);
+
+    if (keep !== null && window === null) {
+        return;
+    }
+
+    const places = tabPlaces().filter((each) => each?.id !== id || each.owner !== owner);
+
+    places.push({ id, owner, build: view.build, from, keep, window });
+
+    try {
+        sessionStorage.setItem(TAB_PLACES, JSON.stringify(places.slice(-TAB_PLACE_LIMIT)));
+    } catch {
+        // Storage refused or full: the shared cache still works.
+    }
+}
+
+function dropTabPlaces(id) {
+    if (id === undefined || pendingTabPlace?.view.conversation.id === id) {
+        clearTimeout(savingTabPlace);
+        pendingTabPlace = undefined;
+    }
+
+    try {
+        if (id === undefined) {
+            sessionStorage.removeItem(TAB_PLACES);
+        } else {
+            const places = tabPlaces();
+            const kept = places.filter((each) => each?.id !== id);
+
+            if (kept.length !== places.length) {
+                sessionStorage.setItem(TAB_PLACES, JSON.stringify(kept));
+            }
+        }
+    } catch {
+        // A denied store does not stop the session from opening.
+    }
+}
+
+onPageVisibility(() => {
+    if (!pageVisible()) {
+        flushTabPlace();
+    }
+});
 
 /** The view the device last saved for the session shown, and where the reader was then: not saved again unchanged. */
 let lastSaved = null;
@@ -1401,9 +1543,9 @@ function adopt(id, found, identity = store.state) {
         return undefined;
     }
 
-    keptViews.set(id, { ...found.record, size: found.info.size });
+    keptViews.set(id, { ...found.record, size: found.info.size, device: true });
 
-    return keptView(id);
+    return keptView(id, identity);
 }
 
 /** Whose and which build's sessions `warmFromDevice` last read ahead, so it does so once for each. */
@@ -1480,7 +1622,7 @@ async function warmFromDevice() {
         }
 
         if (usable(found, info.id)) {
-            read.push([info.id, { ...found.record, size: found.info.size }]);
+            read.push([info.id, { ...found.record, size: found.info.size, device: true }]);
         }
     }
 
@@ -1510,6 +1652,8 @@ async function warmFromDevice() {
 
 /** Drop what the device kept of one session (the server says it is missing, or it did not go on from what it had). */
 function dropFromDevice(id) {
+    dropTabPlaces(id);
+
     if (typeof indexedDB !== "undefined") {
         void disk.drop((info) => info.id === id).catch(() => {});
     }
@@ -1522,6 +1666,7 @@ function tidyDevice(me, server) {
     }
 
     if (server?.deviceCache !== true || !me) {
+        dropTabPlaces();
         void disk.clear().catch(() => {});
 
         return;
@@ -1575,7 +1720,7 @@ function holdsFor(kept) {
  * and where the reader was in it; or an empty view. One held for its changes (`holdsFor`) opens at the bottom once they
  * come, as a session does that was not kept.
  */
-function keptView(id) {
+function keptView(id, identity = store.state) {
     const kept = keptViews.get(id);
 
     keptViews.delete(id);
@@ -1594,7 +1739,12 @@ function keptView(id) {
     }
 
     const hold = holdsFor(kept);
-    const place = hold ? null : kept.place;
+    const bookmark = !hold && kept.device ? tabPlace(kept.view, identity) : undefined;
+    const place = hold || bookmark?.keep === null ? null : (bookmark ?? kept.place);
+
+    if (hold) {
+        dropTabPlaces(id);
+    }
 
     return {
         view: kept.view,
@@ -1638,6 +1788,20 @@ function goesOn(view, data) {
     );
 }
 
+/** Without a device view, the server's first view can still match this tab's bookmark. */
+function viewWithTabPlace(state, data) {
+    const view = mergeView(state.view, data);
+    const place = state.view.conversation == null && data.full ? tabPlace(view, state) : undefined;
+
+    return place === undefined
+        ? { view }
+        : {
+              view,
+              transcriptFrom: place.from,
+              transcriptPlace: place.keep === null ? null : { keep: place.keep },
+          };
+}
+
 function applyView(data) {
     // One of a session this tab has left, sent before the server heard of the switch (`show`): not the one it shows.
     if (data.conversation.id !== store.state.conversationId) {
@@ -1661,7 +1825,7 @@ function applyView(data) {
 
     // A session held for its changes (`holdsFor`) shows with them.
     store.set((state) => ({
-        view: mergeView(state.view, data),
+        ...viewWithTabPlace(state, data),
         missing: null,
         holding: null,
     }));
@@ -2247,6 +2411,7 @@ async function restoreAccount() {
 // A frozen page must not hold an event stream or show its old account on return. Checking the cookie keeps a
 // same-person restore intact, including uploads still held only in memory.
 addEventListener("pagehide", (event) => {
+    flushTabPlace();
     source?.close();
     source = null;
     clearTimeout(accountRetry);
