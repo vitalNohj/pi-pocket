@@ -31,6 +31,8 @@ import type { RunnerView } from "../src/server/runners.ts";
 const there = join(root, "there");
 // Pi can read a parent context file outside its approved folder. Other outside paths remain runner-restricted.
 const outside = join(root, "AGENTS.md");
+// An ordinary file in a folder given to the guest there, outside the session's folder: no context file of Pi's.
+const notes = join(root, "notes.txt");
 let app: App;
 let server: Server;
 let runner: Runner;
@@ -75,6 +77,7 @@ async function request<T = Record<string, unknown>>(
 before(async () => {
     mkdirSync(join(there, "inner"), { recursive: true });
     writeFileSync(outside, "A context file above the session folder.\n");
+    writeFileSync(notes, "Notes beside the session folder.\n");
     writeFileSync(join(there, "inside.txt"), "Inside the session.\n");
     app = await openApp(scriptedModel());
     app.config.lastModel = { provider: "faux", modelId: "faux-1", thinkingLevel: "off" };
@@ -400,6 +403,20 @@ describe("people granted a computer", () => {
             404,
         );
         assert.equal((await request(stranger, `c/${id}/view?path=inside.txt`)).status, 200);
+
+        // An ordinary file there, which the runner lets no session read by itself (`request-gate.ts` `piReads`): the
+        // guest reads it by the folder given to them; who was invited to the session alone does not.
+        const plain = await app.workspace.viewFile(id, guest, notes);
+
+        assert.equal(plain.kind === "text" && plain.text, "Notes beside the session folder.\n");
+        assert.equal(
+            (await request(guest, `c/${id}/view?path=${encodeURIComponent(notes)}`)).status,
+            200,
+        );
+        assert.equal(
+            (await request(stranger, `c/${id}/view?path=${encodeURIComponent(notes)}`)).status,
+            404,
+        );
         app.setAccess(owner(app), stranger.id, { sessions: null });
         assert.equal(app.canSee(stranger, id), false);
     });

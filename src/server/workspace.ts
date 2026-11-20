@@ -185,8 +185,12 @@ export class Workspace {
     /**
      * How a session's folder is reached: this machine's disk, or its computer's daemon. A computer that is offline is a
      * 409 that says so: nothing falls back to this machine.
+     *
+     * `folder`: another folder on its computer, which the caller checked that the person may read (`remoteFile`). The
+     * runner keeps a session's requests inside the folder they name (`request-gate.ts`), so a read there names that
+     * folder, for the same session. Only what the caller does with the result: the session's own tools keep its folder.
      */
-    async #access(id: ConversationId): Promise<FolderAccess> {
+    async #access(id: ConversationId, folder?: string): Promise<FolderAccess> {
         const runner = this.#app.runnerOf(id);
 
         if (runner === undefined) {
@@ -201,8 +205,12 @@ export class Workspace {
                 throw error instanceof HttpError ? error : new HttpError(409, describe(error));
             });
 
+        const scope = this.#app.runnerScope(id);
+
         return remoteAccess(
-            this.#app.runners.env(runner, this.#app.cwdOf(id), this.#app.runnerScope(id)),
+            folder === undefined
+                ? this.#app.runners.env(runner, this.#app.cwdOf(id), scope)
+                : this.#app.runners.env(runner, folder, { ...scope, folder }),
             info,
         );
     }
@@ -622,8 +630,9 @@ export class Workspace {
 
     /**
      * Where a file of a session on another computer is, for a person who may read it there: a path there, in its path
-     * rules, with `~` its home there. Owners and people granted this computer read what Pi can; anyone else only what is
-     * under the session's folder, links followed, as viewers here. Not there, or not theirs: 404.
+     * rules, with `~` its home there. Who is in charge of that computer reads what Pi can; anyone else only what is
+     * under the session's folder or a folder given to them there, links followed. Not there, or not theirs: 404. The
+     * `access` it returns reads that file: for one outside the session's folder, it names the given folder it is in.
      */
     async remoteFile(
         user: User,
@@ -677,7 +686,16 @@ export class Workspace {
             throw new HttpError(404, "Not found");
         }
 
-        return { access, file: target, home };
+        // In a folder given to them, outside the session's folder: the runner would refuse it as the session's.
+        const elsewhere = inside(root)
+            ? undefined
+            : folders.find((base) => base !== undefined && inside(base));
+
+        return {
+            access: elsewhere === undefined ? access : await this.#access(id, elsewhere),
+            file: target,
+            home,
+        };
     }
 
     /** Normalize without a remote read, so a kept image can load while its computer is offline, also after restart. */
