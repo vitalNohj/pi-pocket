@@ -41,6 +41,7 @@ import {
     notify,
     openSheet,
     onItsWay,
+    queuedSending,
     store,
     takeInsert,
     typing,
@@ -2023,8 +2024,8 @@ export function Composer() {
                 html`<div class="inbox">
                     ${inbox.map(
                         (item) => html`<div class="queued">
-                            <span class="queued-mode">
-                                ${queuedMode(item)}
+                            <span class="queued-mode" aria-live="polite">
+                                ${queuedSending(item) ? "Sending..." : queuedMode(item)}
                                 <span class="muted">${queuedBy(item)}</span>
                             </span>
                             <button
@@ -2035,6 +2036,7 @@ export function Composer() {
                                 ${queuedText(item)}
                             </button>
                             ${
+                                !queuedSending(item) &&
                                 canSteer() &&
                                 (!blocked || item.by === me?.id) &&
                                 html`<button
@@ -2048,6 +2050,7 @@ export function Composer() {
                             }
                             ${
                                 // Tapped open, one's own message: move it, or send it now. Only its sender can.
+                                !queuedSending(item) &&
                                 reading === item.id &&
                                 item.by !== undefined &&
                                 item.by === me?.id &&

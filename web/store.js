@@ -2751,6 +2751,42 @@ export async function start() {
 
 const current = () => store.state.conversationId;
 
+/** Whether a reply can still change this card: a newer copy of the queue wins. */
+function isCurrentQueued(id, item) {
+    const { view } = store.state;
+
+    return (
+        item !== undefined &&
+        !changingAccount &&
+        !signingOut &&
+        current() === id &&
+        view.conversation?.id === id &&
+        view.inbox.includes(item)
+    );
+}
+
+/** Confirmed Interrupts, tied to the exact cards they acted on, never saved with a view. */
+const sendingQueued = new WeakSet();
+
+export const queuedSending = (item) => sendingQueued.has(item);
+
+function markQueuedSending(id, item) {
+    if (queuedSending(item)) {
+        return;
+    }
+
+    sendingQueued.add(item);
+    store.set({});
+    // A view with a fresh inbox replaces the cards. Also clear the mark if no fresh inbox comes.
+    setTimeout(() => {
+        sendingQueued.delete(item);
+
+        if (isCurrentQueued(id, item)) {
+            store.set({});
+        }
+    }, 5000);
+}
+
 /**
  * A send's answer, which names what the send made (`key`). One that does not was not the server's, or was cut short:
  * an error with no status, as for no answer, since what came of the send is not known.
@@ -2815,19 +2851,15 @@ export const actions = {
             throw new ApiError(undefined, "The server did not confirm the move. Check the queue.");
         }
 
-        // A mode change is saved before the reply. Show it without waiting for the view, but do not replace a card
-        // the view has since updated or removed. An Interrupt is a task that has yet to send, not a mode change.
-        const { view } = store.state;
+        if (!isCurrentQueued(id, before)) {
+            return result;
+        }
 
-        if (
-            mode !== "interrupt" &&
-            before !== undefined &&
-            before.mode !== mode &&
-            !changingAccount &&
-            current() === id &&
-            view.conversation?.id === id &&
-            view.inbox.includes(before)
-        ) {
+        // A mode change is saved before the reply. An Interrupt is a task that has yet to send, not a mode change.
+        if (mode === "interrupt") {
+            markQueuedSending(id, before);
+        } else if (before.mode !== mode) {
+            const { view } = store.state;
             const inbox = view.inbox.map((item) => (item === before ? { ...item, mode } : item));
 
             store.set({ view: { ...view, inbox } });
@@ -2835,7 +2867,26 @@ export const actions = {
 
         return result;
     },
-    editQueued: (submissionId, id = current()) => api(`c/${id}/edit-queued`, { submissionId }),
+    editQueued: async (submissionId, id = current()) => {
+        const before = store.state.view.inbox.find((item) => item.id === submissionId);
+        const back = await api(`c/${id}/edit-queued`, { submissionId });
+
+        if (typeof back?.text !== "string" || !Array.isArray(back.attachments)) {
+            throw new ApiError(
+                undefined,
+                "The server did not return the message. Check the queue.",
+            );
+        }
+
+        if (isCurrentQueued(id, before)) {
+            const { view } = store.state;
+            const inbox = view.inbox.filter((item) => item !== before);
+
+            store.set({ view: { ...view, inbox } });
+        }
+
+        return back;
+    },
     /** What a Stop held: send them all, or drop one or take it back into the box, by its key. */
     sendHeld: () => api(`c/${current()}/held`, { action: "send" }),
     dropHeld: (key) => api(`c/${current()}/held`, { action: "drop", key }),
