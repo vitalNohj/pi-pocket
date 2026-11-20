@@ -32,9 +32,16 @@ const real = {
     skip: chromium === undefined ? "no Chromium-based browser on this machine" : false,
 } as const;
 
-/** "risky please" calls a tool, which Lancet Guard asks about; everything else is echoed. */
+/** Script a few special requests; echo the rest. */
 const route: FauxResponseStep = (request) => {
     const { text } = lastText(request as never);
+
+    if (text === "fail please") {
+        return fauxAssistantMessage([], {
+            stopReason: "error",
+            errorMessage: "Scripted request failed.",
+        });
+    }
 
     if (text === "ask me") {
         const options = [
@@ -311,6 +318,35 @@ test("local Markdown file links use the viewer", real, async () => {
             )) === true,
         "the environment file contents",
     );
+});
+
+test("failed replies show the stored message time", real, async () => {
+    const id = await newSession(app);
+
+    await say(app, id, "fail please");
+    await fresh();
+    await goTo(id);
+    await until(
+        () =>
+            inPage<boolean>(`
+                return JSON.stringify(document.querySelector(".reply .error-box")?.textContent === "Scripted request failed.");
+            `),
+        "the failed reply",
+    );
+
+    const times = await inPage<{ shown: string[]; expected: string }>(`
+        const { store } = await import("/store.js");
+        const { fromServer } = await import("/seen.js");
+        const entry = [...store.state.view.entries.values()].find(entry => entry.stopReason === "error");
+        const row = document.querySelector(".reply .error-box + .answer-actions");
+
+        return JSON.stringify({
+            shown: [...(row?.querySelectorAll("time") ?? [])].map(time => time.dateTime),
+            expected: new Date(fromServer(entry.at)).toISOString(),
+        });
+    `);
+
+    assert.deepEqual(times.shown, [times.expected], "the error shows its stored message time");
 });
 
 test("completed replies show stored message times across providers", real, async () => {
