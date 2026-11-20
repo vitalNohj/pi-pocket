@@ -189,6 +189,12 @@ export interface StoredRunner {
     createdBy: string;
     /** People the owner granted access to start sessions on this computer. */
     users?: string[];
+    /**
+     * People no longer chosen here whose shares and sessions here are not taken back yet (`app.ts` `#finishLeaving`).
+     * Set in the same save that drops them from `users`, so no share here counts for them from then on (`access.ts`
+     * `Computer.leaving`), also after a restart that cut the rest short.
+     */
+    leaving?: string[];
     /** The folders the owner gave each chosen person here, by person id (`access.ts`). The owner needs none. */
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
@@ -229,6 +235,8 @@ export interface StoredRunner {
 export interface StoredServer {
     /** The people the owner chose: they may use this server. Viewers among them only see. */
     users?: string[];
+    /** People no longer chosen here whose shares and sessions here are not taken back yet (`StoredRunner.leaving`). */
+    leaving?: string[];
     /** The folders the owner gave each chosen person (real paths here), by person id (`access.ts`). */
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
@@ -482,6 +490,32 @@ export const COMPUTER_RIGHTS: readonly ComputerRight[] = ["wheel", "allows"];
 
 /** What a computer's record keeps about those rights, and the people chosen for it. */
 type Rights = { users?: string[]; wheel?: string[]; allows?: string[] };
+
+/** What a computer's record keeps about the people chosen for it, and those leaving it (`StoredRunner.leaving`). */
+type Leaving = { users?: string[]; leaving?: string[] };
+
+/** The people `chosen` no longer names are leaving `target`: marked before its list changes, for the same save. */
+function markLeaving(target: Leaving, chosen: readonly string[]): void {
+    const dropped = (target.users ?? []).filter((each) => !chosen.includes(each));
+
+    if (dropped.length > 0) {
+        target.leaving = [...new Set([...(target.leaving ?? []), ...dropped])];
+    }
+}
+
+/** `people` are no longer leaving `target`; a list with nobody in it leaves no entry. Whether anything changed. */
+function dropLeaving(target: Leaving, people: readonly string[]): boolean {
+    const before = target.leaving ?? [];
+    const rest = before.filter((each) => !people.includes(each));
+
+    if (rest.length === 0) {
+        delete target.leaving;
+    } else {
+        target.leaving = rest;
+    }
+
+    return rest.length !== before.length;
+}
 
 /** Keep each right to the people `keep` names; a right nobody holds leaves no entry. */
 function trimRights(target: Rights, keep: (person: string) => boolean): void {
@@ -1033,6 +1067,7 @@ export class ConfigStore {
                     setList(computer, "given", id, []);
                     setList(computer, "sees", id, []);
                     trimRights(computer, (each) => each !== id);
+                    dropLeaving(computer, [id]);
                 }
             }
 
@@ -1218,6 +1253,8 @@ export class ConfigStore {
         if (runner !== undefined) {
             runner.createdBy = linker;
             runner.users = runner.users?.filter((each) => each !== linker);
+            // In charge of it now: nothing of theirs here is taken back.
+            dropLeaving(runner, [linker]);
             trimRights(runner, (each) => each !== linker);
             this.save();
         }
@@ -1230,6 +1267,7 @@ export class ConfigStore {
         if (runner !== undefined) {
             const chosen = this.#choosable(users, (user) => user.id === runner.createdBy);
 
+            markLeaving(runner, chosen);
             runner.users = chosen;
             trimRights(runner, (each) => chosen.includes(each));
             this.save();
@@ -1246,9 +1284,35 @@ export class ConfigStore {
         this.#changeServer((server) => {
             const chosen = this.#choosable(users, (user) => user.role === "owner");
 
+            markLeaving(server, chosen);
             server.users = chosen;
             trimRights(server, (each) => chosen.includes(each));
         });
+    }
+
+    /** The people leaving computer `id` (undefined: this server): `StoredRunner.leaving`. */
+    leaving(id: string | undefined): readonly string[] {
+        return (id === undefined ? this.#config.server : this.runnerById(id))?.leaving ?? [];
+    }
+
+    /**
+     * What `people` had on computer `id` (undefined: this server) is taken back: they are no longer leaving it. Only
+     * `app.ts` `#finishLeaving` says so, after its saves; choosing a person again does not.
+     */
+    clearLeaving(id: string | undefined, people: readonly string[]): void {
+        if (id === undefined) {
+            if ((this.#config.server?.leaving ?? []).some((each) => people.includes(each))) {
+                this.#changeServer((server) => void dropLeaving(server, people));
+            }
+
+            return;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined && dropLeaving(runner, people)) {
+            this.save();
+        }
     }
 
     /** The people who hold `right` on computer `id` (undefined: this server): `StoredRunner.wheel`, `.allows`. */

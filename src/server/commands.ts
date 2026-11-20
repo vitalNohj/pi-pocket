@@ -1257,7 +1257,10 @@ export class Commands {
         const computer = meta.runner ?? THIS_SERVER;
         const starter = app.policy.starter({ id: String(root), computer, ...meta });
         const shared: string[] = [];
-        const before = new Set(meta.sharedWith ?? []);
+        // Who is leaving its computer (no longer chosen there, their shares not taken back yet) no longer has it.
+        const leaving = (): readonly string[] => app.config.leaving(meta.runner);
+        const had = new Set(meta.sharedWith ?? []);
+        const before = new Set([...had].filter((each) => !leaving().includes(each)));
 
         for (const each of new Set(people)) {
             const person = app.config.userById(each);
@@ -1267,6 +1270,11 @@ export class Commands {
             }
 
             if (app.policy.inCharge(person, computer) || person.id === starter) {
+                continue;
+            }
+
+            // Their share is ending (`app.ts` `#finishLeaving`): this save does not keep it.
+            if (had.has(person.id) && !before.has(person.id)) {
                 continue;
             }
 
@@ -1280,6 +1288,8 @@ export class Commands {
             shared.push(person.id);
         }
 
+        let saved: string[] = shared;
+
         await app.harness.commit(async (tx) => {
             const sessions = await tx.doc(SessionsDoc);
             const item = sessions.items[String(root)];
@@ -1288,15 +1298,25 @@ export class Commands {
                 throw new HttpError(404, "Not a session");
             }
 
-            if (shared.length === 0) {
+            // Checked again here, as it is saved: someone no longer chosen for its computer since the check above is
+            // not shared with anew, and never someone who is leaving it.
+            const now = item.sharedWith ?? [];
+
+            saved = shared.filter(
+                (each) =>
+                    !leaving().includes(each) &&
+                    (now.includes(each) || app.policy.mayUse({ id: each }, computer)),
+            );
+
+            if (saved.length === 0) {
                 delete item.sharedWith;
             } else {
-                item.sharedWith = shared;
+                item.sharedWith = saved;
             }
         }, context);
 
-        const added = shared.filter((each) => !before.has(each));
-        const removed = [...before].filter((each) => !shared.includes(each));
+        const added = saved.filter((each) => !before.has(each));
+        const removed = [...before].filter((each) => !saved.includes(each));
         const names = (ids: string[]) =>
             ids.map((each) => app.config.userById(each)?.name ?? "someone").join(", ");
 
@@ -1312,7 +1332,7 @@ export class Commands {
             );
         }
 
-        return shared;
+        return saved;
     }
 
     async updateSession(

@@ -86,6 +86,25 @@ async function call<T = Record<string, unknown>>(
 
 const listed = (user: User) => app.sessions(user).map((each) => String(each.id));
 
+/**
+ * Run `during` with the guest no longer chosen for this server, as the settings alone say it: what a restart leaves
+ * when it cuts an unchoose short (`app.ts` `#finishLeaving`), with nothing taken back yet. Then the guest is as before.
+ * The app's own unchoose would take their shares and sessions here, which the tests after this one use.
+ */
+async function withoutGuest(during: () => Promise<unknown>): Promise<void> {
+    app.config.setServerUsers([viewer.id]);
+    app.accessChanged();
+
+    try {
+        await during();
+    } finally {
+        app.config.setServerUsers([guest.id, viewer.id]);
+        // Nothing was taken back, so nothing is left to finish: what is shared with the guest counts again.
+        app.config.clearLeaving(undefined, [guest.id]);
+        app.accessChanged();
+    }
+}
+
 /** Every session id a tab was ever sent in a session list. */
 const everListed = (tab: ReturnType<typeof fakeTab>) =>
     new Set(
@@ -458,15 +477,9 @@ describe("favorite folders", () => {
         );
         assert.deepEqual((await call(stranger, "folder-favorites")).body, []);
 
-        app.config.setServerUsers([viewer.id]);
-        app.accessChanged();
-
-        try {
+        await withoutGuest(async () => {
             assert.deepEqual((await call(guest, "folder-favorites")).body, []);
-        } finally {
-            app.config.setServerUsers([guest.id, viewer.id]);
-            app.accessChanged();
-        }
+        });
 
         assert.deepEqual((await call(guest, "folder-favorites")).body, [work]);
     });
@@ -844,12 +857,8 @@ describe("starting sessions, as the app is told", () => {
 
         try {
             assert.equal(startsIn(tab), true);
-            app.config.setServerUsers([viewer.id]);
-            app.accessChanged();
-            await until(() => startsIn(tab) === false, "a hello that says no");
+            await withoutGuest(() => until(() => startsIn(tab) === false, "a hello that says no"));
         } finally {
-            app.config.setServerUsers([guest.id, viewer.id]);
-            app.accessChanged();
             app.detach(tab.client);
         }
     });
@@ -890,18 +899,12 @@ describe("linked sessions", () => {
         assert.ok(!listed(viewer).includes(String(session)));
 
         // No longer chosen: Pi working for them starts nothing more.
-        app.config.setServerUsers([viewer.id]);
-        app.accessChanged();
-
-        try {
-            await assert.rejects(
+        await withoutGuest(() =>
+            assert.rejects(
                 app.linkedSessions.start(source, { message: "another" }, crypto.randomUUID()),
                 { status: 404 },
-            );
-        } finally {
-            app.config.setServerUsers([guest.id, viewer.id]);
-            app.accessChanged();
-        }
+            ),
+        );
     });
 });
 

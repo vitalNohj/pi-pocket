@@ -606,6 +606,8 @@ export class PocketApp {
     /** The extensions installed now: every conversation runs with them, except PiP's own, which PiP alone selects. */
     #registry: Registry | undefined;
     #unsubscribeCommits: (() => void) | undefined;
+    /** The change of a computer's people that runs now, or the last one: the next waits for it (`#choose`). */
+    #choosing: Promise<void> = Promise.resolve();
     #unsubscribeRunEnds: (() => void) | undefined;
     #unsubscribeApprovals: (() => void) | undefined;
     #unsubscribeBrowsers: (() => void) | undefined;
@@ -1304,6 +1306,12 @@ export class PocketApp {
         // A removal a restart cut short: what is still saved for someone no longer here goes to who is in charge. After
         // the observer, so what is kept in memory follows.
         await this.#handOverGone();
+
+        // An unchoose a restart cut short: what the people it dropped still have there is taken back.
+        for (const id of [THIS_SERVER, ...this.config.runners.map((each) => each.id)]) {
+            await this.#finishLeaving(id);
+        }
+
         this.#unsubscribeRunEnds = this.linkedSessions.watch();
         this.#unsubscribeApprovals = this.approvals.subscribe((id) => {
             void this.#rooms.get(id)?.then(
@@ -2957,6 +2965,7 @@ export class PocketApp {
                         id,
                         linker: config.users.find((each) => each.role === "owner")?.id ?? "",
                         chosen: server.users ?? [],
+                        leaving: server.leaving ?? [],
                         given: (person) => config.givenFolders(undefined, person),
                         sees: (person) => config.seenFolders(undefined, person),
                         wheel: config.rightHolders(undefined, "wheel"),
@@ -2975,6 +2984,7 @@ export class PocketApp {
                     id,
                     linker: runner.createdBy,
                     chosen: runner.users ?? [],
+                    leaving: runner.leaving ?? [],
                     given: (person) => config.givenFolders(id, person),
                     sees: (person) => config.seenFolders(id, person),
                     wheel: config.rightHolders(id, "wheel"),
@@ -5236,34 +5246,71 @@ export class PocketApp {
      * at once; their sessions there, and their tasks, move to who is in charge (`handOver`).
      */
     async choosePeople(id: string, users: string[]): Promise<void> {
-        const before =
-            id === THIS_SERVER
-                ? (this.config.server.users ?? [])
-                : (this.config.runnerById(id)?.users ?? []);
+        await this.#choose(id, () => users);
+    }
 
-        if (id === THIS_SERVER) {
-            this.config.setServerUsers(users);
-        } else {
-            this.config.setRunnerUsers(id, users);
+    /**
+     * Change the people of computer `id`: `next` gives the new list from the list as it is. One such change at a time,
+     * on any computer: a change reads the list, saves it, and takes back what the people it dropped had there
+     * (`#finishLeaving`), and a second change in between could end the mark of someone the first has not finished.
+     *
+     * The list is saved first, with everyone it drops marked as leaving in that same save (`config.ts`
+     * `StoredRunner.leaving`): from then on no share there counts for them (`access.ts` `Computer.leaving`), though the
+     * shares themselves are saved elsewhere and are removed a moment later.
+     */
+    async #choose(id: string, next: (now: readonly string[]) => string[]): Promise<void> {
+        const earlier = this.#choosing;
+
+        let done = (): void => {};
+
+        this.#choosing = new Promise<void>((resolve) => {
+            done = resolve;
+        });
+
+        try {
+            await earlier;
+
+            const users = next(
+                id === THIS_SERVER
+                    ? (this.config.server.users ?? [])
+                    : (this.config.runnerById(id)?.users ?? []),
+            );
+
+            if (id === THIS_SERVER) {
+                this.config.setServerUsers(users);
+            } else {
+                this.config.setRunnerUsers(id, users);
+            }
+
+            // Their tabs leave at once, before the saves below: no event of a session there reaches them meanwhile.
+            this.accessChanged();
+            await this.#finishLeaving(id);
+        } finally {
+            done();
         }
+    }
 
-        const gone = before.filter((each) => !users.includes(each));
+    /**
+     * Take back what the people leaving computer `id` still have there (`config.ts` `StoredRunner.leaving`): their
+     * shares, in one commit; then their sessions and tasks, which move to who is in charge (`handOver`). Only then are
+     * they no longer marked: a restart in between leaves the mark, and the next start finishes it. Chosen again later,
+     * they see only what is shared with them anew.
+     */
+    async #finishLeaving(id: string): Promise<void> {
+        const key = id === THIS_SERVER ? undefined : id;
+        const leaving = [...this.config.leaving(key)];
 
-        // Their tabs leave at once, before the hand-over's saves: no event of a session there reaches them meanwhile.
-        this.accessChanged();
-
-        if (gone.length === 0) {
+        if (leaving.length === 0) {
             return;
         }
 
-        // Shares on that computer end with it: chosen again later, they see only what is shared with them anew.
         await this.harness.commit(async (tx) => {
             for (const meta of Object.values((await tx.doc(SessionsDoc)).items)) {
                 if ((meta.runner ?? THIS_SERVER) !== id || meta.sharedWith === undefined) {
                     continue;
                 }
 
-                const kept = meta.sharedWith.filter((each) => !gone.includes(each));
+                const kept = meta.sharedWith.filter((each) => !leaving.includes(each));
 
                 if (kept.length === 0) {
                     delete meta.sharedWith;
@@ -5273,10 +5320,11 @@ export class PocketApp {
             }
         }, context);
 
-        for (const person of gone) {
+        for (const person of leaving) {
             await this.handOver(person, id);
         }
 
+        this.config.clearLeaving(key, leaving);
         this.accessChanged();
     }
 
@@ -5303,12 +5351,9 @@ export class PocketApp {
             );
         }
 
-        const now =
-            id === THIS_SERVER
-                ? (this.config.server.users ?? [])
-                : (this.config.runnerById(id)?.users ?? []);
-
-        await this.choosePeople(id, on ? [...now, person] : now.filter((each) => each !== person));
+        await this.#choose(id, (now) =>
+            on ? [...now, person] : now.filter((each) => each !== person),
+        );
     }
 
     /**

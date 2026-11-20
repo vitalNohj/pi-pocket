@@ -34,6 +34,7 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
         id,
         linker: id === THIS_SERVER ? owner.id : linker.id,
         chosen: [guest.id, viewer.id],
+        leaving: [],
         // The guest was given /given (and what is in it); no one else anything.
         given: (person) => (person === guest.id ? ["/given"] : []),
         sees: () => [],
@@ -885,5 +886,33 @@ describe("approval methods", () => {
         auth.confirm(guest.id, code(other.secret, clock.now + STEP_MS));
         auth.remove(guest.id, owner);
         assert.equal(auth.linked(guest.id), false);
+    });
+});
+
+describe("a person leaving a computer", () => {
+    it("has no share there, while their share on another computer still counts", () => {
+        const { policy } = world(
+            [
+                computer(THIS_SERVER, { chosen: [viewer.id], leaving: [guest.id] }),
+                computer("runner"),
+            ],
+            [
+                { id: "60", computer: THIS_SERVER, createdBy: owner.id, sharedWith: [guest.id] },
+                { id: "61", computer: "runner", createdBy: linker.id, sharedWith: [guest.id] },
+            ],
+        );
+
+        assert.equal(policy.maySee(guest, "60"), false);
+        assert.equal(policy.maySteer(guest, "60"), false);
+        assert.equal(policy.maySee(guest, "61"), true);
+    });
+
+    it("leaves a share with someone who was never chosen there", () => {
+        const { policy } = world(
+            [computer(THIS_SERVER, { chosen: [] })],
+            [{ id: "60", computer: THIS_SERVER, createdBy: owner.id, sharedWith: [guest.id] }],
+        );
+
+        assert.equal(policy.maySee(guest, "60"), true);
     });
 });

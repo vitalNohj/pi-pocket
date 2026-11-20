@@ -38,6 +38,12 @@ export type Computer = {
     linker: string;
     /** The people the one in charge chose: they may use it. Viewers among them only see. */
     chosen: readonly string[];
+    /**
+     * The people no longer chosen whose shares and sessions here are not taken back yet. No share here counts for them
+     * (`#sharedWith`): being dropped ends their shares at once, before the saves that remove them, and whatever cuts
+     * those saves short.
+     */
+    leaving: readonly string[];
     /** The folders the one in charge gave `person` here (real paths); each covers the folders in it. */
     given(person: string): readonly string[];
     /** Of those, the folders in which `person` sees every session, whoever started it (`seesFolder`). */
@@ -488,16 +494,24 @@ export class AccessPolicy {
         // A removed computer's sessions run nowhere: their starter and the people they were shared with still see them,
         // to read and archive them. Nobody else: unlinking a computer shows no one its private sessions.
         if (this.#facts.computer(facts.computer) === undefined) {
-            return (
-                this.starter(facts) === current.id ||
-                facts.sharedWith?.includes(current.id) === true
-            );
+            return this.starter(facts) === current.id || this.#sharedWith(current, facts);
         }
 
         return (
-            facts.sharedWith?.includes(current.id) === true ||
+            this.#sharedWith(current, facts) ||
             (this.starter(facts) === current.id && this.mayUse(current, facts.computer)) ||
             this.#seesByFolder(current, facts)
+        );
+    }
+
+    /**
+     * Is session `facts` shared with `person`, one at a time. Not while they are leaving its computer
+     * (`Computer.leaving`): no longer chosen there, with their shares there not taken back yet.
+     */
+    #sharedWith(person: Pick<Person, "id">, facts: SessionFacts): boolean {
+        return (
+            facts.sharedWith?.includes(person.id) === true &&
+            this.#facts.computer(facts.computer)?.leaving.includes(person.id) !== true
         );
     }
 
@@ -529,7 +543,7 @@ export class AccessPolicy {
             facts.pip === undefined &&
             current.sessions === undefined &&
             this.starter(facts) !== current.id &&
-            facts.sharedWith?.includes(current.id) !== true &&
+            !this.#sharedWith(current, facts) &&
             !this.inCharge(current, facts.computer) &&
             this.#seesByFolder(current, facts)
         );
