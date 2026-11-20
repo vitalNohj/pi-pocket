@@ -3144,9 +3144,19 @@ export class PocketApp {
 
         folderRule();
 
-        // From another computer, it starts as a new session there would.
+        // From another computer, it starts as a new session there would. Its approval can wait for minutes: where the
+        // copy is saved, the source must still be theirs to steer, as it was when they asked (`commands.ts`
+        // `#requireForkable`). Not its approval: that is of the source's computer, and was never asked for here.
         if (!sameComputer) {
-            return this.approveStart(user, real, signal, computer);
+            const started = await this.approveStart(user, real, signal, computer);
+
+            return {
+                check: () => {
+                    started.check();
+                    this.requireSteer(user, from);
+                },
+                keep: started.keep,
+            };
         }
 
         await this.#requireApproval(from, user, signal);

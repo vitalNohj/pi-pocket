@@ -485,6 +485,45 @@ describe("a copy with a place", () => {
         assert.equal(count(), before, "no copy was made, here or there");
     });
 
+    it("is not made when its session stops being shared while the other computer's approval waits", async () => {
+        const { id, reply } = await talked();
+        const before = app.sessions().length;
+
+        asked.length = 0;
+        // The owner leaves the request waiting, and answers it by hand below.
+        answer = () => undefined;
+
+        try {
+            await asking(async (guest) => {
+                const copying = app.commands.fork(id, guest, {
+                    entryId: reply,
+                    place: { runner: laptop.id, cwd: laptop.folder },
+                });
+                const outcome = copying.then(
+                    () => "made",
+                    (error: unknown) => error,
+                );
+
+                await until(() => asked.length === 1, "the copy to ask for the laptop");
+                assert.equal(app.canSee(guest, id), true, "shared while they asked");
+
+                // The session is taken back, then the folder on the laptop is allowed.
+                await app.commands.shareSession(id, owner(app), []);
+                assert.equal(app.canSee(guest, id), false);
+                await app.folderRequests.approve(owner(app), asked[0]!.id, { method: "owner" });
+
+                const error = (await outcome) as { status?: number; message?: string };
+
+                assert.equal(error.status, 404, String(error.message ?? error));
+                assert.match(String(error.message), /not shared with you/);
+            });
+        } finally {
+            answer = () => true;
+        }
+
+        assert.equal(app.sessions().length, before, "no copy was made");
+    });
+
     it("withdraws reply forks and resends without making their copies", async () => {
         const { id, reply, prompt } = await talked();
 
