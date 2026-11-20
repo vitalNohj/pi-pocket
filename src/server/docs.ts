@@ -83,6 +83,12 @@ export type SessionMeta = {
     repo?: string;
 };
 
+/** What access reads of a session's record. A field the policy starts to read is added here. */
+export type AccessMeta = Pick<
+    SessionMeta,
+    "cwd" | "runner" | "createdBy" | "sharedWith" | "pip" | "worktree"
+>;
+
 /** The catalogue of user-facing sessions: ownerless conversations created by the app. Subagents are not listed. */
 export const SessionsDoc = defineDoc<{ items: Record<string, SessionMeta> }>({
     kind: "pocket.sessions",

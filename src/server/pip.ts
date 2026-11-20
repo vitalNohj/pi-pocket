@@ -371,6 +371,7 @@ export class Pip {
 
                     agent.extensions = [...PIP_EXTENSIONS];
                     agent.tools = { remove: [...PIP_WITHOUT] };
+                    // This initializer only adds the new session's record.
                     (await tx.doc(SessionsDoc)).items[String(id)] = {
                         title: PIP_NAME,
                         cwd,

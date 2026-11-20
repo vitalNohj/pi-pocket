@@ -636,6 +636,7 @@ export class Commands {
                                 : { thinkingLevel: initial.thinkingLevel }),
                         },
                         init: async (tx, id) => {
+                            // This initializer only adds the new session's record.
                             const sessions = await tx.doc(SessionsDoc);
 
                             (await tx.doc(AgentDoc, id)).extensions = app.remoteExtensions();
@@ -744,6 +745,7 @@ export class Commands {
                                   : { thinkingLevel: initial.thinkingLevel }),
                         },
                         init: async (tx, id) => {
+                            // This initializer only adds the new session's record.
                             const sessions = await tx.doc(SessionsDoc);
 
                             sessions.items[String(id)] = {
@@ -912,6 +914,7 @@ export class Commands {
                         (await tx.doc(AgentDoc, id)).extensions = app.remoteExtensions();
                     }
 
+                    // This initializer only adds the new session's record.
                     (await tx.doc(SessionsDoc)).items[String(id)] = {
                         cwd,
                         title,
@@ -1080,12 +1083,12 @@ export class Commands {
 
         // One save: the session and its subagents go back to the folders the worktree came from, and the session's
         // record says so. Nothing that cuts it short leaves the two apart.
-        await app.harness.commit(async (tx) => {
+        await app.commit(async (tx) => {
             for (const move of moves) {
                 await configureAgent(tx, move.id, { cwd: move.cwd });
             }
 
-            const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+            const meta = (await app.sessionsIn(tx)).items[String(id)];
 
             if (meta === undefined) {
                 return;
@@ -1338,8 +1341,8 @@ export class Commands {
         let was: string[] = [];
         let handed: [string, Map<string, string>][] = [];
 
-        await app.harness.commit(async (tx) => {
-            const sessions = await tx.doc(SessionsDoc);
+        await app.commit(async (tx) => {
+            const sessions = await app.sessionsIn(tx);
             const item = sessions.items[String(root)];
 
             if (item === undefined) {
@@ -1693,8 +1696,8 @@ export class Commands {
         const saving = app.admission(id, user, { stop: stops });
         let warmText: string | undefined;
 
-        await app.harness.commit(async (tx) => {
-            const sessions = await tx.doc(SessionsDoc);
+        await app.commit(async (tx) => {
+            const sessions = await app.sessionsIn(tx);
             const meta = sessions.items[String(id)];
 
             if (meta === undefined) {
@@ -2445,8 +2448,8 @@ export class Commands {
 
         let provisional: string | undefined;
 
-        await this.#app.harness.commit(async (tx) => {
-            const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+        await this.#app.commit(async (tx) => {
+            const meta = (await this.#app.sessionsIn(tx)).items[String(id)];
 
             if (meta === undefined) {
                 return;
@@ -3252,7 +3255,7 @@ export class Commands {
 
         // One save: where Pi works and the session's record of it change together. Access is judged by the record, so
         // nothing that cuts a move short leaves a session judged by a folder it no longer works in.
-        await app.harness.commit(async (tx) => {
+        await app.commit(async (tx) => {
             if (request.pipPanel === true) {
                 // Check and save together: a turn may have started while the picker was open.
                 const live = await tx.doc(LiveDoc, id);
@@ -3267,7 +3270,7 @@ export class Commands {
             }
 
             if (cwd !== undefined) {
-                const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+                const meta = (await app.sessionsIn(tx)).items[String(id)];
 
                 if (meta !== undefined) {
                     meta.cwd = cwd;
@@ -4102,7 +4105,7 @@ export class Commands {
         // still start sessions here.
         const saving = app.admission(id, user, { also: starts });
         // Check the queue and newest message on the same commit that makes the fork and archives its source.
-        const { forked, entry, wasArchived } = await app.harness.commit(async (tx) => {
+        const { forked, entry, wasArchived } = await app.commit(async (tx) => {
             const live = await tx.doc(LiveDoc, id);
             const inbox = await tx.doc(InboxDoc, id);
 
@@ -4128,7 +4131,7 @@ export class Commands {
                     1,
                 )
             ).items;
-            const source = (await tx.doc(SessionsDoc)).items[String(id)];
+            const source = (await app.sessionsIn(tx)).items[String(id)];
 
             if (source === undefined) {
                 throw new HttpError(400, "Only sessions can be forked");
@@ -4362,8 +4365,8 @@ export class Commands {
 
         return this.repoOf(runner, cwd, id)
             .then((repo) =>
-                app.harness.commit(async (tx) => {
-                    const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+                app.commit(async (tx) => {
+                    const meta = (await app.sessionsIn(tx)).items[String(id)];
 
                     if (meta === undefined || meta.cwd !== cwd || meta.repo === repo) {
                         return;
@@ -4689,6 +4692,7 @@ export class Commands {
     ): Promise<void> {
         const app = this.#app;
         const { at, title, cwd, worktree, runner, runnerPermission, moved, resend } = fork;
+        // This initializer only adds the new session's record.
         const sessions = await tx.doc(SessionsDoc);
         const now = Date.now();
         const starter = fork.keeps === undefined ? user.id : fork.keeps.createdBy;

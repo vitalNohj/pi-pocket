@@ -189,6 +189,8 @@ It gets each commit once it is stored (`Harness.observeCommits`). Since Pi Durab
 
 Everything here is synchronous. A commit listener may not call the harness's session APIs, so a write it causes (noting a message's author, or moving a session up the list when Pi starts work there) runs in `setImmediate`. Keep this one coordinator: separate listeners would make their registration order a billing rule nobody can see.
 
+At a save, `app.admission` must pass on both the published state and what the commit line holds for that session. A preceding commit can change access before it publishes, so a queued save cannot rely on publication alone. Commits that take the session records or take-turns state go through `app.commit`, except new-session initializers and read-only wheel checks. The line view compares only touched session records, or all published records if the commit lists or replaces the items. Only `recheck` uses this view for access decisions; lists, live events, and eviction still use published state.
+
 Updates to tabs are coalesced:
 
 | What                                                                       | How often, at most |

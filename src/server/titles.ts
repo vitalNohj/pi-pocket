@@ -9,7 +9,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Usage } from "@earendil-works/pi-ai";
 import { type ConversationId, ProviderDoc, UsageDoc } from "@earendil-works/pi-durable";
 import type { PocketApp } from "./app.ts";
-import { SessionsDoc } from "./docs.ts";
 import { describe } from "./errors.ts";
 import { noWait } from "./limit-gate.ts";
 
@@ -137,7 +136,7 @@ export async function writeTitle(
             reply.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
         );
 
-        await app.harness.commit(async (tx) => {
+        await app.commit(async (tx) => {
             const usage = await tx.doc(UsageDoc, id);
             const key = `${model.provider}/${model.id}`;
 
@@ -156,7 +155,7 @@ export async function writeTitle(
                 return;
             }
 
-            const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+            const meta = (await app.sessionsIn(tx)).items[String(id)];
 
             if (meta !== undefined && meta.title === provisional) {
                 meta.title = title;

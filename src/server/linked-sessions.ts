@@ -25,13 +25,7 @@ import type {
     LinkedSessionsApi,
 } from "./host.ts";
 import type { RequestActor } from "./extension-request.ts";
-import {
-    LinkedSessionCallsDoc,
-    LinkedSessionPeersDoc,
-    PlanDoc,
-    SessionsDoc,
-    TurnsDoc,
-} from "./docs.ts";
+import { LinkedSessionCallsDoc, LinkedSessionPeersDoc, PlanDoc, TurnsDoc } from "./docs.ts";
 import { THIS_SERVER } from "./access.ts";
 import { ChooseModelError, describe, HttpError } from "./errors.ts";
 import { defang, INVISIBLE_CLASS } from "./fence.ts";
@@ -198,6 +192,7 @@ export class LinkedSessions implements LinkedSessionsApi {
     ): Promise<User> {
         await this.#authorize(tx, source, actor);
 
+        // Read-only check of the target's wheel.
         const turns = await tx.doc(TurnsDoc, this.#app.rootOf(target));
         const targetPlan = await tx.doc(PlanDoc, target);
         const agent = await tx.doc(AgentDoc, source);
@@ -242,7 +237,9 @@ export class LinkedSessions implements LinkedSessionsApi {
         const app = this.#app;
         const agent = await tx.doc(AgentDoc, source);
         const plan = await tx.doc(PlanDoc, source);
+        // Read-only check of the source's wheel.
         const sourceTurns = await tx.doc(TurnsDoc, app.rootOf(source));
+        // Read-only check of the target's wheel.
         const targetTurns = await tx.doc(TurnsDoc, app.rootOf(target));
         const targetPlan = await tx.doc(PlanDoc, target);
         const user = await this.#authorizeTarget(tx, source, target, actor, approved);
@@ -971,7 +968,7 @@ export class LinkedSessions implements LinkedSessionsApi {
 
         const now = Date.now();
 
-        return app.harness
+        return app
             .commit(
                 async (tx) => {
                     let inherited = agent;
@@ -1019,7 +1016,7 @@ export class LinkedSessions implements LinkedSessionsApi {
                         return receipt.conversationId as unknown as ConversationId;
                     }
 
-                    const sessions = await tx.doc(SessionsDoc);
+                    const sessions = await app.sessionsIn(tx);
                     const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
 
                     const childAgent = await tx.doc(AgentDoc, child.id);
@@ -1216,7 +1213,7 @@ export class LinkedSessions implements LinkedSessionsApi {
         await this.#maySend(source, user);
 
         // The switch and its receipt are one commit: a crash leaves neither.
-        return app.harness.commit(async (tx) => {
+        return app.commit(async (tx) => {
             const record = recordOf(await tx.doc(LinkedSessionCallsDoc, source), token, app.now());
 
             if (record.conversationId !== undefined && record.conversationId !== Number(source)) {
@@ -1231,7 +1228,7 @@ export class LinkedSessions implements LinkedSessionsApi {
                 return { take: record.result.take };
             }
 
-            const meta = (await tx.doc(SessionsDoc)).items[String(source)];
+            const meta = (await app.sessionsIn(tx)).items[String(source)];
 
             if (meta === undefined) {
                 throw new HttpError(404, "Not a session");
@@ -1325,7 +1322,7 @@ export class LinkedSessions implements LinkedSessionsApi {
 
         // The archive and its receipt are one commit: a crash leaves neither, and a key for another session is refused
         // before this one changes. The activity line follows, as it does for a person's own archive.
-        const { result, changed } = await app.harness.commit(async (tx) => {
+        const { result, changed } = await app.commit(async (tx) => {
             const record = recordOf(await tx.doc(LinkedSessionCallsDoc, source), token, app.now());
 
             if (record.conversationId !== undefined && record.conversationId !== Number(id)) {
@@ -1346,7 +1343,7 @@ export class LinkedSessions implements LinkedSessionsApi {
                 };
             }
 
-            const sessions = await tx.doc(SessionsDoc);
+            const sessions = await app.sessionsIn(tx);
             const meta = sessions.items[String(id)];
 
             if (meta === undefined) {

@@ -17,7 +17,6 @@ import {
     type Pin,
     PinsDoc,
     ReactionsDoc,
-    TurnsDoc,
 } from "./docs.ts";
 import { THIS_SERVER } from "./access.ts";
 import { describe, HttpError } from "./errors.ts";
@@ -466,8 +465,8 @@ export class Collab {
         let line: string | undefined;
 
         try {
-            await app.harness.commit(async (tx) => {
-                const doc = await tx.doc(TurnsDoc, root);
+            await app.commit(async (tx) => {
+                const doc = await app.turnsIn(tx, root);
                 const isDriver = doc.driver === user.id;
 
                 if (action === "on") {

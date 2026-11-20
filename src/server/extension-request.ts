@@ -101,6 +101,7 @@ export class ExtensionRequest implements RequestActor {
     async authorize(tx: Tx, mutation: boolean): Promise<User> {
         this.current();
 
+        // Read-only check of the source's wheel.
         const turns =
             mutation && this.#source !== undefined
                 ? await tx.doc(TurnsDoc, this.#app.rootOf(this.#source))

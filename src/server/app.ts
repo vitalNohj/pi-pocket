@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, posix, resolve as resolvePath, win32 } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Draft } from "@earendil-works/chord/delta";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
     getAgentDir,
@@ -24,6 +25,7 @@ import {
 import {
     AgentDoc,
     type AgentState,
+    type CommitOptions,
     type CommitPublication,
     configure as configureAgent,
     type Conversation,
@@ -73,6 +75,7 @@ import {
     type User,
 } from "./config.ts";
 import {
+    type AccessMeta,
     ArtifactAssetDoc,
     ArtifactBodyDoc,
     type ArtifactMeta,
@@ -99,6 +102,7 @@ import {
     type SubagentRecord,
     ScheduleDoc,
     SubagentsDoc,
+    type Turns,
     TurnsDoc,
     WatchDoc,
 } from "./docs.ts";
@@ -428,6 +432,95 @@ function failedSubagents(
         }));
 }
 
+/** Copy only what access reads, including when `meta` is a transaction draft. */
+function accessOf(meta: AccessMeta): AccessMeta {
+    const { cwd, runner, createdBy, sharedWith, pip, worktree } = meta;
+    const copy: AccessMeta = { cwd };
+
+    if (runner !== undefined) {
+        copy.runner = runner;
+    }
+
+    if (createdBy !== undefined) {
+        copy.createdBy = createdBy;
+    }
+
+    if (sharedWith !== undefined) {
+        copy.sharedWith = [...sharedWith];
+    }
+
+    if (pip !== undefined) {
+        copy.pip = pip;
+    }
+
+    if (worktree !== undefined) {
+        const { path, branch, source } = worktree;
+
+        copy.worktree = { path, branch, source };
+    }
+
+    return copy;
+}
+
+type SessionsDraft = Draft<ReturnType<typeof SessionsDoc.definition.initial>>;
+
+type Scope = {
+    sessions?: SessionsDraft;
+    sessionsView?: Promise<SessionsDraft>;
+    touched: Set<string>;
+    all: boolean;
+    turns: Map<string, Draft<Turns>>;
+};
+
+/** Record which items the caller could have changed, without wrapping the item drafts themselves. */
+function recordSessions(draft: SessionsDraft, scope: Scope): SessionsDraft {
+    const touch = (key: string | symbol): void => {
+        if (typeof key === "string") {
+            scope.touched.add(key);
+        }
+    };
+
+    const wrap = (items: SessionsDraft["items"]) =>
+        new Proxy(items, {
+            get(target, key) {
+                touch(key);
+
+                return Reflect.get(target, key);
+            },
+            set(target, key, value) {
+                touch(key);
+
+                return Reflect.set(target, key, value);
+            },
+            deleteProperty(target, key) {
+                touch(key);
+
+                return Reflect.deleteProperty(target, key);
+            },
+            ownKeys(target) {
+                scope.all = true;
+
+                return Reflect.ownKeys(target);
+            },
+        });
+    let items: SessionsDraft["items"] | undefined;
+
+    return new Proxy(draft, {
+        get(target, key) {
+            return key === "items" ? (items ??= wrap(target.items)) : Reflect.get(target, key);
+        },
+        set(target, key, value) {
+            if (key === "items") {
+                scope.all = true;
+                // On the next read the view must use the replacement as its target.
+                items = undefined;
+            }
+
+            return Reflect.set(target, key, value);
+        },
+    });
+}
+
 export interface OpenOptions {
     dataDir: string;
     defaultCwd: string;
@@ -615,6 +708,14 @@ export class PocketApp {
     readonly #subagents = new Map<ConversationId, SubagentsOf>();
     #sessions: Record<string, SessionMeta> = {};
     #sessionsTimer: NodeJS.Timeout | undefined;
+    /** Changes made on the commit line, for the second pass of `recheck` only. */
+    readonly #lineSessions = new Map<string, { meta: AccessMeta | null; token: object }>();
+    readonly #lineTurns = new Map<
+        string,
+        { turns: { on: boolean; driver?: string }; token: object }
+    >();
+    readonly #scopes = new WeakMap<Tx, Scope>();
+    #atSave = false;
     /** The extensions installed now: every conversation runs with them, except PiP's own, which PiP alone selects. */
     #registry: Registry | undefined;
     #unsubscribeCommits: (() => void) | undefined;
@@ -1567,15 +1668,15 @@ export class PocketApp {
      */
     #movedUp(id: ConversationId, at: number): void {
         setImmediate(() => {
-            this.harness
-                .commit(async (tx) => {
-                    const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+            this.commit(async (tx) => {
+                const meta = (await this.sessionsIn(tx)).items[String(id)];
 
-                    if (meta !== undefined && meta.updatedAt < at) {
-                        meta.updatedAt = Date.now();
-                    }
-                }, context)
-                .catch((error: unknown) => this.log(`session not moved up: ${describe(error)}`));
+                if (meta !== undefined && meta.updatedAt < at) {
+                    meta.updatedAt = Date.now();
+                }
+            }, context).catch((error: unknown) =>
+                this.log(`session not moved up: ${describe(error)}`),
+            );
         });
     }
 
@@ -3077,7 +3178,9 @@ export class PocketApp {
             approved: (id) => this.folderApprovals.live(id),
             session: (id) => {
                 const root = String(this.rootOf(Number(id) as unknown as ConversationId));
-                const meta = this.#sessions[root];
+                const held = this.#atSave ? this.#lineSessions.get(root) : undefined;
+                const meta: AccessMeta | undefined =
+                    held === undefined ? this.#sessions[root] : (held.meta ?? undefined);
                 const folder = (): string => this.#accessFolder(meta!);
 
                 return meta === undefined
@@ -3281,6 +3384,7 @@ export class PocketApp {
      * there; else undefined. A copy made without a worktree of its own works in its source's, and has no record of it.
      */
     #worktreeSource(computer: string, folder: string): string | undefined {
+        // Even at a save, other sessions' worktrees are read from the published copy.
         // The sessions' record is replaced, never changed in place (`#committed`), so the list is good while it is the
         // same record. A list of sessions asks this once for each of them (`access.ts` `#seesByFolder`).
         if (this.#worktrees?.of !== this.#sessions) {
@@ -3338,7 +3442,7 @@ export class PocketApp {
      * Its own counts only while it works in it. Moved to another folder, it is judged by that folder: the record of its
      * worktree stays, to remove the worktree later (`commands.ts` `removeWorktree`), and gives nobody anything.
      */
-    #accessFolder(meta: SessionMeta): string {
+    #accessFolder(meta: AccessMeta): string {
         const own =
             meta.worktree !== undefined && inFolder(meta.cwd, meta.worktree.path)
                 ? meta.worktree.source
@@ -3870,8 +3974,8 @@ export class PocketApp {
         const moved = new Map<string, string>();
         let lost = new Map<string, string>();
 
-        await this.harness.commit(async (tx) => {
-            const sessions = await tx.doc(SessionsDoc);
+        await this.commit(async (tx) => {
+            const sessions = await this.sessionsIn(tx);
 
             for (const [id, meta] of Object.entries(sessions.items)) {
                 const where = meta.runner ?? THIS_SERVER;
@@ -4122,8 +4226,8 @@ export class PocketApp {
             return;
         }
 
-        await this.harness.commit(async (tx) => {
-            const sessions = await tx.doc(SessionsDoc);
+        await this.commit(async (tx) => {
+            const sessions = await this.sessionsIn(tx);
 
             for (const [key, change] of changes) {
                 const meta = sessions.items[key];
@@ -4457,8 +4561,28 @@ export class PocketApp {
      * approval asked, also on a blocked computer.
      */
     recheck(id: ConversationId, user: User, task?: boolean, stop?: boolean): void {
+        this.#recheck(id, user, task, stop);
+        const root = String(this.rootOf(id));
+
+        if (!this.#lineSessions.has(root) && !this.#lineTurns.has(root)) {
+            return;
+        }
+
+        this.#atSave = true;
+
+        try {
+            this.#recheck(id, user, task, stop);
+        } finally {
+            this.#atSave = false;
+        }
+    }
+
+    #recheck(id: ConversationId, user: User, task?: boolean, stop?: boolean): void {
         this.requireSteer(user, id);
-        this.#requireWheel(this.#turns.get(String(this.rootOf(id))), user);
+        const root = String(this.rootOf(id));
+        const held = this.#atSave ? this.#lineTurns.get(root)?.turns : undefined;
+
+        this.#requireWheel(held ?? this.#turns.get(root), user);
 
         if (stop === true) {
             return;
@@ -5136,6 +5260,118 @@ export class PocketApp {
         return [...this.#busy];
     }
 
+    /** Open a commit that can change what admission reads before publication. */
+    async commit<T>(
+        change: (tx: Tx) => T | Promise<T>,
+        context: Context,
+        options?: CommitOptions,
+    ): Promise<T> {
+        const token = {};
+        const sessions: string[] = [];
+        const turns: string[] = [];
+
+        try {
+            return await this.harness.commit(
+                async (tx) => {
+                    const scope: Scope = { touched: new Set(), all: false, turns: new Map() };
+
+                    this.#scopes.set(tx, scope);
+
+                    try {
+                        const result = await change(tx);
+
+                        this.#applyLine(scope, token, sessions, turns);
+
+                        return result;
+                    } finally {
+                        this.#scopes.delete(tx);
+                    }
+                },
+                context,
+                options,
+            );
+        } finally {
+            for (const id of sessions) {
+                if (this.#lineSessions.get(id)?.token === token) {
+                    this.#lineSessions.delete(id);
+                }
+            }
+
+            for (const root of turns) {
+                if (this.#lineTurns.get(root)?.token === token) {
+                    this.#lineTurns.delete(root);
+                }
+            }
+        }
+    }
+
+    async sessionsIn(tx: Tx): Promise<SessionsDraft> {
+        const scope = this.#scopes.get(tx);
+
+        if (scope === undefined) {
+            throw new Error("Take this document in app.commit");
+        }
+
+        return (scope.sessionsView ??= tx.doc(SessionsDoc).then((draft) => {
+            scope.sessions = draft;
+
+            return recordSessions(draft, scope);
+        }));
+    }
+
+    async turnsIn(tx: Tx, root: ConversationId): Promise<Draft<Turns>> {
+        const scope = this.#scopes.get(tx);
+
+        if (scope === undefined) {
+            throw new Error("Take this document in app.commit");
+        }
+
+        const draft = await tx.doc(TurnsDoc, root);
+
+        scope.turns.set(String(root), draft);
+
+        return draft;
+    }
+
+    #applyLine(scope: Scope, token: object, sessions: string[], turns: string[]): void {
+        const items = scope.sessions?.items;
+
+        if (items !== undefined) {
+            // Taking the draft waits for the previous write of this document to publish, so #sessions has that write.
+            const ids = scope.all ? Object.keys(this.#sessions) : scope.touched;
+
+            for (const id of ids) {
+                // New sessions cannot already have a save on the line and do not need an entry.
+                if (!Object.hasOwn(this.#sessions, id)) {
+                    continue;
+                }
+
+                const item = items[id];
+                const meta = item === undefined ? null : accessOf(item);
+
+                if (
+                    meta === null ||
+                    JSON.stringify(meta) !== JSON.stringify(accessOf(this.#sessions[id]!))
+                ) {
+                    this.#lineSessions.set(id, { meta, token });
+                    sessions.push(id);
+                }
+            }
+        }
+
+        for (const [root, draft] of scope.turns) {
+            const { on, driver } = draft;
+
+            this.#lineTurns.set(root, { turns: { on, driver }, token });
+            turns.push(root);
+        }
+    }
+
+    /** Number of line view entries, for tests. */
+    get lineHeld(): number {
+        return this.#lineSessions.size + this.#lineTurns.size;
+    }
+
     /** The catalogue entry of a session; undefined for subagents and other conversations. */
     sessionMeta(id: ConversationId): SessionMeta | undefined {
         return this.#sessions[String(id)];
@@ -5759,10 +5995,10 @@ export class PocketApp {
         const owner = this.#ownerId();
         let shared = 0;
 
-        await this.harness.commit(async (tx) => {
+        await this.commit(async (tx) => {
             shared = 0;
 
-            for (const meta of Object.values((await tx.doc(SessionsDoc)).items)) {
+            for (const meta of Object.values((await this.sessionsIn(tx)).items)) {
                 if (meta.pip !== undefined || meta.runner !== undefined) {
                     continue;
                 }
@@ -5828,8 +6064,8 @@ export class PocketApp {
             return;
         }
 
-        await this.harness.commit(async (tx) => {
-            for (const meta of Object.values((await tx.doc(SessionsDoc)).items)) {
+        await this.commit(async (tx) => {
+            for (const meta of Object.values((await this.sessionsIn(tx)).items)) {
                 if ((meta.runner ?? THIS_SERVER) !== id || meta.sharedWith === undefined) {
                     continue;
                 }
@@ -5933,8 +6169,8 @@ export class PocketApp {
 
         const computers = new Set<string>();
 
-        await this.harness.commit(async (tx) => {
-            const sessions = await tx.doc(SessionsDoc);
+        await this.commit(async (tx) => {
+            const sessions = await this.sessionsIn(tx);
 
             // It can run again: only what this run shared counts.
             computers.clear();

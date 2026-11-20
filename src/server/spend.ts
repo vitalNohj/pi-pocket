@@ -10,7 +10,7 @@ import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { type ConversationId, UsageDoc, type UsageState } from "@earendil-works/pi-durable";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
-import { SessionsDoc, SpendDoc } from "./docs.ts";
+import { SpendDoc } from "./docs.ts";
 import { describe, HttpError } from "./errors.ts";
 import { usageCost } from "./projection.ts";
 
@@ -416,8 +416,8 @@ export class Spend {
             throw new HttpError(404, "Not a session");
         }
 
-        await this.#app.harness.commit(async (tx) => {
-            const meta = (await tx.doc(SessionsDoc)).items[String(id)];
+        await this.#app.commit(async (tx) => {
+            const meta = (await this.#app.sessionsIn(tx)).items[String(id)];
 
             if (meta === undefined) {
                 throw new HttpError(404, "Not a session");
