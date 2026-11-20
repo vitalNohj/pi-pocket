@@ -1735,7 +1735,10 @@ test(
             );
         };
 
-        assert.match(await sheetText(), /They join as a viewer, with a temporary account\./);
+        assert.match(
+            await sheetText(),
+            /They join as a viewer, with a temporary account that expires 1 week after they join\./,
+        );
         assert.match(
             await sheetText(),
             /Allow viewer to become a user and prompt\s*Off: a temporary account\. They view what is shared with them, and cannot link an authenticator or become a user\./,
@@ -1766,7 +1769,10 @@ test(
             async () => ![null, first, allowed].includes(await code()),
             "the temporary invite",
         );
-        assert.match(await sheetText(), /They join as a viewer, with a temporary account\./);
+        assert.match(
+            await sheetText(),
+            /They join as a viewer, with a temporary account that expires 1 week after they join\./,
+        );
 
         const joined = await fetch(`${base}/join/${await code()}`, {
             method: "POST",
@@ -1825,6 +1831,12 @@ test(
                 null,
                 "a temporary account is offered no authenticator",
             );
+            assert.match(
+                await inPage<string>(
+                    `return JSON.stringify(document.querySelector(".pages-detail").textContent)`,
+                ),
+                /Your account expires in \d+ days?\./,
+            );
 
             // The owner's page for them: it says so, Can prompt is not theirs to get, and one switch ends it.
             page = owners;
@@ -1875,6 +1887,153 @@ test(
             // The tests share one page: the owner's again, whatever happened.
             page = owners;
             await theirs.closeAll({ final: true });
+        }
+    },
+);
+
+test(
+    "the Invite sheet sets the lifetime of a temporary account, and People clears it",
+    real,
+    async () => {
+        const phone = VIEWPORTS.mobile;
+        const account = '.sheet [aria-label="Account expires in"]';
+        const end = '.sheet [aria-label="Account expires"]';
+        const allow = "Allow viewer to become a user and prompt: off";
+        const code = () =>
+            inPage<string | null>(
+                `return JSON.stringify(document.querySelector(".sheet .invite-code-value")?.textContent.replace(/\\s/g, "") ?? null)`,
+            );
+
+        /** Tap a button of the sheet. Wait until it takes a click. */
+        const tap = async (label: string, where = ".sheet") => {
+            const found = `[...document.querySelectorAll(${JSON.stringify(where + " button")})].find((each) => (each.getAttribute("aria-label") ?? each.textContent.trim()) === ${JSON.stringify(label)} && !each.disabled)`;
+
+            await until(
+                () => inPage<boolean>(`return JSON.stringify(${found} !== undefined)`),
+                `${label} taking a click`,
+            );
+            await inPage(`${found}.click(); return JSON.stringify(true);`);
+        };
+
+        const selected = (where: string) =>
+            inPage<string | null>(
+                `return JSON.stringify(document.querySelector(${JSON.stringify(where + ' [aria-pressed="true"]')})?.textContent.trim() ?? null)`,
+            );
+        const sheetText = () =>
+            inPage<string>(
+                `return JSON.stringify(document.querySelector(".sheet").textContent.replace(/\\s+/g, " "))`,
+            );
+
+        const fitsPhone = async () => {
+            assert.deepEqual(
+                await inPage<string[]>(`
+                    return JSON.stringify(
+                        [...document.querySelectorAll(".sheet, .sheet *")]
+                            .filter((each) => each.getBoundingClientRect().right > innerWidth + 0.5 || each.getBoundingClientRect().left < -0.5)
+                            .map((each) => each.getAttribute("class") || each.tagName),
+                    );
+                `),
+                [],
+                "nothing in the sheet extends past the phone's edges",
+            );
+        };
+
+        let viewer: User | undefined;
+
+        try {
+            await open("people", phone);
+            await tap("Invite someone");
+            await until(
+                () =>
+                    inPage<boolean>(
+                        `return JSON.stringify(innerWidth === 390 && document.querySelector('[aria-label="${allow}"]') !== null)`,
+                    ),
+                "the Invite sheet on a 390px phone, with the switch off",
+            );
+            assert.equal(await selected(account), "1 week", "the account row defaults to a week");
+            await until(
+                async () =>
+                    (await code()) !== null || (await sheetText()).includes("No invite yet."),
+                "the 1 week invite request to finish",
+            );
+            const week = await code();
+
+            assert.ok(week, "the server must grant the requested 1 week account lifetime");
+            assert.match(
+                await sheetText(),
+                /Starts when they join\. After that their account is removed\./,
+            );
+            await fitsPhone();
+            await tap("1 day", account);
+            await until(
+                async () => ![null, week].includes(await code()),
+                "a new invite with a 1 day account",
+            );
+            const day = await code();
+
+            assert.equal(await selected(account), "1 day");
+            assert.match(
+                await sheetText(),
+                /They join as a viewer, with a temporary account that expires 1 day after they join\./,
+            );
+            assert.equal(
+                (await fetch(`${base}/join/${week}`)).status,
+                410,
+                "the old invite is cancelled",
+            );
+
+            const beforeJoin = Date.now();
+            const joined = await fetch(`${base}/join/${day}`, {
+                method: "POST",
+                redirect: "manual",
+                body: new URLSearchParams({ name: "Day viewer" }).toString(),
+                headers: {
+                    "content-type": "application/x-www-form-urlencoded",
+                    "sec-fetch-site": "same-origin",
+                },
+            });
+            const token = decodeURIComponent(
+                /pocket_auth=([^;]+)/.exec(joined.headers.get("set-cookie") ?? "")?.[1] ?? "",
+            );
+
+            viewer = app.config.userByToken(token);
+            assert.equal(viewer?.temporary, true);
+            assert.ok(viewer.expiresAt !== undefined);
+            assert.ok(viewer.expiresAt - 86_400_000 >= beforeJoin);
+            assert.ok(viewer.expiresAt - 86_400_000 <= Date.now());
+
+            await tap(allow);
+            await until(
+                () =>
+                    inPage<boolean>(
+                        `return JSON.stringify(document.querySelector(${JSON.stringify(account)}) === null)`,
+                    ),
+                "the account row hidden when the switch is on",
+            );
+            await until(
+                async () => ![null, day].includes(await code()),
+                "an invite for a full account",
+            );
+
+            await open("people", phone);
+            await show(viewer.name);
+            assert.match(await sheetText(), /Account expires\s*in \d+ (?:hours?|days?)/);
+            await fitsPhone();
+            await tap("Never", end);
+            await until(
+                () => app.config.userById(viewer!.id)?.expiresAt === undefined,
+                "the account's end cleared",
+            );
+            await until(
+                async () => (await selected(end)) === "Never",
+                "Never on the person's page",
+            );
+        } finally {
+            await page.setViewport(DESKTOP);
+
+            if (viewer !== undefined) {
+                await app.removeUser(owner(app), viewer.id);
+            }
         }
     },
 );

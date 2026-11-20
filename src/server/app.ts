@@ -716,6 +716,8 @@ export class PocketApp {
     >();
     readonly #scopes = new WeakMap<Tx, Scope>();
     #atSave = false;
+    #accountExpiryTimer: NodeJS.Timeout | undefined;
+    #expiringAccounts: Promise<number | void> | undefined;
     /** The extensions installed now: every conversation runs with them, except PiP's own, which PiP alone selects. */
     #registry: Registry | undefined;
     #unsubscribeCommits: (() => void) | undefined;
@@ -1483,8 +1485,19 @@ export class PocketApp {
         this.secrets.sync();
         await this.pip.tuneAll((line) => this.#log(line));
         await this.#tuneRemote();
+        const expire = () =>
+            this.expireAccounts().catch((error: unknown) => {
+                this.#log(`Account expiry failed: ${describe(error)}`);
+            });
+
+        await expire();
         // Work a previous process left unfinished continues now.
         this.harness.resume();
+        this.#accountExpiryTimer = setInterval(() => {
+            this.#expiringAccounts ??= expire().finally(() => {
+                this.#expiringAccounts = undefined;
+            });
+        }, 60_000).unref();
     }
 
     /**
@@ -3057,9 +3070,12 @@ export class PocketApp {
                 ...(each.keepsWarm === true && (manages || viewer.id === each.id)
                     ? { keepsWarm: true }
                     : {}),
-                // A temporary account, for the owner, who can end that, and for themselves.
+                // A temporary account and its end, for who manages them, and for themselves.
                 ...(each.temporary === true && (manages || viewer.id === each.id)
-                    ? { temporary: true }
+                    ? {
+                          temporary: true,
+                          ...(each.expiresAt === undefined ? {} : { expiresAt: each.expiresAt }),
+                      }
                     : {}),
                 // A user paused until they link an authenticator; never send the rights saved inside `paused`.
                 ...(each.paused !== undefined && (manages || viewer.id === each.id)
@@ -3967,7 +3983,8 @@ export class PocketApp {
      * folder. Their sessions there that they may no longer use move to who is in charge of it, and so does each task they
      * set up on a session there that they may no longer steer: on their own sessions and on sessions shared with them
      * alike (`handTasks`). One commit moves both, so a restart never leaves a task with someone who left
-     * (`#handOverGone` finishes one that removing a person began). Nothing stops.
+     * (`#handOverGone` finishes one that removing a person began). The same save drops a removed person from session
+     * shares. Nothing stops.
      *
      * With `only` (a top session there), that session alone is taken from them (`revokeSession`): it is no longer
      * shared with them, and one they started moves although they may still use its folder.
@@ -3984,11 +4001,11 @@ export class PocketApp {
             for (const [id, meta] of Object.entries(sessions.items)) {
                 const where = meta.runner ?? THIS_SERVER;
 
-                if (only !== undefined) {
-                    if (id !== only) {
-                        continue;
-                    }
+                if ((only !== undefined && id !== only) || !on(where)) {
+                    continue;
+                }
 
+                if (only !== undefined || (gone && meta.sharedWith?.includes(person) === true)) {
                     const kept = meta.sharedWith?.filter((each) => each !== person);
 
                     if (kept === undefined || kept.length === 0) {
@@ -3998,7 +4015,7 @@ export class PocketApp {
                     }
                 }
 
-                if (meta.createdBy !== person || meta.pip !== undefined || !on(where)) {
+                if (meta.createdBy !== person || meta.pip !== undefined) {
                     continue;
                 }
 
@@ -4302,21 +4319,21 @@ export class PocketApp {
         const known = new Set(this.config.users.map((each) => each.id));
         const left = new Set<string>();
 
-        for (const meta of Object.values(this.#sessions)) {
-            if (
-                meta.pip === undefined &&
-                meta.createdBy !== undefined &&
-                !known.has(meta.createdBy)
-            ) {
-                left.add(meta.createdBy);
-            }
-        }
-
         const check = (by: string | undefined): void => {
             if (by !== undefined && !known.has(by)) {
                 left.add(by);
             }
         };
+
+        for (const meta of Object.values(this.#sessions)) {
+            if (meta.pip === undefined) {
+                check(meta.createdBy);
+
+                for (const person of meta.sharedWith ?? []) {
+                    check(person);
+                }
+            }
+        }
 
         const hooks = await this.harness.snapshot(HooksDoc, context);
         const watches = await this.harness.snapshot(RepoWatchesDoc, context);
@@ -4870,6 +4887,12 @@ export class PocketApp {
             folderApprovals: this.sessionApprovals(user),
             user: {
                 ...helloUser(user),
+                ...(user.temporary === true
+                    ? {
+                          temporary: true as const,
+                          ...(user.expiresAt === undefined ? {} : { expiresAt: user.expiresAt }),
+                      }
+                    : {}),
                 // May they start sessions on this server (`access.ts` `mayStart`): the app offers New only then. May
                 // they invite someone new (`mayInvite`): it offers Invite someone only then. And the computers where
                 // they may take the wheel from a driver (`wheel`), or allow a call their own message led to
@@ -5743,7 +5766,7 @@ export class PocketApp {
     setAccess(
         by: User,
         userId: string,
-        patch: { role?: unknown; sessions?: unknown; temporary?: unknown },
+        patch: { role?: unknown; sessions?: unknown; temporary?: unknown; expiresAt?: unknown },
     ): void {
         const target = this.config.userById(userId);
 
@@ -5751,6 +5774,10 @@ export class PocketApp {
 
         if (target === undefined) {
             throw new HttpError(404, "No such person");
+        }
+
+        if (patch.expiresAt !== undefined && target.temporary !== true) {
+            throw new HttpError(409, "Only a temporary account expires.");
         }
 
         if (target.role === "owner") {
@@ -5762,6 +5789,7 @@ export class PocketApp {
             sessions?: string[] | undefined;
             temporary?: false;
             paused?: undefined;
+            expiresAt?: number;
         } = {};
 
         // A temporary account becomes a full one, never the other way: an invite alone makes one temporary.
@@ -5771,6 +5799,20 @@ export class PocketApp {
             }
 
             change.temporary = false;
+        }
+
+        if (patch.expiresAt !== undefined) {
+            if (patch.expiresAt === null) {
+                change.expiresAt = undefined;
+            } else if (
+                typeof patch.expiresAt === "number" &&
+                Number.isFinite(patch.expiresAt) &&
+                patch.expiresAt > this.now()
+            ) {
+                change.expiresAt = patch.expiresAt;
+            } else {
+                throw new HttpError(400, "expiresAt must be a time in the future, or null");
+            }
         }
 
         if (patch.role !== undefined) {
@@ -5949,6 +5991,25 @@ export class PocketApp {
         }
 
         await this.#forget(userId);
+    }
+
+    /** Remove temporary accounts that have reached their end, as if someone removed them in People. */
+    async expireAccounts(now = this.now()): Promise<number> {
+        let removed = 0;
+
+        for (const user of this.config.users) {
+            if (
+                user.role !== "owner" &&
+                user.expiresAt !== undefined &&
+                user.expiresAt <= now &&
+                this.config.userById(user.id) !== undefined
+            ) {
+                await this.#forget(user.id);
+                removed += 1;
+            }
+        }
+
+        return removed;
     }
 
     /**
@@ -7557,6 +7618,8 @@ export class PocketApp {
 
     close(): Promise<void> {
         this.#closing ??= (async () => {
+            clearInterval(this.#accountExpiryTimer);
+            await this.#expiringAccounts;
             clearTimeout(this.#sessionsTimer);
             // Runners reconnect to the next server; their daemons keep running meanwhile (offline is offline).
             this.runners.close();

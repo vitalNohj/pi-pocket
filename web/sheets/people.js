@@ -17,11 +17,22 @@ import {
     notify,
     openId,
     openSheet,
+    serverClockOffset,
     signOut,
     store,
 } from "../store.js";
 import { pinsSynced, syncPins } from "../theme.js";
-import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
+import {
+    copyText,
+    countdown,
+    html,
+    Icon,
+    Loader,
+    Sheet,
+    Switch,
+    timeAgo,
+    useMinute,
+} from "../ui.js";
 import { accessFolder } from "./access-tree.js";
 import { AccessRow, choosable, computers, inCharge, loadComputers } from "./access.js";
 import { ApprovalTime, TasksExpire } from "./approvals.js";
@@ -37,6 +48,28 @@ const LASTS = [
     [7 * 24 * 60, "1 week", "in a week"],
     [30 * 24 * 60, "1 month", "in a month"],
 ];
+
+/** How long a temporary account may last, in minutes, or without an end. */
+const ACCOUNT_LASTS = [
+    [24 * 60, "1 day"],
+    [7 * 24 * 60, "1 week"],
+    [30 * 24 * 60, "1 month"],
+    [null, "Never"],
+];
+
+function DurationButtons({ label, choices, value, onChange }) {
+    return html`<div class="segmented" role="group" aria-label=${label}>
+        ${choices.map(
+            ([each, text]) => html`<button
+                class=${value === each ? "on" : ""}
+                aria-pressed=${value === each}
+                onClick=${() => onChange(each)}
+            >
+                ${text}
+            </button>`,
+        )}
+    </div>`;
+}
 
 /** End an invite or a device link nobody will see: one no longer shown, or one that answered too late to show. */
 const cancelInvite = (invite) => {
@@ -67,6 +100,7 @@ export function InviteSheet({ session = null }) {
     // What the invite shares: the open session when there is one, else its folder, else all of this person's.
     const [what, setWhat] = useState(single ? "session" : here ? "folder" : "mine");
     const [minutes, setMinutes] = useState(15);
+    const [account, setAccount] = useState(7 * 24 * 60);
     // Off until asked: whoever joins has a temporary account, which links no authenticator and so stays a viewer.
     const [allow, setAllow] = useState(false);
     // A server from before roles knows no temporary account: nothing is asked of it.
@@ -75,7 +109,7 @@ export function InviteSheet({ session = null }) {
     // The newest invite could not be made: the sheet offers to try again rather than wait for ever.
     const [failed, setFailed] = useState(false);
     // What the sheet says now: an invite shows only while it was made for exactly this.
-    const asked = JSON.stringify([what, minutes, temporary]);
+    const asked = JSON.stringify([what, minutes, temporary, ...(temporary ? [account] : [])]);
     // Only the newest invite shows: one asked for before a change, answering late, must not stand for what the sheet says.
     const latest = useRef(0);
     // The invite the sheet last showed: a change to what it grants, or how long it lasts, ends it.
@@ -101,17 +135,14 @@ export function InviteSheet({ session = null }) {
             let answer;
 
             try {
-                answer = await api(
-                    "invite",
-                    collab() && here && what !== "mine"
-                        ? {
-                              session: here.id,
-                              ...(what === "folder" ? { folder: true } : {}),
-                              minutes,
-                              temporary,
-                          }
-                        : { minutes, ...(collab() ? { temporary } : {}) },
-                );
+                answer = await api("invite", {
+                    minutes,
+                    ...(collab() ? { temporary } : {}),
+                    ...(temporary && account !== null ? { accountMinutes: account } : {}),
+                    ...(collab() && here && what !== "mine"
+                        ? { session: here.id, ...(what === "folder" ? { folder: true } : {}) }
+                        : {}),
+                });
 
                 // A server from before folder invites made one to the session alone: never shown as the folder's.
                 if (what === "folder" && here && answer.grant?.folder === undefined) {
@@ -125,6 +156,12 @@ export function InviteSheet({ session = null }) {
                     cancelInvite(answer);
 
                     throw new Error("Restart Pi Pocket to make a temporary account.");
+                }
+
+                if (temporary && account !== null && answer.grant?.accountMinutes !== account) {
+                    cancelInvite(answer);
+
+                    throw new Error("Restart Pi Pocket to make an account that expires.");
                 }
             } catch (error) {
                 if (ticket === latest.current) {
@@ -146,7 +183,7 @@ export function InviteSheet({ session = null }) {
 
     useEffect(() => {
         create({ replacing: true });
-    }, [what, minutes, temporary]);
+    }, [asked]);
     useEffect(
         () => () => {
             mounted.current = false;
@@ -179,6 +216,7 @@ export function InviteSheet({ session = null }) {
     const lasting = LASTS.find(
         ([each]) => each === (invite ? (invite.minutes ?? 15) : minutes),
     )?.[2];
+    const accountLength = ACCOUNT_LASTS.find(([each]) => each === account)?.[1];
 
     return html`<${Sheet} title="Invite someone" onClose=${closeSheet}>
         ${
@@ -186,7 +224,9 @@ export function InviteSheet({ session = null }) {
             html`<p class="muted small">
                 ${
                     temporary
-                        ? "They join as a viewer, with a temporary account."
+                        ? account === null
+                            ? "They join as a viewer, with a temporary account."
+                            : `They join as a viewer, with a temporary account that expires ${accountLength} after they join.`
                         : "They join as a viewer. To prompt, they link an authenticator and are made a user in People."
                 }
             </p>
@@ -243,17 +283,12 @@ export function InviteSheet({ session = null }) {
         }
         <div class="field">
             <div class="label">Invite expires in</div>
-            <div class="segmented">
-                ${LASTS.map(
-                    ([each, label]) => html`<button
-                        class=${minutes === each ? "on" : ""}
-                        aria-pressed=${minutes === each}
-                        onClick=${() => setMinutes(each)}
-                    >
-                        ${label}
-                    </button>`,
-                )}
-            </div>
+            <${DurationButtons}
+                label="Invite expires in"
+                choices=${LASTS}
+                value=${minutes}
+                onChange=${setMinutes}
+            />
         </div>
         ${
             collab() &&
@@ -271,6 +306,25 @@ export function InviteSheet({ session = null }) {
                     onChange=${() => setAllow(!allow)}
                 />
             <//>`
+        }
+        ${
+            temporary &&
+            html`<div class="field">
+                <div class="label">Account expires in</div>
+                <${DurationButtons}
+                    label="Account expires in"
+                    choices=${ACCOUNT_LASTS}
+                    value=${account}
+                    onChange=${setAccount}
+                />
+                <div class="muted small">
+                    ${
+                        account === null
+                            ? "Their account stays until someone removes it."
+                            : "Starts when they join. After that their account is removed."
+                    }
+                </div>
+            </div>`
         }
         ${
             collab() &&
@@ -689,6 +743,16 @@ function Setting({ label, hint, children }) {
     </div>`;
 }
 
+/** The server's clock, so the end is shown and set correctly even when the browser's clock is off. */
+const serverNow = () => Date.now() + serverClockOffset();
+
+function AccountEnd({ expiresAt, own = false }) {
+    useMinute();
+    const when = countdown(expiresAt, serverNow(), { long: true });
+
+    return own ? html`<p class="muted small">Your account expires ${when}.</p>` : when;
+}
+
 /** Keep pinned sessions synced on this browser (`theme.js`), on the owner's or a user's own page. */
 function PinSync() {
     const on = pinsSynced();
@@ -758,6 +822,27 @@ function Rights({ person, change }) {
                         confirm(
                             `Allow ${person.name} to become a user and prompt? Their account cannot be made temporary again. You can still turn off Can prompt, revoke their sessions, or remove them.`,
                         ) && change({ temporary: false })}
+                />
+            <//>`
+        }
+        ${
+            person.temporary &&
+            html`<${Setting}
+                label="Account expires"
+                hint=${
+                    person.expiresAt === undefined
+                        ? "Never"
+                        : html`<${AccountEnd} expiresAt=${person.expiresAt} />`
+                }
+            >
+                <${DurationButtons}
+                    label="Account expires"
+                    choices=${ACCOUNT_LASTS}
+                    value=${person.expiresAt === undefined ? null : undefined}
+                    onChange=${(minutes) =>
+                        change({
+                            expiresAt: minutes === null ? null : serverNow() + minutes * 60_000,
+                        })}
                 />
             <//>`
         }
@@ -1171,6 +1256,11 @@ function PersonPage({ person }) {
                 .filter(Boolean)
                 .join(" · ")}
         </div>
+        ${
+            myself &&
+            person.expiresAt !== undefined &&
+            html`<${AccountEnd} expiresAt=${person.expiresAt} own=${true} />`
+        }
         ${
             mine &&
             person.paused &&

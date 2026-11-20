@@ -9,6 +9,7 @@ import { join } from "node:path";
 import QRCode from "qrcode";
 import { MAX_PEEKS } from "../app.ts";
 import {
+    ACCOUNT_MINUTES,
     type Auth,
     COOKIE,
     clearAuthCookie,
@@ -216,7 +217,13 @@ export function createApi(options: HttpOptions, auth: Auth) {
      */
     const inviteGrant = (
         user: User,
-        body: { role?: unknown; session?: unknown; folder?: unknown },
+        body: {
+            role?: unknown;
+            session?: unknown;
+            folder?: unknown;
+            temporary?: unknown;
+            accountMinutes?: unknown;
+        },
     ): InviteGrant => {
         // A page loaded before device links still asks for an owner invite, which handed out the owner's token.
         if (body.role === "owner") {
@@ -235,7 +242,22 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         // Every invite starts as a viewer: steering comes later, once they link an authenticator, from who is in charge.
-        const role = "viewer";
+        const grant: InviteGrant = { role: "viewer" };
+
+        // Unless the invite allows more, the account links no authenticator and stays a viewer.
+        if (body.temporary !== false) {
+            grant.temporary = true;
+
+            if (body.accountMinutes !== undefined && body.accountMinutes !== null) {
+                const accountMinutes = ACCOUNT_MINUTES.find((each) => each === body.accountMinutes);
+
+                if (accountMinutes === undefined) {
+                    throw new HttpError(400, "accountMinutes must be 1440, 10080, or 43200");
+                }
+
+                grant.accountMinutes = accountMinutes;
+            }
+        }
 
         if (body.session === undefined || body.session === null) {
             if (!app.policy.mayInvite(user)) {
@@ -245,7 +267,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 );
             }
 
-            return { role };
+            return grant;
         }
 
         const session = conversationId(String(body.session));
@@ -270,7 +292,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 );
             }
 
-            return { role, folder };
+            return { ...grant, folder };
         }
 
         if (!app.policy.mayInvite(user, String(app.rootOf(session)))) {
@@ -280,7 +302,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
-        return { role, session: String(app.rootOf(session)) };
+        return { ...grant, session: String(app.rootOf(session)) };
     };
 
     /** How long an invite lasts, in minutes: one of `INVITE_MINUTES`, 15 when not said. */
@@ -1929,14 +1951,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 folder?: unknown;
                 minutes?: unknown;
                 temporary?: unknown;
+                accountMinutes?: unknown;
             };
-            // A temporary account, whatever the invite is to: whoever joins links no authenticator and stays a viewer.
-            // That is what an invite makes unless it says otherwise ("Allow viewer to become a user and prompt"), so
-            // one that says nothing gives the least.
-            const grant: InviteGrant = {
-                ...inviteGrant(user, body),
-                ...(body.temporary === false ? {} : { temporary: true }),
-            };
+            const grant = inviteGrant(user, body);
             const invite = auth.createInvite(user, grant, inviteMinutes(body));
 
             return json(response, 200, { ...(await shownInvite(request, user, invite)), grant });

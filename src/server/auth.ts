@@ -12,6 +12,10 @@ export const COOKIE = "pocket_auth";
 export const INVITE_MINUTES = [15, 60, 24 * 60, 7 * 24 * 60, 30 * 24 * 60] as const;
 export type InviteMinutes = (typeof INVITE_MINUTES)[number];
 
+/** How long a temporary account may last from joining, in minutes: a day, a week, or a month. */
+export const ACCOUNT_MINUTES = [24 * 60, 7 * 24 * 60, 30 * 24 * 60] as const;
+export type AccountMinutes = (typeof ACCOUNT_MINUTES)[number];
+
 export function parseCookies(header: string | undefined): Record<string, string> {
     const out: Record<string, string> = {};
 
@@ -90,6 +94,7 @@ export type InviteGrant = {
     folder?: { computer: string; path: string };
     /** The account it makes is temporary (`config.ts` `User.temporary`). */
     temporary?: true;
+    accountMinutes?: AccountMinutes;
 };
 
 /**
@@ -168,9 +173,16 @@ export class Auth {
     ): { code: string; expiresAt: number; minutes: InviteMinutes } {
         const code = newCode();
         const expiresAt = Date.now() + minutes * 60_000;
+        const { accountMinutes, ...scope } = grant;
 
         // Every invite starts its person as a viewer: steering comes once they link an authenticator.
-        this.#config.addInvite(code, { ...grant, role: "viewer", expiresAt, createdBy: by.id });
+        this.#config.addInvite(code, {
+            ...scope,
+            role: "viewer",
+            expiresAt,
+            createdBy: by.id,
+            ...(grant.temporary === true && accountMinutes !== undefined ? { accountMinutes } : {}),
+        });
 
         return { code, expiresAt, minutes };
     }
@@ -243,7 +255,15 @@ export class Auth {
         }
 
         // A temporary account, whatever else the invite is to (`config.ts` `User.temporary`).
-        const temporary = invite.temporary === true ? { temporary: true as const } : {};
+        const temporary =
+            invite.temporary === true
+                ? {
+                      temporary: true as const,
+                      ...(invite.accountMinutes === undefined
+                          ? {}
+                          : { accountMinutes: invite.accountMinutes }),
+                  }
+                : {};
 
         if (invite.session !== undefined) {
             return { role: invite.role, session: invite.session, ...temporary };
@@ -332,6 +352,9 @@ export class Auth {
             "viewer",
             invite.session === undefined ? undefined : [invite.session],
             invite.temporary === true,
+            invite.temporary === true && invite.accountMinutes !== undefined
+                ? Date.now() + invite.accountMinutes * 60_000
+                : undefined,
         );
 
         if (invite.session !== undefined) {

@@ -460,6 +460,8 @@ test(
     "on a phone, an invite lasts as long as chosen, and the one it replaces ends",
     real,
     async () => {
+        const lifetime = '.sheet [aria-label="Invite expires in"]';
+        const choices = JSON.stringify(`${lifetime} button`);
         const code = () =>
             inPage<string | null>(
                 `return JSON.stringify(document.querySelector(".invite-code-value")?.textContent.replace(/\\s/g, "") ?? null)`,
@@ -474,7 +476,7 @@ test(
 
         const pick = (label: string) =>
             page.evaluate(
-                `[...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === ${JSON.stringify(label)}).click()`,
+                `[...document.querySelectorAll(${choices})].find((each) => each.textContent.trim() === ${JSON.stringify(label)}).click()`,
             );
 
         await pick("1 week");
@@ -495,7 +497,7 @@ test(
         // A month is the longest. Its button fits the phone's row beside the others, and the sheet says how long.
         assert.deepEqual(
             await inPage<string[]>(
-                `return JSON.stringify([...document.querySelectorAll(".sheet .segmented button")].map((each) => each.textContent.trim()).filter((label) => /^(15 min|1 (hour|day|week|month))$/.test(label)))`,
+                `return JSON.stringify([...document.querySelectorAll(${choices})].map((each) => each.textContent.trim()))`,
             ),
             ["15 min", "1 hour", "1 day", "1 week", "1 month"],
         );
@@ -507,7 +509,7 @@ test(
         await until(async () => (await status(week)) === 410, "the week's invite, ended");
         assert.deepEqual(
             await inPage<{ said: boolean; rows: number; fits: boolean }>(`
-                const last = [...document.querySelectorAll(".sheet .segmented button")].filter((each) => /^(15 min|1 (hour|day|week|month))$/.test(each.textContent.trim()));
+                const last = [...document.querySelectorAll(${choices})];
                 const sheet = document.querySelector(".sheet").getBoundingClientRect();
                 const boxes = last.map((each) => each.getBoundingClientRect());
 
@@ -541,7 +543,7 @@ test(
         await page.evaluate(`
             window.frames = [];
             const watch = () => {
-                const on = [...document.querySelectorAll(".sheet .segmented .on")].map((each) => each.textContent.trim()).join("|");
+                const on = document.querySelector(${JSON.stringify(`${lifetime} .on`)})?.textContent.trim() ?? "";
                 const code = document.querySelector(".invite-code-value")?.textContent.replace(/\\s/g, "");
 
                 window.frames.push([on, code ?? null]);
@@ -552,7 +554,7 @@ test(
             };
 
             requestAnimationFrame(watch);
-            [...document.querySelectorAll(".sheet .segmented button")].find((each) => each.textContent.trim() === "1 hour").click();
+            [...document.querySelectorAll(${choices})].find((each) => each.textContent.trim() === "1 hour").click();
         `);
         await until(async () => ![null, week2].includes(await code()), "the hour's invite");
         const frames = await inPage<[string, string | null][]>(
@@ -560,7 +562,7 @@ test(
         );
 
         assert.ok(
-            !frames.some(([on, shown]) => on.includes("1 hour") && shown === week2),
+            !frames.some(([on, shown]) => on === "1 hour" && shown === week2),
             "no frame shows the week's invite under 1 hour",
         );
         const hour = await code();

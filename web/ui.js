@@ -1069,15 +1069,30 @@ export function formatWhen(ms) {
     return `${day} ${time}`;
 }
 
+const RELATIVE_TIME = new Intl.RelativeTimeFormat("en");
+
 /**
  * How long until a time ahead, as a countdown: "12:04" under an hour (minutes and seconds), "2h 15m" under a day,
- * "1d 3h" after; "now" once it is due.
+ * "1d 3h" after; "now" once it is due. `long` says the largest unit in words: "in 6 days", "in 3 hours".
  */
-export function countdown(ms, now = Date.now()) {
+export function countdown(ms, now = Date.now(), { long = false } = {}) {
     const seconds = Math.max(0, Math.floor((ms - now) / 1000));
 
     if (seconds === 0) {
         return "now";
+    }
+
+    if (long) {
+        const [unit, length] =
+            seconds >= 86_400
+                ? ["day", 86_400]
+                : seconds >= 3600
+                  ? ["hour", 3600]
+                  : seconds >= 60
+                    ? ["minute", 60]
+                    : ["second", 1];
+
+        return RELATIVE_TIME.format(Math.floor(seconds / length), unit);
     }
 
     if (seconds < 3600) {

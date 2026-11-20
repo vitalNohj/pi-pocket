@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AuthenticatorStore, StoredAuthenticator } from "./approval-methods.ts";
+import type { AccountMinutes } from "./auth.ts";
 import type { StoredLinkLimits } from "./link-limits.ts";
 import { codeHash, newIdentity, type Identity } from "../runner/secure-link.ts";
 
@@ -95,6 +96,8 @@ export interface User {
      * that, and it never comes back (`app.ts` `setAccess`).
      */
     temporary?: true;
+    /** When this temporary account ends and is removed (`app.ts` `expireAccounts`). Absent: it does not end. */
+    expiresAt?: number;
     /** Their other devices, each signed in with a link from one of their own (`auth.ts` `createDeviceLink`). */
     devices?: StoredDevice[];
     /**
@@ -181,6 +184,8 @@ export type InviteFor =
           folder?: { computer: string; path: string };
           /** The account it makes is temporary (`User.temporary`). */
           temporary?: true;
+          /** How long the temporary account lasts once they join. Absent: it does not end. */
+          accountMinutes?: AccountMinutes;
           device?: never;
           person?: never;
       }
@@ -192,6 +197,7 @@ export type InviteFor =
           session?: never;
           folder?: never;
           temporary?: never;
+          accountMinutes?: never;
       };
 
 /**
@@ -981,11 +987,13 @@ export class ConfigStore {
     /** Whose token this is: their first one, or one of their other devices'. */
     userByToken(token: string): User | undefined {
         const hash = hashToken(token);
+        const now = Date.now();
 
         return this.#config.users.find(
             (user) =>
-                sameHash(user.tokenHash, hash) ||
-                user.devices?.some((each) => sameHash(each.tokenHash, hash)) === true,
+                (user.expiresAt === undefined || user.expiresAt > now) &&
+                (sameHash(user.tokenHash, hash) ||
+                    user.devices?.some((each) => sameHash(each.tokenHash, hash)) === true),
         );
     }
 
@@ -1068,6 +1076,7 @@ export class ConfigStore {
         role: Role,
         sessions?: string[],
         temporary = false,
+        expiresAt?: number,
     ): { user: User; token: string } {
         const token = newToken();
         const user: User = {
@@ -1078,6 +1087,7 @@ export class ConfigStore {
             createdAt: Date.now(),
             ...(sessions === undefined ? {} : { sessions: [...sessions] }),
             ...(temporary ? { temporary: true } : {}),
+            ...(temporary && expiresAt !== undefined ? { expiresAt } : {}),
         };
 
         this.#config.users.push(user);
@@ -1106,6 +1116,7 @@ export class ConfigStore {
                 | "setupDismissed"
                 | "accessRequest"
                 | "paused"
+                | "expiresAt"
             >
         > & {
             /** Only ever turned off: a temporary account becomes a full one, never the other way. */
@@ -1172,6 +1183,10 @@ export class ConfigStore {
 
         if (user.temporary !== true) {
             delete user.temporary;
+        }
+
+        if (user.expiresAt === undefined || user.temporary !== true) {
+            delete user.expiresAt;
         }
 
         if (user.setupDismissed !== true) {
