@@ -327,14 +327,7 @@ export function MessageSheet({ entryId }) {
                     "keep it as a lesson for Pi",
                 )
             }
-            ${
-                canUndo &&
-                item(
-                    "Undo",
-                    () => undo(entry.id),
-                    "opens a copy without this message; the original is archived",
-                )
-            }
+            ${canUndo && item("Undo", () => undo(entry.id), "without this message")}
             ${!filesAlone && !waiting && item("Copy text", copy)}
         </div>
     <//>`;
