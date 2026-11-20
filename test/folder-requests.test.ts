@@ -207,6 +207,37 @@ test("someone not chosen for this server is refused before anything waits", asyn
     assert.deepEqual(app.folderRequests.list(owner(app)), []);
 });
 
+test(
+    "a folder beside a given one, named as that one with a backslash, is not in it",
+    { skip: process.platform === "win32" },
+    async () => {
+        // On this system `\` is a character of a name: this is a folder beside the given one, not one in it.
+        const beside = `${given}\\inside`;
+
+        mkdirSync(beside, { recursive: true });
+        assert.equal(app.policy.mayUseFolder(alex, THIS_SERVER, beside), false);
+        await assert.rejects(
+            app.commands.createSession(alex, { cwd: beside }),
+            /not given you this folder/,
+        );
+        assert.deepEqual(app.folderRequests.list(owner(app)), []);
+
+        // The picker does not list it either: it shows the given folders instead.
+        const away = await call<{ dirs: { path: string }[] }>(
+            alex,
+            `fs?path=${encodeURIComponent(beside)}`,
+        );
+
+        assert.equal(away.status, 200);
+        assert.deepEqual(
+            away.body.dirs.map((each) => each.path),
+            [given],
+        );
+        // And nothing is made in it.
+        assert.equal((await call(alex, "fs", { path: join(beside, "made") })).status, 403);
+    },
+);
+
 test("a folder not given is refused before anything waits, and the picker stays in the given ones", async () => {
     const outside = join(root, "outside");
 

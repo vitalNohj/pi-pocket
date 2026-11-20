@@ -3,16 +3,28 @@
 // does: which folder a session counts as working in (`src/server/app.ts` `#accessFolder`), and which given folder
 // holds it (`src/server/access.ts` `inFolder`). Plain functions with no imports, so tests load them as they are.
 
-/** Whether `folder` is `given` or in it, on either kind of path: `/a/b`, or `C:\a\b`. */
+/**
+ * Whether a folder's path is Windows' kind (`C:\a\b`), where `\` parts folders as `/` does. A path that starts with
+ * `/` is Linux's or macOS's, where `\` is a character of a name like any other.
+ */
+const windowsPath = (folder) => !folder.startsWith("/");
+
+/** `folder` without the separators at its end, by its own kind of path. */
+const baseOf = (folder) => folder.replace(windowsPath(folder) ? /[\\/]+$/ : /\/+$/, "");
+
+/**
+ * Whether `folder` is `given` or in it, by the kind of path `given` is: `/a/b` holds `/a/b/c`, and not the folder
+ * beside it named `b\c`; `C:\a\b` holds `C:\a\b\c`.
+ */
 export function inFolder(folder, given) {
-    const base = given.replace(/[\\/]+$/, "");
+    const base = baseOf(given);
 
     return (
         folder === given ||
         base === "" ||
         folder === base ||
         folder.startsWith(`${base}/`) ||
-        folder.startsWith(`${base}\\`)
+        (windowsPath(given) && folder.startsWith(`${base}\\`))
     );
 }
 
@@ -34,7 +46,7 @@ export function accessFolder(session, there) {
     return session.cwd;
 }
 
-const depthOf = (folder) => folder.replace(/[\\/]+$/, "").length;
+const depthOf = (folder) => baseOf(folder).length;
 
 /**
  * `sessions` under `folders`: each session under the deepest given folder that holds it, so with a folder and one in
@@ -93,13 +105,13 @@ export function seenBy(sees, session, there) {
 
 /** `path` as it reads under `folder`: nothing for the folder itself, the rest of the path for one in it. */
 export function below(path, folder) {
-    const base = folder.replace(/[\\/]+$/, "");
+    const base = baseOf(folder);
 
     if (path === folder || path === base) {
         return "";
     }
 
-    return path.startsWith(`${base}/`) || path.startsWith(`${base}\\`)
+    return path.startsWith(`${base}/`) || (windowsPath(folder) && path.startsWith(`${base}\\`))
         ? path.slice(base.length + 1)
         : path;
 }

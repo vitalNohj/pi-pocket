@@ -9,6 +9,7 @@ import {
     type AccessFacts,
     AccessPolicy,
     type Computer,
+    inFolder,
     type Person,
     type SessionFacts,
     THIS_SERVER,
@@ -207,9 +208,47 @@ describe("may this person use this folder", () => {
     it("asks a chosen guest for a folder given to them, or one inside it", () => {
         const { policy } = world();
 
-        for (const folder of ["/given", "/given/app", "/given\\win"]) {
+        for (const folder of ["/given", "/given/app", "/given/a\\b"]) {
             assert.deepEqual(policy.folder(guest, THIS_SERVER, folder), { kind: "ask" }, folder);
         }
+    });
+
+    it("judges a folder by its computer's path rules: a backslash parts folders on Windows alone", () => {
+        // Where paths start with `/`, `\` is a character of a name: these are folders beside the given one.
+        const { policy } = world();
+
+        for (const folder of ["/given\\win", "/given\\", "/given\\..\\other"]) {
+            assert.equal(policy.folder(guest, THIS_SERVER, folder).kind, "refuse", folder);
+            assert.equal(policy.mayUseFolder(guest, THIS_SERVER, folder), false, folder);
+        }
+
+        // A given folder whose own name ends in `\` is that folder, not the one without it.
+        assert.equal(inFolder("/a/proj/src", "/a/proj\\"), false);
+        assert.equal(inFolder("/a/proj\\/src", "/a/proj\\"), true);
+        assert.equal(inFolder("/a/proj/src", "/a/proj//"), true);
+
+        // On Windows both part folders, also mixed, and a folder beside is still outside.
+        const windows = world([
+            computer(THIS_SERVER),
+            computer("runner", {
+                given: (person) => (person === guest.id ? ["C:\\Users\\a\\app"] : []),
+            }),
+        ]).policy;
+
+        for (const folder of [
+            "C:\\Users\\a\\app",
+            "C:\\Users\\a\\app\\src",
+            "C:\\Users\\a\\app/src",
+        ]) {
+            assert.deepEqual(windows.folder(guest, "runner", folder), { kind: "ask" }, folder);
+        }
+
+        for (const folder of ["C:\\Users\\a\\apple", "C:\\Users\\a", "D:\\Users\\a\\app"]) {
+            assert.equal(windows.folder(guest, "runner", folder).kind, "refuse", folder);
+        }
+
+        assert.equal(inFolder("D:\\work", "D:\\"), true);
+        assert.equal(inFolder("/anything", "/"), true);
     });
 
     it("refuses a guest a folder not given, also one beside or above a given folder", () => {

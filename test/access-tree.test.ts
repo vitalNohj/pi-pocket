@@ -37,7 +37,12 @@ test("a given folder holds itself and what is in it, as the server judges it", (
         ["/anything", "/"],
         ["C:\\Users\\a\\app\\src", "C:\\Users\\a\\app"],
         ["C:\\Users\\a\\apple", "C:\\Users\\a\\app"],
+        ["C:\\Users\\a\\app/src", "C:\\Users\\a\\app"],
         ["D:\\work", "D:\\"],
+        // Where paths start with `/`, `\` is a character of a name: a folder beside, not one inside.
+        ["/home/a/app\\src", "/home/a/app"],
+        ["/home/a/app/src", "/home/a/app\\"],
+        ["/home/a/app\\/src", "/home/a/app\\"],
     ];
 
     for (const [folder, given] of cases) {
@@ -51,6 +56,16 @@ test("a given folder holds itself and what is in it, as the server judges it", (
     assert.equal(inFolder("/home/a/app/src", "/home/a/app"), true);
     assert.equal(inFolder("/home/a/application", "/home/a/app"), false);
     assert.equal(inFolder("C:\\Users\\a\\app\\src", "C:\\Users\\a\\app"), true);
+    assert.equal(inFolder("/home/a/app\\src", "/home/a/app"), false);
+    assert.equal(inFolder("/home/a/app\\/src", "/home/a/app\\"), true);
+
+    // So a session in the folder beside is not placed under the given one, and reads by its whole path.
+    const beside: Session = { id: 9, cwd: "/home/a/app\\src" };
+    const shape = placed(["/home/a/app"], [beside], [beside]);
+
+    assert.deepEqual(ids(shape.folders[0]!.sessions), []);
+    assert.deepEqual(ids(shape.other), [9]);
+    assert.equal(below("/home/a/app\\src", "/home/a/app"), "/home/a/app\\src");
 });
 
 test("a session in a git worktree counts as in the folder the worktree came from", () => {

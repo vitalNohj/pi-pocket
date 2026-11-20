@@ -97,16 +97,22 @@ export interface AccessFacts {
 export type FolderDecision =
     { kind: "allow" } | { kind: "ask" } | { kind: "refuse"; reason: string };
 
-/** Whether `folder` is `given` or inside it, with either separator (a runner may run Windows). */
+/**
+ * Whether `folder` is `given` or inside it, by the path rules of the computer the two are on. Both are real paths
+ * there, so `given` tells which rules: one that starts with `/` is on Linux or macOS, where `\` is a character of a
+ * name like any other and only `/` parts folders; any other (`C:\work`, `\\host\share`) is on Windows, where both
+ * do. So `/a/proj` does not hold the folder beside it that is named `proj\x`.
+ */
 export function inFolder(folder: string, given: string): boolean {
-    const base = given.replace(/[\\/]+$/, "");
+    const windows = !given.startsWith("/");
+    const base = given.replace(windows ? /[\\/]+$/ : /\/+$/, "");
 
     return (
         folder === given ||
         base === "" ||
         folder === base ||
         folder.startsWith(`${base}/`) ||
-        folder.startsWith(`${base}\\`)
+        (windows && folder.startsWith(`${base}\\`))
     );
 }
 
