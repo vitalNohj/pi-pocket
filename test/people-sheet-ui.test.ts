@@ -1330,14 +1330,18 @@ test(
             inPage<string[]>(
                 `return JSON.stringify([...document.querySelectorAll(".pages-detail button")].map((each) => each.getAttribute("aria-label") ?? each.textContent.trim()))`,
             );
-        const tap = (label: string) =>
-            inPage(`
-            [...document.querySelectorAll(".pages-detail button")]
-                .find((each) => (each.getAttribute("aria-label") ?? each.textContent.trim()) === ${JSON.stringify(label)})
-                .click();
 
-            return JSON.stringify(true);
-        `);
+        /** Tap a button of the page shown. One that shows while its page still saves takes no click: wait for it. */
+        const tap = async (label: string) => {
+            const found = `[...document.querySelectorAll(".pages-detail button")].find((each) => (each.getAttribute("aria-label") ?? each.textContent.trim()) === ${JSON.stringify(label)} && !each.disabled)`;
+
+            await until(
+                () => inPage<boolean>(`return JSON.stringify(${found} !== undefined)`),
+                `${label} taking a click`,
+            );
+            await inPage(`${found}.click(); return JSON.stringify(true);`);
+        };
+
         const text = () =>
             inPage<string>(
                 `return JSON.stringify(document.querySelector(".pages-detail").textContent.replace(/\\s+/g, " "))`,
