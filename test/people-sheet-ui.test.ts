@@ -950,6 +950,60 @@ test(
 );
 
 test(
+    "a group's title on a page starts where the page's rows start, in People and in Runners",
+    real,
+    async () => {
+        /** Each group title on the page shown: how far its words start from the page's left edge, in pixels. */
+        const titles = () =>
+            inPage<[string, number][]>(`
+                const detail = document.querySelector(".pages-detail .sheet-page");
+                const start = (each) => {
+                    const range = document.createRange();
+
+                    range.selectNodeContents(each);
+
+                    return range.getBoundingClientRect().left;
+                };
+
+                return JSON.stringify(
+                    [...detail.querySelectorAll(".group-title")].map((each) => [
+                        each.textContent.trim(),
+                        Math.round(start(each) - detail.getBoundingClientRect().left),
+                    ]),
+                );
+            `);
+
+        for (const viewport of [DESKTOP, VIEWPORTS.mobile]) {
+            // One's own page: the Authenticator group.
+            await open("people", viewport);
+            await until(
+                async () => (await titles()).some(([title]) => title === "Authenticator"),
+                "the Authenticator group",
+            );
+            assert.deepEqual(await titles(), [["Authenticator", 0]]);
+
+            // Someone else's, as the owner sees it: every group of theirs.
+            await show("Gina");
+            await until(async () => (await titles()).length === 3, "Gina's groups");
+            assert.deepEqual(await titles(), [
+                ["What they may do", 0],
+                ["Where they may work", 0],
+                ["Sign-in", 0],
+            ]);
+
+            // A computer's page in Runners is laid out the same way.
+            await open("computers", viewport);
+            await show("This server");
+            await until(async () => (await titles()).length > 0, "the computer's groups");
+
+            for (const [title, from] of await titles()) {
+                assert.equal(from, 0, `"${title}" in Runners`);
+            }
+        }
+    },
+);
+
+test(
     "an invite shares the open session first, then its folder, then my sessions; with no session open, my sessions",
     real,
     async () => {

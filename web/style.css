@@ -7623,6 +7623,13 @@ div.group-head {
     margin: 8px 2px 0;
 }
 
+/* A group's title starts where the rows under it start: on a page, nothing rounded sits under it to step in from. */
+.sheet-page .group-title,
+.sheet-pane .group-title {
+    margin-left: 0;
+    margin-right: 0;
+}
+
 .sheet-page-head {
     display: flex;
     align-items: center;
