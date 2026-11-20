@@ -293,6 +293,9 @@ async function join(
 test("a device link for someone with an authenticator takes two codes: its own, and one from the authenticator", async () => {
     const dana = person("Dana", "viewer");
     const secret = await link(dana);
+
+    app.setAccess(owner(app), dana.id, { role: "guest" });
+
     const made = await call<{ code: string }>(dana, "me/device", {});
 
     assert.equal(made.status, 200);
@@ -335,8 +338,9 @@ test("a device link for someone with an authenticator takes two codes: its own, 
 
     // Someone without an authenticator is asked for none.
     const pat = person("Pat", "viewer");
-    const theirs = await call<{ code: string }>(pat, "me/device", {});
+    const theirs = await call<{ code: string }>(owner(app), `users/${pat.id}/device`, {});
 
+    assert.equal(theirs.status, 200);
     assert.doesNotMatch((await join(theirs.body.code)).text, /name="code"/);
     assert.equal((await join(theirs.body.code, {})).who, pat.id);
 });

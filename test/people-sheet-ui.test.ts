@@ -99,6 +99,17 @@ async function show(name: string): Promise<void> {
     );
 }
 
+/** Tap a button of the page shown. One that shows while its page still saves takes no click: wait for it. */
+async function tap(label: string): Promise<void> {
+    const found = `[...document.querySelectorAll(".pages-detail button")].find((each) => (each.getAttribute("aria-label") ?? each.textContent.trim()) === ${JSON.stringify(label)} && !each.disabled)`;
+
+    await until(
+        () => inPage<boolean>(`return JSON.stringify(${found} !== undefined)`),
+        `${label} taking a click`,
+    );
+    await inPage(`${found}.click(); return JSON.stringify(true);`);
+}
+
 /** The switches of the page shown, by what a screen reader calls them; a disabled one says so. */
 const switches = () =>
     inPage<string[]>(`
@@ -828,6 +839,8 @@ test(
 
         // Someone else's page, for the owner: a link that signs a device in as them, for a lost device.
         await open("people");
+        await show("Vera");
+        assert.equal(await part(".small"), "Sign in a device of theirs", "also on a viewer's page");
         await show("Gina");
         assert.equal(await part(".small"), "Sign in a device of theirs");
         assert.equal(live(), 0, "nothing is made until asked");
@@ -1162,8 +1175,10 @@ test(
 
             return JSON.stringify([
                 detail.querySelector(".my-photo") && "photo",
-                detail.querySelector(".my-name") && "name",
+                detail.querySelector('.my-name input[aria-label="Name"]') && "name",
+                detail.querySelector(".my-request") && "request access",
                 detail.querySelector(".device-link") && "device",
+                detail.querySelector('[role="switch"][aria-label^="Keep pinned sessions synced"]') && "pin sync",
                 detail.querySelector(".my-authenticator") && "authenticator",
                 detail.querySelector(".my-signout") && "sign out",
             ].filter(Boolean));
@@ -1203,20 +1218,8 @@ test(
                 ).startsWith("Nora"),
                 "their own page",
             );
-            await until(async () => (await rows()).length === 5, "the rows of their account");
-            assert.deepEqual(await rows(), [
-                "photo",
-                "name",
-                "device",
-                "authenticator",
-                "sign out",
-            ]);
-            assert.deepEqual(
-                await inPage<string[]>(
-                    `return JSON.stringify([...document.querySelectorAll(".pages-detail .my-photo button")].map((each) => each.textContent.trim()))`,
-                ),
-                ["Add photo"],
-            );
+            await until(async () => (await rows()).includes("authenticator"), "the authenticator");
+            assert.deepEqual(await rows(), ["name", "request access", "authenticator", "sign out"]);
 
             // A viewer has no list of the people here: their own row alone.
             assert.deepEqual(
@@ -1305,6 +1308,130 @@ test(
     },
 );
 
+test("a viewer's own page shows only their account essentials on a phone", real, async () => {
+    const full = app.config.addUser("Rae", "guest");
+    const temporary = app.config.addUser("Tess", "viewer", undefined, true);
+    const theirs = new Browsers({
+        dataDir: mkdtempSync(join(root, "people-sheet-viewer-")),
+        load: async () => undefined,
+        save: () => {},
+    });
+    const owners = page;
+
+    // A photo set while they were a user stays in the page head.
+    app.setAvatar(
+        full.user,
+        Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            "base64",
+        ),
+    );
+    app.setAccess(owner(app), full.user.id, { role: "viewer" });
+
+    try {
+        page = await theirs.open(1);
+
+        for (const { user, token } of [full, temporary]) {
+            await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+
+            if (!user.temporary) {
+                // This browser had sync on while the viewer was a user.
+                await inPage(`
+                    localStorage.setItem("pocket.pinned.synced", ${JSON.stringify(user.id)});
+                    return JSON.stringify(true);
+                `);
+            }
+
+            await open("people", VIEWPORTS.mobile);
+            await until(
+                () =>
+                    inPage<boolean>(`
+                        return JSON.stringify(document.querySelector('.pages-detail input[aria-label="Name"]')?.value === ${JSON.stringify(user.name)});
+                    `),
+                `${user.name}'s own page`,
+            );
+
+            if (user.temporary) {
+                // Give the sheet's authenticator request time to finish before checking that it showed nothing.
+                await inPage(`
+                    const { api } = await import("/store.js");
+                    await api("me/authenticator");
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                    return JSON.stringify(true);
+                `);
+            } else {
+                await until(
+                    () =>
+                        inPage<boolean>(`
+                            return JSON.stringify(document.querySelector(".pages-detail .my-authenticator") !== null &&
+                                document.querySelector(".pages-detail .sheet-page-head .avatar-img")?.naturalWidth > 0);
+                        `),
+                    "the authenticator group and the saved photo in the page head",
+                );
+            }
+
+            const detail = await inPage<{
+                width: number;
+                height: number;
+                buttons: string[];
+                deviceLink: boolean;
+                pinSync: boolean;
+                authenticator: string | null;
+                wider: string[];
+            }>(`
+                const detail = document.querySelector(".pages-detail .sheet-page");
+
+                return JSON.stringify({
+                    width: innerWidth,
+                    height: innerHeight,
+                    buttons: [...detail.querySelectorAll("button")].map((each) => each.textContent.trim()),
+                    deviceLink: detail.querySelector('[data-part="device-link"]') !== null,
+                    pinSync: detail.querySelector('[role="switch"][aria-label^="Keep pinned sessions synced"]') !== null,
+                    authenticator: detail.querySelector(".my-authenticator .group-title")?.textContent.trim() ?? null,
+                    wider: [detail, ...detail.querySelectorAll("*")]
+                        .filter((each) => each.getBoundingClientRect().right > innerWidth + 0.5 || each.getBoundingClientRect().left < -0.5)
+                        .map((each) => each.className || each.tagName),
+                });
+            `);
+
+            assert.ok(detail.buttons.includes("Request access"), "Request access is on the page");
+            assert.ok(detail.buttons.includes("Sign out"), "Sign out is on the page");
+            assert.deepEqual(
+                detail.buttons.filter((label) => /^(Add|Change|Remove) photo$/.test(label)),
+                [],
+                "no photo buttons",
+            );
+            assert.equal(detail.deviceLink, false, "no Sign in another device");
+            assert.equal(detail.pinSync, false, "no pin sync switch");
+            assert.equal(
+                await inPage<boolean>(`
+                    const { pinsSynced } = await import("/theme.js");
+                    return JSON.stringify(pinsSynced());
+                `),
+                false,
+                "viewers keep pins local, even with a saved sync preference",
+            );
+            assert.equal(detail.authenticator, user.temporary ? null : "Authenticator");
+            assert.deepEqual([detail.width, detail.height], [390, 844]);
+            assert.deepEqual(detail.wider, [], "nothing on the page is wider than the phone");
+
+            await tap("Sign out");
+            await until(
+                () =>
+                    inPage<boolean>(
+                        `return JSON.stringify((await fetch("/api/me")).status === 401)`,
+                    ).catch(() => false),
+                `${user.name} signed out`,
+            );
+        }
+    } finally {
+        page = owners;
+        await theirs.closeAll({ final: true });
+        await app.removeUser(owner(app), full.user.id);
+        await app.removeUser(owner(app), temporary.user.id);
+    }
+});
+
 test(
     "a viewer asks for access on their own page; who manages people sees Request on their row, reads it, and clears it",
     real,
@@ -1330,17 +1457,6 @@ test(
             inPage<string[]>(
                 `return JSON.stringify([...document.querySelectorAll(".pages-detail button")].map((each) => each.getAttribute("aria-label") ?? each.textContent.trim()))`,
             );
-
-        /** Tap a button of the page shown. One that shows while its page still saves takes no click: wait for it. */
-        const tap = async (label: string) => {
-            const found = `[...document.querySelectorAll(".pages-detail button")].find((each) => (each.getAttribute("aria-label") ?? each.textContent.trim()) === ${JSON.stringify(label)} && !each.disabled)`;
-
-            await until(
-                () => inPage<boolean>(`return JSON.stringify(${found} !== undefined)`),
-                `${label} taking a click`,
-            );
-            await inPage(`${found}.click(); return JSON.stringify(true);`);
-        };
 
         const text = () =>
             inPage<string>(

@@ -276,9 +276,9 @@ export const themeDefault = () => store.state.server?.themeDefault ?? null;
 
 // ─── Pinned sessions (this browser, or synced) ────────────────────────────────────
 //
-// Pins are this browser's own, unless its person turned on "Keep pinned sessions synced on this browser" (People): then
-// they mirror the person's list on the server, which every browser with the switch on shows. The list is also kept in
-// `PINNED`, so a reload shows it before the server answers, and turning the switch off keeps what is on the screen.
+// Pins are this browser's own, unless its person can sync pins and turned on "Keep pinned sessions synced on this
+// browser" (People). The list is also kept in `PINNED`, so a reload shows it before the server answers, and turning
+// the switch off keeps what is on the screen.
 
 /** The pinned ids as a set, made again only when the list changes: rows ask for each session as they draw. */
 let pinnedSet = { list: null, set: new Set() };
@@ -326,9 +326,9 @@ function showPins(pinned) {
     store.set({ pinned });
 }
 
-/** Does this browser keep its pins synced: only for the person who turned it on here. */
+/** Only for the person who turned it on here, and only while they are not a viewer. */
 export function pinsSynced(state = store.state) {
-    return state.me != null && state.pinSyncFor === state.me.id;
+    return state.me != null && state.me.role !== "viewer" && state.pinSyncFor === state.me.id;
 }
 
 /**

@@ -1,6 +1,15 @@
 // Synced pinned sessions are each person's own (`pinned-sessions.ts`): read and replaced over `/api/pinned-sessions`,
-// told in `hello` once there is a list, and sent only to that person's connected devices. Viewers keep one too.
-import { type App, cleanUp, fakeTab, openApp, owner, scriptedModel, until } from "./helpers.ts";
+// told in `hello` once there is a list, and sent only to that person's connected devices. Viewers cannot sync pins.
+import {
+    type App,
+    cleanUp,
+    fakeTab,
+    linkAuthenticator,
+    openApp,
+    owner,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -108,10 +117,36 @@ test("each person has their own list, and only their devices hear of it", async 
     }
 });
 
-test("a viewer keeps synced pins too", async () => {
-    assert.deepEqual((await call(vera, { pinned: [9] })).body, { ok: true });
-    assert.deepEqual((await call(vera)).body, { pinned: [9] });
-    assert.deepEqual((await app.hello(vera)).pinnedSessions, [9]);
+test("a viewer cannot sync pins, but their saved list returns when they become a user again", async () => {
+    const rae = person("Rae", "guest");
+    const boss = owner(app);
+
+    linkAuthenticator(app, rae);
+    assert.equal((await call(rae, { pinned: [9, 4] })).status, 200);
+    app.setAccess(boss, rae.id, { role: "viewer" });
+
+    assert.deepEqual(await call(rae, { pinned: [5] }), {
+        status: 403,
+        body: { error: "Viewers keep their pins in this browser." },
+    });
+    assert.deepEqual(await call(rae), { status: 200, body: { pinned: null } }, "viewer GET");
+    assert.ok(!("pinnedSessions" in (await app.hello(rae))), "viewer hello omits synced pins");
+
+    // A write by someone else must not deliver Rae's old list to their connected tabs either.
+    const tab = fakeTab(undefined, rae);
+
+    await app.attach(tab.client);
+
+    try {
+        assert.equal((await call(alex, { pinned: [4] })).status, 200);
+        assert.equal(tab.last("pinned-sessions"), null, "the viewer is not sent their stored list");
+    } finally {
+        app.detach(tab.client);
+    }
+
+    app.setAccess(boss, rae.id, { role: "guest" });
+    assert.deepEqual((await call(rae)).body, { pinned: [9, 4] });
+    assert.deepEqual((await app.hello(rae)).pinnedSessions, [9, 4]);
 });
 
 test("a list that is not one of session ids is refused, and changes nothing", async () => {

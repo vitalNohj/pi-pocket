@@ -176,10 +176,10 @@ export class Auth {
     }
 
     /**
-     * A device link: it signs another device in as `target` and makes no one new. Anyone makes one for themselves; the
-     * owner makes one for someone else, who lost their device (`api.ts` checks who asks). It works once and lasts 15
-     * minutes, the least: whoever opens it gets all that `target` has, after a code from their authenticator when they
-     * have one (`redeem`).
+     * A device link: it signs another device in as `target` and makes no one new. The owner and users make one for
+     * themselves; the owner makes one for someone else, who lost their device (`api.ts` checks who asks). It works
+     * once and lasts 15 minutes: whoever opens it gets all that `target` has, after a code from their authenticator
+     * when they have one (`redeem`).
      */
     createDeviceLink(
         by: User,

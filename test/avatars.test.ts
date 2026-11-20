@@ -64,6 +64,25 @@ test("a picture is set, seen by others, and removed", async () => {
     assert.equal((await call(owner, `/api/avatar/${guest.id}`, "GET")).status, 404);
 });
 
+test("a viewer keeps their existing picture but cannot set or remove it", async () => {
+    const { user, token } = app.config.addUser("Val", "guest");
+
+    assert.equal((await call(token, "/api/me/avatar", "POST", PNG)).status, 200);
+    app.config.updateUser(user.id, { role: "viewer" });
+
+    const posted = await call(token, "/api/me/avatar", "POST", PNG);
+    const removed = await call(token, "/api/me/avatar", "DELETE");
+
+    assert.deepEqual([posted.status, removed.status], [403, 403], "POST and DELETE are refused");
+    assert.deepEqual(await posted.json(), { error: "Viewers do not set a photo." });
+    assert.deepEqual(await removed.json(), { error: "Viewers do not set a photo." });
+
+    const photo = await call(token, `/api/avatar/${user.id}`, "GET");
+
+    assert.equal(photo.status, 200);
+    assert.deepEqual(Buffer.from(await photo.arrayBuffer()), PNG);
+});
+
 test("only pictures of an allowed type and size are kept", async () => {
     const text = await call(guest.token, "/api/me/avatar", "POST", Buffer.from("<svg onload=x>"));
 

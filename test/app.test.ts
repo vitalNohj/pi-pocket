@@ -2676,7 +2676,7 @@ test("invites carry a role and a session over HTTP, and viewers get 403 on steer
     }
 });
 
-test("anyone signs another device in as themselves: the link works once, makes no one new, and that device has a token of its own", async () => {
+test("the owner and users can sign another device in as themselves: the link works once, makes no one new, and that device has a token of its own", async () => {
     const { createServer } = await import("node:http");
     const { createHandler } = await import("../src/server/http.ts");
     const { Auth } = await import("../src/server/auth.ts");
@@ -2721,23 +2721,38 @@ test("anyone signs another device in as themselves: the link works once, makes n
         return me.ok ? ((await me.json()) as { user: { id: string } }).user.id : me.status;
     };
 
-    const link = async (token: string) =>
-        (await (await call(token, "me/device", {})).json()) as {
+    const link = async (token: string) => {
+        const response = await call(token, "me/device", {});
+
+        assert.equal(response.status, 200);
+
+        return (await response.json()) as {
             code: string;
             minutes: number;
             url: string;
             svg: string;
             grant?: unknown;
         };
+    };
+
     const id = await newSession();
     const guest = await addPerson(app, "Gwen", "guest");
     const viewer = await addPerson(app, "Vic", "viewer");
-    const scoped = await addPerson(app, "Sol", "viewer", [String(id)]);
+    const scoped = await addPerson(app, "Sol", "guest", [String(id)]);
 
     try {
-        // Everyone makes one for themselves, whatever they may do here. It is not an invite: it grants nothing new.
-        for (const token of [app.config.ownerToken, guest.token, viewer.token, scoped.token]) {
-            assert.equal((await call(token, "me/device", {})).status, 200);
+        // A user can make a link while limited to a session. A viewer must ask for one.
+        const left = await link(scoped.token);
+
+        app.setAccess(owner(), scoped.user.id, { role: "viewer" });
+
+        for (const token of [viewer.token, scoped.token]) {
+            const refused = await call(token, "me/device", {});
+
+            assert.equal(refused.status, 403);
+            assert.deepEqual(await refused.json(), {
+                error: "Ask whoever manages people here for a sign-in link.",
+            });
         }
 
         const mine = await link(app.config.ownerToken);
@@ -2840,7 +2855,6 @@ test("anyone signs another device in as themselves: the link works once, makes n
 
         // Someone removed takes their devices and their unused links along.
         const auth = new Auth(app.config);
-        const left = await link(scoped.token);
         const gone = app.config.addDevice(scoped.user.id)!;
         const forThem = (await (
             await call(app.config.ownerToken, `users/${scoped.user.id}/device`, {})
@@ -3083,9 +3097,9 @@ test("people who signed in through a Cloudflare quick tunnel are removed once th
         const legacy = await join("Legacy");
         // Another device of someone here, signed in through the tunnel: the device is tied to it, not the person.
         const { code } = (await (
-            await fetch(`${base}/api/me/device`, {
+            await fetch(`${base}/api/users/${named("Wifi")!.id}/device`, {
                 method: "POST",
-                headers: { ...owner, authorization: `Bearer ${wifi}` },
+                headers: owner,
                 body: "{}",
             })
         ).json()) as { code: string };

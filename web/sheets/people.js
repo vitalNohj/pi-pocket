@@ -686,7 +686,7 @@ function Setting({ label, hint, children }) {
     </div>`;
 }
 
-/** Keep pinned sessions synced on this browser (`theme.js`): one's own, on one's own page, for every role. */
+/** Keep pinned sessions synced on this browser (`theme.js`), on the owner's or a user's own page. */
 function PinSync() {
     const on = pinsSynced();
     const label = "Keep pinned sessions synced on this browser";
@@ -1039,6 +1039,7 @@ function PersonPage({ person }) {
     const { me } = store.state;
     const owner = me?.role === "owner";
     const myself = person.id === me?.id;
+    const viewer = person.role === "viewer";
     // Is this person mine to change (`access.ts` `mayManagePerson`): the owner changes everyone else; a user who manages
     // users changes neither themselves nor another who manages users.
     const mine =
@@ -1091,12 +1092,12 @@ function PersonPage({ person }) {
         </div>
         ${mine && person.request && html`<${Asked} person=${person} />`}
         ${reach && html`<${Reach} person=${person} placed=${places} />`}
-        ${myself && html`<${MyPhoto} />`}
+        ${myself && !viewer && html`<${MyPhoto} />`}
         ${myself && html`<${MyName} key=${person.name} person=${person} />`}
-        ${myself && person.role === "viewer" && html`<${RequestAccess} person=${person} />`}
+        ${myself && viewer && html`<${RequestAccess} person=${person} />`}
         ${
             collab() &&
-            (myself || owner) &&
+            (owner || (myself && !viewer)) &&
             html`<${DeviceLink} key=${person.id} person=${person} />`
         }
         ${
@@ -1109,7 +1110,7 @@ function PersonPage({ person }) {
                 <${ApprovalTime} person=${person} plain=${true} />
             <//>`
         }
-        ${myself && html`<${PinSync} />`}
+        ${myself && !viewer && html`<${PinSync} />`}
         ${
             // A temporary account gets nothing here: it links none.
             myself && html`<${MyAuthenticator} />`

@@ -4726,7 +4726,8 @@ export class PocketApp {
         // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
         const folderFavorites = await this.folderFavorites.list(user);
         const runnerFavorites = await this.folderFavorites.runners(user);
-        const pinnedSessions = await this.pinnedSessions.list(user);
+        const pinnedSessions =
+            user.role === "viewer" ? undefined : await this.pinnedSessions.list(user);
         const runners = this.runners.list(user);
         const thisServer = this.thisServer(user);
 
@@ -4825,7 +4826,7 @@ export class PocketApp {
             folderFavorites,
             // The same, on each computer they may use (`runners.ts`), by its id.
             runnerFavorites,
-            // Their synced pinned sessions, once a browser of theirs gave a list (`pinned-sessions.ts`).
+            // Their synced pins, once a browser of theirs gave a list, and only while they can sync.
             ...(pinnedSessions === undefined ? {} : { pinnedSessions }),
             // Linked computers (`runners.ts`), for the owner's Runners sheet and New session's Runs on.
             ...(user.role === "owner" || runners.length > 0 ? { runners } : {}),

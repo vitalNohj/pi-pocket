@@ -419,14 +419,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
-        if (first === "me" && second === "avatar" && method === "POST") {
-            app.setAvatar(user, await readBody(request, MAX_AVATAR));
+        if (first === "me" && second === "avatar" && (method === "POST" || method === "DELETE")) {
+            if (user.role === "viewer") {
+                throw new HttpError(403, "Viewers do not set a photo.");
+            }
 
-            return json(response, 200, { ok: true });
-        }
-
-        if (first === "me" && second === "avatar" && method === "DELETE") {
-            app.setAvatar(user, undefined);
+            app.setAvatar(
+                user,
+                method === "POST" ? await readBody(request, MAX_AVATAR) : undefined,
+            );
 
             return json(response, 200, { ok: true });
         }
@@ -590,8 +591,12 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         // Each person's own authenticator app (`approval-methods.ts`): they approve their new folders with its codes.
-        // A device link: it signs another device in as this person, whoever they are, once, within 15 minutes.
+        // A device link: it signs another device in as this person once, within 15 minutes.
         if (first === "me" && second === "device" && third === undefined && method === "POST") {
+            if (user.role === "viewer") {
+                throw new HttpError(403, "Ask whoever manages people here for a sign-in link.");
+            }
+
             return json(
                 response,
                 200,
@@ -667,12 +672,18 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
-        // Every signed-in person keeps their own synced pins, viewers too.
+        // The owner and users can sync pins. Viewers keep theirs in the browser.
         if (first === "pinned-sessions" && second === undefined && method === "GET") {
-            return json(response, 200, { pinned: (await app.pinnedSessions.list(user)) ?? null });
+            const pinned = user.role === "viewer" ? undefined : await app.pinnedSessions.list(user);
+
+            return json(response, 200, { pinned: pinned ?? null });
         }
 
         if (first === "pinned-sessions" && second === undefined && method === "POST") {
+            if (user.role === "viewer") {
+                throw new HttpError(403, "Viewers keep their pins in this browser.");
+            }
+
             await app.pinnedSessions.set(user, await readJson(request));
 
             return json(response, 200, { ok: true });
