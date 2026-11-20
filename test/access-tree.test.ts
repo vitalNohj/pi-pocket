@@ -86,6 +86,38 @@ test("a session in a git worktree counts as in the folder the worktree came from
     assert.equal(accessFolder(copy, [copy, plain]), "/data/worktrees/app-1/src");
 });
 
+test("a session moved out of its worktree counts as in the folder it works in now", () => {
+    const worktree = { path: "/data/worktrees/app-1", branch: "fix", source: "/home/a/app" };
+    // The record of its worktree stays, to remove the worktree later, and places it nowhere.
+    const moved: Session = { id: 1, cwd: "/home/b/other", createdBy: "gina", worktree };
+    const inside: Session = { id: 2, cwd: "/data/worktrees/app-1/src", worktree };
+    // One moved into another session's worktree counts as that worktree's folder.
+    const other: Session = {
+        id: 3,
+        cwd: "/data/worktrees/web-2",
+        worktree: { path: "/data/worktrees/web-2", branch: "b", source: "/home/a/web" },
+    };
+    const guest: Session = { id: 4, cwd: "/data/worktrees/web-2/src", worktree };
+    const there = [moved, inside, other, guest];
+
+    assert.equal(accessFolder(moved, there), "/home/b/other");
+    assert.equal(accessFolder(inside, there), "/home/a/app");
+    assert.equal(accessFolder(guest, there), "/home/a/web");
+
+    // So the tree shows it under the folder it is in, and taking back the old folder does not take it.
+    const shown = placed(["/home/a/app", "/home/b"], [moved, inside], there);
+
+    assert.deepEqual(
+        shown.folders.map((each) => [each.folder, ids(each.sessions)]),
+        [
+            ["/home/a/app", [2]],
+            ["/home/b", [1]],
+        ],
+    );
+    assert.deepEqual(ids(leaving("/home/a/app", ["/home/a/app", "/home/b"], [moved], there)), []);
+    assert.deepEqual(ids(leaving("/home/b", ["/home/a/app", "/home/b"], [moved], there)), [1]);
+});
+
 test("each session shows once, under the deepest given folder that holds it; the rest are the others", () => {
     const sessions: Session[] = [
         { id: 1, cwd: "/home/a/app" },

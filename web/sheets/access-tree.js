@@ -30,10 +30,11 @@ export function inFolder(folder, given) {
 
 /**
  * The folder a session counts as working in: a session in a git worktree of its own, or of another session on the
- * same computer (`there`: the sessions on it), counts as in the folder that worktree came from.
+ * same computer (`there`: the sessions on it), counts as in the folder that worktree came from. Its own counts only
+ * while it works in it: moved to another folder, it is judged by that folder, though the record of its worktree stays.
  */
 export function accessFolder(session, there) {
-    if (session.worktree?.source) {
+    if (session.worktree?.source && inFolder(session.cwd, session.worktree.path)) {
         return session.worktree.source;
     }
 
