@@ -1313,6 +1313,9 @@ export class PocketApp {
             await this.#finishLeaving(id);
         }
 
+        // A server from before the access rules: its people keep the sessions that were here.
+        await this.#finishUpgrade();
+
         this.#unsubscribeRunEnds = this.linkedSessions.watch();
         this.#unsubscribeApprovals = this.approvals.subscribe((id) => {
             void this.#rooms.get(id)?.then(
@@ -5349,6 +5352,82 @@ export class PocketApp {
         } finally {
             done();
         }
+    }
+
+    /**
+     * A server from before the access rules, at its first start with them (`config.ts` `keepAccess`). The people it
+     * chose had every session here, so each session here is shared with them, in one commit. Then the sessions someone
+     * other than the owner prompts get the owner's approval, in one save, so the upgrade itself locks nobody out: the
+     * ones used within the default approval time, and the ones a person is held to. An older one would have ended by
+     * now anyway, and is renewed as any other. Sessions on a runner are left alone: no server had runners without
+     * rules of their own for them. Only after both saves is the file done: a start cut short leaves it as it was, and
+     * the next start does all of this again, which adds nothing twice.
+     */
+    async #finishUpgrade(): Promise<void> {
+        const upgrade = this.config.accessUpgrade;
+
+        if (upgrade === undefined) {
+            return;
+        }
+
+        const chosen = this.config.server.users ?? [];
+        const people = upgrade.filter((each) => chosen.includes(each));
+        const owner = this.#ownerId();
+        let shared = 0;
+
+        await this.harness.commit(async (tx) => {
+            shared = 0;
+
+            for (const meta of Object.values((await tx.doc(SessionsDoc)).items)) {
+                if (meta.pip !== undefined || meta.runner !== undefined) {
+                    continue;
+                }
+
+                const starter = meta.createdBy ?? owner;
+                const next = [
+                    ...new Set([
+                        ...(meta.sharedWith ?? []),
+                        ...people.filter((each) => each !== starter),
+                    ]),
+                ];
+
+                if (next.length > (meta.sharedWith?.length ?? 0)) {
+                    meta.sharedWith = next;
+                    shared++;
+                }
+            }
+        }, context);
+
+        // Only a guest is ever locked out: the owner is never asked here, and a viewer prompts nothing.
+        const guests = this.config.users.filter((each) => each.role === "guest");
+        const held = new Set(guests.flatMap((each) => each.sessions ?? []));
+        const since = this.now() - approvalDays({}) * DAY_MS;
+        const approved =
+            guests.length === 0
+                ? 0
+                : this.folderApprovals.approveNew(
+                      Object.entries(this.#sessions)
+                          .filter(
+                              ([key, meta]) =>
+                                  meta.pip === undefined &&
+                                  meta.runner === undefined &&
+                                  (held.has(key) || meta.updatedAt >= since),
+                          )
+                          .map(([key, meta]) => ({
+                              session: key,
+                              computer: THIS_SERVER,
+                              folder: this.#accessFolder(meta),
+                              user: meta.createdBy ?? owner,
+                          })),
+                      "owner",
+                      owner,
+                  );
+
+        this.#log(
+            `[info] Access rules: ${people.length} people keep what they had on this server (${shared} sessions shared, ${approved} approved).`,
+        );
+        this.config.clearAccessUpgrade();
+        this.accessChanged();
     }
 
     /**

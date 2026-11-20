@@ -140,6 +140,45 @@ export class FolderApprovals {
     }
 
     /**
+     * Approve many sessions in one save, `method` by `by`: each of `targets` that never had an approval gets one, used
+     * now by its `user`. One that has an approval, live or ended, keeps it. For sessions from before approvals
+     * (`app.ts` `#finishUpgrade`): nobody waits for these, so no one is told. Returns how many it approved.
+     */
+    approveNew(
+        targets: readonly { session: string; computer: string; folder: string; user: string }[],
+        method: StoredApproval["method"],
+        by: string,
+    ): number {
+        const now = this.#now();
+        const known = new Set(this.#store.folderApprovals.map((each) => each.session));
+        const added: StoredApproval[] = [];
+
+        for (const target of targets) {
+            if (known.has(target.session)) {
+                continue;
+            }
+
+            known.add(target.session);
+            added.push({
+                session: target.session,
+                computer: target.computer,
+                folder: target.folder,
+                method,
+                by,
+                approvedAt: now,
+                usedAt: now,
+                lastUser: target.user,
+            });
+        }
+
+        if (added.length > 0) {
+            this.#save((list) => [...list, ...added]);
+        }
+
+        return added.length;
+    }
+
+    /**
      * A copy, a linked session, or a subagent started from session `from` while its approval was live: `to` gets that
      * approval, used now by `user`, in its own folder. Pi's work from a live run asks no one.
      */

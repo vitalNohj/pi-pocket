@@ -342,6 +342,17 @@ interface PocketConfig {
      * the session's top id (`app.ts` `tasksMayRun`). Gone once it is renewed, or the owner turns `tasksExpire` off.
      */
     taskReminders?: Record<string, number>;
+    /**
+     * This file follows the access rules (`access.ts`): written when it is made, and when an older one is brought up to
+     * date (`#migrate`). Absent: an older file, which may be from before the rules (`knowsAccess`).
+     */
+    access?: 1;
+    /**
+     * A file from before the access rules, not finished yet: the people who keep the sessions that were here, still to
+     * be shared with them when the app starts (`keepAccess`, `app.ts` `#finishUpgrade`). Empty: nobody to share with,
+     * and the sessions people were invited to are still to approve. Absent: done, or never such a file.
+     */
+    accessUpgrade?: string[];
 }
 
 /**
@@ -483,6 +494,64 @@ function setList(
     }
 }
 
+/**
+ * What only the access rules write (`access.ts`), in the file and on a person: one of these says its server had the
+ * rules already. A runner's keys are not among them: a server could link runners before it had the rules.
+ */
+const ACCESS_KEYS = ["server", "folderApprovals", "taskReminders", "serverIdentity"] as const;
+const ACCESS_PERSON_KEYS = [
+    "authenticator",
+    "approvalDays",
+    "linksRunners",
+    "invites",
+    "keepsWarm",
+    "temporary",
+    "devices",
+] as const;
+
+/**
+ * Was `config`, a file with no word on it (`PocketConfig.access`), kept by a server that had the access rules. Any
+ * sign counts: a file wrongly taken for one from before would give its people the whole server, where the other
+ * mistake only leaves them waiting for the owner to choose them.
+ */
+function knowsAccess(config: PocketConfig): boolean {
+    return (
+        ACCESS_KEYS.some((key) => key in config) ||
+        config.users.some((user) => ACCESS_PERSON_KEYS.some((key) => key in user))
+    );
+}
+
+/**
+ * A file from before the access rules: its people keep what that server gave them. Then, everyone not held to a
+ * session had the whole server: a guest started sessions in any folder, prompted every session, and invited people;
+ * a viewer read every session. So each of them is chosen for this server, and a guest is given every folder (`/`
+ * holds them all, `access.ts` `inFolder`) and may invite. The sessions that are here are shared with them once the
+ * app starts (`app.ts` `#finishUpgrade`), which takes the people returned here. It is what they had, not a rule for
+ * what comes: a session started later is its starter's alone, as on any server, until the owner shares new ones
+ * (`StoredServer.shareNew`). A person held to sessions has those as before, and nothing changes for them.
+ */
+function keepAccess(config: PocketConfig): string[] {
+    const people = config.users.filter(
+        (user) => user.role !== "owner" && user.sessions === undefined,
+    );
+    const guests = people.filter((user) => user.role === "guest");
+
+    if (people.length > 0) {
+        config.server = {
+            users: people.map((user) => user.id),
+            ...(guests.length === 0
+                ? {}
+                : { given: Object.fromEntries(guests.map((user) => [user.id, ["/"]])) }),
+        };
+    }
+
+    for (const guest of guests) {
+        guest.invites = true;
+    }
+
+    return people.map((user) => user.id);
+}
+
 /** A right one chosen person holds on one computer, set by who is in charge of it (`access.ts`). */
 export type ComputerRight = "wheel" | "allows";
 
@@ -568,6 +637,7 @@ export class ConfigStore {
 
             this.#config = {
                 version: 1,
+                access: 1,
                 ownerToken,
                 users: [
                     {
@@ -589,10 +659,23 @@ export class ConfigStore {
      * computer linked before the secure link (`secure-link.ts`) loses its shared key, which no longer opens anything:
      * it links again, keeping its id and sessions. Open link codes stay: they were kept by the same hash. An owner
      * invite, which handed out the owner's token, is now a device link (`auth.ts`): one not yet used ends.
+     *
+     * A file from before the access rules (`knowsAccess`) gives its people what that server gave them (`keepAccess`),
+     * in this one save. Any other older file keeps who is chosen as it is.
      */
     #migrate(): void {
         const old = this.#config as PocketConfig & { sharedRunnerSessions?: boolean };
         let changed = false;
+
+        if (old.access === undefined) {
+            if (!knowsAccess(old)) {
+                old.accessUpgrade = keepAccess(old);
+            }
+
+            old.access = 1;
+            changed = true;
+        }
+
         const invites = old.invites?.filter((each) => (each.role as Role | undefined) !== "owner");
 
         if (invites !== undefined && invites.length !== old.invites?.length) {
@@ -1277,6 +1360,22 @@ export class ConfigStore {
     /** This server as a computer (`StoredServer`): a copy, so a change goes through the setters below. */
     get server(): Readonly<StoredServer> {
         return this.#config.server ?? {};
+    }
+
+    /**
+     * The people of a file from before the access rules whose sessions here are still to share with them
+     * (`PocketConfig.accessUpgrade`); undefined once that is done, and for any other file.
+     */
+    get accessUpgrade(): readonly string[] | undefined {
+        return this.#config.accessUpgrade;
+    }
+
+    /** Those sessions are shared and approved: only `app.ts` `#finishUpgrade` says so, after its saves. */
+    clearAccessUpgrade(): void {
+        if (this.#config.accessUpgrade !== undefined) {
+            delete this.#config.accessUpgrade;
+            this.save();
+        }
     }
 
     /** Choose the people who may use this server: anyone but the owner, who is in charge of it. */

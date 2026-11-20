@@ -1459,7 +1459,12 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             const given = app.policy.givenFolders(user, THIS_SERVER);
             const asked = url.searchParams.get("path") || "~";
-            const requested = given !== undefined && asked === "~" ? (given[0] ?? asked) : asked;
+            // With no folder asked for, the picker opens in the home folder when that is theirs (someone given `/`),
+            // else in the first folder given to them.
+            const homeIsTheirs =
+                given?.some((each) => inFolder(realpathOrSelf(homedir()), each)) === true;
+            const requested =
+                given !== undefined && asked === "~" && !homeIsTheirs ? (given[0] ?? asked) : asked;
             const real = realpathOrSelf(app.workspace.checkDirectory(requested));
 
             // Someone given folders browses inside them only: anywhere else, the picker lists the folders given.

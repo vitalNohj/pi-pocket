@@ -581,9 +581,14 @@ export class Workspace {
             .map(real)
             .filter((root): root is string => root !== undefined);
 
+        // A root that ends with the separator is the top folder (`/`, given to the people of a server from before the
+        // access rules): it holds every path.
         if (
             target === undefined ||
-            !roots.some((root) => target === root || target.startsWith(root + sep))
+            !roots.some(
+                (root) =>
+                    target === root || target.startsWith(root.endsWith(sep) ? root : root + sep),
+            )
         ) {
             throw new HttpError(404, "Image not found");
         }

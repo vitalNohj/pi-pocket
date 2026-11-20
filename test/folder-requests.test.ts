@@ -22,6 +22,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, test, type TestContext } from "node:test";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
@@ -249,6 +250,22 @@ test("a folder not given is refused before anything waits, and the picker stays 
     );
 
     assert.equal(ownerView.body.given, undefined);
+});
+
+test("with no folder asked for, the picker opens in the first given folder, or at home for someone given every folder", async () => {
+    const first = await call<{ path: string }>(alex, "fs");
+
+    assert.equal(first.body.path, given);
+
+    // Every folder is theirs (`/`, as a server from before the access rules gives its guests): home, as for the owner.
+    app.config.setGivenFolders(undefined, alex.id, ["/"]);
+
+    const home = await call<{ path: string; parent: unknown; given: string[] }>(alex, "fs");
+
+    assert.equal(home.status, 200);
+    assert.equal(home.body.path, homedir());
+    assert.deepEqual(home.body.given, ["/"]);
+    assert.notEqual(home.body.parent, null, "with a way up");
 });
 
 test("a chosen person starts a session with their own code, and the approval is that session's", async () => {
