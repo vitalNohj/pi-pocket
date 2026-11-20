@@ -17,6 +17,7 @@ import { routeSliding } from "./back.js";
 import { browserAvailable, setBrowserOpen } from "./browser.js";
 import { describeCall, describersRevision } from "./calls.js";
 import { DiffBlock } from "./diff.js";
+import { pageVisible } from "./host.js";
 import { LinkedSessions } from "./linked-sessions.js";
 import { markdownRevision } from "./markdown-ext.js";
 import { personStorage } from "./person-storage.js";
@@ -34,6 +35,7 @@ import {
     loadEarlier,
     loadedFrom,
     navigate,
+    noteTabPlace,
     notify,
     openSheet,
     store,
@@ -3498,7 +3500,7 @@ const passing = (element) =>
  * the first row in view, its top. In the scroller's layout, not as a glide moves it: by the column's own place.
  */
 function anchorOf(scroller, column, bottom) {
-    if (!scroller || !column) {
+    if (!scroller?.clientHeight || !column) {
         return null;
     }
 
@@ -3573,6 +3575,8 @@ export function Transcript() {
     const jumping = useRef(false);
     /** Distance from the bottom to restore after rows are added above, so the reader stays in place. */
     const keep = useRef(store.state.transcriptPlace?.keep ?? null);
+    /** A programmatic restore is not a scroll by the reader, even when the browser sends an event for it. */
+    const restoredTop = useRef(null);
     const counted = useRef(0);
     const [showJump, setShowJump] = useState(() => store.state.transcriptPlace !== null);
     // A session read from the device after the loading screen drew: where the reader was comes with its first view.
@@ -3610,19 +3614,44 @@ export function Transcript() {
         element.scrollTop = endOf(element, column.current, glide.current, glideBase.current);
     };
 
+    /** The startup draw can run behind the boot screen. Keep the distance until the scroller has a viewport. */
+    function restorePlace(element) {
+        if (keep.current === null || element.clientHeight === 0) {
+            return false;
+        }
+
+        element.scrollTop = element.scrollHeight - keep.current;
+        restoredTop.current = element.scrollTop;
+        keep.current = null;
+        // A restore to the very top fires no scroll event: the button back down shows from here.
+        setShowJump(element.scrollHeight - element.clientHeight - element.scrollTop >= 60);
+
+        return true;
+    }
+
     /**
-     * Note where the reader is, for the tab to open this session there again (`transcriptPlace`, kept with its view):
-     * null at the bottom. Without a draw, and only while this session is the one shown, not as the tab leaves it.
+     * Note where the reader is (`transcriptPlace`, kept with its view): null at the bottom. Only scrolls that change
+     * the place also update the tab's bookmark. A layout that restores a place must not replace it with its own.
      */
-    function place(element) {
-        if (store.state.conversationId !== view.conversation?.id) {
+    function place(element, source) {
+        if (
+            !element?.clientHeight ||
+            keep.current !== null ||
+            !pageVisible() ||
+            store.state.conversationId !== view.conversation?.id
+        ) {
             return;
         }
 
         const keepNow = stick.current ? null : element.scrollHeight - element.scrollTop;
+        const changed = (store.state.transcriptPlace?.keep ?? null) !== keepNow;
 
-        if ((store.state.transcriptPlace?.keep ?? null) !== keepNow) {
+        if (changed) {
             store.note({ transcriptPlace: keepNow === null ? null : { keep: keepNow } });
+        }
+
+        if (source === "bottom" || (source === "scroll" && changed)) {
+            noteTabPlace(view, rows[start]?.id ?? null, keepNow);
         }
     }
 
@@ -3714,17 +3743,15 @@ export function Transcript() {
             setShowJump(false);
         }
 
-        if (keep.current !== null) {
-            element.scrollTop = element.scrollHeight - keep.current;
-            keep.current = null;
-            // A restore to the very top fires no scroll event: the button back down shows from here.
-            setShowJump(element.scrollHeight - element.clientHeight - element.scrollTop >= 60);
-        } else if (stick.current) {
-            toEnd(element);
+        if (element.clientHeight > 0) {
+            if (!restorePlace(element) && stick.current) {
+                toEnd(element);
+            }
+
+            catchUp(element);
+            place(element);
         }
 
-        catchUp(element);
-        place(element);
         counted.current = rows.length;
 
         // The first rows on screen are what the tab or the device kept: the server's view of them is still to come.
@@ -3746,7 +3773,7 @@ export function Transcript() {
         } else if (grew && stick.current && rows.length - start > 2 * TRANSCRIPT_ROWS) {
             store.set({ transcriptFrom: rows[rows.length - TRANSCRIPT_ROWS].id });
         }
-    }, [view, history, start]);
+    }, [view, history, start, held]);
 
     /**
      * The catch-up's rows are drawn and the scroller is where it goes (above): what the reader looked at moves no more
@@ -3880,8 +3907,9 @@ export function Transcript() {
 
     // The conversation gets shorter or taller as what is above the message box changes (the queue, the subagents' list,
     // a message box that grows), and its rows grow between draws (a card that draws late, a font that loads, a line
-    // under a reply): stay at the bottom if we were there, before the change shows.
-    useEffect(() => {
+    // under a reply): stay at the bottom if we were there, before the change shows. Observe in the layout phase so
+    // that a kept place is applied even on the first frame after the app is shown.
+    useLayoutEffect(() => {
         const element = scroller.current;
 
         if (!element) {
@@ -3923,7 +3951,13 @@ export function Transcript() {
             performance.now() - pressed < OPENED_MS &&
             changes.every((change) => change.target !== element);
         const observer = new ResizeObserver((changes) => {
-            if (stick.current && !gliding() && !opened(changes)) {
+            if (element.clientHeight === 0) {
+                return;
+            }
+
+            if (restorePlace(element)) {
+                place(element);
+            } else if (stick.current && !gliding() && !opened(changes)) {
                 toEnd(element);
             } else if (!stick.current) {
                 // What grew below the reader: they are that much further from the bottom (`transcriptPlace`).
@@ -3952,7 +3986,7 @@ export function Transcript() {
             element.removeEventListener("pointerdown", press, { capture: true });
             element.removeEventListener("keydown", press, { capture: true });
         };
-    }, [view.conversation?.id]);
+    }, [view.conversation?.id, held]);
 
     // A jump to a message (`jumpToEntry`) leaves the bottom, until the reader scrolls or taps: its smooth scroll starts
     // near the bottom, where `onScroll` would follow along again, and the next update (earlier rows that load for it)
@@ -4019,13 +4053,24 @@ export function Transcript() {
 
     const onScroll = () => {
         const element = scroller.current;
+
+        if (
+            !element?.clientHeight ||
+            keep.current !== null ||
+            element.scrollTop === restoredTop.current ||
+            !pageVisible()
+        ) {
+            return;
+        }
+
+        restoredTop.current = null;
         // Not what a catch-up's glide has still to go: the reader is at the bottom it glides to.
         const atBottom =
             endOf(element, column.current, glide.current, glideBase.current) - element.scrollTop <
             60;
 
         stick.current = atBottom && !jumping.current;
-        place(element);
+        place(element, "scroll");
 
         if (showJump === atBottom) {
             setShowJump(!atBottom);
@@ -4078,7 +4123,7 @@ export function Transcript() {
         setTimeout(() => (settledFor = id), 400);
         const element = scroller.current;
 
-        if (!element) {
+        if (!element?.clientHeight || !pageVisible()) {
             return;
         }
 
@@ -4217,7 +4262,11 @@ export function Transcript() {
                 aria-label="To the bottom"
                 onClick=${() => {
                     stick.current = true;
+                    jumping.current = false;
+                    keep.current = null;
+                    restoredTop.current = null;
                     toBottom(scroller.current);
+                    place(scroller.current, "bottom");
                     setShowJump(false);
                 }}
             >
