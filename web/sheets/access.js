@@ -10,11 +10,14 @@ import { accessFolder, below, inFolder, leaving, placed, seenBy } from "./access
 
 export const THIS_SERVER = "this-server";
 
-/** Whether I am in charge of a computer: its linker, or for this server the owner (`access.ts` `inCharge`). */
+/**
+ * Whether I am in charge of a computer: its linker, or for this server the owner (`access.ts` `inCharge`). Nobody is in
+ * charge of a blocked computer: its linker is a viewer now (`blocked`).
+ */
 export function inCharge(computer) {
     return computer.id === THIS_SERVER
         ? store.state.me?.role === "owner"
-        : computer.createdBy === store.state.me?.id;
+        : computer.createdBy === store.state.me?.id && !computer.blocked;
 }
 
 /** The computers this person knows of: this server first (the owner's alone to know), then the linked ones. */

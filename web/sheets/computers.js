@@ -19,6 +19,11 @@ import { PageItem, Pages, PageTabs } from "./pages.js";
 
 /** What a computer is doing now, in a few words. */
 function status(runner) {
+    // Its linker is a viewer now: connected or not, nothing starts or runs there.
+    if (runner.blocked) {
+        return runner.online ? "Blocked · connected" : "Blocked";
+    }
+
     if (runner.online) {
         return "Online";
     }
@@ -405,7 +410,22 @@ function Overview({ computer }) {
 
     return html`<div class="sheet-pane">
         ${
+            computer.blocked &&
+            html`<div class="runner-note warning" role="alert" data-part="blocked">
+                ${
+                    computer.createdBy === store.state.me?.id
+                        ? `${computer.name} is blocked: you linked it, and you are a viewer now. Nothing starts or runs there until the owner makes you a user.`
+                        : `${computer.name} is blocked: ${linker ?? "the person who linked it"}, who linked it, is a viewer now. Nothing starts or runs there until they are made a user.`
+                }${
+                    store.state.me?.role === "owner"
+                        ? " As the owner, you can make them a user in People, or unlink it."
+                        : ""
+                }
+            </div>`
+        }
+        ${
             !mine &&
+            !computer.blocked &&
             html`<div class="runner-note" data-part="read-only">
                 Linked by ${linker ?? "someone else"}, who is in charge of it: only they choose its people, give
                 folders there, and change its settings.${
@@ -474,7 +494,8 @@ function ComputerPage({ computer }) {
     const server = computer.id === "this-server";
     const tabs = tabsFor(computer);
     const shown = tabs.some(([id]) => id === tab) ? tab : "overview";
-    const mine = computer.createdBy === store.state.me?.id;
+    // Not its linker while it is blocked: only the owner unlinks it then.
+    const mine = inCharge(computer);
     const owner = store.state.me?.role === "owner";
     // A computer linked before the secure link: a code for it links its runner again, with the same sessions.
     const relink = () =>
@@ -660,13 +681,15 @@ export function ComputersSheet() {
                         ></span>`}
                         title=${runner.name}
                         detail=${[
-                            runner.relink
-                                ? "Link again"
-                                : runner.online
-                                  ? "Online"
-                                  : runner.away
-                                    ? "Offline"
-                                    : "Not connected",
+                            runner.blocked
+                                ? "Blocked"
+                                : runner.relink
+                                  ? "Link again"
+                                  : runner.online
+                                    ? "Online"
+                                    : runner.away
+                                      ? "Offline"
+                                      : "Not connected",
                             system(runner),
                             // Whose it is, when it is not mine to change.
                             !inCharge(runner) &&

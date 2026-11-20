@@ -667,6 +667,84 @@ test(
 );
 
 test(
+    "a computer whose linker was made a viewer says it is blocked, and why, until they are a user again",
+    real,
+    async () => {
+        const ginas = app.config.addRunner("Gina's desktop", guest.id, newIdentity().publicKey).id;
+        const read = () =>
+            inPage<{
+                row: string;
+                status: string;
+                note: string;
+                role: string;
+                readOnly: string;
+                tabs: string[];
+                actions: string[];
+            }>(`
+                const row = [...document.querySelectorAll(".pages-item")].find((each) =>
+                    each.querySelector(".pages-item-title").textContent.startsWith("Gina's desktop"),
+                );
+                const words = (element) => element?.textContent.replace(/\\s+/g, " ").trim() ?? "";
+                const note = document.querySelector('.pages-detail [data-part="blocked"]');
+
+                return JSON.stringify({
+                    row: words(row),
+                    status: words(document.querySelector(".pages-detail .sheet-page-head + .muted")),
+                    note: words(note),
+                    role: note?.getAttribute("role") ?? "",
+                    readOnly: words(document.querySelector('.pages-detail [data-part="read-only"]')),
+                    tabs: [...document.querySelectorAll(".pages-detail .sheet-tabs [role=tab]")].map((each) => each.textContent.trim()),
+                    actions: [...document.querySelectorAll(".pages-detail .sheet-page-actions button")].map((each) => each.textContent.trim()),
+                });
+            `);
+
+        try {
+            // The owner makes Gina, who linked it, a viewer (`access.ts` `blocked`).
+            app.setAccess(owner(app), guest.id, { role: "viewer" });
+            assert.equal(app.policy.blocked(ginas), true);
+            await open("computers");
+            await show("Gina's desktop");
+
+            const blocked = await read();
+
+            assert.match(blocked.row, /Blocked/, "the list says so");
+            assert.match(blocked.row, /Gina$/, "and whose it is");
+            assert.match(blocked.status, /^Blocked/);
+            assert.equal(
+                blocked.note,
+                "Gina's desktop is blocked: Gina, who linked it, is a viewer now. Nothing starts or runs there until they are made a user. As the owner, you can make them a user in People, or unlink it.",
+            );
+            assert.equal(blocked.role, "alert");
+            assert.equal(
+                blocked.readOnly,
+                "",
+                "nobody is in charge of it: no line that says Gina is",
+            );
+            assert.deepEqual(blocked.tabs, [], "no People or Settings");
+            assert.deepEqual(blocked.actions, ["Unlink"], "no New session");
+
+            // A user again: it is hers as before, and nothing says blocked.
+            app.config.updateUser(guest.id, { role: "guest" });
+            app.accessChanged();
+            assert.equal(app.policy.blocked(ginas), false);
+            await open("computers");
+            await show("Gina's desktop");
+
+            const back = await read();
+
+            assert.equal(back.note, "");
+            assert.doesNotMatch(back.row, /Blocked/);
+            assert.doesNotMatch(back.status, /Blocked/);
+            assert.match(back.readOnly, /Linked by Gina, who is in charge of it/);
+        } finally {
+            app.config.updateUser(guest.id, { role: "guest" });
+            app.accessChanged();
+            await app.unlinkRunner(ginas);
+        }
+    },
+);
+
+test(
     "the owner's Settings page keeps what holds for everyone, and no page lists approvals",
     real,
     async () => {

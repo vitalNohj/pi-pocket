@@ -147,6 +147,24 @@ export class LinkNetwork {
         this.#streams.message(message);
     }
 
+    /**
+     * The computer is blocked while its link stays up (`runners.ts` `block`): every stream ends, here and there, and
+     * what is opening fails with `error`. Unlike `drop`, this network works again afterwards.
+     */
+    refuseAll(error: NetError): void {
+        const opening = [...this.#opening.entries()];
+
+        this.#opening.clear();
+
+        for (const [id, each] of opening) {
+            clearTimeout(each.timer);
+            this.#control({ type: "net-reset", id });
+            each.reject(error);
+        }
+
+        this.#streams.resetAll(error.message);
+    }
+
     /** The link connection went: every stream ends, and what is opening fails as offline. */
     drop(): void {
         this.#dropped = true;

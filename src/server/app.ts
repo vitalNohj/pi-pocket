@@ -709,6 +709,7 @@ export class PocketApp {
             mayManage: (id, user) => this.policy.mayManage(user, id),
             mayStart: (id, user) => this.policy.mayStart(user, id),
             mayUse: (id, user) => this.policy.mayUse(user, id),
+            blocked: (id) => this.policy.blocked(id),
             mayLink: (by, runner) =>
                 this.policy.mayLink({ id: by }) &&
                 (runner === undefined || this.policy.mayManage({ id: by }, runner)),
@@ -3664,13 +3665,14 @@ export class PocketApp {
      * 7 days of grace after it ended (with a reminder each day to its starter and who is in charge), then they pause
      * until someone renews it, and those two hear it once. A revoke ends it then, so the 7 days count from the revoke. A
      * session with no approval at all (from before approvals) counts as ended when the switch went on, or when it
-     * started if that was later. Who is in charge of its computer, and a PiP, never need one.
+     * started if that was later. Who is in charge of its computer, and a PiP, never need one. On a blocked computer
+     * (`access.ts` `blocked`) no task runs: they wait until its linker prompts again.
      */
     tasksMayRun(id: ConversationId): boolean {
         const root = String(this.rootOf(id));
         const facts = this.policy.session(root);
 
-        if (facts === undefined) {
+        if (facts === undefined || this.policy.blocked(facts.computer)) {
             return false;
         }
 
@@ -4003,6 +4005,11 @@ export class PocketApp {
             );
         }
 
+        // Its linker was made a viewer: nothing runs there, whoever started it (`access.ts` `blocked`).
+        if (this.policy.blocked(runner)) {
+            throw new HttpError(403, this.runners.blockedReason(runner));
+        }
+
         const starter = meta.createdBy ?? this.#ownerId();
 
         if (this.policy.mayStart({ id: starter }, runner)) {
@@ -4049,7 +4056,9 @@ export class PocketApp {
      * live (`#requireApproval`), or renewed now. `task`: one of its tasks runs (`tasksMayRun` decides), not a person.
      */
     async requireDriver(id: ConversationId, user: User, task?: boolean): Promise<void> {
+        // First, so who may not see the session learns nothing of its computer.
         await this.requireTurn(id, user);
+        this.#requireUnblocked(id);
 
         if (task !== true) {
             await this.#requireApproval(id, user);
@@ -4096,6 +4105,31 @@ export class PocketApp {
         );
     }
 
+    /**
+     * Why nothing is sent to Pi in session `id` now, when its computer is blocked (`access.ts` `blocked`: its linker was
+     * made a viewer); undefined when it is not.
+     */
+    blockedOf(id: ConversationId): string | undefined {
+        const computer = this.policy.session(String(this.rootOf(id)))?.computer;
+
+        return computer !== undefined && this.policy.blocked(computer)
+            ? this.runners.blockedReason(computer)
+            : undefined;
+    }
+
+    /**
+     * Refuse what would make Pi work in a session on a blocked computer: a prompt, a change of its settings, one of its
+     * tasks. Pi's answer needs no computer, only its tools do, so the refusal is here, before Pi is asked, and nobody
+     * is asked to renew anything. Stopping work is not refused (`requireTurn`).
+     */
+    #requireUnblocked(id: ConversationId): void {
+        const reason = this.blockedOf(id);
+
+        if (reason !== undefined) {
+            throw new HttpError(403, reason);
+        }
+    }
+
     /** Refuse `user` when session `id`'s approval is not live for them now (`access.ts` `steer`). Nobody is asked. */
     #requireLive(id: ConversationId, user: User): void {
         const root = String(this.rootOf(id));
@@ -4121,6 +4155,7 @@ export class PocketApp {
     recheck(id: ConversationId, user: User, task?: boolean): void {
         this.requireSteer(user, id);
         this.#requireWheel(this.#turns.get(String(this.rootOf(id))), user);
+        this.#requireUnblocked(id);
 
         if (task !== true) {
             this.#requireLive(id, user);
@@ -5185,7 +5220,9 @@ export class PocketApp {
         this.folderRequests.prune((request) =>
             request.kind === "renew"
                 ? this.policy.maySteer({ id: request.person }, request.session ?? "")
-                : this.policy.mayUseFolder(
+                : // Also on a blocked computer, where nothing starts and nobody is in charge to answer.
+                  this.policy.mayStart({ id: request.person }, request.computer) &&
+                  this.policy.mayUseFolder(
                       { id: request.person },
                       request.computer,
                       request.folder,
@@ -5221,6 +5258,8 @@ export class PocketApp {
             }
         }
 
+        // A computer whose linker was just made a viewer: what runs there for the server stops now.
+        this.runners.enforce();
         this.runners.changed();
         this.#scheduleSessions();
     }

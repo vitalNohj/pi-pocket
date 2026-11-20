@@ -15,6 +15,10 @@ import type { WebAccess } from "./host.ts";
 /** The id of this server's own computer record, as `SessionMeta.runner` is absent for its sessions. */
 export const THIS_SERVER = "this-server";
 
+/** What a person who uses a blocked computer is told (`AccessPolicy.blocked`). */
+export const BLOCKED =
+    "This computer is blocked: the person who linked it is a viewer now. It works again when they are made a user.";
+
 /**
  * A person as the policy needs them. `linksRunners`: the owner let this guest link computers of their own. `invites`:
  * the owner let this guest invite people. `keepsWarm`: the owner let this guest keep sessions warm.
@@ -130,7 +134,8 @@ export class AccessPolicy {
 
     /**
      * Is `person` in charge of computer `id`: the owner of this server, the linker of a runner. On a runner someone else
-     * linked, the owner is no one special: they use it only if its linker chose them.
+     * linked, the owner is no one special: they use it only if its linker chose them. A linker made a viewer is in
+     * charge of nothing: their runner is blocked (`blocked`) until they prompt again, and then nobody is in charge of it.
      */
     inCharge(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -140,12 +145,27 @@ export class AccessPolicy {
             return false;
         }
 
-        return id === THIS_SERVER ? current.role === "owner" : computer.linker === current.id;
+        return id === THIS_SERVER
+            ? current.role === "owner"
+            : computer.linker === current.id && current.role !== "viewer";
+    }
+
+    /**
+     * Is computer `id` blocked: a runner whose linker was made a viewer. Nothing starts or runs there, and nobody
+     * changes its people, folders, or settings, or allows anything on it; the owner still lists it, and unlinks it.
+     * Its people keep seeing what they saw, its linker the sessions they started. A rule, not a record: it ends when
+     * its linker prompts again.
+     */
+    blocked(id: string): boolean {
+        const computer = id === THIS_SERVER ? undefined : this.#facts.computer(id);
+
+        return computer !== undefined && this.#facts.person(computer.linker)?.role === "viewer";
     }
 
     /**
      * May `person` use computer `id`: see it and the sessions on it they may see. Who is in charge of it, and the people
-     * they chose. A person invited to one session uses no computer: they see that session only.
+     * they chose. A person invited to one session uses no computer: they see that session only. A runner's linker uses
+     * it also as a viewer, when they are no longer in charge of it: they still see the sessions they started there.
      */
     mayUse(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -157,13 +177,26 @@ export class AccessPolicy {
 
         return (
             this.inCharge(current, id) ||
-            (current.sessions === undefined && computer.chosen.includes(current.id))
+            (current.sessions === undefined &&
+                (computer.chosen.includes(current.id) || computer.linker === current.id))
         );
     }
 
-    /** May `person` start sessions on computer `id`: they may use it, and they steer. */
-    mayStart(person: Pick<Person, "id">, id: string): boolean {
+    /**
+     * Does `person` prompt on computer `id`: they may use it, and are no viewer. What they have there (their folders,
+     * the sessions they see by a folder) follows this, also while the computer is blocked, so a block takes nothing
+     * from anyone.
+     */
+    #promptsHere(person: Pick<Person, "id">, id: string): boolean {
         return this.mayUse(person, id) && this.#current(person)?.role !== "viewer";
+    }
+
+    /**
+     * May `person` start sessions on computer `id`, and may a session they started run there: they prompt there, and
+     * the computer is not blocked.
+     */
+    mayStart(person: Pick<Person, "id">, id: string): boolean {
+        return this.#promptsHere(person, id) && !this.blocked(id);
     }
 
     /**
@@ -352,7 +385,7 @@ export class AccessPolicy {
 
     /**
      * The folders `person` may work in on computer `id`: those its one in charge gave them there; undefined for who is
-     * in charge, who may use every folder. Empty for who may not start sessions there.
+     * in charge, who may use every folder. Empty for who does not prompt there: not chosen, or a viewer.
      */
     givenFolders(person: Pick<Person, "id">, id: string): readonly string[] | undefined {
         const current = this.#current(person);
@@ -361,7 +394,7 @@ export class AccessPolicy {
             return undefined;
         }
 
-        return current !== undefined && this.mayStart(current, id)
+        return current !== undefined && this.#promptsHere(current, id)
             ? (this.#facts.computer(id)?.given(current.id) ?? [])
             : [];
     }
@@ -453,7 +486,10 @@ export class AccessPolicy {
         );
     }
 
-    /** Who is in charge of session `id`'s computer: its runner's linker, or the owner. */
+    /**
+     * Who is in charge of session `id`'s computer: its runner's linker, or the owner. Of a blocked runner (`blocked`),
+     * still its linker, though they decide nothing there until they prompt again.
+     */
     inChargeOf(id: string): string {
         const facts = this.#facts.session(id);
         const computer = facts === undefined ? undefined : this.#facts.computer(facts.computer);
@@ -639,9 +675,11 @@ export class AccessPolicy {
             ? "You were invited to one session and cannot start new ones."
             : current?.role === "viewer" && this.mayUse(current, id)
               ? "Viewers cannot start sessions. Ask to be made a user."
-              : id === THIS_SERVER
-                ? "The owner has not chosen you for this server yet."
-                : "The person who linked this computer has not chosen you for it yet.";
+              : current !== undefined && this.blocked(id) && this.mayUse(current, id)
+                ? BLOCKED
+                : id === THIS_SERVER
+                  ? "The owner has not chosen you for this server yet."
+                  : "The person who linked this computer has not chosen you for it yet.";
     }
 
     #folderRefusal(id: string): string {

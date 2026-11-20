@@ -169,6 +169,8 @@ export type RunnerView = {
     downloads?: string;
     /** Its runner allows plain HTTP to this server (set when it was linked, there). */
     allowHttp?: true;
+    /** Its linker was made a viewer: nothing starts or runs there until they prompt again (`access.ts` `blocked`). */
+    blocked?: true;
 };
 
 function lost(message: string): RemoteError {
@@ -238,7 +240,10 @@ export class RunnerLink {
     #ackTimer: NodeJS.Timeout | undefined;
     #closed = false;
     /** Unlike daemon requests, these survive a reset of the daemon session. */
-    readonly #piResults = new Map<string, (message: PiSessionsResult) => void>();
+    readonly #piResults = new Map<
+        string,
+        { resolve: (message: PiSessionsResult) => void; reject: (error: Error) => void }
+    >();
     readonly #taskRequests = new Map<
         string,
         {
@@ -298,13 +303,15 @@ export class RunnerLink {
     /**
      * Wait until the computer is online and its daemon said hello. A session's turn and each of its tool calls wait here
      * (`app.ts`), so Pi does not start on a message, or a tool, while its computer is offline. Ends when `signal` aborts,
-     * and fails only when the computer was removed.
+     * and fails only when the computer was removed, or is blocked.
      */
     async whenOnline(signal?: AbortSignal): Promise<void> {
         for (;;) {
             if (this.#closed || this.#runners.stored(this.id) === undefined) {
                 throw lost(`${this.name} was removed from this server`);
             }
+
+            this.#refuse();
 
             signal?.throwIfAborted();
 
@@ -401,6 +408,9 @@ export class RunnerLink {
         options: RequestOptions = {},
         scope?: SessionScope,
     ): Promise<Reply> {
+        // Nothing is sent to a blocked computer: every request of a session, a panel, or a task leaves from here.
+        this.#refuse();
+
         // The runner keeps each request inside the folder of the session it names (`request-gate.ts`).
         if (scope !== undefined) {
             json = { ...json, [SESSION_FIELD]: scope };
@@ -417,6 +427,8 @@ export class RunnerLink {
         }
 
         await this.info();
+        // It was blocked while this waited for its daemon.
+        this.#refuse();
 
         return this.#answer(op, this.#send(this.#ready(), op, json, options));
     }
@@ -447,6 +459,56 @@ export class RunnerLink {
         const from = session.pending.get(id)?.from;
 
         return from === undefined ? json : { ...json, [SESSION_FIELD]: from };
+    }
+
+    /** Throw while this computer is blocked (`Runners.blocked`): the server sends it nothing then. */
+    #refuse(http = false): void {
+        if (this.#runners.blocked(this.id)) {
+            const reason = this.#runners.blockedReason(this.id);
+
+            throw http ? new HttpError(403, reason) : lost(reason);
+        }
+    }
+
+    /**
+     * The computer is blocked (`access.ts` `blocked`): what the server runs there stops now. Each request in flight is
+     * cancelled there, as Stop does, and fails here; who waits for the computer stops waiting; its network streams end.
+     * The connection and its daemon session stay, so the computer shows as connected, and works again at once when the
+     * block ends. A background task already started there is the computer's own process: it keeps running.
+     */
+    block(): void {
+        const reason = this.#runners.blockedReason(this.id);
+        const session = this.#session;
+
+        // Before its daemon said hello, the only request out is the hello itself.
+        if (session?.live === true && session.known) {
+            for (const [id, pending] of [...session.pending]) {
+                // Before the request is forgotten: its cancel carries the session field it had.
+                const cancel = this.#cancel(session, id, {});
+
+                session.pending.delete(id);
+                this.#write(session, frame(FRAME.cancel, id, cancel));
+                pending.reject(lost(reason));
+            }
+        }
+
+        const tasks = [...this.#taskRequests.values()];
+        const sessions = [...this.#piResults.values()];
+
+        // Forgotten first: an answer that still comes finds nothing.
+        this.#taskRequests.clear();
+        this.#piResults.clear();
+
+        for (const pending of tasks) {
+            pending.reject(lost(reason));
+        }
+
+        for (const pending of sessions) {
+            pending.reject(new HttpError(403, reason));
+        }
+
+        this.#wake(lost(reason));
+        this.#network?.refuseAll(new NetError("refused", reason));
     }
 
     /** The computer was removed: what runs there stops, and its runner is told to go for good. */
@@ -725,7 +787,7 @@ export class RunnerLink {
                 this.#drop(1002, "Acknowledged bytes it was never sent");
             }
         } else if (message?.type === "pi-sessions-result") {
-            this.#piResults.get(message.id)?.(message);
+            this.#piResults.get(message.id)?.resolve(message);
         } else if (message?.type === "task-result") {
             this.#taskRequests.get(message.id)?.resolve(message);
         } else if (message?.type === "bye") {
@@ -834,7 +896,9 @@ export class RunnerLink {
      * fails too.
      */
     async piSessions(request: PiSessionsQuery, signal?: AbortSignal): Promise<PiSessionsResult> {
+        this.#refuse(true);
         await this.infoNow();
+        this.#refuse(true);
 
         if (signal?.aborted) {
             throw new HttpError(409, "Cancelled.");
@@ -852,7 +916,7 @@ export class RunnerLink {
                     PI_SESSIONS_MS,
                 );
                 signal?.addEventListener("abort", cancelled, { once: true });
-                this.#piResults.set(id, resolve);
+                this.#piResults.set(id, { resolve, reject });
                 this.#control({ type: "pi-sessions", id, ...request });
             });
 
@@ -948,6 +1012,10 @@ export class RunnerLink {
      * with a `NetError` that names the computer when it is offline, its runner is too old, or it refused or failed.
      */
     openNetwork(host: string, port: number, socket: Duplex, options?: OpenOptions): Promise<void> {
+        if (this.#runners.blocked(this.id)) {
+            return Promise.reject(new NetError("refused", this.#runners.blockedReason(this.id)));
+        }
+
         if (this.#closed || this.#socket === undefined || this.#network === undefined) {
             return Promise.reject(
                 new NetError(
@@ -1092,6 +1160,8 @@ export class Runners {
     readonly #mayUse: (id: string, user: User) => boolean;
     /** May the person with this id still link a computer, or link `runner` again (`access.ts` `mayLink`, `mayManage`). */
     readonly #mayLink: (by: string, runner?: string) => boolean;
+    /** Is computer `id` blocked: its linker was made a viewer (`access.ts` `blocked`). */
+    readonly #blocked: (id: string) => boolean;
     readonly #links = new Map<string, RunnerLink>();
     readonly #envs = new Map<string, RunnerEnv>();
     readonly #server = new WebSocketServer({
@@ -1120,6 +1190,8 @@ export class Runners {
          * code does not outlive its maker's right. Absent (tests of the link alone): yes.
          */
         mayLink?: (by: string, runner?: string) => boolean;
+        /** The access policy's "is blocked" (its linker is a viewer now); absent: never. */
+        blocked?: (id: string) => boolean;
     }) {
         this.#config = options.config;
         this.#log = options.log;
@@ -1132,6 +1204,7 @@ export class Runners {
         this.#mayStart = options.mayStart ?? this.#mayList;
         this.#mayUse = options.mayUse ?? this.#mayList;
         this.#mayLink = options.mayLink ?? (() => true);
+        this.#blocked = options.blocked ?? (() => false);
 
         const config = options.config;
 
@@ -1145,6 +1218,33 @@ export class Runners {
 
     log(line: string): void {
         this.#log(`Runners: ${line}`);
+    }
+
+    /** Is computer `id` blocked: its linker was made a viewer, so nothing starts or runs there (`access.ts`). */
+    blocked(id: string): boolean {
+        return this.#blocked(id);
+    }
+
+    /** What a person is told about blocked computer `id`: its name, and whose role it waits for. */
+    blockedReason(id: string): string {
+        const runner = this.#config.runnerById(id);
+        const linker =
+            runner === undefined ? undefined : this.#config.userById(runner.createdBy)?.name;
+        const who =
+            linker === undefined
+                ? "the person who linked it is a viewer now"
+                : `${linker}, who linked it, is a viewer now`;
+
+        return `${runner?.name ?? "This computer"} is blocked: ${who}. It works again when they are made a user.`;
+    }
+
+    /** Stop what runs for the server on each blocked computer (`RunnerLink.block`): called when access changed. */
+    enforce(): void {
+        for (const [id, link] of this.#links) {
+            if (this.#blocked(id)) {
+                link.block();
+            }
+        }
     }
 
     changed(): void {
@@ -1428,6 +1528,7 @@ export class Runners {
                           }
                         : {}),
                     ...(runner.shareNew === true ? { shareNew: true as const } : {}),
+                    ...(this.#blocked(runner.id) ? { blocked: true as const } : {}),
                     ...(user !== undefined && !this.#mayStart(runner.id, user)
                         ? { mayStart: false as const }
                         : {}),

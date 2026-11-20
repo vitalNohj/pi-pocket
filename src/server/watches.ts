@@ -997,7 +997,7 @@ export class Watches {
                 }
 
                 return this.#again(runtime, this.timing.retry, {}, context, {
-                    note: "Waits until this session's approval is renewed.",
+                    note: app.blockedOf(id) ?? "Waits until this session's approval is renewed.",
                 });
             }
 

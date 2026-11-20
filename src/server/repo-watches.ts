@@ -767,7 +767,7 @@ export class RepoWatches {
                     runtime,
                     this.timing.poll,
                     context,
-                    "Waits until its session's approval is renewed.",
+                    app.blockedOf(target) ?? "Waits until its session's approval is renewed.",
                 );
             }
 
