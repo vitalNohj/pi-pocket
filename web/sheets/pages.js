@@ -17,7 +17,7 @@ const STACKED = "(max-width: 719px)";
  * A row in the list on the left: one thing to open, with what stands before its name and a count after it. A row that
  * shows a page here says whether it is the one shown (`selected`); one that opens something else leaves it out.
  */
-export function PageItem({ selected, onSelect, lead, title, detail, badge }) {
+export function PageItem({ selected, onSelect, lead, title, detail, badge, alert }) {
     const select = (event) => {
         const split = event.currentTarget.closest(".pages-split");
 
@@ -41,7 +41,7 @@ export function PageItem({ selected, onSelect, lead, title, detail, badge }) {
             <span class="pages-item-title">${title}</span>
             ${detail && html`<span class="muted small">${detail}</span>`}
         </span>
-        ${badge && html`<span class="pages-badge">${badge}</span>`}
+        ${badge && html`<span class=${`pages-badge ${alert ? "alert" : ""}`}>${badge}</span>`}
     </button>`;
 }
 

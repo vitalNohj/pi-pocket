@@ -1218,11 +1218,13 @@ test(
                 ["Add photo"],
             );
 
-            // Nobody else's page has them.
-            await show("Owner");
-            assert.deepEqual(await rows(), []);
-            await show("Nora");
-            await until(async () => (await rows()).includes("name"), "their own page again");
+            // A viewer has no list of the people here: their own row alone.
+            assert.deepEqual(
+                await inPage<string[]>(
+                    `return JSON.stringify([...document.querySelectorAll(".pages-item")].filter((each) => each.querySelector(".people-here")).map((each) => each.querySelector(".pages-item-title").textContent.trim()))`,
+                ),
+                ["Nora (you)"],
+            );
 
             // A new name: Save is offered only for a change, and the list and the page head show it.
             const field = (value: string) =>
@@ -1299,6 +1301,187 @@ test(
             // The tests share one page: the owner's again, whatever happened.
             page = owners;
             await theirs.closeAll({ final: true });
+        }
+    },
+);
+
+test(
+    "a viewer asks for access on their own page; who manages people sees Request on their row, reads it, and clears it",
+    real,
+    async () => {
+        const { user, token } = app.config.addUser("Rita", "viewer");
+        const kept = () => app.config.userById(user.id)?.accessRequest;
+        /** The rows of people in the list on the left: each name, with its badge after " | " when it has one. */
+        const rows = () =>
+            inPage<string[]>(`
+            return JSON.stringify(
+                [...document.querySelectorAll(".pages-item")]
+                    .filter((each) => each.querySelector(".people-here"))
+                    .map((each) => {
+                        const badge = each.querySelector(".pages-badge");
+
+                        return each.querySelector(".pages-item-title").textContent.trim() +
+                            (badge ? " | " + badge.textContent.trim() + (badge.classList.contains("alert") ? " (alert)" : "") : "");
+                    }),
+            );
+        `);
+        /** The buttons of the page shown, by what they say. */
+        const buttons = () =>
+            inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".pages-detail button")].map((each) => each.getAttribute("aria-label") ?? each.textContent.trim()))`,
+            );
+        const tap = (label: string) =>
+            inPage(`
+            [...document.querySelectorAll(".pages-detail button")]
+                .find((each) => (each.getAttribute("aria-label") ?? each.textContent.trim()) === ${JSON.stringify(label)})
+                .click();
+
+            return JSON.stringify(true);
+        `);
+        const text = () =>
+            inPage<string>(
+                `return JSON.stringify(document.querySelector(".pages-detail").textContent.replace(/\\s+/g, " "))`,
+            );
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "people-sheet-request-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+        const chosen = app.config.server.users ?? [];
+        const session = await newSession(app);
+        let ritas: BrowserPage | undefined;
+
+        try {
+            // She is shown one session of the owner's, so she is told the owner's name, for the messages there.
+            app.config.setServerUsers([...new Set([...chosen, user.id])]);
+            await app.commands.shareSession(session, owner(app), [user.id]);
+            ritas = await theirs.open(1);
+            page = ritas;
+            await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await open("people");
+            assert.deepEqual(
+                await inPage<string[]>(
+                    `const { store } = await import("/store.js"); return JSON.stringify(store.state.users.map((each) => each.name).sort())`,
+                ),
+                [owner(app).name, "Rita"].sort(),
+                "the people she meets, and nobody else",
+            );
+            // Her own row alone all the same, and on her page a field and a button to ask with.
+            assert.deepEqual(await rows(), ["Rita (you)"]);
+            await until(
+                async () => (await buttons()).includes("Request access"),
+                "Request access on her page",
+            );
+            await inPage(`
+                const input = document.querySelector('.pages-detail input[aria-label="What you need"]');
+
+                input.value = "  The docs folder, please ";
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+
+                return JSON.stringify(true);
+            `);
+            await tap("Request access");
+            await until(() => kept() !== undefined, "her request");
+            assert.equal(kept()?.note, "The docs folder, please");
+            await until(
+                async () => (await buttons()).includes("Take back"),
+                "her page saying that she asked",
+            );
+            assert.match(await text(), /Asked just now: “The docs folder, please”/);
+            assert.equal((await buttons()).includes("Request access"), false);
+
+            // The owner sees Request on her row, in the color of what waits, and on nobody else's.
+            page = owners;
+            await open("people");
+            await until(
+                async () => (await rows()).includes("Rita | Request (alert)"),
+                "Request on her row",
+            );
+            assert.deepEqual(
+                (await rows()).filter((each) => each.includes("|")),
+                ["Rita | Request (alert)"],
+            );
+            await show("Rita");
+            assert.deepEqual(
+                await inPage<string[]>(
+                    `return JSON.stringify([...document.querySelectorAll(".pages-detail .access-asked .grow > div")].map((each) => each.textContent.replace(/\\s+/g, " ").trim()))`,
+                ),
+                [
+                    "Asked for access just now",
+                    "“The docs folder, please”",
+                    "Give them what they need below, then clear this.",
+                ],
+            );
+            // Her own things are not on the page the owner has of her.
+            assert.equal((await buttons()).includes("Take back"), false);
+
+            // On a phone the request fits the screen.
+            await page.setViewport({ width: 390, height: 844, scale: 2, mobile: true });
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(document.querySelector(".pages-detail .access-asked") !== null && innerWidth <= 390)`,
+                    ),
+                "the page at a phone's size",
+            );
+            assert.deepEqual(
+                await inPage<string[]>(`
+                    return JSON.stringify(
+                        [...document.querySelectorAll(".pages-sheet .access-asked, .pages-sheet .access-asked *, .pages-sheet .pages-item, .pages-sheet .pages-badge")]
+                            .filter((each) => each.getBoundingClientRect().right > innerWidth + 0.5 || each.getBoundingClientRect().left < -0.5)
+                            .map((each) => each.className || each.tagName),
+                    );
+                `),
+                [],
+                "nothing of the request is wider than the phone",
+            );
+            await page.setViewport(DESKTOP);
+
+            // Clear takes it from her row and her page, and from her own page too, which offers to ask again.
+            await tap("Clear Rita's request");
+            await until(() => kept() === undefined, "the request cleared");
+            await until(
+                async () => !(await rows()).some((each) => each.includes("|")),
+                "the badge gone",
+            );
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify(document.querySelector(".pages-detail .access-asked") === null)`,
+                ),
+                true,
+            );
+            page = ritas;
+            await until(
+                async () => (await buttons()).includes("Request access"),
+                "her page offering to ask again, without a reload",
+            );
+
+            // With no words, and taken back by herself.
+            await tap("Request access");
+            await until(() => kept() !== undefined, "her second request");
+            assert.equal(kept()?.note, undefined);
+            await until(async () => (await buttons()).includes("Take back"), "Take back");
+            assert.match(await text(), /Asked just now\. Whoever manages people here sees it\./);
+            await tap("Take back");
+            await until(() => kept() === undefined, "her request taken back");
+            await until(
+                async () => (await buttons()).includes("Request access"),
+                "her page offering to ask once more",
+            );
+        } finally {
+            // The tests share one page: the owner's again, at its usual size, whatever happened.
+            page = owners;
+            await page.setViewport(DESKTOP);
+            await theirs.closeAll({ final: true });
+            await app.commands.shareSession(session, owner(app), []).catch(() => {});
+
+            if (app.config.userById(user.id) !== undefined) {
+                app.config.removeUser(user.id);
+            }
+
+            app.config.setServerUsers(chosen);
+            app.accessChanged();
         }
     },
 );

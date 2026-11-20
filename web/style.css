@@ -7584,6 +7584,13 @@ div.group-head {
     font-size: 11px;
 }
 
+/* A badge that waits for an answer: a viewer's request for access, on their row in People. */
+.pages-badge.alert {
+    background: var(--err-soft);
+    color: var(--err);
+    font-weight: 600;
+}
+
 .pages-detail {
     min-width: 0;
     padding: calc(16px * var(--space-y)) calc(20px * var(--space-x)) calc(20px * var(--space-y));
@@ -23431,6 +23438,26 @@ pre.gallery-code {
 }
 
 .my-name .button {
+    flex: none;
+}
+
+/* What a viewer asked for access with, on their page in People, for who manages them: their words, and Clear. */
+.access-asked {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: var(--border) solid color-mix(in srgb, var(--err) 30%, transparent);
+    border-radius: var(--r-control);
+    background: var(--err-soft);
+}
+
+.access-asked .grow {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.access-asked .button {
     flex: none;
 }
 

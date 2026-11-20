@@ -487,6 +487,25 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // Who manages people has answered a viewer's request for access: it leaves their row.
+        if (
+            first === "users" &&
+            second !== undefined &&
+            third === "access-request" &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ clear?: unknown } | null>(request);
+
+            if (body?.clear !== true) {
+                throw new HttpError(400, "clear must be true.");
+            }
+
+            app.clearAccessRequest(user, second);
+
+            // The people as they are now, as the other changes to a person answer.
+            return json(response, 200, app.people(user));
+        }
+
         // The owner lets a guest invite people, or takes it back.
         if (first === "users" && second !== undefined && third === "invites" && method === "POST") {
             const body = await readJson<{ on?: unknown } | null>(request);
@@ -542,6 +561,30 @@ export function createApi(options: HttpOptions, auth: Auth) {
             const body = await readJson<{ days?: unknown } | null>(request);
 
             app.setApprovalDays(user, second, body?.days);
+
+            return json(response, 200, { ok: true });
+        }
+
+        // A viewer asks for access, with a few words if they like, or takes that back (`app.ts` `requestAccess`).
+        if (
+            first === "me" &&
+            second === "access-request" &&
+            third === undefined &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ note?: unknown; withdraw?: unknown } | null>(request);
+
+            if (body?.withdraw === true) {
+                app.clearAccessRequest(user);
+
+                return json(response, 200, { ok: true });
+            }
+
+            if (body?.note !== undefined && typeof body.note !== "string") {
+                throw new HttpError(400, "note must be text.");
+            }
+
+            app.requestAccess(user, body?.note);
 
             return json(response, 200, { ok: true });
         }

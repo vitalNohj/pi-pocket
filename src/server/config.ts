@@ -96,6 +96,11 @@ export interface User {
      * authenticator: it does not come again.
      */
     setupDismissed?: true;
+    /**
+     * This viewer asked for access (`app.ts` `requestAccess`): when, and what they wrote. Who manages people reads it in
+     * People and clears it. One at a time, and it ends when they are no longer a viewer (`updateUser`).
+     */
+    accessRequest?: { at: number; note?: string };
 }
 
 /** Who is signed in, as `hello` says it to a tab, and as the app page carries it (`serveApp`). */
@@ -527,6 +532,7 @@ const ACCESS_PERSON_KEYS = [
     "keepsWarm",
     "temporary",
     "devices",
+    "accessRequest",
 ] as const;
 
 /**
@@ -1092,6 +1098,7 @@ export class ConfigStore {
                 | "managesUsers"
                 | "keepsWarm"
                 | "setupDismissed"
+                | "accessRequest"
             >
         > & {
             /** Only ever turned off: a temporary account becomes a full one, never the other way. */
@@ -1158,6 +1165,11 @@ export class ConfigStore {
 
         if (user.setupDismissed !== true) {
             delete user.setupDismissed;
+        }
+
+        // Only a viewer asks for access: made a user, they have it, and what they asked is done with.
+        if (user.accessRequest === undefined || user.role !== "viewer") {
+            delete user.accessRequest;
         }
 
         this.save();

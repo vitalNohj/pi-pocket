@@ -560,6 +560,98 @@ function MyName({ person }) {
     <//>`;
 }
 
+/** When something was asked, in words: "just now", "5m ago", or the day. */
+function whenAsked(at) {
+    const text = timeAgo(at);
+
+    return text === "now" ? "just now" : /^\d+[mhd]$/.test(text) ? `${text} ago` : `on ${text}`;
+}
+
+/**
+ * A viewer asks for access, on their own page: with a few words if they like, for who manages people here, who reads it
+ * on the viewer's row in People. One at a time: once asked, the page says so, and they can take it back.
+ */
+function RequestAccess({ person }) {
+    const [note, setNote] = useState("");
+    const [busy, setBusy] = useState(false);
+    const asked = person.request;
+
+    const send = (body) =>
+        attempt(async () => {
+            setBusy(true);
+
+            try {
+                await api("me/access-request", body);
+                const hello = await api("me");
+
+                store.set({ me: hello.user, users: hello.users });
+                setNote("");
+            } finally {
+                setBusy(false);
+            }
+        });
+
+    if (asked) {
+        return html`<${Setting}
+            label="Request access"
+            hint=${`Asked ${whenAsked(asked.at)}${asked.note ? `: “${asked.note}”` : "."} Whoever manages people here sees it.`}
+        >
+            <button
+                class="button small ghost"
+                disabled=${busy}
+                onClick=${() => send({ withdraw: true })}
+            >
+                Take back
+            </button>
+        <//>`;
+    }
+
+    const ask = () => send(note.trim() === "" ? {} : { note: note.trim() });
+
+    return html`<${Setting}
+        label="Request access"
+        hint="Ask for a folder, a session, or to prompt. Whoever manages people here sees it."
+    >
+        <div class="my-name my-request">
+            <input
+                aria-label="What you need"
+                placeholder="Optional note"
+                maxlength="200"
+                value=${note}
+                onInput=${(event) => setNote(event.currentTarget.value)}
+                onKeyDown=${(event) => event.key === "Enter" && !busy && ask()}
+            />
+            <button class="button small" disabled=${busy} onClick=${ask}>Request access</button>
+        </div>
+    <//>`;
+}
+
+/**
+ * What a viewer asked for access with, on their page, for who manages them: when, their words, and Clear once it is
+ * answered. Access itself is given below it, where it always is.
+ */
+function Asked({ person }) {
+    const clear = () =>
+        attempt(async () => {
+            store.set({
+                users: await api(`users/${encodeURIComponent(person.id)}/access-request`, {
+                    clear: true,
+                }),
+            });
+        });
+
+    return html`<div class="access-asked">
+        <div class="grow">
+            <div class="small"><b>Asked for access</b> ${whenAsked(person.request.at)}</div>
+            ${person.request.note && html`<div class="small">“${person.request.note}”</div>`}
+            <div class="muted small">Give them what they need below, then clear this.</div>
+        </div>
+        <button class="button small" aria-label=${`Clear ${person.name}'s request`} onClick=${clear}>
+            Clear
+        </button>
+    </div>`;
+}
+
 /** Everyone with access, as the list on the left orders them: who is here first, then who was here last. */
 function ordered(users) {
     return [...users].sort(
@@ -948,8 +1040,10 @@ function PersonPage({ person }) {
                 .filter(Boolean)
                 .join(" · ")}
         </div>
+        ${mine && person.request && html`<${Asked} person=${person} />`}
         ${myself && html`<${MyPhoto} />`}
         ${myself && html`<${MyName} key=${person.name} person=${person} />`}
+        ${myself && person.role === "viewer" && html`<${RequestAccess} person=${person} />`}
         ${
             collab() &&
             (myself || owner) &&
@@ -1022,7 +1116,11 @@ export function PeopleSheet() {
     const { me, users } = store.state;
     const owner = me?.role === "owner";
     const [view, setView] = useState(null);
-    const people = ordered(users);
+    // A viewer has no list of the people here: their own page alone. The people they meet in the sessions shown to them
+    // stay in `users`, for the names on messages there.
+    const people = ordered(
+        me?.role === "viewer" ? users.filter((each) => each.id === me.id) : users,
+    );
 
     // The lists as they are now: also someone who joined with an invite a moment ago.
     useEffect(() => {
@@ -1055,6 +1153,8 @@ export function PeopleSheet() {
                 lead=${html`<${Face} person=${person} />`}
                 title=${person.id === me?.id ? `${person.name} (you)` : person.name}
                 detail=${[roleText(person), lastSeen(person)].join(" · ")}
+                badge=${managesPeople() && person.request ? "Request" : null}
+                alert=${true}
             />`,
         )}
         ${

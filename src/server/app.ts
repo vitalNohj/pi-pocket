@@ -258,6 +258,8 @@ function failureText(
 
 const ASK_SUBJECT = 200;
 const ASK_REASON = 200;
+/** The longest note a viewer writes with a request for access (`requestAccess`): a line or two on a row in People. */
+const ACCESS_NOTE_MAX = 200;
 const FAILED_AGENTS = 5;
 
 type SessionAsk = {
@@ -2865,36 +2867,48 @@ export class PocketApp {
         }
 
         for (const client of this.#clients) {
-            client.send("users", this.people(client.user));
+            const people = this.people(this.config.userById(client.user.id) ?? client.user);
+
+            this.#peopleTold.set(client, JSON.stringify(people));
+            client.send("users", people);
         }
     }
+
+    /** The people list each viewer's tab last got (`#peopleChanged`, `#scheduleSessions`), as JSON. */
+    readonly #peopleTold = new WeakMap<Client, string>();
 
     /**
      * The people with access to this server as `viewer` may see them: who is online now, and when the others were last
      * here. People invited to one session see only those who share it, and not which sessions others are limited to.
+     * A viewer has no list of the people here: they get themselves, and of the people they meet in the sessions they
+     * may see (`#metBy`) the name and the picture alone, which a message there shows anyway.
      */
     people(viewer: User) {
         const scope = viewer.sessions;
         // Who manages people reads of everyone what the owner reads.
         const manages = this.policy.managesPeople(viewer);
+        const met = viewer.role === "viewer" ? this.#metBy(viewer) : undefined;
+        // Someone a viewer only meets in a session: nothing of when they are here, or of what they may do.
+        const bare = (each: User) => met !== undefined && each.id !== viewer.id;
 
         return this.config.users
-            .filter(
-                (each) =>
-                    scope === undefined ||
-                    each.sessions === undefined ||
-                    each.sessions.some((id) => scope.includes(id)),
+            .filter((each) =>
+                met !== undefined
+                    ? met.has(each.id)
+                    : scope === undefined ||
+                      each.sessions === undefined ||
+                      each.sessions.some((id) => scope.includes(id)),
             )
             .map((each) => ({
                 id: each.id,
                 name: each.name,
                 role: each.role,
                 ...(each.avatar === undefined ? {} : { avatar: each.avatar }),
-                online: this.#online(each.id),
-                ...(each.lastSeen === undefined ? {} : { lastSeen: each.lastSeen }),
+                online: !bare(each) && this.#online(each.id),
+                ...(each.lastSeen === undefined || bare(each) ? {} : { lastSeen: each.lastSeen }),
                 // Which sessions they are limited to: only the ones this viewer may see themselves. An empty list still
                 // says that they are limited.
-                ...(each.sessions === undefined || scope !== undefined
+                ...(each.sessions === undefined || scope !== undefined || bare(each)
                     ? {}
                     : {
                           sessions: each.sessions
@@ -2932,7 +2946,35 @@ export class PocketApp {
                 ...(each.temporary === true && (manages || viewer.id === each.id)
                     ? { temporary: true }
                     : {}),
+                // What this viewer asked for access with (`requestAccess`), for who manages people, who answers it, and
+                // for themselves.
+                ...(each.accessRequest !== undefined && (manages || viewer.id === each.id)
+                    ? { request: { ...each.accessRequest } }
+                    : {}),
             }));
+    }
+
+    /**
+     * Whom viewer `viewer` meets: themselves, and everyone else who may see a session they may see. That takes in who
+     * started it, while it is theirs: a session its starter may no longer use moves to who is in charge (`handOver`).
+     * Nobody else: a viewer who was shown nothing meets nobody.
+     */
+    #metBy(viewer: User): Set<string> {
+        const met = new Set([viewer.id]);
+
+        for (const id of Object.keys(this.#sessions)) {
+            if (!this.policy.maySee(viewer, id)) {
+                continue;
+            }
+
+            for (const each of this.config.users) {
+                if (!met.has(each.id) && this.policy.maySee(each, id)) {
+                    met.add(each.id);
+                }
+            }
+        }
+
+        return met;
     }
 
     // ─── Access ─────────────────────────────────────────────────────────────
@@ -4834,6 +4876,18 @@ export class PocketApp {
                 this.#sendSessions(client, list.sessions, list.json);
                 this.#sendPip(client);
 
+                // Whom a viewer meets follows the sessions they may see (`#metBy`): shown one, or no longer, they get
+                // the names for it with the list, and lose the ones they no longer meet.
+                if (user.role === "viewer") {
+                    const people = this.people(user);
+                    const told = JSON.stringify(people);
+
+                    if (this.#peopleTold.get(client) !== told) {
+                        this.#peopleTold.set(client, told);
+                        client.send("users", people);
+                    }
+                }
+
                 if (client.board === true) {
                     let entries = boards.get(user.id);
 
@@ -5912,6 +5966,51 @@ export class PocketApp {
         this.config.updateUser(person, { linksRunners: on ? true : undefined });
         this.#peopleChanged();
         this.runners.changed();
+    }
+
+    /**
+     * Viewer `person` asks for access, with a few words if they like: People shows it to who manages people, on that
+     * person's row. One at a time: asking again replaces what they asked. Only a viewer asks; anyone else has what a
+     * viewer asks for, or asks the owner for a right in words.
+     */
+    requestAccess(person: User, note?: string): void {
+        if (person.role !== "viewer") {
+            throw new HttpError(403, "Only a viewer asks for access.");
+        }
+
+        const words = note?.trim() ?? "";
+
+        if (words.length > ACCESS_NOTE_MAX) {
+            throw new HttpError(400, `Write ${ACCESS_NOTE_MAX} characters or fewer.`);
+        }
+
+        this.config.updateUser(person.id, {
+            accessRequest: { at: this.now(), ...(words === "" ? {} : { note: words }) },
+        });
+        this.#peopleChanged();
+    }
+
+    /**
+     * A request for access ends: `by` takes back their own, or, managing `person` (`#requireManages`), has answered
+     * theirs. Giving access is done where it always is, on that person's page; this only clears what they asked.
+     */
+    clearAccessRequest(by: User, person: string = by.id): void {
+        const target = this.config.userById(person);
+
+        if (person !== by.id) {
+            this.#requireManages(by, target);
+        }
+
+        if (target === undefined) {
+            throw new HttpError(404, "No such person");
+        }
+
+        if (target.accessRequest === undefined) {
+            return;
+        }
+
+        this.config.updateUser(person, { accessRequest: undefined });
+        this.#peopleChanged();
     }
 
     /**
