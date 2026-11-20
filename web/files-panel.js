@@ -661,7 +661,7 @@ export function FilesPanel(props) {
 function FilesPanelContent({ leaving = false }) {
     const { filesTab, view, server } = store.state;
     const root = view.agent?.cwd ?? view.conversation?.cwd ?? "";
-    const { changes } = useChanges(true);
+    const { changes } = useChanges();
     // Pi's edits git does not list count too: outside a repository, they are all there is.
     const count = changes ? changes.files.length + changes.piOnly.length : 0;
 
@@ -738,7 +738,10 @@ function FilesPanelContent({ leaving = false }) {
             aria-label="Changes"
             hidden=${filesTab !== "changes"}
         >
-            <${DiffReview} active=${filesTab === "changes"} covering=${!beside && !leaving} />
+            <${DiffReview}
+                active=${filesTab === "changes" && !leaving}
+                covering=${!beside && !leaving}
+            />
         </div>
     </section>`;
 }
