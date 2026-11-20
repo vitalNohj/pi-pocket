@@ -195,6 +195,12 @@ export interface StoredRunner {
      * `Computer.leaving`), also after a restart that cut the rest short.
      */
     leaving?: string[];
+    /**
+     * People from whom a folder here, or all sessions in one, was taken back, whose sessions and tasks there are not
+     * handed over yet (`app.ts` `#finishHandOvers`). Set in the same save that takes it back, so a restart that cut
+     * the hand-over short still finishes it.
+     */
+    handOver?: string[];
     /** The folders the owner gave each chosen person here, by person id (`access.ts`). The owner needs none. */
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
@@ -237,6 +243,8 @@ export interface StoredServer {
     users?: string[];
     /** People no longer chosen here whose shares and sessions here are not taken back yet (`StoredRunner.leaving`). */
     leaving?: string[];
+    /** People whose hand-over here, after a folder was taken back, is not saved yet (`StoredRunner.handOver`). */
+    handOver?: string[];
     /** The folders the owner gave each chosen person (real paths here), by person id (`access.ts`). */
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
@@ -581,6 +589,30 @@ function dropLeaving(target: Leaving, people: readonly string[]): boolean {
         delete target.leaving;
     } else {
         target.leaving = rest;
+    }
+
+    return rest.length !== before.length;
+}
+
+/** What a computer's record keeps about the hand-overs it still owes (`StoredRunner.handOver`). */
+type Owed = { handOver?: string[] };
+
+/** `person`'s hand-over on `target` is owed: marked in the save that takes a folder back from them. */
+function markOwed(target: Owed, person: string): void {
+    if (target.handOver?.includes(person) !== true) {
+        target.handOver = [...(target.handOver ?? []), person];
+    }
+}
+
+/** `people`'s hand-overs on `target` are saved; a list with nobody in it leaves no entry. Whether anything changed. */
+function dropOwed(target: Owed, people: readonly string[]): boolean {
+    const before = target.handOver ?? [];
+    const rest = before.filter((each) => !people.includes(each));
+
+    if (rest.length === 0) {
+        delete target.handOver;
+    } else {
+        target.handOver = rest;
     }
 
     return rest.length !== before.length;
@@ -1151,6 +1183,7 @@ export class ConfigStore {
                     setList(computer, "sees", id, []);
                     trimRights(computer, (each) => each !== id);
                     dropLeaving(computer, [id]);
+                    dropOwed(computer, [id]);
                 }
             }
 
@@ -1414,6 +1447,31 @@ export class ConfigStore {
         }
     }
 
+    /** The people whose hand-over on computer `id` (undefined: this server) is owed: `StoredRunner.handOver`. */
+    handOvers(id: string | undefined): readonly string[] {
+        return (id === undefined ? this.#config.server : this.runnerById(id))?.handOver ?? [];
+    }
+
+    /**
+     * `people`'s hand-overs on computer `id` (undefined: this server) are saved: no longer owed. Only `app.ts`
+     * `#finishHandOvers` says so, after its saves.
+     */
+    clearHandOvers(id: string | undefined, people: readonly string[]): void {
+        if (id === undefined) {
+            if ((this.#config.server?.handOver ?? []).some((each) => people.includes(each))) {
+                this.#changeServer((server) => void dropOwed(server, people));
+            }
+
+            return;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined && dropOwed(runner, people)) {
+            this.save();
+        }
+    }
+
     /** The people who hold `right` on computer `id` (undefined: this server): `StoredRunner.wheel`, `.allows`. */
     rightHolders(id: string | undefined, right: ComputerRight): readonly string[] {
         const computer = id === undefined ? this.#config.server : this.runnerById(id);
@@ -1472,11 +1530,16 @@ export class ConfigStore {
 
     /**
      * Set the folders given to `person` on computer `id` (undefined: this server); an empty list takes them all. A
-     * folder taken back is no longer one they see every session in (`setSeenFolder`).
+     * folder taken back is no longer one they see every session in (`setSeenFolder`), and what they had by it is
+     * owed a hand-over, marked in this same save (`StoredRunner.handOver`).
      */
     setGivenFolders(id: string | undefined, person: string, folders: readonly string[]): void {
-        const apply = (target: FolderGrants): void => {
+        const apply = (target: FolderGrants & Owed): void => {
             const unique = [...new Set(folders)];
+
+            if ((target.given?.[person] ?? []).some((each) => !unique.includes(each))) {
+                markOwed(target, person);
+            }
 
             setList(target, "given", person, unique);
             setList(
@@ -1520,8 +1583,14 @@ export class ConfigStore {
             return false;
         }
 
-        const apply = (target: FolderGrants): void => {
-            const rest = (target.sees?.[person] ?? []).filter((each) => each !== folder);
+        const apply = (target: FolderGrants & Owed): void => {
+            const had = target.sees?.[person] ?? [];
+            const rest = had.filter((each) => each !== folder);
+
+            // Off: the tasks they set up on sessions they had by it are owed a hand-over, marked in this same save.
+            if (!on && rest.length !== had.length) {
+                markOwed(target, person);
+            }
 
             setList(target, "sees", person, on ? [...rest, folder] : rest);
         };

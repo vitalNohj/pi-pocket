@@ -22,6 +22,7 @@ import {
 import {
     type AgentChange,
     AgentDoc,
+    configure as configureAgent,
     type ConversationCreateOptions,
     type ConversationId,
     type Cursor,
@@ -1041,7 +1042,7 @@ export class Commands {
         }
 
         const back = await sourceFolders(worktree, access);
-        const moves = [];
+        const moves: { id: ConversationId; cwd: string }[] = [];
 
         for (const each of app.conversationsOf(id)) {
             if (await inside(each)) {
@@ -1053,14 +1054,15 @@ export class Commands {
         app.recheck(id, user);
         await removeWorktree(worktree, force === true, access);
 
-        // The session and its subagents go back to the folders the worktree came from.
-        for (const move of moves) {
-            await (await app.conversation(move.id)).configure({ cwd: move.cwd }, context);
-        }
+        const cwd = moves.find((each) => each.id === id)?.cwd ?? app.cwdOf(id);
 
-        const cwd = app.cwdOf(id);
-
+        // One save: the session and its subagents go back to the folders the worktree came from, and the session's
+        // record says so. Nothing that cuts it short leaves the two apart.
         await app.harness.commit(async (tx) => {
+            for (const move of moves) {
+                await configureAgent(tx, move.id, { cwd: move.cwd });
+            }
+
             const meta = (await tx.doc(SessionsDoc)).items[String(id)];
 
             if (meta === undefined) {
@@ -2864,7 +2866,9 @@ export class Commands {
             app.requireWorkspaceOwner(user, request.cwd);
         }
 
-        const conversation = await app.conversation(id);
+        // 404 when it does not exist.
+        await app.conversation(id);
+
         const current = await app.agentState(id);
         const ref = request.model ?? current?.model;
         const model =
@@ -2929,9 +2933,11 @@ export class Commands {
             ...(cwd === undefined ? {} : { cwd }),
         };
 
-        if (request.pipPanel === true) {
-            // Check and save together: a turn may have started while the picker was open.
-            await app.harness.commit(async (tx) => {
+        // One save: where Pi works and the session's record of it change together. Access is judged by the record, so
+        // nothing that cuts a move short leaves a session judged by a folder it no longer works in.
+        await app.harness.commit(async (tx) => {
+            if (request.pipPanel === true) {
+                // Check and save together: a turn may have started while the picker was open.
                 const live = await tx.doc(LiveDoc, id);
 
                 if (live.run !== undefined || (live.compactions?.length ?? 0) > 0) {
@@ -2939,19 +2945,20 @@ export class Commands {
                 }
 
                 Object.assign(await tx.doc(AgentDoc, id), change);
-            }, saving);
-        } else {
-            await conversation.configure(change, saving);
-        }
+            } else {
+                await configureAgent(tx, id, change);
+            }
 
-        if (cwd !== undefined && app.sessionMeta(id) !== undefined) {
-            await app.harness.commit(async (tx) => {
+            if (cwd !== undefined) {
                 const meta = (await tx.doc(SessionsDoc)).items[String(id)];
 
                 if (meta !== undefined) {
                     meta.cwd = cwd;
                 }
-            }, context);
+            }
+        }, saving);
+
+        if (cwd !== undefined && app.sessionMeta(id) !== undefined) {
             app.folderApprovals.moved(String(app.rootOf(id)), cwd);
             void this.recordRepo(id, cwd);
         }

@@ -1314,9 +1314,11 @@ export class PocketApp {
         // the observer, so what is kept in memory follows.
         await this.#handOverGone();
 
-        // An unchoose a restart cut short: what the people it dropped still have there is taken back.
+        // An unchoose a restart cut short: what the people it dropped still have there is taken back. And a folder taken
+        // back, or all sessions in one, whose hand-over a restart cut short.
         for (const id of [THIS_SERVER, ...this.config.runners.map((each) => each.id)]) {
             await this.#finishLeaving(id);
+            await this.#finishHandOvers(id);
         }
 
         // A server from before the access rules: its people keep the sessions that were here.
@@ -3286,17 +3288,7 @@ export class PocketApp {
         person: string,
         folders: readonly string[],
     ): Promise<void> {
-        if (id !== THIS_SERVER) {
-            this.runners.require(id);
-        }
-
-        this.policy.requireManage(by, id);
-
-        const target = this.config.userById(person);
-
-        if (target === undefined || !this.policy.mayStart(target, id)) {
-            throw new HttpError(400, "Choose them for this computer first.");
-        }
+        this.#requireGiving(by, id, person);
 
         const real = await Promise.all(
             folders
@@ -3318,10 +3310,32 @@ export class PocketApp {
                 }),
         );
 
-        this.config.setGivenFolders(id === THIS_SERVER ? undefined : id, person, real);
-        await this.handOver(person, id);
+        await this.#inTurn(async () => {
+            // Checked again where it is saved: the folders were looked up meanwhile.
+            this.#requireGiving(by, id, person);
+            this.config.setGivenFolders(id === THIS_SERVER ? undefined : id, person, real);
+            await this.#finishHandOvers(id, person);
+        });
         this.accessChanged();
         this.runners.changed();
+    }
+
+    /**
+     * `by` may change what `person` has on computer `id` (`THIS_SERVER` or a runner): the computer is linked, `by` is
+     * in charge of it, and `person` is chosen there. Checked when asked, and again where the change is saved.
+     */
+    #requireGiving(by: User, id: string, person: string): void {
+        if (id !== THIS_SERVER) {
+            this.runners.require(id);
+        }
+
+        this.policy.requireManage(by, id);
+
+        const target = this.config.userById(person);
+
+        if (target === undefined || !this.policy.mayStart(target, id)) {
+            throw new HttpError(400, "Choose them for this computer first.");
+        }
     }
 
     /**
@@ -3348,20 +3362,20 @@ export class PocketApp {
             throw new HttpError(400, "Send person, folder, and on.");
         }
 
-        const target = this.config.userById(person);
+        this.#requireGiving(by, id, person);
+        await this.#inTurn(async () => {
+            this.#requireGiving(by, id, person);
 
-        if (target === undefined || !this.policy.mayStart(target, id)) {
-            throw new HttpError(400, "Choose them for this computer first.");
-        }
+            if (
+                !this.config.setSeenFolder(id === THIS_SERVER ? undefined : id, person, folder, on)
+            ) {
+                throw new HttpError(400, "Give them that folder first.");
+            }
 
-        if (!this.config.setSeenFolder(id === THIS_SERVER ? undefined : id, person, folder, on)) {
-            throw new HttpError(400, "Give them that folder first.");
-        }
-
-        if (!on) {
-            await this.handOver(person, id);
-        }
-
+            if (!on) {
+                await this.#finishHandOvers(id, person);
+            }
+        });
         this.accessChanged();
     }
 
@@ -5452,17 +5466,7 @@ export class PocketApp {
      * shares themselves are saved elsewhere and are removed a moment later.
      */
     async #choose(id: string, next: (now: readonly string[]) => string[]): Promise<void> {
-        const earlier = this.#choosing;
-
-        let done = (): void => {};
-
-        this.#choosing = new Promise<void>((resolve) => {
-            done = resolve;
-        });
-
-        try {
-            await earlier;
-
+        await this.#inTurn(async () => {
             const users = next(
                 id === THIS_SERVER
                     ? (this.config.server.users ?? [])
@@ -5478,6 +5482,28 @@ export class PocketApp {
             // Their tabs leave at once, before the saves below: no event of a session there reaches them meanwhile.
             this.accessChanged();
             await this.#finishLeaving(id);
+        });
+    }
+
+    /**
+     * One change of what people have on a computer at a time, on any computer: who is chosen (`#choose`), a person's
+     * folders (`giveFolders`), and all sessions in one (`seeFolder`). Each saves the settings, then takes back what
+     * they no longer cover, and ends the mark of what is still owed; a second change in between could end the mark of
+     * something the first has not finished. A change that fails does not hold up the next.
+     */
+    async #inTurn<T>(change: () => Promise<T>): Promise<T> {
+        const earlier = this.#choosing;
+
+        let done = (): void => {};
+
+        this.#choosing = new Promise<void>((resolve) => {
+            done = resolve;
+        });
+
+        try {
+            await earlier;
+
+            return await change();
         } finally {
             done();
         }
@@ -5595,6 +5621,24 @@ export class PocketApp {
 
         this.config.clearLeaving(key, leaving);
         this.accessChanged();
+    }
+
+    /**
+     * Hand over what the people marked on computer `id` may no longer use there (`config.ts` `StoredRunner.handOver`),
+     * and `also`'s: a folder was taken back from them, or all sessions in one. Their sessions in folders no longer
+     * theirs, and the tasks they set up on sessions they no longer steer, move on (`handOver`). The settings were saved
+     * first, with the mark in that save; only after the hand-overs is it ended, so a restart in between leaves it and
+     * the next start finishes it.
+     */
+    async #finishHandOvers(id: string, also?: string): Promise<void> {
+        const key = id === THIS_SERVER ? undefined : id;
+        const owed = [...this.config.handOvers(key)];
+
+        for (const person of new Set(also === undefined ? owed : [...owed, also])) {
+            await this.handOver(person, id);
+        }
+
+        this.config.clearHandOvers(key, owed);
     }
 
     /**
