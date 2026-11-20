@@ -25,6 +25,7 @@ import {
     AgentDoc,
     type AgentState,
     type CommitPublication,
+    configure as configureAgent,
     type Conversation,
     type ConversationId,
     type Cursor,
@@ -1304,6 +1305,11 @@ export class PocketApp {
         });
 
         this.#unsubscribeCommits = () => commits.detach();
+        // Sessions saved by a link's path, or left behind by a move a restart cut short: saved by where they work.
+        // Before the hand-overs below, which judge a session by its folder. A failure here stops no start.
+        await this.#realFolders().catch((error: unknown) =>
+            this.#log(`[warn] Session folders not checked: ${describe(error)}`),
+        );
         // A removal a restart cut short: what is still saved for someone no longer here goes to who is in charge. After
         // the observer, so what is kept in memory follows.
         await this.#handOverGone();
@@ -3060,8 +3066,9 @@ export class PocketApp {
      * they are in charge of it, refuse a folder they were not given, or wait for an approval (`folder-requests.ts`):
      * their own authenticator code, or Allow by who is in charge. Returns what keeps the approval for the new session
      * once it has an id (nothing to keep for who is in charge), and what checks them again where the session is saved
-     * (`Approved`). `folder` is a real path there: on this server it is resolved here, so a symlink changed later cannot
-     * widen it; a runner's is checked there (`runners.ts` `checkFolder`).
+     * (`Approved`). `folder` is judged by its real path: on this server it is resolved here, and the session is saved by
+     * that path too (`workspace.ts` `checkDirectory`), so a link changed later gives nobody anything; a runner's is
+     * resolved there (`runners.ts` `checkFolder`).
      */
     async approveStart(
         user: User,
@@ -3885,6 +3892,128 @@ export class PocketApp {
         if (gone) {
             this.attribution.forget(person, (id) => this.sessionMeta(this.rootOf(id))?.createdBy);
         }
+    }
+
+    /**
+     * At startup: each session on this server is saved by the folder it really works in, links followed, as a new one
+     * is (`workspace.ts` `checkDirectory`) and as a runner's is (`runners.ts` `checkFolder`). One started through a
+     * link was once saved by the link's path, and counted as in the link's folder: for who accesses all sessions in a
+     * folder (`access.ts` `seesFolder`), and for whose it stays (`handOver`). Where Pi works is the truth: a session's
+     * record that names another folder was left behind, and follows. A folder that is not there stays as written. Its
+     * worktree's folders are real paths too.
+     *
+     * Then what follows from a session's folder: its approval names it, and where the folder a session is judged by
+     * changed, its starter and the people who access all sessions in a folder here keep only what is still theirs
+     * (`handOver`). Only people chosen here: what anyone else has waits for them as it is.
+     */
+    async #realFolders(): Promise<void> {
+        const changes = new Map<
+            string,
+            { cwd: string; agent: boolean; worktree?: NonNullable<SessionMeta["worktree"]> }
+        >();
+        const before = new Map<string, string>();
+
+        for (const [key, meta] of Object.entries(this.#sessions)) {
+            const at = this.#agents.get(Number(key) as unknown as ConversationId)?.cwd;
+            const works = at ?? meta.cwd;
+
+            if (
+                meta.runner !== undefined ||
+                meta.pip !== undefined ||
+                workspaceScheme(works) !== undefined
+            ) {
+                continue;
+            }
+
+            const cwd = await realFolder(works);
+            const worktree =
+                meta.worktree === undefined
+                    ? undefined
+                    : {
+                          ...meta.worktree,
+                          path: await realFolder(meta.worktree.path),
+                          source: await realFolder(meta.worktree.source),
+                      };
+            const moved =
+                worktree !== undefined &&
+                (worktree.path !== meta.worktree?.path || worktree.source !== meta.worktree.source);
+
+            if (cwd !== meta.cwd || cwd !== works || moved) {
+                changes.set(key, {
+                    cwd,
+                    agent: at !== undefined && cwd !== at,
+                    ...(moved ? { worktree } : {}),
+                });
+                before.set(key, this.#accessFolder(meta));
+            }
+        }
+
+        if (changes.size === 0) {
+            return;
+        }
+
+        await this.harness.commit(async (tx) => {
+            const sessions = await tx.doc(SessionsDoc);
+
+            for (const [key, change] of changes) {
+                const meta = sessions.items[key];
+
+                if (meta === undefined) {
+                    continue;
+                }
+
+                meta.cwd = change.cwd;
+
+                if (change.worktree !== undefined) {
+                    meta.worktree = change.worktree;
+                }
+
+                if (change.agent) {
+                    await configureAgent(tx, Number(key) as unknown as ConversationId, {
+                        cwd: change.cwd,
+                    });
+                }
+            }
+        }, context);
+
+        const chosen = this.config.server.users ?? [];
+        const people = new Set<string>();
+
+        for (const key of changes.keys()) {
+            const meta = this.#sessions[key];
+
+            if (meta === undefined) {
+                continue;
+            }
+
+            const folder = this.#accessFolder(meta);
+
+            this.folderApprovals.moved(key, folder);
+
+            if (folder === before.get(key)) {
+                continue;
+            }
+
+            if (meta.createdBy !== undefined) {
+                people.add(meta.createdBy);
+            }
+
+            for (const each of chosen) {
+                if (this.config.seenFolders(undefined, each).length > 0) {
+                    people.add(each);
+                }
+            }
+        }
+
+        for (const person of people) {
+            if (chosen.includes(person)) {
+                await this.handOver(person, THIS_SERVER);
+            }
+        }
+
+        this.#log(
+            `[info] Folders: ${changes.size} sessions are now saved by the folder they really work in.`,
+        );
     }
 
     /**

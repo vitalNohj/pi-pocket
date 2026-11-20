@@ -386,7 +386,11 @@ export class Workspace {
         return { branch: name };
     }
 
-    /** A folder to work in, as its whole path: a 404 when it is not there, so the folder picker can offer to make it. */
+    /**
+     * A folder to work in, as its real path, links followed: a 404 when it is not there, so the folder picker can offer
+     * to make it. A session is saved by this path, and judged by it (`access.ts` `inFolder`), as a runner's is
+     * (`runners.ts` `checkFolder`): one started through a link counts as in the folder it works in, not in the link's.
+     */
     checkDirectory(path: string): string {
         if (this.#app.workspaceScheme(path.trim()) !== undefined) {
             throw new HttpError(
@@ -425,7 +429,12 @@ export class Workspace {
             throw new HttpError(400, `${absolute} is a file, not a folder.`);
         }
 
-        return absolute;
+        // The resolver the folders given are saved with (`app.ts` `giveFolders`), so the two compare.
+        try {
+            return realpathSync.native(absolute);
+        } catch {
+            return absolute;
+        }
     }
 
     /**

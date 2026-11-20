@@ -1465,10 +1465,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 given?.some((each) => inFolder(realpathOrSelf(homedir()), each)) === true;
             const requested =
                 given !== undefined && asked === "~" && !homeIsTheirs ? (given[0] ?? asked) : asked;
-            const real = realpathOrSelf(app.workspace.checkDirectory(requested));
+            // Its real path, links followed: what the folders given are compared with, and what a session is saved by.
+            const path = app.workspace.checkDirectory(requested);
 
             // Someone given folders browses inside them only: anywhere else, the picker lists the folders given.
-            if (given !== undefined && !given.some((each) => inFolder(real, each))) {
+            if (given !== undefined && !given.some((each) => inFolder(path, each))) {
                 return json(response, 200, {
                     ...givenListing(given),
                     recent: app
@@ -1477,7 +1478,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 });
             }
 
-            const path = app.workspace.checkDirectory(requested);
             const showHidden = url.searchParams.get("hidden") === "1";
             const dirs: { name: string; path: string }[] = [];
             let entries;

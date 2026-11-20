@@ -16,7 +16,8 @@ import type { Client } from "../src/server/room.ts";
 
 export const context = BACKGROUND_CONTEXT;
 
-export const root = mkdtempSync(join(tmpdir(), "pi-pocket-test-"));
+// Its real path: a session is saved by the folder it really works in, and the temporary folder can be a link.
+export const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-pocket-test-")));
 // Isolate from the real Pi install: its auth, settings, skills, and Lancet Guard.
 process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 process.env.PI_POCKET_GUARD = "off";

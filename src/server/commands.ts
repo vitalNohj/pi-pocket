@@ -39,6 +39,7 @@ import {
     type Tx,
     type UserInput,
 } from "@earendil-works/pi-durable";
+import { realFolder } from "../runner/folders.ts";
 import type { SessionScope } from "../runner/protocol.ts";
 import { checkedContext } from "./admission.ts";
 import type { Approved, PocketApp } from "./app.ts";
@@ -977,7 +978,8 @@ export class Commands {
                 : remoteWorktrees(this.#app.runners.env(remote.runner, cwd, remote.scope), info);
         const folder =
             access === undefined || info === undefined || remote === undefined
-                ? join(this.#app.dataDir, "worktrees")
+                ? // By its real path, as a session's folder is saved: the data folder may be reached through a link.
+                  join(await realFolder(this.#app.dataDir), "worktrees")
                 : access.path.join(info.home, ".pi-pocket", "worktrees", remote.scope.id);
         const made = await createWorktree(cwd, folder, label, access);
 
