@@ -163,6 +163,8 @@ export type Hello = {
     /** The runner's Pi Pocket version, for the computers list. */
     version: string;
     tools: RunnerTools;
+    /** The runner can answer a scoped `pocket-read-snapshot` request itself. */
+    readSnapshot?: true;
     /** Plain HTTP to this server is allowed on this computer (`pi-pocket runner link --allow-http`), for the sheet. */
     allowHttp?: boolean;
 };
