@@ -149,6 +149,20 @@ export const FolderFavoritesDoc = defineDoc<FolderFavorites>({
 });
 
 /**
+ * Pinned sessions in pin order, private to each person, for the browsers where they turned syncing on
+ * (`pinned-sessions.ts`). A person with no key has no synced list yet; an empty list is a synced list with no pins.
+ */
+export type PinnedSessions = { users: Record<string, number[]> };
+
+export const PinnedSessionsDoc = defineDoc<PinnedSessions>({
+    kind: "pocket.pinned-sessions",
+    version: 1,
+    ...rebased,
+    scope: "session",
+    initial: () => ({ users: {} }),
+});
+
+/**
  * The addresses this session knows its linked sessions by, so no session id goes into its transcript. A fork starts with
  * none, so it leaves the team: the addresses in the history it inherited do not resolve there.
  */

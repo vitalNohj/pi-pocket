@@ -89,6 +89,8 @@ import {
     FolderFavoritesDoc,
     HooksDoc,
     MemoryDoc,
+    type PinnedSessions as PinnedSessionsValue,
+    PinnedSessionsDoc,
     RepoWatchesDoc,
     RunFailureDoc,
     type SessionMeta,
@@ -130,6 +132,7 @@ import { configureHttp } from "./net.ts";
 import { expandHome, workspaceScheme } from "./paths.ts";
 import { createPublicFetch } from "./public-fetch.ts";
 import { PiSessions } from "./pi-sessions.ts";
+import { PinnedSessions } from "./pinned-sessions.ts";
 import { Hooks } from "./hooks.ts";
 import { Inbox, type InboxDelivery } from "./inbox.ts";
 import { Pip, PIP_EXTENSION } from "./pip.ts";
@@ -542,6 +545,8 @@ export class PocketApp {
     readonly memory = new Memory(this);
     /** Each person's favorite working folders, shared by their devices. */
     readonly folderFavorites = new FolderFavorites(this);
+    /** Each person's pinned sessions, for the browsers where they turned syncing on. */
+    readonly pinnedSessions = new PinnedSessions(this);
     /** Artifacts published to anyone with their address (`share.ts`), which needs no sign-in. */
     readonly shares = new Shares(this);
     /** Extension modules' pages for anyone with the address (`public-links.ts`), which need no sign-in. */
@@ -1727,6 +1732,8 @@ export class PocketApp {
             }
         } else if (kind === FolderFavoritesDoc.definition.kind) {
             this.folderFavorites.committed(value as FolderFavoritesValue | null);
+        } else if (kind === PinnedSessionsDoc.definition.kind) {
+            this.pinnedSessions.committed(value as PinnedSessionsValue | null);
         } else if (kind === MemoryDoc.definition.kind) {
             this.memory.committed();
         } else if (ROOM_DOCS.has(kind) && id !== undefined) {
@@ -4646,6 +4653,7 @@ export class PocketApp {
         // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
         const folderFavorites = await this.folderFavorites.list(user);
         const runnerFavorites = await this.folderFavorites.runners(user);
+        const pinnedSessions = await this.pinnedSessions.list(user);
         const runners = this.runners.list(user);
         const thisServer = this.thisServer(user);
 
@@ -4735,6 +4743,8 @@ export class PocketApp {
             folderFavorites,
             // The same, on each computer they may use (`runners.ts`), by its id.
             runnerFavorites,
+            // Their synced pinned sessions, once a browser of theirs gave a list (`pinned-sessions.ts`).
+            ...(pinnedSessions === undefined ? {} : { pinnedSessions }),
             // Linked computers (`runners.ts`), for the owner's Runners sheet and New session's Runs on.
             ...(user.role === "owner" || runners.length > 0 ? { runners } : {}),
             // Every theme folder, for Appearance and for the look this tab uses (`theme.js`).
