@@ -3250,13 +3250,18 @@ export class PocketApp {
             : { computer: meta.runner ?? THIS_SERVER, path: this.#accessFolder(meta) };
     }
 
-    /** The folder session `meta`'s access is judged by: where its worktree came from, its own or the one it works in. */
+    /**
+     * The folder session `meta`'s access is judged by: where its worktree came from, its own or the one it works in.
+     * Its own counts only while it works in it. Moved to another folder, it is judged by that folder: the record of its
+     * worktree stays, to remove the worktree later (`commands.ts` `removeWorktree`), and gives nobody anything.
+     */
     #accessFolder(meta: SessionMeta): string {
-        return (
-            meta.worktree?.source ??
-            this.#worktreeSource(meta.runner ?? THIS_SERVER, meta.cwd) ??
-            meta.cwd
-        );
+        const own =
+            meta.worktree !== undefined && inFolder(meta.cwd, meta.worktree.path)
+                ? meta.worktree.source
+                : undefined;
+
+        return own ?? this.#worktreeSource(meta.runner ?? THIS_SERVER, meta.cwd) ?? meta.cwd;
     }
 
     /**

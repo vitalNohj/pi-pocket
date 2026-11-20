@@ -965,6 +965,75 @@ test("a session's own worktree counts as the folder it came from: its copies and
     assert.deepEqual(app.folderRequests.list(owner(app)), [], "nothing asked anyone");
 });
 
+test("a worktree session moved to another folder is judged by that folder, not by where its worktree came from", async () => {
+    const repo = newFolder();
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+
+    git("init", "-q");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "T");
+    writeFileSync(join(repo, "main.ts"), "export const answer = 1;\n");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+
+    // A folder outside the one everyone here is given.
+    mkdirSync(join(root, "elsewhere"), { recursive: true });
+
+    const elsewhere = realpathSync(join(root, "elsewhere"));
+
+    writeFileSync(join(elsewhere, "secret.txt"), "not hers\n");
+
+    // Gale accesses all sessions in the given folder, so the owner's worktree session from a repository in it too.
+    await app.seeFolder(owner(app), THIS_SERVER, gale.id, given, true);
+
+    try {
+        const { id } = await app.commands.createSession(owner(app), { cwd: repo, worktree: true });
+        const worktree = app.sessionMeta(id)!.worktree!;
+
+        assert.equal(worktree.source, repo);
+        assert.equal(app.canSee(gale, id), true, "by the folder its worktree came from");
+        assert.equal((await call(gale, `c/${id}/view?path=main.ts`)).status, 200);
+
+        // The owner moves it out. Its worktree's record stays, to remove the worktree later; it gives nobody anything.
+        await app.commands.configure(id, owner(app), { cwd: elsewhere });
+        assert.equal(app.cwdOf(id), elsewhere);
+        assert.deepEqual(app.sessionMeta(id)!.worktree, worktree);
+        assert.equal(app.canSee(gale, id), false, "it works in a folder she was not given");
+        assert.equal(app.policy.maySteer(gale, String(id)), false);
+        assert.ok(!app.sessions(gale).some((each) => String(each.id) === String(id)));
+        assert.equal((await call(gale, `c/${id}/view?path=secret.txt`)).status, 404);
+        assert.equal(app.folderOf(id)?.path, elsewhere);
+
+        // Back in its worktree, it counts as the repository again.
+        await app.commands.configure(id, owner(app), { cwd: worktree.path });
+        assert.equal(app.canSee(gale, id), true);
+        assert.equal(app.folderOf(id)?.path, repo);
+    } finally {
+        await app.seeFolder(owner(app), THIS_SERVER, gale.id, given, false);
+    }
+
+    // A person's own worktree session, moved to a folder that is then taken back from them, goes to who is in charge.
+    const other = newFolder();
+
+    await app.giveFolders(owner(app), THIS_SERVER, alex.id, [repo, other]);
+
+    const started = app.commands.createSession(alex, { cwd: repo, worktree: true });
+
+    await app.folderRequests.approve(owner(app), (await pending(alex, repo)).id, {
+        method: "owner",
+    });
+
+    const { id: own } = await started;
+
+    await app.commands.configure(own, alex, { cwd: other });
+    assert.equal(app.cwdOf(own), other);
+    assert.equal(app.sessionMeta(own)!.createdBy, alex.id);
+
+    await app.giveFolders(owner(app), THIS_SERVER, alex.id, [repo]);
+    assert.notEqual(app.sessionMeta(own)!.createdBy, alex.id, "its folder is no longer his");
+    assert.equal(app.canSee(alex, own), false);
+});
+
 test("a person removed from this server loses their waiting requests, and their sessions go to the owner", async () => {
     const folder = newFolder();
     const started = app.commands.createSession(gale, { cwd: folder });
