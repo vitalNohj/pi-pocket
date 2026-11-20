@@ -20,3 +20,23 @@ It prints the median, nearest-rank p95, and all 24 samples in milliseconds, afte
 `idleToRow` start when the browser receives the idle view. To compare revisions, run the same
 script and fixture on each revision with the same Node, Chromium, and machine. This measures the
 local refresh path, not remote model or runner latency.
+
+## Runner file reads
+
+Install Playwright and Chromium as above, or set `PI_POCKET_BROWSER` to a Chromium executable.
+
+```sh
+systemd-run --user --scope -q --expand-environment=no -p CPUQuota=200% -- \
+  node test/perf/runner-read.mjs
+```
+
+The lab starts a real runner process and a port-0 server with a temporary `HOME` and a faux
+model. A TCP proxy adds half of the selected RTT in each direction of the runner link only.
+The browser measures from the model issuing `read` or `edit` until the tool result summary
+appears in the transcript. The read file is 36 bytes. The edit is an unchanged control.
+
+At +0, +20, +50 and +100 ms RTT, the lab alternates the old path and the snapshot path in the
+same session. It disables only the snapshot capability for the old path. It skips 2 warmup
+pairs, then prints all 24 pairs, their request names, the median and nearest-rank p95 for each
+path, and the median of `before − after` in milliseconds. A positive difference means the
+snapshot path took less time. Independent workspace requests can appear in the request list.
