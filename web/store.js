@@ -703,6 +703,18 @@ export const canInviteNew = () => store.state.me?.mayInvite ?? (canStart() && ca
  */
 export const managesPeople = () => hasRight("managesUsers") ?? store.state.me?.role === "owner";
 
+/**
+ * Does this person manage runners (`access.ts` `managesRunners`): the owner, and a user the owner lets. They are in
+ * charge of this server and of the runners the owner linked, and unlink any runner.
+ */
+export const managesRunners = () => hasRight("managesRunners") ?? store.state.me?.role === "owner";
+
+/**
+ * Does this person manage this server (`access.ts` `managesServer`): the owner, and a user the owner lets. The app
+ * offers them its settings: extensions, providers, models, themes, spend limits, memory lessons, and Restart.
+ */
+export const managesServer = () => hasRight("managesServer") ?? store.state.me?.role === "owner";
+
 /** The computer a session runs on, as the server names it (`access.ts` `THIS_SERVER`): a runner's id, or this server. */
 const computerOf = (session) => session?.runner ?? "this-server";
 

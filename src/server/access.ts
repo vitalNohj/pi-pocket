@@ -845,6 +845,13 @@ export class AccessPolicy {
         }
     }
 
+    /** Refuse who does not manage this server (`managesServer`): its settings are the owner's, and theirs. */
+    requireManagesServer(person: Pick<Person, "id">): void {
+        if (!this.managesServer(person)) {
+            throw new HttpError(403, "Only someone who manages the server can do that.");
+        }
+    }
+
     requireUnlink(person: Pick<Person, "id">, id: string): void {
         if (!this.mayUnlink(person, id)) {
             throw new HttpError(403, "Only the owner or who linked this computer can remove it.");
