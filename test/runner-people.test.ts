@@ -258,7 +258,7 @@ describe("people granted a computer", () => {
             });
 
             assert.equal(outsideStart.status, 403);
-            assert.match(outsideStart.body.error, /not given you this folder/);
+            assert.match(outsideStart.body.error, /not given this folder/);
             assert.equal(
                 (await request(guest, "sessions", { runner: runnerId, cwd: away })).status,
                 403,

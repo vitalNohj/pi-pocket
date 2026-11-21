@@ -296,7 +296,7 @@ function Lesson({ lesson, data, conversationId, pendingOnly = false }) {
         ${
             (lesson.pending || lesson.proposal) &&
             !data.owner &&
-            html`<div class="muted small">Waits for the owner's approval; until then Pi goes on as before.</div>`
+            html`<div class="muted small">Waits for approval; until then Pi goes on as before.</div>`
         }
         <div class="lesson-foot">
             <${Source} lesson=${lesson} />
@@ -508,7 +508,7 @@ export function MemorySheet({ draft: initial = "", conversationId, pendingOnly =
             notify(
                 "info",
                 lesson.pending
-                    ? "Saved. Pi uses it once the owner approves it."
+                    ? "Saved. Pi uses it once it is approved."
                     : "Saved. Pi gets it from its next message.",
             );
         }).finally(() => setBusy(false));
@@ -539,7 +539,7 @@ export function MemorySheet({ draft: initial = "", conversationId, pendingOnly =
 
     return html`<${Sheet} title=${title} onClose=${closeSheet} wide=${true}>
         <p class="muted small">
-            Short lessons Pi keeps across sessions: how to build and test, gotchas, conventions, preferences. ${project ? html`Those for <b>${project.name}</b> go to every session in it, worktrees too; the rest go everywhere.` : "PiP keeps lessons for everywhere."} ${own} Pi proposes one only when asked, or when sure it will help in many later sessions, and the owner approves; yours count at once.
+            Short lessons Pi keeps across sessions: how to build and test, gotchas, conventions, preferences. ${project ? html`Those for <b>${project.name}</b> go to every session in it, worktrees too; the rest go everywhere.` : "PiP keeps lessons for everywhere."} ${own} Pi proposes one only when asked, or when sure it will help in many later sessions, and someone who manages the server approves; ${data.owner ? "yours count at once" : "yours wait for approval too"}.
         </p>
         ${
             scopes.length > 1 &&
@@ -687,7 +687,7 @@ export function LessonCall({ lessonId, conversationId }) {
 
     return html`<div class="lesson-call waiting">
         <div class="grow">
-            <div>${what}, for ${reach(lesson)}, waits for ${data.owner ? "you" : "the owner"}:</div>
+            <div>${what}, for ${reach(lesson)}, waits for ${data.owner ? "you" : "approval"}:</div>
             <div class="lesson-text">${text}</div>
         </div>
         ${

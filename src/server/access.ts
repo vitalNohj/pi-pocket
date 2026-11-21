@@ -826,14 +826,14 @@ export class AccessPolicy {
               : current !== undefined && this.blocked(id) && this.mayUse(current, id)
                 ? BLOCKED
                 : id === THIS_SERVER
-                  ? "The owner has not chosen you for this server yet."
-                  : "The person who linked this computer has not chosen you for it yet.";
+                  ? "You are not chosen for this server yet. Ask whoever is in charge of it."
+                  : "You are not chosen for this computer yet. Ask whoever is in charge of it.";
     }
 
     #folderRefusal(id: string): string {
         return id === THIS_SERVER
-            ? "The owner has not given you this folder. Ask them to add it for you."
-            : "The person who linked this computer has not given you this folder. Ask them to add it for you.";
+            ? "You were not given this folder. Ask whoever is in charge of this server to add it."
+            : "You were not given this folder. Ask whoever is in charge of this computer to add it.";
     }
 
     /** Refuse `folder` on computer `id` to who may not work in it (`mayUseFolder`). */

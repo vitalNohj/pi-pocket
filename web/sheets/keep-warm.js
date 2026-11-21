@@ -806,7 +806,7 @@ export function KeepWarmCard({ compact = false }) {
                     type="button"
                     class=${chosen === value && (on || value === 0) ? "on" : ""}
                     aria-pressed=${chosen === value}
-                    title=${value === fallback ? "The owner's default" : value === "break-even" ? BREAK_EVEN : ""}
+                    title=${value === fallback ? "The server's default" : value === "break-even" ? BREAK_EVEN : ""}
                     disabled=${!steer || !allowed(value)}
                     onClick=${() => pick(value)}
                 >

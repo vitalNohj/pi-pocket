@@ -148,7 +148,7 @@ test("keep warm: session changes validate together, check permissions, and recor
                     archived: true,
                     keepWarm: choice,
                 }),
-                /Only the owner/,
+                /Keep sessions warm permission/,
             );
             assert.deepEqual(
                 app.sessionMeta(id),
@@ -179,7 +179,7 @@ test("keep warm: session changes validate together, check permissions, and recor
         await app.keepWarm.setSettings(owner(app), { hours: "break-even" });
         await assert.rejects(
             app.commands.updateSession(id, guest, { keepWarm: "default" }),
-            /Only the owner/,
+            /Keep sessions warm permission/,
         );
         assert.equal(app.sessionMeta(id)?.keepWarm, 0);
         await app.commands.updateSession(id, owner(app), { keepWarm: "break-even" });
@@ -195,7 +195,7 @@ test("keep warm: session changes validate together, check permissions, and recor
         await app.commands.updateSession(id, owner(app), { keepWarm: 0.5 });
         await assert.rejects(
             app.commands.updateSession(id, guest, { keepWarm: "default" }),
-            /Only the owner/,
+            /Keep sessions warm permission/,
         );
         assert.equal(app.sessionMeta(id)?.keepWarm, 0.5);
 
@@ -249,7 +249,7 @@ test("keep warm: a user the owner lets turns a session on and picks its time; ta
         const other = (await addPerson(app, "Dana", "guest")).user;
         const viewer = (await addPerson(app, "Bea", "viewer")).user;
         const id = await newSession(app);
-        const refused = /Only the owner, or someone the owner lets, can keep a session warm/;
+        const refused = /You do not have the Keep sessions warm permission/;
         const told = async (user: typeof guest) => (await app.hello(user)).user.rights.keepsWarm;
         const shown = (to: typeof guest) =>
             (
@@ -266,7 +266,7 @@ test("keep warm: a user the owner lets turns a session on and picks its time; ta
         // Only the owner sets it, and never for themselves.
         assert.throws(
             () => app.setRight(guest, { person: guest.id, right: "keepsWarm", on: true }),
-            /Only the owner can do that/,
+            /Only someone who manages users can do that/,
         );
         assert.throws(
             () => app.setRight(owner(app), { person: owner(app).id, right: "keepsWarm", on: true }),

@@ -177,7 +177,7 @@ test("only someone who manages the account can set or clear its end", async () =
     const refused = await access(user.id, { expiresAt: null }, other.token);
 
     assert.equal(refused.status, 403);
-    assert.equal(refused.body.error, "Only the owner can do that");
+    assert.equal(refused.body.error, "Only someone who manages users can do that.");
     assert.equal(kept().expiresAt, end);
 
     for (const expiresAt of [clock - 1, clock, String(end), true]) {

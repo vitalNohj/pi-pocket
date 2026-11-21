@@ -36,8 +36,6 @@ export type Right = {
     on: string;
     /** Under its switch while it is off. Absent: `on`, which then reads the same in both. */
     off?: string;
-    /** Under its switch while it is off, for the owner. Absent: `off`. */
-    offOwner?: string;
     /** Under its switch while they have it with another right (`with`). */
     withHint?: string;
     /** Asked before it is turned on; `{name}` is the person. Absent: nothing is asked. */
@@ -61,7 +59,6 @@ export const RIGHTS = {
         says: "invites people",
         on: "On: they invite people, who join as viewers and see what the invite shares.",
         off: "Off: they do not invite people.",
-        offOwner: "Off: only you invite people.",
         withHint:
             "On with Manage users: they invite people, who join as viewers and see what the invite shares.",
     },
@@ -74,7 +71,7 @@ export const RIGHTS = {
         label: "Manage users",
         says: "manages users",
         on: "On: they invite people, change what other people may do, remove them, and make a sign-in link for a viewer. Not you, themselves, or others who manage users.",
-        off: "Off: only you manage users.",
+        off: "Off: they do not manage users.",
         confirm:
             "Let {name} manage users? They can invite people, make viewers users, change what other people may do, remove them, and sign a device in as a viewer.",
     },
@@ -87,7 +84,7 @@ export const RIGHTS = {
         label: "Manage runners",
         says: "manages runners",
         on: "On: they are in charge of this server and the runners you linked, as you are: they choose people, give folders, change settings, answer approvals, and see every session there. They unlink any runner.",
-        off: "Off: only you are in charge of this server and the runners you linked.",
+        off: "Off: they are not in charge of this server or the runners you linked.",
         confirm:
             "Let {name} manage runners? They see and prompt every session on this server and on the runners you linked, in any folder, and choose who else may.",
     },
@@ -100,7 +97,7 @@ export const RIGHTS = {
         label: "Manage server",
         says: "manages the server",
         on: "On: they change this server's settings: extensions, providers, models, themes, spend limits, and memory lessons, and restart it.",
-        off: "Off: only you change this server's settings.",
+        off: "Off: they do not change this server's settings.",
         confirm:
             "Let {name} manage the server? They can turn on extensions, which run code on it, add providers, which see every prompt, sign providers in and out, and restart it.",
     },
@@ -201,13 +198,13 @@ export function holds(
 /** What the app is told of a right, to draw its switch: its words, and none of its rules. */
 export type ToldRight = Pick<
     Right,
-    "scope" | "line" | "label" | "says" | "on" | "off" | "offOwner" | "withHint" | "confirm"
+    "scope" | "line" | "label" | "says" | "on" | "off" | "withHint" | "confirm"
 > & { key: RightKey };
 
 /** Every right as the app is told it, in the order their switches are shown. */
 export function toldRights(): ToldRight[] {
     return KEYS.map((key) => {
-        const { scope, line, label, says, on, off, offOwner, withHint, confirm } = declared(key);
+        const { scope, line, label, says, on, off, withHint, confirm } = declared(key);
 
         return {
             key,
@@ -217,7 +214,6 @@ export function toldRights(): ToldRight[] {
             on,
             ...(line === undefined ? {} : { line }),
             ...(off === undefined ? {} : { off }),
-            ...(offOwner === undefined ? {} : { offOwner }),
             ...(withHint === undefined ? {} : { withHint }),
             ...(confirm === undefined ? {} : { confirm }),
         };

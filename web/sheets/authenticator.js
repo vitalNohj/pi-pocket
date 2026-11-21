@@ -139,8 +139,11 @@ export function MyAuthenticator({ paused }) {
                 : removing
                   ? html`<form class="authenticator-link" onSubmit=${remove}>
                         <p class="muted small">
-                            Enter a code from your authenticator to remove it. Lost your phone? Ask the owner to
-                            remove it.
+                            Enter a code from your authenticator to remove it.${
+                                owner
+                                    ? ""
+                                    : " Lost your phone? Ask whoever manages people here to remove it."
+                            }
                         </p>
                         <${CodeField} code=${code} setCode=${setCode} label="Code from your authenticator" />
                         ${error && html`<p class="runner-code-error" role="alert">${error}</p>`}
@@ -157,9 +160,9 @@ export function MyAuthenticator({ paused }) {
                             <div class="muted small">
                                 ${
                                     status.linked
-                                        ? "You approve your new folders with its codes."
+                                        ? "You approve your sessions with its codes."
                                         : owner || paused
-                                          ? "Link an authenticator app to approve your new folders with its codes."
+                                          ? "Link an authenticator app to approve your sessions with its codes."
                                           : "Link an authenticator app to be made a user, who can prompt."
                                 }
                             </div>

@@ -343,10 +343,7 @@ export class KeepWarm {
             choice === 0 || (choice === "default" && (fallback === 0 || fallback === current));
 
         if (!may && !allowed) {
-            throw new HttpError(
-                403,
-                "Only the owner, or someone the owner lets, can keep a session warm",
-            );
+            throw new HttpError(403, "You do not have the Keep sessions warm permission.");
         }
 
         if (choice === "default") {

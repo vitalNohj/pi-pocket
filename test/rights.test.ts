@@ -324,12 +324,26 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
         await refused(owner(app), path(owner(app)), body(true), 404, /No such person/);
         await refused(owner(app), "users/nobody/rights", body(true), 404, /No such person/);
         await refused(owner(app), path(gil), { right, on: "yes" }, 400, /on must be true or false/);
-        await refused(gil, path(gil), body(true), 403, /Only the owner can do that/);
+        await refused(
+            gil,
+            path(gil),
+            body(true),
+            403,
+            owners
+                ? /Only the owner gives that permission/
+                : /Only someone who manages users can do that/,
+        );
 
         if (owners) {
             // Only the owner gives it, and takes it back.
-            await refused(mona, path(gil), body(true), 403, /Only the owner can do that/);
-            await refused(mona, path(gil), body(false), 403, /Only the owner can do that/);
+            await refused(mona, path(gil), body(true), 403, /Only the owner gives that permission/);
+            await refused(
+                mona,
+                path(gil),
+                body(false),
+                403,
+                /Only the owner gives that permission/,
+            );
             await done(owner(app), path(gil), body(true));
             assert.equal(has(gil, right), true, right);
             await done(owner(app), path(gil), body(false));

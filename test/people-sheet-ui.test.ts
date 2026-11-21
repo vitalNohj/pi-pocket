@@ -2096,7 +2096,7 @@ test(
             await open("people");
             await show("Gina");
             assert.ok((await switches()).includes("Gina invites people: off"));
-            assert.match(await hint(), /Off: only you invite people\./);
+            assert.match(await hint(), /Off: they do not invite people\./);
             assert.equal(await offered(), true, "the owner always invites");
 
             await flip("Gina invites people");
@@ -2270,7 +2270,7 @@ test(
         };
 
         const everything = "This invite shares every session you started so far.";
-        const full = `${everything} It allows them to become a user: they can link an authenticator, and once you make them a user, they can prompt in all of those sessions.`;
+        const full = `${everything} It allows them to become a user: they can link an authenticator, and once they are made a user, they can prompt in all of those sessions.`;
 
         // One session, then its folder: neither is everything, so nothing warns.
         await invite(
@@ -2562,7 +2562,7 @@ test(
             await open("people");
             await show("Gina");
             assert.ok((await switches()).includes("Gina manages users: off"));
-            assert.match(await text(), /Off: only you manage users\./);
+            assert.match(await text(), /Off: they do not manage users\./);
             await show("Uma");
             assert.deepEqual(await times(), [
                 "1 day",

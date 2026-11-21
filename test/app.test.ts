@@ -894,7 +894,10 @@ test("viewers read and chat but never steer; people invited to one session see o
         linkAuthenticator(app, viewer);
         app.setAccess(owner(), viewer.id, { role: "guest" });
         assert.equal(app.config.userById(viewer.id)?.role, "guest");
-        assert.throws(() => app.setAccess(viewer, scoped.id, { role: "viewer" }), /owner/);
+        assert.throws(
+            () => app.setAccess(viewer, scoped.id, { role: "viewer" }),
+            /Only someone who manages users can do that/,
+        );
         assert.throws(
             () => app.setAccess(owner(), owner().id, { role: "viewer" }),
             /owner can do everything/,

@@ -325,7 +325,7 @@ const COMMANDS = [
             notify(
                 "info",
                 lesson.pending
-                    ? "Remembered. Pi uses it once the owner approves it."
+                    ? "Remembered. Pi uses it once it is approved."
                     : "Remembered. Pi gets it from its next message.",
             );
         },

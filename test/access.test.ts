@@ -163,7 +163,7 @@ describe("may this person use this computer", () => {
             message: /Viewers cannot start sessions/,
         });
         assert.throws(() => policy.requireStart(stranger, "runner"), {
-            message: /person who linked this computer has not chosen you/,
+            message: /You are not chosen for this computer yet/,
         });
     });
 
@@ -269,7 +269,7 @@ describe("may this person use this folder", () => {
         }
 
         assert.throws(() => policy.requireFolder(guest, "runner", "/other"), {
-            message: /person who linked this computer has not given you this folder/,
+            message: /Ask whoever is in charge of this computer to add it/,
         });
     });
 

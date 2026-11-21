@@ -149,14 +149,14 @@ test("only the owner lets someone manage users, and only a user who is not limit
         path(gil),
         { right: "managesUsers", on: true },
         403,
-        /Only the owner can do that/,
+        /Only the owner gives that permission/,
     );
     await refused(
         mona,
         path(mona),
         { right: "managesUsers", on: true },
         403,
-        /Only the owner can do that/,
+        /Only the owner gives that permission/,
     );
     await refused(
         owner(app),
@@ -211,14 +211,14 @@ test("only the owner lets someone manage users, and only a user who is not limit
         path(gil),
         { right: "managesUsers", on: true },
         403,
-        /Only the owner can do that/,
+        /Only the owner gives that permission/,
     );
     await refused(
         mona,
         path(mona),
         { right: "managesUsers", on: false },
         403,
-        /Only the owner can do that/,
+        /Only the owner gives that permission/,
     );
 
     await done(owner(app), path(mona), { right: "managesUsers", on: false });
@@ -258,14 +258,26 @@ test("who manages users makes a viewer a user and back, removes their authentica
     linkAuthenticator(app, vera);
 
     // Someone who manages nobody is refused as before.
-    await refused(gil, `users/${vera.id}`, { role: "guest" }, 403, /Only the owner can do that/);
-    await refused(gil, `users/${vera.id}/remove`, {}, 403, /Only the owner can do that/);
+    await refused(
+        gil,
+        `users/${vera.id}`,
+        { role: "guest" },
+        403,
+        /Only someone who manages users can do that/,
+    );
+    await refused(
+        gil,
+        `users/${vera.id}/remove`,
+        {},
+        403,
+        /Only someone who manages users can do that/,
+    );
     await refused(
         gil,
         `users/${vera.id}/authenticator`,
         undefined,
         403,
-        /Only the owner can do that/,
+        /Only someone who manages users can do that/,
         "DELETE",
     );
     await refused(
@@ -273,7 +285,7 @@ test("who manages users makes a viewer a user and back, removes their authentica
         `users/${vera.id}/approval-days`,
         { days: 1 },
         403,
-        /Only the owner can do that/,
+        /Only someone who manages users can do that/,
     );
     assert.equal(kept(vera.id)?.role, "viewer");
 
@@ -324,7 +336,13 @@ test("who manages users invites people, and signs a device in as a viewer and as
 
     // Someone who only invites makes a sign-in link for nobody.
     await done(owner(app), `users/${ivy.id}/rights`, { right: "invites", on: true });
-    await refused(ivy, `users/${vera.id}/device`, {}, 403, /Only the owner can do that/);
+    await refused(
+        ivy,
+        `users/${vera.id}/device`,
+        {},
+        403,
+        /Only someone who manages users can do that/,
+    );
 
     // For a viewer, who makes none themselves: it signs a device in as them.
     const made = await link(mona, vera.id);
@@ -366,7 +384,13 @@ test("who manages users invites people, and signs a device in as a viewer and as
     assert.equal((await app.hello(kept(mona.id)!)).user.rights.invites, false);
     assert.notEqual(told(owner(app), mona)?.rights?.includes("invites"), true);
     assert.equal((await join(invite.body.code, { name: "Nia 7" })).who, undefined);
-    await refused(mona, `users/${vera.id}/device`, {}, 403, /Only the owner can do that/);
+    await refused(
+        mona,
+        `users/${vera.id}/device`,
+        {},
+        403,
+        /Only someone who manages users can do that/,
+    );
 });
 
 test("who manages users changes neither themselves, the owner, nor another who manages users", async () => {
@@ -494,7 +518,13 @@ test("managing users ends when they are made a viewer or limited to one session,
     assert.equal(kept(mona.id)?.role, "guest");
     assert.notEqual(kept(mona.id)?.rights?.includes("managesUsers"), true);
     assert.equal((await app.hello(kept(mona.id)!)).user.rights.managesUsers, false);
-    await refused(mona, `users/${gil.id}/remove`, {}, 403, /Only the owner can do that/);
+    await refused(
+        mona,
+        `users/${gil.id}/remove`,
+        {},
+        403,
+        /Only someone who manages users can do that/,
+    );
     assert.equal(told(mona, vera)?.approvalDays, undefined);
 
     // Their authenticator removed: a viewer, so it ends too.
@@ -507,7 +537,13 @@ test("managing users ends when they are made a viewer or limited to one session,
     assert.notEqual(kept(max.id)?.rights?.includes("managesUsers"), true);
     app.config.updateUser(max.id, { sessions: undefined });
     assert.notEqual(kept(max.id)?.rights?.includes("managesUsers"), true);
-    await refused(max, `users/${gil.id}/remove`, {}, 403, /Only the owner can do that/);
+    await refused(
+        max,
+        `users/${gil.id}/remove`,
+        {},
+        403,
+        /Only someone who manages users can do that/,
+    );
 
     // It is not kept for a viewer, or for someone limited.
     const sam = person("Sam 6", "guest", ["1"]);
@@ -525,7 +561,13 @@ test("managing users ends when they are made a viewer or limited to one session,
         assert.equal(app.policy.mayManagePerson(each, gil), false, each.name);
         assert.equal((await app.hello(kept(each.id)!)).user.rights.managesUsers, false, each.name);
         assert.equal(told(each, gil)?.approvalDays, undefined, each.name);
-        await refused(each, `users/${gil.id}/remove`, {}, 403, /Only the owner can do that/);
+        await refused(
+            each,
+            `users/${gil.id}/remove`,
+            {},
+            403,
+            /Only someone who manages users can do that/,
+        );
     }
 
     assert.notEqual(kept(gil.id), undefined);

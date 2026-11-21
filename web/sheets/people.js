@@ -211,9 +211,8 @@ export function InviteSheet({ session = null }) {
               ? `the sessions you started in ${folder} so far, and later ones only when they are shared with them`
               : "the sessions you started so far, and later ones only when they are shared with them";
     // An invite to all of its maker's sessions is the widest there is: the sheet says so, and what follows for an
-    // account that is not temporary. Who manages users makes someone a user (`app.ts` `setAccess`), never they themselves.
+    // account that is not temporary.
     const all = what === "mine" || !here;
-    const makes = managesPeople() ? "you make" : "the owner makes";
     // As long as the invite shown lasts (a server that does not say: 15 minutes), or, while one is made, as chosen.
     const lasting = LASTS.find(
         ([each]) => each === (invite ? (invite.minutes ?? 15) : minutes),
@@ -335,8 +334,8 @@ export function InviteSheet({ session = null }) {
                 <strong>This invite shares every session you started so far.</strong>
                 ${
                     !temporary &&
-                    html` It allows them to become a user: they can link an authenticator, and once ${makes} them
-                        a user, they can prompt in all of those sessions.`
+                    html` It allows them to become a user: they can link an authenticator, and once they are made a
+                        user, they can prompt in all of those sessions.`
                 }
             </div>`
         }
@@ -790,7 +789,6 @@ const NOT_YOURS = "Off: you can only give what you have yourself.";
 function PersonRight({ person, each }) {
     const offer = person.offer[each.key];
     const on = person.rights?.includes(each.key) === true;
-    const owner = store.state.me?.role === "owner";
     const hint =
         offer === "with"
             ? (each.withHint ?? each.on)
@@ -798,7 +796,7 @@ function PersonRight({ person, each }) {
               ? each.on
               : offer === "lacking"
                 ? NOT_YOURS
-                : ((owner ? each.offOwner : undefined) ?? each.off ?? each.on);
+                : (each.off ?? each.on);
 
     const flip = () =>
         (on || !each.confirm || confirm(each.confirm.replaceAll("{name}", person.name))) &&
@@ -1251,9 +1249,9 @@ function PersonPage({ person }) {
             html`<p class="muted small">
                 ${
                     person.role === "owner"
-                        ? "They see every session and choose who gets in."
+                        ? "They see every session on this server and on the runners they linked."
                         : person.role === "viewer"
-                          ? `${myself ? "You read" : "They read"} the sessions shared with ${myself ? "you" : "them"}, and cannot send to Pi Pocket.`
+                          ? `${myself ? "You read" : "They read"} the sessions shared with ${myself ? "you" : "them"}, and cannot prompt.`
                           : `${myself ? "You prompt" : "They prompt"} and start sessions in ${myself ? "your" : "their"} folders.`
                 }
             </p>`

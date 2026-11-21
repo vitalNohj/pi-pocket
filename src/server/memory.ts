@@ -481,7 +481,7 @@ export class Memory {
             ) {
                 throw new HttpError(
                     409,
-                    `${String(MAX_PENDING)} lessons ${session ? "for this session " : ""}wait for the owner's approval already: wait for them first.`,
+                    `${String(MAX_PENDING)} lessons ${session ? "for this session " : ""}wait for approval already: wait for them first.`,
                 );
             }
 
@@ -495,7 +495,7 @@ export class Memory {
             ) {
                 throw new HttpError(
                     409,
-                    `${String(MAX_PENDING_SESSIONS)} session lessons wait for the owner's approval already: wait for them first.`,
+                    `${String(MAX_PENDING_SESSIONS)} session lessons wait for approval already: wait for them first.`,
                 );
             }
 
@@ -534,7 +534,7 @@ export class Memory {
                 tx,
                 conversationId,
                 writer,
-                `saved a lesson for ${session ? "this session" : project === undefined ? "everywhere" : project.name}: “${snippet(text, 80)}”${pending ? ", for the owner to approve" : ""}`,
+                `saved a lesson for ${session ? "this session" : project === undefined ? "everywhere" : project.name}: “${snippet(text, 80)}”${pending ? ", to be approved" : ""}`,
             );
 
             return copy(lesson);
@@ -686,10 +686,7 @@ export class Memory {
                             byPi: true,
                             at: app.now(),
                         };
-                        await said(
-                            tx,
-                            `proposed forgetting the lesson ${quoted}, for the owner to approve`,
-                        );
+                        await said(tx, `proposed forgetting the lesson ${quoted}, to be approved`);
                     }
 
                     return copy(lesson);
@@ -728,7 +725,7 @@ export class Memory {
                     };
                     await said(
                         tx,
-                        `proposed new text for the lesson ${quoted}: “${snippet(text!, 80)}”, for the owner to approve`,
+                        `proposed new text for the lesson ${quoted}: “${snippet(text!, 80)}”, to be approved`,
                     );
                 }
 
@@ -750,7 +747,7 @@ export class Memory {
             delete lesson.proposal;
             await said(
                 tx,
-                `changed a lesson to “${snippet(lesson.text, 80)}”${lesson.pending === true ? ", for the owner to approve" : ""}`,
+                `changed a lesson to “${snippet(lesson.text, 80)}”${lesson.pending === true ? ", to be approved" : ""}`,
             );
 
             return copy(lesson);

@@ -850,7 +850,7 @@ describe("sharing and invites", () => {
                 assert.equal(answer.status, 403, JSON.stringify(each));
                 assert.match(
                     JSON.stringify(answer.body),
-                    /Only the owner, and the users the owner lets, can invite people\./,
+                    /You do not have the Invite people permission\./,
                 );
             }
 

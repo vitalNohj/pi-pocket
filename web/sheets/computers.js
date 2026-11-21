@@ -423,7 +423,7 @@ function Overview({ computer }) {
             html`<div class="runner-note warning" role="alert" data-part="blocked">
                 ${
                     computer.createdBy === store.state.me?.id
-                        ? `${computer.name} is blocked: you linked it, and you are a viewer now. Nothing starts or runs there until the owner makes you a user.`
+                        ? `${computer.name} is blocked: you linked it, and you are a viewer now. Nothing starts or runs there until you are made a user again.`
                         : `${computer.name} is blocked: ${linker ?? "the person who linked it"}, who linked it, is a viewer now. Nothing starts or runs there until they are made a user.`
                 }${
                     store.state.me?.role === "owner"

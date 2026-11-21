@@ -178,7 +178,7 @@ function Held({ why }) {
                 ? html`<button class="link" onClick=${() => openSheet({ type: "spend" })}>
                       Raise it
                   </button>`
-                : html`<span>They go once the owner raises it.</span>`
+                : html`<span>They go once it is raised.</span>`
         }
     </div>`;
 }

@@ -293,11 +293,11 @@ describe("a session on another computer", () => {
             assert.throws(() => app.requireSee(person, id as never), /not shared with you/);
             await assert.rejects(
                 app.commands.createSession(person, { cwd: there, runner: runnerId }),
-                /has not chosen you for it/,
+                /not chosen for this computer/,
             );
             await assert.rejects(
                 app.commands.fork(id as never, person, {}),
-                /not shared|not chosen you/,
+                /not shared|not chosen for/,
             );
         }
 
@@ -484,7 +484,7 @@ describe("a session on another computer", () => {
             app.config.setGivenFolders(runnerId, mover.id, [there]);
             await assert.rejects(
                 app.commands.configure(session as never, mover, { cwd: folder }),
-                /has not given you this folder/,
+                /not given this folder/,
             );
             assert.equal(app.cwdOf(session as never), there, "a refused move keeps the old folder");
             app.config.setGivenFolders(runnerId, mover.id, [root]);
@@ -695,7 +695,7 @@ describe("a session on another computer", () => {
                     { cwd: otherFolder, message: "hello" },
                     crypto.randomUUID(),
                 ),
-                /has not given you this folder/,
+                /not given this folder/,
             );
             assert.equal(asked.length, 0, "a linked session never asks");
             assert.equal(app.sessions(owner(app)).length, made, "no linked session was made");

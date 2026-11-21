@@ -3664,7 +3664,7 @@ export class PocketApp {
         }
 
         if (declared(right).gives === "owner" && by.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
+            throw new HttpError(403, "Only the owner gives that permission.");
         }
 
         const target = this.config.userById(person);
@@ -3990,7 +3990,7 @@ export class PocketApp {
         if (this.policy.seesOnlyByFolder(person, facts.id)) {
             throw new HttpError(
                 400,
-                `${person.name} sees every session in that folder. Turn that off on the folder.`,
+                `${person.name} accesses all sessions in that folder. Turn that off on the folder.`,
             );
         }
 
@@ -5940,7 +5940,7 @@ export class PocketApp {
      */
     #requireManages(by: User, target: User | undefined): void {
         if (!this.policy.managesPeople(by)) {
-            throw new HttpError(403, "Only the owner can do that");
+            throw new HttpError(403, "Only someone who manages users can do that.");
         }
 
         if (

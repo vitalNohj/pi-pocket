@@ -154,7 +154,7 @@ async function authenticatorRoute(
     if ((action === "begin" || action === "confirm") && user.temporary === true) {
         throw new HttpError(
             403,
-            "A temporary account cannot link an authenticator. Ask the owner to allow you to become a user.",
+            "A temporary account cannot link an authenticator. Ask whoever manages people here to allow you to become a user.",
         );
     }
 
@@ -237,10 +237,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // Off for everyone but the owner, until the owner turns Invite people on for a user (`access.ts` `invites`).
         if (!app.policy.invites(user)) {
-            throw new HttpError(
-                403,
-                "Only the owner, and the users the owner lets, can invite people.",
-            );
+            throw new HttpError(403, "You do not have the Invite people permission.");
         }
 
         // Every invite starts as a viewer: steering comes later, once they link an authenticator, from who is in charge.
@@ -577,7 +574,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         // Who manages users makes one for a viewer, who makes none themselves (`access.ts` `maySignInAs`).
         if (first === "users" && second !== undefined && third === "device" && method === "POST") {
             if (!app.policy.managesPeople(user)) {
-                requireOwner(user);
+                throw new HttpError(403, "Only someone who manages users can do that.");
             }
 
             const person = app.config.userById(second);
@@ -1201,7 +1198,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         // its linker's.
         if (first === "runners" && second === "code" && method === "POST") {
             if (!app.policy.mayLink(user)) {
-                throw new HttpError(403, "The owner has not let you link computers.");
+                throw new HttpError(403, "You do not have the Link runners permission.");
             }
 
             const body = await readJson<{ name?: unknown; runner?: unknown }>(request);

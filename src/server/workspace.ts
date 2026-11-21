@@ -467,7 +467,7 @@ export class Workspace {
         if (!this.#app.policy.mayUseFolder(user, THIS_SERVER, realInside(absolute))) {
             throw new HttpError(
                 403,
-                "The owner has not given you this folder. Make new folders inside the ones you were given.",
+                "You were not given this folder. Make new folders inside the ones you were given.",
             );
         }
 

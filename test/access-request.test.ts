@@ -280,8 +280,20 @@ test("a viewer asks for access with a few words; who manages people reads it on 
     assert.deepEqual(kept(vic.id)?.accessRequest, { at: clock, note: "Still waiting" });
 
     // Only who manages them clears it.
-    await refused(guy, path(vic), { clear: true }, 403, /Only the owner can do that/);
-    await refused(val, path(vic), { clear: true }, 403, /Only the owner can do that/);
+    await refused(
+        guy,
+        path(vic),
+        { clear: true },
+        403,
+        /Only someone who manages users can do that/,
+    );
+    await refused(
+        val,
+        path(vic),
+        { clear: true },
+        403,
+        /Only someone who manages users can do that/,
+    );
     await refused(boss, path(vic), { clear: "yes" }, 400, /clear must be true/);
     await refused(boss, "users/nobody/access-request", { clear: true }, 404, /No such person/);
     assert.deepEqual(kept(vic.id)?.accessRequest, { at: clock, note: "Still waiting" });

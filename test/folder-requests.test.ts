@@ -201,7 +201,7 @@ test("someone not chosen for this server is refused before anything waits", asyn
 
     await assert.rejects(
         app.commands.createSession(stranger, { cwd: folder }),
-        /not chosen you for this server/,
+        /not chosen for this server/,
     );
     await assert.rejects(app.approveStart(vera, folder), /Viewers cannot start sessions/);
     assert.deepEqual(app.folderRequests.list(owner(app)), []);
@@ -218,7 +218,7 @@ test(
         assert.equal(app.policy.mayUseFolder(alex, THIS_SERVER, beside), false);
         await assert.rejects(
             app.commands.createSession(alex, { cwd: beside }),
-            /not given you this folder/,
+            /not given this folder/,
         );
         assert.deepEqual(app.folderRequests.list(owner(app)), []);
 
@@ -244,7 +244,7 @@ test("a folder not given is refused before anything waits, and the picker stays 
     mkdirSync(outside, { recursive: true });
     await assert.rejects(
         app.commands.createSession(alex, { cwd: outside }),
-        /not given you this folder/,
+        /not given this folder/,
     );
     assert.deepEqual(app.folderRequests.list(owner(app)), []);
 
@@ -770,7 +770,7 @@ test("copies, moves, and linked sessions inherit the session's approval, in fold
     assert.equal(app.folderApprovals.get(String(id))?.folder, target);
     await assert.rejects(
         app.commands.configure(id, alex, { cwd: realpathSync(root) }),
-        /not given you this folder/,
+        /not given this folder/,
     );
 
     // A copy inherits the approval.
@@ -998,7 +998,7 @@ test("a session's own worktree counts as the folder it came from: its copies and
 
     // Not given the source folder, she is refused: the worktree counts as that folder, no more.
     app.config.setGivenFolders(undefined, gale.id, [newFolder()]);
-    await assert.rejects(app.commands.fork(id, gale, {}), /not given you this folder/);
+    await assert.rejects(app.commands.fork(id, gale, {}), /not given this folder/);
 
     // Only the session's own worktree: from another session, it is a folder nobody was given.
     const other = app.commands.createSession(alex, { cwd: repo });
@@ -1008,7 +1008,7 @@ test("a session's own worktree counts as the folder it came from: its copies and
     });
     await assert.rejects(
         app.commands.fork((await other).id, alex, { place: { cwd: worktree.path } }),
-        /not given you this folder/,
+        /not given this folder/,
     );
     assert.deepEqual(app.folderRequests.list(owner(app)), [], "nothing asked anyone");
 });
@@ -1319,7 +1319,7 @@ test("a new session is checked again where it is saved: the folder was taken bac
     assert.equal(app.sessions(owner(app)).length, before + 1);
 
     takeBack = true;
-    await assert.rejects(start(newFolder()), /has not given you this folder/);
+    await assert.rejects(start(newFolder()), /not given this folder/);
     assert.equal(app.sessions(owner(app)).length, before + 1, "no session was saved");
     assert.equal(app.config.folderApprovals.length, 1, "and no approval kept");
 });
