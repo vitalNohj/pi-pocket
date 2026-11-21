@@ -2319,7 +2319,7 @@ function ApprovalCard({ approval }) {
                   ${
                       notMine &&
                       html`<div class="muted small">
-                          ${`Only who is in charge of this computer can allow ${mine ? "your command" : "someone else's command"}. You can deny it.`}
+                          ${`Only whoever is in charge of this computer can allow ${mine ? "your command" : "someone else's command"}. You can deny it.`}
                       </div>`
                   }
                 <div class="approval-actions">

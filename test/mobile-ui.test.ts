@@ -1866,7 +1866,7 @@ test(
                 card: card && {
                     title: card.querySelector(".approval-ask").textContent.trim(),
                     buttons: [...card.querySelectorAll(".approval-actions button")].map((each) => each.textContent.trim()),
-                    note: /Only who is in charge of this computer can allow your command\. You can deny it\./.test(card.textContent),
+                    note: /Only whoever is in charge of this computer can allow your command\. You can deny it\./.test(card.textContent),
                 },
                 waiting: waiting && [waiting.querySelector(".muted").textContent.trim(), waiting.querySelector("button").textContent.trim()],
                 entries: [...document.querySelectorAll(".shell-row:not(.pending)")].map((each) => each.querySelector(".shell-head .muted").textContent.trim()),

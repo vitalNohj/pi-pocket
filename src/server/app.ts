@@ -5808,7 +5808,7 @@ export class PocketApp {
      */
     cannotAllow(user: User, request: ApprovalRequest): string | undefined {
         if (user.role === "viewer") {
-            return "You can view this session but not steer Pi.";
+            return "You can view this session but not prompt.";
         }
 
         const computer = this.runnerOf(request.conversationId) ?? THIS_SERVER;

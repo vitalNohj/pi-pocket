@@ -2596,7 +2596,7 @@ test(
             assert.match(await text(), /manages users/);
             assert.match(
                 await text(),
-                /On: they invite people, change what other people may do, remove them, and make a sign-in link for a viewer\./,
+                /On: they invite people, change what others may do, and remove them\. They cannot change you, themselves, or others who manage users\./,
             );
             // Invite people comes with it: on, and not a switch of its own while she manages users.
             assert.ok((await switches()).includes("Gina invites people: on (disabled)"));

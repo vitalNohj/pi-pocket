@@ -856,7 +856,7 @@ export class AccessPolicy {
                 403,
                 id === THIS_SERVER
                     ? "Only the owner, or someone who manages runners, can change this server's settings."
-                    : "Only who is in charge of this computer can change its settings.",
+                    : "Only whoever is in charge of this computer can change its settings.",
             );
         }
     }

@@ -70,7 +70,7 @@ export const RIGHTS = {
         line: true,
         label: "Manage users",
         says: "manages users",
-        on: "On: they invite people, change what other people may do, remove them, and make a sign-in link for a viewer. Not you, themselves, or others who manage users.",
+        on: "On: they invite people, change what others may do, and remove them. They cannot change you, themselves, or others who manage users.",
         off: "Off: they do not manage users.",
         confirm:
             "Let {name} manage users? They can invite people, make viewers users, change what other people may do, remove them, and sign a device in as a viewer.",
@@ -83,7 +83,7 @@ export const RIGHTS = {
         line: true,
         label: "Manage runners",
         says: "manages runners",
-        on: "On: they are in charge of this server and the runners you linked, as you are: they choose people, give folders, change settings, answer approvals, and see every session there. They unlink any runner.",
+        on: "On: they are in charge of this server and the runners you linked, as you are. They can unlink any runner.",
         off: "Off: they are not in charge of this server or the runners you linked.",
         confirm:
             "Let {name} manage runners? They see and prompt every session on this server and on the runners you linked, in any folder, and choose who else may.",
@@ -119,8 +119,8 @@ export const RIGHTS = {
         scope: "computer",
         label: "Allow their own calls",
         says: "allows their own calls on",
-        on: "On: they allow their own ! commands that Lancet Guard asks about here and, while approvals need someone else, the calls their own messages led to.",
-        off: "Off: who is in charge allows their ! commands that Lancet Guard asks about and, while approvals need someone else, someone else allows their calls.",
+        on: "On: they allow their own ! commands and calls that Lancet Guard asks about here.",
+        off: "Off: whoever is in charge allows their ! commands. While Approvals need someone else is on, someone else allows their calls.",
     },
 } as const satisfies Record<string, Right>;
 

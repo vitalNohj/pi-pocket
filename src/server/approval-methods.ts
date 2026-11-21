@@ -189,7 +189,7 @@ export class ApprovalMethods {
             id: "owner",
             verify: (_approver, _requester, _proof, inCharge) => Promise.resolve(inCharge),
             refusal: () =>
-                new HttpError(403, "Only who is in charge of this computer can allow this."),
+                new HttpError(403, "Only whoever is in charge of this computer can allow this."),
         });
     }
 

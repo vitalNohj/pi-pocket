@@ -838,7 +838,7 @@ function Rights({ person, change }) {
                 hint=${
                     person.temporary
                         ? "Off: a temporary account. They cannot link an authenticator or become a user."
-                        : "On: they can link an authenticator and be made a user. It stays on; you can still turn off Can prompt, revoke their access, or remove them."
+                        : "On: they can link an authenticator and be made a user. This cannot be turned off again."
                 }
             >
                 <${Switch}
@@ -1150,7 +1150,7 @@ function PersonPage({ person }) {
 
     const remove = () =>
         confirm(
-            `Remove ${person.name}? Their devices are signed out, and their sessions move to who is in charge of each computer.`,
+            `Remove ${person.name}? Their devices are signed out, and their sessions move to whoever is in charge of each computer.`,
         ) &&
         attempt(async () => {
             await api(`users/${encodeURIComponent(person.id)}/remove`, {});

@@ -356,7 +356,7 @@ export function TrustSheet() {
         ${
             !trustAvailable()
                 ? html`<p class="muted small">
-                      Only who is in charge of this computer can change this.
+                      Only whoever is in charge of this computer can change this.
                   </p>`
                 : !info.unreadable &&
                   html`<div class="group">

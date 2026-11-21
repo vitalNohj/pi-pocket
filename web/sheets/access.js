@@ -586,8 +586,8 @@ export function AccessRow({ computer, person, lead, title }) {
                             ? "Invited to one session only: not chosen for a computer."
                             : manager
                               ? chosen
-                                  ? "In charge here: they manage runners. On: what they keep here if that ends."
-                                  : "In charge here: they manage runners. Off: they keep nothing here if that ends."
+                                  ? "In charge here because they manage runners. If that ends, they keep their access here."
+                                  : "In charge here because they manage runners. If that ends, they have no access here."
                               : !chosen
                                 ? sessions.length === 0
                                     ? "Off: they see nothing of it."

@@ -198,7 +198,7 @@ test("who manages runners is in charge of this server and the owner's runners, a
     const gil = person("Gil", "guest");
     const charge =
         /Only the owner, or someone who manages runners, can change this server's settings/;
-    const theirs = /Only who is in charge of this computer can change its settings/;
+    const theirs = /Only whoever is in charge of this computer can change its settings/;
     const manages = /Only someone who manages runners can do that/;
 
     assert.equal(app.policy.managesRunners(mona), true);

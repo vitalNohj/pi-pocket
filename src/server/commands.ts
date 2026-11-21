@@ -1220,7 +1220,7 @@ export class Commands {
         if (!app.policy.mayShare(user, String(root))) {
             throw new HttpError(
                 403,
-                "Only the person who started this session, or who is in charge of its computer, can share it.",
+                "Only the person who started this session, or whoever is in charge of its computer, can share it.",
             );
         }
 
@@ -1272,7 +1272,7 @@ export class Commands {
         if (!app.policy.mayShare(user, String(root))) {
             throw new HttpError(
                 403,
-                "Only the person who started this session, or who is in charge of its computer, can share it.",
+                "Only the person who started this session, or whoever is in charge of its computer, can share it.",
             );
         }
 
@@ -1645,7 +1645,7 @@ export class Commands {
                     throw new HttpError(
                         400,
                         person.sessions?.includes(String(root)) === true
-                            ? `Only who is in charge of ${place(meta)} takes a session from someone invited to it alone.`
+                            ? `Only whoever is in charge of ${place(meta)} can take a session from someone invited to it alone.`
                             : `${person.name} does not have that session from you.`,
                     );
                 }

@@ -715,7 +715,7 @@ describe("review drill fixes for people on a computer", () => {
                 );
 
                 assert.equal(refused.status, 403, `${path} ${JSON.stringify(body)}`);
-                assert.match(refused.body.error, /Only who is in charge of this computer/);
+                assert.match(refused.body.error, /Only whoever is in charge of this computer/);
             }
 
             assert.deepEqual(

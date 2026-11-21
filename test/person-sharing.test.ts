@@ -461,7 +461,7 @@ test("who is in charge takes back what a person started or was invited to; a sta
         String(
             (await call(bo, sharing(ivy), { revoke: [Number(there)] })).body.refused?.[0]?.reason,
         ),
-        /Only who is in charge of Take laptop takes a session from someone invited to it alone/,
+        /Only whoever is in charge of Take laptop can take a session from someone invited to it alone/,
     );
     assert.deepEqual(now(ivy).sessions, [String(there)]);
     assert.equal(rows(lin, ivy).get("take: Bo's on the laptop")?.take, true);
