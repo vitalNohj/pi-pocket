@@ -5,7 +5,7 @@
 import { applyIcons, reportIconsAs } from "./app-icon.js";
 import { THEMES } from "./themes.js";
 import { onSafeModeEnd, safeMode } from "./safe-mode.js";
-import { api, notify, store } from "./store.js";
+import { api, managesServer, notify, store } from "./store.js";
 
 const KEY = "pocket.appearance";
 const CACHE = "pocket.themeCache";
@@ -999,7 +999,7 @@ export function startTheme() {
 
         stop();
         checkDesktop({ animate: false });
-        reportIconsAs(state.me.role === "owner");
+        reportIconsAs(managesServer());
     });
 }
 

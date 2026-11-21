@@ -503,7 +503,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, app.people(user));
         }
 
-        // The owner turns "Tasks expire with the session" on or off.
+        // "Tasks expire with the session": a server setting.
         if (first === "tasks-expire" && second === undefined && method === "POST") {
             const body = await readJson<{ on?: unknown } | null>(request);
 
@@ -924,11 +924,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
             });
         }
 
-        // Theme folders (`themes.ts`): everyone signed in lists them, as everyone chooses one for their own browsers;
-        // only the owner adds, edits, and removes them.
-        // The app icon's colors, which the owner's browser reports for the requests that carry no cookie (`icon-store.ts`).
+        // Theme folders (`themes.ts`): everyone signed in lists them and chooses their own look; only people who
+        // manage the server add, edit, or remove them, and report the app icon colors for requests without a cookie.
         if (first === "app-icon" && second === undefined && method === "PUT") {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
 
             const { colors } = await readJson<{ colors?: unknown }>(request);
 
@@ -942,7 +941,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "themes" && second === undefined && method === "GET") {
-            return json(response, 200, { themes: app.themes.list(user.role === "owner") });
+            return json(response, 200, { themes: app.themes.list(app.policy.managesServer(user)) });
         }
 
         if (first === "themes" && second === "default" && method === "PUT") {
@@ -955,7 +954,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "themes" && second === "duplicate" && method === "POST") {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
             const body = await readJson<{ from?: unknown; name?: unknown; colors?: unknown }>(
                 request,
             );
@@ -970,7 +969,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "themes" && second !== undefined && third === "fonts" && method === "PUT") {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
             app.themes.setFonts(
                 second,
                 await readJson<{ sans?: unknown; mono?: unknown; ligatures?: unknown }>(request),
@@ -980,7 +979,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "themes" && second !== undefined && third === "edit" && method === "GET") {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
 
             return json(response, 200, app.themes.edit(second));
         }
@@ -991,7 +990,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === undefined &&
             method === "DELETE"
         ) {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
             app.themes.remove(second);
 
             return json(response, 200, { ok: true });
@@ -1679,7 +1678,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 throw new HttpError(400, "Change one setting at a time.");
             }
 
-            // The models subagents may run on: the owner's (checked in `app.ts`).
+            // The models subagents may run on (access checked in `app.ts`).
             if (body.subagentModels !== undefined) {
                 await app.setSubagentModels(user, body.subagentModels);
             }
@@ -1688,7 +1687,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 await app.setPipCompactAt(user, body.pipCompactAt);
             }
 
-            // How long a run waits for a provider's limit to clear: the owner's (checked in `app.ts`).
+            // How long a run waits for a provider's limit to clear (access checked in `app.ts`).
             if (body.limitWaitHours !== undefined) {
                 await app.setLimitWaitHours(user, body.limitWaitHours);
             }
@@ -1705,7 +1704,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
-        // Keep warm's settings window: every setting, model lifetimes, and what is warm now. The owner's.
+        // Keep warm's settings window: every setting, model lifetimes, and what is warm now.
         if (first === "keep-warm" && second === undefined && method === "GET") {
             return json(response, 200, app.keepWarm.overview(user));
         }
@@ -1716,7 +1715,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, app.keepWarm.overview(user));
         }
 
-        // One model allowed for subagents, or no longer: the rest stay as they are. The owner's (checked in `app.ts`).
+        // One model allowed for subagents, or no longer: the rest stay as they are (access checked in `app.ts`).
         if (first === "subagent-models" && second === undefined && method === "POST") {
             const body = await readJson<{ model?: unknown; allowed?: unknown }>(request);
 
@@ -1737,14 +1736,14 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, await app.extensions(user));
         }
 
-        // A module's settings (`web.settings`): the owner sets them; whoever its browser module is for reads them.
+        // Server managers set a module's settings (`web.settings`); its browser module's users can also read them.
         if (first === "extension-settings" && second !== undefined && third === undefined) {
             if (method === "GET") {
                 return json(response, 200, app.extensionSettings(user, second));
             }
 
             if (method === "PUT") {
-                requireOwner(user);
+                app.policy.requireManagesServer(user);
 
                 return json(
                     response,
@@ -1764,7 +1763,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === undefined &&
             method === "POST"
         ) {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
             const body = await readJson<{ enabled?: unknown }>(request);
 
             if (typeof body.enabled !== "boolean") {
@@ -1782,7 +1781,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === "reload" &&
             method === "POST"
         ) {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
             await app.reloadExtension(second);
 
             return json(response, 200, await app.extensions(user));
@@ -1794,14 +1793,14 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === undefined &&
             method === "POST"
         ) {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
 
             return json(response, 200, await app.providers.modelRefresh.refresh());
         }
 
-        // OpenAI-compatible endpoints, in Pi's models.json: the owner's alone, as they hold keys and decide models.
+        // OpenAI-compatible endpoints in Pi's models.json hold keys and decide models.
         if (first === "custom-providers") {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
             const providers = app.customProviders;
 
             if (second === undefined && method === "GET") {
@@ -1829,15 +1828,16 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
         }
 
-        // For the owner, each subscription's sign-in is asked afresh first (three seconds at most; a mark found later
-        // comes with the models): one that can no longer be renewed shows as needing sign-in. Others see what was last
-        // found, so nobody else makes the server ask providers.
+        // Ask each subscription afresh for people who manage the server (three seconds at most; a mark found later
+        // comes with the models). Others see what was last found, so they do not make the server ask providers.
         if (first === "providers" && second === undefined && method === "GET") {
-            if (user.role === "owner") {
+            const managesServer = app.policy.managesServer(user);
+
+            if (managesServer) {
                 await app.providers.checkAll(3_000);
             }
 
-            return json(response, 200, app.providers.list(user.role === "owner"));
+            return json(response, 200, app.providers.list(managesServer));
         }
 
         if (
@@ -1846,7 +1846,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === "login" &&
             method === "POST"
         ) {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
             const body = await readJson<{ type?: string }>(request);
 
             return json(response, 200, {
@@ -1864,7 +1864,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === "logout" &&
             method === "POST"
         ) {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
             await app.providers.logout(second);
 
             return json(response, 200, { ok: true });
@@ -1918,7 +1918,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "restart" && method === "POST") {
-            requireOwner(user);
+            app.policy.requireManagesServer(user);
 
             if (!app.supervised) {
                 throw new HttpError(

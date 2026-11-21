@@ -17,6 +17,7 @@ import {
     attempt,
     giveBackQuote,
     isRow,
+    managesServer,
     navigate,
     notify,
     openSheet,
@@ -1036,7 +1037,7 @@ function Composer({ id, busy, board = false }) {
     >
         ${
             id !== undefined &&
-            store.state.me?.role === "owner" &&
+            managesServer() &&
             memoryAvailable(id) &&
             html`<${PendingMemories} id=${id} before=${board ? undefined : closePip} />`
         }

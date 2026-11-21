@@ -405,12 +405,15 @@ test("PiP compacts itself once idle above its threshold; not below it, nor when 
     app.config.pipCompactAt = undefined;
 });
 
-test("only the owner sets when PiP compacts, to one of its choices; PiP turned off is not compacted", async () => {
+test("only server managers set when PiP compacts, to one of its choices; PiP turned off is not compacted", async () => {
     const me = owner(app);
     const guest = (await addPerson(app, "Guest", "guest")).user;
     const id = await pip();
 
-    await assert.rejects(app.setPipCompactAt(guest, 40_000), /Only the owner/);
+    await assert.rejects(
+        app.setPipCompactAt(guest, 40_000),
+        /Only someone who manages the server can do that./,
+    );
     await assert.rejects(app.setPipCompactAt(me, 12_345), /pipCompactAt must be one of/);
     await app.setPipCompactAt(me, 40_000);
     assert.equal(app.pipCompaction.compactAt, 40_000);

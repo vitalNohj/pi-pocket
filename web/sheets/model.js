@@ -1,7 +1,7 @@
 // The model picker: a menu over the model chip, searchable once there are many models; and the same menu for the model
 // and thinking level new sessions start with.
 import { useEffect, useRef, useState } from "preact/hooks";
-import { actions, api, attempt, closeSheet, openSheet, store } from "../store.js";
+import { actions, api, attempt, closeSheet, managesServer, openSheet, store } from "../store.js";
 import { useDragToClose } from "../gestures.js";
 import { favoriteModels } from "../model-favorites.js";
 import { chooseLevel, chooseModel, copyDraft, modelOf } from "../copy-draft.js";
@@ -69,7 +69,7 @@ const matches = (model, query) => {
  * goes back to it.
  */
 export function ModelPicker() {
-    const { models, server, me } = store.state;
+    const { models, server } = store.state;
     const [pipId] = useState(() => store.state.sheet?.pipId);
     const view = pipId === undefined ? store.state.view : store.state.pipView;
     const locked =
@@ -118,7 +118,6 @@ export function ModelPicker() {
         onClose: close,
         enabled: BOTTOM_SHEETS.matches,
     });
-    const owner = me?.role === "owner";
     const chosen = server?.defaultModel ?? null;
     const isDefault = (model) =>
         chosen?.provider === model?.provider && chosen?.modelId === (model?.id ?? model?.modelId);
@@ -455,8 +454,8 @@ export function ModelPicker() {
                                     </span>`
                           }
                       </div>`
-                      : // Only the owner makes a default: no one else gets an empty footer.
-                        owner &&
+                      : // Only server managers set a default.
+                        managesServer() &&
                         models.some((model) => isCurrent(model)) &&
                         html`<div class="pop-menu-foot pop-menu-default">
                             ${

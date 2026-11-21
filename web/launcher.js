@@ -33,6 +33,7 @@ import {
     canSteer,
     canToggleTurns,
     collab,
+    managesServer,
     navigate,
     notify,
     openSheet,
@@ -219,10 +220,10 @@ function actionItems() {
                 icon: "sparkle",
                 run: () => openSheet({ type: "model" }),
             },
-        store.state.me?.role === "owner" &&
+        managesServer() &&
             store.state.server?.defaultModel !== undefined && {
                 label: "Default model",
-                detail: "owner default first; otherwise project, last picked, then Pi global",
+                detail: "server default first; otherwise project, last picked, then Pi global",
                 icon: "sparkle",
                 run: () => openSheet({ type: "model", id: "default", forDefault: true }),
             },
@@ -472,7 +473,7 @@ function actionItems() {
                 icon: "external",
                 run: () => openSheet({ type: "hooks" }),
             },
-        me?.role === "owner" && {
+        managesServer() && {
             label: "Providers",
             detail: "sign in to model providers",
             icon: "key",
@@ -485,7 +486,7 @@ function actionItems() {
             icon: "monitor",
             run: () => openSheet({ type: "computers" }),
         },
-        me?.role === "owner" &&
+        managesServer() &&
             keepWarmAvailable() && {
                 label: "Keep warm",
                 detail: "keep prompt caches warm after a run",
@@ -535,7 +536,7 @@ function actionItems() {
             // Your own page in People, which opens on it.
             run: () => openSheet({ type: "people" }),
         },
-        me?.role === "owner" &&
+        managesServer() &&
             server?.supervised && {
                 label: "Restart server",
                 detail: "running work resumes",

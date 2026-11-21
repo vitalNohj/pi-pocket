@@ -6,6 +6,7 @@ import {
     attempt,
     closeSheet,
     drafts,
+    managesServer,
     navigate,
     notify,
     openSheet,
@@ -628,8 +629,8 @@ export function AppearanceSheet() {
         <div class="look-grid">
             ${lookIds().map((id) => html`<${LookCard} key=${id} id=${id} />`)}
         </div>
-        ${store.state.me?.role === "owner" && html`<${LookTools} />`}
-        ${store.state.me?.role === "owner" && html`<${FontTools} />`}
+        ${managesServer() && html`<${LookTools} />`}
+        ${managesServer() && html`<${FontTools} />`}
         <div class="label">Colors</div>
         <div class="theme-grid">
             ${desktop && html`<${ThemeCard} id="desktop" desktop=${true} />`}
@@ -637,8 +638,8 @@ export function AppearanceSheet() {
                 (id) => html`<${ThemeCard} key=${id} id=${id} />`,
             )}
         </div>
-        ${store.state.me?.role === "owner" && html`<${ColorsTools} />`}
-        ${store.state.me?.role === "owner" && html`<${DefaultTools} />`}
+        ${managesServer() && html`<${ColorsTools} />`}
+        ${managesServer() && html`<${DefaultTools} />`}
         ${
             !desktop &&
             html`<p class="muted small">

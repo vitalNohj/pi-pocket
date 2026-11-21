@@ -621,8 +621,9 @@ export class PocketApp {
     readonly goals = new Goals(this);
     readonly shell = new Shell(this);
     readonly spend = new Spend(this);
-    /** The owner's keep-warm settings and each session's choice (`keep-warm.ts`). */
+    /** The server's keep-warm settings and each session's choice (`keep-warm.ts`). */
     readonly keepWarm = new KeepWarm({
+        requireManagesServer: (user) => this.policy.requireManagesServer(user),
         settings: () => this.config.keepWarm,
         saveSettings: (next) => {
             this.config.keepWarm = next;
@@ -2514,7 +2515,7 @@ export class PocketApp {
         this.#sendSessions(client, this.sessions(client.user));
         this.#sendPip(client);
 
-        if (client.user.role === "owner" && this.themes.failure !== undefined) {
+        if (this.policy.managesServer(client.user) && this.themes.failure !== undefined) {
             client.send("notice", { level: "warning", message: this.themes.failure });
         }
 
@@ -4050,11 +4051,9 @@ export class PocketApp {
         return left > 0;
     }
 
-    /** The owner turns "Tasks expire with the session" on or off. */
+    /** Turn "Tasks expire with the session" on or off. */
     setTasksExpire(user: User, on: boolean): void {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can change this.");
-        }
+        this.policy.requireManagesServer(user);
 
         this.config.setTasksExpire(on, this.now());
         this.#peopleChanged();
@@ -5060,6 +5059,7 @@ export class PocketApp {
             user.role === "viewer" ? undefined : await this.pinnedSessions.list(user);
         const runners = this.runners.list(user);
         const thisServer = this.thisServer(user);
+        const managesServer = this.policy.managesServer(user);
 
         return {
             ...(thisServer === undefined ? {} : { thisServer }),
@@ -5093,8 +5093,8 @@ export class PocketApp {
                     ? { setup: true as const }
                     : {}),
             },
-            // "Tasks expire with the session", for the owner's switch (`tasksMayRun`).
-            ...(user.role === "owner" && this.config.server.tasksExpire === true
+            // "Tasks expire with the session", for the server setting switch (`tasksMayRun`).
+            ...(managesServer && this.config.server.tasksExpire === true
                 ? { tasksExpire: true }
                 : {}),
             users: this.people(user),
@@ -5125,8 +5125,8 @@ export class PocketApp {
                     ),
                 // Tells the web app this server has people chat and typing indicators.
                 chat: true,
-                // Manual refresh reloads shared model configuration and catalogs; only the owner may start it.
-                refreshModels: user.role === "owner",
+                // Manual refresh reloads shared model configuration and catalogs.
+                refreshModels: managesServer,
                 // Tells the web app this server sends peek tiles (`POST /api/peeks`, `peek` events).
                 peeks: true,
                 // Tells the web app it may show another session on the connection it has (`POST /api/switch`).
@@ -5147,10 +5147,8 @@ export class PocketApp {
                 defaultModel: this.config.defaultModel ?? null,
                 // The theme and colors of browsers that have not chosen their own, or null for the app's own.
                 themeDefault: this.config.themeDefault ?? null,
-                // The models Pi may start subagents on: the owner's to see and change.
-                ...(user.role === "owner"
-                    ? { subagentModels: [...this.config.subagentModels] }
-                    : {}),
+                // The models Pi may start subagents on: server managers may see and change them.
+                ...(managesServer ? { subagentModels: [...this.config.subagentModels] } : {}),
                 // This person may have a PiP, the assistant over every screen (`pip.ts`).
                 pip: this.pip.available(user),
                 // Tokens of context above which PiP compacts itself once idle; 0: only as sessions do.
@@ -5168,7 +5166,7 @@ export class PocketApp {
             // Linked computers (`runners.ts`), for the owner's Runners sheet and New session's Runs on.
             ...(user.role === "owner" || runners.length > 0 ? { runners } : {}),
             // Every theme folder, for Appearance and for the look this tab uses (`theme.js`).
-            themes: this.themes.list(user.role === "owner"),
+            themes: this.themes.list(managesServer),
         };
     }
 
@@ -7136,15 +7134,15 @@ export class PocketApp {
         };
     }
 
-    /** The extension modules, as this person may see them: where the server keeps files is for the owner only. */
+    /** The extension modules, as this person may see them: only server managers see where the files are. */
     async extensions(
         user: User,
     ): Promise<{ modules: ExtensionInfo[]; guard: GuardStatus; dropIns?: string }> {
-        const owner = user.role === "owner";
+        const managesServer = this.policy.managesServer(user);
         // A load error can name the server's folders too.
-        // Modules' routes are the owner's to know: others see only whose tabs load a browser module.
+        // Only server managers see modules' routes; others see only whose tabs load a browser module.
         const modules = this.loader.list().map(({ path, error, web, ...module }) =>
-            owner
+            managesServer
                 ? {
                       ...module,
                       ...(path === undefined ? {} : { path }),
@@ -7165,7 +7163,7 @@ export class PocketApp {
         return {
             modules,
             guard: await this.guard.status(),
-            ...(owner ? { dropIns: join(this.dataDir, "extensions") } : {}),
+            ...(managesServer ? { dropIns: join(this.dataDir, "extensions") } : {}),
         };
     }
 
@@ -7239,13 +7237,11 @@ export class PocketApp {
     }
 
     /**
-     * The owner starts the LANCET model download. It runs on in the background; every tab hears each step in the guard's
+     * Start the LANCET model download. It runs in the background; every tab hears each step in the guard's
      * status, and everyone in the app is told how it ended.
      */
     async setupGuardModel(user: User): Promise<void> {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
+        this.policy.requireManagesServer(user);
 
         if (this.guard.directory === undefined) {
             throw new HttpError(400, "specpi-lancet-guard is not installed in Pi");
@@ -7273,11 +7269,9 @@ export class PocketApp {
         ).finally(refresh);
     }
 
-    /** The owner changes who may allow risky calls. */
+    /** Change who may allow risky calls. */
     async setApprovalRule(user: User, rule: unknown): Promise<void> {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
+        this.policy.requireManagesServer(user);
 
         if (rule !== "anyone" && rule !== "others") {
             throw new HttpError(400, "approvalRule must be anyone or others");
@@ -7297,7 +7291,7 @@ export class PocketApp {
         );
     }
 
-    /** The owner changed keep warm's settings: tabs hear the new time limit, and open views show each session's state. */
+    /** Keep warm's settings changed: tabs hear the new time limit, and open views show each session's state. */
     async keepWarmSettingsChanged(): Promise<void> {
         this.cacheKeeper.reconsider();
         this.refreshViews();
@@ -7305,13 +7299,11 @@ export class PocketApp {
     }
 
     /**
-     * The owner chooses how many hours a run waits for a provider's limit to clear, at most; 0 turns waiting off, and
+     * Set the maximum hours a run waits for a provider's limit to clear; 0 turns waiting off, and
      * runs that wait now go on at once.
      */
     async setLimitWaitHours(user: User, hours: unknown): Promise<void> {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
+        this.policy.requireManagesServer(user);
 
         if (typeof hours !== "number" || !LIMIT_WAIT_CHOICES.includes(hours)) {
             throw new HttpError(
@@ -7337,8 +7329,8 @@ export class PocketApp {
     }
 
     /**
-     * A module's settings as `user` may see them: the owner, and whoever its browser module is for. A secret's value
-     * never leaves the server: only whether it is set. 404 for anyone else, and for a module that is off or has none.
+     * Server managers and users of a module's browser code can see its settings, but not secret values.
+     * Return 404 for anyone else, and for a module that is off or has no settings.
      */
     extensionSettings(user: User, module: string) {
         const fields = this.webs.settingsOf(module);
@@ -7346,7 +7338,7 @@ export class PocketApp {
 
         if (
             fields === undefined ||
-            (user.role !== "owner" &&
+            (!this.policy.managesServer(user) &&
                 (access === undefined || !this.policy.mayUseExtension(user, access)))
         ) {
             throw new HttpError(404, "That module has no settings here.");
@@ -7355,11 +7347,9 @@ export class PocketApp {
         return shownSettings(fields, this.config.extensionSettings(module), false);
     }
 
-    /** The owner changes a module's settings; the module hears it (`web.onSettings`). */
+    /** Change a module's settings; the module hears it (`web.onSettings`). */
     setExtensionSettings(user: User, module: string, change: unknown) {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
+        this.policy.requireManagesServer(user);
 
         const fields = this.webs.settingsOf(module);
 
@@ -7383,11 +7373,9 @@ export class PocketApp {
         return shownSettings(fields, next, false);
     }
 
-    /** The owner chooses when PiP compacts itself: above so many tokens of context once idle, or (0) as sessions do. */
+    /** Set when PiP compacts itself: above so many tokens of context once idle, or (0) as sessions do. */
     async setPipCompactAt(user: User, tokens: unknown): Promise<void> {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
+        this.policy.requireManagesServer(user);
 
         if (typeof tokens !== "number" || !PIP_COMPACT_CHOICES.includes(tokens)) {
             throw new HttpError(
@@ -7405,13 +7393,11 @@ export class PocketApp {
     }
 
     /**
-     * The theme and colors browsers start with until their person chooses (`config.themeDefault`): the owner's to set,
+     * Set the theme and colors browsers start with until their person chooses (`config.themeDefault`),
      * or `null` for the app's own. Everyone's tabs hear it in `hello`.
      */
     async setThemeDefault(user: User, choice: unknown): Promise<void> {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner sets the default theme");
-        }
+        this.policy.requireManagesServer(user);
 
         if (choice === null) {
             this.config.themeDefault = undefined;
@@ -7482,13 +7468,11 @@ export class PocketApp {
     }
 
     /**
-     * The owner picks the model and thinking level new sessions start with: a signed-in model, its level kept to one it
+     * Set the model and thinking level new sessions start with: a signed-in model, its level kept to one it
      * has. Null leaves it to the last model picked, as before there was a choice.
      */
     async setDefaultModel(user: User, choice: unknown): Promise<void> {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
+        this.policy.requireManagesServer(user);
 
         if (choice === null) {
             if (this.config.defaultModel !== undefined) {
@@ -7559,9 +7543,7 @@ export class PocketApp {
      * changes one model at a time (`allowSubagentModel`).
      */
     async setSubagentModels(user: User, models: unknown): Promise<void> {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
+        this.policy.requireManagesServer(user);
 
         if (
             !Array.isArray(models) ||
@@ -7608,9 +7590,7 @@ export class PocketApp {
         model: unknown,
         allowed: unknown,
     ): Promise<readonly string[]> {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can do that");
-        }
+        this.policy.requireManagesServer(user);
 
         if (typeof model !== "string" || typeof allowed !== "boolean") {
             throw new HttpError(400, "Send model (provider/modelId) and allowed (true or false).");
@@ -7670,7 +7650,7 @@ export class PocketApp {
             }
         }
 
-        await this.#refreshClients((user) => user.role === "owner");
+        await this.#refreshClients((user) => this.policy.managesServer(user));
         // What changed: the checklist shows the rest.
         const added = chosen.filter((each) => !before.includes(each));
         const removed = before.filter((each) => !chosen.includes(each));

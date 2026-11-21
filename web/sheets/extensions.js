@@ -2,7 +2,7 @@
 // its context.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { browserModuleState, leaveSafeMode, safeMode } from "../extension-ui.js";
-import { api, attempt, closeSheet, openSheet, store } from "../store.js";
+import { api, attempt, closeSheet, managesServer, openSheet, store } from "../store.js";
 import { html, Icon, Loader, Sheet, shortPath, Switch } from "../ui.js";
 import { ACCESS_WORDS, galleryApi, galleryAvailable, Tile } from "./gallery.js";
 
@@ -438,8 +438,7 @@ export function ExtensionsContent({
     beforeCount = 0,
     between = null,
 }) {
-    const { me } = store.state;
-    const owner = me?.role === "owner";
+    const canManageServer = managesServer();
     const [data, setData] = useState(null);
     const [problem, setProblem] = useState(null);
     const [busy, setBusy] = useState(null);
@@ -601,7 +600,7 @@ export function ExtensionsContent({
                         ? html`<span class="ext-state">Always on</span>`
                         : html`<${Switch}
                               on=${module.enabled}
-                              disabled=${!owner || busy !== null}
+                              disabled=${!canManageServer || busy !== null}
                               label=${`${module.title}: ${module.enabled ? "on" : "off"}`}
                               onChange=${(event) => toggle(module, event.currentTarget)}
                           />`
@@ -617,7 +616,7 @@ export function ExtensionsContent({
                 guard &&
                 html`<div class="ext-row-under">
                     <${GuardModel}
-                        owner=${owner}
+                        owner=${canManageServer}
                         model=${store.state.guard?.model ?? data.guard.model}
                         onStart=${() => attempt(async () => setData(await api("guard/model", {})))}
                     />
@@ -693,11 +692,11 @@ export function ExtensionsContent({
                 isOpen &&
                 html`<div class="ext-row-more ext-row-under" id=${id}>
                     ${note && !note.warn && html`<div class="small ok">${note.text}</div>`}
-                    ${guard && module.enabled && html`<${ApprovalRule} owner=${owner} />`}
-                    ${module.file === "pip.ts" && module.enabled && html`<${PipCompactAt} owner=${owner} />`}
+                    ${guard && module.enabled && html`<${ApprovalRule} owner=${canManageServer} />`}
+                    ${module.file === "pip.ts" && module.enabled && html`<${PipCompactAt} owner=${canManageServer} />`}
                     <${WebPart} module=${module} />
                     ${
-                        owner &&
+                        canManageServer &&
                         module.enabled &&
                         module.web?.settings &&
                         html`<${ModuleSettings} module=${module.file.replace(/\.ts$/, "")} />`
@@ -713,7 +712,7 @@ export function ExtensionsContent({
                         ${tools.length > 0 ? ` · tools: ${tools.join(", ")}` : ""}
                     </div>
                     ${
-                        owner &&
+                        canManageServer &&
                         module.enabled &&
                         html`<div class="ext-step-actions">
                             <button
@@ -766,7 +765,7 @@ export function ExtensionsContent({
                 html`<p class="muted small">Nothing installed matches.</p>`
             }
             ${
-                owner &&
+                canManageServer &&
                 html`<footer class="ext-footer">
                     ${
                         data?.dropIns &&
@@ -784,7 +783,7 @@ export function ExtensionsContent({
 
     return html`<div class="extension-management">
         <p class="ext-intro">
-            Tools, checks, and app features. A change reaches every session at once and stays after restarts.${owner ? "" : " Only the owner can change them."}
+            Tools, checks, and app features. A change reaches every session at once and stays after restarts.${canManageServer ? "" : " Only server managers can change them."}
         </p>
         <${SafeMode} />
         ${problem && html`<div class="error-box">${problem}</div>`}
@@ -810,7 +809,7 @@ export function ExtensionsContent({
             html`<p class="muted small">No built-in extensions or drop-ins match.</p>`
         }
         ${
-            owner &&
+            canManageServer &&
             html`<footer class="ext-footer">
                 ${
                     galleryInstalled === undefined &&

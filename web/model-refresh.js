@@ -1,10 +1,10 @@
 // One refresh action and its persistent feedback, shared by the menu, Providers, and the launcher.
-import { api, notify, store } from "./store.js";
+import { api, managesServer, notify, store } from "./store.js";
 import { html, Icon } from "./ui.js";
 
-/** Reloading shared model configuration and contacting providers is the owner's choice. */
+/** Only server managers can reload shared model configuration and contact providers. */
 export const modelRefreshAvailable = () =>
-    store.state.me?.role === "owner" && store.state.server?.refreshModels === true;
+    managesServer() && store.state.server?.refreshModels === true;
 
 /** A refresh does not choose a model: the server's existing models event updates the lists. */
 export async function refreshModels() {

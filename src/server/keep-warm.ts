@@ -21,6 +21,7 @@ import { cachePrices, factsTier, publishedLifetime, PublishedPrices } from "./mo
 
 /** The settings, sessions, models, and keeper calls that keep warm uses. */
 export type KeepWarmDeps = {
+    requireManagesServer: (user: User) => void;
     settings: () => KeepWarmSettings;
     saveSettings: (next: KeepWarmSettings) => void;
     sessionMeta: (id: ConversationId) => SessionMeta | undefined;
@@ -64,12 +65,6 @@ type ModelRow = {
     known: Known;
     /** How Break-even keeps it warm: undefined fields when no cache time is known, so it is not kept warm. */
     plan: { everyMs?: number; refreshes?: number; breakEvenStopMs?: number };
-};
-
-const ownerOnly = (user: User) => {
-    if (user.role !== "owner") {
-        throw new HttpError(403, "Only the owner can do that");
-    }
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -183,7 +178,7 @@ export class KeepWarm {
 
     /** The settings window's: every setting, Pi's facts about each model, and what is warm now. */
     overview(user: User) {
-        ownerOnly(user);
+        this.#deps.requireManagesServer(user);
         const settings = this.#deps.settings();
 
         return {
@@ -207,9 +202,9 @@ export class KeepWarm {
         };
     }
 
-    /** The owner changes some of the settings; the rest stay. Each warm session follows the new ones at once. */
+    /** Change some of the settings; the rest stay. Each warm session follows the new ones at once. */
     async setSettings(user: User, patch: unknown): Promise<void> {
-        ownerOnly(user);
+        this.#deps.requireManagesServer(user);
 
         if (!isRecord(patch)) {
             throw new HttpError(400, "keepWarm must be an object of settings");

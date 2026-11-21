@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { nowDoing } from "./agent-now.js";
 import { useOnScreen } from "./peeks.js";
 import { fromServer } from "./seen.js";
-import { api, attempt, canSteer, navigate, openSheet, store } from "./store.js";
+import { api, attempt, canSteer, managesServer, navigate, openSheet, store } from "./store.js";
 import { html, Icon, shortModelName, Spinner, timeAgo } from "./ui.js";
 
 /**
@@ -168,15 +168,13 @@ function AgentRow({ agent }) {
 }
 
 /**
- * Reports a spend limit holds back: why they wait, and for the owner the way to raise it. They go once it is raised.
+ * Reports a spend limit holds back: why they wait, and a link to Spend for server managers.
  */
 function Held({ why }) {
-    const owner = store.state.me?.role === "owner";
-
     return html`<div class="agents-held" role="status">
         <span>Reports wait: ${why}.</span>
         ${
-            owner
+            managesServer()
                 ? html`<button class="link" onClick=${() => openSheet({ type: "spend" })}>
                       Raise it
                   </button>`

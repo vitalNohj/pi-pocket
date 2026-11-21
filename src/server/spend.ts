@@ -409,7 +409,7 @@ export class Spend {
      * session on a computer someone else is in charge of answers as one that is not there, so its id says nothing.
      */
     async setSessionBudget(user: User, id: ConversationId, budget: unknown): Promise<void> {
-        requireOwner(user);
+        this.#app.policy.requireManagesServer(user);
         const amount = budgetOf(budget);
 
         if (!this.#app.canSee(user, id)) {
@@ -439,10 +439,12 @@ export class Spend {
         );
     }
 
-    /** The owner limits what Pi may spend for a person (`null`: no limit). */
+    /** Set a person's spend limit (`null`: no limit). Only the owner can set a server manager's limit. */
     setPersonBudget(user: User, userId: string, budget: unknown): void {
-        requireOwner(user);
-        const person = this.#app.config.userById(userId);
+        const app = this.#app;
+
+        app.policy.requireManagesServer(user);
+        const person = app.config.userById(userId);
 
         if (person === undefined) {
             throw new HttpError(404, "No such person");
@@ -452,16 +454,23 @@ export class Spend {
             throw new HttpError(400, "The owner has no spend limit");
         }
 
+        if (app.policy.managesServer(person) && app.config.userById(user.id)?.role !== "owner") {
+            throw new HttpError(
+                403,
+                "Only the owner can change the spend limit of someone who manages the server.",
+            );
+        }
+
         const amount = budgetOf(budget);
 
-        this.#app.config.updateUser(userId, { budget: amount });
+        app.config.updateUser(userId, { budget: amount });
         this.#limitsChanged();
     }
 
-    /** Spend as this person may see it: the owner sees everything, others their own sessions and themselves. */
+    /** Spend as this person may see it: only server managers see the total and each person's spend. */
     summary(user: User): SpendSummary {
         const app = this.#app;
-        const owner = user.role === "owner";
+        const managesServer = app.policy.managesServer(user);
         // Each session's spend, its subagents' with it, in one pass over every conversation.
         const byRoot = new Map<ConversationId, number>();
 
@@ -498,7 +507,7 @@ export class Spend {
         }
 
         const people = app.config.users
-            .filter((person) => owner || person.id === user.id)
+            .filter((person) => managesServer || person.id === user.id)
             .map((person) => ({
                 id: person.id,
                 name: person.name,
@@ -508,7 +517,7 @@ export class Spend {
         const total = [...this.#costs.values()].reduce((sum, cost) => sum + cost, 0);
 
         return {
-            ...(owner ? { total } : {}),
+            ...(managesServer ? { total } : {}),
             sessions: sessions.sort((a, b) => b.spent - a.spent),
             people: people.sort((a, b) => b.spent - a.spent),
         };
@@ -517,12 +526,6 @@ export class Spend {
     close(): void {
         clearTimeout(this.#timer);
         this.#limits.clear();
-    }
-}
-
-function requireOwner(user: User): void {
-    if (user.role !== "owner") {
-        throw new HttpError(403, "Only the owner can do that");
     }
 }
 

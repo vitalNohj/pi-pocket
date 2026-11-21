@@ -1,12 +1,12 @@
 // Spend: what each session and person cost, and their limits.
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, attempt, closeSheet, store } from "../store.js";
+import { api, attempt, closeSheet, managesServer, store } from "../store.js";
 import { html, Icon, Loader, Sheet } from "../ui.js";
 
 const money = (amount) => `$${amount.toFixed(2)}`;
 const largest = (rows) => rows.reduce((max, row) => Math.max(max, row.spent), 1);
 
-/** A spend limit, and (for the owner) a way to change it. */
+/** A spend limit, and a way to change it when allowed. */
 function SpendLimit({ budget, editable, save }) {
     const [draft, setDraft] = useState(null);
     const field = useRef(null);
@@ -86,9 +86,9 @@ function Usage({ row, max }) {
     ><span></span></span>`;
 }
 
-/** What Pi spent, by person and by session, with the owner's limits. */
+/** What Pi spent, by person and by session, with the spend limits. */
 export function SpendSheet() {
-    const owner = store.state.me?.role === "owner";
+    const canManageServer = managesServer();
     const [data, setData] = useState(null);
 
     useEffect(() => {
@@ -121,7 +121,7 @@ export function SpendSheet() {
                             <span class="mono">${money(person.spent)}</span>
                             <${SpendLimit}
                                 budget=${person.budget}
-                                editable=${owner && person.id !== store.state.me?.id}
+                                editable=${canManageServer && person.id !== store.state.me?.id}
                                 save=${save({ person: person.id })}
                             />
                         </div>`,
@@ -138,7 +138,7 @@ export function SpendSheet() {
                             <span class="mono">${money(session.spent)}</span>
                             <${SpendLimit}
                                 budget=${session.budget}
-                                editable=${owner}
+                                editable=${canManageServer}
                                 save=${save({ session: session.id })}
                             />
                         </div>`,

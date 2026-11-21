@@ -322,17 +322,16 @@ export class Memory {
         return { project, lessons };
     }
 
-    #isOwner(userId: string | undefined): boolean {
-        return userId !== undefined && this.#app.config.userById(userId)?.role === "owner";
+    #managesServer(userId: string | undefined): boolean {
+        return userId !== undefined && this.#app.policy.managesServer({ id: userId });
     }
 
     /**
-     * Whether a write waits for the owner: every one of Pi's, and every one of someone who is not the owner. What Pi
-     * read (a web page, a post, a comment, a file) can talk it into "a lesson", and a lesson reaches every later session:
-     * Pi proposes, the owner approves.
+     * Pi's writes and writes by people who do not manage the server wait for approval. What Pi read (a web page,
+     * a post, a comment, a file) can talk it into "a lesson", and a lesson reaches every later session.
      */
     #held(writer: Writer): boolean {
-        return writer.byPi || !this.#isOwner(writer.userId);
+        return writer.byPi || !this.#managesServer(writer.userId);
     }
 
     #roomFor(
@@ -366,13 +365,16 @@ export class Memory {
     }
 
     #mayChange(lesson: Lesson, userId: string | undefined): boolean {
-        return this.#isOwner(userId) || (userId !== undefined && lesson.by === userId);
+        return this.#managesServer(userId) || (userId !== undefined && lesson.by === userId);
     }
 
-    /** Cross-project review is for the human owner in their private PiP, before reading any lesson or writing activity. */
-    #requirePendingOwner(writer: Writer, conversationId: ConversationId): void {
-        if (writer.byPi || !this.#isOwner(writer.userId)) {
-            throw new HttpError(403, "Only the owner can review all pending lessons.");
+    /** Cross-project review is for a human server manager in their private PiP. */
+    #requirePendingReviewer(writer: Writer, conversationId: ConversationId): void {
+        if (writer.byPi || !this.#managesServer(writer.userId)) {
+            throw new HttpError(
+                403,
+                "Only someone who manages the server can review all pending lessons.",
+            );
         }
 
         if (this.#app.sessionMeta(this.#app.rootOf(conversationId))?.pip !== writer.userId) {
@@ -540,13 +542,13 @@ export class Memory {
     }
 
     /**
-     * Change a lesson's text or forget it; approve or discard what waits. Only the owner, or whoever saved a lesson,
-     * changes or forgets it; only the owner approves. A change from Pi or a guest to a lesson in force is a proposal:
-     * the lesson stays as it is until the owner approves it. One that waits anyway changes as it is.
+     * Change a lesson's text or forget it; approve or discard what waits. Server managers and the original author
+     * can change or forget a lesson. Pi and people who do not manage the server can only propose edits to a lesson
+     * in force. Only a human server manager can approve a proposal. A lesson that waits anyway changes as it is.
      *
-     * An approval says what the owner saw (`expected`): what waits can change between their look and their tap, so
+     * An approval says what the reviewer saw (`expected`): what waits can change between their look and their tap, so
      * approving holds only when it would make true what they saw. `pendingOnly` is a cross-project review mode for the
-     * human owner in their private PiP, limited to approving or discarding lessons that still wait; the Pi tool never sets it.
+     * human server manager in their private PiP, limited to approving or discarding lessons that still wait.
      */
     async change(
         conversationId: ConversationId,
@@ -559,9 +561,9 @@ export class Memory {
     ): Promise<Lesson> {
         const app = this.#app;
 
-        // Never let Pi, a guest, or a shared-session review use the cross-project lookup.
+        // Do not let Pi or a shared-session review use the cross-project lookup.
         if (pendingOnly) {
-            this.#requirePendingOwner(writer, conversationId);
+            this.#requirePendingReviewer(writer, conversationId);
 
             if (change !== "approve" && change !== "discard") {
                 throw new HttpError(400, "The pending queue only approves or discards lessons.");
@@ -576,8 +578,8 @@ export class Memory {
             const doc = await tx.doc(MemoryDoc);
 
             if (pendingOnly) {
-                // Recheck after waiting for the transaction: a person's role may have changed meanwhile.
-                this.#requirePendingOwner(writer, conversationId);
+                // Recheck after waiting for the transaction: the person's rights may have changed.
+                this.#requirePendingReviewer(writer, conversationId);
             }
 
             const lesson = this.#find(doc, here, id, pendingOnly);
@@ -588,11 +590,14 @@ export class Memory {
 
             const before = copy(lesson);
             const quoted = `“${snippet(lesson.text, 80)}”`;
-            const owner = !writer.byPi && this.#isOwner(writer.userId);
+            const reviewer = !writer.byPi && this.#managesServer(writer.userId);
 
             if (change === "approve") {
-                if (!owner) {
-                    throw new HttpError(403, "Only the owner approves lessons.");
+                if (!reviewer) {
+                    throw new HttpError(
+                        403,
+                        "Only someone who manages the server can approve lessons.",
+                    );
                 }
 
                 // What approving makes true; with nothing waiting, the text in force, so a second tap does nothing.
@@ -641,27 +646,30 @@ export class Memory {
                 const own = (by: string | undefined) =>
                     !writer.byPi && by !== undefined && by === writer.userId;
 
-                if (lesson.pending === true && (owner || own(lesson.by))) {
+                if (lesson.pending === true && (reviewer || own(lesson.by))) {
                     delete doc.items[lesson.id];
                     await said(tx, `discarded the lesson ${quoted}`);
 
                     return before;
                 }
 
-                if (lesson.proposal !== undefined && (owner || own(proposer))) {
+                if (lesson.proposal !== undefined && (reviewer || own(proposer))) {
                     delete lesson.proposal;
                     await said(tx, `kept the lesson ${quoted} as it was`);
 
                     return copy(lesson);
                 }
 
-                throw new HttpError(403, "Only the owner, or whoever asked, can discard this.");
+                throw new HttpError(
+                    403,
+                    "Only someone who manages the server, or whoever asked, can discard this.",
+                );
             }
 
             if (!this.#mayChange(lesson, writer.userId)) {
                 throw new HttpError(
                     403,
-                    "Only the owner, or whoever saved it, can change or forget this lesson.",
+                    "Only someone who manages the server, or whoever saved it, can change or forget this lesson.",
                 );
             }
 
@@ -731,7 +739,7 @@ export class Memory {
                 return before;
             }
 
-            // The owner's own edit is in force at once: of a lesson waiting, it approves it too.
+            // A server manager's edit is in force at once. An edit to a pending lesson also approves it.
             if (!held && !inForce) {
                 this.#roomFor(doc, lesson);
                 delete lesson.pending;
@@ -784,16 +792,16 @@ export class Memory {
         return { userId: user.id, byPi: false, name: user.name };
     }
 
-    /** The session's lessons, or the human owner's pending lessons across all projects and everywhere in their private PiP. */
+    /** The session's lessons, or all pending lessons for a human server manager in their private PiP. */
     async view(id: ConversationId, user: User, pendingOnly = false): Promise<MemoryView> {
         const app = this.#app;
 
         if (pendingOnly) {
-            this.#requirePendingOwner(this.#person(user), id);
+            this.#requirePendingReviewer(this.#person(user), id);
         }
 
         app.requireSee(user, id);
-        const owner = user.role === "owner";
+        const managesServer = app.policy.managesServer(user);
         const project = pendingOnly ? undefined : await this.project(id, app.cwdOf(id));
         const applying = pendingOnly
             ? ordered(
@@ -836,7 +844,8 @@ export class Memory {
                       }
                     : {}),
                 mine: !pendingOnly && user.role !== "viewer" && this.#mayChange(lesson, user.id),
-                ...(lesson.proposal !== undefined && (owner || lesson.proposal.by === user.id)
+                ...(lesson.proposal !== undefined &&
+                (managesServer || lesson.proposal.by === user.id)
                     ? {
                           proposal: {
                               ...(lesson.proposal.text === undefined
@@ -853,7 +862,7 @@ export class Memory {
         };
 
         const lessons = applying
-            .filter((lesson) => lesson.pending !== true || owner || lesson.by === user.id)
+            .filter((lesson) => lesson.pending !== true || managesServer || lesson.by === user.id)
             .map(show);
         const others: NonNullable<MemoryView["others"]> = [];
 
@@ -898,7 +907,7 @@ export class Memory {
             project: project === undefined ? null : { name: project.name },
             lessons,
             ...(others.length === 0 ? {} : { others }),
-            owner,
+            owner: managesServer,
             canWrite: !pendingOnly && user.role !== "viewer",
             limits: {
                 project: MAX_PROJECT_LESSONS,
@@ -956,7 +965,7 @@ export class Memory {
         const app = this.#app;
 
         if (pendingOnly) {
-            this.#requirePendingOwner(this.#person(user), id);
+            this.#requirePendingReviewer(this.#person(user), id);
         }
 
         app.requireSteer(user, id);
