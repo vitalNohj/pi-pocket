@@ -2692,6 +2692,25 @@ test(
             app.setRight(owner(app), { person: guest.id, right: "managesUsers", on: false });
             await until(async () => (await switches()).length === 0, "Vera's switches to go");
             assert.equal(await removable(), false);
+
+            // Settings, what holds for everyone, is for who manages the server: not hers until the owner lets her.
+            const listed = () =>
+                inPage<string[]>(
+                    `return JSON.stringify([...document.querySelectorAll(".pages-item-title")].map((each) => each.textContent.trim()))`,
+                );
+
+            await open("people");
+            assert.equal((await listed()).includes("Settings"), false);
+            app.setRight(owner(app), { person: guest.id, right: "managesServer", on: true });
+            await until(async () => (await listed()).includes("Settings"), "Settings to be hers");
+            await show("Settings");
+            assert.deepEqual(await switches(), ["Tasks expire with the session: off"]);
+            await flip("Tasks expire with the session");
+            await until(() => app.config.server.tasksExpire === true, "the server to keep it");
+            await flip("Tasks expire with the session");
+            await until(() => app.config.server.tasksExpire !== true, "it to be taken back");
+            app.setRight(owner(app), { person: guest.id, right: "managesServer", on: false });
+            await until(async () => !(await listed()).includes("Settings"), "Settings to go");
         } finally {
             // The tests share one page: the owner's again, whatever happened.
             page = owners;

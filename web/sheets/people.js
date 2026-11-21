@@ -15,6 +15,7 @@ import {
     collab,
     declaredRights,
     managesPeople,
+    managesServer,
     notify,
     openId,
     openSheet,
@@ -1269,7 +1270,7 @@ function PersonPage({ person }) {
     </div>`;
 }
 
-/** What the owner sets for everyone on this server. */
+/** What holds for everyone on this server: the owner sets it, and a user who manages the server. */
 function SettingsPage() {
     return html`<div class="sheet-page">
         <h3 class="sheet-page-title">Settings</h3>
@@ -1280,11 +1281,12 @@ function SettingsPage() {
 
 /**
  * People: everyone with access on the left, and the chosen person's page beside it, laid out as the Runners sheet is
- * (`pages.js`). The owner manages each person there, and sets what holds for everyone (Settings).
+ * (`pages.js`). The owner manages each person there. What holds for everyone (Settings) is set by who manages the
+ * server (`store.js` `managesServer`).
  */
 export function PeopleSheet() {
     const { me, users } = store.state;
-    const owner = me?.role === "owner";
+    const settings = managesServer();
     const [view, setView] = useState(null);
     // A viewer has no list of the people here: their own page alone. The people they meet in the sessions shown to them
     // stay in `users`, for the names on messages there.
@@ -1305,7 +1307,7 @@ export function PeopleSheet() {
     // way.
     const fallback = (people.find((each) => each.id === me?.id) ?? people[0])?.id;
     const shown =
-        view === "settings" && owner
+        view === "settings" && settings
             ? view
             : people.some((each) => `person:${each.id}` === view)
               ? view
@@ -1337,7 +1339,7 @@ export function PeopleSheet() {
         }
         <div class="group-title">More</div>
         ${
-            owner &&
+            settings &&
             html`<${PageItem}
                 selected=${shown === "settings"}
                 onSelect=${() => setView("settings")}

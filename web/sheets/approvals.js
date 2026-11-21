@@ -48,7 +48,7 @@ export function ApprovalTime({ person, plain = false }) {
 }
 
 /**
- * The owner's switch: tasks that run on their own (webhooks, schedules, watches) stop with their session's approval, a
+ * The switch of who manages the server: tasks that run on their own (webhooks, schedules, watches) stop with their session's approval, a
  * week after it ends, with reminders. Off: they run for good once set up.
  */
 export function TasksExpire() {
