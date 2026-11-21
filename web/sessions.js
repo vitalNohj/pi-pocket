@@ -25,6 +25,7 @@ import {
     canSteer,
     chatReadStored,
     collab,
+    managesServer,
     navigate,
     notify,
     isUnread,
@@ -2915,7 +2916,7 @@ function Rail({ foldable = false, folded = false }) {
                 </button>`
         }
         ${
-            me?.role === "owner" &&
+            managesServer() &&
             html`<button
                 class="rail-button"
                 data-part="rail-button"

@@ -1,6 +1,15 @@
 // Memory: the lessons Pi keeps, for this session's project, for everywhere, and for this session alone.
 import { useEffect, useState } from "preact/hooks";
-import { api, attempt, closeSheet, navigate, notify, openSheet, store } from "../store.js";
+import {
+    api,
+    attempt,
+    closeSheet,
+    managesServer,
+    navigate,
+    notify,
+    openSheet,
+    store,
+} from "../store.js";
 import { html, Sheet, timeAgo } from "../ui.js";
 
 /** Memory needs its extension, and a conversation to say which project: `id`, or the one open. */
@@ -52,7 +61,7 @@ export function useMemory(conversationId, pendingOnly = false) {
     const [rev, setRev] = useState(() => revision(store.state));
 
     useEffect(() => store.subscribe((state) => setRev(revision(state))), []);
-    const on = memoryAvailable(id) && (!pendingOnly || me?.role === "owner");
+    const on = memoryAvailable(id) && (!pendingOnly || managesServer());
     const [data, setData] = useState(last?.key === key ? last : null);
     // Asked again a few times when a fetch fails (a dropped connection, a restart), rather than loading for ever.
     const [retry, setRetry] = useState(0);
@@ -436,9 +445,9 @@ export function MemorySheet({ draft: initial = "", conversationId, pendingOnly =
 
     const title = pendingOnly ? "Pending memories" : "Memory";
 
-    if (pendingOnly && store.state.me?.role !== "owner") {
+    if (pendingOnly && !managesServer()) {
         return html`<${Sheet} title=${title} onClose=${closeSheet} wide=${true}>
-            <p class="muted">Only the owner can review pending memories.</p>
+            <p class="muted">Only someone who manages the server can review pending memories.</p>
         <//>`;
     }
 

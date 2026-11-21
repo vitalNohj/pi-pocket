@@ -20,6 +20,7 @@ import {
     canToggleTurns,
     closeSheet,
     collab,
+    managesServer,
     navigate,
     notify,
     openRunning,
@@ -576,7 +577,7 @@ export function MenuSheet({ places = true }) {
             ${item("Appearance", () => openSheet({ type: "appearance" }), lookLabel())}
             ${!touch && item("Keyboard shortcuts", () => openSheet({ type: "shortcuts" }), "?")}
             ${
-                me?.role === "owner" &&
+                managesServer() &&
                 defaultsKept() &&
                 item(
                     "Default model",
@@ -589,16 +590,16 @@ export function MenuSheet({ places = true }) {
             ${collab() && item("Notifications", () => openSheet({ type: "notifications" }), "Pi finished, approvals, chat")}
             ${item("Running now", openRunning, "everything Pi is doing")}
             ${view.conversation && item("Background", () => openSheet({ type: "background" }), "what commands print as they run")}
-            ${item("Spend", () => openSheet({ type: "spend" }), me?.role === "owner" ? "by person and session, limits" : "yours")}
+            ${item("Spend", () => openSheet({ type: "spend" }), managesServer() ? "by person and session, limits" : "yours")}
             ${triggersOn() && me?.role !== "viewer" && item("Webhooks and watches", () => openSheet({ type: "hooks" }), "GitHub, other services")}
-            ${me?.role === "owner" && item("Providers", () => openSheet({ type: "providers" }))}
+            ${managesServer() && item("Providers", () => openSheet({ type: "providers" }))}
             ${runnersOffered() && item("Runners", () => openSheet({ type: "computers" }), runnersHint())}
-            ${me?.role === "owner" && keepWarmAvailable() && item("Keep warm", () => openSheet({ type: "keep-warm" }), keepWarmHint())}
+            ${managesServer() && keepWarmAvailable() && item("Keep warm", () => openSheet({ type: "keep-warm" }), keepWarmHint())}
             ${modelRefreshAvailable() && item("Refresh models", refreshModels, store.state.modelRefresh.loading ? "refreshing…" : "models.json and providers")}
             ${extensionMenuItems().map((each) => item(each.label, each.run, each.hint))}
             ${item("Extensions", () => openSheet({ type: "extensions" }), extensionsHint())}
             ${
-                me?.role === "owner" &&
+                managesServer() &&
                 server?.supervised &&
                 item(
                     "Restart server",

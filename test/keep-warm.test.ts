@@ -42,6 +42,7 @@ test("cache prices: published and owner read prices, tiered writes, and missing 
 });
 
 const fakeDeps = (overrides: Partial<KeepWarmDeps> = {}): KeepWarmDeps => ({
+    requireManagesServer: () => {},
     settings: () => keepWarmFrom({}),
     saveSettings: () => {},
     sessionMeta: () => undefined,
@@ -301,10 +302,10 @@ test("keep warm: a user the owner lets turns a session on and picks its time; ta
         await assert.rejects(app.commands.updateSession(id, viewer, { keepWarm: 4 }));
         assert.equal(app.sessionMeta(id)?.keepWarm, undefined);
 
-        // The Keep warm settings stay the owner's.
+        // The session right does not grant access to the server settings.
         await assert.rejects(
             app.keepWarm.setSettings(guest, { hours: 8 }),
-            /Only the owner can do that/,
+            /Only someone who manages the server can do that./,
         );
 
         // Taken back: what is on stays on, and they can only turn it off.

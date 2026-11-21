@@ -1,7 +1,15 @@
 // Model providers: signing in and out, the models subagents may use, and the dialog a
 // sign-in uses to ask for a code or a key.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { api, attempt, closeSheet, closeSignIn, signInAnswered, store } from "../store.js";
+import {
+    api,
+    attempt,
+    closeSheet,
+    closeSignIn,
+    managesServer,
+    signInAnswered,
+    store,
+} from "../store.js";
 import { html, Icon, Loader, MODEL_SEARCH_AT, Sheet } from "../ui.js";
 import { RefreshModelsButton, RefreshModelsStatus } from "../model-refresh.js";
 import { favoriteModels, setModelFavorite } from "../model-favorites.js";
@@ -315,7 +323,7 @@ function RowPanel({ open, children }) {
 const ADDING = ":add";
 
 export function ProvidersSheet() {
-    const { me, auth } = store.state;
+    const { auth } = store.state;
     const [providers, setProviders] = useState(null);
     const [query, setQuery] = useState("");
     const loginButton = useRef(null);
@@ -330,8 +338,8 @@ export function ProvidersSheet() {
             loginButton.current = null;
         }
     }, [auth]);
-    const owner = me?.role === "owner";
-    const custom = useCustomProviders(owner);
+    const canManageServer = managesServer();
+    const custom = useCustomProviders(canManageServer);
     // The endpoint form: ADDING, an endpoint's id, or null when closed.
     const [endpointForm, setEndpointForm] = useState(null);
     const customIds = new Set((custom.list ?? []).map((endpoint) => endpoint.id));
@@ -360,7 +368,7 @@ export function ProvidersSheet() {
         });
     const needle = query.trim().toLowerCase();
     // Not a provider of Pi's: the row that adds an OpenAI-compatible endpoint, which becomes one.
-    const addRow = owner
+    const addRow = canManageServer
         ? [
               {
                   id: "openai-compatible",
@@ -404,7 +412,7 @@ export function ProvidersSheet() {
     const noteGroup = (groups.find(([title]) => title === "Signed in") ??
         groups.find(([title]) => title === "Not configured") ??
         groups[0])?.[0];
-    const noteMore = owner ? "" : " · only the owner can change them";
+    const noteMore = canManageServer ? "" : " · only server managers can change them";
     const note = html`<p class="providers-note">
         Shared with Pi · <span class="mono">~/.pi/agent/auth.json</span>${noteMore}
     </p>`;
@@ -458,7 +466,7 @@ export function ProvidersSheet() {
             }
         </div>
         ${
-            owner &&
+            canManageServer &&
             html`<div class="provider-actions">
                 ${
                     provider.adds &&
@@ -523,11 +531,11 @@ export function ProvidersSheet() {
     return html`<${Sheet}
         title="Providers"
         onClose=${closeSheet}
-        className=${`providers-sheet ${owner ? "with-side" : ""}`}
+        className=${`providers-sheet ${canManageServer ? "with-side" : ""}`}
     >
         <div class="providers-layout">
             ${
-                owner &&
+                canManageServer &&
                 html`<aside class="providers-side" aria-label="Subagent models">
                     <${SubagentModels}
                         names=${Object.fromEntries(
@@ -538,7 +546,7 @@ export function ProvidersSheet() {
             }
             <div class="providers-main">
                 ${auth && !authInList && html`<${AuthDialog} inline=${true} />`}
-                ${owner && html`<${LimitWait} />`}
+                ${canManageServer && html`<${LimitWait} />`}
                 <label class="search">
                     <${Icon} name="search" size=${16} />
                     <input
