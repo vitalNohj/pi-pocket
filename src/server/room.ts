@@ -95,7 +95,10 @@ export const ROOM_DOCS = new Set(
 );
 /** A typing indicator lasts this long unless the browser renews it. */
 const TYPING_MS = 6000;
-/** Peek tiles change at most this often: they are glanced at, and a streaming answer changes every 90 ms. */
+/** A room groups ordinary updates, but makes first text and stored tool results wait less. */
+const VIEW_MS = 90;
+const EARLY_VIEW_MS = 25;
+/** Peek tiles change at most this often: they are glanced at, and a streaming answer changes much more often. */
 const PEEK_MS = 1000;
 /** Entries read from the end of a session for its peek tile: enough to find the results of the calls it shows. */
 const PEEK_ENTRIES = PEEK_LINES * 3;
@@ -354,6 +357,19 @@ export type ActiveView = Omit<ConversationView, "entries" | "before"> & {
     readonly entries: readonly EntryRecord[];
 };
 
+/** Only non-blank reply text counts, not thinking or tool-call arguments. */
+function hasReplyText(message: { content?: unknown } | undefined): boolean {
+    const content = message?.content;
+
+    return (
+        Array.isArray(content) &&
+        content.some(
+            (part: { type?: unknown; text?: unknown } | null) =>
+                part?.type === "text" && typeof part.text === "string" && /\S/.test(part.text),
+        )
+    );
+}
+
 /** The view of one conversation, shared by every client attached to it. */
 export class Room {
     readonly id: ConversationId;
@@ -367,6 +383,7 @@ export class Room {
     #view: ActiveView | undefined;
     #watch: ConversationWatch | undefined;
     #timer: NodeJS.Timeout | undefined;
+    #earlyTimer: NodeJS.Timeout | undefined;
     #closeTimer: NodeJS.Timeout | undefined;
     #headTimer: NodeJS.Timeout | undefined;
     /** The branch this view last read, as JSON. */
@@ -637,8 +654,20 @@ export class Room {
             }
 
             if (this.#view !== undefined) {
+                const before = held.docs["pi.live"] as LiveState | undefined;
+                const next = view.docs["pi.live"] as LiveState | undefined;
+                // A short answer can go straight to an entry. A tool is finished here only once the watch has its result entry.
+                const early =
+                    added.some((entry) => entry.kind === "pi.tool-result") ||
+                    (!hasReplyText(before?.generation?.message) &&
+                        (hasReplyText(next?.generation?.message) ||
+                            added.some(
+                                (entry) =>
+                                    entry.kind === "pi.assistant" && hasReplyText(entry.model?.[0]),
+                            )));
+
                 this.#view = { conversation: view.conversation, docs: view.docs, entries };
-                this.schedule();
+                this.schedule(early);
             }
         } catch (error) {
             // A listener that throws would end the watch: the view keeps what it has, and the next value tries again.
@@ -646,21 +675,30 @@ export class Room {
         }
     }
 
-    /** Coalesce bursts of commits (streaming commits land every 100 ms) into one update per client. */
-    schedule(): void {
+    /** Coalesce ordinary commits. First text and stored results can bring the pending update forward. */
+    schedule(early = false): void {
         this.schedulePeek();
+        this.#timer ??= setTimeout(() => this.#flush(), VIEW_MS);
 
-        if (this.#timer !== undefined) {
-            return;
+        // Keep the ordinary deadline too: it can already be less than EARLY_VIEW_MS away.
+        if (early) {
+            this.#earlyTimer ??= setTimeout(() => this.#flush(), EARLY_VIEW_MS);
         }
+    }
 
-        this.#timer = setTimeout(() => {
-            this.#timer = undefined;
+    #clearViewTimers(): void {
+        clearTimeout(this.#timer);
+        clearTimeout(this.#earlyTimer);
+        this.#timer = undefined;
+        this.#earlyTimer = undefined;
+    }
 
-            for (const client of this.#allowed()) {
-                this.push(client, false);
-            }
-        }, 90);
+    #flush(): void {
+        this.#clearViewTimers();
+
+        for (const client of this.#allowed()) {
+            this.push(client, false);
+        }
     }
 
     /** Presentations changed: every entry projects again, and open tabs get the ones that now show differently. */
@@ -824,11 +862,11 @@ export class Room {
         client.orderCount = order.length;
         const agentState = (view.docs["pi.agent"] ?? {}) as AgentState;
         const inbox = (view.docs["pi.inbox"] ?? { items: [] }) as unknown as InboxState;
-        // These grow with the session (authors has one item per message) but rarely change: streaming sends an update
-        // every 90 ms, which would repeat them all each time. Send each only when it differs from what this client has.
+        // These grow with the session (authors has one item per message) but rarely change. Do not repeat them on
+        // each streaming update: send each only when it differs from what this client has.
         const queue = this.#inbox(inbox.items);
         const fields: Record<string, unknown> = {
-            // A turn's updates would repeat it every 90 ms, and a waiting paste or batch of reports can be large.
+            // A turn's updates would repeat it, and a waiting paste or batch of reports can be large.
             inbox: queue,
             artifacts: Object.entries(this.artifacts).map(([id, meta]) => ({
                 id,
@@ -1448,7 +1486,7 @@ export class Room {
     }
 
     close(): void {
-        clearTimeout(this.#timer);
+        this.#clearViewTimers();
         clearTimeout(this.#closeTimer);
         clearInterval(this.#headTimer);
         clearTimeout(this.#peekTimer);
