@@ -292,6 +292,17 @@ test("spend: managers set session and guest limits, but only the owner sets a ma
 
     assert.equal(app.config.userById(manager.id)?.budget, 3);
     assert.equal(app.config.userById(other.id)?.budget, 2);
+
+    // The rows say which limits are not this reader's to change, so the sheet offers no way to.
+    const locked = async (reader: User) =>
+        (await done<SpendSummary>(reader, ["spend"])).people
+            .filter((each) => each.locked === true)
+            .map((each) => each.id)
+            .sort();
+
+    assert.deepEqual(await locked(manager), [first.id, manager.id, other.id].sort());
+    assert.deepEqual(await locked(first), [first.id]);
+    assert.deepEqual(await locked(guest), []);
     await refused(first, budget(first, 1), "The owner has no spend limit", 400);
     await done(first, budget(manager, null));
 });

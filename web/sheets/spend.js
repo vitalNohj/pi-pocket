@@ -1,6 +1,6 @@
 // Spend: what each session and person cost, and their limits.
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, attempt, closeSheet, managesServer, store } from "../store.js";
+import { api, attempt, closeSheet, managesServer } from "../store.js";
 import { html, Icon, Loader, Sheet } from "../ui.js";
 
 const money = (amount) => `$${amount.toFixed(2)}`;
@@ -121,7 +121,7 @@ export function SpendSheet() {
                             <span class="mono">${money(person.spent)}</span>
                             <${SpendLimit}
                                 budget=${person.budget}
-                                editable=${canManageServer && person.id !== store.state.me?.id}
+                                editable=${canManageServer && !person.locked}
                                 save=${save({ person: person.id })}
                             />
                         </div>`,

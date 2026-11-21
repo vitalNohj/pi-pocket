@@ -5833,7 +5833,7 @@ export class PocketApp {
             const whose = own ? "you" : "someone else";
 
             return computer === THIS_SERVER
-                ? `Only the owner can allow a command ${whose} typed.`
+                ? `Only the owner, or someone who manages runners, can allow a command ${whose} typed.`
                 : `Only ${this.#inChargeName(request.conversationId)}, who is in charge of ${this.#computerName(computer)}, can allow a command ${whose} typed.`;
         }
 
@@ -5844,7 +5844,7 @@ export class PocketApp {
         // Not knowing who asked is not knowing that it was someone else.
         if (request.requestedBy === undefined) {
             return computer === THIS_SERVER
-                ? "Nobody is known to have asked for this call, so only the owner can allow it."
+                ? "Nobody is known to have asked for this call, so only the owner, or someone who manages runners, can allow it."
                 : `Nobody is known to have asked for this call, so only ${this.#inChargeName(request.conversationId)}, who is in charge of ${this.#computerName(computer)}, can allow it.`;
         }
 

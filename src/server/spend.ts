@@ -25,8 +25,11 @@ export type SpendSummary = {
     /** Everything Pi spent on this server; only the owner sees it. */
     total?: number;
     sessions: { id: number; title: string; spent: number; budget?: number }[];
-    /** Everyone for the owner; others see themselves. */
-    people: { id: string; name: string; spent: number; budget?: number }[];
+    /**
+     * Everyone for who manages the server; others see themselves. `locked`: this reader cannot change that person's
+     * limit (the owner has none; only the owner sets the limit of someone who manages the server).
+     */
+    people: { id: string; name: string; spent: number; budget?: number; locked?: true }[];
 };
 
 export class Spend {
@@ -450,21 +453,34 @@ export class Spend {
             throw new HttpError(404, "No such person");
         }
 
-        if (person.role === "owner") {
-            throw new HttpError(400, "The owner has no spend limit");
-        }
+        const refusal = this.#cannotLimit(user, person);
 
-        if (app.policy.managesServer(person) && app.config.userById(user.id)?.role !== "owner") {
-            throw new HttpError(
-                403,
-                "Only the owner can change the spend limit of someone who manages the server.",
-            );
+        if (refusal !== undefined) {
+            throw refusal;
         }
 
         const amount = budgetOf(budget);
 
         app.config.updateUser(userId, { budget: amount });
         this.#limitsChanged();
+    }
+
+    /**
+     * Why `by`, who manages the server, cannot change `person`'s spend limit; undefined when they can. The owner has
+     * none. Someone who manages the server could lift their own, so theirs is the owner's to set.
+     */
+    #cannotLimit(by: User, person: User): HttpError | undefined {
+        if (person.role === "owner") {
+            return new HttpError(400, "The owner has no spend limit");
+        }
+
+        return this.#app.policy.managesServer(person) &&
+            this.#app.config.userById(by.id)?.role !== "owner"
+            ? new HttpError(
+                  403,
+                  "Only the owner can change the spend limit of someone who manages the server.",
+              )
+            : undefined;
     }
 
     /** Spend as this person may see it: only server managers see the total and each person's spend. */
@@ -513,6 +529,10 @@ export class Spend {
                 name: person.name,
                 spent: this.personSpent(person.id),
                 ...(person.budget === undefined ? {} : { budget: person.budget }),
+                // For who manages the server: a row whose limit is not theirs to change offers no way to.
+                ...(managesServer && this.#cannotLimit(user, person) !== undefined
+                    ? { locked: true as const }
+                    : {}),
             }));
         const total = [...this.#costs.values()].reduce((sum, cost) => sum + cost, 0);
 
