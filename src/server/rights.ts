@@ -78,6 +78,32 @@ export const RIGHTS = {
         confirm:
             "Let {name} manage users? They can invite people, make viewers users, change what other people may do, remove them, and sign a device in as a viewer.",
     },
+    managesRunners: {
+        scope: "person",
+        whole: true,
+        gives: "owner",
+        lapses: true,
+        line: true,
+        label: "Manage runners",
+        says: "manages runners",
+        on: "On: they are in charge of this server and the runners you linked, as you are: they choose people, give folders, change settings, answer approvals, and see every session there. They unlink any runner.",
+        off: "Off: only you are in charge of this server and the runners you linked.",
+        confirm:
+            "Let {name} manage runners? They see and prompt every session on this server and on the runners you linked, in any folder, and choose who else may.",
+    },
+    managesServer: {
+        scope: "person",
+        whole: true,
+        gives: "owner",
+        lapses: true,
+        line: true,
+        label: "Manage server",
+        says: "manages the server",
+        on: "On: they change this server's settings: extensions, providers, models, themes, spend limits, and memory lessons, and restart it.",
+        off: "Off: only you change this server's settings.",
+        confirm:
+            "Let {name} manage the server? They can turn on extensions, which run code on it, add providers, which see every prompt, sign providers in and out, and restart it.",
+    },
     keepsWarm: {
         scope: "person",
         label: "Keep sessions warm",

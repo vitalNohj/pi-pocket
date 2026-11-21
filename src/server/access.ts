@@ -338,6 +338,24 @@ export class AccessPolicy {
     }
 
     /**
+     * Does `person` manage runners: the owner, and the users the owner lets (`managesRunners`). They are in charge of
+     * this server and of the runners the owner linked, as the owner is (`inCharge`), and unlink any runner
+     * (`mayUnlink`).
+     */
+    managesRunners(person: Pick<Person, "id">): boolean {
+        return this.has(person, "managesRunners");
+    }
+
+    /**
+     * Does `person` manage this server: the owner, and the users the owner lets (`managesServer`). They change its
+     * settings (extensions, providers, models, themes, spend limits, memory lessons) and restart it. Not the owner's
+     * account, or anyone's PiP.
+     */
+    managesServer(person: Pick<Person, "id">): boolean {
+        return this.has(person, "managesServer");
+    }
+
+    /**
      * May `by` change what `target` may do, or remove them. Nobody changes the owner. The owner changes everyone else.
      * A user who manages people changes nobody who manages people, which they do themselves: only the owner does, so
      * that nobody raises their own rights or takes another manager's away.
