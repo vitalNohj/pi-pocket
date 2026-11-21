@@ -783,7 +783,7 @@ export function ExtensionsContent({
 
     return html`<div class="extension-management">
         <p class="ext-intro">
-            Tools, checks, and app features. A change reaches every session at once and stays after restarts.${canManageServer ? "" : " Only server managers can change them."}
+            Tools, checks, and app features. A change reaches every session at once and stays after restarts.${canManageServer ? "" : " Only someone who manages the server can change them."}
         </p>
         <${SafeMode} />
         ${problem && html`<div class="error-box">${problem}</div>`}

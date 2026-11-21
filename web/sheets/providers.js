@@ -412,7 +412,9 @@ export function ProvidersSheet() {
     const noteGroup = (groups.find(([title]) => title === "Signed in") ??
         groups.find(([title]) => title === "Not configured") ??
         groups[0])?.[0];
-    const noteMore = canManageServer ? "" : " · only server managers can change them";
+    const noteMore = canManageServer
+        ? ""
+        : " · only someone who manages the server can change them";
     const note = html`<p class="providers-note">
         Shared with Pi · <span class="mono">~/.pi/agent/auth.json</span>${noteMore}
     </p>`;

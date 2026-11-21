@@ -969,12 +969,13 @@ export class PocketApp {
             notify: (message) => this.ownerNotice("warning", message),
             // Everyone's tabs: a theme anyone may have chosen changed, or one came or went.
             changed: () => {
-                const lists = { owner: this.themes.list(true), others: this.themes.list(false) };
+                // With each one's problem for who manages the server, as `hello` says them.
+                const lists = { full: this.themes.list(true), others: this.themes.list(false) };
 
                 for (const client of this.#clients) {
                     client.send(
                         "themes",
-                        client.user.role === "owner" ? lists.owner : lists.others,
+                        this.policy.managesServer(client.user) ? lists.full : lists.others,
                     );
                 }
 
@@ -3727,7 +3728,10 @@ export class PocketApp {
         }
 
         if (this.policy.inCharge(target, id)) {
-            throw new HttpError(400, "Who is in charge of a computer needs no such right there.");
+            throw new HttpError(
+                400,
+                "Who is in charge of a computer needs no such permission there.",
+            );
         }
 
         if (target.role === "viewer") {

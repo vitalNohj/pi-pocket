@@ -141,7 +141,28 @@ test("themes and app icon: managers can see problems and change the shared look"
         name: "Manager's look",
     });
 
-    await managed(`themes/${id}/fonts`, { mono: "Pocket Fira Code" }, "PUT");
+    // A live change tells each open tab the list its person reads: with a theme's problem only for who manages the server.
+    const tabs = [manager, guest].map((user) => fakeTab(undefined, user));
+
+    for (const tab of tabs) {
+        await app.attach(tab.client);
+    }
+
+    try {
+        await managed(`themes/${id}/fonts`, { mono: "Pocket Fira Code" }, "PUT");
+
+        const told = (tab: (typeof tabs)[number]) =>
+            broken(tab.last("themes") as unknown as Parameters<typeof broken>[0]);
+
+        assert.ok(told(tabs[0]!)?.problem, "the manager's tab hears the problem");
+        assert.ok(told(tabs[1]!), "a guest's tab hears of the theme");
+        assert.equal(told(tabs[1]!)?.problem, undefined, "and not its problem");
+    } finally {
+        for (const tab of tabs) {
+            app.detach(tab.client);
+        }
+    }
+
     assert.ok((await managed<{ cwd: string }>(`themes/${id}/edit`)).cwd.endsWith(id));
     const choice = { look: id, colors: "tokyo-night" };
 
