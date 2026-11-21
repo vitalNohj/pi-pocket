@@ -183,6 +183,8 @@ async function authenticatorRoute(
             user,
             body?.code === undefined ? undefined : sixDigits(body.code),
         );
+        // A viewer now: what they were in charge of as one who manages runners is handed over before the answer.
+        await app.settle();
 
         return status();
     }
@@ -480,6 +482,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
             const body = await readJson<{ right?: unknown; on?: unknown } | null>(request);
 
             app.setRight(user, { person: second, right: body?.right, on: body?.on });
+            // Managing runners taken back: what they had by it alone is handed over before the answer.
+            await app.settle();
 
             return json(response, 200, { ok: true });
         }
@@ -697,6 +701,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             app.removeAuthenticator(second, user);
+            await app.settle();
 
             return json(response, 200, app.people(user));
         }
@@ -733,6 +738,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         if (first === "users" && second !== undefined && third === undefined && method === "POST") {
             app.setAccess(user, second, await readJson(request));
+            // Made a viewer, or limited to sessions: they manage runners no longer, and what they had by it moves on.
+            await app.settle();
 
             return json(response, 200, app.people(user));
         }
@@ -1168,8 +1175,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, app.thisServer(user));
         }
 
+        // What guards linking (`link-limits.ts`): the owner's, and of who manages runners.
         if (first === "runners" && second === "locks" && third === undefined && method === "GET") {
-            requireOwner(user);
+            app.policy.requireManagesRunners(user);
 
             return json(response, 200, app.runners.linkLocks());
         }
@@ -1181,7 +1189,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === undefined &&
             method === "DELETE"
         ) {
-            requireOwner(user);
+            app.policy.requireManagesRunners(user);
 
             const address = url.searchParams.get("address") ?? "";
 

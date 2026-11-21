@@ -271,7 +271,10 @@ export const store = {
         users: [],
         /** Other computers that run sessions' tools: the owner's, from `GET /api/runners` and `runners` events. */
         runners: [],
-        /** This server's own record in the Runners sheet, for the owner alone (`this-server` events); else null. */
+        /**
+         * This server's own record in the Runners sheet, for who is in charge of it (the owner, and who manages
+         * runners; `this-server` events); else null.
+         */
         thisServer: null,
         /** New folders waiting for an approval (`folder-requests.js`): mine, and for the owner every one. */
         folderRequests: [],
@@ -708,6 +711,18 @@ export const managesPeople = () => hasRight("managesUsers") ?? store.state.me?.r
  * charge of this server and of the runners the owner linked, and unlink any runner.
  */
 export const managesRunners = () => hasRight("managesRunners") ?? store.state.me?.role === "owner";
+
+/**
+ * Whether the app offers this person the Runners sheet: who manages runners (the owner too), who may link computers
+ * of their own, and who is in charge of one (`runners.ts` `RunnerView.inCharge`; a server from before it says who
+ * linked it).
+ */
+export const runnersOffered = () =>
+    managesRunners() ||
+    canLink() ||
+    store.state.runners.some(
+        (each) => each.inCharge ?? (each.createdBy === store.state.me?.id && !each.blocked),
+    );
 
 /**
  * Does this person manage this server (`access.ts` `managesServer`): the owner, and a user the owner lets. The app

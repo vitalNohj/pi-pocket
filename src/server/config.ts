@@ -11,6 +11,7 @@ import {
     PERSON_RIGHTS,
     canHold,
     declared,
+    holds,
     type ComputerRight,
     type PersonRight,
 } from "./rights.ts";
@@ -1189,6 +1190,8 @@ export class ConfigStore {
             delete patch.budget;
         }
 
+        const managed = user.role !== "owner" && holds(user, "managesRunners");
+
         Object.assign(user, patch);
 
         if (user.paused === undefined || user.role !== "viewer") {
@@ -1247,7 +1250,29 @@ export class ConfigStore {
             delete user.accessRequest;
         }
 
+        if (managed && !holds(user, "managesRunners")) {
+            this.#oweManaged(user.id);
+        }
+
         this.save();
+    }
+
+    /**
+     * `person` managed runners and no longer does: the right was taken back, or they can no longer hold it (a viewer
+     * now, or limited to sessions). They were in charge of this server and of each runner the owner linked
+     * (`access.ts` `inCharge`), so what they had there by that alone is owed a hand-over on each, marked in the save
+     * that ends it (`StoredRunner.handOver`): `app.ts` `settle` finishes it, also after a restart.
+     */
+    #oweManaged(person: string): void {
+        const owner = this.#config.users.find((each) => each.role === "owner")?.id;
+
+        markOwed((this.#config.server ??= {}), person);
+
+        for (const runner of this.#config.runners ?? []) {
+            if (runner.createdBy === owner) {
+                markOwed(runner, person);
+            }
+        }
     }
 
     /** Each person's linked authenticator, kept with their account. Setting one for someone removed does nothing. */

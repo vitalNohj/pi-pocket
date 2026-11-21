@@ -4,20 +4,33 @@
 // `/given`, `/sees`, and `/rights`, `POST /api/sessions/:id/revoke`). One person on one computer is a switch and, under it, one
 // tree with the rows of the Files panel's: the folders given to them there, and in each the sessions they have in it.
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, attempt, closeSheet, declaredRights, navigate, store } from "../store.js";
+import {
+    api,
+    attempt,
+    closeSheet,
+    declaredRights,
+    managesRunners,
+    navigate,
+    store,
+} from "../store.js";
 import { html, Icon, Switch } from "../ui.js";
 import { accessFolder, below, inFolder, leaving, placed, seenBy } from "./access-tree.js";
 
 export const THIS_SERVER = "this-server";
 
 /**
- * Whether I am in charge of a computer: its linker, or for this server the owner (`access.ts` `inCharge`). Nobody is in
- * charge of a blocked computer: its linker is a viewer now (`blocked`).
+ * Whether I am in charge of a computer (`access.ts` `inCharge`): the server says (`inCharge` on its record), since
+ * besides its linker, and this server's owner, that is whoever manages runners on this server and the runners the
+ * owner linked. A server from before it does not say: its linker, or for this server the owner. Nobody is in charge of
+ * a blocked computer: its linker is a viewer now (`blocked`).
  */
 export function inCharge(computer) {
-    return computer.id === THIS_SERVER
-        ? store.state.me?.role === "owner"
-        : computer.createdBy === store.state.me?.id && !computer.blocked;
+    return (
+        computer.inCharge ??
+        (computer.id === THIS_SERVER
+            ? store.state.me?.role === "owner"
+            : computer.createdBy === store.state.me?.id && !computer.blocked)
+    );
 }
 
 /** The computers this person knows of: this server first (the owner's alone to know), then the linked ones. */
@@ -29,10 +42,10 @@ export function computers() {
 
 /** Read the computers again: a sheet that opens shows them as they are now. */
 export async function loadComputers() {
-    // This server's record is the owner's business alone (who is in charge of it).
+    // This server's record is the business of who is in charge of it: the owner, and who manages runners.
     const [list, server] = await Promise.all([
         api("runners"),
-        store.state.me?.role === "owner" ? api("runners/this-server") : null,
+        managesRunners() ? api("runners/this-server") : null,
     ]);
 
     store.set({ runners: list, thisServer: server });
@@ -46,6 +59,17 @@ export function choosable(computer, person) {
 /** Whether `person` is among the people chosen for `computer`. */
 export function chosenFor(computer, person) {
     return (computer.users ?? []).some((each) => each.id === person.id);
+}
+
+/**
+ * Who a computer's sessions go to when they are taken from someone: the one person they are handed to (`access.ts`
+ * `inChargeOf`), its linker, the owner for this server. "you" for that person; their name for a user who is in charge
+ * there because they manage runners.
+ */
+function heir(computer) {
+    return computer.createdBy === store.state.me?.id
+        ? "you"
+        : (store.state.users.find((each) => each.id === computer.createdBy)?.name ?? "the owner");
 }
 
 /** A computer as the server answered it after a change: shown at once, before its event arrives. */
@@ -241,7 +265,7 @@ function AccessTree({ computer, person, starts }) {
         if (
             gone > 0 &&
             !confirm(
-                `Remove ${folder} from ${person.name}? ${gone === 1 ? "The session they started in it moves" : `The ${gone} sessions they started in it move`} to you, with the tasks they set up there. Sessions shared with them stay.`,
+                `Remove ${folder} from ${person.name}? ${gone === 1 ? "The session they started in it moves" : `The ${gone} sessions they started in it move`} to ${heir(computer)}, with the tasks they set up there. Sessions shared with them stay.`,
             )
         ) {
             return;
@@ -310,7 +334,7 @@ function AccessTree({ computer, person, starts }) {
         const asked = person.sessions?.includes(session.id)
             ? `Take “${title(session)}” from ${person.name}? They were invited to it alone.`
             : session.createdBy === person.id
-              ? `Take “${title(session)}” from ${person.name}? They started it: it moves to you, with the tasks they set up in it.`
+              ? `Take “${title(session)}” from ${person.name}? They started it: it moves to ${heir(computer)}, with the tasks they set up in it.`
               : `Stop sharing “${title(session)}” with ${person.name}?`;
 
         if (!confirm(asked)) {
@@ -516,6 +540,9 @@ function AccessTree({ computer, person, starts }) {
 export function AccessRow({ computer, person, lead, title }) {
     const [busy, setBusy] = useState(false);
     const chosen = chosenFor(computer, person);
+    // In charge here because they manage runners: they have everything here whatever this switch says. It sets what
+    // they keep once they manage runners no longer.
+    const manager = computer.managers?.includes(person.id) === true;
     const folders = computer.given?.[person.id] ?? [];
     const sessions = sessionsOf(computer, person);
     // Folders are for those who start sessions: who steers, and is not held to one session.
@@ -531,7 +558,9 @@ export function AccessRow({ computer, person, lead, title }) {
         if (
             chosen &&
             !confirm(
-                `Take ${computer.name} from ${person.name}? They leave its sessions at once, and the sessions they started there move to you.`,
+                manager
+                    ? `Take ${computer.name} from ${person.name}? They manage runners, so they stay in charge of it and nothing moves now. They keep nothing here once that ends.`
+                    : `Take ${computer.name} from ${person.name}? They leave its sessions at once, and the sessions they started there move to ${heir(computer)}.`,
             )
         ) {
             return;
@@ -555,17 +584,21 @@ export function AccessRow({ computer, person, lead, title }) {
                     ${
                         person.sessions
                             ? "Invited to one session only: not chosen for a computer."
-                            : !chosen
-                              ? sessions.length === 0
-                                  ? "Off: they see nothing of it."
-                                  : person.role === "viewer"
-                                    ? "Off: they see only the sessions shared with them here."
-                                    : "Off: they have only the sessions shared with them here, and start none."
-                              : person.role === "viewer"
-                                ? "On: they see the sessions shared with them here. View only."
-                                : folders.length === 0
-                                  ? "On, with no folders yet: they cannot start sessions here."
-                                  : "On: they start sessions in their folders here, and see the ones shared with them."
+                            : manager
+                              ? chosen
+                                  ? "In charge here: they manage runners. On: what they keep here if that ends."
+                                  : "In charge here: they manage runners. Off: they keep nothing here if that ends."
+                              : !chosen
+                                ? sessions.length === 0
+                                    ? "Off: they see nothing of it."
+                                    : person.role === "viewer"
+                                      ? "Off: they see only the sessions shared with them here."
+                                      : "Off: they have only the sessions shared with them here, and start none."
+                                : person.role === "viewer"
+                                  ? "On: they see the sessions shared with them here. View only."
+                                  : folders.length === 0
+                                    ? "On, with no folders yet: they cannot start sessions here."
+                                    : "On: they start sessions in their folders here, and see the ones shared with them."
                     }
                 </div>
             </div>

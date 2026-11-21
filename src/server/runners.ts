@@ -176,6 +176,16 @@ export type RunnerView = {
     allowHttp?: true;
     /** Its linker was made a viewer: nothing starts or runs there until they prompt again (`access.ts` `blocked`). */
     blocked?: true;
+    /**
+     * Is whoever is told this in charge of it (`access.ts` `inCharge`): its linker, or on a runner the owner linked,
+     * who manages runners. Said to a person; the app asks nothing else to know whose it is to change.
+     */
+    inCharge?: boolean;
+    /**
+     * The users in charge of it because they manage runners (`access.ts` `managesRunners`), by id; only for who is in
+     * charge of it. Their row under it says so: its switch is what they keep once they manage runners no longer.
+     */
+    managers?: string[];
 };
 
 function lost(message: string): RemoteError {
@@ -1218,6 +1228,7 @@ export class Runners {
     readonly #mayLink: (by: string, runner?: string) => boolean;
     /** Is computer `id` blocked: its linker was made a viewer (`access.ts` `blocked`). */
     readonly #blocked: (id: string) => boolean;
+    readonly #managers: (id: string) => string[];
     readonly #links = new Map<string, RunnerLink>();
     readonly #envs = new Map<string, RunnerEnv>();
     readonly #server = new WebSocketServer({
@@ -1248,6 +1259,8 @@ export class Runners {
         mayLink?: (by: string, runner?: string) => boolean;
         /** The access policy's "is blocked" (its linker is a viewer now); absent: never. */
         blocked?: (id: string) => boolean;
+        /** The ids of the users in charge of `id` because they manage runners; absent: none. */
+        managers?: (id: string) => string[];
     }) {
         this.#config = options.config;
         this.#log = options.log;
@@ -1261,6 +1274,7 @@ export class Runners {
         this.#mayUse = options.mayUse ?? this.#mayList;
         this.#mayLink = options.mayLink ?? (() => true);
         this.#blocked = options.blocked ?? (() => false);
+        this.#managers = options.managers ?? (() => []);
 
         const config = options.config;
 
@@ -1570,6 +1584,7 @@ export class Runners {
                                   ]),
                               ),
                               rights: this.#config.rightsOn(runner.id),
+                              managers: this.#managers(runner.id),
                           }
                         : {}),
                     // Its settings are its managers' business; a granted person sees only that it is there.
@@ -1584,6 +1599,7 @@ export class Runners {
                         : {}),
                     ...(runner.shareNew === true ? { shareNew: true as const } : {}),
                     ...(this.#blocked(runner.id) ? { blocked: true as const } : {}),
+                    ...(user === undefined ? {} : { inCharge: manages }),
                     ...(user !== undefined && !this.#mayStart(runner.id, user)
                         ? { mayStart: false as const }
                         : {}),

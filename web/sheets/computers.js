@@ -4,7 +4,16 @@
 // (`src/server/access.ts`).
 // A runner trusts its server after the link: its settings are kept here and sent to it.
 import { useEffect, useState } from "preact/hooks";
-import { api, attempt, canLink, closeSheet, notify, openSheet, store } from "../store.js";
+import {
+    api,
+    attempt,
+    canLink,
+    closeSheet,
+    managesRunners,
+    notify,
+    openSheet,
+    store,
+} from "../store.js";
 import { copyText, html, Icon, Loader, Sheet, Switch, timeAgo } from "../ui.js";
 import { Avatar } from "../avatar.js";
 import {
@@ -112,7 +121,7 @@ export function TrustNote() {
 
 /**
  * Linking paused, for one address or the whole server, and the addresses banned for guessing codes, which the owner can
- * lift (`link-limits.ts`). Only the owner opens Runners.
+ * lift (`link-limits.ts`): for the owner, and who manages runners.
  */
 function LinkLocks({ locks, reload }) {
     const intro = html`<h3 class="sheet-page-title">Linking limits</h3>
@@ -429,7 +438,11 @@ function Overview({ computer }) {
             html`<div class="runner-note" data-part="read-only">
                 Linked by ${linker ?? "someone else"}, who is in charge of it: only they choose its people, give
                 folders there, and change its settings.${
-                    store.state.me?.role === "owner" ? " As the owner, you can unlink it." : ""
+                    store.state.me?.role === "owner"
+                        ? " As the owner, you can unlink it."
+                        : managesRunners()
+                          ? " You manage runners, so you can unlink it."
+                          : ""
                 }
             </div>`
         }
@@ -494,9 +507,9 @@ function ComputerPage({ computer }) {
     const server = computer.id === "this-server";
     const tabs = tabsFor(computer);
     const shown = tabs.some(([id]) => id === tab) ? tab : "overview";
-    // Not its linker while it is blocked: only the owner unlinks it then.
+    // Not its linker while it is blocked: only the owner, and who manages runners, unlink it then.
     const mine = inCharge(computer);
-    const owner = store.state.me?.role === "owner";
+    const owner = managesRunners();
     // A computer linked before the secure link: a code for it links its runner again, with the same sessions.
     const relink = () =>
         attempt(async () =>
@@ -617,7 +630,8 @@ export function runnersHint() {
 
 export function ComputersSheet() {
     const { runners, thisServer } = store.state;
-    const owner = store.state.me?.role === "owner";
+    // What guards linking is the owner's to see and lift, and of who manages runners.
+    const owner = managesRunners();
     const [loaded, setLoaded] = useState(false);
     const [view, setView] = useState(null);
     const [locks, setLocks] = useState(null);

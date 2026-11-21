@@ -356,6 +356,10 @@ export type ServerView = {
      */
     rights: Record<ComputerRight, string[]>;
     shareNew: boolean;
+    /** Whoever is told this is in charge of it (`access.ts` `inCharge`): the owner, and who manages runners. */
+    inCharge: true;
+    /** The users in charge of it because they manage runners (`access.ts` `managesRunners`), by id. */
+    managers: string[];
 };
 
 export function subagentState(entry: SubagentEntry): SubagentState {
@@ -838,12 +842,14 @@ export class PocketApp {
             config: this.config,
             log: (line) => this.#log(line),
             onChange: () => this.#runnersChanged(),
-            // Who may use it; the owner sees every runner, to unlink one (no folders or sessions unless chosen).
-            mayList: (id, user) => user.role === "owner" || this.policy.mayUse(user, id),
+            // Who may use it; the owner, and who manages runners, see every runner, to unlink one (no folders or
+            // sessions on one someone else linked unless chosen there).
+            mayList: (id, user) => this.policy.mayUnlink(user, id) || this.policy.mayUse(user, id),
             mayManage: (id, user) => this.policy.mayManage(user, id),
             mayStart: (id, user) => this.policy.mayStart(user, id),
             mayUse: (id, user) => this.policy.mayUse(user, id),
             blocked: (id) => this.policy.blocked(id),
+            managers: (id) => this.#managersOf(id),
             mayLink: (by, runner) =>
                 this.policy.mayLink({ id: by }) &&
                 (runner === undefined || this.policy.mayManage({ id: by }, runner)),
@@ -3287,7 +3293,22 @@ export class PocketApp {
             ),
             rights: this.config.rightsOn(undefined),
             shareNew: server.shareNew === true,
+            inCharge: true,
+            managers: this.#managersOf(THIS_SERVER),
         };
+    }
+
+    /**
+     * The ids of the users in charge of computer `id` because they manage runners (`access.ts` `inCharge`): not its
+     * linker, and not the owner. A computer's view names them for who is in charge of it.
+     */
+    #managersOf(id: string): string[] {
+        return this.config.users
+            .filter((each) => each.role !== "owner" && this.policy.inCharge(each, id))
+            .filter(
+                (each) => id === THIS_SERVER || this.config.runnerById(id)?.createdBy !== each.id,
+            )
+            .map((each) => each.id);
     }
 
     /**
@@ -3673,8 +3694,9 @@ export class PocketApp {
         this.config.setPersonRight(person, right, on);
         void this.#refreshUser(person);
         this.#peopleChanged();
-        // Who links computers changes what the Runners sheet offers them.
-        this.runners.changed();
+        // Who links computers changes what the Runners sheet offers them; who manages runners, or no longer does, what
+        // they see and answer on this server and the owner's runners, at once (`settle` hands over the rest).
+        this.accessChanged();
     }
 
     /**
@@ -6105,6 +6127,17 @@ export class PocketApp {
         this.runners.enforce();
         this.runners.changed();
         this.#scheduleSessions();
+
+        // Someone's charge of computers just ended (`config.ts` `#oweManaged`): what they had there by it moves on.
+        if (
+            [undefined, ...this.config.runners.map((each) => each.id)].some(
+                (id) => this.config.handOvers(id).length > 0,
+            )
+        ) {
+            void this.settle().catch((error: unknown) =>
+                this.#log(`[warn] Hand-overs not finished: ${describe(error)}`),
+            );
+        }
     }
 
     /** Whether a person is a viewer until they link an authenticator again. */
@@ -6387,6 +6420,31 @@ export class PocketApp {
     }
 
     /**
+     * Finish the hand-overs the settings still owe (`config.ts` `StoredRunner.handOver`), on every computer: after a
+     * change that ended someone's charge of computers (they managed runners and no longer do: `config.ts`
+     * `#oweManaged`), their sessions outside the folders given to them, and the tasks they set up on sessions they no
+     * longer steer, move to who is in charge (`handOver`). The mark was saved with the change, so a restart in between
+     * leaves it and the next start finishes it. `accessChanged` starts this; a route that made such a change waits
+     * for it, so that its answer says what is so.
+     */
+    async settle(): Promise<void> {
+        await this.#inTurn(async () => {
+            let owed = false;
+
+            for (const id of [THIS_SERVER, ...this.config.runners.map((each) => each.id)]) {
+                if (this.config.handOvers(id === THIS_SERVER ? undefined : id).length > 0) {
+                    owed = true;
+                    await this.#finishHandOvers(id);
+                }
+            }
+
+            if (owed) {
+                this.accessChanged();
+            }
+        });
+    }
+
+    /**
      * Who is in charge of computer `id` chooses `person` for it, or no longer: its list as it is now, with that one
      * change (`choosePeople`). Read and saved in one step, so two such changes at once both count. A person who cannot be
      * chosen is refused with the reason, where the whole list leaves them out without a word.
@@ -6398,7 +6456,13 @@ export class PocketApp {
             throw new HttpError(404, "No such person");
         }
 
-        if (on && this.policy.inCharge(target, id)) {
+        // Its linker, or this server's owner. Someone in charge of it only because they manage runners is chosen as
+        // anyone is: what they are given here is what they keep once they no longer manage runners.
+        if (
+            on &&
+            target.id ===
+                (id === THIS_SERVER ? this.#ownerId() : this.config.runnerById(id)?.createdBy)
+        ) {
             throw new HttpError(400, `${target.name} is in charge of it, and has it anyway.`);
         }
 

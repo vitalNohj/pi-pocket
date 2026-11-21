@@ -36,6 +36,7 @@ import {
     navigate,
     notify,
     openSheet,
+    runnersOffered,
     scoped,
     sessionOrder,
     setUnread,
@@ -478,7 +479,7 @@ function actionItems() {
             icon: "key",
             run: () => openSheet({ type: "providers" }),
         },
-        me?.role === "owner" && {
+        runnersOffered() && {
             label: "Runners",
             detail: "link a computer, start sessions on it",
             keywords: "computers runner remote machine link laptop server",

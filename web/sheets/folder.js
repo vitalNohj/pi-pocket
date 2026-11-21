@@ -13,6 +13,7 @@ import {
     navigate,
     notify,
     openSheet,
+    runnersOffered,
     store,
 } from "../store.js";
 import { sessionStarted } from "../extension-ui.js";
@@ -125,7 +126,7 @@ function RunsOn({ runner, runners, onPick }) {
             </button>`,
         )}
         ${
-            store.state.me?.role === "owner" &&
+            runnersOffered() &&
             html`<button
                 type="button"
                 class="link small fp-pi"

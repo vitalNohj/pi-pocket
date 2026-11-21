@@ -154,6 +154,10 @@ export class AccessPolicy {
      * Is `person` in charge of computer `id`: the owner of this server, the linker of a runner. On a runner someone else
      * linked, the owner is no one special: they use it only if its linker chose them. A linker made a viewer is in
      * charge of nothing: their runner is blocked (`blocked`) until they prompt again, and then nobody is in charge of it.
+     *
+     * So is a user the owner lets manage runners (`managesRunners`), wherever the owner is: on this server, and on the
+     * runners the owner linked. Several people can be in charge of such a computer; the one its sessions and tasks go
+     * to, and who hears what it asks, stays the owner (`inChargeOf`).
      */
     inCharge(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -163,9 +167,20 @@ export class AccessPolicy {
             return false;
         }
 
-        return id === THIS_SERVER
-            ? current.role === "owner"
-            : computer.linker === current.id && current.role !== "viewer";
+        if (id !== THIS_SERVER && computer.linker === current.id) {
+            return current.role !== "viewer";
+        }
+
+        // An owner record holds every right, but is in charge of a runner only as its linker: a second owner record
+        // (a settings file edited by hand) is no one special on the runners the owner linked.
+        if (current.role === "owner") {
+            return id === THIS_SERVER;
+        }
+
+        return (
+            (id === THIS_SERVER || computer.linker === this.#facts.ownerId) &&
+            holds(current, "managesRunners")
+        );
     }
 
     /**
@@ -316,12 +331,13 @@ export class AccessPolicy {
         return this.inCharge(person, id);
     }
 
-    /** May `person` unlink runner `id`: its linker, and the owner, who decides what links to this server. */
+    /**
+     * May `person` unlink runner `id`: its linker, and the owner and who manages runners (`managesRunners`), who decide
+     * what links to this server. On a runner someone else linked, that is all they do: they list it, and learn nothing
+     * of its people, folders, or sessions.
+     */
     mayUnlink(person: Pick<Person, "id">, id: string): boolean {
-        return (
-            id !== THIS_SERVER &&
-            (this.#current(person)?.role === "owner" || this.inCharge(person, id))
-        );
+        return id !== THIS_SERVER && (this.managesRunners(person) || this.inCharge(person, id));
     }
 
     /** May `person` link computers of their own: the owner, and the guests the owner lets. */
@@ -839,9 +855,16 @@ export class AccessPolicy {
             throw new HttpError(
                 403,
                 id === THIS_SERVER
-                    ? "Only the owner can change this server's settings."
-                    : "Only the person who linked this computer can change its settings.",
+                    ? "Only the owner, or someone who manages runners, can change this server's settings."
+                    : "Only who is in charge of this computer can change its settings.",
             );
+        }
+    }
+
+    /** Refuse who does not manage runners (`managesRunners`): what guards linking is the owner's, and theirs. */
+    requireManagesRunners(person: Pick<Person, "id">): void {
+        if (!this.managesRunners(person)) {
+            throw new HttpError(403, "Only someone who manages runners can do that.");
         }
     }
 
@@ -854,7 +877,10 @@ export class AccessPolicy {
 
     requireUnlink(person: Pick<Person, "id">, id: string): void {
         if (!this.mayUnlink(person, id)) {
-            throw new HttpError(403, "Only the owner or who linked this computer can remove it.");
+            throw new HttpError(
+                403,
+                "Only who linked this computer, the owner, or someone who manages runners can remove it.",
+            );
         }
     }
 }
