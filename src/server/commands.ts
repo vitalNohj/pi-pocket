@@ -1458,80 +1458,94 @@ export class Commands {
     /**
      * The sessions `user` may share (`access.ts` `mayShare`), each with how `personId` has it now: to share several with
      * one person at once, and to take several back (`shareWith`). A session on a computer that person is in charge of
-     * is left out: every one there is theirs. `only`: the one session asked about (its top session), as a person's page
-     * in People asks about the session open behind it: no other is told, and that one is told also when the person is
-     * in charge of its computer (`charge`), so the page can say why it has nothing to give.
+     * is left out: every one there is theirs, and `charge` names those computers, so a list of what they have from
+     * `user` can say what it leaves out. `only`: the one session asked about (its top session), as a person's page in
+     * People asks about the session open behind it: no other is told, and that one is told also when the person is in
+     * charge of its computer (its state `charge`), so the page can say why it has nothing to give.
      */
     sharingWith(
         user: User,
         personId: string,
         only?: ConversationId,
-    ): { person: { id: string; name: string }; sessions: SharingRow[] } {
+    ): {
+        person: { id: string; name: string };
+        sessions: SharingRow[];
+        charge: { id: string; name: string }[];
+    } {
         const app = this.#app;
         const person = this.#sharee(user, personId);
         const one = only === undefined ? undefined : Number(app.rootOf(only));
+        const charge = new Map<string, string>();
+        const sessions = app.sessions(user).flatMap((row): SharingRow[] => {
+            const id = row.id as unknown as ConversationId;
+            const meta = app.sessionMeta(id);
+            const computer = row.runner ?? THIS_SERVER;
+            const theirs = app.policy.inCharge(person, computer);
+
+            if (
+                (one !== undefined && row.id !== one) ||
+                row.mayShare !== true ||
+                meta === undefined
+            ) {
+                return [];
+            }
+
+            const mine = app.policy.inCharge(user, computer);
+            const name = computer === THIS_SERVER ? "This server" : app.runners.name(computer);
+
+            if (theirs && one === undefined) {
+                charge.set(computer, name);
+
+                return [];
+            }
+
+            const state: SharingRow["state"] = theirs
+                ? "charge"
+                : person.sessions?.includes(String(id)) === true
+                  ? "invited"
+                  : app.policy.starter({ id: String(id), computer, ...meta }) === person.id
+                    ? "started"
+                    : meta.sharedWith?.includes(person.id) === true &&
+                        !app.config.leaving(meta.runner).includes(person.id)
+                      ? "shared"
+                      : app.seesByFolder(person, id)
+                        ? "folder"
+                        : app.policy.mayUse(person, computer)
+                          ? "none"
+                          : "blocked";
+
+            return [
+                {
+                    id: row.id,
+                    title: meta.title ?? "New session",
+                    computer,
+                    computerName: name,
+                    cwd: meta.cwd,
+                    ...(meta.archived === true ? { archived: true as const } : {}),
+                    state,
+                    // One they have by its folder can be shared with them as well: it stays when the folder goes.
+                    give: state === "none" || state === "folder",
+                    // A share ends for who shared it; one they started, or were invited to alone, only for who is
+                    // in charge of its computer (`app.ts` `revokeSession`).
+                    take:
+                        state === "shared" ||
+                        (mine && (state === "started" || state === "invited")),
+                    ...(state === "blocked"
+                        ? {
+                              reason:
+                                  person.sessions === undefined
+                                      ? `cannot use ${name}`
+                                      : "invited to one session only",
+                          }
+                        : {}),
+                },
+            ];
+        });
 
         return {
             person: { id: person.id, name: person.name },
-            sessions: app.sessions(user).flatMap((row): SharingRow[] => {
-                const id = row.id as unknown as ConversationId;
-                const meta = app.sessionMeta(id);
-                const computer = row.runner ?? THIS_SERVER;
-                const theirs = app.policy.inCharge(person, computer);
-
-                if (
-                    (one !== undefined && row.id !== one) ||
-                    row.mayShare !== true ||
-                    meta === undefined ||
-                    (theirs && one === undefined)
-                ) {
-                    return [];
-                }
-
-                const mine = app.policy.inCharge(user, computer);
-                const name = computer === THIS_SERVER ? "This server" : app.runners.name(computer);
-                const state: SharingRow["state"] = theirs
-                    ? "charge"
-                    : person.sessions?.includes(String(id)) === true
-                      ? "invited"
-                      : app.policy.starter({ id: String(id), computer, ...meta }) === person.id
-                        ? "started"
-                        : meta.sharedWith?.includes(person.id) === true &&
-                            !app.config.leaving(meta.runner).includes(person.id)
-                          ? "shared"
-                          : app.seesByFolder(person, id)
-                            ? "folder"
-                            : app.policy.mayUse(person, computer)
-                              ? "none"
-                              : "blocked";
-
-                return [
-                    {
-                        id: row.id,
-                        title: meta.title ?? "New session",
-                        computer,
-                        computerName: name,
-                        cwd: meta.cwd,
-                        ...(meta.archived === true ? { archived: true as const } : {}),
-                        state,
-                        // One they have by its folder can be shared with them as well: it stays when the folder goes.
-                        give: state === "none" || state === "folder",
-                        // A share ends for who shared it; one they started, or were invited to alone, only for who is
-                        // in charge of its computer (`app.ts` `revokeSession`).
-                        take:
-                            state === "shared" ||
-                            (mine && (state === "started" || state === "invited")),
-                        ...(state === "blocked"
-                            ? {
-                                  reason:
-                                      person.sessions === undefined
-                                          ? `cannot use ${name}`
-                                          : "invited to one session only",
-                              }
-                            : {}),
-                    },
-                ];
-            }),
+            sessions,
+            charge: [...charge].map(([id, name]) => ({ id, name })),
         };
     }
 
@@ -1551,6 +1565,7 @@ export class Commands {
     ): Promise<{
         person: { id: string; name: string };
         sessions: SharingRow[];
+        charge: { id: string; name: string }[];
         refused: { id: number; reason: string }[];
     }> {
         const app = this.#app;

@@ -50,6 +50,7 @@ export const RIGHTS = {
         label: "Link runners",
         says: "links runners",
         on: "On: they link computers of their own as runners, which they are in charge of.",
+        off: "Off: they do not link runners.",
     },
     invites: {
         scope: "person",

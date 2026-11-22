@@ -143,6 +143,65 @@ function RightSwitch({ computer, person, each }) {
 }
 
 /**
+ * The rights given one person at a time on `computer` (`rights.ts`), for those who prompt there: chosen, not a viewer,
+ * not held to one session. A computer's view names who holds each only for who manages it.
+ */
+export function rightsFor(computer, person) {
+    return chosenFor(computer, person) &&
+        person.role !== "viewer" &&
+        !person.sessions &&
+        computer.rights
+        ? declaredRights("computer").filter((each) => Array.isArray(computer.rights[each.key]))
+        : [];
+}
+
+/**
+ * Those rights of one person on one computer, as a group of their own: a person's page in People shows them with what
+ * else the person is let do, apart from their folders and sessions there. Nothing where there is none to give.
+ */
+export function ComputerRights({ computer, person }) {
+    const rights = rightsFor(computer, person);
+
+    if (rights.length === 0) {
+        return null;
+    }
+
+    return html`<div class="group">
+        <div class="group-title">On ${computer.name}</div>
+        ${rights.map(
+            (each) =>
+                html`<${RightSwitch}
+                    key=${each.key}
+                    computer=${computer}
+                    person=${person}
+                    each=${each}
+                />`,
+        )}
+    </div>`;
+}
+
+/**
+ * One session as a line of a tree: its name, how the person has it, where it works, and at its end what is done with
+ * it (`children`: its buttons). The tree of a computer draws its sessions with it, and so does the list of one's own
+ * sessions a person has (`people.js` `Shared`). The three are one group that takes more lines where one is too short
+ * (`style.css` `.at-about`): a place is never cut short, since its end is what tells two folders apart.
+ */
+export function SessionLine({ name, how, where, children }) {
+    return html`<div class="at-line at-session">
+        <div class="ft-row" style="--depth:1" title=${name}>
+            <span class="ft-spacer"></span>
+            <${Icon} name="chat" size=${13} />
+            <span class="at-about">
+                <span class="at-session-name">${name}</span>
+                <span class="at-how">${how}</span>
+                ${where && html`<span class="at-where" title=${where}>${where}</span>`}
+            </span>
+        </div>
+        <div class="at-actions">${children}</div>
+    </div>`;
+}
+
+/**
  * The folders on `computer` in which `person` sees every session (`access.ts` `seesFolder`): among the ones given to
  * them there, and only while they start sessions there (chosen, a user, not held to one session).
  */
@@ -359,17 +418,12 @@ function AccessTree({ computer, person, starts }) {
         ${list.map((session) => {
             const place = where(session, folder);
 
-            return html`<div class="at-line at-session" key=${session.id}>
-                <div class="ft-row" style="--depth:1" title=${title(session)}>
-                    <span class="ft-spacer"></span>
-                    <${Icon} name="chat" size=${13} />
-                    <span class="ft-name at-session-name">${title(session)}</span>
-                    <span class="at-about">
-                        <span class="at-how">${how(session, folder)}</span>
-                        ${place && html`<span class="at-where" title=${place}>${place}</span>`}
-                    </span>
-                </div>
-                <div class="at-actions">
+            return html`<${SessionLine}
+                key=${session.id}
+                name=${title(session)}
+                how=${how(session, folder)}
+                where=${place}
+            >
                     ${
                         locked(session) &&
                         html`<button
@@ -401,8 +455,7 @@ function AccessTree({ computer, person, starts }) {
                               </button>`
                             : html`<span class="at-end" aria-hidden="true"></span>`
                     }
-                </div>
-            </div>`;
+            <//>`;
         })}
     </div>`;
 
@@ -535,9 +588,10 @@ function AccessTree({ computer, person, starts }) {
 /**
  * One person on one computer, for who is in charge of it: whether they may use it, then the tree of that computer's
  * folders given to them and their sessions there (`AccessTree`). Runners shows it per person under a computer (`lead`,
- * `title`: the person); People shows it per computer under a person (the computer).
+ * `title`: the person); People shows it per computer under a person (the computer), and keeps the rights given one
+ * person at a time there with what else the person is let do (`rights` false: `ComputerRights`).
  */
-export function AccessRow({ computer, person, lead, title }) {
+export function AccessRow({ computer, person, lead, title, rights: withRights = true }) {
     const [busy, setBusy] = useState(false);
     const chosen = chosenFor(computer, person);
     // In charge here because they manage runners: they have everything here whatever this switch says. It sets what
@@ -547,12 +601,7 @@ export function AccessRow({ computer, person, lead, title }) {
     const sessions = sessionsOf(computer, person);
     // Folders are for those who start sessions: who steers, and is not held to one session.
     const starts = chosen && person.role === "guest" && !person.sessions;
-    // The rights given one person at a time are for those who prompt here. A computer's view names who holds each
-    // only for who manages it.
-    const rights =
-        chosen && person.role !== "viewer" && !person.sessions && computer.rights
-            ? declaredRights("computer").filter((each) => Array.isArray(computer.rights[each.key]))
-            : [];
+    const rights = withRights ? rightsFor(computer, person) : [];
 
     const toggle = async () => {
         if (

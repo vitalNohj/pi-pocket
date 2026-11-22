@@ -33,6 +33,7 @@ type Answer = {
     error?: string;
     person?: { id: string; name: string };
     sessions?: SharingRow[];
+    charge?: { id: string; name: string }[];
     refused?: { id: number; reason: string }[];
 };
 
@@ -351,6 +352,7 @@ test("asked about one session, the answer tells of that one alone: also why a pe
     const shared = await call(gina, one(open), { share: [Number(open)] });
 
     assert.deepEqual(shared.body.refused, []);
+    assert.deepEqual(shared.body.charge, [], "Eli is in charge of no computer");
     assert.deepEqual(told(shared), [["one: open", "shared", false, true]]);
     assert.deepEqual(sharedWith(open), [eli.id]);
     assert.deepEqual(sharedWith(other), []);
@@ -381,6 +383,17 @@ test("asked about one session, the answer tells of that one alone: also why a pe
         ["one: open", "charge", false, false],
     ]);
     assert.deepEqual((await call(gina, sharing(boss))).body.sessions, []);
+    // What is left out is named: the computers that person is in charge of on which the asker has sessions to share,
+    // so the page says why its list is empty. Asked about one session, its row says it, and no computer is named.
+    assert.deepEqual((await call(gina, sharing(boss))).body.charge, [
+        { id: THIS_SERVER, name: "This server" },
+    ]);
+    assert.deepEqual(
+        (await call(gina, `${sharing(boss)}?session=${String(open)}`)).body.charge,
+        [],
+    );
+    // Of someone in charge of nothing, none is named.
+    assert.deepEqual((await call(gina, sharing(eli))).body.charge, []);
 });
 
 test("who is in charge takes back what a person started or was invited to; a starter only what they shared", async () => {

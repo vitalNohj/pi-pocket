@@ -7730,8 +7730,10 @@ div.group-head {
     min-width: 0;
 }
 
-/* The sessions of an opened row: as high as 18 of them (a row is 28px, `.ft-row`, and 4px from the next), then that
- * list scrolls alone. The room around it keeps the focus ring of a button at its edge whole. */
+/* The sessions of an opened row: as high as 18 of one line each (such a row is 28px, `.ft-row`, and 4px from the
+ * next), then that list scrolls alone. A session whose place does not fit beside its name takes two lines
+ * (`.at-about`), so fewer of those show at once. The room around it keeps the focus ring of a button at its edge
+ * whole. */
 .at-group {
     --rows: 18;
     max-height: calc(var(--rows) * 28px + (var(--rows) - 1) * 4px + 4px);
@@ -7773,47 +7775,57 @@ div.group-head {
     font-variant-numeric: tabular-nums;
 }
 
-/* A session: its name, how they have it, and where in the folder it works; its buttons go under it where the two
- * do not fit. It is not pressed itself, so it does not light up under the pointer. */
+/* A session: its name, how they have it, and where it works; its buttons go under it where the two do not fit. It is
+ * not pressed itself, so it does not light up under the pointer. Its icon and its buttons stay level with the name's
+ * first line when what it says takes more lines. */
 .at-session {
     flex-wrap: wrap;
+    align-items: flex-start;
 }
 
 .at-session > .ft-row {
     flex: 1 1 15rem;
+    align-items: flex-start;
+    padding-top: 6px;
+    padding-bottom: 5px;
     background: none;
+    white-space: normal;
 }
 
-.at-tree .at-session-name {
+.at-session > .ft-row > .icon {
+    flex: none;
+    margin-top: 1px;
+}
+
+.at-session > .at-actions {
+    margin-top: 1px;
+}
+
+/* Its name, how they have it, and its place, side by side while they fit. Nothing is cut short: what does not fit
+ * beside the name goes under it, whole, and a name or place longer than the line takes more lines. A place cut short
+ * would lose its end, which is what tells two folders apart. */
+.at-about {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    flex: 1 1 0;
+    gap: 2px 6px;
+    min-width: 0;
+}
+
+.at-session-name,
+.at-how,
+.at-where {
     flex: 0 1 auto;
-    min-width: 2.5rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.at-session-name {
     color: var(--text);
 }
 
-/* After its name, in the room the name leaves: how they have it, then its place. Where room is short, the place
- * gives way first, then how they have it, and the name last: shrinking all three would cut the name by a part of a
- * pixel, and so end it in "…". */
-.at-about {
-    display: flex;
-    align-items: center;
-    flex: 1 1 0;
-    gap: 6px;
-    min-width: 0;
-}
-
-.at-how,
 .at-where {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.at-how {
-    flex: 0 1 auto;
-}
-
-.at-where {
-    flex: 1 1 0;
     color: var(--faint);
 }
 
@@ -7895,6 +7907,24 @@ div.group-head {
     flex: 1;
     min-width: 0;
     font: 12.5px var(--mono);
+}
+
+/* A tree with no switch over it (`people.js` `Shared`): nothing to be set apart from. */
+.at-tree.lone {
+    padding-top: 0;
+    border-top: 0;
+}
+
+/* On a phone a session's line has no room for its name, how they have it, and its place side by side: the name takes
+ * the line, the other two go under it, and its buttons under those. */
+@media (max-width: 719px) {
+    .at-session > .ft-row {
+        flex: 1 1 100%;
+    }
+
+    .at-session-name {
+        flex: 1 1 100%;
+    }
 }
 
 /* A person's picture in the list of a sheet of pages, and at the head of their page. */
