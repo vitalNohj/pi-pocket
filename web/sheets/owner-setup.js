@@ -33,8 +33,7 @@ export function OwnerSetupSheet() {
 
     return html`<${Sheet} title="Finish setting up your owner account" onClose=${closeSheet}>
         <p class="muted small">
-            Link an authenticator app to your account. You approve sessions with its codes on a computer that someone
-            else is in charge of, and a sign-in link for another device asks for a code too.
+            Link an authenticator app to your account. Its codes are for approvals and 2FA sign-in.
         </p>
         <div class="sheet-actions">
             <button class="button" disabled=${busy} onClick=${later}>Not now</button>

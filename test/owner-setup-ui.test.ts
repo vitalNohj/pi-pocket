@@ -120,6 +120,7 @@ test(
             await inPage(`
                 return JSON.stringify({
                     title: document.querySelector(".sheet h2").textContent.trim(),
+                    says: document.querySelector(".sheet p.muted").textContent.replace(/\\s+/g, " ").trim(),
                     buttons: [...document.querySelectorAll(".sheet .sheet-actions button")].map((each) => [
                         each.textContent.trim(),
                         each.classList.contains("primary"),
@@ -128,6 +129,7 @@ test(
             `),
             {
                 title: "Finish setting up your owner account",
+                says: "Link an authenticator app to your account. Its codes are for approvals and 2FA sign-in.",
                 buttons: [
                     ["Not now", false],
                     ["Open People", true],
