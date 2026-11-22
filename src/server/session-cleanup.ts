@@ -19,7 +19,6 @@ import {
     type RemovedSession,
     RepoWatchesDoc,
     type SessionMeta,
-    SessionsDoc,
 } from "./docs.ts";
 import { describe, HttpError } from "./errors.ts";
 import { type FolderAccess, localAccess, Unreachable } from "./folder-access.ts";
@@ -702,8 +701,10 @@ export class SessionCleanup {
             }
         }
 
-        await app.harness.commit(async (tx) => {
-            const sessions = await tx.doc(SessionsDoc);
+        // The app's commit (`app.commit`): a save queued right behind this one is checked against a catalogue without
+        // the session, before this commit is published.
+        await app.commit(async (tx) => {
+            const sessions = await app.sessionsIn(tx);
             const meta = sessions.items[String(id)];
 
             if (meta?.archived !== true || meta.pip !== undefined) {
