@@ -419,12 +419,32 @@ export default function createRelay(host: PocketHost, web?: ExtensionWeb) {
 
         const before = relay.config(request.params.id ?? "");
 
-        if (before === undefined || !(await remove(before.id))) {
+        if (before === undefined) {
             throw web.error(404, "No such connector.");
         }
 
-        await bind(request, before.target);
-        web.send("changed");
+        let failure: unknown;
+        let removed = false;
+
+        try {
+            removed = await remove(before.id);
+        } catch (error) {
+            failure = error;
+        }
+
+        if (failure === undefined && !removed) {
+            throw web.error(404, "No such connector.");
+        }
+
+        // A failed write still removed the connector from memory: unbind its tools now.
+        if (relay.config(before.id) === undefined) {
+            await bind(request, before.target);
+            web.send("changed");
+        }
+
+        if (failure !== undefined) {
+            throw failure;
+        }
 
         return {};
     });

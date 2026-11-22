@@ -10,10 +10,7 @@ import type { Host, Web } from "../../types/pocket.d.ts";
 export const pocketApi = 2;
 
 export default function createApprovalMonitor(host: Host, web: Web) {
-    if (host.pendingApprovals === undefined) {
-        return;
-    }
-
+    const approvals = host.pendingApprovals;
     const watching = new Set<ConversationId>();
     const disposers: (() => void)[] = [];
 
@@ -34,19 +31,30 @@ export default function createApprovalMonitor(host: Host, web: Web) {
                     parameters: obj({}),
                     replay: "safe",
                     execute: async (_args, api) => {
+                        if (approvals === undefined) {
+                            return {
+                                output: [
+                                    {
+                                        type: "text",
+                                        text: "Approval waits are not available on this server.",
+                                    },
+                                ],
+                            };
+                        }
+
                         const source = api.conversationId;
 
                         if (!watching.has(source)) {
                             // Subscribe first. A snapshot reconciles state; events alone are not a restart log.
                             disposers.push(
-                                host.pendingApprovals.on(source, "created", (approval) => {
+                                approvals.on(source, "created", (approval) => {
                                     host.notice(
                                         "info",
                                         `Waiting for a person: ${approval.summary}`,
                                         source,
                                     );
                                 }),
-                                host.pendingApprovals.on(source, "resolved", (approval) => {
+                                approvals.on(source, "resolved", (approval) => {
                                     host.notice(
                                         "info",
                                         `Approval wait ended: ${approval.outcome}`,
@@ -61,7 +69,7 @@ export default function createApprovalMonitor(host: Host, web: Web) {
                             output: [
                                 {
                                     type: "text",
-                                    text: JSON.stringify(host.pendingApprovals.list(source)),
+                                    text: JSON.stringify(approvals.list(source)),
                                 },
                             ],
                         };

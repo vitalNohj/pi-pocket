@@ -268,9 +268,9 @@ web.onDispose(
 readonly pendingApprovals: PendingApprovals;
 ```
 
-Since 0.29.0 · Experimental
+Since 0.30.0 · Experimental
 
-Read-only snapshots and events for tool approvals and questions that wait for a person. This is the public observation API; the mutable approval service remains internal. It never approves, denies, or answers a question. Check that this member exists on older servers. [examples/approval-monitor.ts](../../examples/approval-monitor.ts) is a complete example.
+Read-only snapshots and events for tool approvals and questions that wait for a person. This is the public observation API; the mutable approval service remains internal. It never approves, denies, or answers a question. Check that this member exists on older servers.
 
 Each call names a top-level `source` session. It acts for the person Pi works for there, as `linkedSessions` does. An unknown session, a PiP, a source with no known requester, or a requester who no longer sees the source is refused. The snapshot includes only waits that the requester **and everyone who can see the source** can see. This prevents a tool from copying a private session's status into a shared transcript. Subagents use their parent session's audience. PiP waits are never exposed.
 
@@ -282,7 +282,7 @@ Snapshots and events are frozen copies. Arguments, commands, paths, free-text re
 list(source: ConversationId): readonly PendingApproval[];
 ```
 
-Since 0.29.0 · Experimental
+Since 0.30.0 · Experimental
 
 The currently pending, visible waits, including waits in other visible sessions. Resolved waits are not kept as history. Subscribe first, then list, and reconcile by `id`. Re-list after a reload, reconnect, audience change, or restart. On a restart the durable guard hook reconstructs pending waits as runs resume; the snapshot can be empty until that happens. The same guard wait keeps its `id` and original `createdAt`. An old wait made before this API gets a time on its first replay with this version. Questions from `host.ask` keep their existing interrupted-call behavior: a retried question can have a new id.
 
@@ -296,7 +296,7 @@ on<E extends keyof ApprovalEvents>(
 ): () => void;
 ```
 
-Since 0.29.0 · Experimental
+Since 0.30.0 · Experimental
 
 Listen to `created` or `resolved`, and pass the returned disposer to `web.onDispose`. The subscription binds to the source's current requester. Core checks that person's current access and the source's whole current audience again before each delivery. Removing access stops delivery; it does not synthesize a resolved event. Reconcile a snapshot when access changes.
 
@@ -316,7 +316,7 @@ interface PendingApproval {
 }
 ```
 
-Since 0.29.0 · Experimental
+Since 0.30.0 · Experimental
 
 - `id`: the approval's stable id, also used by its card in the app. It grants no permission to answer it.
 - `conversationId`: the conversation that waits, which can belong to a subagent.
@@ -334,7 +334,7 @@ interface ResolvedApproval extends Omit<PendingApproval, "state"> {
 }
 ```
 
-Since 0.29.0 · Experimental
+Since 0.30.0 · Experimental
 
 The same metadata, with `state: "resolved"` and an `outcome`. `allowed` and `denied` record the person's decision (submitted and declined for a question). `cancelled` means the waiting context ended without a decision; `superseded` means another request replaced this id. No answer values or person's name are included.
 
@@ -347,7 +347,7 @@ interface ApprovalEvents {
 }
 ```
 
-Since 0.29.0 · Experimental
+Since 0.30.0 · Experimental
 
 What each `pendingApprovals.on` listener receives. These events are source-scoped, not global `host.on` events.
 
@@ -407,6 +407,18 @@ browser(
 Since 0.22.0 · Experimental
 
 A session's browser page: the one that Pi's `browser` tool and the people in the session use. With `open: true`, it opens the page when it is not open. It is `undefined` while the Browser module is off, and without `open`, when no page is open. See [`BrowserPageHandle`](#browserpagehandle).
+
+## Turn notes
+
+### `annotateTurns`
+
+```ts
+annotateTurns(name: string, annotate: TurnAnnotator): () => void;
+```
+
+Since 0.30.0 · Experimental
+
+Adds a note for the model right after a person's message, as a separate entry of the transcript. `annotate` gets the [`Turn`](#turn) and returns the note's text, or `undefined` for none. Pi Pocket stores the note in the same commit as the message, and never computes it again. The model reads `Note from extension <name>:` and a line break before the text. Only a message placed at once gets notes: Pi does not work in the session, and nothing is queued. A queued message, an Interrupt, a scheduled message, and PiP's own conversation get none. The annotators of all modules have 2 seconds together; one that is late, throws, or returns more than 4,000 characters adds nothing, and the session shows a warning. `name` is 1 to 60 letters, digits, `.`, `_`, `:`, or `-`, and the transcript shows it with each note. Pass the returned function to `web.onDispose`. See [Turn notes](../turn-notes.md).
 
 ## Notices and text
 
@@ -720,6 +732,7 @@ interface AppEvents {
     };
     "session.renamed": { conversationId: number; title: string };
     "session.archived": { conversationId: number; archived: boolean };
+    "session.removed": { conversationId: number };
     "message.sent": {
         conversationId: number;
         by: string;
@@ -743,6 +756,7 @@ What each event's listener gets.
 
 - `session.created`: a session in the list was made, by a person, a fork (`forkedFrom`), a linked start (`linkedFrom`), or a resend. `createdBy` is a person's id. Subagents are not sessions in the list, and send none.
 - `session.renamed`, `session.archived`: its new title, or whether it is archived now.
+- `session.removed` (since 0.30.0): the owner removed an archived session from the app (Session cleanup). Its id is not shown again: drop what your module keeps for it.
 - `message.sent`: a person's message to Pi, a steer or a queued one too. `by` is their id. `text` is the words as stored, with values that extensions hide already hidden and attachments left out. `via` names what sent it for them, such as PiP or a schedule.
 - `run.started`, `run.ended`: Pi started or stopped working in a conversation. `conversationId` is that conversation, a session's or a subagent's; `session` is the session it belongs to. Since 0.28.0, `run.ended` also says how the run stopped: `outcome` is `done` when it finished, `failed` when it gave up, or `aborted` when it was stopped. `failure` is why it gave up, the same short line the session list shows, and only when `outcome` is `failed`. A session's failure stands until a later run starts.
 
@@ -754,7 +768,7 @@ type AppEventName = keyof AppEvents;
 
 Since 0.22.0 · Experimental
 
-The name of an event: `"session.created"`, `"session.renamed"`, `"session.archived"`, `"message.sent"`, `"run.started"`, or `"run.ended"`.
+The name of an event: `"session.created"`, `"session.renamed"`, `"session.archived"`, `"session.removed"`, `"message.sent"`, `"run.started"`, or `"run.ended"`.
 
 ## Types for asking, hiding, and the browser
 
@@ -872,6 +886,34 @@ Since 0.22.0 · Experimental
 
 Gives the variables to add to one command. A name is letters, digits, and `_`, not starting with a digit; a value has no NUL. A variable that breaks these is left out. The variables of all providers for one command are 256 KB at most.
 
+### `Turn`
+
+```ts
+interface Turn {
+    readonly conversationId: number;
+    readonly by: string;
+    readonly via?: string;
+    readonly text: string;
+    readonly at: number;
+    readonly previousActivityAt?: number;
+    readonly signal: AbortSignal;
+}
+```
+
+Since 0.30.0 · Experimental
+
+One person's message, before Pi answers it: its session, the person's id, what sent it for them (`via`, when it is not their own typing), their words as stored (hidden values hidden, attachments left out), and when it came. `previousActivityAt` is the newest time of a message, an answer, or a tool result among the session's last 32 entries, also from before a reset. It is `undefined` when there is none. `signal` aborts when the time for annotators ends.
+
+### `TurnAnnotator`
+
+```ts
+type TurnAnnotator = (turn: Turn) => string | undefined | Promise<string | undefined>;
+```
+
+Since 0.30.0 · Experimental
+
+Gives the text of a note for one turn, at most 4,000 characters, or `undefined` for no note. Pi Pocket trims the text; an empty text is no note.
+
 ### `BrowserTarget`
 
 ```ts
@@ -968,6 +1010,7 @@ The host has more members, for Pi Pocket's built-in modules only. They are not i
 - `pip`: what the tools of PiP, the owner's assistant, do.
 - `pipCompaction`: PiP's own summaries when its context is compacted.
 - `gallery`: the extension gallery, for its own routes.
+- `sessionCleanup` (since 0.30.0): archived sessions' plans, worktrees cleaned up, and sessions removed from the app, for the Session cleanup module.
 - `toolNames`: the names of the tools that the modules that are on give now (built-in and drop-in), for codemode's Only mode.
 - `stopToolCall`, `waitsForLimit`, `alertOwner` (since 0.29.0): for the stall watches of Subagents and Agent Teams. They stop one running call, say whether a run waits for a provider's limit or for its linked computer to be online again, and tell who is in charge of the session's computer (a notice and a push): the owner, or the linker of the runner the session is on.
 - `linkedSessions.activity`, `linkedSessions.stopCall`, `linkedSessions.onLedRun` (since 0.29.0): for the stall watch of Agent Teams. They give the led sessions at work, stop a stuck call of a led session, and call back when a led session starts a run.

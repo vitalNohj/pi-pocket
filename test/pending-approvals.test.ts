@@ -1,4 +1,3 @@
-// Read-only approval observations, with real session audiences and a resumed durable guard hook.
 import {
     type App,
     cleanUp,
@@ -21,11 +20,7 @@ import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { User } from "../src/server/config.ts";
 import type { ApprovalRequest } from "../src/server/host.ts";
-import {
-    pendingApprovalsFor,
-    type PendingApproval,
-    type ResolvedApproval,
-} from "../src/server/pending-approvals.ts";
+import type { PendingApproval, PendingApprovals, ResolvedApproval } from "../types/pocket.d.ts";
 
 const SECRET = "private-token-never-observable";
 const data = join(root, "data");
@@ -66,10 +61,7 @@ export default (host, web) => {
     host.guard.judge = async (tool, args) => tool === "bash" && args.command === "printf approval-api-safe"
         ? { subject: args.command, decision: { action: "ask", reason: "test guard" } }
         : undefined;
-    web.route("POST", "read", (request) => ({
-        pending: host.pendingApprovals.list(Number(request.body.source)),
-        methods: Object.keys(host.pendingApprovals),
-    }));
+    web.route("GET", "facade", () => host.pendingApprovals);
 };
 `,
     );
@@ -82,6 +74,18 @@ after(async () => {
     await app?.close();
     cleanUp();
 });
+
+// Call the test drop-in's handler directly. It captures the facade that real extensions get, without HTTP serialization.
+async function approvalApi(): Promise<PendingApprovals> {
+    const matched = app.webs.match("monitor", "GET", ["facade"], owner(app));
+
+    assert.ok(matched !== undefined && "route" in matched);
+    const api = (await matched.route.handle({} as never)) as PendingApprovals | undefined;
+
+    assert.ok(api, "the public host must have pendingApprovals");
+
+    return api;
+}
 
 async function source(user: User = owner(app)): Promise<ConversationId> {
     const id = await newSession(app);
@@ -113,8 +117,8 @@ function ask(id: ConversationId, more: Partial<ApprovalRequest> = {}, waitContex
 const tick = () => new Promise<void>((done) => setImmediate(done));
 
 test("list and created give immutable, redacted snapshots; decisions emit resolved once", async () => {
+    const api = await approvalApi();
     const id = await source();
-    const api = pendingApprovalsFor(app);
     const created: PendingApproval[] = [];
     const resolved: ResolvedApproval[] = [];
     const off = [
@@ -123,9 +127,6 @@ test("list and created give immutable, redacted snapshots; decisions emit resolv
     ];
 
     assert.deepEqual(api.list(id), []);
-    assert.deepEqual(Object.keys(api).sort(), ["list", "on"]);
-    assert.equal(Object.isFrozen(api), true);
-    assert.equal("answer" in api || "approve" in api || "deny" in api || "request" in api, false);
 
     try {
         for (const allow of [true, false]) {
@@ -167,8 +168,8 @@ test("list and created give immutable, redacted snapshots; decisions emit resolv
 });
 
 test("form contents, unknown tool names, and answer values are never observed", async () => {
+    const api = await approvalApi();
     const id = await source();
-    const api = pendingApprovalsFor(app);
     const seen: unknown[] = [];
     const off = api.on(id, "resolved", (value) => seen.push(value));
     const question = ask(id, {
@@ -197,8 +198,8 @@ test("form contents, unknown tool names, and answer values are never observed", 
 });
 
 test("supersession and cancellation resolve waits without granting permission", async () => {
+    const api = await approvalApi();
     const id = await source();
-    const api = pendingApprovalsFor(app);
     const outcomes: string[] = [];
     const off = api.on(id, "resolved", (value) => outcomes.push(value.outcome));
     const first = ask(id);
@@ -220,11 +221,11 @@ test("supersession and cancellation resolve waits without granting permission", 
 });
 
 test("the requester and whole source audience must see a wait; PiP is excluded", async () => {
+    const api = await approvalApi();
     const shared = await source();
     const privateSession = await source();
     const guest = app.config.addUser("Limited", "guest", [String(shared)]).user;
     const pip = await app.pip.ensure(owner(app));
-    const api = pendingApprovalsFor(app);
     const seen: string[] = [];
     const off = api.on(shared, "created", (value) => seen.push(value.id));
     const visible = ask(shared);
@@ -291,8 +292,8 @@ test("the requester and whole source audience must see a wait; PiP is excluded",
 });
 
 test("listeners are isolated from decisions and one another, and disposal stops queued delivery", async () => {
+    const api = await approvalApi();
     const id = await source();
-    const api = pendingApprovalsFor(app);
     const seen: string[] = [];
     const off = [
         api.on(id, "created", () => {
@@ -320,24 +321,16 @@ test("listeners are isolated from decisions and one another, and disposal stops 
     await cancelledDelivery.answer;
 });
 
-test("a loaded extension receives the narrow public host surface", async () => {
-    const id = await source();
-    const wait = ask(id);
-    const matched = app.webs.match("monitor", "POST", ["read"], owner(app));
+test("the public approval facade has no decision or mutation methods", async () => {
+    const api = await approvalApi();
 
-    assert.ok(matched !== undefined && "route" in matched);
-    const response = (await matched.route.handle({ body: { source: id } } as never)) as {
-        pending: PendingApproval[];
-        methods: string[];
-    };
-
-    assert.deepEqual(response.methods.sort(), ["list", "on"]);
-    assert.equal(response.pending[0]?.id, wait.request.id);
-    app.approvals.answer(wait.request.id, { allow: false, by: "cleanup" });
-    await wait.answer;
+    assert.deepEqual(Object.keys(api).sort(), ["list", "on"]);
+    assert.equal(Object.isFrozen(api), true);
+    assert.equal("answer" in api || "approve" in api || "deny" in api || "request" in api, false);
 });
 
 test("a subagent's approval belongs to its top-level session and follows that session's audience", async () => {
+    const api = await approvalApi();
     const id = await source();
 
     await loadTools(app, id, "subagent", "bash");
@@ -349,7 +342,6 @@ test("a subagent's approval belongs to its top-level session and follows that se
         () => app.approvals.all().some((request) => app.rootOf(request.conversationId) === id),
         "helper approval",
     );
-    const api = pendingApprovalsFor(app);
     const wait = api.list(id).find((value) => value.session === id)!;
 
     assert.ok(wait);
@@ -380,6 +372,7 @@ test("a subagent's approval belongs to its top-level session and follows that se
 });
 
 test("a pending guard wait returns after a server restart with the same id and creation time", async () => {
+    const initial = await approvalApi();
     const id = await source();
 
     await loadTools(app, id, "bash");
@@ -394,14 +387,12 @@ test("a pending guard wait returns after a server restart with the same id and c
         requestId: crypto.randomUUID(),
     });
     await until(() => app.approvals.forConversation(id).length === 1, "guard approval");
-    const before = pendingApprovalsFor(app)
-        .list(id)
-        .find((value) => value.conversationId === id)!;
+    const before = initial.list(id).find((value) => value.conversationId === id)!;
 
     assert.ok(before);
     await app.close();
     app = await openApp(model, data);
-    const api = pendingApprovalsFor(app);
+    const api = await approvalApi();
 
     await until(() => api.list(id).some((value) => value.id === before.id), "restored approval");
     assert.deepEqual(
@@ -417,9 +408,7 @@ test("a pending guard wait returns after a server restart with the same id and c
     await app.close();
     app = await openApp(model, data);
     assert.equal(
-        pendingApprovalsFor(app)
-            .list(id)
-            .some((value) => value.id === before.id),
+        (await approvalApi()).list(id).some((value) => value.id === before.id),
         false,
     );
 });

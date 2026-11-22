@@ -19,6 +19,7 @@ import type { Memory } from "./memory.ts";
 import type { Pip } from "./pip.ts";
 import type { PipCompaction } from "./pip-compact.ts";
 import type { Schedules } from "./schedules.ts";
+import type { SessionCleanup } from "./session-cleanup.ts";
 import type { BackgroundTasks } from "./background.ts";
 import type { Updates } from "./updates.ts";
 import type { RepoWatches } from "./repo-watches.ts";
@@ -26,6 +27,7 @@ import type { Watches } from "./watches.ts";
 import type { FetchPublic } from "./public-fetch.ts";
 import type { BrowserControl } from "./browser/page.ts";
 import type { CommandEnvProvider, HiddenValue } from "./hidden.ts";
+import type { TurnAnnotator } from "./turn-notes.ts";
 import type { AppEventName, AppEvents } from "./app-events.ts";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SettingField, SettingValue } from "./extension-settings.ts";
@@ -506,7 +508,7 @@ export interface WorkspaceProvider {
 export interface PocketHost {
     readonly guard: LancetGuard;
     readonly approvals: Approvals;
-    /** Read-only approval snapshots and events, with source audience checks. @experimental @since 0.29.0 */
+    /** Read-only approval snapshots and events, with source audience checks. @experimental @since 0.30.0 */
     readonly pendingApprovals: PendingApprovalsApi;
     readonly agentDir: string;
     readonly dataDir: string;
@@ -610,6 +612,14 @@ export interface PocketHost {
      */
     commandEnv(provider: CommandEnvProvider): () => void;
     /**
+     * Add a note for the model after a person's message, as a separate entry: `annotate` returns its text, or undefined
+     * for none. Only a message placed at once (an idle conversation with nothing queued) gets notes. Returns how to
+     * stop; pass that to `web.onDispose`.
+     *
+     * @experimental @since 0.30.0 (docs/extensions/policies/api-stability.md).
+     */
+    annotateTurns(name: string, annotate: TurnAnnotator): () => void;
+    /**
      * A session's browser page, the one Pi and people use: opened when `open` is true, else only when it is open
      * already. Undefined while the Browser module is off, or with no page.
      *
@@ -673,6 +683,8 @@ export interface PocketHost {
     cwdOf(conversationId: ConversationId): string;
     /** Messages to Pi for later: the schedule tool sets up Pi's own. */
     readonly schedules: Pick<Schedules, "add" | "cancel" | "limits" | "list" | "task">;
+    /** Archived sessions cleaned up and removed from the app. */
+    readonly sessionCleanup: Pick<SessionCleanup, "plan" | "cleanUp" | "remove">;
     /** Commands Pi runs in the background: the background tool starts, reads, and stops them. */
     readonly background: Pick<
         BackgroundTasks,

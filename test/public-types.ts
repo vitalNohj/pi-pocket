@@ -79,6 +79,7 @@ type Internal =
     | "envFor"
     | "guard"
     | "schedules"
+    | "sessionCleanup"
     | "background"
     | "goals"
     | "browsers"

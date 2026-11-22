@@ -56,6 +56,7 @@ import { CodingTools, createCodingTools } from "@earendil-works/pi-durable/tools
 import { withRunnerRead } from "./runner-read.ts";
 import { Alerts } from "./alerts.ts";
 import { ApprovalMethods, Authenticators } from "./approval-methods.ts";
+import { sweepAssets } from "./artifacts.ts";
 import { Attribution, type Missing } from "./attribution.ts";
 import { Browsers } from "./browser.ts";
 import type { BrowserState } from "./browser/page.ts";
@@ -97,6 +98,7 @@ import {
     type ChatMessage,
     DecisionsDoc,
     type FolderFavorites as FolderFavoritesValue,
+    DeletedDoc,
     FolderFavoritesDoc,
     HooksDoc,
     MemoryDoc,
@@ -104,6 +106,7 @@ import {
     PinnedSessionsDoc,
     RepoWatchesDoc,
     RunFailureDoc,
+    type RemovedSession,
     type SessionMeta,
     SessionsDoc,
     SpendDoc,
@@ -161,6 +164,7 @@ import { measureModelStreams } from "./timing.ts";
 import { Providers } from "./providers.ts";
 import { CustomProviders } from "./custom-providers.ts";
 import { type EmbedderMessage, PushStore } from "./push.ts";
+import { writeDropInConfig } from "./dropin-config.ts";
 import { type ExtensionInfo, ExtensionLoader, linkTypes, prepareDropInFolder } from "./reload.ts";
 import { ResendTask } from "./resend.ts";
 import {
@@ -175,8 +179,10 @@ import { whyUnanswered } from "./subagent-runs.ts";
 import { Schedules } from "./schedules.ts";
 import { CoreSecrets } from "./secrets.ts";
 import { BackgroundTasks } from "./background.ts";
+import { SessionCleanup } from "./session-cleanup.ts";
 import { Shares } from "./share.ts";
 import { CommandEnvs, HiddenValues, wrapEnv } from "./hidden.ts";
+import { TurnNotes } from "./turn-notes.ts";
 import { withQuietLimit } from "./deadline.ts";
 import { AppEventBus } from "./app-events.ts";
 import { changeSettings, shownSettings } from "./extension-settings.ts";
@@ -671,6 +677,7 @@ export class PocketApp {
     readonly pinnedSessions = new PinnedSessions(this);
     /** Artifacts published to anyone with their address (`share.ts`), which needs no sign-in. */
     readonly shares = new Shares(this);
+    readonly sessionCleanup = new SessionCleanup(this);
     /** Extension modules' pages for anyone with the address (`public-links.ts`), which need no sign-in. */
     readonly publicLinks = new PublicLinks(this);
     /** What happens in the app, for extensions (`app-events.ts`, `host.on`). */
@@ -681,6 +688,7 @@ export class PocketApp {
     );
     /** What extensions add to the environment of each command (`hidden.ts`, `host.commandEnv`). */
     readonly commandEnvs = new CommandEnvs((line) => this.#log(line));
+    readonly turnNotes = new TurnNotes(this);
     /** Other people's drop-ins, from a reviewed index: found, installed off, read, updated, removed (`gallery.ts`). */
     readonly gallery = new Gallery(this);
     /** Updates of Pi Pocket itself: the newest release, and updating to it (`updates.ts`). */
@@ -731,6 +739,10 @@ export class PocketApp {
     /** Each conversation's subagents, and those with a report on its way to it: for the board and the session list. */
     readonly #subagents = new Map<ConversationId, SubagentsOf>();
     #sessions: Record<string, SessionMeta> = {};
+    /** The conversations of sessions removed from the app: nobody sees them again. */
+    #removed = new Set<string>();
+    /** The session each removed session was forked from: a live fork still reads its uploads through it. */
+    #removedForks = new Map<string, NonNullable<SessionMeta["forkedFrom"]>>();
     #sessionsTimer: NodeJS.Timeout | undefined;
     /** Changes made on the commit line, for the second pass of `recheck` only. */
     readonly #lineSessions = new Map<string, { meta: AccessMeta | null; token: object }>();
@@ -1301,6 +1313,7 @@ export class PocketApp {
             ask: (request, askContext) => ask(this.approvals, request, askContext),
             hide: (value) => this.hidden.add(value),
             commandEnv: (provider) => this.commandEnvs.add(provider),
+            annotateTurns: (name, annotate) => this.turnNotes.add(name, annotate),
             browser: (conversationId, options) =>
                 browserFor(
                     this.browsers,
@@ -1323,6 +1336,7 @@ export class PocketApp {
             sessions: this.extensionSessions,
             cwdOf: (conversationId) => this.cwdOf(conversationId),
             schedules: this.schedules,
+            sessionCleanup: this.sessionCleanup,
             background: this.background,
             goals: this.goals,
             browsers: this.browsers,
@@ -1344,20 +1358,29 @@ export class PocketApp {
 
         this.#registry = registry;
         const dropIn = join(this.dataDir, "extensions");
+        const packageModules = Object.fromEntries(
+            Object.keys(pocketPackage.dependencies ?? {}).map((name) => [name, modulesWith(name)]),
+        );
 
         try {
-            prepareDropInFolder(
+            const refused = prepareDropInFolder(
                 dropIn,
                 modulesWith("@earendil-works/pi-durable"),
-                Object.fromEntries(
-                    Object.keys(pocketPackage.dependencies ?? {}).map((name) => [
-                        name,
-                        modulesWith(name),
-                    ]),
-                ),
+                packageModules,
             );
+
+            // Drop-ins import Pi Pocket's packages without the link: only tools that read the folder miss it.
+            if (refused !== undefined) {
+                this.#log(`The drop-in folder has no node_modules link: ${describe(refused)}`);
+            }
         } catch (error) {
-            this.#log(`Drop-in extensions cannot import Pi Pocket's packages: ${describe(error)}`);
+            this.#log(`The drop-in folder cannot be made: ${describe(error)}`);
+        }
+
+        try {
+            writeDropInConfig(dropIn, packageModules);
+        } catch (error) {
+            this.#log(`The drop-in folder has no tsconfig.json: ${describe(error)}`);
         }
 
         try {
@@ -1525,6 +1548,13 @@ export class PocketApp {
                 this.#expiringAccounts = undefined;
             });
         }, 60_000).unref();
+        void this.sessionCleanup
+            .resume()
+            .catch((error: unknown) => this.#log(`Removals could not go on: ${describe(error)}`));
+        // Asset bytes that a deleted artifact left, if a restart cut its sweep off (`artifacts.ts`).
+        void sweepAssets(this).catch((error: unknown) =>
+            this.#log(`Unused artifact assets could not be removed: ${describe(error)}`),
+        );
     }
 
     /**
@@ -1534,6 +1564,7 @@ export class PocketApp {
      */
     async #recover(storage: Storage): Promise<ConversationId[]> {
         this.#sessions = { ...((await this.harness.snapshot(SessionsDoc, context))?.items ?? {}) };
+        this.#noteRemoved((await this.harness.snapshot(DeletedDoc, context))?.items);
         const conversations: ConversationId[] = [];
         const unrecorded = new Map<ConversationId, Missing[]>();
         let cursor: Cursor | undefined;
@@ -1882,6 +1913,24 @@ export class PocketApp {
                     () => {},
                 );
             }
+        } else if (kind === DeletedDoc.definition.kind) {
+            this.#noteRemoved((value as { items?: Record<string, RemovedSession> } | null)?.items);
+
+            for (const client of [...this.#clients]) {
+                if (
+                    client.conversationId !== undefined &&
+                    !this.canSee(client.user, client.conversationId)
+                ) {
+                    this.#evict(client, "This session was removed.");
+                }
+
+                for (const peek of client.peeks ?? []) {
+                    if (!this.canSee(client.user, peek)) {
+                        client.peeks?.delete(peek);
+                        this.#unpeek(client, peek);
+                    }
+                }
+            }
         } else if (kind === FolderFavoritesDoc.definition.kind) {
             this.folderFavorites.committed(value as FolderFavoritesValue | null);
         } else if (kind === PinnedSessionsDoc.definition.kind) {
@@ -2002,6 +2051,12 @@ export class PocketApp {
 
     /** What changed in the session list, as events for extensions (`host.on`). PiP's conversations send none. */
     #sessionEvents(before: Record<string, SessionMeta>, after: Record<string, SessionMeta>): void {
+        for (const [key, meta] of Object.entries(before)) {
+            if (after[key] === undefined && meta.pip === undefined) {
+                this.events.emit("session.removed", { conversationId: Number(key) });
+            }
+        }
+
         for (const [key, meta] of Object.entries(after)) {
             const was = before[key];
             const conversationId = Number(key);
@@ -3241,6 +3296,12 @@ export class PocketApp {
             approved: (id) => this.folderApprovals.live(id),
             session: (id) => {
                 const root = String(this.rootOf(Number(id) as unknown as ConversationId));
+
+                // A removed session is nobody's to see, and neither is a conversation of it (`session-cleanup.ts`).
+                if (this.#removed.has(root) || this.#removed.has(id)) {
+                    return undefined;
+                }
+
                 const held = this.#atSave ? this.#lineSessions.get(root) : undefined;
                 const meta: AccessMeta | undefined =
                     held === undefined ? this.#sessions[root] : (held.meta ?? undefined);
@@ -3415,6 +3476,7 @@ export class PocketApp {
 
             return {
                 check: () => {
+                    this.#requireNotRemoved(from);
                     started.check();
                     this.requireSteer(user, from);
                 },
@@ -3431,6 +3493,7 @@ export class PocketApp {
         return {
             // Where it is saved: the folder is still theirs, and the source still theirs to steer, its approval live.
             check: () => {
+                this.#requireNotRemoved(from);
                 folderRule();
                 this.requireSteer(user, from);
                 this.#requireLive(from, user);
@@ -4763,6 +4826,16 @@ export class PocketApp {
         }
     }
 
+    /**
+     * Refuse a save that copies session `id` once it was removed (`session-cleanup.ts`), and say so. A removed session
+     * is nobody's to see, so the policy's own refusal would say it is not shared with them.
+     */
+    #requireNotRemoved(id: ConversationId): void {
+        if (this.#removed.has(String(this.rootOf(id))) || this.#removed.has(String(id))) {
+            throw new HttpError(409, "That session was removed.");
+        }
+    }
+
     /** Refuse `user` when session `id`'s approval is not live for them now (`access.ts` `steer`). Nobody is asked. */
     #requireLive(id: ConversationId, user: User): void {
         const root = String(this.rootOf(id));
@@ -5601,6 +5674,28 @@ export class PocketApp {
     /** Number of line view entries, for tests. */
     get lineHeld(): number {
         return this.#lineSessions.size + this.#lineTurns.size;
+    }
+
+    /** The session this one was forked from: also for a session removed from the app, whose forks still read it. */
+    forkedFrom(id: ConversationId): SessionMeta["forkedFrom"] {
+        return this.#sessions[String(id)]?.forkedFrom ?? this.#removedForks.get(String(id));
+    }
+
+    #noteRemoved(items: Record<string, RemovedSession> | undefined): void {
+        this.#removed = new Set();
+        this.#removedForks = new Map();
+
+        for (const [key, record] of Object.entries(items ?? {})) {
+            this.#removed.add(key);
+
+            for (const each of record.conversations) {
+                this.#removed.add(String(each));
+            }
+
+            if (record.forkedFrom !== undefined) {
+                this.#removedForks.set(key, record.forkedFrom);
+            }
+        }
     }
 
     /** The catalogue entry of a session; undefined for subagents and other conversations. */
