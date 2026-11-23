@@ -51,7 +51,7 @@ The [clock example](../examples/clock.ts) has a command: `/clock-zone Europe/Ber
 `scope` says who may run the command:
 
 - **`"conversation"`**: each person who may steer the session. While people take turns, only the person who drives. Guests invited to one session can run it there.
-- **`"global"`**: the owner alone, in each session that the owner sees. Use it for settings of the whole app. Its card still goes to the session where the owner typed it, for all the people in it. While another person drives, the app shows the owner no message box in that session: the owner runs the command from another session, or takes the wheel first.
+- **`"global"`**: the owner and users the owner gives **Run global commands**, in sessions they can use. Use it for settings of the whole app. Its card still goes to the session where they typed it, for all the people in it. While another person drives, the app shows them no message box in that session: they run the command from another session, or take the wheel first.
 - Viewers run no commands, and see none in the suggestions.
 
 The handler runs with the owner's rights, as all of the module does. A conversation command is offered to each person who can steer the session, also to people invited to that session only. So:
@@ -65,7 +65,7 @@ Each run is a durable task, kept by the person who ran it, the session, and the 
 
 - When a reply gets lost, the same text sent again from the same browser, also after a reload, finds the first run, and gets its result. The handler runs one time. Pi Pocket keeps the ids of a person's recent runs only ([limits](reference/limits.md#commands)).
 - A restart of the server never runs a handler again. The person hears that it was stopped, because it can have done a part of its work.
-- Menu → **Running now** shows a command while it runs, and can stop it. People who steer stop conversation commands; the owner stops global commands.
+- Menu → **Running now** shows a command while it runs, and can stop it. People who steer stop conversation commands; the owner and users with **Run global commands** stop global commands.
 - To stop a run aborts `ctx.signal`. It does not undo what the handler did. A stop just after the handler wrote its card leaves the card, and the run says that it was stopped.
 
 A command has no time limit. The handler must watch `ctx.signal`, and end when it aborts.

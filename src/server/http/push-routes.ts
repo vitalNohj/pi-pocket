@@ -19,6 +19,7 @@ export async function pushRoutes(api: ApiRequest, action: string | undefined): P
             publicKey: store.publicKey,
             prefs: store.prefs(user.id),
             devices: store.subscriptions(user.id).length,
+            kinds: app.policy.pushKinds(user),
         });
     }
 

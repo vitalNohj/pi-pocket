@@ -126,17 +126,11 @@ const KINDS = [
     ],
     ["mention", "Mentions", "when someone writes @your name in a chat"],
     ["chat", "Chat messages", "in sessions you take part in, and from one person to you"],
-    [
-        "security",
-        "Security",
-        "when too many wrong authenticator codes lock someone's codes out",
-        "owner",
-    ],
+    ["security", "Security", "when too many wrong authenticator codes lock someone's codes out"],
     [
         "folders",
         "Folder requests",
-        "when someone asks to start a session in a new folder here, or their project waits for you to trust it",
-        "owner",
+        "when someone asks to start a session in a new folder here, or their project waits for you to trust it, or a session of yours needs renewing",
     ],
 ];
 
@@ -217,6 +211,9 @@ export function NotificationsSheet() {
         });
 
     const on = Boolean(subscription);
+    // Servers from before `kinds` show these two switches to the owner alone.
+    const owner = store.state.me?.role === "owner";
+    const kinds = info?.kinds ?? { security: owner, folders: owner ? "requests" : false };
 
     return html`<${Sheet}
         title="Notifications"
@@ -250,23 +247,31 @@ export function NotificationsSheet() {
                 </div>
                 <div class="group-title">Notify me about</div>
                 <div class="sheet-list">
-                    ${KINDS.filter(
-                        ([, , , only]) => only === undefined || store.state.me?.role === only,
-                    ).map(
-                        ([key, title, hint]) => html`<div class="extension">
+                    ${KINDS.filter(([key]) =>
+                        key === "security"
+                            ? kinds.security
+                            : key !== "folders" || kinds.folders !== false,
+                    ).map(([key, title, hint]) => {
+                        const renewals = key === "folders" && kinds.folders === "renewals";
+                        const label = renewals ? "Session renewals" : title;
+                        const detail = renewals
+                            ? "when a session of yours needs renewing before its tasks pause"
+                            : hint;
+
+                        return html`<div class="extension">
                             <div class="extension-main">
-                                <div>${title}</div>
-                                <div class="muted small">${hint}</div>
+                                <div>${label}</div>
+                                <div class="muted small">${detail}</div>
                             </div>
                             <div class="extension-actions">
                                 <${Switch}
                                     on=${info.prefs[key]}
-                                    label=${title}
+                                    label=${label}
                                     onChange=${() => setPref(key, !info.prefs[key])}
                                 />
                             </div>
-                        </div>`,
-                    )}
+                        </div>`;
+                    })}
                 </div>
                 ${
                     on &&

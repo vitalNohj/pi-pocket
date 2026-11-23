@@ -80,7 +80,7 @@ Rules:
 - **S4.2. Before a conversation command changes anything outside its session, check `ctx.user.role` and `ctx.conversationId`.**\
   _Reason:_ the person who runs it may see only this session.
 - **S4.3. Use a global command for settings of the whole app.**\
-  _Reason:_ only the owner can run it.
+  _Reason:_ only the owner and users with **Run global commands** can run it.
 - **S4.4. Put no secrets in a card.** Everyone who sees the session sees the card. Find in session and export include it.\
   _Reason:_ a card is for the whole session.
 

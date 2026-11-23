@@ -271,8 +271,11 @@ export class ExtensionCommands {
         this.#app.requireSee(user, id);
 
         if (scope === "global") {
-            if (user.role !== "owner") {
-                throw new HttpError(403, "Only the owner can run global extension commands.");
+            if (!this.#app.policy.runsGlobalCommands(user)) {
+                throw new HttpError(
+                    403,
+                    "Only the owner, or someone the owner lets, can run global extension commands.",
+                );
             }
         } else {
             await this.#app.requireDriver(id, user);
@@ -460,7 +463,7 @@ export class ExtensionCommands {
                     made = true;
 
                     return created;
-                    // A session command is stored only for who still drives the session; a global one is the owner's.
+                    // A session command is stored only for who still drives the session; a global one does not need the wheel.
                 },
                 command.scope === "global" ? context : app.admission(id, user),
             );
@@ -472,7 +475,7 @@ export class ExtensionCommands {
         }
     }
 
-    /** Stopping a conversation command is open to steerers; stopping global work stays owner-only. */
+    /** Steerers can stop conversation commands. Stopping a global command also needs the permission to run it. */
     async stop(id: ConversationId, user: User, taskId: number): Promise<void> {
         const app = this.#app;
 
@@ -485,8 +488,14 @@ export class ExtensionCommands {
             throw new HttpError(404, "No such extension command here.");
         }
 
-        if ((task.input as CommandInput).scope !== "conversation" && user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can stop global extension commands.");
+        if (
+            (task.input as CommandInput).scope !== "conversation" &&
+            !app.policy.runsGlobalCommands(user)
+        ) {
+            throw new HttpError(
+                403,
+                "Only the owner, or someone the owner lets, can stop global extension commands.",
+            );
         }
 
         if (task.state.status !== "terminal") {

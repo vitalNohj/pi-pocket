@@ -209,11 +209,14 @@ export class SessionCleanup {
         this.#app = app;
     }
 
-    #requireOwner(userId: string): User {
+    #requireManagesRunners(userId: string): User {
         const user = this.#app.config.userById(userId);
 
-        if (user?.role !== "owner") {
-            throw new HttpError(403, "Only the owner can clean up sessions.");
+        if (user === undefined || !this.#app.policy.managesRunners(user)) {
+            throw new HttpError(
+                403,
+                "Only the owner, or someone who manages runners, can clean up sessions.",
+            );
         }
 
         return user;
@@ -520,7 +523,7 @@ export class SessionCleanup {
 
     /** Sessions that are not there, and PiP, are left out. */
     async plan(userId: string, ids: readonly unknown[]): Promise<SessionPlan[]> {
-        const user = this.#requireOwner(userId);
+        const user = this.#requireManagesRunners(userId);
         const chosen = this.#ids(ids);
         const readByForks = this.#readByForks(new Set(chosen.map(Number)));
         const docs = await this.#docs();
@@ -539,7 +542,7 @@ export class SessionCleanup {
 
     /** Removes only the worktrees: the sessions and their transcripts stay. */
     async cleanUp(userId: string, ids: readonly unknown[]): Promise<CleanupOutcome[]> {
-        const user = this.#requireOwner(userId);
+        const user = this.#requireManagesRunners(userId);
         const outcomes: CleanupOutcome[] = [];
 
         for (const id of this.#ids(ids)) {
@@ -587,7 +590,7 @@ export class SessionCleanup {
 
     /** Each is checked again first: one that cannot go now stays, with why. */
     async remove(userId: string, ids: readonly unknown[]): Promise<CleanupOutcome[]> {
-        const user = this.#requireOwner(userId);
+        const user = this.#requireManagesRunners(userId);
 
         const depth = (id: ConversationId) => {
             let count = 0;

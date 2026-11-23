@@ -67,7 +67,7 @@ export async function extensionRoute(
     }
 
     const id = source === undefined ? undefined : (Number(source) as unknown as ConversationId);
-    const scope = new ExtensionRequest(app, user.id, route.access, id);
+    const scope = new ExtensionRequest(app, user.id, route.access, id, part.builtInModule);
     const clientCancelled = new AbortController();
 
     // Preserve the existing signal's disconnect-only lifetime, including while the answer is being sent.

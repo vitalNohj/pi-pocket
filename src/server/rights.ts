@@ -94,7 +94,7 @@ export const RIGHTS = {
         on: "On: they are in charge of this server and the runners you linked, as you are. They can unlink any runner.",
         off: "Off: they are not in charge of this server or the runners you linked.",
         confirm:
-            "Let {name} manage runners? They see and prompt every session on this server and on the runners you linked, in any folder, and choose who else may.",
+            "Let {name} manage runners? They see and prompt every session on this server and on the runners you linked, in any folder, choose who else may, and clean up archived sessions.",
     },
     managesServer: {
         scope: "person",
@@ -108,6 +108,18 @@ export const RIGHTS = {
         off: "Off: they do not change this server's settings.",
         confirm:
             "Let {name} manage the server? They can turn on extensions, which run code on it, add providers, which see every prompt, sign providers in and out, and restart it.",
+    },
+    runsGlobalCommands: {
+        scope: "person",
+        whole: true,
+        gives: "owner",
+        lapses: true,
+        label: "Run global commands",
+        says: "runs global commands",
+        on: "On: they run and stop the commands that extensions add for the whole server.",
+        off: "Off: they run only the commands for a session.",
+        confirm:
+            "Let {name} run global commands? Extensions add them to change settings for everyone on this server.",
     },
     keepsWarm: {
         scope: "person",

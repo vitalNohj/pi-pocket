@@ -91,49 +91,64 @@ export class Alerts {
     }
 
     /**
-     * Too many wrong codes locked out someone's authenticator (`approval-methods.ts`): the owner hears at once, in their
-     * open tabs and as a push, whoever it was, themselves too. It names the person, not what they asked for.
+     * Too many wrong codes locked out someone's authenticator (`approval-methods.ts`). The owner hears about everyone;
+     * a manager hears only about people they may manage. It names the person, not what they asked for.
      */
     lockout(lockout: Lockout): void {
         const app = this.#app;
         const person = app.config.userById(lockout.person);
-        const who =
-            person === undefined ? "Someone" : person.role === "owner" ? "You" : person.name;
-        const whose = person?.role === "owner" ? "your" : "their";
+        const users = app.config.users;
+        const owner = users.find((each) => each.role === "owner");
+        const store = app.pushStore;
         const time = span(lockout.until - app.now());
         const again =
             lockout.count > 1
                 ? ` This is lockout ${String(lockout.count)} today: each one lasts longer.`
                 : "";
-        const body = `${who} entered 5 wrong authenticator codes. Codes for ${whose} account are refused for ${time}.${again}`;
-
-        app.ownerNotice("warning", body);
-
-        const owner = app.config.users.find((each) => each.role === "owner");
-        const store = app.pushStore;
-
-        if (owner === undefined || !(store?.prefs(owner.id) ?? DEFAULT_PREFS).security) {
-            return;
-        }
-
-        const message = {
-            title: "Authenticator codes locked out",
-            body,
-            url: "/",
-            tag: `lockout-${lockout.person}`,
-        } satisfies PushMessage;
-
-        app.notifyEmbedders(owner.id, { ...message, urgency: "high" });
-
         // Push services want a real contact; Apple rejects placeholders. A tunnel's https address will do.
         const subject = app.access?.url?.startsWith("https://") ? app.access.url : undefined;
 
-        void store
-            ?.notify(owner.id, message, {
-                urgency: "high",
-                ...(subject === undefined ? {} : { subject }),
-            })
-            .catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
+        for (const recipient of users) {
+            if (
+                recipient.id !== owner?.id &&
+                (recipient.role === "owner" ||
+                    person === undefined ||
+                    !app.policy.managesPeople(recipient) ||
+                    !app.policy.mayManagePerson(recipient, person))
+            ) {
+                continue;
+            }
+
+            const self = recipient.id === lockout.person;
+            const who = self ? "You" : (person?.name ?? "Someone");
+            const whose = self ? "your" : "their";
+            const body = `${who} entered 5 wrong authenticator codes. Codes for ${whose} account are refused for ${time}.${again}`;
+
+            if (recipient.id === owner?.id) {
+                app.ownerNotice("warning", body);
+            } else {
+                app.noticeTo(recipient.id, "warning", body);
+            }
+
+            if (!(store?.prefs(recipient.id) ?? DEFAULT_PREFS).security) {
+                continue;
+            }
+
+            const message = {
+                title: "Authenticator codes locked out",
+                body,
+                url: "/",
+                tag: `lockout-${lockout.person}`,
+            } satisfies PushMessage;
+
+            app.notifyEmbedders(recipient.id, { ...message, urgency: "high" });
+            void store
+                ?.notify(recipient.id, message, {
+                    urgency: "high",
+                    ...(subject === undefined ? {} : { subject }),
+                })
+                .catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
+        }
     }
 
     /**

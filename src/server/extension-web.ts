@@ -60,7 +60,7 @@ const METHODS: ReadonlySet<string> = new Set(["GET", "POST", "PUT", "PATCH", "DE
 const ACCESS: ReadonlySet<string> = new Set(["owner", "steer", "view"]);
 /** A module with a web part needs a name that is one part of an address as it is. */
 const MODULE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const TRUSTED_DIAGRAMS_FILE = fileURLToPath(new URL("./extensions/diagrams.ts", import.meta.url));
+const BUILT_IN_EXTENSIONS = fileURLToPath(new URL("./extensions", import.meta.url));
 const SEGMENT = /^(?::[A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9._~-]+)$/;
 /** A browser module's file or folder: a name that is one part of an address as it is. */
 const ENTRY = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
@@ -184,8 +184,7 @@ function isTrustedDiagramsClient(part: WebPart): boolean {
 
     return (
         client !== undefined &&
-        part.module === "diagrams" &&
-        join(part.directory, part.file) === TRUSTED_DIAGRAMS_FILE &&
+        part.builtInModule === "diagrams" &&
         client.name === "diagrams" &&
         client.folder &&
         client.access === "view"
@@ -199,11 +198,14 @@ function isTrustedDiagramsClient(part: WebPart): boolean {
 function mayUseClient(
     part: WebPart,
     user: WebUser,
-    mayUse: (user: WebUser, access: WebAccess) => boolean,
+    mayUse: NonNullable<Options["mayUse"]>,
 ): boolean {
     const client = part.client;
 
-    return client !== undefined && (mayUse(user, client.access) || isTrustedDiagramsClient(part));
+    return (
+        client !== undefined &&
+        (mayUse(user, client.access, part.builtInModule) || isTrustedDiagramsClient(part))
+    );
 }
 
 /** A module's name, from its file: `server-status.ts` is `server-status`. */
@@ -273,6 +275,13 @@ export class WebPart {
         this.title = title;
     }
 
+    /** The module name only for the actual built-in file, never for a same-named drop-in. */
+    get builtInModule(): string | undefined {
+        return join(this.directory, this.file) === join(BUILT_IN_EXTENSIONS, `${this.module}.ts`)
+            ? this.module
+            : undefined;
+    }
+
     /** Whether it added nothing to the app: no routes, browser module, public pages, commands, or presentations (cleanups do not count). */
     get empty(): boolean {
         return (
@@ -293,7 +302,7 @@ export type RouteMatch =
 
 interface Options {
     /** Browser modules changed: each affected tab must hear which to load. */
-    changed?: (access: WebAccess[] | "all") => void;
+    changed?: (access: WebAccess[] | "all", builtInOwnerModule?: string) => void;
     /** Send a browser module's event to the tabs it loads in (`to`: one person's). */
     deliver?: (part: WebPart, access: WebAccess, event: string, data: unknown, to?: string) => void;
     log?: (message: string) => void;
@@ -306,7 +315,7 @@ interface Options {
     /** Where public links are kept (`public-links.ts`). Without it, `web.links` refuses. */
     links?: PublicLinks;
     /** The access policy's "may use an extension's parts open to `access`" (`access.ts`); without it, by role alone. */
-    mayUse?: (user: WebUser, access: WebAccess) => boolean;
+    mayUse?: (user: WebUser, access: WebAccess, builtInModule?: string) => boolean;
     /** The owner's values for modules' settings (config.json). Without it, every setting has its default. */
     settings?: (module: string) => Record<string, SettingValue>;
 }
@@ -330,7 +339,7 @@ export class ExtensionWebs {
         this.#mayUse = options.mayUse ?? byRole;
     }
 
-    readonly #mayUse: (user: WebUser, access: WebAccess) => boolean;
+    readonly #mayUse: NonNullable<Options["mayUse"]>;
 
     /** What a module registers while `file` (in `directory`) loads, and the `web` its default export gets. */
     stage(file: string, directory: string, title: string): { part: WebPart; web: ExtensionWeb } {
@@ -911,9 +920,13 @@ export class ExtensionWebs {
         return this.#parts.get(module)?.settings;
     }
 
-    /** Whose tabs load a module's browser module, when it has one: they may read its settings, secrets left out. */
-    clientAccess(module: string): WebAccess | undefined {
-        return this.#parts.get(module)?.client?.access;
+    /** Whether the module's browser access lets `user` see its settings and its browser part in Extensions. */
+    mayUseClient(module: string, user: WebUser): boolean {
+        const part = this.#parts.get(module);
+
+        return (
+            part?.client !== undefined && this.#mayUse(user, part.client.access, part.builtInModule)
+        );
     }
 
     /** The module failed to load: what it registered goes, and the version before stays. */
@@ -968,7 +981,7 @@ export class ExtensionWebs {
         }
 
         const found = part.routes.flatMap((route) => {
-            const params = this.#mayUse(user, route.access)
+            const params = this.#mayUse(user, route.access, part.builtInModule)
                 ? matchPath(route.segments, path)
                 : undefined;
 
@@ -1172,7 +1185,11 @@ export class ExtensionWebs {
         const access = parts.flatMap((part) => (part?.client ? [part.client.access] : []));
 
         if (access.length > 0) {
-            this.#options.changed?.(access);
+            const builtInOwnerModule = parts.find(
+                (part) => part?.client?.access === "owner" && part.builtInModule !== undefined,
+            )?.builtInModule;
+
+            this.#options.changed?.(access, builtInOwnerModule);
         }
     }
 
@@ -1507,7 +1524,7 @@ function clientKey(part: WebPart | undefined): string {
 
     return client === undefined
         ? ""
-        : `${client.access}:${client.rev}:${client.entry}:${part!.tools.join(",")}`;
+        : `${part!.builtInModule ?? ""}:${client.access}:${client.rev}:${client.entry}:${part!.tools.join(",")}`;
 }
 
 /** A folder and the folders in it, as `revision` walks them: not hidden ones, nor `node_modules`. */

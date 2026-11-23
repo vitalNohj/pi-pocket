@@ -16,6 +16,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { defineDoc } from "@earendil-works/pi-durable";
+import { runningBoard } from "../src/server/running.ts";
 
 // What the commands' handlers changed: how many times each ran, in its session.
 const Runs = defineDoc<{ count: number }>({
@@ -54,9 +55,12 @@ export default (_host, web) => {
         },
     });
     web.command("count-all", {
-        description: "Count for the owner", scope: "global",
-        handler: async (_args, ctx) => {
+        description: "Count for the server", scope: "global",
+        handler: async (args, ctx) => {
             await count(ctx);
+            if (args === "hold" && !ctx.signal.aborted) {
+                await new Promise((resolve) => ctx.signal.addEventListener("abort", resolve, { once: true }));
+            }
             return { type: "toast", level: "info", message: "Counted." };
         },
     });
@@ -131,7 +135,7 @@ test("a run that ended with no result answers that it failed, and runs again", a
     assert.equal(await runs(id), 2);
 });
 
-test("a viewer runs no command, and a global command is the owner's alone", async () => {
+test("a viewer runs no command, and a user without permission runs no global command", async () => {
     const id = await newSession(app);
     const viewer = (await addPerson(app, "Viewer", "viewer")).user;
     const guest = (await addPerson(app, "Guest", "guest")).user;
@@ -163,6 +167,67 @@ test("a viewer runs no command, and a global command is the owner's alone", asyn
         "done",
     );
     assert.equal(await runs(id), 1);
+});
+
+test("Run global commands opens running, stopping, suggestions and Running now, not Manage server", async () => {
+    const id = await newSession(app);
+    const runner = (await addPerson(app, "Command runner", "guest")).user;
+    const serverManager = (await addPerson(app, "Server manager", "guest")).user;
+    const plain = (await addPerson(app, "Plain user", "guest")).user;
+    const viewer = (await addPerson(app, "Viewing only", "viewer")).user;
+    const names = async (user: typeof runner) =>
+        (await app.hello(user)).server.extensionCommands.map((each) => each.name);
+
+    assert.ok(!(await names(runner)).includes("count-all"));
+    app.setRight(owner(app), { person: runner.id, right: "runsGlobalCommands", on: true });
+    app.setRight(owner(app), { person: serverManager.id, right: "managesServer", on: true });
+
+    assert.ok((await names(runner)).includes("count-all"));
+    assert.ok((await names(owner(app))).includes("count-all"));
+    assert.deepEqual(await names(viewer), []);
+
+    for (const other of [plain, serverManager]) {
+        const commands = await names(other);
+
+        assert.ok(commands.includes("count-here"));
+        assert.ok(!commands.includes("count-all"));
+        await assert.rejects(app.extensionCommands.run(id, other, request("count-all")), {
+            status: 403,
+            message:
+                "Only the owner, or someone the owner lets, can run global extension commands.",
+        });
+    }
+
+    assert.equal(
+        (await app.extensionCommands.run(id, runner, request("count-all"))).status,
+        "done",
+    );
+    const held = app.extensionCommands.run(id, runner, request("count-all", "hold"));
+    const listed = async (user: typeof runner) =>
+        (await runningBoard(app, user)).sessions
+            .flatMap((each) => each.tasks)
+            .find((each) => each.label === "running /count-all");
+
+    await until(async () => (await runs(id)) === 2, "the running global command's handler");
+    const task = await listed(runner);
+
+    assert.ok(task !== undefined);
+
+    try {
+        for (const other of [plain, serverManager]) {
+            assert.equal(await listed(other), undefined);
+            await assert.rejects(app.extensionCommands.stop(id, other, task.id), {
+                status: 403,
+                message:
+                    "Only the owner, or someone the owner lets, can stop global extension commands.",
+            });
+        }
+
+        await app.extensionCommands.stop(id, runner, task.id);
+        assert.equal((await held).status, "stopped");
+    } finally {
+        await app.extensionCommands.stop(id, owner(app), task.id);
+    }
 });
 
 test("a card shows in the transcript, never in Pi's context, and does not change whom Pi works for", async () => {

@@ -92,6 +92,25 @@ function world(
     return { policy: new AccessPolicy(facts), people: byId, approved };
 }
 
+describe("extension web access", () => {
+    it("opens only the built-in cleanup module's owner parts to people who manage runners", () => {
+        const { policy, people } = world();
+
+        people.set(stranger.id, { ...stranger, rights: ["managesRunners"] });
+        assert.equal(policy.mayUseExtension(owner, "owner"), true);
+        assert.equal(policy.mayUseExtension(stranger, "owner", "session-cleanup"), true);
+        assert.equal(policy.mayUseExtension(stranger, "owner", "updates"), false);
+        assert.equal(policy.mayUseExtension(stranger, "owner"), false);
+        assert.equal(policy.mayUseExtension(guest, "owner", "session-cleanup"), false);
+        assert.equal(policy.mayUseExtension(viewer, "owner", "session-cleanup"), false);
+        assert.equal(policy.mayUseExtension(invited, "owner", "session-cleanup"), false);
+        assert.equal(policy.mayUseExtension(guest, "steer"), true);
+        assert.equal(policy.mayUseExtension(viewer, "steer"), false);
+        assert.equal(policy.mayUseExtension(viewer, "view"), true);
+        assert.equal(policy.mayUseExtension(invited, "view"), false);
+    });
+});
+
 describe("who is in charge of a computer", () => {
     it("puts the owner in charge of this server, and a runner's linker in charge of it", () => {
         const { policy } = world();
