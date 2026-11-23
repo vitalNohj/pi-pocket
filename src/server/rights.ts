@@ -63,6 +63,14 @@ export const RIGHTS = {
         withHint:
             "On with Manage users: they invite people, who join as viewers and see what the invite shares.",
     },
+    reshares: {
+        scope: "person",
+        whole: true,
+        label: "Share what they were given",
+        says: "shares what they were given",
+        on: "On: they share sessions that are shared with them, and give folders that were given to them.",
+        off: "Off: they share only the sessions they started.",
+    },
     managesUsers: {
         scope: "person",
         whole: true,

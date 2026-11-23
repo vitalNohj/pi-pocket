@@ -78,7 +78,7 @@ import { attribute } from "./fence.ts";
 import { homePath } from "./paths.ts";
 import { localRepo, remoteRepo } from "./repo.ts";
 import { forModel, MAX_INLINE_IMAGE, modelImage, modelImageOf } from "./model-images.ts";
-import { THIS_SERVER } from "./access.ts";
+import { noteShares, THIS_SERVER } from "./access.ts";
 import { localAccess, Unreachable } from "./folder-access.ts";
 import { clearUploads, copyUploads, uploadedThere, uploadsFolder } from "./remote-context.ts";
 import { type FileView, mentionedPaths, viewFile } from "./files.ts";
@@ -427,7 +427,14 @@ function settle(
     return cleared;
 }
 
-/** One session `user` may share, with how one person has it now (`Commands` `sharingWith`). */
+/** What someone who sees a session but may not share it is told (`access.ts` `mayShare`). */
+const CANNOT_SHARE =
+    "Only the person who started this session, whoever is in charge of its computer, or someone who shares what they were given can share it.";
+
+/**
+ * One session `user` may share with one person, or take back from them, with how that person has it now (`Commands`
+ * `sharingWith`). An archived session is not listed.
+ */
 export type SharingRow = {
     id: number;
     title: string;
@@ -435,17 +442,46 @@ export type SharingRow = {
     /** Its computer's name, as the sheets show it. */
     computerName: string;
     cwd: string;
-    archived?: true;
+    /** The folder its access is judged by (`app.ts` `folderOf`): the list groups it under that one. */
+    folder: string;
+    /** When anything last happened in it, and when whoever asks last sent to Pi in it (`app.ts` `usedAt`). */
+    updatedAt: number;
+    usedAt?: number;
+    starter: { id: string; name: string };
     /**
      * How they have it: they started it; they were invited to it alone; it is shared with them; they see every session
-     * in its folder; they are in charge of its computer, where every session is theirs (told only of the one session
-     * asked for); they cannot have it (`reason`); or they do not have it.
+     * in its folder; they cannot have it (`reason`); or they do not have it.
      */
-    state: "started" | "invited" | "shared" | "folder" | "charge" | "blocked" | "none";
-    /** Can it be shared with them now, and can it be taken back from them by whoever asks. */
+    state: "started" | "invited" | "shared" | "folder" | "blocked" | "none";
+    /** Can whoever asks share it with them now, and take it back from them. */
     give: boolean;
     take: boolean;
+    /** Who shared it with them, when that is known. */
+    by?: { id: string; name: string };
     reason?: string;
+};
+
+/** One folder on a computer whoever asks is not in charge of, with how one person has it (`Commands` `sharingWith`). */
+export type SharingFolder = {
+    path: string;
+    /** They were given it; and `sees`: they access every session in it. */
+    has: boolean;
+    sees: boolean;
+    /** Can whoever asks give it to them now, take it back, and change `sees`. */
+    give: boolean;
+    take: boolean;
+    see: boolean;
+    /** Who gave it to them, when that is known. */
+    by?: { id: string; name: string };
+};
+
+/** A computer whoever asks uses and is not in charge of: the folders they can give one person there, or gave them. */
+export type SharingComputer = {
+    id: string;
+    name: string;
+    /** Why nothing can be given to that person there. */
+    reason?: string;
+    folders: SharingFolder[];
 };
 
 /**
@@ -1192,8 +1228,9 @@ export class Commands {
     /**
      * Whom session `id` is shared with, and whom it can be: everyone who may use its computer, but who is in charge of
      * it and its starter, who have it anyway. Someone it is shared with already who may not use the computer (they came
-     * with an invite, or are no longer chosen) is listed too, as `notChosen`: they keep it until taken off. Its starter's
-     * and the one in charge's to see (`access.ts` `mayShare`); to anyone else who sees it, 403; to whom it is hidden, 404.
+     * with an invite, or are no longer chosen) is listed too, as `notChosen`: they keep it until taken off. For who may
+     * share it (`access.ts` `mayShare`); to anyone else who sees it, 403; to whom it is hidden, 404. `locked`: a share
+     * that is not `user`'s to end (`mayUnshare`), which a save of theirs leaves as it is. Who asks is not listed.
      */
     sharing(
         id: ConversationId,
@@ -1207,6 +1244,8 @@ export class Commands {
             notChosen?: true;
             /** They see it anyway: it is in a folder they see every session of (`access.ts` `seesFolder`). */
             byFolder?: true;
+            /** Shared with them by someone else: not `user`'s to end (`access.ts` `mayUnshare`). */
+            locked?: true;
         }[];
         computer: string;
     } {
@@ -1221,10 +1260,7 @@ export class Commands {
         }
 
         if (!app.policy.mayShare(user, String(root))) {
-            throw new HttpError(
-                403,
-                "Only the person who started this session, or whoever is in charge of its computer, can share it.",
-            );
+            throw new HttpError(403, CANNOT_SHARE);
         }
 
         const computer = meta.runner ?? THIS_SERVER;
@@ -1236,6 +1272,7 @@ export class Commands {
                 (person) =>
                     !app.policy.inCharge(person, computer) &&
                     person.id !== starter &&
+                    person.id !== user.id &&
                     (app.policy.mayUse(person, computer) || shared.includes(person.id)),
             )
             .map((person) => ({
@@ -1244,6 +1281,10 @@ export class Commands {
                 role: person.role,
                 ...(app.policy.mayUse(person, computer) ? {} : { notChosen: true as const }),
                 ...(app.seesByFolder(person, root) ? { byFolder: true as const } : {}),
+                ...(shared.includes(person.id) &&
+                !app.policy.mayUnshare(user, String(root), person.id)
+                    ? { locked: true as const }
+                    : {}),
             }));
 
         return {
@@ -1255,11 +1296,12 @@ export class Commands {
     }
 
     /**
-     * Share session `id` with exactly `people` (person ids), one at a time: its starter and the owner may (`access.ts`
+     * Share session `id` with exactly `people` (person ids), one at a time: for who may share it (`access.ts`
      * `mayShare`). Each must be able to use the session's computer; who is in charge of it sees every session there
      * anyway, and the starter has it, so neither is kept. Someone it is shared with already stays without that, until
-     * taken off. Someone taken off leaves it at once (`app.accessChanged`), and the tasks they set up on it go to who is
-     * in charge of its computer, in the same save.
+     * taken off. A share that is not `user`'s to end (`mayUnshare`: someone else made it, and `user` neither started
+     * the session nor is in charge of its computer) stays whatever the list says. Someone taken off leaves it at once
+     * (`app.accessChanged`), and the tasks they set up on it go to who is in charge of its computer, in the same save.
      */
     async shareSession(id: ConversationId, user: User, people: unknown): Promise<string[]> {
         const app = this.#app;
@@ -1273,10 +1315,7 @@ export class Commands {
         }
 
         if (!app.policy.mayShare(user, String(root))) {
-            throw new HttpError(
-                403,
-                "Only the person who started this session, or whoever is in charge of its computer, can share it.",
-            );
+            throw new HttpError(403, CANNOT_SHARE);
         }
 
         if (
@@ -1312,16 +1351,27 @@ export class Commands {
             }
 
             if (!before.has(person.id) && !app.policy.mayUse(person, computer)) {
+                const place = computer === THIS_SERVER ? "this server" : app.runners.name(computer);
+
                 throw new HttpError(
                     400,
-                    `${person.name} cannot use ${computer === THIS_SERVER ? "this server" : app.runners.name(computer)}: choose them for it first.`,
+                    app.policy.inCharge(user, computer)
+                        ? `${person.name} cannot use ${place}: choose them for it first.`
+                        : `${person.name} cannot use ${place}. Whoever is in charge of it chooses who uses it.`,
                 );
             }
 
             shared.push(person.id);
         }
 
-        return await this.#saveShares(root, user, meta.runner, () => shared);
+        // Asked as it is saved: a share someone else made since is not ended by a list that never had it.
+        return await this.#saveShares(root, user, meta.runner, (now) => [
+            ...shared,
+            ...now.filter(
+                (each) =>
+                    !shared.includes(each) && !app.policy.mayUnshare(user, String(root), each),
+            ),
+        ]);
     }
 
     /**
@@ -1370,6 +1420,13 @@ export class Commands {
             } else {
                 item.sharedWith = saved;
             }
+
+            // Whoever saves it shared it with the people who are new in it: a share of theirs to end (`mayUnshare`).
+            noteShares(
+                item,
+                saved.filter((each) => !now.includes(each)),
+                user.id,
+            );
 
             // Whoever this save takes off hands the tasks they set up on the session to who is in charge of its
             // computer, in this same save: nothing that cuts it short leaves a task with someone who lost the session.
@@ -1438,8 +1495,15 @@ export class Commands {
         return person;
     }
 
-    /** Session `id` when it is `user`'s to share (`access.ts` `mayShare`); one hidden from them is no session to them. */
-    #sharable(user: User, id: ConversationId): { root: ConversationId; meta: SessionMeta } {
+    /**
+     * Session `id` when it is `user`'s to share (`access.ts` `mayShare`), or, with `from`, to take back from that
+     * person (`mayUnshare`); one hidden from them is no session to them.
+     */
+    #sharable(
+        user: User,
+        id: ConversationId,
+        from?: string,
+    ): { root: ConversationId; meta: SessionMeta } {
         const app = this.#app;
         const root = app.rootOf(id);
         const meta = app.sessionMeta(root);
@@ -1447,7 +1511,10 @@ export class Commands {
         if (
             meta === undefined ||
             !app.canSee(user, root) ||
-            !app.policy.mayShare(user, String(root))
+            !(
+                app.policy.mayShare(user, String(root)) ||
+                (from !== undefined && app.policy.mayUnshare(user, String(root), from))
+            )
         ) {
             throw new HttpError(404, "Not a session you can share.");
         }
@@ -1456,63 +1523,74 @@ export class Commands {
     }
 
     /**
-     * The sessions `user` may share (`access.ts` `mayShare`), each with how `personId` has it now: to share several with
-     * one person at once, and to take several back (`shareWith`). A session on a computer that person is in charge of
-     * is left out: every one there is theirs, and `charge` names those computers, so a list of what they have from
-     * `user` can say what it leaves out. `only`: the one session asked about (its top session), as a person's page in
-     * People asks about the session open behind it: no other is told, and that one is told also when the person is in
-     * charge of its computer (its state `charge`), so the page can say why it has nothing to give.
+     * What `user` can give `personId`, and take back from them, as a person's page in People lists it.
+     *
+     * `sessions`: the ones `user` may share (`access.ts` `mayShare`) or take back from that person (`mayUnshare`), each
+     * with how the person has it now, newest first; none of them archived. A session on a computer that person is in
+     * charge of is left out: every one there is theirs, and `charge` names those computers.
+     *
+     * `computers`: where `user` is not in charge, the folders they can give that person (their own, while they share
+     * what they were given: `mayGiveFolder`) and the ones they gave them. Where `user` is in charge, the Runners rules
+     * tell them every folder (`app.ts` `thisServer`, `runners.ts` `list`), so none is told here.
      */
     sharingWith(
         user: User,
         personId: string,
-        only?: ConversationId,
     ): {
         person: { id: string; name: string };
         sessions: SharingRow[];
         charge: { id: string; name: string }[];
+        computers: SharingComputer[];
     } {
         const app = this.#app;
         const person = this.#sharee(user, personId);
-        const one = only === undefined ? undefined : Number(app.rootOf(only));
         const charge = new Map<string, string>();
+
+        const named = (id: string | undefined): { id: string; name: string } | undefined => {
+            const found = id === undefined ? undefined : app.config.userById(id);
+
+            return found === undefined ? undefined : { id: found.id, name: found.name };
+        };
+
+        const placed = (computer: string): string =>
+            computer === THIS_SERVER ? "This server" : app.runners.name(computer);
         const sessions = app.sessions(user).flatMap((row): SharingRow[] => {
             const id = row.id as unknown as ConversationId;
             const meta = app.sessionMeta(id);
             const computer = row.runner ?? THIS_SERVER;
-            const theirs = app.policy.inCharge(person, computer);
 
             if (
-                (one !== undefined && row.id !== one) ||
-                row.mayShare !== true ||
-                meta === undefined
+                meta === undefined ||
+                meta.archived === true ||
+                (row.mayShare !== true && !app.policy.mayUnshare(user, String(id), person.id))
             ) {
                 return [];
             }
 
             const mine = app.policy.inCharge(user, computer);
-            const name = computer === THIS_SERVER ? "This server" : app.runners.name(computer);
+            const name = placed(computer);
 
-            if (theirs && one === undefined) {
+            if (app.policy.inCharge(person, computer)) {
                 charge.set(computer, name);
 
                 return [];
             }
 
-            const state: SharingRow["state"] = theirs
-                ? "charge"
-                : person.sessions?.includes(String(id)) === true
-                  ? "invited"
-                  : app.policy.starter({ id: String(id), computer, ...meta }) === person.id
-                    ? "started"
-                    : meta.sharedWith?.includes(person.id) === true &&
-                        !app.config.leaving(meta.runner).includes(person.id)
-                      ? "shared"
-                      : app.seesByFolder(person, id)
-                        ? "folder"
-                        : app.policy.mayUse(person, computer)
-                          ? "none"
-                          : "blocked";
+            const starter = app.policy.starter({ id: String(id), computer, ...meta });
+            const state: SharingRow["state"] =
+                person.sessions?.includes(String(id)) === true
+                    ? "invited"
+                    : starter === person.id
+                      ? "started"
+                      : meta.sharedWith?.includes(person.id) === true &&
+                          !app.config.leaving(meta.runner).includes(person.id)
+                        ? "shared"
+                        : app.seesByFolder(person, id)
+                          ? "folder"
+                          : app.policy.mayUse(person, computer)
+                            ? "none"
+                            : "blocked";
+            const by = state === "shared" ? named(meta.sharedBy?.[person.id]) : undefined;
 
             return [
                 {
@@ -1521,15 +1599,21 @@ export class Commands {
                     computer,
                     computerName: name,
                     cwd: meta.cwd,
-                    ...(meta.archived === true ? { archived: true as const } : {}),
+                    folder: app.folderOf(id)?.path ?? meta.cwd,
+                    updatedAt: meta.updatedAt,
+                    ...(row.usedAt === undefined ? {} : { usedAt: row.usedAt }),
+                    starter: named(starter) ?? { id: starter, name: "someone" },
                     state,
                     // One they have by its folder can be shared with them as well: it stays when the folder goes.
-                    give: state === "none" || state === "folder",
-                    // A share ends for who shared it; one they started, or were invited to alone, only for who is
-                    // in charge of its computer (`app.ts` `revokeSession`).
+                    give: row.mayShare === true && (state === "none" || state === "folder"),
+                    // A share ends for who made it, the session's starter, and who is in charge of its computer
+                    // (`mayUnshare`); one they started, or were invited to alone, only for who is in charge
+                    // (`app.ts` `revokeSession`).
                     take:
-                        state === "shared" ||
-                        (mine && (state === "started" || state === "invited")),
+                        state === "shared"
+                            ? app.policy.mayUnshare(user, String(id), person.id)
+                            : mine && (state === "started" || state === "invited"),
+                    ...(by === undefined ? {} : { by }),
                     ...(state === "blocked"
                         ? {
                               reason:
@@ -1542,10 +1626,71 @@ export class Commands {
             ];
         });
 
+        const computers = [THIS_SERVER, ...app.config.runners.map((each) => each.id)].flatMap(
+            (id): SharingComputer[] => {
+                if (
+                    app.policy.inCharge(user, id) ||
+                    app.policy.inCharge(person, id) ||
+                    !app.policy.mayUse(user, id)
+                ) {
+                    return [];
+                }
+
+                const key = id === THIS_SERVER ? undefined : id;
+                const theirs = app.config.givenFolders(key, person.id);
+                const sees = app.config.seenFolders(key, person.id);
+                const givers = app.config.givenBy(key, person.id);
+                const mine = app.policy.reshares(user)
+                    ? (app.policy.givenFolders(user, id) ?? [])
+                    : [];
+                const paths = [
+                    ...new Set([...mine, ...theirs.filter((each) => givers[each] === user.id)]),
+                ];
+
+                if (paths.length === 0) {
+                    return [];
+                }
+
+                // Folders are for someone who prompts there already: who uses a computer is its one in charge's choice.
+                const uses = app.policy.mayStart(person, id);
+
+                return [
+                    {
+                        id,
+                        name: placed(id),
+                        ...(uses
+                            ? {}
+                            : {
+                                  reason:
+                                      person.role === "viewer"
+                                          ? "Folders are given to users only."
+                                          : `${person.name} cannot use ${placed(id)}. Whoever is in charge of it chooses who uses it.`,
+                              }),
+                        folders: paths.map((path) => {
+                            const has = theirs.includes(path);
+                            const on = has && sees.includes(path);
+                            const by = has ? named(givers[path]) : undefined;
+
+                            return {
+                                path,
+                                has,
+                                sees: on,
+                                give: !has && uses && app.policy.mayGiveFolder(user, id, path),
+                                take: has && app.policy.mayTakeFolder(user, id, person.id, path),
+                                see: has && app.policy.maySetSees(user, id, person.id, path, !on),
+                                ...(by === undefined ? {} : { by }),
+                            };
+                        }),
+                    },
+                ];
+            },
+        );
+
         return {
             person: { id: person.id, name: person.name },
             sessions,
             charge: [...charge].map(([id, name]) => ({ id, name })),
+            computers,
         };
     }
 
@@ -1554,18 +1699,18 @@ export class Commands {
      * refused (not theirs to share, a person who cannot use its computer) is named in `refused` with the reason, and the
      * others are done. Sharing is `shareSession`'s, for that one person, with the others it is shared with left as they
      * are at that moment. Taking back is `app.ts` `revokeSession` for who is in charge of the session's computer (also
-     * one they started, or were invited to alone); its starter, who is not, ends only a share. `only`: the answer tells
-     * of that one session, as `sharingWith` does.
+     * one they started, or were invited to alone); anyone else ends only a share, and only one that is theirs to end
+     * (`access.ts` `mayUnshare`: they started the session, or made that share).
      */
     async shareWith(
         user: User,
         personId: string,
         body: { share?: unknown; revoke?: unknown } | null,
-        only?: ConversationId,
     ): Promise<{
         person: { id: string; name: string };
         sessions: SharingRow[];
         charge: { id: string; name: string }[];
+        computers: SharingComputer[];
         refused: { id: number; reason: string }[];
     }> {
         const app = this.#app;
@@ -1631,7 +1776,9 @@ export class Commands {
 
                 const cannot = new HttpError(
                     400,
-                    `${person.name} cannot use ${place(meta)}: choose them for it first.`,
+                    app.policy.inCharge(user, computer)
+                        ? `${person.name} cannot use ${place(meta)}: choose them for it first.`
+                        : `${person.name} cannot use ${place(meta)}. Whoever is in charge of it chooses who uses it.`,
                 );
 
                 if (!app.policy.mayUse(person, computer)) {
@@ -1651,7 +1798,7 @@ export class Commands {
 
         for (const id of revoke) {
             await each(id, async () => {
-                const { root, meta } = this.#sharable(user, id);
+                const { root, meta } = this.#sharable(user, id, person.id);
 
                 if (app.policy.inCharge(user, meta.runner ?? THIS_SERVER)) {
                     await app.revokeSession(user, root, person.id);
@@ -1668,13 +1815,20 @@ export class Commands {
                     );
                 }
 
+                if (!app.policy.mayUnshare(user, String(root), person.id)) {
+                    throw new HttpError(
+                        403,
+                        `Only whoever shared it with ${person.name}, its starter, or whoever is in charge of ${place(meta)} can take it back.`,
+                    );
+                }
+
                 await this.#saveShares(root, user, meta.runner, (now) =>
                     now.filter((other) => other !== person.id),
                 );
             });
         }
 
-        return { ...this.sharingWith(user, personId, only), refused };
+        return { ...this.sharingWith(user, personId), refused };
     }
 
     /**
@@ -1997,7 +2151,12 @@ export class Commands {
         // The title comes from the message as it was stored: without hidden values.
         const titled = app.hidden.replace(typed, id);
 
-        await this.#touched(id, titled, text === titled ? undefined : text);
+        await this.#touched(
+            id,
+            titled,
+            text === titled ? undefined : text,
+            task !== true && via === undefined ? user.id : undefined,
+        );
         this.#reportUnanswered(id, submission.wait(context));
 
         if (failure !== undefined) {
@@ -2481,9 +2640,16 @@ export class Commands {
      * A session just got a message: it moves up the list, and its first message names it. A long first message gets a
      * short title written for it afterwards (`titles.ts`), and so does a command (`/skill:name`, a prompt template),
      * whose name says little: written from the command and what it `expanded` to, which says what it asks (a skill's
-     * instructions without the paths of its files, which would pull the title toward a folder's name).
+     * instructions without the paths of its files, which would pull the title toward a folder's name). `by`: the person
+     * whose own message it was, not a task's run or another agent's: they used the session now (`docs.ts`
+     * `SessionMeta.usedBy`).
      */
-    async #touched(id: ConversationId, text: string, expanded?: string): Promise<void> {
+    async #touched(
+        id: ConversationId,
+        text: string,
+        expanded?: string,
+        by?: string,
+    ): Promise<void> {
         if (this.#app.sessionMeta(id) === undefined) {
             return;
         }
@@ -2497,7 +2663,23 @@ export class Commands {
                 return;
             }
 
-            meta.updatedAt = Date.now();
+            const now = Date.now();
+
+            // The first use kept leaves its starter the last activity before it as theirs (`app.ts` `usedAt`).
+            if (by !== undefined && meta.pip === undefined) {
+                const starter = this.#app.policy.starter({
+                    id: String(id),
+                    computer: meta.runner ?? THIS_SERVER,
+                    ...meta,
+                });
+
+                meta.usedBy = {
+                    ...(meta.usedBy ?? (starter === by ? {} : { [starter]: meta.updatedAt })),
+                    [by]: now,
+                };
+            }
+
+            meta.updatedAt = now;
 
             if (meta.title === undefined && text !== "") {
                 meta.title = provisional = text.replace(/\s+/g, " ").slice(0, 80);
@@ -4239,6 +4421,8 @@ export class Commands {
                     createdBy: source.createdBy,
                     sharedWith:
                         source.sharedWith === undefined ? undefined : [...source.sharedWith],
+                    sharedBy: source.sharedBy === undefined ? undefined : { ...source.sharedBy },
+                    usedBy: source.usedBy === undefined ? undefined : { ...source.usedBy },
                 },
             });
             const wasArchived = source.archived === true;
@@ -4743,7 +4927,13 @@ export class Commands {
              * It takes the place of session `id` (Undo), and is no new session of `user`'s: it keeps that session's
              * starter (none: the owner's, as any session without one) and the people it is shared with.
              */
-            keeps?: { createdBy: string | undefined; sharedWith: string[] | undefined };
+            keeps?: {
+                createdBy: string | undefined;
+                sharedWith: string[] | undefined;
+                /** Who made each of those shares, and when each person used it (`SessionMeta`). */
+                sharedBy?: Record<string, string> | undefined;
+                usedBy?: Record<string, number> | undefined;
+            };
             /** The computer it runs on, with its permission there; absent: this server. */
             runner?: string;
             runnerPermission?: string;
@@ -4775,6 +4965,8 @@ export class Commands {
             updatedAt: now,
             ...(starter === undefined ? {} : { createdBy: starter }),
             ...(sharedWith === undefined ? {} : { sharedWith }),
+            ...(fork.keeps?.sharedBy === undefined ? {} : { sharedBy: fork.keeps.sharedBy }),
+            ...(fork.keeps?.usedBy === undefined ? {} : { usedBy: fork.keeps.usedBy }),
             forkedFrom: { id: Number(id), ...(at === undefined ? {} : { entryId: at }) },
             ...(runner === undefined ? {} : { runner, runnerPermission }),
             ...(worktree === undefined ? {} : { worktree }),

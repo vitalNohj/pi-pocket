@@ -9,7 +9,9 @@ import {
     type AccessFacts,
     AccessPolicy,
     type Computer,
+    forgetPerson,
     inFolder,
+    noteShares,
     type Person,
     type SessionFacts,
     THIS_SERVER,
@@ -30,6 +32,9 @@ const viewer: Person = { id: "viewer", role: "viewer" };
 const stranger: Person = { id: "stranger", role: "guest" };
 const linker: Person = { id: "linker", role: "guest", rights: ["linksRunners"] };
 const invited: Person = { id: "invited", role: "guest", sessions: ["30"] };
+/** A user who shares what they were given (`rights.ts` `reshares`), and one who does not. */
+const lead: Person = { id: "lead", role: "guest", rights: ["reshares"] };
+const plain: Person = { id: "plain", role: "guest" };
 
 /** On a computer, `people` hold `right`, and nobody the other one. */
 const held = (right: ComputerRight, people: string[]): Pick<Computer, "holders"> => ({
@@ -45,6 +50,7 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
         // The guest was given /given (and what is in it); no one else anything.
         given: (person) => (person === guest.id ? ["/given"] : []),
         sees: () => [],
+        givenBy: () => ({}),
         holders: () => [],
         shareNew: false,
         ...patch,
@@ -574,6 +580,119 @@ describe("may this person send to a session now", () => {
     });
 });
 
+describe("who may give a folder", () => {
+    /**
+     * On this server the lead has /proj (all sessions in it) and /docs; the guest has /proj from the lead, the plain
+     * user from whoever is in charge. On the runner the lead has /r.
+     */
+    const folders = (
+        patch: Partial<Computer> = {},
+        people: Person[] = [owner, guest, viewer, lead, plain, linker],
+    ) =>
+        world(
+            [
+                computer(THIS_SERVER, {
+                    chosen: [guest.id, lead.id, plain.id],
+                    given: (person) =>
+                        person === lead.id
+                            ? ["/proj", "/docs"]
+                            : person === guest.id || person === plain.id
+                              ? ["/proj"]
+                              : [],
+                    givenBy: (person): Record<string, string> =>
+                        person === guest.id ? { "/proj": lead.id } : {},
+                    sees: (person) => (person === lead.id ? ["/proj"] : []),
+                    ...patch,
+                }),
+                computer("runner", {
+                    chosen: [lead.id],
+                    given: (person) => (person === lead.id ? ["/r"] : []),
+                }),
+            ],
+            [],
+            people,
+        );
+    const without = [owner, guest, viewer, { ...lead, rights: [] }, plain, linker];
+
+    it("lets who is in charge give any folder, and someone who shares what they were given exactly their own", () => {
+        const { policy } = folders();
+
+        assert.equal(policy.mayGiveFolder(owner, THIS_SERVER, "/anywhere"), true);
+        assert.equal(policy.mayGiveFolder(linker, "runner", "/anywhere"), true);
+        assert.equal(policy.mayGiveFolder(lead, THIS_SERVER, "/proj"), true);
+        assert.equal(policy.mayGiveFolder(lead, THIS_SERVER, "/docs"), true);
+        assert.equal(policy.mayGiveFolder(lead, "runner", "/r"), true);
+    });
+
+    it("refuses a folder they do not have, one inside or above theirs, and anyone without the right", () => {
+        const { policy } = folders();
+
+        assert.equal(policy.mayGiveFolder(lead, THIS_SERVER, "/proj/app"), false);
+        assert.equal(policy.mayGiveFolder(lead, THIS_SERVER, "/"), false);
+        assert.equal(policy.mayGiveFolder(lead, THIS_SERVER, "/other"), false);
+        assert.equal(policy.mayGiveFolder(lead, "runner", "/proj"), false, "theirs elsewhere");
+        assert.equal(policy.mayGiveFolder(plain, THIS_SERVER, "/proj"), false);
+        assert.equal(policy.mayGiveFolder(owner, "runner", "/r"), false);
+        assert.equal(folders({}, without).policy.mayGiveFolder(lead, THIS_SERVER, "/proj"), false);
+
+        // A viewer gives nothing, and nothing is given on a blocked computer.
+        const asViewer = folders({}, [owner, guest, { ...lead, role: "viewer" }, plain, linker]);
+        const blocked = folders({}, [owner, guest, lead, plain, { ...linker, role: "viewer" }]);
+
+        assert.equal(asViewer.policy.mayGiveFolder(lead, THIS_SERVER, "/proj"), false);
+        assert.equal(blocked.policy.blocked("runner"), true);
+        assert.equal(blocked.policy.mayGiveFolder(lead, "runner", "/r"), false);
+    });
+
+    it("lets a folder be taken back by who is in charge and whoever gave it, with or without the right", () => {
+        const { policy } = folders();
+
+        assert.equal(policy.mayTakeFolder(owner, THIS_SERVER, guest.id, "/proj"), true);
+        assert.equal(policy.mayTakeFolder(owner, THIS_SERVER, plain.id, "/proj"), true);
+        assert.equal(policy.mayTakeFolder(lead, THIS_SERVER, guest.id, "/proj"), true);
+        assert.equal(
+            folders({}, without).policy.mayTakeFolder(lead, THIS_SERVER, guest.id, "/proj"),
+            true,
+        );
+    });
+
+    it("refuses to take back a folder someone else gave, and one they gave on a computer they left", () => {
+        const { policy } = folders();
+
+        assert.equal(policy.mayTakeFolder(lead, THIS_SERVER, plain.id, "/proj"), false);
+        assert.equal(policy.mayTakeFolder(plain, THIS_SERVER, guest.id, "/proj"), false);
+        assert.equal(policy.mayTakeFolder(guest, THIS_SERVER, guest.id, "/proj"), false);
+        assert.equal(
+            folders({ chosen: [guest.id, plain.id] }).policy.mayTakeFolder(
+                lead,
+                THIS_SERVER,
+                guest.id,
+                "/proj",
+            ),
+            false,
+        );
+    });
+
+    it("lets all sessions in a folder be turned on by who gave it only while they access them all themselves", () => {
+        const { policy } = folders();
+
+        assert.equal(policy.maySetSees(owner, THIS_SERVER, guest.id, "/proj", true), true);
+        assert.equal(policy.maySetSees(lead, THIS_SERVER, guest.id, "/proj", true), true);
+        assert.equal(policy.maySetSees(lead, THIS_SERVER, guest.id, "/proj", false), true);
+
+        // Not for a folder someone else gave, nor by someone who gave nothing.
+        assert.equal(policy.maySetSees(lead, THIS_SERVER, plain.id, "/proj", true), false);
+        assert.equal(policy.maySetSees(lead, THIS_SERVER, plain.id, "/proj", false), false);
+        assert.equal(policy.maySetSees(plain, THIS_SERVER, guest.id, "/proj", false), false);
+
+        // Without all sessions in it themselves, or without the right: only off.
+        for (const { policy: limited } of [folders({ sees: () => [] }), folders({}, without)]) {
+            assert.equal(limited.maySetSees(lead, THIS_SERVER, guest.id, "/proj", true), false);
+            assert.equal(limited.maySetSees(lead, THIS_SERVER, guest.id, "/proj", false), true);
+        }
+    });
+});
+
 describe("who may share a session", () => {
     it("lets who is in charge and the starter share it", () => {
         const { policy } = world();
@@ -590,6 +709,150 @@ describe("who may share a session", () => {
         assert.equal(policy.mayShare(stranger, "10"), false);
         assert.equal(policy.mayShare(owner, "20"), false);
         assert.equal(policy.mayShare(guest, "40"), false);
+    });
+
+    /** Session 60 is the stranger's, shared with the guest, a lead, and a plain user; 61 is the owner's alone. */
+    const passedOn = (
+        patch: Partial<SessionFacts> = {},
+        people: Person[] = [owner, guest, viewer, stranger, lead, plain],
+    ) =>
+        world(
+            [
+                computer(THIS_SERVER, {
+                    chosen: [guest.id, viewer.id, stranger.id, lead.id, plain.id],
+                }),
+            ],
+            [
+                {
+                    id: "60",
+                    computer: THIS_SERVER,
+                    createdBy: stranger.id,
+                    sharedWith: [guest.id, lead.id, plain.id],
+                    ...patch,
+                },
+                { id: "61", computer: THIS_SERVER, createdBy: owner.id },
+                { id: "62", computer: THIS_SERVER, pip: lead.id },
+            ],
+            people,
+        );
+
+    it("lets someone share a session that is shared with them once they share what they were given", () => {
+        const { policy } = passedOn();
+
+        assert.equal(policy.mayShare(lead, "60"), true);
+        assert.equal(policy.mayShare(stranger, "60"), true, "its starter needs no right");
+
+        // Also one that is theirs by its folder alone.
+        const folder = (person: string) =>
+            person === lead.id || person === plain.id ? ["/proj"] : [];
+        const byFolder = world(
+            [computer(THIS_SERVER, { chosen: [lead.id, plain.id], given: folder, sees: folder })],
+            [{ id: "70", computer: THIS_SERVER, createdBy: owner.id, folder: "/proj/app" }],
+            [owner, lead, plain],
+        );
+
+        assert.equal(byFolder.policy.maySteer(plain, "70"), true);
+        assert.equal(byFolder.policy.mayShare(lead, "70"), true);
+        assert.equal(byFolder.policy.mayShare(plain, "70"), false);
+    });
+
+    it("refuses that without the right, as a viewer, and for a session they do not have", () => {
+        const { policy } = passedOn();
+
+        assert.equal(policy.mayShare(plain, "60"), false);
+        assert.equal(policy.mayShare(lead, "61"), false, "nobody shares what they do not have");
+        assert.equal(policy.mayShare(lead, "62"), false, "never a PiP");
+
+        // A viewer holds no right, whatever their record says.
+        const asViewer = passedOn({}, [
+            owner,
+            guest,
+            viewer,
+            stranger,
+            { ...lead, role: "viewer" },
+            plain,
+        ]);
+
+        assert.equal(asViewer.policy.maySee(lead, "60"), true);
+        assert.equal(asViewer.policy.mayShare(lead, "60"), false);
+    });
+
+    it("lets a share be ended by who is in charge, the session's starter, and whoever made it", () => {
+        // The lead shared it with the guest, its starter with the plain user; who shared it with the lead is not known.
+        const { policy } = passedOn({ sharedBy: { [guest.id]: lead.id, [plain.id]: stranger.id } });
+
+        assert.equal(policy.mayUnshare(owner, "60", guest.id), true);
+        assert.equal(policy.mayUnshare(stranger, "60", guest.id), true);
+        assert.equal(policy.mayUnshare(lead, "60", guest.id), true);
+
+        // It takes no right: what someone gave stays theirs to take back.
+        const without = passedOn({ sharedBy: { [guest.id]: lead.id } }, [
+            owner,
+            guest,
+            viewer,
+            stranger,
+            { ...lead, rights: [] },
+            plain,
+        ]);
+
+        assert.equal(without.policy.mayShare(lead, "60"), false);
+        assert.equal(without.policy.mayUnshare(lead, "60", guest.id), true);
+    });
+
+    it("refuses to end a share someone else made, one whose maker is not known, and one of a session they lost", () => {
+        const { policy } = passedOn({ sharedBy: { [guest.id]: lead.id, [plain.id]: stranger.id } });
+
+        assert.equal(policy.mayUnshare(lead, "60", plain.id), false);
+        assert.equal(policy.mayUnshare(plain, "60", guest.id), false);
+        assert.equal(policy.mayUnshare(lead, "60", lead.id), false, "not known who shared it");
+        assert.equal(policy.mayUnshare(owner, "62", lead.id), false, "never a PiP");
+
+        const unknown = passedOn();
+
+        assert.equal(unknown.policy.mayUnshare(lead, "60", guest.id), false);
+        assert.equal(unknown.policy.mayUnshare(stranger, "60", guest.id), true);
+
+        // The session is no longer shared with the lead: the share they made is its starter's to end.
+        const lost = passedOn({
+            sharedWith: [guest.id, plain.id],
+            sharedBy: { [guest.id]: lead.id },
+        });
+
+        assert.equal(lost.policy.mayUnshare(lead, "60", guest.id), false);
+        assert.equal(lost.policy.mayUnshare(stranger, "60", guest.id), true);
+    });
+
+    it("keeps who shared a session only while it is shared, and forgets a removed person", () => {
+        const meta: {
+            sharedWith?: string[];
+            sharedBy?: Record<string, string>;
+            usedBy?: Record<string, number>;
+        } = { sharedWith: ["a", "b"], sharedBy: { a: "x", gone: "y" } };
+
+        noteShares(meta, ["b", "not shared"], "z");
+        assert.deepEqual(meta.sharedBy, { a: "x", b: "z" });
+
+        // Shared again by someone else after it ended: the first giver is not kept.
+        meta.sharedWith = ["b"];
+        noteShares(meta);
+        meta.sharedWith = ["b", "a"];
+        noteShares(meta, ["a"]);
+        assert.deepEqual(meta.sharedBy, { b: "z" }, "a share with no giver named has none");
+
+        delete meta.sharedWith;
+        noteShares(meta);
+        assert.equal(meta.sharedBy, undefined);
+
+        const left = {
+            sharedWith: ["a", "b"],
+            sharedBy: { a: "x", b: "y" } as Record<string, string>,
+            usedBy: { x: 1, y: 2 } as Record<string, number>,
+        };
+
+        forgetPerson(left, "x");
+        assert.deepEqual(left.sharedWith, ["a", "b"], "the shares they made stay");
+        assert.deepEqual(left.sharedBy, { b: "y" });
+        assert.deepEqual(left.usedBy, { y: 2 });
     });
 
     it("shares new sessions with no one unless the computer shares them with its people", () => {

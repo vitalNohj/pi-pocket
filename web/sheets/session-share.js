@@ -1,12 +1,13 @@
-// Share a session with people, one at a time (`commands.ts` `sharing` and `shareSession`): its starter and who is in
-// charge of its computer pick from everyone chosen for it. Someone taken off leaves it at once.
+// Share a session with people, one at a time (`commands.ts` `sharing` and `shareSession`): its starter, who is in
+// charge of its computer, and someone who shares what they were given pick from everyone chosen for it. Someone taken
+// off leaves it at once. A share that is not one's own to end (`access.ts` `mayUnshare`) shows, and cannot be changed.
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, closeSheet, notify, store } from "../store.js";
 import { html, Loader, Sheet } from "../ui.js";
 
 /**
  * May this tab share session `session` (a row of the list): the server says so on the row (`access.ts` `mayShare`): who
- * is in charge of its computer, and its starter while they steer it.
+ * is in charge of its computer, its starter while they steer it, and someone who shares what they were given.
  */
 export function canShare(session) {
     return Boolean(store.state.me) && session?.mayShare === true;
@@ -87,7 +88,7 @@ export function SessionShareSheet({ id }) {
                                       <input
                                           type="checkbox"
                                           checked=${selected.includes(person.id)}
-                                          disabled=${busy}
+                                          disabled=${busy || person.locked === true}
                                           onChange=${(event) =>
                                               setSelected(
                                                   event.currentTarget.checked
@@ -104,6 +105,10 @@ export function SessionShareSheet({ id }) {
                                       }${
                                           person.notChosen
                                               ? html` <span class="muted small">(not chosen for ${data.computer}: once taken off, choose them first)</span>`
+                                              : ""
+                                      }${
+                                          person.locked
+                                              ? html` <span class="muted small">(shared by someone else: only they, its starter, or whoever is in charge of ${data.computer} can take it back)</span>`
                                               : ""
                                       }${
                                           person.byFolder

@@ -122,6 +122,7 @@ test("every right is declared once, and the app is told its words and none of it
     assert.deepEqual(PERSON_RIGHTS, [
         "linksRunners",
         "invites",
+        "reshares",
         "managesUsers",
         "managesRunners",
         "managesServer",
@@ -186,6 +187,7 @@ test("one check answers for every right: the owner has them all, a user what the
     for (const each of [owner(app), gil, vera, sam]) {
         assert.equal(app.policy.mayLink(each), has(each, "linksRunners"), each.name);
         assert.equal(app.policy.invites(each), has(each, "invites"), each.name);
+        assert.equal(app.policy.reshares(each), has(each, "reshares"), each.name);
         assert.equal(app.policy.managesPeople(each), has(each, "managesUsers"), each.name);
         assert.equal(app.policy.managesRunners(each), has(each, "managesRunners"), each.name);
         assert.equal(app.policy.managesServer(each), has(each, "managesServer"), each.name);
@@ -196,6 +198,7 @@ test("one check answers for every right: the owner has them all, a user what the
     assert.deepEqual((await app.hello(owner(app))).user.rights, {
         linksRunners: true,
         invites: true,
+        reshares: true,
         managesUsers: true,
         managesRunners: true,
         managesServer: true,
@@ -206,6 +209,7 @@ test("one check answers for every right: the owner has them all, a user what the
     assert.deepEqual((await app.hello(kept(gil))).user.rights, {
         linksRunners: true,
         invites: false,
+        reshares: false,
         managesUsers: false,
         managesRunners: false,
         managesServer: false,
@@ -246,7 +250,7 @@ test("one check answers for every right: the owner has them all, a user what the
     );
     assert.throws(
         () => app.setRight(owner(app), { person: gil.id, right: "wheel", on: true }),
-        /Send right \(linksRunners, invites, managesUsers, managesRunners, managesServer, keepsWarm\) and on\./,
+        /Send right \(linksRunners, invites, reshares, managesUsers, managesRunners, managesServer, keepsWarm\) and on\./,
     );
 });
 
@@ -264,6 +268,7 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     assert.deepEqual(told(owner(app), gil)?.offer, {
         linksRunners: "open",
         invites: "open",
+        reshares: "open",
         managesUsers: "open",
         managesRunners: "open",
         managesServer: "open",
@@ -275,6 +280,7 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     assert.deepEqual(told(owner(app), mona)?.offer, {
         linksRunners: "open",
         invites: "with",
+        reshares: "open",
         managesUsers: "open",
         managesRunners: "open",
         managesServer: "open",
@@ -286,6 +292,7 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     assert.deepEqual(told(mona, gil)?.offer, {
         linksRunners: "lacking",
         invites: "open",
+        reshares: "lacking",
         keepsWarm: "lacking",
     });
     // They change nobody who manages users, nor themselves; a person reads their own rights, and offers none.
@@ -401,7 +408,7 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
 
     // Made a viewer: they hold none; the rights to manage (users, runners, the server) lapse, the others wait for them.
     app.config.updateUser(pia.id, { role: "viewer" });
-    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "keepsWarm"]);
+    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "reshares", "keepsWarm"]);
 
     for (const right of PERSON_RIGHTS) {
         assert.equal(has(pia, right), false, right);
@@ -425,7 +432,7 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
     linkAuthenticator(app, pia);
     app.removeAuthenticator(pia.id, owner(app));
     assert.equal(kept(pia).role, "viewer");
-    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "keepsWarm"]);
+    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "reshares", "keepsWarm"]);
     assert.deepEqual(kept(pia).paused, { rights: lapsing });
 
     for (const right of PERSON_RIGHTS) {

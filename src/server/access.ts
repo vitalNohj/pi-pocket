@@ -62,6 +62,11 @@ export type Computer = {
     /** Of those, the folders in which `person` sees every session, whoever started it (`seesFolder`). */
     sees(person: string): readonly string[];
     /**
+     * Who gave `person` each of those folders, by folder. No entry: not known (given before this was kept), so only
+     * who is in charge takes that folder back.
+     */
+    givenBy(person: string): Readonly<Record<string, string>>;
+    /**
      * The chosen people the one in charge gave `right` here (`rights.ts`): to take the wheel from a driver
      * (`overridesTurns`), or to allow a call their own message led to (`allowsOwn`).
      */
@@ -80,6 +85,11 @@ export type SessionFacts = {
     createdBy?: string;
     /** People it is shared with, one at a time. */
     sharedWith?: readonly string[];
+    /**
+     * Who shared it with each of them, by person. No entry: not known, so only its starter or who is in charge of its
+     * computer ends that share.
+     */
+    sharedBy?: Readonly<Record<string, string>>;
     /** Set on a PiP: the person it belongs to. */
     pip?: string;
     /**
@@ -124,6 +134,69 @@ export function inFolder(folder: string, given: string): boolean {
         folder.startsWith(`${base}/`) ||
         (windows && folder.startsWith(`${base}\\`))
     );
+}
+
+/** What a session's record keeps of who shared it and who used it (`docs.ts` `SessionMeta`). */
+type ShareRecord = {
+    sharedWith?: string[];
+    sharedBy?: Record<string, string>;
+    usedBy?: Record<string, number>;
+};
+
+/**
+ * After `meta.sharedWith` was written: who shared it is kept only for the people it is still shared with, and `by` is
+ * noted as who shared it with `added`. Every write of the list is followed by this, so a share that ended and began
+ * again never keeps the giver of the first.
+ */
+export function noteShares(meta: ShareRecord, added: readonly string[] = [], by?: string): void {
+    const shared = meta.sharedWith ?? [];
+    const next: Record<string, string> = {};
+
+    for (const [person, giver] of Object.entries(meta.sharedBy ?? {})) {
+        if (shared.includes(person)) {
+            next[person] = giver;
+        }
+    }
+
+    if (by !== undefined) {
+        for (const person of added) {
+            if (shared.includes(person)) {
+                next[person] = by;
+            }
+        }
+    }
+
+    if (Object.keys(next).length === 0) {
+        if (meta.sharedBy !== undefined) {
+            delete meta.sharedBy;
+        }
+    } else {
+        meta.sharedBy = next;
+    }
+}
+
+/**
+ * `person` was removed: a session no longer says when they used it, nor that they shared it with anyone. The shares
+ * they made stay, for its starter or who is in charge to end.
+ */
+export function forgetPerson(meta: ShareRecord, person: string): void {
+    if (meta.usedBy?.[person] !== undefined) {
+        const { [person]: _was, ...rest } = meta.usedBy;
+
+        meta.usedBy = rest;
+    }
+
+    if (Object.values(meta.sharedBy ?? {}).includes(person)) {
+        const kept = Object.fromEntries(
+            Object.entries(meta.sharedBy!).filter(([, giver]) => giver !== person),
+        );
+
+        if (Object.keys(kept).length === 0) {
+            delete meta.sharedBy;
+        } else {
+            meta.sharedBy = kept;
+        }
+    }
 }
 
 export class AccessPolicy {
@@ -460,6 +533,15 @@ export class AccessPolicy {
     }
 
     /**
+     * Does `person` pass on what they were given: share a session that is shared with them (`mayShare`), and give a
+     * folder that was given to them (`mayGiveFolder`). Off unless who manages them turns it on. What is their own
+     * (a session they started, a computer they are in charge of) they share without it.
+     */
+    reshares(person: Pick<Person, "id">): boolean {
+        return this.has(person, "reshares");
+    }
+
+    /**
      * May `person` invite someone new: only who the owner lets (`invites`), and then to session `session` alone, who
      * may share it (`mayShare`); to their own sessions, or a folder's, who may start sessions on some computer: this
      * server or a runner, their own or one they were chosen for. Not on this server alone: an invite gives only what
@@ -564,6 +646,76 @@ export class AccessPolicy {
         const sees = this.#facts.computer(id)?.sees(current.id) ?? [];
 
         return sees.some((each) => given.includes(each) && inFolder(folder, each));
+    }
+
+    /**
+     * May `person` give `folder` on computer `id` to someone who uses it: who is in charge, any folder; and who passes
+     * on what they were given (`reshares`), a folder exactly as it was given to them, while the computer works. Nobody
+     * gives what they do not have.
+     */
+    mayGiveFolder(person: Pick<Person, "id">, id: string, folder: string): boolean {
+        const current = this.#current(person);
+
+        if (current === undefined) {
+            return false;
+        }
+
+        return (
+            this.inCharge(current, id) ||
+            (this.reshares(current) &&
+                !this.blocked(id) &&
+                (this.givenFolders(current, id) ?? []).includes(folder))
+        );
+    }
+
+    /**
+     * May `person` take `folder` on computer `id` back from `target`: who is in charge, and whoever gave it to them,
+     * while they still use the computer. It takes no right: what someone gave stays theirs to take back.
+     */
+    mayTakeFolder(person: Pick<Person, "id">, id: string, target: string, folder: string): boolean {
+        const current = this.#current(person);
+
+        if (current === undefined) {
+            return false;
+        }
+
+        return (
+            this.inCharge(current, id) ||
+            (this.#facts.computer(id)?.givenBy(target)[folder] === current.id &&
+                this.mayUse(current, id))
+        );
+    }
+
+    /**
+     * May `person` set whether `target` sees every session in `folder` on computer `id`: who is in charge; and whoever
+     * gave them the folder, to turn it off, or to turn it on while they pass on what they were given and see every
+     * session in it themselves.
+     */
+    maySetSees(
+        person: Pick<Person, "id">,
+        id: string,
+        target: string,
+        folder: string,
+        on: boolean,
+    ): boolean {
+        const current = this.#current(person);
+
+        if (current === undefined) {
+            return false;
+        }
+
+        if (this.inCharge(current, id)) {
+            return true;
+        }
+
+        if (
+            this.#facts.computer(id)?.givenBy(target)[folder] !== current.id ||
+            !this.mayUse(current, id)
+        ) {
+            return false;
+        }
+
+        return !on || (this.reshares(current) && this.seesFolder(current, id, folder));
     }
 
     /**
@@ -764,8 +916,10 @@ export class AccessPolicy {
     }
 
     /**
-     * May `person` change whom session `id` is shared with, or invite someone to it alone (an invite shares it too): who
-     * is in charge of its computer, and its starter while they may steer it.
+     * May `person` share session `id` with someone, or invite someone to it alone (an invite shares it too): who is in
+     * charge of its computer; its starter while they may steer it; and anyone else who steers it (it is shared with
+     * them, or theirs by its folder) while they pass on what they were given (`reshares`). Nobody shares what they do
+     * not have. Ending a share is `mayUnshare`.
      */
     mayShare(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -777,7 +931,28 @@ export class AccessPolicy {
 
         return (
             this.inCharge(current, facts.computer) ||
-            (this.starter(facts) === current.id && this.maySteer(current, id))
+            (this.maySteer(current, id) &&
+                (this.starter(facts) === current.id || this.reshares(current)))
+        );
+    }
+
+    /**
+     * May `person` end `target`'s share of session `id`: who is in charge of its computer; its starter while they may
+     * steer it; and whoever shared it with `target`, while they still steer it themselves. It takes no right: what
+     * someone gave stays theirs to take back. A share whose giver is not known is its starter's to end.
+     */
+    mayUnshare(person: Pick<Person, "id">, id: string, target: string): boolean {
+        const current = this.#current(person);
+        const facts = this.#facts.session(id);
+
+        if (current === undefined || facts === undefined || facts.pip !== undefined) {
+            return false;
+        }
+
+        return (
+            this.inCharge(current, facts.computer) ||
+            (this.maySteer(current, id) &&
+                (this.starter(facts) === current.id || facts.sharedBy?.[target] === current.id))
         );
     }
 

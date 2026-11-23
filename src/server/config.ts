@@ -236,6 +236,11 @@ export interface StoredRunner {
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
     sees?: Record<string, string[]>;
     /**
+     * Who gave each of those folders, by person id, then by folder (`access.ts` `mayTakeFolder`). No entry: not known,
+     * so only who is in charge takes that folder back.
+     */
+    givenBy?: Record<string, Record<string, string>>;
+    /**
      * The chosen people who hold each right given one person at a time here (`rights.ts`), by person id: `wheel`, to
      * take the wheel from a driver and turn take turns off under them (`access.ts` `overridesTurns`); `allows`, to
      * allow a call their own message led to while approvals need someone else (`allowsOwn`). Who is in charge always
@@ -276,6 +281,8 @@ export interface StoredServer {
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
     sees?: Record<string, string[]>;
+    /** Who gave each of those folders, as for a runner (`StoredRunner.givenBy`). */
+    givenBy?: Record<string, Record<string, string>>;
     /** The chosen people who hold each right given one person at a time here, as for a runner (`StoredRunner.rights`). */
     rights?: Partial<Record<ComputerRight, string[]>>;
     /** New sessions here start shared with its people. */
@@ -503,6 +510,32 @@ export type ApprovalRule = "anyone" | "others";
 
 /** What a computer's record keeps per person about folders: the ones given, and the ones they see every session in. */
 type FolderGrants = { given?: Record<string, string[]>; sees?: Record<string, string[]> };
+
+/** And who gave each of them (`StoredRunner.givenBy`). */
+type FolderGivers = { givenBy?: Record<string, Record<string, string>> };
+
+/** Keep `givers` as who gave `person` their folders; none leaves no entry, and no entries leave no record. */
+function setGivers(target: FolderGivers, person: string, givers: Record<string, string>): void {
+    const { [person]: _was, ...rest } = target.givenBy ?? {};
+    const next = Object.keys(givers).length === 0 ? rest : { ...rest, [person]: givers };
+
+    if (Object.keys(next).length === 0) {
+        delete target.givenBy;
+    } else {
+        target.givenBy = next;
+    }
+}
+
+/** Forget that `giver` gave anyone a folder here: the folders stay given, for who is in charge to take back. */
+function dropGiver(target: FolderGivers, giver: string): void {
+    for (const [person, givers] of Object.entries(target.givenBy ?? {})) {
+        setGivers(
+            target,
+            person,
+            Object.fromEntries(Object.entries(givers).filter(([, each]) => each !== giver)),
+        );
+    }
+}
 
 /** Keep `list` as `person`'s under `key`; an empty one leaves no entry, and no entries leave no record. */
 function setList(
@@ -1316,6 +1349,8 @@ export class ConfigStore {
                 if (computer !== undefined) {
                     setList(computer, "given", id, []);
                     setList(computer, "sees", id, []);
+                    setGivers(computer, id, {});
+                    dropGiver(computer, id);
                     trimRights(computer, (each) => each !== id);
                     dropLeaving(computer, [id]);
                     dropOwed(computer, [id]);
@@ -1682,19 +1717,45 @@ export class ConfigStore {
         return computer?.given?.[person] ?? [];
     }
 
+    /** Who gave `person` each folder they have on computer `id` (undefined: this server), by folder. */
+    givenBy(id: string | undefined, person: string): Readonly<Record<string, string>> {
+        const computer = id === undefined ? this.#config.server : this.runnerById(id);
+
+        return computer?.givenBy?.[person] ?? {};
+    }
+
     /**
      * Set the folders given to `person` on computer `id` (undefined: this server); an empty list takes them all. A
      * folder taken back is no longer one they see every session in (`setSeenFolder`), and what they had by it is
-     * owed a hand-over, marked in this same save (`StoredRunner.handOver`).
+     * owed a hand-over, marked in this same save (`StoredRunner.handOver`). `by`: who gives the folders that are new
+     * in the list; one they had already keeps who gave it.
      */
-    setGivenFolders(id: string | undefined, person: string, folders: readonly string[]): void {
-        const apply = (target: FolderGrants & Owed): void => {
+    setGivenFolders(
+        id: string | undefined,
+        person: string,
+        folders: readonly string[],
+        by?: string,
+    ): void {
+        const apply = (target: FolderGrants & FolderGivers & Owed): void => {
             const unique = [...new Set(folders)];
+            const had = target.given?.[person] ?? [];
+            const givers = target.givenBy?.[person] ?? {};
 
-            if ((target.given?.[person] ?? []).some((each) => !unique.includes(each))) {
+            if (had.some((each) => !unique.includes(each))) {
                 markOwed(target, person);
             }
 
+            setGivers(
+                target,
+                person,
+                Object.fromEntries(
+                    unique.flatMap((each) => {
+                        const giver = had.includes(each) ? givers[each] : by;
+
+                        return giver === undefined ? [] : [[each, giver]];
+                    }),
+                ),
+            );
             setList(target, "given", person, unique);
             setList(
                 target,

@@ -51,6 +51,18 @@ export type SessionMeta = {
      * session; its subagents follow it. Absent: no one.
      */
     sharedWith?: string[];
+    /**
+     * Who shared it with each of those people, by person id: that one may end the share they made (`access.ts`
+     * `mayUnshare`). No entry: not known (shared before this was kept, or by its computer's default), so only its
+     * starter or who is in charge ends that share.
+     */
+    sharedBy?: Record<string, string>;
+    /**
+     * When each person last sent a message to Pi here, by person id: "last used by you" where sessions are listed for
+     * sharing (`commands.ts` `#touched`). Absent (nobody sent since this was kept): its starter counts as having used
+     * it at `updatedAt` (`app.ts` `usedAt`), which the first use recorded here keeps for them.
+     */
+    usedBy?: Record<string, number>;
     archived?: boolean;
     /** The session this one was forked from, and the last entry it inherited; no entry: forked before the first message. */
     forkedFrom?: { id: number; entryId?: number };
@@ -98,7 +110,7 @@ export type SessionMeta = {
 /** What access reads of a session's record. A field the policy starts to read is added here. */
 export type AccessMeta = Pick<
     SessionMeta,
-    "cwd" | "runner" | "createdBy" | "sharedWith" | "pip" | "worktree"
+    "cwd" | "runner" | "createdBy" | "sharedWith" | "sharedBy" | "pip" | "worktree"
 >;
 
 /**

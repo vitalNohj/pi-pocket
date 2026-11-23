@@ -11,10 +11,25 @@ import {
     declaredRights,
     managesRunners,
     navigate,
+    notify,
     store,
 } from "../store.js";
-import { html, Icon, Switch } from "../ui.js";
-import { accessFolder, below, inFolder, leaving, placed, seenBy } from "./access-tree.js";
+import { html, Icon, Marked, Switch } from "../ui.js";
+import {
+    accessFolder,
+    ago,
+    below,
+    hitsOf,
+    inFolder,
+    keeps,
+    keepsFolder,
+    leaving,
+    orderOf,
+    placed,
+    ranked,
+    seenBy,
+} from "./access-tree.js";
+import { canShare } from "./session-share.js";
 
 export const THIS_SERVER = "this-server";
 
@@ -66,7 +81,7 @@ export function chosenFor(computer, person) {
  * `inChargeOf`), its linker, the owner for this server. "you" for that person; their name for a user who is in charge
  * there because they manage runners.
  */
-function heir(computer) {
+export function heir(computer) {
     return computer.createdBy === store.state.me?.id
         ? "you"
         : (store.state.users.find((each) => each.id === computer.createdBy)?.name ?? "the owner");
@@ -183,19 +198,38 @@ export function ComputerRights({ computer, person }) {
 /**
  * One session as a line of a tree: its name, how the person has it, where it works, and at its end what is done with
  * it (`children`: its buttons). The tree of a computer draws its sessions with it, and so does the list of one's own
- * sessions a person has (`people.js` `Shared`). The three are one group that takes more lines where one is too short
- * (`style.css` `.at-about`): a place is never cut short, since its end is what tells two folders apart.
+ * sessions on a computer someone else is in charge of (`people.js` `OtherComputer`). The three are one group that
+ * takes more lines where one is too short (`style.css` `.at-about`): a place is never cut short, since its end is what
+ * tells two folders apart. `off`: one the person does not have, listed to be given: its name is dimmed. `used`: when
+ * whoever reads last used it themselves, after what it says. `words`: what is searched for, marked in its name and
+ * its place.
  */
-export function SessionLine({ name, how, where, children }) {
-    return html`<div class="at-line at-session">
+export function SessionLine({ name, how, where, used, words = [], off = false, children }) {
+    return html`<div class=${`at-line at-session ${off ? "off" : ""}`}>
         <div class="ft-row" style="--depth:1" title=${name}>
             <span class="ft-spacer"></span>
             <${Icon} name="chat" size=${13} />
             <span class="at-about">
-                <span class="at-session-name">${name}</span>
+                <span class="at-session-name">
+                    <${Marked} text=${name} hits=${hitsOf(name, words)} />
+                </span>
                 <span class="at-how">${how}</span>
-                ${where && html`<span class="at-where" title=${where}>${where}</span>`}
+                ${
+                    where &&
+                    html`<span class="at-where" title=${where}>
+                        <${Marked} text=${where} hits=${hitsOf(where, words)} />
+                    </span>`
+                }
             </span>
+            ${
+                used !== undefined &&
+                html`<span
+                    class="at-used"
+                    title=${`Last used by you: ${new Date(used).toLocaleString()}`}
+                >
+                    ${ago(used, Date.now())}
+                </span>`
+            }
         </div>
         <div class="at-actions">${children}</div>
     </div>`;
@@ -246,29 +280,266 @@ function locked(session) {
 /** What the group of sessions in no given folder is opened by, in the tree's own record of what is open. */
 const OTHER = "\0other";
 
+/** The owner's id: a session from before sessions had a starter is theirs (`access.ts` `starter`). */
+const ownerId = () => store.state.users.find((each) => each.role === "owner")?.id;
+
 /**
- * One person's folders on one computer and their sessions there, as one tree (`access-tree.js`), with the rows of the
- * Files panel's. A folder given to them (`starts`: they start sessions, so they have folders) holds the sessions they
- * have in it, and stays closed until opened; the sessions in no given folder are a group of their own. Each row is
- * taken back alone: a folder with Remove, a session with Revoke (`app.ts` `revokeSession`). A session opens from its
- * row, and a locked one is allowed again there.
+ * How `person` stands on `computer`: chosen for it; in charge of it because they manage runners (`manager`); starting
+ * sessions there, so with folders (`starts`); and someone sessions there can be given to one at a time (`offers`:
+ * chosen, not held to one session, not in charge).
  */
-function AccessTree({ computer, person, starts }) {
-    const folders = starts ? (computer.given?.[person.id] ?? []) : [];
-    const sees = seenFolders(computer, person);
-    const sessions = sessionsOf(computer, person);
+function standing(computer, person) {
+    const chosen = chosenFor(computer, person);
+    const manager = computer.managers?.includes(person.id) === true;
+
+    return {
+        chosen,
+        manager,
+        starts: chosen && person.role === "guest" && !person.sessions,
+        offers: chosen && !person.sessions && !manager,
+    };
+}
+
+/**
+ * One person's folders on one computer and the sessions under them (`access-tree.js` `placed`), as the tree draws them
+ * and as a search over it counts them. `giving`: the tree also lists the sessions there that are mine to share and
+ * that they do not have, each to be given (People); without it, only theirs (Runners). An archived session is never
+ * listed. Null where there is no tree: someone not chosen there who has no session there.
+ *
+ * A row: the session, whether they have it themselves (`own`: started, shared, invited alone) or by a folder they
+ * access all sessions in (`by`), when whoever reads last used it (`usedAt`), who started it, and the folders a search
+ * finds it by (`places`).
+ */
+export function treeOf(computer, person, giving) {
+    const { chosen, manager, starts, offers } = standing(computer, person);
     const there = store.state.sessions.filter(
         (each) => (each.runner ?? THIS_SERVER) === computer.id,
     );
-    const shape = placed(folders, sessions, there);
-    // The folder that gives them a session they have in no other way: taken back with its switch, not alone.
-    const onlyBy = (session) => (holds(person, session) ? undefined : seenBy(sees, session, there));
+    // Where a session counts as working asks only about the sessions with a worktree (`access-tree.js`
+    // `accessFolder`): with every session of the computer listed, the others are left out of that search.
+    const worktrees = there.filter((each) => each.worktree);
+    const sees = seenFolders(computer, person);
+    const theirs = (session) =>
+        holds(person, session) || seenBy(sees, session, worktrees) !== undefined;
+    // Archived ones too: whether they have anything here at all.
+    const held = there.filter(theirs);
+
+    if (!chosen && held.length === 0) {
+        return null;
+    }
+
+    const given = starts ? (computer.given?.[person.id] ?? []) : [];
+    const gives = giving && offers;
+    const shape = placed(
+        given,
+        there.filter((each) => !each.archived && (theirs(each) || (gives && canShare(each)))),
+        worktrees,
+    );
+    const owner = ownerId();
+
+    const row = (session, folder) => {
+        const own = holds(person, session);
+        const by = own ? undefined : seenBy(sees, session, worktrees);
+
+        return {
+            id: session.id,
+            session,
+            title: session.title ?? "New session",
+            own,
+            by,
+            has: own || by !== undefined,
+            usedAt: session.usedAt,
+            updatedAt: session.updatedAt,
+            starter: session.createdBy ?? owner,
+            places: folder === undefined ? [session.cwd] : [session.cwd, folder],
+        };
+    };
+
+    const folders = shape.folders.map((node) => ({
+        folder: node.folder,
+        rows: node.sessions.map((each) => row(each, node.folder)),
+    }));
+    const other = shape.other.map((each) => row(each, undefined));
+
+    return {
+        chosen,
+        manager,
+        starts,
+        offers: gives,
+        sees,
+        there,
+        worktrees,
+        given,
+        held,
+        folders,
+        other,
+        rows: [...folders.flatMap((each) => each.rows), ...other],
+    };
+}
+
+/** What a tree reads where nothing is searched for or filtered: every row is listed, and no change is noted. */
+const NO_FIND = {
+    words: [],
+    access: "",
+    time: "",
+    by: "",
+    active: false,
+    kept: new Set(),
+    now: 0,
+    stamp: "",
+    keep() {},
+};
+
+/**
+ * Which rows of a tree are open, and the order of the sessions in each open one. Nothing searched for (`find`): a row
+ * is closed until opened by hand. A search or a filter opens every row it lists, until one is closed by hand; that
+ * starts over when what is searched for changes (`find.stamp`).
+ *
+ * `inOrder(key, rows)`: the sessions of row `key` as they stood when it was first drawn open, the one whoever reads
+ * used last first (`access-tree.js` `orderOf`, `ranked`): a session stays where it is while its button changes, or it
+ * is used. Closing the row, or a change of what is searched for, lets go of that order.
+ */
+export function useGroups(find = NO_FIND) {
     const [open, setOpen] = useState(() => new Set());
+    const [shut, setShut] = useState(() => ({ stamp: find.stamp, keys: new Set() }));
+    const orders = useRef({ stamp: find.stamp, at: new Map() });
+
+    if (orders.current.stamp !== find.stamp) {
+        orders.current = { stamp: find.stamp, at: new Map() };
+    }
+
+    const closed = shut.stamp === find.stamp ? shut.keys : new Set();
+
+    return {
+        isOpen: (key) => (find.active ? !closed.has(key) : open.has(key)),
+        toggle(key) {
+            orders.current.at.delete(key);
+
+            if (find.active) {
+                const keys = new Set(closed);
+
+                if (!keys.delete(key)) {
+                    keys.add(key);
+                }
+
+                setShut({ stamp: find.stamp, keys });
+            } else {
+                setOpen((now) => {
+                    const next = new Set(now);
+
+                    if (!next.delete(key)) {
+                        next.add(key);
+                    }
+
+                    return next;
+                });
+            }
+        },
+        inOrder(key, rows) {
+            let order = orders.current.at.get(key);
+
+            if (order === undefined) {
+                order = orderOf(rows);
+                orders.current.at.set(key, order);
+            }
+
+            return ranked(rows, order);
+        },
+    };
+}
+
+/**
+ * The rows of a tree that open (`tree`: `treeOf`, or a computer someone else is in charge of as `people.js` shapes
+ * it): its folders, then the sessions outside them. Each with the sessions it lists under what is searched for and
+ * filtered by (`listed`). Then a row with nothing to list is left out, but for a folder that is itself what was
+ * searched for.
+ */
+export function groupsOf(tree, find = NO_FIND) {
+    return [
+        ...tree.folders.map((each) => ({ key: each.folder, ...each })),
+        ...(tree.other.length > 0 || !tree.starts ? [{ key: OTHER, rows: tree.other }] : []),
+    ]
+        .map((each) => ({ ...each, listed: each.rows.filter((row) => keeps(find, row)) }))
+        .filter(
+            (each) =>
+                !find.active ||
+                each.listed.length > 0 ||
+                (each.folder !== undefined && keepsFolder(find, each.folder)),
+        );
+}
+
+/** How many of a row's sessions the person has: "2 of 5" where it lists others too. */
+export function countOf(rows) {
+    const theirs = rows.filter((each) => each.has).length;
+
+    return theirs === rows.length ? String(theirs) : `${theirs} of ${rows.length}`;
+}
+
+/**
+ * One row of a tree that opens: a folder (`folder`), or the sessions outside the folders. Its name, how many sessions
+ * the person has in it (`count`), at its end what is done with the folder (`actions`), and under it, open, its
+ * sessions (`children`). `off`: a folder the person does not have, listed to be given. `words`: what is searched for,
+ * marked in a folder's path.
+ */
+export function TreeGroup({
+    folder = false,
+    name,
+    label,
+    count,
+    title,
+    open,
+    onToggle,
+    words = [],
+    off = false,
+    actions,
+    children,
+}) {
+    return html`<div class=${`at-node ${off ? "off" : ""}`}>
+        <div class=${`at-line ${folder ? "at-folder-line" : ""}`}>
+            <button
+                type="button"
+                class=${`ft-row dir ${folder ? "at-folder" : "at-rest"}`}
+                aria-expanded=${open}
+                aria-label=${label}
+                title=${title}
+                onClick=${onToggle}
+            >
+                <${Icon} name="chevron" size=${11} class=${`chev ${open ? "open" : ""}`} />
+                <${Icon} name=${folder ? "folder" : "chat"} size=${13} />
+                <span class="ft-name">
+                    <${Marked} text=${name} hits=${folder ? hitsOf(name, words) : []} />
+                </span>
+                <span class="at-count">${count}</span>
+            </button>
+            ${actions && html`<div class="at-actions">${actions}</div>`}
+        </div>
+        ${open && html`<div class="at-group" role="group">${children}</div>`}
+    </div>`;
+}
+
+/**
+ * One person's folders on one computer and their sessions there, as one tree (`treeOf`), with the rows of the Files
+ * panel's. A folder given to them (they start sessions, so they have folders) holds the sessions in it, and stays
+ * closed until opened; the sessions in no given folder are a group of their own. Each row is taken back alone: a
+ * folder with Remove, a session with Revoke (`app.ts` `revokeSession`). A session opens from its row, and a locked
+ * one is allowed again there. In an open row, the session I used last is first.
+ *
+ * Where sessions can be given to them (`tree.offers`: People), a row lists every session there that is mine to share,
+ * not only theirs, and one they do not have themselves ends in Invite where Revoke would be (`commands.ts`
+ * `shareWith`). That button follows only what the person has of the session themselves: a folder they access all
+ * sessions in gives them its sessions without changing any of them, so with its switch off again each session is as
+ * it was.
+ *
+ * `find`: what People searches for and filters by (`access-tree.js` `keeps`). Then a row lists only what that keeps,
+ * a row with nothing to list is left out, the others are open, and the tree offers no new folder.
+ */
+function AccessTree({ computer, person, tree, find = NO_FIND }) {
+    const { starts, offers, sees, there, worktrees, given: folders } = tree;
+    const groups = useGroups(find);
     const [adding, setAdding] = useState(false);
     const [draft, setDraft] = useState("");
     const [busy, setBusy] = useState(false);
     const field = useRef(null);
-    const title = (session) => session.title ?? "New session";
     const on = `${person.name} on ${computer.name}`;
 
     useEffect(() => {
@@ -276,17 +547,6 @@ function AccessTree({ computer, person, starts }) {
             field.current?.focus();
         }
     }, [adding]);
-
-    const toggle = (key) =>
-        setOpen((now) => {
-            const next = new Set(now);
-
-            if (!next.delete(key)) {
-                next.add(key);
-            }
-
-            return next;
-        });
 
     const save = async (next) => {
         setBusy(true);
@@ -317,8 +577,8 @@ function AccessTree({ computer, person, starts }) {
         const gone = leaving(
             folder,
             folders,
-            sessions.filter((each) => each.createdBy === person.id),
-            there,
+            tree.held.filter((each) => each.createdBy === person.id),
+            worktrees,
         ).length;
 
         if (
@@ -336,9 +596,8 @@ function AccessTree({ computer, person, starts }) {
     // They see every session in a folder, or no longer. Turning it on says how many become theirs now.
     const seeAll = async (folder) => {
         const on = !sees.includes(folder);
-        const more = there.filter(
-            (each) => !holds(person, each) && inFolder(accessFolder(each, there), folder),
-        ).length;
+        const inside = there.filter((each) => inFolder(accessFolder(each, worktrees), folder));
+        const more = inside.filter((each) => !holds(person, each)).length;
         const now =
             more === 0
                 ? "No one else has a session there now. They will see each one started there later."
@@ -348,6 +607,8 @@ function AccessTree({ computer, person, starts }) {
             return;
         }
 
+        // Each stays listed under a filter it no longer passes, so the switch can be turned back where it is.
+        find.keep(inside.map((each) => each.id));
         setBusy(true);
 
         try {
@@ -359,181 +620,212 @@ function AccessTree({ computer, person, starts }) {
         }
     };
 
-    const how = (session, folder) =>
+    const how = (row, folder) =>
         [
-            person.sessions?.includes(session.id)
+            person.sessions?.includes(row.id)
                 ? "invited to it alone"
-                : session.createdBy === person.id
+                : row.session.createdBy === person.id
                   ? "started it"
-                  : session.sharedWith?.includes(person.id)
+                  : row.own
                     ? "shared with them"
-                    : onlyBy(session) === folder
-                      ? "accesses all sessions here"
-                      : `accesses all sessions in ${onlyBy(session)}`,
-            session.archived && "archived",
-            locked(session) && "locked until allowed",
+                    : row.by === undefined
+                      ? "not shared with them"
+                      : row.by === folder
+                        ? "accesses all sessions here"
+                        : `accesses all sessions in ${row.by}`,
+            locked(row.session) && "locked until allowed",
         ]
             .filter(Boolean)
             .join(" · ");
 
     // Where in its folder a session works, when that is not the folder itself; its whole folder outside one.
-    const where = (session, folder) =>
+    const where = ({ session }, folder) =>
         session.worktree
             ? `⎇ ${session.worktree.branch}`
             : folder === undefined
               ? session.cwd
               : below(session.cwd, folder);
 
-    const go = (session) => {
+    const go = (row) => {
         closeSheet();
-        navigate(session.id);
+        navigate(row.id);
     };
 
-    const revoke = async (session) => {
-        const asked = person.sessions?.includes(session.id)
-            ? `Take “${title(session)}” from ${person.name}? They were invited to it alone.`
-            : session.createdBy === person.id
-              ? `Take “${title(session)}” from ${person.name}? They started it: it moves to ${heir(computer)}, with the tasks they set up in it.`
-              : `Stop sharing “${title(session)}” with ${person.name}?`;
+    const revoke = async (row) => {
+        // A folder they access all sessions in still gives it to them: said, since Revoke then changes little.
+        const kept = seenBy(sees, row.session, worktrees);
+        const still =
+            kept === undefined
+                ? ""
+                : ` They still have it after that: they access all sessions in ${kept}.`;
+        const asked = person.sessions?.includes(row.id)
+            ? `Take “${row.title}” from ${person.name}? They were invited to it alone.`
+            : row.session.createdBy === person.id
+              ? `Take “${row.title}” from ${person.name}? They started it: it moves to ${heir(computer)}, with the tasks they set up in it.`
+              : `Stop sharing “${row.title}” with ${person.name}?`;
 
-        if (!confirm(asked)) {
+        if (!confirm(asked + still)) {
             return;
         }
 
+        find.keep([row.id]);
         setBusy(true);
 
         try {
-            await attempt(() => api(`sessions/${session.id}/revoke`, { person: person.id }));
+            await attempt(() => api(`sessions/${row.id}/revoke`, { person: person.id }));
         } finally {
             setBusy(false);
         }
     };
 
-    const allow = (session) =>
-        attempt(() => api(`session-approvals/${encodeURIComponent(session.id)}`, {}));
+    // Shared with that one person, the others it is shared with left as they are. One they have by its folder is
+    // theirs alone from then on too: it stays when the folder's switch goes off.
+    const invite = async (row) => {
+        find.keep([row.id]);
+        setBusy(true);
 
-    /** The sessions of one opened row, set in under it. */
-    const inside = (list, folder) => html`<div class="at-group" role="group">
-        ${list.length === 0 && html`<div class="ft-row muted at-note" style="--depth:1">No sessions ${folder === undefined ? "here" : "in it"}.</div>`}
-        ${list.map((session) => {
-            const place = where(session, folder);
+        try {
+            await attempt(async () => {
+                const answer = await api(`users/${encodeURIComponent(person.id)}/sharing`, {
+                    share: [row.id],
+                });
 
-            return html`<${SessionLine}
-                key=${session.id}
-                name=${title(session)}
-                how=${how(session, folder)}
-                where=${place}
-            >
+                if (answer.refused.length > 0) {
+                    notify("error", answer.refused[0].reason);
+                }
+            });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const allow = (row) =>
+        attempt(() => api(`session-approvals/${encodeURIComponent(row.id)}`, {}));
+
+    /** The sessions of one open row. */
+    const inside = (key, rows, folder) => html`
+        ${rows.length === 0 && html`<div class="ft-row muted at-note" style="--depth:1">No sessions ${folder === undefined ? "here" : "in it"}.</div>`}
+        ${groups.inOrder(key, rows).map(
+            (row) =>
+                html`<${SessionLine}
+                    key=${row.id}
+                    name=${row.title}
+                    how=${how(row, folder)}
+                    where=${where(row, folder)}
+                    used=${row.usedAt}
+                    words=${find.words}
+                    off=${!row.has}
+                >
                     ${
-                        locked(session) &&
+                        locked(row.session) &&
                         html`<button
                             class="button small"
-                            aria-label=${`Allow ${title(session)} again`}
-                            onClick=${() => allow(session)}
+                            aria-label=${`Allow ${row.title} again`}
+                            onClick=${() => allow(row)}
                         >
                             Allow
                         </button>`
                     }
                     <button
                         class="button small"
-                        aria-label=${`Go to ${title(session)}`}
-                        onClick=${() => go(session)}
+                        aria-label=${`Go to ${row.title}`}
+                        onClick=${() => go(row)}
                     >
                         Go to session
                     </button>
                     ${
-                        // One they have by its folder alone has no Revoke: its place stays, so the buttons before
+                        // Theirs themselves: Revoke. Not theirs, or theirs by its folder alone: Invite in its place,
+                        // where sessions can be given to them. With neither, the place stays, so the buttons before
                         // it are one column down the tree.
-                        onlyBy(session) === undefined
+                        row.own
                             ? html`<button
                                   class="button small ghost at-end"
                                   disabled=${busy}
-                                  aria-label=${`Revoke ${title(session)} from ${person.name}`}
-                                  onClick=${() => revoke(session)}
+                                  aria-label=${`Revoke ${row.title} from ${person.name}`}
+                                  onClick=${() => revoke(row)}
                               >
                                   Revoke
                               </button>`
-                            : html`<span class="at-end" aria-hidden="true"></span>`
+                            : offers && canShare(row.session)
+                              ? html`<button
+                                    class="button small at-end"
+                                    disabled=${busy}
+                                    aria-label=${`Invite ${person.name} to ${row.title}`}
+                                    title=${
+                                        row.by === undefined
+                                            ? undefined
+                                            : "They have it through the folder now. Invited, they keep it when that ends."
+                                    }
+                                    onClick=${() => invite(row)}
+                                >
+                                    Invite
+                                </button>`
+                              : html`<span class="at-end" aria-hidden="true"></span>`
                     }
-            <//>`;
-        })}
-    </div>`;
+                <//>`,
+        )}
+    `;
 
     // With folders, the sessions outside them are the others; without (a viewer, someone invited to one session),
     // they are all there is.
     const rest = folders.length > 0 ? "Other sessions" : "Sessions";
+    const shown = groupsOf(tree, find);
+
+    if (find.active && shown.length === 0) {
+        return null;
+    }
 
     return html`<div class="at-tree" role="group" aria-label=${`Folders and sessions of ${on}`}>
-        ${starts && folders.length === 0 && html`<div class="ft-row muted at-note">No folders yet: ${person.name} cannot start sessions here.</div>`}
-        ${shape.folders.map(
-            (node) => html`<div class="at-node" key=${node.folder}>
-                <div class="at-line at-folder-line">
-                    <button
-                        type="button"
-                        class="ft-row dir at-folder"
-                        aria-expanded=${open.has(node.folder)}
-                        aria-label=${`Folder ${node.folder} of ${on}: ${node.sessions.length}`}
-                        onClick=${() => toggle(node.folder)}
-                    >
-                        <${Icon}
-                            name="chevron"
-                            size=${11}
-                            class=${`chev ${open.has(node.folder) ? "open" : ""}`}
-                        />
-                        <${Icon} name="folder" size=${13} />
-                        <span class="ft-name">${node.folder}</span>
-                        <span class="at-count">${node.sessions.length}</span>
-                    </button>
-                    <div class="at-actions">
-                        <span class="at-sees" title="Every session in this folder, whoever started it: to open and to prompt.">
-                            User accesses all sessions in folder
-                        </span>
-                        <${Switch}
-                            on=${sees.includes(node.folder)}
-                            disabled=${busy}
-                            label=${`${person.name} accesses all sessions in ${node.folder} on ${computer.name}: ${sees.includes(node.folder) ? "on" : "off"}`}
-                            onChange=${() => seeAll(node.folder)}
-                        />
-                        <button
-                            class="button small ghost at-end"
-                            disabled=${busy}
-                            aria-label=${`Remove ${node.folder} from ${on}`}
-                            onClick=${() => remove(node.folder)}
-                        >
-                            Remove
-                        </button>
-                    </div>
-                </div>
-                ${open.has(node.folder) && inside(node.sessions, node.folder)}
-            </div>`,
+        ${!find.active && starts && folders.length === 0 && html`<div class="ft-row muted at-note">No folders yet: ${person.name} cannot start sessions here.</div>`}
+        ${shown.map((each) =>
+            each.folder === undefined
+                ? html`<${TreeGroup}
+                      key=${each.key}
+                      name=${rest}
+                      label=${`${rest} of ${on}: ${countOf(each.rows)}`}
+                      count=${countOf(each.rows)}
+                      title=${folders.length > 0 ? "In no folder given to them." : undefined}
+                      open=${groups.isOpen(each.key)}
+                      onToggle=${() => groups.toggle(each.key)}
+                  >
+                      ${inside(each.key, each.listed, undefined)}
+                  <//>`
+                : html`<${TreeGroup}
+                      key=${each.key}
+                      folder=${true}
+                      name=${each.folder}
+                      label=${`Folder ${each.folder} of ${on}: ${countOf(each.rows)}`}
+                      count=${countOf(each.rows)}
+                      open=${groups.isOpen(each.key)}
+                      onToggle=${() => groups.toggle(each.key)}
+                      words=${find.words}
+                      actions=${html`<span
+                              class="at-sees"
+                              title="Every session in this folder, whoever started it: to open and to prompt."
+                          >
+                              User accesses all sessions in folder
+                          </span>
+                          <${Switch}
+                              on=${sees.includes(each.folder)}
+                              disabled=${busy}
+                              label=${`${person.name} accesses all sessions in ${each.folder} on ${computer.name}: ${sees.includes(each.folder) ? "on" : "off"}`}
+                              onChange=${() => seeAll(each.folder)}
+                          />
+                          <button
+                              class="button small ghost at-end"
+                              disabled=${busy}
+                              aria-label=${`Remove ${each.folder} from ${on}`}
+                              onClick=${() => remove(each.folder)}
+                          >
+                              Remove
+                          </button>`}
+                  >
+                      ${inside(each.key, each.listed, each.folder)}
+                  <//>`,
         )}
         ${
-            (shape.other.length > 0 || !starts) &&
-            html`<div class="at-node">
-                <div class="at-line">
-                    <button
-                        type="button"
-                        class="ft-row dir at-rest"
-                        aria-expanded=${open.has(OTHER)}
-                        aria-label=${`${rest} of ${on}: ${shape.other.length}`}
-                        title=${folders.length > 0 ? "In no folder given to them: shared with them, or invited to." : undefined}
-                        onClick=${() => toggle(OTHER)}
-                    >
-                        <${Icon}
-                            name="chevron"
-                            size=${11}
-                            class=${`chev ${open.has(OTHER) ? "open" : ""}`}
-                        />
-                        <${Icon} name="chat" size=${13} />
-                        <span class="ft-name">${rest}</span>
-                        <span class="at-count">${shape.other.length}</span>
-                    </button>
-                </div>
-                ${open.has(OTHER) && inside(shape.other, undefined)}
-            </div>`
-        }
-        ${
             starts &&
+            !find.active &&
             (adding
                 ? html`<div class="at-line at-adding">
                       <input
@@ -590,18 +882,21 @@ function AccessTree({ computer, person, starts }) {
  * folders given to them and their sessions there (`AccessTree`). Runners shows it per person under a computer (`lead`,
  * `title`: the person); People shows it per computer under a person (the computer), and keeps the rights given one
  * person at a time there with what else the person is let do (`rights` false: `ComputerRights`).
+ *
+ * `find`: People's search and filters over the tree. With it the tree also lists the sessions that can be given to
+ * the person; Runners, without it, lists what they have.
  */
-export function AccessRow({ computer, person, lead, title, rights: withRights = true }) {
+export function AccessRow({ computer, person, lead, title, rights: withRights = true, find }) {
     const [busy, setBusy] = useState(false);
-    const chosen = chosenFor(computer, person);
-    // In charge here because they manage runners: they have everything here whatever this switch says. It sets what
-    // they keep once they manage runners no longer.
-    const manager = computer.managers?.includes(person.id) === true;
+    const tree = treeOf(computer, person, find !== undefined);
+    const { chosen, manager } = standing(computer, person);
     const folders = computer.given?.[person.id] ?? [];
-    const sessions = sessionsOf(computer, person);
-    // Folders are for those who start sessions: who steers, and is not held to one session.
-    const starts = chosen && person.role === "guest" && !person.sessions;
     const rights = withRights ? rightsFor(computer, person) : [];
+
+    // Under a search or a filter, a computer with nothing to list is left out whole.
+    if (find?.active && (tree === null || groupsOf(tree, find).length === 0)) {
+        return null;
+    }
 
     const toggle = async () => {
         if (
@@ -624,7 +919,7 @@ export function AccessRow({ computer, person, lead, title, rights: withRights = 
         }
     };
 
-    return html`<div class="access-row">
+    return html`<div class="access-row" data-computer=${computer.id}>
         <div class="setting wrap">
             ${lead}
             <div class="grow">
@@ -638,7 +933,7 @@ export function AccessRow({ computer, person, lead, title, rights: withRights = 
                                   ? "In charge here because they manage runners. If that ends, they keep their access here."
                                   : "In charge here because they manage runners. If that ends, they have no access here."
                               : !chosen
-                                ? sessions.length === 0
+                                ? tree === null
                                     ? "Off: they see nothing of it."
                                     : person.role === "viewer"
                                       ? "Off: they see only the sessions shared with them here."
@@ -668,8 +963,8 @@ export function AccessRow({ computer, person, lead, title, rights: withRights = 
                 />`,
         )}
         ${
-            (chosen || sessions.length > 0) &&
-            html`<${AccessTree} computer=${computer} person=${person} starts=${starts} />`
+            tree !== null &&
+            html`<${AccessTree} computer=${computer} person=${person} tree=${tree} find=${find} />`
         }
     </div>`;
 }

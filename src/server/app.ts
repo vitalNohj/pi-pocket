@@ -204,7 +204,7 @@ import { Transcripts } from "./transcripts.ts";
 import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.ts";
-import { AccessPolicy, inFolder, THIS_SERVER } from "./access.ts";
+import { AccessPolicy, forgetPerson, inFolder, noteShares, THIS_SERVER } from "./access.ts";
 import { realFolder } from "../runner/folders.ts";
 import { FolderRequests } from "./folder-requests.ts";
 import { TrustRequests, type TrustWait } from "./trust-requests.ts";
@@ -453,7 +453,7 @@ function failedSubagents(
 
 /** Copy only what access reads, including when `meta` is a transaction draft. */
 function accessOf(meta: AccessMeta): AccessMeta {
-    const { cwd, runner, createdBy, sharedWith, pip, worktree } = meta;
+    const { cwd, runner, createdBy, sharedWith, sharedBy, pip, worktree } = meta;
     const copy: AccessMeta = { cwd };
 
     if (runner !== undefined) {
@@ -466,6 +466,10 @@ function accessOf(meta: AccessMeta): AccessMeta {
 
     if (sharedWith !== undefined) {
         copy.sharedWith = [...sharedWith];
+    }
+
+    if (sharedBy !== undefined) {
+        copy.sharedBy = { ...sharedBy };
     }
 
     if (pip !== undefined) {
@@ -3271,6 +3275,7 @@ export class PocketApp {
                         leaving: server.leaving ?? [],
                         given: (person) => config.givenFolders(undefined, person),
                         sees: (person) => config.seenFolders(undefined, person),
+                        givenBy: (person) => config.givenBy(undefined, person),
                         holders: (right) => config.rightHolders(undefined, right),
                         shareNew: server.shareNew === true,
                     };
@@ -3289,6 +3294,7 @@ export class PocketApp {
                     leaving: runner.leaving ?? [],
                     given: (person) => config.givenFolders(id, person),
                     sees: (person) => config.seenFolders(id, person),
+                    givenBy: (person) => config.givenBy(id, person),
                     holders: (right) => config.rightHolders(id, right),
                     shareNew: runner.shareNew === true,
                 };
@@ -3314,6 +3320,7 @@ export class PocketApp {
                           computer: meta.runner ?? THIS_SERVER,
                           ...(meta.createdBy === undefined ? {} : { createdBy: meta.createdBy }),
                           ...(meta.sharedWith === undefined ? {} : { sharedWith: meta.sharedWith }),
+                          ...(meta.sharedBy === undefined ? {} : { sharedBy: meta.sharedBy }),
                           ...(meta.pip === undefined ? {} : { pip: meta.pip }),
                           // Read only when asked for (`access.ts` `#seesByFolder`): a worktree's takes a look at
                           // every session.
@@ -3627,11 +3634,162 @@ export class PocketApp {
         await this.#inTurn(async () => {
             // Checked again where it is saved: the folders were looked up meanwhile.
             this.#requireGiving(by, id, person);
-            this.config.setGivenFolders(id === THIS_SERVER ? undefined : id, person, real);
+            this.config.setGivenFolders(id === THIS_SERVER ? undefined : id, person, real, by.id);
             await this.#finishHandOvers(id, person);
         });
         this.accessChanged();
         this.runners.changed();
+    }
+
+    /**
+     * `person` as `by` sees them in People, and not `by`: whom they give something of their own to (`giveFolder`,
+     * `seeFolder`). Someone not in their People is no person to them.
+     */
+    #other(by: User, person: string): User {
+        const target = this.people(by).some((each) => each.id === person)
+            ? this.config.userById(person)
+            : undefined;
+
+        if (target === undefined) {
+            throw new HttpError(404, "No such person.");
+        }
+
+        if (target.id === by.id) {
+            throw new HttpError(400, "That is you: what you have is yours already.");
+        }
+
+        return target;
+    }
+
+    /**
+     * `by` gives `person` one folder on computer `id`, or takes it back (`on`). Who is in charge gives any folder
+     * (`giveFolders`, with that one change). Anyone else gives only a folder that was given to them, exactly as their
+     * own list has it, while they share what they were given (`access.ts` `mayGiveFolder`), and to someone who uses
+     * that computer already: who uses a computer is its one in charge's to choose. They take back only a folder they
+     * gave (`mayTakeFolder`). Nobody gives what they do not have. Taken back, the person's sessions in it move to who is
+     * in charge, as when the one in charge takes it.
+     */
+    async giveFolder(
+        by: User,
+        id: string,
+        person: unknown,
+        folder: unknown,
+        on: unknown,
+    ): Promise<void> {
+        if (typeof person !== "string" || typeof folder !== "string" || typeof on !== "boolean") {
+            throw new HttpError(400, "Send person, folder, and on.");
+        }
+
+        if (by.role === "viewer") {
+            throw new HttpError(403, "Viewers cannot give folders. Ask to be made a user.");
+        }
+
+        if (id !== THIS_SERVER) {
+            this.runners.require(id);
+        }
+
+        const key = id === THIS_SERVER ? undefined : id;
+
+        if (this.policy.inCharge(by, id)) {
+            const had = this.config.givenFolders(key, person);
+
+            await this.giveFolders(
+                by,
+                id,
+                person,
+                on ? [...had, folder] : had.filter((each) => each !== folder),
+            );
+
+            return;
+        }
+
+        const target = this.#other(by, person);
+        const place = this.#computerName(id);
+
+        /** Whether there is a change to save; refused when it is not `by`'s to make. Asked again where it is saved. */
+        const changes = (): boolean => {
+            const has = this.config.givenFolders(key, person).includes(folder);
+
+            if (!on) {
+                if (has && !this.policy.mayTakeFolder(by, id, person, folder)) {
+                    throw new HttpError(
+                        403,
+                        `Only whoever gave ${target.name} that folder, or whoever is in charge of ${place}, can take it back.`,
+                    );
+                }
+
+                return has;
+            }
+
+            if (!this.policy.mayGiveFolder(by, id, folder)) {
+                throw new HttpError(
+                    403,
+                    this.policy.reshares(by)
+                        ? "You can give only a folder that was given to you."
+                        : "You cannot give folders: Share what they were given is off for you.",
+                );
+            }
+
+            if (this.policy.inCharge(target, id)) {
+                throw new HttpError(
+                    400,
+                    `${target.name} is in charge of ${place}: every folder there is theirs.`,
+                );
+            }
+
+            if (!this.policy.mayStart(target, id)) {
+                throw new HttpError(
+                    400,
+                    target.role === "viewer"
+                        ? `${target.name} is a viewer, and folders are given to users only.`
+                        : `${target.name} cannot use ${place}. Whoever is in charge of it chooses who uses it.`,
+                );
+            }
+
+            return !has;
+        };
+
+        if (!changes()) {
+            return;
+        }
+
+        await this.#inTurn(async () => {
+            if (!changes()) {
+                return;
+            }
+
+            const had = this.config.givenFolders(key, person);
+
+            this.config.setGivenFolders(
+                key,
+                person,
+                on ? [...had, folder] : had.filter((each) => each !== folder),
+                by.id,
+            );
+            await this.#finishHandOvers(id, person);
+        });
+        this.accessChanged();
+        this.runners.changed();
+    }
+
+    /**
+     * When `person` last sent a message to Pi in top session `id` (`docs.ts` `SessionMeta.usedBy`). A session nobody
+     * sent to since that was kept counts as used by its starter at its last activity. Undefined: never, as far as is
+     * known.
+     */
+    usedAt(id: string, person: string): number | undefined {
+        const meta = this.#sessions[id];
+
+        if (meta === undefined) {
+            return undefined;
+        }
+
+        return (
+            meta.usedBy?.[person] ??
+            (meta.usedBy === undefined && (meta.createdBy ?? this.#ownerId()) === person
+                ? meta.updatedAt
+                : undefined)
+        );
     }
 
     /**
@@ -3670,15 +3828,44 @@ export class PocketApp {
             this.runners.require(id);
         }
 
-        this.policy.requireManage(by, id);
+        // Someone who is not in charge there sets it only on a folder they gave (`access.ts` `maySetSees`).
+        const lead =
+            !this.policy.mayManage(by, id) &&
+            typeof person === "string" &&
+            Object.values(
+                this.config.givenBy(id === THIS_SERVER ? undefined : id, person),
+            ).includes(by.id);
+
+        if (!lead) {
+            this.policy.requireManage(by, id);
+        }
 
         if (typeof person !== "string" || typeof folder !== "string" || typeof on !== "boolean") {
             throw new HttpError(400, "Send person, folder, and on.");
         }
 
-        this.#requireGiving(by, id, person);
+        const allowed = (): void => {
+            if (!lead) {
+                this.#requireGiving(by, id, person);
+
+                return;
+            }
+
+            const target = this.#other(by, person);
+
+            if (!this.policy.maySetSees(by, id, person, folder, on)) {
+                throw new HttpError(
+                    403,
+                    on
+                        ? `You can turn this on only for a folder you gave ${target.name}, while you access all sessions in it yourself.`
+                        : `Only whoever gave ${target.name} that folder, or whoever is in charge of ${this.#computerName(id)}, can turn this off.`,
+                );
+            }
+        };
+
+        allowed();
         await this.#inTurn(async () => {
-            this.#requireGiving(by, id, person);
+            allowed();
 
             if (
                 !this.config.setSeenFolder(id === THIS_SERVER ? undefined : id, person, folder, on)
@@ -4189,6 +4376,11 @@ export class PocketApp {
                     continue;
                 }
 
+                // Removed: no session says when they used it, or that a share was theirs to end.
+                if (gone) {
+                    forgetPerson(meta, person);
+                }
+
                 if (only !== undefined || (gone && meta.sharedWith?.includes(person) === true)) {
                     const kept = meta.sharedWith?.filter((each) => each !== person);
 
@@ -4197,6 +4389,8 @@ export class PocketApp {
                     } else {
                         meta.sharedWith = kept;
                     }
+
+                    noteShares(meta);
                 }
 
                 if (meta.createdBy !== person || meta.pip !== undefined) {
@@ -4368,6 +4562,7 @@ export class PocketApp {
 
         meta.createdBy = to;
         meta.sharedWith = meta.sharedWith?.filter((each) => each !== to && each !== person);
+        noteShares(meta);
 
         return to;
     }
@@ -5442,7 +5637,16 @@ export class PocketApp {
                 const failedAgents = failedSubagents(subagents.get(id) ?? []);
                 const ask = asks.get(id);
                 // Which of Pi's sessions it continues is the owner's to know (the Pi sessions sheet), not the list's.
-                const { fromPi: _fromPi, forkedFrom, linkedFrom, ...shown } = meta;
+                // Nor who shared it with whom, or when each person used it: a reader gets their own last use alone.
+                const {
+                    fromPi: _fromPi,
+                    sharedBy: _sharedBy,
+                    usedBy: _usedBy,
+                    forkedFrom,
+                    linkedFrom,
+                    ...shown
+                } = meta;
+                const used = user === undefined ? undefined : this.usedAt(id, user.id);
                 // Linking does not share the origin: do not leak its id to someone who only sees the new chat.
                 const origin =
                     linkedFrom === undefined ? undefined : this.#sessions[String(linkedFrom.id)];
@@ -5489,7 +5693,9 @@ export class PocketApp {
                     ...(chat === undefined ? {} : { chatAt: chat.at, chatBy: chat.userId }),
                     ...(counts === undefined ? {} : { subagents: counts }),
                     ...(background === undefined ? {} : { background }),
-                    // May this person change whom it is shared with (`access.ts` `mayShare`): its menu offers Share.
+                    // When this person last sent to Pi here (`usedAt`): "Last used by you" where sessions are shared.
+                    ...(used === undefined ? {} : { usedAt: used }),
+                    // May this person share it with someone (`access.ts` `mayShare`): its menu offers Share.
                     ...(user !== undefined && this.policy.mayShare(user, id)
                         ? { mayShare: true as const }
                         : {}),
@@ -6423,6 +6629,7 @@ export class PocketApp {
 
                 if (next.length > (meta.sharedWith?.length ?? 0)) {
                     meta.sharedWith = next;
+                    noteShares(meta);
                     shared++;
                 }
             }
@@ -6487,6 +6694,8 @@ export class PocketApp {
                 } else {
                     meta.sharedWith = kept;
                 }
+
+                noteShares(meta);
             }
         }, context);
 
@@ -6629,7 +6838,12 @@ export class PocketApp {
                             inFolder(this.#accessFolder(meta), folder.path)));
 
                 if (given) {
-                    meta.sharedWith = [...new Set([...(meta.sharedWith ?? []), person])];
+                    // One they had already keeps who shared it with them.
+                    if (meta.sharedWith?.includes(person) !== true) {
+                        meta.sharedWith = [...(meta.sharedWith ?? []), person];
+                        noteShares(meta, [person], inviter);
+                    }
+
                     computers.add(computer);
                 }
             }

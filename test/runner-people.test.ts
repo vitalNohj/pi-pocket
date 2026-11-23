@@ -370,7 +370,11 @@ describe("people granted a computer", () => {
         });
 
         assert.equal(response.status, 400);
-        assert.match(String(response.body.error), /choose them for it first/);
+        // The guest is not in charge of it, so they are not told to choose anyone: that is its linker's to do.
+        assert.equal(
+            response.body.error,
+            "Other guest cannot use Laptop. Whoever is in charge of it chooses who uses it.",
+        );
         const others = await app.commands.createSession(owner(app), {
             runner: runnerId,
             cwd: there,
@@ -1197,12 +1201,47 @@ describe("review drill fixes for people on a computer", () => {
             app.sessions(user).find((each) => each.id === Number(session)) as
                 { mayShare?: true } | undefined;
 
-        // Who is in charge of its computer, and its starter: Share. The owner only sees it there: no Share, and 403.
+        // Who is in charge of its computer, and its starter: Share. The owner is not in charge there, and it is only
+        // shared with them: they share it as anyone does who shares what they were given (`rights.ts` `reshares`),
+        // which the owner holds like every right. They are no one special there for the rest: only its linker chooses
+        // who uses the computer, so the owner shares it with no one else.
         assert.equal(row(host)?.mayShare, true, "in charge of its computer");
         assert.equal(row(worker)?.mayShare, true, "its starter");
-        assert.notEqual(row(owner(app)), undefined, "shared with the owner");
-        assert.equal(row(owner(app))?.mayShare, undefined, "the owner is not in charge there");
-        assert.equal((await request(owner(app), `sessions/${session}/share`)).status, 403);
+        assert.equal(
+            app.policy.inCharge(owner(app), theirs),
+            false,
+            "the owner is not in charge there",
+        );
+        assert.equal(row(owner(app))?.mayShare, true, "the owner shares what was shared with them");
+        assert.equal((await request(owner(app), `sessions/${session}/share`)).status, 200);
+        const unchosen = await request<{ error?: string }>(
+            owner(app),
+            `sessions/${session}/share`,
+            { people: [owner(app).id, invited.id, stranger.id] },
+        );
+
+        assert.equal(unchosen.status, 400);
+        assert.equal(
+            unchosen.body.error,
+            "Other guest cannot use Share host's laptop. Whoever is in charge of it chooses who uses it.",
+        );
+        assert.deepEqual(app.sessionMeta(session)?.sharedWith, [owner(app).id, invited.id]);
+
+        // An invite link to it takes Invite people as well, which the owner also holds: it brings in a viewer held to
+        // that one session, whom its linker did not choose.
+        const link = await request<{ code: string; grant: { role?: string; session?: string } }>(
+            owner(app),
+            "invite",
+            { session: String(session) },
+        );
+
+        assert.equal(link.status, 200);
+        assert.equal(link.body.grant.role, "viewer");
+        assert.equal(link.body.grant.session, String(session));
+        assert.equal(
+            (await request(owner(app), "invite/cancel", { code: link.body.code })).status,
+            200,
+        );
         assert.equal(row(invited)?.mayShare, undefined);
 
         // Everyone it is shared with is listed, also who is not chosen there: they can be seen and taken off.

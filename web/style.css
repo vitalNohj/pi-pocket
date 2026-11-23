@@ -7829,6 +7829,11 @@ div.group-head {
     color: var(--faint);
 }
 
+/* A session they do not have, listed to be given (Invite at its end): its name is as quiet as the rest of its line. */
+.at-session.off .at-session-name {
+    color: var(--muted);
+}
+
 /* A folder's whole path shows, on more lines where one is too short: its end is what tells two folders apart. */
 .at-tree .at-folder {
     padding-top: 4px;
@@ -7909,10 +7914,142 @@ div.group-head {
     font: 12.5px var(--mono);
 }
 
-/* A tree with no switch over it (`people.js` `Shared`): nothing to be set apart from. */
-.at-tree.lone {
-    padding-top: 0;
-    border-top: 0;
+/* When I last used a session, at the end of its row: one narrow column down a list. */
+.at-used {
+    flex: none;
+    min-width: 2.2em;
+    margin-left: auto;
+    padding-top: 1px;
+    color: var(--faint);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+/* A folder they do not have, listed to be given (Add at its end): as quiet as a session they do not have. */
+.at-node.off > .at-line > .ft-row.dir {
+    color: var(--muted);
+}
+
+/* What a search found, in a session's name, its place, or a folder's path. */
+.at-tree mark {
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    color: inherit;
+}
+
+/* A person's folders and sessions in People (`people.js` `Access`): one card for each computer, under the search and
+ * the filters over them all. */
+.access {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}
+
+.access > .group-title {
+    margin-bottom: 0;
+}
+
+/* The search and its filters stay in sight while the cards under them scroll. Their own background covers what passes
+ * under them, and the room around them keeps a focus ring whole. */
+.access-find {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0 -4px;
+    padding: 6px 4px 8px;
+    background: var(--panel);
+}
+
+/* The field holds, at its end, how many sessions are listed and what clears the search and the filters. */
+.access-found {
+    flex: none;
+    color: var(--faint);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.access-clear {
+    flex: none;
+    padding: 2px 6px;
+    border-radius: var(--r-seg);
+    color: var(--accent);
+    font-size: 12px;
+}
+
+@media (hover: hover) {
+    .access-clear:hover {
+        background: var(--hover);
+    }
+}
+
+.access-picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* One filter: what it says, under the device's own list of choices, which takes every press on it. */
+.access-pick {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 28px;
+    padding: 0 8px 0 10px;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-pill);
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+    transition:
+        border-color var(--t-hover) var(--ease-out),
+        background-color var(--t-hover) var(--ease-out);
+}
+
+.access-pick > .icon {
+    flex: none;
+}
+
+.access-pick > select {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+/* A field with letters under 16px makes a phone zoom in when it opens. */
+@media (pointer: coarse) {
+    .access-pick > select {
+        font-size: 16px;
+    }
+}
+
+@media (hover: hover) {
+    .access-pick:hover {
+        border-color: var(--line-strong);
+    }
+}
+
+.access-pick:has(select:focus-visible) {
+    outline: 1px solid var(--focus-ring);
+    outline-offset: 1px;
+}
+
+/* A filter that is set says what it keeps, in the color of what is on. */
+.access-pick.on {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    color: var(--accent);
 }
 
 /* On a phone a session's line has no room for its name, how they have it, and its place side by side: the name takes
@@ -23554,8 +23691,8 @@ pre.gallery-code {
     flex: none;
 }
 
-/* What whoever prompts does with another person, on that person's page in People (`people.js` `Reach`): two buttons,
- * a line that says what the first one does or why it does nothing, and under them what the second one opens. */
+/* Invite to your runner, on another person's page in People (`people.js` `Reach`): the button, a line where it does
+ * nothing, and under them what it opens. */
 .reach {
     display: flex;
     flex-direction: column;
@@ -23565,11 +23702,6 @@ pre.gallery-code {
 
 .reach-buttons {
     flex-wrap: wrap;
-}
-
-/* The line names a session, whose title can be long. */
-.reach > .muted {
-    overflow-wrap: anywhere;
 }
 
 /* The button whose panel is open under it. */

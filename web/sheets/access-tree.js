@@ -104,6 +104,163 @@ export function seenBy(sees, session, there) {
     return sees.find((each) => inFolder(at, each));
 }
 
+/** The words of what was typed in a search field, in lower case. */
+export function wordsOf(query) {
+    return query.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+/** Whether each of `words` is in one of `texts` (a session's name, its folders), whatever the case. */
+export function matches(words, ...texts) {
+    const all = texts.map((each) => (each ?? "").toLowerCase());
+
+    return words.every((word) => all.some((text) => text.includes(word)));
+}
+
+/**
+ * Where `words` are in `text`: the indexes of its letters to mark (`ui.js` `Marked`). None where lower case has
+ * another length than the text, since the indexes would then point beside the match.
+ */
+export function hitsOf(text, words) {
+    const lower = text.toLowerCase();
+    const hits = [];
+
+    if (lower.length !== text.length) {
+        return hits;
+    }
+
+    for (const word of words) {
+        for (let at = lower.indexOf(word); at !== -1; at = lower.indexOf(word, at + word.length)) {
+            for (let index = at; index < at + word.length; index++) {
+                hits.push(index);
+            }
+        }
+    }
+
+    return hits;
+}
+
+const HOUR_MS = 3_600_000;
+
+/** The longest of the times a list is filtered by, in hours: "old" is longer ago than this. */
+export const OLD_HOURS = 720;
+
+/**
+ * Whether a session last used at `usedAt` by whoever reads the list (undefined: never) passes the filter `time`: ""
+ * for any time; a number of hours, as "24", for used within them; "old" for used longer ago than `OLD_HOURS`; "never".
+ */
+export function usedWithin(usedAt, time, now) {
+    if (time === "") {
+        return true;
+    }
+
+    if (time === "never" || usedAt === undefined) {
+        return time === "never" && usedAt === undefined;
+    }
+
+    return time === "old"
+        ? now - usedAt > OLD_HOURS * HOUR_MS
+        : now - usedAt <= Number(time) * HOUR_MS;
+}
+
+/**
+ * How long ago `ms` was, in the few letters a row has room for: "now", "5m", "3h", "6d", then weeks ("3w") up to a
+ * year, then years ("2y").
+ */
+export function ago(ms, now) {
+    const minutes = Math.max(0, (now - ms) / 60_000);
+
+    if (minutes < 1) {
+        return "now";
+    }
+
+    if (minutes < 60) {
+        return `${Math.floor(minutes)}m`;
+    }
+
+    if (minutes < 24 * 60) {
+        return `${Math.floor(minutes / 60)}h`;
+    }
+
+    const days = Math.floor(minutes / (24 * 60));
+
+    return days < 14
+        ? `${days}d`
+        : days < 365
+          ? `${Math.floor(days / 7)}w`
+          : `${Math.floor(days / 365)}y`;
+}
+
+/**
+ * Whether a list keeps the row of one session under what is searched and filtered (`find`): each word typed is in its
+ * name or in one of its folders (`places`), the person has it or not as `access` asks ("has", "none"), whoever reads
+ * last used it within `time` (`usedWithin`), and `by` started it. A row changed since the search last changed is kept
+ * whatever it is now (`kept`: their ids), so what was just given can be taken back where it stands.
+ */
+export function keeps(find, row) {
+    if (find.kept.has(row.id)) {
+        return true;
+    }
+
+    if ((find.access === "has" && !row.has) || (find.access === "none" && row.has)) {
+        return false;
+    }
+
+    if (
+        !usedWithin(row.usedAt, find.time, find.now) ||
+        (find.by !== "" && row.starter !== find.by)
+    ) {
+        return false;
+    }
+
+    return matches(find.words, row.title, ...row.places);
+}
+
+/**
+ * Whether a list keeps a folder with no session to list under what is searched (`find`): only when words alone are
+ * searched for, and each is in its path. A filter asks about sessions, and such a folder has none.
+ */
+export function keepsFolder(find, folder) {
+    return (
+        find.words.length > 0 &&
+        find.access === "" &&
+        find.time === "" &&
+        find.by === "" &&
+        matches(find.words, folder)
+    );
+}
+
+/**
+ * `rows` with the one whoever reads used last first (`usedAt`: when they last sent to Pi in it); the ones they never
+ * used come after those, the one that anything happened in last first (`updatedAt`).
+ */
+export function newest(rows) {
+    return [...rows].sort((one, other) =>
+        one.usedAt !== undefined && other.usedAt !== undefined
+            ? other.usedAt - one.usedAt
+            : one.usedAt !== undefined
+              ? -1
+              : other.usedAt !== undefined
+                ? 1
+                : (other.updatedAt ?? 0) - (one.updatedAt ?? 0),
+    );
+}
+
+/** The place of each of `rows` in a list of them, newest first (`newest`): what `ranked` keeps a list in. */
+export function orderOf(rows) {
+    return new Map(newest(rows).map((row, index) => [row.id, index]));
+}
+
+/**
+ * `rows` in the order their list had when it was opened (`order`: `orderOf` then), so a row stays where it is when it
+ * is used or its button changes; the ones that came since are last, the newest of them first.
+ */
+export function ranked(rows, order) {
+    return newest(rows)
+        .map((row, index) => [order.get(row.id) ?? order.size + index, row])
+        .sort(([one], [other]) => one - other)
+        .map(([, row]) => row);
+}
+
 /** `path` as it reads under `folder`: nothing for the folder itself, the rest of the path for one in it. */
 export function below(path, folder) {
     const base = baseOf(folder);

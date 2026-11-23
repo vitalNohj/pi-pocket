@@ -707,18 +707,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // The sessions I may share, each with how one person has it now: to share several with them at once, or take
         // several back (`commands.ts` `sharingWith`, `shareWith`). For whoever prompts; a viewer shares nothing.
-        // `?session=`: the answer tells of that one session alone, as a person's page asks about the open one.
         if (first === "users" && second !== undefined && third === "sharing") {
-            const asked = url.searchParams.get("session");
-
-            if (asked !== null && !/^\d{1,15}$/.test(asked)) {
-                throw new HttpError(400, "session must be a session id.");
-            }
-
-            const only = asked === null ? undefined : conversationId(asked);
-
             if (method === "GET") {
-                return json(response, 200, app.commands.sharingWith(user, second, only));
+                return json(response, 200, app.commands.sharingWith(user, second));
             }
 
             if (method === "POST") {
@@ -729,7 +720,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
                         user,
                         second,
                         await readJson<{ share?: unknown; revoke?: unknown } | null>(request),
-                        only,
                     ),
                 );
             }
@@ -1371,6 +1361,20 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
+        // One folder on a computer is given to one person, or taken back (`app.ts` `giveFolder`): by who is in charge
+        // there, or by someone who gives a folder that was given to them (`access.ts` `mayGiveFolder`).
+        if (first === "runners" && second !== undefined && third === "give" && method === "POST") {
+            const body = await readJson<{
+                person?: unknown;
+                folder?: unknown;
+                on?: unknown;
+            } | null>(request);
+
+            await app.giveFolder(user, second, body?.person, body?.folder, body?.on);
+
+            return json(response, 200, { ok: true });
+        }
+
         // One chosen person sees every session in one of their folders on a computer, or no longer (`app.ts` `seeFolder`).
         if (first === "runners" && second !== undefined && third === "sees" && method === "POST") {
             const body = await readJson<{
@@ -1381,12 +1385,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
             await app.seeFolder(user, second, body?.person, body?.folder, body?.on);
 
+            // Who set it on a folder they gave, and is not in charge there, has no view of the computer.
             return json(
                 response,
                 200,
-                second === THIS_SERVER
+                (second === THIS_SERVER
                     ? app.thisServer(user)
-                    : app.runners.list(user).find((runner) => runner.id === second),
+                    : app.runners.list(user).find((runner) => runner.id === second)) ?? {
+                    ok: true,
+                },
             );
         }
 
