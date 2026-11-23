@@ -3967,6 +3967,15 @@ pre.diff .del {
     flex: none;
 }
 
+.queued-mode .spinner {
+    margin-inline-end: 4px;
+}
+
+.inbox .queued button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
 .queued-text {
     flex: 1;
     min-width: 0;
@@ -4033,7 +4042,7 @@ pre.diff .del {
 }
 
 @media (hover: hover) {
-    .queued-actions .button.small:hover {
+    .queued-actions .button.small:hover:not(:disabled) {
         color: var(--text);
         background: var(--hover);
     }

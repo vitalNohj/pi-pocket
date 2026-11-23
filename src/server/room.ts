@@ -403,7 +403,14 @@ export class Room {
     /** The live run as tabs get it, projected once for each state of it, not once for each tab. */
     #live: { from: LiveState | undefined; limit: string; projected: ClientLive } | undefined;
     /** Each waiting message's text for the queue, and the subagents it reports from: what it says does not change. */
-    readonly #queued = new Map<number, { text: string; reports: string[] | undefined }>();
+    readonly #queued = new Map<
+        number,
+        {
+            text: string;
+            reports: string[] | undefined;
+            draft?: ReturnType<PocketApp["commands"]["queuedDraft"]>;
+        }
+    >();
     authors: Record<string, string> = {};
     artifacts: Record<string, ArtifactMeta> = {};
     /** The last version number of each deleted artifact: cards that name one say it was deleted. */
@@ -879,7 +886,7 @@ export class Room {
         const inbox = (view.docs["pi.inbox"] ?? { items: [] }) as unknown as InboxState;
         // These grow with the session (authors has one item per message) but rarely change. Do not repeat them on
         // each streaming update: send each only when it differs from what this client has.
-        const queue = this.#inbox(inbox.items);
+        const queue = this.#inbox(inbox.items, client.user);
         const fields: Record<string, unknown> = {
             // A turn's updates would repeat it, and a waiting paste or batch of reports can be large.
             inbox: queue,
@@ -1197,7 +1204,7 @@ export class Room {
     }
 
     /** The queue as its rows show it: each message's start, who sent it, and the subagents a message of reports is from. */
-    #inbox(items: InboxItem[]) {
+    #inbox(items: InboxItem[], user: User) {
         const waiting = new Set<number>();
         const rows = items.map((item) => {
             const id = item.id as unknown as number;
@@ -1231,6 +1238,11 @@ export class Room {
             }
 
             const submitter = this.#app.attribution.submitterOf(id, this);
+            // The public row holds only a preview. Only its sender can Edit and needs the full draft and files.
+            const draft =
+                submitter.by === user.id && user.role !== "viewer"
+                    ? (queued.draft ??= this.#app.commands.queuedDraft(this.id, item.content))
+                    : undefined;
             const presented = queuePresentation(
                 item.entry?.kind,
                 queuedText(item.content),
@@ -1243,6 +1255,7 @@ export class Room {
                 id,
                 mode: item.mode,
                 ...submitter,
+                ...(draft === undefined ? {} : { draft }),
                 ...(presented === undefined
                     ? {
                           text: queued.text,

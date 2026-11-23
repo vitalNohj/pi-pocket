@@ -3293,26 +3293,46 @@ function isCurrentQueued(id, item) {
     );
 }
 
-/** Confirmed Interrupts, tied to the exact cards they acted on, never saved with a view. */
-const sendingQueued = new WeakSet();
+// The view owns the queue. A change belongs to the exact row it acted on, so a fresh inbox wins even before
+// a reply. The request owns the submission id until it settles, even when a fresh row for that id arrives.
+const queueChanges = new WeakMap();
+const queueRequests = new Set();
 
-export const queuedSending = (item) => sendingQueued.has(item);
+export const queuedChange = (item) => queueChanges.get(item);
+export const queuedBusy = (item) => queueRequests.has(item.id);
 
-function markQueuedSending(id, item) {
-    if (queuedSending(item)) {
+async function actOnQueued(item, change, request) {
+    const id = current();
+    const before = queuedChange(item);
+
+    if (!isCurrentQueued(id, item) || queuedBusy(item) || before?.hidden || before?.sending) {
         return;
     }
 
-    sendingQueued.add(item);
+    queueRequests.add(item.id);
+    queueChanges.set(item, change);
     store.set({});
-    // A view with a fresh inbox replaces the cards. Also clear the mark if no fresh inbox comes.
-    setTimeout(() => {
-        sendingQueued.delete(item);
 
-        if (isCurrentQueued(id, item)) {
-            store.set({});
+    try {
+        const result = await request(id, item.id);
+
+        if (change.hideOnSuccess && isCurrentQueued(id, item)) {
+            queueChanges.set(item, { hidden: true });
         }
-    }, 5000);
+
+        return result;
+    } catch (error) {
+        if (before) {
+            queueChanges.set(item, before);
+        } else {
+            queueChanges.delete(item);
+        }
+
+        throw error;
+    } finally {
+        queueRequests.delete(item.id);
+        store.set({});
+    }
 }
 
 /**
@@ -3412,53 +3432,51 @@ export const actions = {
     saveNotes: (text, rev) => api(`c/${current()}/notes`, { text, rev }),
     turns: (action, to) => api(`c/${current()}/turns`, { action, ...(to ? { to } : {}) }),
     setAccess: (userId, patch) => api(`users/${encodeURIComponent(userId)}`, patch),
-    withdraw: (submissionId) => api(`c/${current()}/withdraw`, { submissionId }),
+    withdraw: (item) =>
+        actOnQueued(
+            item,
+            { label: "Withdrawing...", hideOnSuccess: true },
+            async (id, submissionId) => {
+                const answer = await api(`c/${id}/withdraw`, { submissionId });
+
+                if (answer?.result !== "aborted") {
+                    throw new ApiError(409, "That message has already gone to Pi.");
+                }
+            },
+        ),
     /** Move one's own queued message to "steer" or "followUp", or send it now with "interrupt". */
-    move: async (submissionId, mode) => {
-        const id = current();
-        const before = store.state.view.inbox.find((item) => item.id === submissionId);
-        const result = await api(`c/${id}/move`, { submissionId, mode });
+    move: (item, mode) =>
+        actOnQueued(
+            item,
+            mode === "interrupt" ? { sending: true } : { mode },
+            async (id, submissionId) => {
+                const result = await api(`c/${id}/move`, { submissionId, mode });
 
-        if (result?.ok !== true) {
-            throw new ApiError(undefined, "The server did not confirm the move. Check the queue.");
-        }
+                if (result?.ok !== true) {
+                    throw new ApiError(
+                        undefined,
+                        "The server did not confirm the move. Check the queue.",
+                    );
+                }
+            },
+        ),
+    editQueued: (item) =>
+        actOnQueued(
+            item,
+            { hidden: item.draft !== undefined, label: "Taking back...", hideOnSuccess: true },
+            async (id, submissionId) => {
+                const back = await api(`c/${id}/edit-queued`, { submissionId });
 
-        if (!isCurrentQueued(id, before)) {
-            return result;
-        }
+                if (typeof back?.text !== "string" || !Array.isArray(back.attachments)) {
+                    throw new ApiError(
+                        undefined,
+                        "The server did not return the message. Check the queue.",
+                    );
+                }
 
-        // A mode change is saved before the reply. An Interrupt is a task that has yet to send, not a mode change.
-        if (mode === "interrupt") {
-            markQueuedSending(id, before);
-        } else if (before.mode !== mode) {
-            const { view } = store.state;
-            const inbox = view.inbox.map((item) => (item === before ? { ...item, mode } : item));
-
-            store.set({ view: { ...view, inbox } });
-        }
-
-        return result;
-    },
-    editQueued: async (submissionId, id = current()) => {
-        const before = store.state.view.inbox.find((item) => item.id === submissionId);
-        const back = await api(`c/${id}/edit-queued`, { submissionId });
-
-        if (typeof back?.text !== "string" || !Array.isArray(back.attachments)) {
-            throw new ApiError(
-                undefined,
-                "The server did not return the message. Check the queue.",
-            );
-        }
-
-        if (isCurrentQueued(id, before)) {
-            const { view } = store.state;
-            const inbox = view.inbox.filter((item) => item !== before);
-
-            store.set({ view: { ...view, inbox } });
-        }
-
-        return back;
-    },
+                return back;
+            },
+        ),
     /** What a Stop held: send them all, or drop one or take it back into the box, by its key. */
     sendHeld: () => api(`c/${current()}/held`, { action: "send" }),
     dropHeld: (key) => api(`c/${current()}/held`, { action: "drop", key }),

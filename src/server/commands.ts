@@ -3208,11 +3208,19 @@ export class Commands {
             throw new HttpError(409, "That message has already gone to Pi.");
         }
 
+        return this.queuedDraft(id, item.content);
+    }
+
+    /** What Edit returns, also sent to the sender with the waiting card so the box can show it at once. */
+    queuedDraft(
+        id: ConversationId,
+        content: UserInput,
+    ): { text: string; attachments: Attachment[] } {
         // A `/skill:` or prompt template message comes back as it was sent: expanded.
         const [written, files] = splitAttachments(
-            userContent({ content: item.content }).text.replace(FROM_PREFIX, ""),
+            userContent({ content }).text.replace(FROM_PREFIX, ""),
         );
-        const uploads = app.workspace.uploadDirectory(id);
+        const uploads = this.#app.workspace.uploadDirectory(id);
 
         return {
             text: written,
