@@ -1219,7 +1219,7 @@ describe("other lists that name sessions or folders", () => {
         assert.ok(!guests.body.recent.includes(ownersFolder));
     });
 
-    it("give someone nobody chose nothing, and keep the search of Pi's sessions the owner's", async () => {
+    it("give someone nobody chose nothing, and reserve the search of Pi's sessions for who is in charge", async () => {
         const spend = await call<{ sessions: unknown[] }>(stranger, "spend");
 
         assert.deepEqual(spend.body.sessions, []);

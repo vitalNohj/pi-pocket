@@ -1,5 +1,6 @@
 // Pi's sessions from the terminal, continued here: Pi gets the context Pi itself builds from the file, people get the
-// whole conversation, nothing Pi did runs again, the file is never written, and only the owner can do it.
+// whole conversation, nothing Pi did runs again, and the file is never written. On this server, only whoever is in
+// charge can continue a session.
 import {
     addPerson,
     type App,
@@ -28,6 +29,7 @@ import {
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "../src/server/access.ts";
 import { createHandler } from "../src/server/http.ts";
 import {
     type PiSessionCompanion,
@@ -413,17 +415,23 @@ test("only files Pi lists, from a Pi this one knows, in a folder that is there",
     await assert.rejects(app.commands.continuePiSession(owner(app), gone), /is not there/);
 });
 
-test("only the owner can list, look at, or continue Pi's sessions", async () => {
-    const path = save(rich(), "owners");
+test("only whoever is in charge of this server lists, looks at, or continues Pi's sessions here", async (t) => {
+    const path = save(rich(), "in-charge");
     const server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
     );
 
+    t.after(() => {
+        server.closeAllConnections();
+        server.close();
+    });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as { port: number }).port;
+    const viewer = app.config.addUser("Viewer", "viewer");
     const guest = await addPerson(app, "Guest", "guest");
+    const ownerToken = app.config.ownerToken;
     const call = (token: string, route: string, body?: unknown) =>
-        fetch(`http://127.0.0.1:${port}/api/pi-sessions${route}`, {
+        fetch(`http://127.0.0.1:${port}/api/${route}`, {
             method: body === undefined ? "GET" : "POST",
             headers: {
                 authorization: `Bearer ${token}`,
@@ -432,26 +440,57 @@ test("only the owner can list, look at, or continue Pi's sessions", async () => 
             },
             ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
-    const preview = `/preview?path=${encodeURIComponent(path)}`;
+    const preview = `pi-sessions/preview?path=${encodeURIComponent(path)}`;
 
-    try {
-        assert.equal((await call(guest.token, "")).status, 403);
-        assert.equal((await call(guest.token, preview)).status, 403);
-        assert.equal((await call(guest.token, "/continue", { path })).status, 403);
-        assert.equal((await call(app.config.ownerToken, "/continue", {})).status, 400);
-        assert.equal((await call(app.config.ownerToken, "")).status, 200);
-        assert.equal((await call(app.config.ownerToken, preview)).status, 200);
-        const made = await call(app.config.ownerToken, "/continue", { path });
+    const checkRoutes = async (token: string, status: number) => {
+        const listed = await call(token, "pi-sessions");
+        const previewed = await call(token, preview);
+        const made = await call(token, "pi-sessions/continue", { path });
 
-        assert.equal(made.status, 200);
+        assert.deepEqual(
+            [listed.status, previewed.status, made.status],
+            [status, status, status],
+            "list, preview, and continue",
+        );
+
+        return made;
+    };
+
+    const setManagesRunners = (on: boolean) =>
+        call(ownerToken, `users/${guest.user.id}/rights`, { right: "managesRunners", on });
+
+    t.after(() => {
+        app.config.removeUser(viewer.user.id);
+        app.config.removeUser(guest.user.id);
+    });
+
+    await t.test("a viewer is refused", async () => {
+        await checkRoutes(viewer.token, 403);
+    });
+    await t.test("a user who may start sessions is refused without Manage runners", async () => {
+        assert.ok(app.policy.mayStart(guest.user, THIS_SERVER));
+        await checkRoutes(guest.token, 403);
+    });
+    await t.test("the owner continues with a live approval", async () => {
+        assert.equal((await call(ownerToken, "pi-sessions/continue", {})).status, 400);
+        const made = await checkRoutes(ownerToken, 200);
         const { id } = (await made.json()) as { id: ConversationId };
 
         assert.equal(app.sessionMeta(id)?.title, "Fix the checkout total");
-    } finally {
-        server.closeAllConnections();
-        server.close();
-        app.config.removeUser(guest.user.id);
-    }
+        assert.equal(app.folderApprovals.live(String(id)), true, "live approval");
+    });
+    await t.test("a user given Manage runners continues with a live approval", async () => {
+        assert.equal((await setManagesRunners(true)).status, 200, "give Manage runners");
+        const made = await checkRoutes(guest.token, 200);
+        const { id } = (await made.json()) as { id: ConversationId };
+
+        assert.equal(app.sessionMeta(id)?.createdBy, guest.user.id);
+        assert.equal(app.folderApprovals.live(String(id)), true, "live approval");
+    });
+    await t.test("the user is refused after Manage runners is taken back", async () => {
+        assert.equal((await setManagesRunners(false)).status, 200, "take back Manage runners");
+        await checkRoutes(guest.token, 403);
+    });
 });
 
 test("two compactions, the second keeping messages from before the first: Pi's context still", async () => {

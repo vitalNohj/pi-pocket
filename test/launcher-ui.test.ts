@@ -1,6 +1,7 @@
 // Focus regressions include #62, reported by @arunsathiya: reopening must focus the native search input, and an
 // action's new sheet must keep its focus when the old launcher finishes leaving.
 import {
+    addPerson,
     type App,
     cleanUp,
     newSession,
@@ -498,3 +499,58 @@ test("New session here starts in the open session's folder", real, async () => {
         "a session in the same folder, without the folder picker",
     );
 });
+
+test(
+    "New session offers Continue a Pi session on this server to a user with Manage runners",
+    real,
+    async (t) => {
+        const { user, token } = await addPerson(app, "Guest", "guest");
+        // A browser of their own: signing in as someone else would ask before changing accounts.
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "continue-pi-ui-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+
+        t.after(() => theirs.closeAll({ final: true }));
+        const guestPage = await theirs.open(1);
+
+        await guestPage.setViewport(VIEWPORTS.desktop);
+        await guestPage.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+        assert.ok(await guestPage.waitFor({ selector: '[data-part="app"]' }), "the signed-in app");
+        assert.equal(
+            await guestPage.evaluate(`return (await import('/store.js')).store.state.me?.id`),
+            user.id,
+        );
+
+        const places = ".sheet-host:not(.leaving) .fp-places";
+
+        const option = async (): Promise<string | null> => {
+            await guestPage.press("Alt+n");
+            assert.ok(
+                await guestPage.waitFor({ selector: places }),
+                "the New session folder sheet",
+            );
+
+            return JSON.parse(
+                await guestPage.evaluate(`
+                return JSON.stringify(document.querySelector(${JSON.stringify(`${places} .fp-pi`)})?.textContent.trim() ?? null);
+            `),
+            ) as string | null;
+        };
+
+        assert.equal(await option(), null, "without Manage runners");
+        await guestPage.evaluate(`(await import('/store.js')).closeSheet()`);
+        app.setRight(owner(app), { person: user.id, right: "managesRunners", on: true });
+        await until(
+            async () =>
+                (await guestPage.evaluate(`
+                    const { store } = await import('/store.js');
+
+                    return store.state.me?.rights?.managesRunners === true;
+                `)) === "true",
+            "Manage runners reaches the guest's tab",
+        );
+        assert.equal(await option(), "Continue a Pi session…", "with Manage runners");
+    },
+);

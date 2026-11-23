@@ -664,7 +664,7 @@ export class PocketApp {
     readonly workspace = new Workspace(this);
     /** The conversation's stored history, as people read it. */
     readonly transcripts = new Transcripts(this);
-    /** Pi's sessions from the terminal, which the owner can continue here. */
+    /** Pi's sessions from the terminal, to list, preview, and continue. */
     readonly piSessions = new PiSessions(this);
     /** PiP, the owner's assistant: its conversation, what its tools do, and the follows that report to it. */
     readonly pip = new Pip(this);
@@ -3413,10 +3413,10 @@ export class PocketApp {
      * Before `user` starts a new session in `folder` on computer `computer` (undefined: this server): go on at once when
      * they are in charge of it, refuse a folder they were not given, or wait for an approval (`folder-requests.ts`):
      * their own authenticator code, or Allow by who is in charge. Returns what keeps the approval for the new session
-     * once it has an id (nothing to keep for who is in charge), and what checks them again where the session is saved
-     * (`Approved`). `folder` is judged by its real path: on this server it is resolved here, and the session is saved by
-     * that path too (`workspace.ts` `checkDirectory`), so a link changed later gives nobody anything; a runner's is
-     * resolved there (`runners.ts` `checkFolder`).
+     * once it has an id, and what checks them again where the session is saved (`Approved`). `folder` is judged by its
+     * real path: on this server it is resolved here, and the session is saved by that path too (`workspace.ts`
+     * `checkDirectory`), so a link changed later gives nobody anything. A runner resolves its path there (`runners.ts`
+     * `checkFolder`).
      */
     async approveStart(
         user: User,
@@ -5668,8 +5668,9 @@ export class PocketApp {
                 const failure = this.#failed.get(Number(id) as unknown as ConversationId);
                 const failedAgents = failedSubagents(subagents.get(id) ?? []);
                 const ask = asks.get(id);
-                // Which of Pi's sessions it continues is the owner's to know (the Pi sessions sheet), not the list's.
-                // Nor who shared it with whom, or when each person used it: a reader gets their own last use alone.
+                // The Pi sessions sheet matches a continuation to its source. The session list does not say which
+                // Pi session it came from, who shared it with whom, or when each person used it: a reader gets their
+                // own last use alone.
                 const {
                     fromPi: _fromPi,
                     sharedBy: _sharedBy,

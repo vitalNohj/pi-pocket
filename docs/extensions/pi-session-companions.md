@@ -1,6 +1,6 @@
 # Files that come with Pi's sessions
 
-An extension of Pi in the terminal can keep a file of its own beside each Pi session file. An example is the state of a context manager. When the owner continues that session in Pi Pocket, the file can come along. Its Pi Pocket extension registers a companion with [`host.registerPiSessionCompanion`](reference/host.md#registerpisessioncompanion).
+An extension of Pi in the terminal can keep a file of its own beside each Pi session file. An example is the state of a context manager. When that session continues on this server, the file can come along. Its Pi Pocket extension registers a companion with [`host.registerPiSessionCompanion`](reference/host.md#registerpisessioncompanion).
 
 The interface is experimental since 0.28.0. It can change in a minor release. A module must check that `host.registerPiSessionCompanion` exists when it supports older servers.
 

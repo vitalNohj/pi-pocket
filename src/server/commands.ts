@@ -816,7 +816,8 @@ export class Commands {
 
     /**
      * Continue one of Pi's sessions from the terminal here: a new session with its history, in its folder, with its model
-     * when that one is signed in here (`pi-sessions.ts`). Local files are the owner's; a runner's files need its grant.
+     * when that one is signed in here (`pi-sessions.ts`). Local files are for whoever is in charge of this server;
+     * a runner's files need its grant.
      */
     async continuePiSession(
         user: User,
@@ -935,6 +936,8 @@ export class Commands {
                     `The folder this Pi session worked in is not there anymore: ${session.cwd}`,
                 );
             }
+
+            approved = await app.approveStart(user, cwd, signal);
         }
 
         const start = this.#defaultModel(session);
