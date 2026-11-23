@@ -10,7 +10,7 @@ import {
     scriptedModel,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import fs, { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import fs, { mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import type { AddressInfo } from "node:net";
@@ -57,10 +57,10 @@ before(async () => {
     app = await openApp(
         scriptedModel((input) => {
             const { role, text } = lastText(input as never);
-            const args = role === "user" && /(?:^|\n)read: (\{.*\})$/.exec(text)?.[1];
+            const call = role === "user" && /(?:^|\n)(read|edit): (\{.*\})$/.exec(text);
 
-            return args
-                ? fauxAssistantMessage([fauxToolCall("read", JSON.parse(args))], {
+            return call
+                ? fauxAssistantMessage([fauxToolCall(call[1]!, JSON.parse(call[2]!))], {
                       stopReason: "toolUse",
                   })
                 : fauxAssistantMessage([fauxText("Done.")]);
@@ -198,6 +198,40 @@ test("the runner snapshot and the existing path give Pi the same results", async
             assert.equal(ops.includes(READ_SNAPSHOT), false);
         });
     }
+});
+
+test("edit reads a fresh snapshot inside the mutation slot and still writes through pi-env", async (t) => {
+    const ops = record(t);
+    const path = "editable.txt";
+    const absolute = join(folder, path);
+
+    const edit = async (oldText: string, newText: string) => {
+        await say(app, id, `edit: ${JSON.stringify({ path, edits: [{ oldText, newText }] })}`);
+        const { messages } = await (await app.conversation(id)).context(context);
+        const result = messages.findLast((message) => message.role === "toolResult");
+
+        assert.equal(result?.toolName, "edit");
+        assert.equal(result?.isError, false);
+    };
+
+    await writeFile(absolute, "\ufefforiginal\r\nother\r\n");
+    await edit("original", "first");
+    assert.equal(await readFile(absolute, "utf8"), "\ufefffirst\r\nother\r\n");
+    assert.equal(ops[0], "realpath", "the stock mutation queue canonicalizes its key first");
+    assert.deepEqual(ops.slice(1).sort(), ["lstat", READ_SNAPSHOT, "write"].sort());
+
+    ops.length = 0;
+    await edit("first", "second");
+    assert.equal(await readFile(absolute, "utf8"), "\ufeffsecond\r\nother\r\n");
+    assert.ok(ops.includes(READ_SNAPSHOT));
+    assert.ok(!ops.includes("pread"));
+
+    ops.length = 0;
+    t.mock.getter(app.runners.link(runnerId), "supportsReadSnapshot", () => false);
+    await edit("second", "third");
+    assert.equal(await readFile(absolute, "utf8"), "\ufeffthird\r\nother\r\n");
+    assert.ok(ops.includes("pread"));
+    assert.ok(!ops.includes(READ_SNAPSHOT));
 });
 
 test("larger snapshots are opt-in and bounded on the runner", async () => {

@@ -53,7 +53,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { CodingTools, createCodingTools } from "@earendil-works/pi-durable/tools";
-import { withRunnerRead } from "./runner-read.ts";
+import { withRunnerEdit, withRunnerRead } from "./runner-read.ts";
 import { Alerts } from "./alerts.ts";
 import { ApprovalMethods, Authenticators } from "./approval-methods.ts";
 import { sweepAssets } from "./artifacts.ts";
@@ -8206,6 +8206,17 @@ async function codingTools(log: (line: string) => void) {
 
     return {
         ...coding,
-        tools: coding.tools?.map((tool) => (tool.name === "read" ? withRunnerRead(tool) : tool)),
+        tools: coding.tools?.map((tool) => {
+            switch (tool.name) {
+                case "read":
+                    return withRunnerRead(tool);
+
+                case "edit":
+                    return withRunnerEdit(tool);
+
+                default:
+                    return tool;
+            }
+        }),
     };
 }
