@@ -4,13 +4,22 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { basename } from "node:path";
 
 export const READ_SNAPSHOT = "pocket-read-snapshot";
-export const MAX_SNAPSHOT_BYTES = 8 * 1024;
+export const MAX_SNAPSHOT_BYTES = 64 * 1024;
+/** Replies to servers that do not opt in must still fit their original limit. */
+const LEGACY_SNAPSHOT_BYTES = 8 * 1024;
 
 /** Like the path probe of `read`: do not open a symlink, non-file or large file on the fast path. */
-export async function snapshotCandidate(path: string): Promise<BigIntStats | undefined> {
+export async function snapshotCandidate(
+    path: string,
+    maxBytes: unknown,
+): Promise<BigIntStats | undefined> {
+    const limit =
+        typeof maxBytes === "number" && Number.isSafeInteger(maxBytes) && maxBytes >= 0
+            ? Math.min(maxBytes, MAX_SNAPSHOT_BYTES)
+            : LEGACY_SNAPSHOT_BYTES;
     const info = await lstat(path, { bigint: true }).catch(() => undefined);
 
-    return info?.isFile() && info.size <= BigInt(MAX_SNAPSHOT_BYTES) ? info : undefined;
+    return info?.isFile() && info.size <= BigInt(limit) ? info : undefined;
 }
 
 function sameFile(before: BigIntStats, after: BigIntStats): boolean {
