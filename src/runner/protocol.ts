@@ -636,7 +636,7 @@ export function readData(message: Buffer): { offset: number; bytes: Buffer } | u
  * stream, so it can send them again after a reconnect.
  */
 export class Outbox {
-    #chunks: { offset: number; bytes: Buffer }[] = [];
+    #chunks: { offset: number; message: Buffer }[] = [];
     /** Bytes written so far: the next chunk's offset. */
     #end = 0;
     /** Bytes the other side acknowledged. */
@@ -651,14 +651,15 @@ export class Outbox {
         return this.#end - this.#acked;
     }
 
-    /** Keep `bytes` as the stream's next ones; returns the binary message that sends them. */
+    /** Copy `bytes` into the stream's next binary message. Callers send the returned buffer without modifying it. */
     write(bytes: Uint8Array): Buffer {
-        const chunk = { offset: this.#end, bytes: Buffer.from(bytes) };
+        const offset = this.#end;
+        const message = dataMessage(offset, bytes);
 
-        this.#chunks.push(chunk);
+        this.#chunks.push({ offset, message });
         this.#end += bytes.length;
 
-        return dataMessage(chunk.offset, chunk.bytes);
+        return message;
     }
 
     /** The other side has the stream up to `received`: forget those bytes. False when `received` is past the end. */
@@ -676,7 +677,7 @@ export class Outbox {
         while (this.#chunks.length > 0) {
             const first = this.#chunks[0]!;
 
-            if (first.offset + first.bytes.length > received) {
+            if (first.offset + first.message.length - 8 > received) {
                 break;
             }
 
@@ -686,17 +687,17 @@ export class Outbox {
         return true;
     }
 
-    /** The messages that send everything from `received` on again, after a reconnect; undefined when it is gone. */
+    /** Read-only messages from `received` onward, after a reconnect; undefined when those bytes are gone. */
     resend(received: number): Buffer[] | undefined {
         if (received < this.#acked || !this.acknowledge(received)) {
             return undefined;
         }
 
-        return this.#chunks.map((chunk) => {
-            const skip = Math.max(0, received - chunk.offset);
-
-            return dataMessage(chunk.offset + skip, chunk.bytes.subarray(skip));
-        });
+        return this.#chunks.map(({ offset, message }) =>
+            received <= offset
+                ? message
+                : dataMessage(received, message.subarray(8 + received - offset)),
+        );
     }
 }
 
@@ -751,7 +752,7 @@ export class FrameSplitter {
         return this.#buffered > 0;
     }
 
-    /** Add bytes; returns the frames they complete. Throws on a frame no pi-env side sends. */
+    /** Add immutable stream bytes and return views of the completed frames. Throws on an invalid length. */
     push(bytes: Buffer): Buffer[] {
         if (bytes.length > 0) {
             this.#chunks.push(bytes);
@@ -792,7 +793,7 @@ export class FrameSplitter {
 
     #take(size: number): Buffer {
         const all = this.#chunks.length === 1 ? this.#chunks[0]! : Buffer.concat(this.#chunks);
-        const taken = Buffer.from(all.subarray(0, size));
+        const taken = all.subarray(0, size);
         const rest = all.subarray(size);
 
         this.#chunks = rest.length === 0 ? [] : [rest];

@@ -284,9 +284,8 @@ class Seal {
 
     seal(plain: Buffer): Buffer {
         const cipher = createCipheriv("aes-256-gcm", this.#key, this.#nonce());
-        const body = Buffer.concat([cipher.update(plain), cipher.final()]);
 
-        return Buffer.concat([body, cipher.getAuthTag()]);
+        return Buffer.concat([cipher.update(plain), cipher.final(), cipher.getAuthTag()]);
     }
 
     /** The plain message, or undefined when it was changed, replayed, or is out of order. */
@@ -300,10 +299,12 @@ class Seal {
 
             decipher.setAuthTag(sealed.subarray(sealed.length - 16));
 
-            return Buffer.concat([
-                decipher.update(sealed.subarray(0, sealed.length - 16)),
-                decipher.final(),
-            ]);
+            const plain = decipher.update(sealed.subarray(0, sealed.length - 16));
+
+            // GCM does not buffer a final block. Still verify its tag before releasing any plaintext.
+            decipher.final();
+
+            return plain;
         } catch {
             return undefined;
         }
