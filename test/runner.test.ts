@@ -372,6 +372,26 @@ describe("runner link", () => {
         }
     });
 
+    it("warns about plain HTTP without saying the runner link is unencrypted", async () => {
+        const setup = await serve();
+        const lines: string[] = [];
+        const { runner } = startRunner(setup, "Laptop", lines, {
+            transport: async () => ({ ok: true, why: "allowed" }),
+        });
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
+
+            const warning = lines.find((line) => line.startsWith("Warning: plain HTTP"));
+
+            assert.match(warning ?? "", /exposes connection details/);
+            assert.match(warning ?? "", /runner link still encrypts commands/);
+        } finally {
+            await runner.stop();
+            await close(setup);
+        }
+    });
+
     it("stops instead of respawning an executable that could not start", async () => {
         const setup = await serve();
         const lines: string[] = [];

@@ -1,6 +1,6 @@
 /**
- * Whether the runner may talk to its server over plain HTTP. HTTPS is always fine. Plain HTTP carries the computer's
- * key and every command in the clear, so it is allowed only where nobody else can read it:
+ * Whether the runner may talk to its server over plain HTTP. The link has its own encryption (`secure-link.ts`), but
+ * plain HTTP exposes connection details. Without an explicit override, it is allowed only to:
  *
  * - this computer (loopback: `localhost`, 127.0.0.0/8, ::1), and
  * - a device of this computer's own tailnet, as Tailscale itself says (`tailscale whois`): WireGuard encrypts the
@@ -218,7 +218,7 @@ export function unsafe(server: string, transport: Extract<Transport, { ok: false
             ? "Tailscale is not installed or not running here, so the runner cannot check that the address is on your tailnet."
             : `Tailscale says ${transport.address} is not a device on your tailnet.`;
 
-    return `${server} uses plain HTTP: anyone on the network could read this computer's key and the commands it runs.\n${tailscale}`;
+    return `${server} uses plain HTTP, which exposes connection details. The runner link still encrypts commands.\n${tailscale}`;
 }
 
 /** Why the runner will not use plain HTTP to `server`, and what to do: for its log, `link`, and the desktop app. */
