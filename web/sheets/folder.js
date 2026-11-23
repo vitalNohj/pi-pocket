@@ -32,6 +32,7 @@ import {
 } from "../folder-paths.js";
 import { APPLE, html, Icon, Sheet, shortPath } from "../ui.js";
 import { piSessionsAvailable } from "./pi-sessions.js";
+import { FolderRows } from "../folder-rows.js";
 
 /** Whether hidden folders show: kept for the next time the picker opens. */
 const HIDDEN_KEY = "pocket.folderHidden";
@@ -303,6 +304,24 @@ export function CwdSheet({
                 ?.scrollIntoView({ block: "nearest" });
         }
     }, [selected]);
+
+    // What a row does, kept current here so the rows (`folder-rows.js`) need not draw again for new handlers.
+    const rowActions = useRef(null);
+
+    rowActions.current = {
+        click: (path) => {
+            if (touch) {
+                load(path);
+
+                return;
+            }
+
+            // The list keeps the keys: a click gives the row the focus, which the list's keys ignore.
+            setSelected(path);
+            list.current?.focus({ preventScroll: true });
+        },
+        open: (path) => !touch && load(path),
+    };
 
     const up = () => listing?.parent && load(listing.parent, { select: listing.path });
 
@@ -768,34 +787,12 @@ export function CwdSheet({
                 }
                 ${failed && html`<p class="fp-note">${failed}</p>`}
                 ${!listing && !failed && html`<p class="fp-note">Opening…</p>`}
-                ${dirs.map(
-                    (dir) => html`<button
-                        key=${dir.path}
-                        type="button"
-                        tabindex="-1"
-                        class=${`fp-row ${dir.path === selected ? "on" : ""}`}
-                        role="option"
-                        aria-selected=${dir.path === selected ? "true" : "false"}
-                        data-path=${dir.path}
-                        title=${touch ? undefined : "Double-click to open"}
-                        onClick=${() => {
-                            if (touch) {
-                                load(dir.path);
-
-                                return;
-                            }
-
-                            // The list keeps the keys: a click gives the row the focus, which the list's keys ignore.
-                            setSelected(dir.path);
-                            list.current?.focus({ preventScroll: true });
-                        }}
-                        onDblClick=${() => !touch && load(dir.path)}
-                    >
-                        <${Icon} name="folder" size=${16} />
-                        <span class="fp-name">${dir.name}</span>
-                        ${touch && html`<${Icon} name="chevron" size=${14} class="fp-chev" />`}
-                    </button>`,
-                )}
+                <${FolderRows}
+                    dirs=${dirs}
+                    selected=${selected}
+                    touch=${touch}
+                    actions=${rowActions}
+                />
                 ${listing && dirs.length === 0 && html`<p class="fp-note">No folders in here.</p>`}
             </div>
         </div>
