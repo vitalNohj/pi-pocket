@@ -33,6 +33,7 @@ import { VIEWPORTS } from "../src/server/browser/viewport.ts";
 import type { User } from "../src/server/config.ts";
 import { SessionsDoc } from "../src/server/docs.ts";
 import { createHandler } from "../src/server/http.ts";
+import { STEP_MS, totp } from "../src/server/totp.ts";
 
 const chromium = findBrowser();
 const real = {
@@ -1731,6 +1732,152 @@ test(
             assert.ok(!detail.includes("Keep as viewer"));
             assert.equal(app.config.userById(user.id)?.paused, undefined);
         } finally {
+            await app.removeUser(owner(app), user.id);
+        }
+    },
+);
+
+test(
+    "a person whose authenticator was removed reads so in red on their own page, signs in another device from it, and has what they had back once they link one again",
+    real,
+    async () => {
+        const { user, token } = app.config.addUser("Paz", "guest");
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "people-sheet-relink-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+        /** Their own row in the list: what it says they are, and its badge, marked when in the color of what waits. */
+        const row = () =>
+            inPage<{ role: string; badge: string | null } | null>(`
+                const row = [...document.querySelectorAll(".pages-item")]
+                    .find((each) => each.querySelector(".pages-item-title")?.textContent.trim() === "Paz (you)");
+                const badge = row?.querySelector(".pages-badge");
+
+                return JSON.stringify(row === undefined ? null : {
+                    role: row.querySelector(".pages-item-text .small").textContent.trim().split(" · ")[0],
+                    badge: badge ? badge.textContent.trim() + (badge.classList.contains("alert") ? " (alert)" : "") : null,
+                });
+            `);
+        /** The notice on the page shown: its words, and whether it is in the color of an error, not the muted one. */
+        const notice = () =>
+            inPage<{ says: string; red: boolean } | null>(`
+                const notice = document.querySelector('.pages-detail [data-part="relink-notice"]');
+
+                if (notice === null) {
+                    return JSON.stringify(null);
+                }
+
+                const probe = document.createElement("span");
+
+                probe.style.color = "var(--err)";
+                document.body.append(probe);
+
+                const red = getComputedStyle(probe).color;
+
+                probe.remove();
+
+                return JSON.stringify({
+                    says: notice.textContent.replace(/\\s+/g, " ").trim(),
+                    red: getComputedStyle(notice).color === red &&
+                        red !== getComputedStyle(document.querySelector(".pages-detail .muted")).color,
+                });
+            `);
+        const buttons = () =>
+            inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".pages-detail button")].map((each) => each.textContent.trim()))`,
+            );
+
+        /** Tap the button of `group` that says `label`, once it is there and takes a click. */
+        const press = async (group: string, label: string) => {
+            const found = `[...document.querySelectorAll('.pages-detail ${group} button')].find((each) => each.textContent.trim() === ${JSON.stringify(label)} && !each.disabled)`;
+
+            await until(
+                () => inPage<boolean>(`return JSON.stringify(${found} !== undefined)`),
+                `${label} taking a click`,
+            );
+            await inPage(`${found}.click(); return JSON.stringify(true);`);
+        };
+
+        const shown = (selector: string) =>
+            inPage<boolean>(
+                `return JSON.stringify(document.querySelector('.pages-detail ${selector}') !== null)`,
+            );
+
+        linkAuthenticator(app, user);
+        app.removeAuthenticator(user.id, owner(app));
+        assert.ok(app.config.userById(user.id)?.paused !== undefined, "paused");
+
+        try {
+            page = await theirs.open(1);
+            await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await open("people");
+            await until(async () => (await notice()) !== null, "the notice on their own page");
+            assert.deepEqual(await notice(), {
+                says: "Your authenticator was removed. Link one again below to get back what you had.",
+                red: true,
+            });
+            assert.deepEqual(await row(), { role: "paused", badge: "Relink (alert)" });
+            assert.equal(
+                (await buttons()).includes("Request access"),
+                false,
+                "they ask for nothing: linking one gives it back",
+            );
+
+            // They still sign in another device from here, which a viewer does not.
+            await press('[data-part="device-link"]', "Make a link");
+            await until(() => shown('[data-part="device-link"] input.mono'), "their sign-in link");
+
+            const signed = await fetch(
+                await inPage<string>(
+                    `return JSON.stringify(document.querySelector('.pages-detail [data-part="device-link"] input.mono').value)`,
+                ),
+                {
+                    method: "POST",
+                    redirect: "manual",
+                    body: "",
+                    headers: { "content-type": "application/x-www-form-urlencoded" },
+                },
+            );
+
+            assert.equal(
+                app.config.userByToken(
+                    decodeURIComponent(
+                        /pocket_auth=([^;]+)/.exec(signed.headers.get("set-cookie") ?? "")![1]!,
+                    ),
+                )?.id,
+                user.id,
+                "the device is them",
+            );
+            assert.equal(app.config.userById(user.id)?.role, "viewer", "and they still only view");
+
+            // Linking one again, on this page, gives back what they had: the notice and the badge go.
+            await press(".my-authenticator", "Link");
+            await until(() => shown(".authenticator-secret"), "the key to link");
+
+            const secret = await inPage<string>(
+                `return JSON.stringify(document.querySelector(".pages-detail .authenticator-secret").textContent.trim())`,
+            );
+
+            await inPage(`
+                const field = document.querySelector('.pages-detail .my-authenticator input[autocomplete="one-time-code"]');
+
+                field.value = ${JSON.stringify(totp(secret, Math.floor(Date.now() / STEP_MS)))};
+                field.dispatchEvent(new Event("input", { bubbles: true }));
+
+                return JSON.stringify(true);
+            `);
+            await press(".my-authenticator", "Link");
+            await until(() => app.config.userById(user.id)?.role === "guest", "a user again");
+            assert.equal(app.config.userById(user.id)?.paused, undefined);
+            await until(async () => (await notice()) === null, "the notice to go");
+            await until(async () => (await row())?.role === "user", "user on their row");
+            assert.deepEqual(await row(), { role: "user", badge: null });
+        } finally {
+            // The tests share one page: the owner's again, whatever happened.
+            page = owners;
+            await theirs.closeAll({ final: true });
             await app.removeUser(owner(app), user.id);
         }
     },

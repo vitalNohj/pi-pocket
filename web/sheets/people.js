@@ -1696,9 +1696,12 @@ function PersonPage({ person, part, onPart }) {
             (placesFor(person).length > 0 ||
                 reach.cards.length > 0 ||
                 (reach.charge.length > 0 && person.role !== "owner")));
-    // A sign-in link: one's own, the owner's for anyone, and for a viewer whoever manages them (`access.ts`
-    // `maySignInAs`).
-    const device = collab() && (owner || (myself && !viewer) || (mine && viewer && !person.paused));
+    // A sign-in link: one's own (`access.ts` `mayAddDevice`: no viewer's, but a paused user's, who links an
+    // authenticator again on that device), the owner's for anyone, and for a viewer whoever manages them
+    // (`maySignInAs`).
+    const device =
+        collab() &&
+        (owner || (myself && (!viewer || person.paused)) || (mine && viewer && !person.paused));
     // A chat with them (`direct.js`): the server says who may (`access.ts` `mayMessage`). Its count is what I have not
     // read of it.
     const chat = !myself && person.mayMessage && collab();
@@ -1751,6 +1754,14 @@ function PersonPage({ person, part, onPart }) {
                 .join(" · ")}
         </div>
         ${
+            // Their authenticator was removed: they read why they only view, and what brings it back, first.
+            myself &&
+            person.paused &&
+            html`<p class="err small" role="status" data-part="relink-notice">
+                Your authenticator was removed. Link one again below to get back what you had.
+            </p>`
+        }
+        ${
             myself &&
             person.expiresAt !== undefined &&
             html`<${AccountEnd} expiresAt=${person.expiresAt} own=${true} />`
@@ -1785,7 +1796,10 @@ function PersonPage({ person, part, onPart }) {
         }
         ${myself && !viewer && html`<${MyPhoto} />`}
         ${myself && html`<${MyName} key=${person.name} person=${person} />`}
-        ${myself && viewer && html`<${RequestAccess} person=${person} />`}
+        ${
+            // A paused person asks for nothing: linking an authenticator gives back what they had.
+            myself && viewer && !person.paused && html`<${RequestAccess} person=${person} />`
+        }
         ${
             // Someone else's, with their permissions: there (below).
             device &&
@@ -1803,13 +1817,6 @@ function PersonPage({ person, part, onPart }) {
             <//>`
         }
         ${myself && !viewer && html`<${PinSync} />`}
-        ${
-            myself &&
-            person.paused &&
-            html`<p class="muted small">
-                Link an authenticator to prompt again. You get back what you had.
-            </p>`
-        }
         ${
             // A temporary account gets nothing here: it links none.
             myself && html`<${MyAuthenticator} paused=${person.paused} />`
@@ -1941,11 +1948,17 @@ export function PeopleSheet() {
                 badge=${
                     managesPeople() && person.request
                         ? "Request"
-                        : (store.state.directUnread[person.id] ?? 0) > 0
-                          ? store.state.directUnread[person.id]
-                          : null
+                        : person.id === me?.id && person.paused
+                          ? // Their own row: their authenticator was removed (their page says so in red).
+                            "Relink"
+                          : (store.state.directUnread[person.id] ?? 0) > 0
+                            ? store.state.directUnread[person.id]
+                            : null
                 }
-                alert=${managesPeople() && Boolean(person.request)}
+                alert=${
+                    (managesPeople() && Boolean(person.request)) ||
+                    (person.id === me?.id && Boolean(person.paused))
+                }
             />`,
         )}
         ${

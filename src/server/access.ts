@@ -464,6 +464,17 @@ export class AccessPolicy {
     }
 
     /**
+     * May `person` make a sign-in link for another device of their own (`auth.ts` `createDeviceLink`): the owner and
+     * users, and a user paused since their authenticator was removed, who signs a device in and links one again
+     * there. A viewer makes none: they ask whoever manages people (`maySignInAs`).
+     */
+    mayAddDevice(person: Pick<Person, "id">): boolean {
+        const current = this.#current(person);
+
+        return current !== undefined && (current.role !== "viewer" || current.paused !== undefined);
+    }
+
+    /**
      * May `by` make a sign-in link that signs a device in as `target`, someone else (`auth.ts` `createDeviceLink`): it
      * gives whoever opens it all that `target` has. The owner, for anyone. Who manages people, only for a viewer they
      * may change, who makes no such link themselves: never for a user, whose sessions and computers are their own, and

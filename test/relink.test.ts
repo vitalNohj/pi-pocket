@@ -84,6 +84,46 @@ async function link(token: string): Promise<string> {
 const removeByOwner = (user: User) =>
     call(app.config.ownerToken, `users/${user.id}/authenticator`, undefined, "DELETE");
 
+/** Ask for a sign-in link for a device of one's own: the status, and its code or the refusal. */
+async function deviceLink(
+    token: string,
+): Promise<{ status: number; code: string | undefined; error: string | undefined }> {
+    const response = await fetch(`${base}/api/me/device`, {
+        method: "POST",
+        signal: AbortSignal.timeout(20_000),
+        headers: {
+            authorization: `Bearer ${token}`,
+            "X-Pocket": "1",
+            "content-type": "application/json",
+        },
+        body: "{}",
+    });
+    const body = (await response.json()) as { code?: string; error?: string };
+
+    return { status: response.status, code: body.code, error: body.error };
+}
+
+/** Open a sign-in link on a new device, with no authenticator code: the token that device gets. */
+async function signIn(code: string): Promise<string> {
+    const response = await fetch(`${base}/join/${code}`, {
+        method: "POST",
+        redirect: "manual",
+        signal: AbortSignal.timeout(20_000),
+        body: "",
+        headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "sec-fetch-site": "same-origin",
+        },
+    });
+
+    await response.text();
+    assert.equal(response.status, 303, "the link signs the device in");
+
+    return decodeURIComponent(
+        /pocket_auth=([^;]+)/.exec(response.headers.get("set-cookie") ?? "")![1]!,
+    );
+}
+
 const submit = (id: ConversationId, user: User) =>
     app.commands.submit(id, current(user), {
         text: "Hello again",
@@ -358,4 +398,43 @@ test("the people view shows only a pause flag, to the owner and the paused perso
     assert.equal((await person(app.config.ownerToken)).paused, true);
     assert.equal((await person(token)).paused, true);
     assert.equal(Object.hasOwn(await person(other.token), "paused"), false);
+});
+
+test("a paused person signs in another device with a link of their own, and links an authenticator again there", async () => {
+    const { user, token } = app.config.addUser("Kit", "guest");
+    const plain = app.config.addUser("Vee", "viewer");
+    const refused = {
+        status: 403,
+        code: undefined,
+        error: "Ask whoever manages people here for a sign-in link.",
+    };
+
+    await link(token);
+    await removeByOwner(user);
+    assert.deepEqual(current(user).paused, {});
+
+    // A viewer makes no link. A paused person does: they are a user again once they link an authenticator.
+    assert.deepEqual(await deviceLink(plain.token), refused);
+
+    const made = await deviceLink(token);
+
+    assert.equal(made.status, 200);
+
+    // The device is them, still paused. It asks for no authenticator code: they have none.
+    const device = await signIn(made.code!);
+
+    assert.notEqual(device, token);
+    assert.equal(app.config.userByToken(device)?.id, user.id);
+    assert.equal(current(user).role, "viewer");
+
+    // Linking one there gives back what they had.
+    await link(device);
+    assert.equal(current(user).role, "guest");
+    assert.equal(Object.hasOwn(current(user), "paused"), false);
+
+    // Kept as a viewer, they are one: no link of their own.
+    await removeByOwner(user);
+    assert.equal((await deviceLink(token)).status, 200);
+    app.setAccess(owner(app), user.id, { role: "viewer" });
+    assert.deepEqual(await deviceLink(token), refused);
 });

@@ -559,9 +559,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         // Each person's own authenticator app (`approval-methods.ts`): they approve their new folders with its codes.
-        // A device link: it signs another device in as this person once, within 15 minutes.
+        // A device link: it signs another device in as this person once, within 15 minutes. Not for a viewer, but for a
+        // user paused since their authenticator was removed (`access.ts` `mayAddDevice`).
         if (first === "me" && second === "device" && third === undefined && method === "POST") {
-            if (user.role === "viewer") {
+            if (!app.policy.mayAddDevice(user)) {
                 throw new HttpError(403, "Ask whoever manages people here for a sign-in link.");
             }
 

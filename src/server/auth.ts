@@ -209,7 +209,7 @@ export class Auth {
 
     /**
      * A device link: it signs another device in as `target` and makes no one new. The owner and users make one for
-     * themselves; the owner makes one for someone else, who lost their device, and who manages users makes one for a
+     * themselves, a paused user too (`access.ts` `mayAddDevice`); the owner makes one for someone else, who lost their device, and who manages users makes one for a
      * viewer (`api.ts` checks who asks). It works once and lasts 15 minutes: whoever opens it gets all that `target`
      * has, after a code from their authenticator when they have one (`redeem`).
      */
