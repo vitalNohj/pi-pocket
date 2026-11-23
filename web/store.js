@@ -668,11 +668,13 @@ export function canToggleTurns() {
 /** People invited to one session cannot start sessions or invite others. */
 export const scoped = () => Array.isArray(store.state.me?.sessions);
 
-/**
- * May this person start sessions on this server, fork, and invite: the server says (`mayStart`, the access policy), as
- * the owner chose them for it; a server from before it, by role.
- */
-export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStart !== false;
+/** May this person start sessions on `runner`, or on this server by default? */
+export const canStart = (runner = null) =>
+    canSteer() &&
+    !scoped() &&
+    (runner === null
+        ? store.state.me?.mayStart !== false
+        : store.state.runners.some((each) => each.id === runner && each.mayStart !== false));
 
 /**
  * Does this person hold right `key` (`rights.ts`), as the server's hello says (`me.rights`: the access policy's answer,

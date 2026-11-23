@@ -23,7 +23,16 @@ import {
     presentationMode,
     resendable,
 } from "../entry-presentation.js";
-import { PlaceRows, placeOf, startCopy, useMainKey, usePlace } from "./copy.js";
+import {
+    CopyAction,
+    copyReady,
+    PlaceRows,
+    placeOf,
+    readyDraft,
+    startCopy,
+    useMainKey,
+    usePlace,
+} from "./copy.js";
 import { KeepWarmCard } from "./keep-warm.js";
 import { memoryAvailable } from "./memory.js";
 
@@ -202,8 +211,8 @@ export function MessageSheet({ entryId }) {
         <//>`;
     }
 
-    // Copies are new sessions: who may start one may make one.
-    const canBranch = canStart() && view.conversation?.kind === "session";
+    // Only sessions have copies. The place rows decide where this person may start one.
+    const canBranch = view.conversation?.kind === "session";
 
     if (entry.kind === "assistant") {
         return html`<${ReplySheet} entry=${entry} canBranch=${canBranch} />`;
@@ -223,16 +232,20 @@ function ReplySheet({ entry, canBranch }) {
     const sessionId = view.conversation.id;
     const text = replyText(entry);
     const empty = text.trim() === "";
-    const draft = usePlace(sessionId, `reply:${sessionId}:${entry.id}`);
+    const { draft, choices } = usePlace(sessionId, `reply:${sessionId}:${entry.id}`, {
+        enabled: canBranch,
+    });
     const [busy, setBusy] = useState(false);
     const go = useCallback(() => {
-        if (!canBranch || busy) {
+        const now = readyDraft(draft);
+
+        if (!canBranch || busy || !now) {
             return;
         }
 
         setBusy(true);
         startCopy(
-            (signal) => actions.fork(entry.id, { place: placeOf(draft) }, signal),
+            (signal) => actions.fork(entry.id, { place: placeOf(now) }, signal),
             "Opened the fork. The original is unchanged.",
         ).finally(() => setBusy(false));
     }, [canBranch, busy, draft, entry.id]);
@@ -243,20 +256,15 @@ function ReplySheet({ entry, canBranch }) {
         <div class="copy-what copy-preview">${empty ? "(no text)" : text}</div>
         ${
             canBranch &&
-            html`<${PlaceRows} sessionId=${sessionId} draft=${draft} verb="Fork" />
-                <div class="copy-go">
-                    <button
-                        type="button"
-                        class="button primary wide"
-                        disabled=${busy}
-                        onClick=${go}
-                    >
-                        Fork from here
-                    </button>
-                    <p class="muted small">
-                        A new session with everything up to this reply. The original stays as it is.
-                    </p>
-                </div>`
+            html`<${PlaceRows} sessionId=${sessionId} draft=${draft} choices=${choices} verb="Fork" />
+                <${CopyAction}
+                    label="Fork from here"
+                    choices=${choices}
+                    disabled=${busy || !copyReady(draft)}
+                    onClick=${go}
+                >
+                    A new session with everything up to this reply. The original stays as it is.
+                <//>`
         }
         <div class="copy-minors">
             ${
@@ -286,6 +294,7 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
     // The last message to Pi, once Pi is idle and the queue is empty, in a session on this server.
     const canUndo =
         again &&
+        canStart() &&
         view.conversation.runner === undefined &&
         !view.live.busy &&
         !view.live.compactions?.length &&
@@ -294,14 +303,20 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
     const retry = canUndo && answerFailed(view, entry.id);
     // A message of files alone has no words: there is nothing to copy.
     const filesAlone = text.trim() === "";
-    const draft = usePlace(sessionId, `message:${sessionId}:${entry.id}`, () => ({ text: null }));
+    const { draft, choices } = usePlace(sessionId, `message:${sessionId}:${entry.id}`, {
+        enabled: again,
+        extra: () => ({ text: null }),
+    });
     // The text as the person has it now: the original until they type (or until its whole text comes).
     const written = draft.text ?? text;
     const edited = draft.text !== null && draft.text !== text;
     const [busy, setBusy] = useState(false);
     const field = useRef(null);
     const go = useCallback(() => {
-        if (!again || busy || (filesAlone && !edited)) {
+        const now = readyDraft(draft);
+        const outgoing = now?.text ?? text;
+
+        if (!again || busy || !now || outgoing.trim() === "") {
             return;
         }
 
@@ -311,20 +326,20 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
                 actions.resend(
                     entry.id,
                     {
-                        ...(edited ? { text: written } : {}),
-                        place: placeOf(draft),
+                        ...(outgoing === text ? {} : { text: outgoing }),
+                        place: placeOf(now),
                     },
                     signal,
                 ),
             "Opened the new session. The original is unchanged.",
         ).finally(() => setBusy(false));
-    }, [again, busy, draft, edited, written, entry.id, filesAlone]);
+    }, [again, busy, draft, entry.id, text]);
 
     useMainKey("message", go);
 
     return html`<${Sheet} title="Your message" onClose=${closeSheet} className="copy-sheet">
         ${
-            again
+            again && choices.length > 0
                 ? html`<textarea
                       ref=${field}
                       class="copy-text"
@@ -341,21 +356,16 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
         ${entry.presentation && html`<${PresentationChoice} presentation=${entry.presentation} />`}
         ${
             again &&
-            html`<${PlaceRows} sessionId=${sessionId} draft=${draft} verb="Send again" />
-                <div class="copy-go">
-                    <button
-                        type="button"
-                        class="button primary wide"
-                        disabled=${busy || written.trim() === ""}
-                        onClick=${go}
-                    >
-                        ${edited ? "Send edited in a new session" : "Send again in a new session"}
-                    </button>
-                    <p class="muted small">
-                        Pi gets ${edited ? "the edited" : "this"} message in a new session that forks just before the
-                        original. The original stays as it is.
-                    </p>
-                </div>`
+            html`<${PlaceRows} sessionId=${sessionId} draft=${draft} choices=${choices} verb="Send again" />
+                <${CopyAction}
+                    label=${edited ? "Send edited in a new session" : "Send again in a new session"}
+                    choices=${choices}
+                    disabled=${busy || !copyReady(draft) || written.trim() === ""}
+                    onClick=${go}
+                >
+                    Pi gets ${edited ? "the edited" : "this"} message in a new session that forks just before the
+                    original. The original stays as it is.
+                <//>`
         }
         <div class="copy-minors">
             ${

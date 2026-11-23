@@ -3,9 +3,9 @@
 // this machine, each in a folder of its own. Also: each session's repository (`repo.ts`), the folder a copy suggests,
 // and the folder picker's Recent and Favorites per computer.
 import assert from "node:assert/strict";
-import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
+import { linkInProcess, newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -17,9 +17,15 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { Runner } from "../packages/runner/src/runner.ts";
+import { THIS_SERVER } from "../src/server/access.ts";
+import { Browsers } from "../src/server/browser.ts";
+import { findBrowser } from "../src/server/browser/discovery.ts";
+import type { BrowserPage } from "../src/server/browser/page.ts";
+import { VIEWPORTS } from "../src/server/browser/viewport.ts";
 import type { User } from "../src/server/config.ts";
 import type { FolderRequestView } from "../src/server/folder-requests.ts";
-import { ChatDoc, FolderFavoritesDoc } from "../src/server/docs.ts";
+import { ChatDoc, FolderFavoritesDoc, SessionsDoc } from "../src/server/docs.ts";
+import { createHandler } from "../src/server/http.ts";
 import { normalizeRemote } from "../src/server/repo.ts";
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
 import {
@@ -37,6 +43,7 @@ import {
     work,
     addPerson,
     answerRequests,
+    approveSession,
 } from "./helpers.ts";
 
 /** What the model got in its newest request, as text. */
@@ -147,7 +154,9 @@ async function talked(cwd = work): Promise<{ id: ConversationId; reply: number; 
 before(async () => {
     app = await openApp(scriptedModel(route));
     app.config.lastModel ??= { provider: "faux", modelId: "faux-1", thinkingLevel: "off" };
-    server = createServer((request, response) => response.writeHead(404).end());
+    server = createServer(
+        createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
+    );
     server.on("upgrade", (request, socket, head) => {
         if (!app.runners.upgrade(request, socket, head)) {
             socket.destroy();
@@ -169,6 +178,57 @@ after(async () => {
     await new Promise((resolve) => server?.close(resolve));
     cleanUp();
 });
+
+/** A separate browser profile for the person opening the copy sheet. */
+async function seeCopySheet(
+    token: string,
+    id: ConversationId,
+    run: (page: BrowserPage) => Promise<void>,
+): Promise<void> {
+    const browsers = new Browsers({
+        dataDir: mkdtempSync(join(root, "copy-sheet-")),
+        load: async () => undefined,
+        save: () => {},
+    });
+
+    try {
+        const page = await browsers.open(1);
+        const base = `http://127.0.0.1:${port}`;
+
+        await page.setViewport(VIEWPORTS.desktop);
+        await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+        await page.navigate(`${base}/s/${id}`);
+        await until(
+            async () =>
+                (await page.evaluate(`
+                    (await import("/store.js")).store.state.view.conversation?.id === ${id}
+                `)) === "true",
+            "the source session's view",
+            30_000,
+        );
+        await run(page);
+    } finally {
+        await browsers.closeAll({ final: true });
+    }
+}
+
+function openFork(page: BrowserPage, id: ConversationId): Promise<string> {
+    return page.evaluate(`(await import("/store.js")).openSheet({ type: "fork", id: ${id} })`);
+}
+
+const forkButton = ".copy-sheet .copy-go button";
+const noComputer = "You cannot start sessions on any computer.";
+const withBrowser = { skip: findBrowser() === undefined ? "no Chromium-based browser" : false };
+
+/** A sheet element that has appeared in the browser. */
+async function shown(page: BrowserPage, selector: string): Promise<void> {
+    await until(
+        async () =>
+            (await page.evaluate(`!!document.querySelector(${JSON.stringify(selector)})`)) ===
+            "true",
+        selector,
+    );
+}
 
 /** A remote with a user and a made-up token in it, built here so that secret scanners do not take it for a real one. */
 const withToken = (user: string, token: string, rest: string) => `https://${user}:${token}@${rest}`;
@@ -708,4 +768,218 @@ describe("the folder picker's places, per computer", () => {
             { status: 404 },
         );
     });
+});
+
+// Real buttons and API requests; only delivery of the place answers is delayed in the race test.
+describe("the whole-session fork sheet", () => {
+    it("forks on the runner for a person chosen only for that runner", withBrowser, async () => {
+        const { user, token } = app.config.addUser("Runner only", "guest");
+
+        app.config.setRunnerUsers(laptop.id, [
+            ...(app.config.runnerById(laptop.id)?.users ?? []),
+            user.id,
+        ]);
+        app.config.setGivenFolders(laptop.id, user.id, [laptop.folder]);
+        app.config.updateUser(user.id, { approvalDays: 7 });
+        const source = await app.commands.createSession(owner(app), {
+            runner: laptop.id,
+            cwd: laptop.folder,
+        });
+
+        await app.commands.shareSession(source.id, owner(app), [user.id]);
+        approveSession(app, source.id, user);
+        assert.equal(app.policy.mayStart(user, THIS_SERVER), false);
+        assert.equal(app.policy.mayStart(user, laptop.id), true);
+        await seeCopySheet(token, source.id, async (page) => {
+            await openFork(page, source.id);
+            await shown(page, `${forkButton}:enabled`);
+            assert.equal(
+                await page.evaluate(
+                    `document.querySelector(".copy-sheet .choice-computer").textContent.trim()`,
+                ),
+                "Laptop",
+            );
+            await page.evaluate(`document.querySelector(${JSON.stringify(forkButton)}).click()`);
+            await until(
+                async () =>
+                    (await page.evaluate(`location.pathname !== "/s/${source.id}"`)) === "true",
+                "the fork to open",
+                30_000,
+            );
+            const copy = Number(
+                await page.evaluate(`location.pathname.split("/").at(-1)`),
+            ) as unknown as ConversationId;
+
+            assert.equal(app.runnerOf(copy), laptop.id);
+            assert.equal(app.cwdOf(copy), laptop.folder);
+            assert.equal(app.sessionMeta(copy)?.forkedFrom?.id, Number(source.id));
+        });
+    });
+
+    it("disables copies when the person cannot start anywhere", withBrowser, async () => {
+        const { id, reply, prompt } = await talked();
+        const { user, token } = app.config.addUser("No computer", "guest");
+
+        // A person can see a shared session without being chosen for its computer.
+        await app.harness.commit(async (tx) => {
+            (await tx.doc(SessionsDoc)).items[String(id)]!.sharedWith = [user.id];
+        }, context);
+        assert.equal(app.policy.mayStart(user, THIS_SERVER), false);
+        await seeCopySheet(token, id, async (page) => {
+            for (const [sheet, label] of [
+                [{ type: "fork", id }, "Fork"],
+                [{ type: "message", entryId: reply }, "Fork from here"],
+                [{ type: "message", entryId: prompt }, "Send again in a new session"],
+            ] as const) {
+                await page.evaluate(
+                    `(await import("/store.js")).openSheet(${JSON.stringify(sheet)})`,
+                );
+                await shown(page, `${forkButton}:disabled`);
+                assert.equal(
+                    await page.evaluate(
+                        `document.querySelector(${JSON.stringify(forkButton)}).textContent.trim()`,
+                    ),
+                    label,
+                );
+                assert.equal(
+                    await page.evaluate(
+                        `document.querySelector(".copy-sheet .copy-go p").textContent.trim()`,
+                    ),
+                    noComputer,
+                );
+                await page.evaluate(`(await import("/store.js")).closeSheet()`);
+            }
+        });
+    });
+
+    it(
+        "shows known and prefetched places at once, and cannot submit a pending place",
+        withBrowser,
+        async () => {
+            const { id } = await talked();
+            const deskWork = join(desk.folder, "work");
+
+            mkdirSync(deskWork, { recursive: true });
+            await app.commands.createSession(owner(app), { runner: desk.id, cwd: deskWork });
+            const linker = app.config.addUser("Blocked linker", "viewer");
+            const blocked = app.config.addRunner(
+                "Blocked computer",
+                linker.user.id,
+                newIdentity().publicKey,
+            );
+
+            assert.equal(
+                app.runners.list(owner(app)).find((each) => each.id === blocked.id)?.mayStart,
+                false,
+            );
+            await seeCopySheet(app.config.ownerToken, id, async (page) => {
+                await page.evaluate(`
+                const fetchPlace = window.fetch.bind(window);
+                window.copyProbe = { asks: [], release: new Map(), forks: 0 };
+                window.fetch = (path, options) => {
+                    const url = new URL(path, location.href);
+                    if (url.pathname === "/api/c/${id}/fork") copyProbe.forks++;
+                    if (url.pathname !== "/api/c/${id}/copy-place") return fetchPlace(path, options);
+                    const runner = url.searchParams.get("runner") || "";
+                    const gate = Promise.withResolvers();
+                    copyProbe.asks.push(runner);
+                    copyProbe.release.set(runner, gate.resolve);
+                    return Promise.all([fetchPlace(path, options), gate.promise]).then(([answer]) => answer);
+                };
+                "ready";
+            `);
+                await openFork(page, id);
+                await shown(page, forkButton);
+                const choices = ".copy-sheet .choice-rows button[aria-expanded]";
+                const folder = ".copy-sheet .choice-rows bdi";
+                const button = JSON.stringify(forkButton);
+                const folderNode = `document.querySelector(${JSON.stringify(folder)})`;
+                const readFolder = `${folderNode}.textContent.trim()`;
+                const readFolderPath = `${folderNode}.closest(".choice-row").title`;
+                const readModel = `Array.from(document.querySelectorAll(".copy-sheet .choice-row"))
+                .find((row) => row.querySelector(".choice-label").textContent === "Model")
+                .querySelector(".choice-main").textContent.trim()`;
+                const clickChoice = (
+                    name: string,
+                ) => `Array.from(document.querySelectorAll(".copy-sheet [role=radio]"))
+                .find((choice) => choice.querySelector(".grow").textContent === ${JSON.stringify(name)}).click()`;
+                const cached = (runner: string | null) =>
+                    until(
+                        async () =>
+                            (await page.evaluate(`
+                !!(await import("/copy-draft.js")).copyDraft()?.places.get(${JSON.stringify(runner)})
+            `)) === "true",
+                        "the place answer to be cached",
+                    );
+
+                assert.equal(await page.evaluate(readFolder), work);
+                assert.match(await page.evaluate(readModel), /faux-1/);
+                assert.equal(
+                    await page.evaluate(`document.querySelector(${button}).disabled`),
+                    "false",
+                );
+                await until(
+                    () =>
+                        page
+                            .evaluate(`copyProbe.asks.length === 3`)
+                            .then((value) => value === "true"),
+                    "all allowed requests in flight at once",
+                );
+                assert.deepEqual(
+                    JSON.parse(await page.evaluate(`JSON.stringify(copyProbe.asks)`)),
+                    ["", laptop.id, desk.id],
+                );
+                await page.evaluate(`document.querySelector(${JSON.stringify(choices)}).click()`);
+                await shown(page, ".copy-sheet [role=radio]");
+                assert.deepEqual(
+                    JSON.parse(
+                        await page.evaluate(`JSON.stringify(Array.from(
+                document.querySelectorAll(".copy-sheet [role=radio] .grow"), (each) => each.textContent
+            ))`),
+                    ),
+                    ["This server", "Laptop", "Desk"],
+                );
+                await page.evaluate(clickChoice("Laptop"));
+                await shown(page, `${forkButton}:disabled`);
+                assert.equal(await page.evaluate(readFolder), "…");
+                await page.evaluate(`
+                document.querySelector(${button}).click();
+                for (const key of ["ctrlKey", "metaKey"]) {
+                    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", [key]: true }));
+                }
+                copyProbe.release.get("")();
+            `);
+                await cached(null);
+                assert.equal(
+                    await page.evaluate(readFolder),
+                    "…",
+                    "the first answer does not change the selection",
+                );
+                assert.equal(await page.evaluate(`copyProbe.forks`), "0");
+                await page.evaluate(`copyProbe.release.get(${JSON.stringify(desk.id)})();`);
+                await cached(desk.id);
+                await page.evaluate(`document.querySelector(${JSON.stringify(choices)}).click()`);
+                await shown(page, ".copy-sheet [role=radio]");
+                const changed = JSON.parse(
+                    await page.evaluate(`
+                ${clickChoice("Desk")};
+                await new Promise(requestAnimationFrame);
+                return JSON.stringify({ folder: ${readFolderPath}, disabled: document.querySelector(${button}).disabled,
+                    asks: copyProbe.asks.length });
+            `),
+                );
+
+                assert.deepEqual(changed, { folder: deskWork, disabled: false, asks: 3 });
+                await page.evaluate(`copyProbe.release.get(${JSON.stringify(laptop.id)})();`);
+                await cached(laptop.id);
+                assert.equal(
+                    await page.evaluate(
+                        `document.querySelector(".copy-sheet .choice-computer").textContent.trim()`,
+                    ),
+                    "Desk",
+                );
+                assert.equal(await page.evaluate(readFolderPath), deskWork);
+            });
+        },
+    );
 });

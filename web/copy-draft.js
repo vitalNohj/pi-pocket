@@ -84,11 +84,21 @@ export function levelFor(model, level) {
 export function chooseModel(model) {
     const ref = { provider: model.provider, modelId: model.id };
 
-    updateDraft({ model: ref, thinkingLevel: levelFor(model, draft?.thinkingLevel ?? "off") });
+    updateDraft({
+        model: ref,
+        thinkingLevel: levelFor(model, draft?.thinkingLevel ?? "off"),
+        modelPicked: true,
+    });
 }
 
 /** The model picker chose a thinking level for the copy. */
-export const chooseLevel = (level) => updateDraft({ thinkingLevel: level });
+export const chooseLevel = (level) => updateDraft({ thinkingLevel: level, modelPicked: true });
 
 /** The folder picker chose a folder for the copy. */
-export const chooseFolder = (cwd) => updateDraft({ cwd, reason: "picked", picked: cwd });
+export const chooseFolder = (cwd) =>
+    updateDraft({
+        cwd,
+        reason: "picked",
+        picked: cwd,
+        ...(cwd === draft?.cwd ? {} : { inRepository: undefined }),
+    });
