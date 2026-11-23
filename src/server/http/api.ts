@@ -1046,7 +1046,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, await app.artifactOverview(user));
         }
 
-        // Pi's sessions from the terminal, which the owner can continue here.
+        // Pi's sessions from the terminal. On this server they are for whoever is in charge.
         if (first === "pi-sessions" && second === undefined && method === "GET") {
             return json(
                 response,

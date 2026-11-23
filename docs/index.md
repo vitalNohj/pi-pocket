@@ -11,7 +11,7 @@ These pages are for agents and people who change how Pi works in Pi Pocket, exte
     - `extensions/` has the owner's drop-in extensions.
     - `themes/` has the owner's themes.
     - Change the data through the app, never in these files: the server keeps them in memory, and writes over them. There are two exceptions: `extensions/`, where drop-ins go ([extensions.md](extensions.md)), and `themes/`, where themes go ([extensions/themes.md](extensions/themes.md)).
-- **Pi's own files** are in `~/.pi/agent/`: sign-ins, models, settings, `AGENTS.md`, skills, and prompt templates. Pi Pocket uses them as Pi does. It only reads Pi's sessions (`sessions/`), so that the owner can continue one here.
+- **Pi's own files** are in `~/.pi/agent/`: sign-ins, models, settings, `AGENTS.md`, skills, and prompt templates. Pi Pocket uses them as Pi does. It only reads Pi's sessions (`sessions/`), so that whoever is in charge of this server can continue one here.
 
 ## Pick the lightest change
 

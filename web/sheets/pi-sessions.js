@@ -1,17 +1,25 @@
-// Pi's sessions from the terminal, which the owner can continue here: the list, by folder, and one of them before it
-// continues, as a short conversation.
+// Pi's sessions from the terminal: the list, by folder, and one of them before it continues, as a short conversation.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { actions, attempt, closeSheet, navigate, notify, openSheet, store } from "../store.js";
+import {
+    actions,
+    attempt,
+    closeSheet,
+    managesRunners,
+    navigate,
+    notify,
+    openSheet,
+    store,
+} from "../store.js";
 import { html, Icon, Loader, Sheet, shortPath, timeAgo } from "../ui.js";
 
 /**
- * Local sessions are the owner's files; a computer's list is for whoever may start sessions there (`mayStart`, sent
- * with each computer). Any approval a new session needs comes as a folder request (`folder-requests.js`).
+ * Local sessions are for whoever is in charge of this server. A runner's list is for whoever may start sessions there
+ * (`mayStart`, sent with each computer). Any approval a new session needs comes as a folder request (`folder-requests.js`).
  */
 export const piSessionsAvailable = (runner) =>
     runner
         ? store.state.runners.some((each) => each.id === runner && each.mayStart !== false)
-        : store.state.me?.role === "owner";
+        : managesRunners();
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 

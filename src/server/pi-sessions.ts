@@ -27,7 +27,7 @@ import {
     UserEntry,
 } from "@earendil-works/pi-durable";
 import { COMPANION_SUFFIX } from "../runner/protocol.ts";
-import { inFolder } from "./access.ts";
+import { inFolder, THIS_SERVER } from "./access.ts";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import { FROM_PI_ENTRY, type FromPiData } from "./entry-format.ts";
@@ -376,9 +376,13 @@ export class PiSessions {
         return found;
     }
 
-    #requireOwner(user: User): void {
-        if (user.role !== "owner") {
-            throw new HttpError(403, "Only the owner can continue Pi's sessions here.");
+    /** Pi's sessions here are for whoever is in charge of this server (`access.ts` `inCharge`). */
+    #requireInCharge(user: User): void {
+        if (!this.#app.policy.inCharge(user, THIS_SERVER)) {
+            throw new HttpError(
+                403,
+                "Only whoever is in charge of this server can continue Pi's sessions here.",
+            );
         }
     }
 
@@ -427,7 +431,7 @@ export class PiSessions {
             };
         }
 
-        this.#requireOwner(user);
+        this.#requireInCharge(user);
         const continued = this.#continued(user);
         const needle = query.trim().toLowerCase();
         // Opening the list reads it again; a search narrows the one just read.
@@ -461,7 +465,7 @@ export class PiSessions {
 
     /** What Pi lists of one of its sessions: only a file Pi lists is read, so nothing else can be read through this. */
     async #listed(user: User, path: string): Promise<SessionInfo> {
-        this.#requireOwner(user);
+        this.#requireInCharge(user);
 
         const find = async (fresh: boolean) =>
             (await this.#find(fresh)).find((each) => each.info.path === path)?.info;
