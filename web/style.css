@@ -9442,6 +9442,9 @@ div.group-head {
     font: 13px var(--mono);
     color: var(--body);
     user-select: none;
+    /* A folder out of sight is not laid out: a thousand of them showed a frame late. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 34px;
 }
 
 @media (hover: hover) {
