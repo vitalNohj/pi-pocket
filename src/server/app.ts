@@ -50,7 +50,8 @@ import {
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
+import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { CodingTools, createCodingTools } from "@earendil-works/pi-durable/tools";
 import { withRunnerRead } from "./runner-read.ts";
@@ -1044,6 +1045,7 @@ export class PocketApp {
             settingsOf: (module) => this.webs.settingsOf(module),
             log: (line) => this.#log(line),
         });
+        this.direct.watchKey();
         this.guard.protect = (tool, args, cwd) => this.secrets.blocked(tool, args, cwd);
     }
 
@@ -1422,7 +1424,8 @@ export class PocketApp {
         await this.#themeDefaultStillHere();
         await this.loader.loadAll();
 
-        const storage = await openNodeSqliteStorage(join(this.dataDir, "pocket.sqlite"));
+        const database = await openNodeSqliteDatabase(join(this.dataDir, "pocket.sqlite"));
+        const storage = await SqliteStorage.open(database);
 
         this.#openingStorage = storage;
         this.harness = await Harness.open(
@@ -1457,6 +1460,7 @@ export class PocketApp {
         );
 
         this.#openingStorage = undefined;
+        await this.direct.sealLegacy(storage, database);
         const conversations = await this.#recover(storage);
 
         await this.spend.load(conversations);

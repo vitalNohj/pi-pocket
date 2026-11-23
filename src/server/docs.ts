@@ -572,23 +572,28 @@ export const ChatDoc = defineDoc<{ messages: ChatMessage[] }>({
 /** Messages a chat keeps; older ones drop off. */
 export const CHAT_LIMIT = 500;
 
-export type DirectMessage = {
+type DirectMessageMetadata = {
     /** Made from the client's request id, so a retried send does not post twice. */
     id: string;
     /** Who wrote it: one of the two. */
     userId: string;
-    text: string;
     at: number;
 };
+
+export type DirectMessage = DirectMessageMetadata & { text: string };
+export type SealedDirectMessage = DirectMessageMetadata & { sealed: string };
+
+/** Only the metadata stays plain. The old plain message shape is accepted on read and sealed at startup. */
+export type StoredDirectMessage = DirectMessage | SealedDirectMessage;
 
 /** Messages a thread keeps; older ones drop off. */
 export const DIRECT_LIMIT = 1000;
 
 /**
- * The chat between two people (`direct.ts`), oldest first, keyed by their two ids, sorted and joined with `:`. Only the
- * two read it; Pi never sees it.
+ * The chat between two people (`direct.ts`), oldest first, keyed by their two ids, sorted and joined with `:`.
+ * Only the two read it; Pi never sees it.
  */
-export const DirectDoc = defineDocFamily<{ messages: DirectMessage[] }, null>({
+export const DirectDoc = defineDocFamily<{ messages: StoredDirectMessage[] }, null>({
     kind: "pocket.direct",
     version: 1,
     ...rebased,

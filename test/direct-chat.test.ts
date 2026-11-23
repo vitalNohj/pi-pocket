@@ -9,7 +9,12 @@ import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { User } from "../src/server/config.ts";
 import { addDirect, directKey } from "../src/server/direct.ts";
-import { DirectDoc, DirectIndexDoc, type DirectMessage } from "../src/server/docs.ts";
+import {
+    DirectDoc,
+    DirectIndexDoc,
+    type DirectMessage,
+    type StoredDirectMessage,
+} from "../src/server/docs.ts";
 import { createHandler } from "../src/server/http.ts";
 import type { EmbedderMessage } from "../src/server/push.ts";
 import type { Client } from "../src/server/room.ts";
@@ -378,10 +383,10 @@ test("a push reaches a receiver who is not looking, and none who is looking or t
 });
 
 test("addDirect keeps the newest messages up to its limit", () => {
-    const thread = { messages: [] as DirectMessage[] };
+    const thread = { messages: [] as StoredDirectMessage[] };
 
     for (let n = 1; n <= 5; n++) {
-        addDirect(thread, { id: String(n), userId: "u", text: String(n), at: n }, 3);
+        addDirect(thread, { id: String(n), userId: "u", sealed: `sealed-${n}`, at: n }, 3);
     }
 
     assert.deepEqual(
