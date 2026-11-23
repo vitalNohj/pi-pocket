@@ -3107,14 +3107,15 @@ export class PocketApp {
             client.send("users", people);
         }
 
-        // A role change can add or take away a chat with one person, and its count.
+        // A change of a role or a right can add or take away a chat with one person, and its count.
         this.direct.tell();
     }
 
     /**
-     * What `viewer` is told of `person`'s rights (`rights.ts`): the ones they hold now beyond their role, and, where
-     * `viewer` may change them, what each one's switch offers (`access.ts` `offer`): People draws a switch for each
-     * right offered, and holds no rule of its own. Nothing of the owner, who has them all.
+     * What `viewer` is told of `person`'s rights (`rights.ts`): the ones they hold now (a user also a viewer's right,
+     * which is theirs by role), and, where `viewer` may change them, what each one's switch offers (`access.ts`
+     * `offer`): People draws a switch for each right offered, and holds no rule of its own. Nothing of the owner, who
+     * has them all.
      */
     #rightsSaid(
         viewer: User,
@@ -3147,21 +3148,23 @@ export class PocketApp {
     /**
      * The people with access to this server as `viewer` may see them: who is online now, and when the others were last
      * here. People invited to one session see only those who share it, and not which sessions others are limited to.
-     * A viewer has no list of the people here: they get themselves, and of the people they meet in the sessions they
-     * may see (`#metBy`) the name and the picture alone, which a message there shows anyway.
+     * A viewer has no list of the people here: they get themselves, the people they meet in the sessions they may see
+     * (`#metBy`), and the people they may chat with (`access.ts` `mayMessage`); of those others the name and the
+     * picture alone, which a message there shows anyway, and whether they may chat with them. Whether such a person is
+     * here now is left out, not said as false: the app shows nothing of it, where a false would read as away.
      */
     people(viewer: User) {
         const scope = viewer.sessions;
         // Who manages people reads of everyone what the owner reads.
         const manages = this.policy.managesPeople(viewer);
         const met = viewer.role === "viewer" ? this.#metBy(viewer) : undefined;
-        // Someone a viewer only meets in a session: nothing of when they are here, or of what they may do.
+        // Someone a viewer meets in a session, or may chat with: nothing of when they are here, or of what they may do.
         const bare = (each: User) => met !== undefined && each.id !== viewer.id;
 
         return this.config.users
             .filter((each) =>
                 met !== undefined
-                    ? met.has(each.id)
+                    ? met.has(each.id) || this.policy.mayMessage(viewer, each)
                     : scope === undefined ||
                       each.sessions === undefined ||
                       each.sessions.some((id) => scope.includes(id)),
@@ -3171,7 +3174,7 @@ export class PocketApp {
                 name: each.name,
                 role: each.role,
                 ...(each.avatar === undefined ? {} : { avatar: each.avatar }),
-                online: !bare(each) && this.#online(each.id),
+                ...(bare(each) ? {} : { online: this.#online(each.id) }),
                 ...(each.lastSeen === undefined || bare(each) ? {} : { lastSeen: each.lastSeen }),
                 // Which sessions they are limited to: only the ones this viewer may see themselves. An empty list still
                 // says that they are limited.
@@ -3194,8 +3197,8 @@ export class PocketApp {
                     ? { hasCode: true }
                     : {}),
                 // The rights they hold beyond their role (to link computers, invite people, manage people, keep sessions
-                // warm), for who manages people and for themselves; and what each one's switch offers who may change
-                // them.
+                // warm, chat with one person, which a user has by role), for who manages people and for themselves; and
+                // what each one's switch offers who may change them.
                 ...(manages || viewer.id === each.id ? this.#rightsSaid(viewer, each) : {}),
                 // A temporary account and its end, for who manages them, and for themselves.
                 ...(each.temporary === true && (manages || viewer.id === each.id)
@@ -3923,11 +3926,12 @@ export class PocketApp {
 
     /**
      * Who manages `person` gives them one right everywhere, or takes it back: to link computers of their own, invite
-     * people, manage people, or keep sessions warm. One that only the owner gives (`rights.ts` `gives`), only the
-     * owner. Only to someone who can hold it; and a user who manages people gives only what they have themselves, else
-     * a second account of theirs would get more than they have (`access.ts` `offer`, which says the same to People).
-     * Taking it back needs none of that. It changes nothing done with it but what asks again: an invite they made
-     * stops working (`auth.ts` `redeem`); a session they keep warm stays so until someone turns it off.
+     * people, manage people, keep sessions warm, or, to a viewer with a full account, chat with one person. One that
+     * only the owner gives (`rights.ts` `gives`), only the owner. Only to someone who can be given it; and a user who
+     * manages people gives only what they have themselves, else a second account of theirs would get more than they
+     * have (`access.ts` `offer`, which says the same to People). Taking it back needs none of that. It changes nothing
+     * done with it but what asks again: an invite they made stops working (`auth.ts` `redeem`); a session they keep
+     * warm stays so until someone turns it off; a viewer's chats stay stored, for when they have the chat again.
      */
     #setPersonRight(by: User, person: unknown, right: unknown, on: unknown): void {
         if (typeof person !== "string" || !isRight(right, "person")) {
@@ -3954,11 +3958,13 @@ export class PocketApp {
             const offer = this.policy.offer(by, target, right);
 
             if (offer === undefined) {
-                const { label, whole } = declared(right);
+                const { label, whole, viewers } = declared(right);
 
                 throw new HttpError(
                     400,
-                    `${target.name} must be a user${whole === true ? " who is not limited to one session" : ""} to ${label.toLowerCase()}.`,
+                    viewers === true
+                        ? `${target.name} must be a viewer with a full account to ${label.toLowerCase()}.`
+                        : `${target.name} must be a user${whole === true ? " who is not limited to one session" : ""} to ${label.toLowerCase()}.`,
                 );
             }
 

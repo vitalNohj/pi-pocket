@@ -24,14 +24,22 @@ import type { WebAccess } from "./host.ts";
 /** The id of this server's own computer record, as `SessionMeta.runner` is absent for its sessions. */
 export const THIS_SERVER = "this-server";
 
+/**
+ * What a person is told who may not chat with one person, or not with that one (`AccessPolicy.requireMessage`, and
+ * `direct.ts` where a message is stored).
+ */
+export const NO_CHAT =
+    "Chat with one person is for the owner, for users, and for viewers who were given it.";
+
 /** What a person who uses a blocked computer is told (`AccessPolicy.blocked`). */
 export const BLOCKED =
     "This computer is blocked: the person who linked it is a viewer now. It works again when they are made a user.";
 
 /**
  * A person as the policy needs them. `rights`: what they were given beyond their role, each declared in `rights.ts`
- * (to link computers of their own, invite people, manage people, keep sessions warm). `paused`: they were a user
- * until their authenticator was removed, and are one again when they link one (`config.ts` `User.paused`).
+ * (to link computers of their own, invite people, manage people, keep sessions warm, chat with one person). `paused`:
+ * they were a user until their authenticator was removed, and are one again when they link one (`config.ts`
+ * `User.paused`).
  */
 export type Person = {
     id: string;
@@ -39,6 +47,8 @@ export type Person = {
     sessions?: readonly string[];
     rights?: readonly PersonRight[];
     paused?: object;
+    /** A temporary account, as its invite said (`config.ts` `User.temporary`): it is given no viewer's right. */
+    temporary?: true;
 };
 
 /** A computer: this server, or a linked runner. */
@@ -307,11 +317,12 @@ export class AccessPolicy {
 
     /**
      * Does `person` hold `right`: the one check for every right given one person at a time (`rights.ts`). The methods
-     * that name a right (`mayLink`, `managesPeople`, `invites`, `keepsWarm`, `overridesTurns`, `allowsOwn`, `reshares`)
-     * ask here.
+     * that name a right (`mayLink`, `managesPeople`, `invites`, `keepsWarm`, `chats`, `overridesTurns`, `allowsOwn`,
+     * `reshares`) ask here.
      *
      * A person's right, held everywhere: the owner has them all; a user has one they were given, or one that comes
-     * with another they hold, while they can hold it at all (`rights.ts` `holds`).
+     * with another they hold, while they can hold it at all; a viewer's right is a user's by role, and a full viewer's
+     * once given (`rights.ts` `holds`).
      *
      * A computer's right, held on computer `computer`: who is in charge of it has them all; else someone chosen there
      * who prompts (not a viewer, not held to one session) and was given it.
@@ -497,9 +508,9 @@ export class AccessPolicy {
     }
 
     /**
-     * May `a` and `b` chat with one another (`direct.ts`): two different people, each the owner or a user, and neither
-     * held to sessions. A viewer has no such chat, and nobody has one with a viewer. Read from the live records, so a
-     * person made a viewer loses it at once; their threads stay, for when they are a user again.
+     * May `a` and `b` chat with one another (`direct.ts`): two different people who both have the chat with one person
+     * (`chats`). Read from the live records, so a person who loses it (made a viewer without it, or its switch turned
+     * off) loses the chat at once; their threads stay, for when they have it again.
      */
     mayMessage(a: Pick<Person, "id">, b: Pick<Person, "id">): boolean {
         const current = this.#current(a);
@@ -509,12 +520,7 @@ export class AccessPolicy {
             return false;
         }
 
-        return (
-            current.role !== "viewer" &&
-            other.role !== "viewer" &&
-            current.sessions === undefined &&
-            other.sessions === undefined
-        );
+        return this.chats(current) && this.chats(other);
     }
 
     /**
@@ -555,6 +561,15 @@ export class AccessPolicy {
      */
     keepsWarm(person: Pick<Person, "id">): boolean {
         return this.has(person, "keepsWarm");
+    }
+
+    /**
+     * Does `person` have the chat with one person (`direct.ts`): the owner, and a user who is not limited to sessions,
+     * by their role; a viewer with a full account (not temporary, not limited to sessions) once who manages them turns
+     * it on. Never a temporary account, and never someone limited to sessions.
+     */
+    chats(person: Pick<Person, "id">): boolean {
+        return this.has(person, "chats");
     }
 
     /**
@@ -1089,10 +1104,8 @@ export class AccessPolicy {
      * of them. `a` is judged first: one who has no such chat is not told whether an id is someone's.
      */
     requireMessage(a: Pick<Person, "id">, b: Pick<Person, "id">): void {
-        const asker = this.#current(a);
-
-        if (asker === undefined || asker.role === "viewer" || asker.sessions !== undefined) {
-            throw new HttpError(403, "Chat with one person is for the owner and users.");
+        if (!this.chats(a)) {
+            throw new HttpError(403, NO_CHAT);
         }
 
         if (this.#current(b) === undefined) {
@@ -1104,7 +1117,7 @@ export class AccessPolicy {
         }
 
         if (!this.mayMessage(a, b)) {
-            throw new HttpError(403, "Chat with one person is for the owner and users.");
+            throw new HttpError(403, NO_CHAT);
         }
     }
 

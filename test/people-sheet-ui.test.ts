@@ -786,6 +786,7 @@ test(
         assert.deepEqual(await switches(), [
             "Vera may become a user and prompt: on (disabled)",
             "Vera can prompt: off (disabled)",
+            "Vera chats with one person: off",
         ]);
         // A viewer is chosen as anyone is, and given no folders: they start nothing.
         await showPart("Folders and sessions");
@@ -3024,6 +3025,7 @@ test(
                     JSON.stringify([
                         "Vera may become a user and prompt: on (disabled)",
                         "Vera can prompt: off (disabled)",
+                        "Vera chats with one person: off",
                     ]),
                 "Vera's switches, for Gina",
             );
@@ -3095,7 +3097,7 @@ test(
             await open("people", VIEWPORTS.mobile);
             await show("Vera");
             await showPart("Permissions");
-            assert.equal((await switches()).length, 2);
+            assert.equal((await switches()).length, 3);
             assert.deepEqual(await wider(), []);
             page = owners;
             await open("people", VIEWPORTS.mobile);

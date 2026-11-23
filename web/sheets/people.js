@@ -543,7 +543,15 @@ function DeviceLink({ person }) {
     </div>`;
 }
 
+/**
+ * When a person was last here, in words. Nothing of someone the server does not say it of (`online` absent: a viewer
+ * is told only the name of the people they meet or chat with, `app.ts` `people`).
+ */
 function lastSeen(person) {
+    if (person.online === undefined) {
+        return undefined;
+    }
+
     if (person.online) {
         return "here now";
     }
@@ -741,11 +749,17 @@ function roleText(person) {
     return person.role === "owner" ? "owner" : "user";
 }
 
-/** A person's picture with the mark that says whether they are here now. */
+/**
+ * A person's picture with the mark that says whether they are here now. No mark for someone the server does not say
+ * it of (`lastSeen`).
+ */
 function Face({ person, size = 28 }) {
     return html`<span class="people-here">
         <${Avatar} person=${person} size=${size} />
-        <span class=${`online-mark ${person.online ? "" : "away"}`} aria-hidden="true"></span>
+        ${
+            person.online !== undefined &&
+            html`<span class=${`online-mark ${person.online ? "" : "away"}`} aria-hidden="true"></span>`
+        }
     </span>`;
 }
 
@@ -797,10 +811,11 @@ function PinSync() {
 const NOT_YOURS = "Off: you can only give what you have yourself.";
 
 /**
- * One right a person is given everywhere (to link runners, invite people, manage users, keep sessions warm), as the
- * server declares it (`each`: `rights.ts`, `store.js` `declaredRights`) and offers it to me for this person
- * (`person.offer`, `access.ts` `offer`): "open", mine to turn on and off; "lacking", only to take back, since I lack it
- * myself; "with", on with another right they hold. The rules are the server's: this draws what it says.
+ * One right a person is given everywhere (to link runners, invite people, manage users, keep sessions warm, chat with
+ * one person), as the server declares it (`each`: `rights.ts`, `store.js` `declaredRights`) and offers it to me for
+ * this person (`person.offer`, `access.ts` `offer`): "open", mine to turn on and off; "lacking", only to take back,
+ * since I lack it myself; "with", on with another right they hold. The rules are the server's: this draws what it
+ * says.
  */
 function PersonRight({ person, each }) {
     const offer = person.offer[each.key];
@@ -1897,10 +1912,12 @@ export function PeopleSheet() {
     const [view, setView] = useState(sheet?.person ? `person:${sheet.person}` : null);
     // The part of a person's page shown: it stays from one person to the next, to do one thing for several people.
     const [part, setPart] = useState(sheet?.part ?? "access");
-    // A viewer has no list of the people here: their own page alone. The people they meet in the sessions shown to them
-    // stay in `users`, for the names on messages there.
+    // A viewer has no list of the people here: their own page, and the people they may chat with (`access.ts`
+    // `mayMessage`). The others they meet in the sessions shown to them stay in `users`, for the names on messages there.
     const people = ordered(
-        me?.role === "viewer" ? users.filter((each) => each.id === me.id) : users,
+        me?.role === "viewer"
+            ? users.filter((each) => each.id === me.id || each.mayMessage)
+            : users,
     );
 
     // The lists as they are now: also someone who joined with an invite a moment ago.
@@ -1944,7 +1961,7 @@ export function PeopleSheet() {
                 onSelect=${() => setView(`person:${person.id}`)}
                 lead=${html`<${Face} person=${person} />`}
                 title=${person.id === me?.id ? `${person.name} (you)` : person.name}
-                detail=${[roleText(person), lastSeen(person)].join(" · ")}
+                detail=${[roleText(person), lastSeen(person)].filter(Boolean).join(" · ")}
                 badge=${
                     managesPeople() && person.request
                         ? "Request"

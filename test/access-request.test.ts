@@ -177,27 +177,16 @@ test("a viewer is told of themselves, and of the people in the sessions shown to
         assert.equal(await picture(vera, ann), 404);
 
         // Of them, the name and the picture alone: not that Gil is here now, when he last was, or what he may do.
+        // Whether he is here is left out, not said as false, which the app would show as away.
         assert.deepEqual(Object.keys(told(vera, gil) ?? {}).sort(), [
             "avatar",
             "id",
             "name",
-            "online",
             "role",
         ]);
-        assert.equal(told(vera, gil)?.online, false);
-        assert.deepEqual(Object.keys(told(vera, boss) ?? {}).sort(), [
-            "id",
-            "name",
-            "online",
-            "role",
-        ]);
+        assert.deepEqual(Object.keys(told(vera, boss) ?? {}).sort(), ["id", "name", "role"]);
         // Not which session Sam is limited to, either.
-        assert.deepEqual(Object.keys(told(vera, sam) ?? {}).sort(), [
-            "id",
-            "name",
-            "online",
-            "role",
-        ]);
+        assert.deepEqual(Object.keys(told(vera, sam) ?? {}).sort(), ["id", "name", "role"]);
         // Of herself she reads what anyone reads of themselves.
         assert.equal(told(vera, vera)?.online, true);
         assert.equal(typeof told(vera, vera)?.lastSeen, "number");
@@ -205,7 +194,7 @@ test("a viewer is told of themselves, and of the people in the sessions shown to
 
         // A viewer invited to one session meets the people of that session, and nobody else.
         assert.deepEqual(names(list(sam)), [boss.name, "Gil", "Sam", "Vera"].sort());
-        assert.equal(told(sam, gil)?.online, false);
+        assert.equal(told(sam, gil)?.online, undefined);
         assert.equal(told(sam, gil)?.lastSeen, undefined);
 
         // No longer shown it, she meets nobody again, and her tab is told.

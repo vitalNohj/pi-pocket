@@ -87,10 +87,10 @@ export interface User {
     approvalDays?: number;
     /**
      * The rights this person was given beyond their role, each declared in `rights.ts`: to link computers of their
-     * own, invite people, manage people, keep sessions warm. The owner has them all and keeps none here. Whether one
-     * counts now is the policy's to say (`access.ts` `has`): a right stays kept while its person cannot hold it, and
-     * counts again when they can, unless it lapses (`rights.ts` `lapses`: `updateUser` drops it). A pause saves such a
-     * one for when they link an authenticator again (`paused`).
+     * own, invite people, manage people, keep sessions warm, and a viewer's to chat with one person. The owner has them
+     * all and keeps none here. Whether one counts now is the policy's to say (`access.ts` `has`): a right stays kept
+     * while its person cannot hold it, and counts again when they can, unless it lapses (`rights.ts` `lapses`:
+     * `updateUser` drops it). A pause saves such a one for when they link an authenticator again (`paused`).
      */
     rights?: PersonRight[];
     /**

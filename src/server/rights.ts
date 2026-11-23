@@ -3,7 +3,8 @@
  * settings file keeps them in one shape (`config.ts` `User.rights`, and a computer's `rights`); the access policy
  * answers for all of them with one check (`access.ts` `has`), and says who may give one (`offer`); one setter changes
  * them (`app.ts` `setRight`); and the app draws their switches from what is said here (`hello.server.rights`). A new
- * right is one entry here, and the code that asks for it.
+ * right is one entry here, and the code that asks for it. A viewer's right (`Right.viewers`) is given to a viewer, and
+ * the owner and users have it by their role.
  *
  * Data, and the rules read straight from it: this file imports nothing.
  */
@@ -17,6 +18,12 @@ export type Right = {
     scope: "person" | "computer";
     /** Only someone who is not limited to sessions holds it. A computer's right is always so. */
     whole?: true;
+    /**
+     * It is a viewer's to be given: a viewer with a full account (not temporary, not limited to sessions) holds it once
+     * given. The owner has it, and so does a user who is not limited to sessions, without being given it: it is theirs
+     * by role.
+     */
+    viewers?: true;
     /** Only the owner gives it. Absent: who manages the person does, and only what they hold themselves. */
     gives?: "owner";
     /** Who holds one of these rights has this one with it. */
@@ -109,6 +116,14 @@ export const RIGHTS = {
         on: "On: they turn keep warm on for a session and pick its time. Refreshes may be charged.",
         off: "Off: they can only turn keep warm off for a session.",
     },
+    chats: {
+        scope: "person",
+        viewers: true,
+        label: "Chat with one person",
+        says: "chats with one person",
+        on: "On: they chat with the owner, with users, and with other viewers who have this. They see those people's names in People.",
+        off: "Off: they chat only in the sessions shown to them.",
+    },
     wheel: {
         scope: "computer",
         label: "Override take turns",
@@ -175,25 +190,40 @@ export function comesWith(key: PersonRight): readonly PersonRight[] {
 }
 
 /**
- * Can `person` hold person right `key` at all: a user, and for a right that takes the whole server, one who is not
+ * Can `person` be given person right `key`: a user, and for a right that takes the whole server, one who is not
+ * limited to sessions. A viewer's right (`Right.viewers`) only a viewer with a full account: not temporary, and not
  * limited to sessions. The owner needs none: they have them all (`access.ts` `has`).
  */
-export function canHold(person: { role: string; sessions?: unknown }, key: PersonRight): boolean {
+export function canHold(
+    person: { role: string; sessions?: unknown; temporary?: unknown },
+    key: PersonRight,
+): boolean {
+    if (declared(key).viewers === true) {
+        return (
+            person.role === "viewer" && person.temporary !== true && person.sessions === undefined
+        );
+    }
+
     return (
         person.role === "guest" && (declared(key).whole !== true || person.sessions === undefined)
     );
 }
 
 /**
- * Does `person` hold person right `key` now: the owner has them all; a user has one they were given, or one that
- * comes with another they hold (`Right.with`), while they can hold it at all (`canHold`).
+ * Does `person` hold person right `key` now: the owner has them all; a user who is not limited to sessions has a
+ * viewer's right by role (`Right.viewers`); anyone else has one they were given, or one that comes with another they
+ * hold (`Right.with`), while they can be given it (`canHold`).
  */
 export function holds(
-    person: { role: string; sessions?: unknown; rights?: readonly string[] },
+    person: { role: string; sessions?: unknown; temporary?: unknown; rights?: readonly string[] },
     key: PersonRight,
 ): boolean {
     if (person.role === "owner") {
         return true;
+    }
+
+    if (declared(key).viewers === true && person.role === "guest") {
+        return person.sessions === undefined;
     }
 
     return (

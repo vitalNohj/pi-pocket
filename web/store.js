@@ -676,8 +676,9 @@ export const canStart = () => canSteer() && !scoped() && store.state.me?.mayStar
 
 /**
  * Does this person hold right `key` (`rights.ts`), as the server's hello says (`me.rights`: the access policy's answer,
- * `access.ts` `has`): a person's right (to link runners, invite people, manage users, keep sessions warm) everywhere,
- * or a computer's (`wheel`, `allows`) on computer `computer`. Undefined: the server has not said yet.
+ * `access.ts` `has`): a person's right (to link runners, invite people, manage users, keep sessions warm, chat with one
+ * person) everywhere, or a computer's (`wheel`, `allows`) on computer `computer`. Undefined: the server has not said
+ * yet.
  */
 export function hasRight(key, computer) {
     const said = store.state.me?.rights?.[key];

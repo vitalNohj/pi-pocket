@@ -476,7 +476,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         // Who manages a person gives them one right, or takes it back: to link computers of their own, invite people,
-        // manage people, or keep sessions warm (`rights.ts`; `app.ts` `setRight` says who gives which).
+        // manage people, keep sessions warm, or chat with one person (`rights.ts`; `app.ts` `setRight` says who gives
+        // which).
         if (first === "users" && second !== undefined && third === "rights" && method === "POST") {
             const body = await readJson<{ right?: unknown; on?: unknown } | null>(request);
 
