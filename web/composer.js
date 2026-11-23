@@ -2046,6 +2046,27 @@ export function Composer() {
               : ` · ${users.find((user) => user.id === item.by)?.name ?? "someone"}`;
 
     useDock(dock);
+    // In the next frame the dock has fitted the opened row. Bring its start to the top of the queue, if it can go
+    // that far, without scrolling the conversation.
+    useLayoutEffect(() => {
+        if (reading === null) {
+            return;
+        }
+
+        const frame = requestAnimationFrame(() => {
+            const queue = dock.current?.querySelector(":scope > .inbox");
+            const row = queue?.querySelector(".queued:has(> .queued-text.open)");
+
+            if (row && queue) {
+                queue.scrollTop +=
+                    row.getBoundingClientRect().top -
+                    queue.getBoundingClientRect().top -
+                    queue.clientTop;
+            }
+        });
+
+        return () => cancelAnimationFrame(frame);
+    }, [reading]);
     // View only now, or someone else took the wheel: the box goes, and dictation with it.
     const writes = !collab() || (canSteer() && !(view.turns?.on && view.turns.driver !== me?.id));
 
