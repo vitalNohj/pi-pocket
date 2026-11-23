@@ -29,6 +29,7 @@ const real = {
 };
 const sheet = '[data-sheet="message"]:not([data-state="closing"])';
 const undoButton = `${sheet} button[aria-label="Undo"]`;
+const retryButton = `${sheet} button[aria-label="Retry"]`;
 const composer = ".composer textarea";
 
 let app: App;
@@ -91,6 +92,13 @@ before(async () => {
     app = await openApp(
         scriptedModel((request) => {
             const { text } = lastText(request as never);
+
+            if (text === "fail this one") {
+                return fauxAssistantMessage([], {
+                    stopReason: "error",
+                    errorMessage: "Scripted request failed.",
+                });
+            }
 
             return text === "wait for me"
                 ? fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 15" })], {
@@ -181,6 +189,37 @@ test(
         );
     },
 );
+
+test("Undo reads Retry when Pi's answer failed, and puts the message back", real, async () => {
+    const id = await newSession(app);
+
+    await say(app, id, "this one works");
+    await say(app, id, "fail this one");
+    await open(id);
+    await until(
+        () => inPage<boolean>(`document.body.textContent.includes("Scripted request failed.")`),
+        "the failed answer",
+    );
+    await openPrompt("this one works");
+    assert.equal(await shown(retryButton), false, "an older prompt has neither");
+    assert.equal(await shown(undoButton), false);
+    await click(`${sheet} button[aria-label="Close"]`);
+    await openPrompt("fail this one");
+    assert.equal(await shown(retryButton), true);
+    assert.equal(await shown(undoButton), false);
+    await click(retryButton);
+    await draftInNewSession(id, "fail this one");
+
+    assert.equal(app.sessionMeta(id)?.archived, true);
+    await until(
+        () => notice("Your message is back in the box to send again. The original is archived."),
+        "the Retry notice",
+    );
+    // The fork ends with an answer that went through: its newest prompt reads Undo again.
+    await openPrompt("this one works");
+    assert.equal(await shown(undoButton), true);
+    assert.equal(await shown(retryButton), false);
+});
 
 test("Ctrl or Command plus Enter sends again, not Undo", real, async () => {
     const id = await newSession(app);
