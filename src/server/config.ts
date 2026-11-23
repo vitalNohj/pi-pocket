@@ -236,6 +236,11 @@ export interface StoredRunner {
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
     sees?: Record<string, string[]>;
     /**
+     * Of those, the ones they see only the sessions made up to a time in ("Sessions so far"): that time in ms, by
+     * person id, then by folder. No entry: every session in it, also the ones made later ("All sessions").
+     */
+    seesUntil?: Record<string, Record<string, number>>;
+    /**
      * Who gave each of those folders, by person id, then by folder (`access.ts` `mayTakeFolder`). No entry: not known,
      * so only who is in charge takes that folder back.
      */
@@ -282,6 +287,8 @@ export interface StoredServer {
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
     sees?: Record<string, string[]>;
+    /** Of those, the ones seen only up to a time, as for a runner (`StoredRunner.seesUntil`). */
+    seesUntil?: Record<string, Record<string, number>>;
     /** Who gave each of those folders, as for a runner (`StoredRunner.givenBy`). */
     givenBy?: Record<string, Record<string, string>>;
     /** The chosen people who hold each right given one person at a time here, as for a runner (`StoredRunner.rights`). */
@@ -509,8 +516,22 @@ export function keepWarmFrom(raw: unknown): KeepWarmSettings {
 /** Who may allow a risky tool call: anyone who can steer, or (for guests) only someone other than who asked. */
 export type ApprovalRule = "anyone" | "others";
 
-/** What a computer's record keeps per person about folders: the ones given, and the ones they see every session in. */
-type FolderGrants = { given?: Record<string, string[]>; sees?: Record<string, string[]> };
+/**
+ * What a computer's record keeps per person about folders: the ones given, the ones they see every session in, and of
+ * those the ones they see only up to a time in.
+ */
+type FolderGrants = {
+    given?: Record<string, string[]>;
+    sees?: Record<string, string[]>;
+    seesUntil?: Record<string, Record<string, number>>;
+};
+
+/**
+ * What one person has of one folder on a computer, as one level (`access.ts` `seesFolder`): nothing; it is given, to
+ * start sessions in (a user); and they also see the sessions in it made so far, or all of them, also later ones.
+ */
+export const FOLDER_LEVELS = ["none", "start", "past", "all"] as const;
+export type FolderLevel = (typeof FOLDER_LEVELS)[number];
 
 /** And who gave each of them (`StoredRunner.givenBy`). */
 type FolderGivers = { givenBy?: Record<string, Record<string, string>> };
@@ -538,10 +559,13 @@ function dropGiver(target: FolderGivers, giver: string): void {
     }
 }
 
-/** Keep `list` as `person`'s under `key`; an empty one leaves no entry, and no entries leave no record. */
+/**
+ * Keep `list` as `person`'s under `key`; an empty one leaves no entry, and no entries leave no record. A folder no
+ * longer in their `sees` loses its time (`seesUntil`) in the same change.
+ */
 function setList(
     target: FolderGrants,
-    key: keyof FolderGrants,
+    key: "given" | "sees",
     person: string,
     list: readonly string[],
 ): void {
@@ -552,6 +576,28 @@ function setList(
         delete target[key];
     } else {
         target[key] = next;
+    }
+
+    if (key === "sees") {
+        const until = target.seesUntil?.[person] ?? {};
+
+        setUntil(
+            target,
+            person,
+            Object.fromEntries(Object.entries(until).filter(([each]) => list.includes(each))),
+        );
+    }
+}
+
+/** Keep `until` as the times of `person`'s folders seen so far; none leaves no entry, and no entries leave no record. */
+function setUntil(target: FolderGrants, person: string, until: Record<string, number>): void {
+    const { [person]: _was, ...rest } = target.seesUntil ?? {};
+    const next = Object.keys(until).length === 0 ? rest : { ...rest, [person]: until };
+
+    if (Object.keys(next).length === 0) {
+        delete target.seesUntil;
+    } else {
+        target.seesUntil = next;
     }
 }
 
@@ -1808,6 +1854,107 @@ export class ConfigStore {
     }
 
     /**
+     * Of the folders `person` sees every session in on computer `id` (undefined: this server), the ones they see only
+     * the sessions made up to a time in ("Sessions so far"): that time, by folder (`access.ts` `seesFolder`).
+     */
+    seenUntil(id: string | undefined, person: string): Readonly<Record<string, number>> {
+        const computer = id === undefined ? this.#config.server : this.runnerById(id);
+
+        return computer?.seesUntil?.[person] ?? {};
+    }
+
+    /** What `person` has of `folder` on computer `id` (undefined: this server), as one level (`FolderLevel`). */
+    folderLevel(id: string | undefined, person: string, folder: string): FolderLevel {
+        if (!this.givenFolders(id, person).includes(folder)) {
+            return "none";
+        }
+
+        if (!this.seenFolders(id, person).includes(folder)) {
+            return "start";
+        }
+
+        return this.seenUntil(id, person)[folder] === undefined ? "all" : "past";
+    }
+
+    /**
+     * Set what `person` has of `folder` on computer `id` (undefined: this server) to `level`, in one save: the folder
+     * is given or not (`given`), seen or not (`sees`), and seen up to a time or not (`seesUntil`). "past" keeps the time
+     * it had, or takes `now`: also from "all", so what exists stays seen and what starts later is not. "none" takes it
+     * from all three. What they had by it and lose is owed a hand-over, marked in this same save (`handOver`). `by`:
+     * who gives it, when it is new to them.
+     */
+    setFolderLevel(
+        id: string | undefined,
+        person: string,
+        folder: string,
+        level: FolderLevel,
+        now: number,
+        by?: string,
+    ): void {
+        const apply = (target: FolderGrants & FolderGivers & Owed): void => {
+            const given = target.given?.[person] ?? [];
+            const sees = target.sees?.[person] ?? [];
+            const until = target.seesUntil?.[person] ?? {};
+            const givers = target.givenBy?.[person] ?? {};
+            const had = given.includes(folder);
+            const saw = sees.includes(folder);
+
+            if ((had && level === "none") || (saw && (level === "none" || level === "start"))) {
+                markOwed(target, person);
+            }
+
+            if (level === "none") {
+                const { [folder]: _gone, ...rest } = givers;
+
+                setGivers(target, person, rest);
+                setList(
+                    target,
+                    "given",
+                    person,
+                    given.filter((each) => each !== folder),
+                );
+            } else if (!had) {
+                setGivers(target, person, by === undefined ? givers : { ...givers, [folder]: by });
+                setList(target, "given", person, [...given, folder]);
+            }
+
+            const seen = level === "past" || level === "all";
+
+            setList(
+                target,
+                "sees",
+                person,
+                seen
+                    ? [...sees.filter((each) => each !== folder), folder]
+                    : sees.filter((each) => each !== folder),
+            );
+
+            const { [folder]: was, ...rest } = until;
+
+            setUntil(
+                target,
+                person,
+                level === "past"
+                    ? { ...rest, [folder]: saw && was !== undefined ? was : now }
+                    : rest,
+            );
+        };
+
+        if (id === undefined) {
+            this.#changeServer(apply);
+
+            return;
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner !== undefined) {
+            apply(runner);
+            this.save();
+        }
+    }
+
+    /**
      * `person` sees every session in `folder` on computer `id` (undefined: this server), or no longer. Only a folder
      * given to them there, as it is written in that list: any other changes nothing, and the answer is false.
      */
@@ -1826,6 +1973,13 @@ export class ConfigStore {
             }
 
             setList(target, "sees", person, on ? [...rest, folder] : rest);
+
+            // On is every session in it, also later ones ("All sessions"): no time.
+            if (on) {
+                const { [folder]: _was, ...others } = target.seesUntil?.[person] ?? {};
+
+                setUntil(target, person, others);
+            }
         };
 
         if (id === undefined) {

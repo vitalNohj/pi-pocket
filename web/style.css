@@ -7841,8 +7841,11 @@ div.group-head {
     white-space: normal;
 }
 
+/* It breaks after a separator only (`access.js` `pathParts`), so a folder's name stays whole; a name longer than the
+ * line still breaks. */
 .at-folder > .ft-name {
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
+    min-width: 0;
 }
 
 .at-actions {
@@ -7888,6 +7891,94 @@ div.group-head {
     color: var(--muted);
     font-size: 11.5px;
     text-align: right;
+}
+
+/* A folder's Access menu (`access.js` `LevelMenu`): a button of one width that says the level, so the buttons are one
+ * column down the tree, and why it cannot be changed beside it. Its menu opens under it, at its right edge, or above
+ * it where there is no room under it, never wider than the screen. */
+.at-level-box {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.at-tree .at-level {
+    flex: none;
+    justify-content: space-between;
+    gap: 4px;
+    width: 4.75rem;
+}
+
+.at-level .icon {
+    color: var(--faint);
+}
+
+/* A level a folder has from the folder above it: as quiet as its count. */
+.at-tree .at-level.inherited {
+    color: var(--muted);
+    font-style: italic;
+}
+
+.at-level-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    width: min(18rem, calc(100vw - 32px));
+    padding: 4px;
+    background: var(--panel);
+    border-radius: var(--r-card);
+    box-shadow: var(--pop);
+    animation: pop 0.15s var(--ease-out);
+}
+
+.at-level-menu.up {
+    top: auto;
+    bottom: calc(100% + 4px);
+}
+
+.at-level-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: var(--r-row);
+    color: var(--text);
+    font-size: 13px;
+    text-align: left;
+}
+
+.at-level-item:focus-visible {
+    outline: none;
+    background: var(--hover);
+}
+
+@media (hover: hover) {
+    .at-level-item:hover {
+        background: var(--hover);
+    }
+}
+
+.at-level-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.at-level-name .icon {
+    margin-left: auto;
+    color: var(--accent);
+}
+
+.at-level-says {
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.35;
 }
 
 .at-tree .at-note {

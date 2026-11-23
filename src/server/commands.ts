@@ -46,7 +46,7 @@ import { realFolder } from "../runner/folders.ts";
 import type { SessionScope } from "../runner/protocol.ts";
 import { checkedContext } from "./admission.ts";
 import type { Approved, PocketApp } from "./app.ts";
-import type { User } from "./config.ts";
+import { FOLDER_LEVELS, type FolderLevel, type User } from "./config.ts";
 import {
     AuthorsDoc,
     ChatDoc,
@@ -476,6 +476,9 @@ export type SharingFolder = {
     see: boolean;
     /** Who gave it to them, when that is known. */
     by?: { id: string; name: string };
+    /** What they have of it as one level (`config.ts` `FolderLevel`), and the levels whoever asks can set it to. */
+    level: FolderLevel;
+    levels: FolderLevel[];
 };
 
 /** A computer whoever asks uses and is not in charge of: the folders they can give one person there, or gave them. */
@@ -1657,8 +1660,9 @@ export class Commands {
                     return [];
                 }
 
-                // Folders are for someone who prompts there already: who uses a computer is its one in charge's choice.
-                const uses = app.policy.mayStart(person, id);
+                // Folders are for someone who uses the computer already, a viewer too, to read: who uses a computer is
+                // its one in charge's choice. A user gets one to start sessions in.
+                const uses = app.policy.mayUse(person, id) && person.sessions === undefined;
 
                 return [
                     {
@@ -1668,14 +1672,15 @@ export class Commands {
                             ? {}
                             : {
                                   reason:
-                                      person.role === "viewer"
-                                          ? "Folders are given to users only."
+                                      person.sessions !== undefined
+                                          ? `${person.name} is invited to one session only.`
                                           : `${person.name} cannot use ${placed(id)}. Whoever is in charge of it chooses who uses it.`,
                               }),
                         folders: paths.map((path) => {
                             const has = theirs.includes(path);
                             const on = has && sees.includes(path);
                             const by = has ? named(givers[path]) : undefined;
+                            const level = app.config.folderLevel(key, person.id, path);
 
                             return {
                                 path,
@@ -1685,6 +1690,13 @@ export class Commands {
                                 take: has && app.policy.mayTakeFolder(user, id, person.id, path),
                                 see: has && app.policy.maySetSees(user, id, person.id, path, !on),
                                 ...(by === undefined ? {} : { by }),
+                                level,
+                                // The Access menu offers the levels it can be set to, and the one it has.
+                                levels: FOLDER_LEVELS.filter(
+                                    (each) =>
+                                        each === level ||
+                                        app.policy.maySetLevel(user, id, person, path, level, each),
+                                ),
                             };
                         }),
                     },

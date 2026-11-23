@@ -9,7 +9,7 @@
  * read whatever that user can read, on this server as on a runner.
  */
 import { HttpError } from "./errors.ts";
-import type { Role } from "./config.ts";
+import type { FolderLevel, Role } from "./config.ts";
 import {
     canHold,
     comesWith,
@@ -72,6 +72,11 @@ export type Computer = {
     /** Of those, the folders in which `person` sees every session, whoever started it (`seesFolder`). */
     sees(person: string): readonly string[];
     /**
+     * Of those, the ones in which `person` sees only the sessions made up to a time ("Sessions so far"): that time in
+     * milliseconds, by folder. No entry: every session in it, also the ones made later ("All sessions").
+     */
+    seesUntil(person: string): Readonly<Record<string, number>>;
+    /**
      * Who gave `person` each of those folders, by folder. No entry: not known (given before this was kept), so only
      * who is in charge takes that folder back.
      */
@@ -102,6 +107,8 @@ export type SessionFacts = {
     sharedBy?: Readonly<Record<string, string>>;
     /** Set on a PiP: the person it belongs to. */
     pip?: string;
+    /** When it was made: a folder seen "so far" shows only the sessions made up to its time (`seesFolder`). */
+    createdAt: number;
     /**
      * The folder its access is judged by, a real path on its computer: its own, or the folder its git worktree came
      * from. Absent: in no folder anyone was given.
@@ -669,6 +676,26 @@ export class AccessPolicy {
             : [];
     }
 
+    /**
+     * Is `folder` on computer `id` (a real path there) one of `person`'s by the record: in a folder given to them there,
+     * while they use the computer; any folder for who is in charge. A viewer's too, who starts nothing there: a session
+     * they started in it, as a user, stays theirs when a folder is taken back (`app.ts` `handOver`).
+     */
+    holdsFolder(person: Pick<Person, "id">, id: string, folder: string): boolean {
+        const current = this.#current(person);
+
+        if (current === undefined || !this.mayUse(current, id)) {
+            return false;
+        }
+
+        return (
+            this.inCharge(current, id) ||
+            (this.#facts.computer(id)?.given(current.id) ?? []).some((each) =>
+                inFolder(folder, each),
+            )
+        );
+    }
+
     /** May `person` work in `folder` on computer `id` (a real path there): who is in charge anywhere, others where given. */
     mayUseFolder(person: Pick<Person, "id">, id: string, folder: string): boolean {
         const given = this.givenFolders(person, id);
@@ -679,22 +706,40 @@ export class AccessPolicy {
     }
 
     /**
-     * Does `person` see every session in `folder` on computer `id` (a real path there), whoever started it: the one in
-     * charge turned that on for a folder given to them that holds it. Only while the folder is theirs to work in, so
-     * taking them off the computer, taking the folder back, or making them a viewer ends it at once. Such a session is
-     * theirs as one shared with them is: they prompt it too.
+     * Does `person` see the session made at `createdAt` in `folder` on computer `id` (a real path there), whoever
+     * started it: the one in charge saved, for a folder given to them that holds it, that they see its sessions. With
+     * a time for that folder ("Sessions so far", `Computer.seesUntil`), only a session made at or before it; without
+     * ("All sessions"), every one, also the ones made later. Only while they use the computer and the folder is given to
+     * them, so taking them off the computer or taking the folder back ends it at once.
+     *
+     * A viewer too: such a folder shows them its sessions, to read. Their role takes nothing here: they still start
+     * nothing (`mayStart`, `mayUseFolder`) and prompt nothing (`maySteer`). Anyone else prompts such a session too, as
+     * one shared with them.
      */
-    seesFolder(person: Pick<Person, "id">, id: string, folder: string): boolean {
+    seesFolder(person: Pick<Person, "id">, id: string, folder: string, createdAt: number): boolean {
         const current = this.#current(person);
+        const computer = this.#facts.computer(id);
 
-        if (current === undefined) {
+        if (
+            current === undefined ||
+            computer === undefined ||
+            this.inCharge(current, id) ||
+            !this.mayUse(current, id)
+        ) {
             return false;
         }
 
-        const given = this.givenFolders(current, id) ?? [];
-        const sees = this.#facts.computer(id)?.sees(current.id) ?? [];
+        const given = computer.given(current.id);
+        const until = computer.seesUntil(current.id);
 
-        return sees.some((each) => given.includes(each) && inFolder(folder, each));
+        return computer
+            .sees(current.id)
+            .some(
+                (each) =>
+                    given.includes(each) &&
+                    inFolder(folder, each) &&
+                    (until[each] === undefined || createdAt <= until[each]),
+            );
     }
 
     /**
@@ -764,7 +809,71 @@ export class AccessPolicy {
             return false;
         }
 
-        return !on || (this.reshares(current, id) && this.seesFolder(current, id, folder));
+        // On: only while they see every session in it themselves, also the ones made later.
+        return (
+            !on || (this.reshares(current, id) && this.seesFolder(current, id, folder, Infinity))
+        );
+    }
+
+    /**
+     * May `person` set what `target` has of `folder` on computer `id` to `level` (`config.ts` `FolderLevel`, the Access
+     * menu of a folder's row): "none", "start" (a user starts sessions in it), "past" (and sees the sessions made in it
+     * so far), "all" (and every session in it, also later ones). The one check over `mayGiveFolder`, `mayTakeFolder`,
+     * and `maySetSees`, for one change from what they have now (`from`).
+     *
+     * `target` uses the computer, is not in charge of it, and is not held to one session. A viewer has no "start": a
+     * folder shows them its sessions, to read, and they start nothing. Who is in charge sets any level. Anyone else:
+     * "none" only on a folder they gave; a folder new to `target` only one they may give (`mayGiveFolder`); and seeing
+     * its sessions turned on only while they see every one in it themselves, off only on a folder they gave.
+     */
+    maySetLevel(
+        person: Pick<Person, "id">,
+        id: string,
+        target: Pick<Person, "id">,
+        folder: string,
+        from: FolderLevel,
+        level: FolderLevel,
+    ): boolean {
+        const current = this.#current(person);
+        const other = this.#current(target);
+
+        if (
+            current === undefined ||
+            other === undefined ||
+            other.sessions !== undefined ||
+            this.inCharge(other, id) ||
+            !this.mayUse(other, id) ||
+            (other.role === "viewer" && level === "start")
+        ) {
+            return false;
+        }
+
+        if (this.inCharge(current, id)) {
+            return true;
+        }
+
+        if (level === "none") {
+            return from === "none" || this.mayTakeFolder(current, id, other.id, folder);
+        }
+
+        if (from === "none" && !this.mayGiveFolder(current, id, folder)) {
+            return false;
+        }
+
+        const saw = from === "past" || from === "all";
+        const sees = level === "past" || level === "all";
+        const mine = (): boolean =>
+            this.reshares(current, id) && this.seesFolder(current, id, folder, Infinity);
+
+        if (from === "none") {
+            return !sees || mine();
+        }
+
+        if (sees === saw && from === level) {
+            return true;
+        }
+
+        return this.maySetSees(current, id, other.id, folder, sees) && (!sees || mine());
     }
 
     /**
@@ -911,7 +1020,9 @@ export class AccessPolicy {
 
         const folder = facts.folder;
 
-        return folder !== undefined && this.seesFolder(person, facts.computer, folder);
+        return (
+            folder !== undefined && this.seesFolder(person, facts.computer, folder, facts.createdAt)
+        );
     }
 
     /**

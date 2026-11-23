@@ -953,8 +953,8 @@ describe("review drill fixes for people on a computer", () => {
             /Pi Pocket is still reading this folder on Folder laptop/,
         );
         // The same folder on another computer is another folder.
-        assert.equal(app.policy.seesFolder(fellow, runnerId, "/srv/app/api"), false);
-        assert.equal(app.policy.seesFolder(fellow, "this-server", "/srv/app/api"), false);
+        assert.equal(app.policy.seesFolder(fellow, runnerId, "/srv/app/api", 0), false);
+        assert.equal(app.policy.seesFolder(fellow, "this-server", "/srv/app/api", 0), false);
 
         // Only who manages the computer is told who sees what there.
         const lists = async (user: User) =>

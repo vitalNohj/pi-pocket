@@ -53,6 +53,7 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
         // The guest was given /given (and what is in it); no one else anything.
         given: (person) => (person === guest.id ? ["/given"] : []),
         sees: () => [],
+        seesUntil: () => ({}),
         givenBy: () => ({}),
         holders: () => [],
         shareNew: false,
@@ -60,9 +61,12 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
     };
 }
 
+/** A session as a test writes it: made at time 0 unless it says when. */
+type Made = Omit<SessionFacts, "createdAt"> & { createdAt?: number };
+
 function world(
     computers: Computer[] = [computer(THIS_SERVER), computer("runner")],
-    sessions: SessionFacts[] = [
+    made: Made[] = [
         { id: "10", computer: THIS_SERVER, createdBy: guest.id },
         { id: "11", computer: THIS_SERVER, createdBy: stranger.id, sharedWith: [guest.id] },
         { id: "12", computer: THIS_SERVER },
@@ -74,6 +78,7 @@ function world(
     people: Person[] = [owner, guest, viewer, stranger, linker, invited],
     approved: Set<string> = new Set(),
 ): { policy: AccessPolicy; people: Map<string, Person>; approved: Set<string> } {
+    const sessions: SessionFacts[] = made.map((each) => ({ createdAt: 0, ...each }));
     const byId = new Map(people.map((each) => [each.id, each]));
     // Subagents name their top session: 101 is a subagent of 10, 201 of 20.
     const parents = new Map([
@@ -342,7 +347,7 @@ describe("may this person see and steer this session", () => {
     });
 
     it("refuses the owner a session on someone else's runner, unless shared with them", () => {
-        const shared: SessionFacts[] = [
+        const shared: Made[] = [
             { id: "20", computer: "runner", createdBy: guest.id },
             { id: "22", computer: "runner", createdBy: guest.id, sharedWith: [owner.id] },
         ];
@@ -370,7 +375,7 @@ describe("may this person see and steer this session", () => {
     it("gives older sessions, with no starter, to the owner", () => {
         const { policy } = world();
 
-        assert.equal(policy.starter({ id: "12", computer: THIS_SERVER }), owner.id);
+        assert.equal(policy.starter({ id: "12", computer: THIS_SERVER, createdAt: 0 }), owner.id);
         assert.equal(policy.maySee(guest, "12"), false);
     });
 
@@ -389,7 +394,7 @@ describe("may this person see and steer this session", () => {
     });
 
     it("lets a viewer see what is shared with them, and refuses them steering", () => {
-        const sessions: SessionFacts[] = [
+        const sessions: Made[] = [
             { id: "50", computer: THIS_SERVER, createdBy: owner.id, sharedWith: [viewer.id] },
         ];
         const { policy } = world(undefined, sessions);
@@ -447,7 +452,7 @@ describe("may this person see every session in a folder", () => {
             assert.equal(policy.maySteer(guest, id), true, id);
         }
 
-        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given/app"), true);
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given/app", 0), true);
     });
 
     it("refuses a session beside the folder, above it, in no folder, on the runner outside it, and a PiP in it", () => {
@@ -457,8 +462,8 @@ describe("may this person see every session in a folder", () => {
             assert.equal(policy.maySee(guest, id), false, id);
         }
 
-        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given-too"), false);
-        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/"), false);
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given-too", 0), false);
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/", 0), false);
     });
 
     it("refuses everyone it was not turned on for: a stranger, a viewer, and the same guest with it off", () => {
@@ -470,31 +475,34 @@ describe("may this person see every session in a folder", () => {
         assert.equal(seeing({ sees: () => [] }).policy.maySee(guest, "50"), false);
     });
 
-    it("ends at once when the folder is taken back, they are no longer chosen, or they are made a viewer", () => {
+    it("ends at once when the folder is taken back, or they are no longer chosen", () => {
         // The folder is no longer given, though the switch's record is still there.
         assert.equal(seeing({ given: () => [] }).policy.maySee(guest, "50"), false);
         // Given a folder inside it only: the record names a folder that is not theirs.
         assert.equal(seeing({ given: () => ["/given/app"] }).policy.maySee(guest, "51"), false);
         assert.equal(seeing({ chosen: [viewer.id] }).policy.maySee(guest, "50"), false);
+    });
 
+    it("keeps the folder for someone made a viewer: they read its sessions, and steer none of them", () => {
         const { policy, people } = seeing();
 
         people.set(guest.id, { ...guest, role: "viewer" });
-        assert.equal(policy.maySee(guest, "50"), false);
+        assert.equal(policy.maySee(guest, "50"), true);
+        assert.equal(policy.maySteer(guest, "50"), false);
         // What is shared with them one at a time stays, to read.
         assert.equal(policy.maySee(guest, "58"), true);
+        assert.equal(policy.maySteer(guest, "58"), false);
     });
 
-    it("gives a viewer and a person invited to one session nothing by a folder, whatever the record says", () => {
+    it("gives a person invited to one session nothing by a folder, whatever the record says", () => {
         const everyone = seeing({
             given: () => ["/given"],
             sees: () => ["/given"],
             chosen: [guest.id, viewer.id, invited.id],
         }).policy;
 
-        assert.equal(everyone.maySee(viewer, "50"), false);
         assert.equal(everyone.maySee(invited, "50"), false);
-        assert.equal(everyone.seesFolder(viewer, THIS_SERVER, "/given"), false);
+        assert.equal(everyone.seesFolder(invited, THIS_SERVER, "/given", 0), false);
     });
 
     it("lets them send while the session's approval is live, and neither share it nor renew it", () => {
@@ -516,6 +524,199 @@ describe("may this person see every session in a folder", () => {
         assert.equal(policy.seesOnlyByFolder(guest, "59"), false, "they started it");
         assert.equal(policy.seesOnlyByFolder(guest, "52"), false, "not theirs at all");
         assert.equal(policy.seesOnlyByFolder(owner, "50"), false, "in charge");
+    });
+});
+
+describe("what a level of a folder shows", () => {
+    // The guest and the viewer have /given on this server; who sees its sessions, and up to when, is the test's.
+    // Session 70 was made at 100 by the stranger in /given, 71 at 300 in /given, 72 at 100 beside it in /given-too.
+    const levels = (
+        sees: (person: string) => readonly string[],
+        until: (person: string) => Readonly<Record<string, number>> = () => ({}),
+    ) =>
+        world(
+            [
+                computer(THIS_SERVER, {
+                    given: (person) =>
+                        person === guest.id || person === viewer.id ? ["/given"] : [],
+                    sees,
+                    seesUntil: until,
+                }),
+            ],
+            [
+                {
+                    id: "70",
+                    computer: THIS_SERVER,
+                    createdBy: stranger.id,
+                    folder: "/given",
+                    createdAt: 100,
+                },
+                {
+                    id: "71",
+                    computer: THIS_SERVER,
+                    createdBy: stranger.id,
+                    folder: "/given",
+                    createdAt: 300,
+                },
+                {
+                    id: "72",
+                    computer: THIS_SERVER,
+                    createdBy: stranger.id,
+                    folder: "/given-too",
+                    createdAt: 100,
+                },
+                {
+                    id: "73",
+                    computer: THIS_SERVER,
+                    createdBy: guest.id,
+                    folder: "/given",
+                    createdAt: 300,
+                },
+            ],
+        );
+    const everyone = () => ["/given"];
+    const soFar = () => ({ "/given": 200 });
+
+    it("at Sessions so far, shows a session made before the change, and not one another person made after it", () => {
+        const { policy } = levels(everyone, soFar);
+
+        for (const person of [guest, viewer]) {
+            assert.equal(policy.maySee(person, "70"), true, person.id);
+            assert.equal(policy.maySee(person, "71"), false, person.id);
+        }
+
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given", 200), true);
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given", 201), false);
+        // Their own, made later, stays theirs: it is not by the folder.
+        assert.equal(policy.maySee(guest, "73"), true);
+    });
+
+    it("at All sessions, shows both; a record from before the time was kept reads as All sessions", () => {
+        const { policy } = levels(everyone);
+
+        for (const person of [guest, viewer]) {
+            assert.equal(policy.maySee(person, "70"), true, person.id);
+            assert.equal(policy.maySee(person, "71"), true, person.id);
+        }
+    });
+
+    it("from All sessions to Sessions so far, hides nothing made by then, and what starts later", () => {
+        // The change was made at 300: 70 and 71 exist then, a session made at 301 does not.
+        const { policy } = levels(everyone, () => ({ "/given": 300 }));
+
+        assert.equal(policy.maySee(viewer, "70"), true);
+        assert.equal(policy.maySee(viewer, "71"), true);
+        assert.equal(policy.seesFolder(viewer, THIS_SERVER, "/given", 301), false);
+    });
+
+    it("shows a viewer no session in a folder beside it, nor one at Start sessions or No access", () => {
+        assert.equal(levels(everyone).policy.maySee(viewer, "72"), false);
+        // Given, but not seen: for a viewer that is nothing.
+        assert.equal(levels(() => []).policy.maySee(viewer, "70"), false);
+        assert.equal(levels(() => []).policy.maySee(guest, "70"), false);
+    });
+
+    it("lets a viewer at either level read and never prompt, start, or work in the folder", () => {
+        for (const until of [() => ({}), soFar]) {
+            const { policy } = levels(everyone, until);
+
+            assert.equal(policy.maySee(viewer, "70"), true);
+            assert.equal(policy.maySteer(viewer, "70"), false);
+            assert.equal(policy.steer(viewer, "70"), "locked");
+            assert.equal(policy.mayStart(viewer, THIS_SERVER), false);
+            assert.equal(policy.mayUseFolder(viewer, THIS_SERVER, "/given"), false);
+            assert.equal(policy.folder(viewer, THIS_SERVER, "/given").kind, "refuse");
+            assert.deepEqual(policy.givenFolders(viewer, THIS_SERVER), []);
+            // The record still holds it: made a user, they keep it.
+            assert.equal(policy.holdsFolder(viewer, THIS_SERVER, "/given"), true);
+        }
+    });
+});
+
+describe("who may set a folder's level", () => {
+    // The lead has /proj and sees all of it, and passes on what they were given; the guest has /proj from the lead;
+    // the plain user and the viewer are chosen and have nothing.
+    const setting = (patch: Partial<Computer> = {}) =>
+        world(
+            [
+                computer(THIS_SERVER, {
+                    chosen: [guest.id, viewer.id, lead.id, plain.id],
+                    ...held("reshares", [lead.id]),
+                    given: (person) => (person === lead.id || person === guest.id ? ["/proj"] : []),
+                    givenBy: (person): Record<string, string> =>
+                        person === guest.id ? { "/proj": lead.id } : {},
+                    sees: (person) => (person === lead.id ? ["/proj"] : []),
+                    ...patch,
+                }),
+            ],
+            [],
+            [owner, guest, viewer, lead, plain, invited],
+        );
+
+    it("lets who is in charge set any level, and a viewer's but Start sessions", () => {
+        const { policy } = setting();
+
+        for (const level of ["start", "past", "all", "none"] as const) {
+            assert.equal(
+                policy.maySetLevel(owner, THIS_SERVER, plain, "/x", "none", level),
+                true,
+                level,
+            );
+        }
+
+        assert.equal(policy.maySetLevel(owner, THIS_SERVER, viewer, "/x", "none", "past"), true);
+        assert.equal(policy.maySetLevel(owner, THIS_SERVER, viewer, "/x", "none", "all"), true);
+        assert.equal(policy.maySetLevel(owner, THIS_SERVER, viewer, "/x", "none", "start"), false);
+    });
+
+    it("refuses someone in charge, invited to one session, or not chosen as the one given it", () => {
+        const { policy } = setting();
+
+        assert.equal(policy.maySetLevel(owner, THIS_SERVER, owner, "/x", "none", "all"), false);
+        assert.equal(policy.maySetLevel(owner, THIS_SERVER, invited, "/x", "none", "all"), false);
+        assert.equal(policy.maySetLevel(owner, THIS_SERVER, stranger, "/x", "none", "all"), false);
+    });
+
+    it("lets someone not in charge give their own folder, and see its sessions only while they see them all", () => {
+        const { policy } = setting();
+
+        assert.equal(policy.maySetLevel(lead, THIS_SERVER, plain, "/proj", "none", "start"), true);
+        assert.equal(policy.maySetLevel(lead, THIS_SERVER, viewer, "/proj", "none", "all"), true);
+        assert.equal(policy.maySetLevel(lead, THIS_SERVER, guest, "/proj", "start", "past"), true);
+        assert.equal(policy.maySetLevel(lead, THIS_SERVER, guest, "/proj", "start", "none"), true);
+
+        // Without every session in it themselves, they give it to start in, and nothing more.
+        const limited = setting({ sees: () => [] }).policy;
+
+        assert.equal(limited.maySetLevel(lead, THIS_SERVER, plain, "/proj", "none", "start"), true);
+        assert.equal(limited.maySetLevel(lead, THIS_SERVER, plain, "/proj", "none", "all"), false);
+        assert.equal(
+            limited.maySetLevel(lead, THIS_SERVER, viewer, "/proj", "none", "past"),
+            false,
+        );
+    });
+
+    it("refuses someone not in charge a folder that was not given to them, and one someone else gave", () => {
+        const { policy } = setting();
+
+        assert.equal(
+            policy.maySetLevel(lead, THIS_SERVER, plain, "/other", "none", "start"),
+            false,
+        );
+        assert.equal(
+            policy.maySetLevel(lead, THIS_SERVER, viewer, "/proj/app", "none", "all"),
+            false,
+        );
+        assert.equal(policy.maySetLevel(plain, THIS_SERVER, viewer, "/proj", "none", "all"), false);
+        // The guest's /proj is the lead's gift: the plain user takes nothing back.
+        assert.equal(
+            policy.maySetLevel(plain, THIS_SERVER, guest, "/proj", "start", "none"),
+            false,
+        );
+        assert.equal(
+            policy.maySetLevel(viewer, THIS_SERVER, plain, "/proj", "none", "start"),
+            false,
+        );
     });
 });
 
