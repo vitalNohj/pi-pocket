@@ -27,9 +27,9 @@ export type PushPrefs = {
     mention: boolean;
     /** A run began to wait a long while for a provider's limit to clear (`limit-gate.ts`). */
     limit: boolean;
-    /** The owner's alone: someone's authenticator codes were locked out after too many wrong ones. */
+    /** Authenticator lockouts: the owner hears about everyone, and managers hear about people they may manage. */
     security: boolean;
-    /** The owner's alone: someone asks to start a session in a new folder on this server (`folder-requests.ts`). */
+    /** Folder and trust requests for who is in charge of a computer, and renewals for a session's starter. */
     folders: boolean;
     /** Work passed a hard limit with no progress (a stalled subagent): for who is in charge of its computer. */
     stalled: boolean;

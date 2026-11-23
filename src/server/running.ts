@@ -198,7 +198,7 @@ async function describeTask(
         case COMMAND_TASK: {
             const command = await app.extensionCommands.named(node.id);
 
-            if (command?.scope !== "conversation" && user.role !== "owner") {
+            if (command?.scope !== "conversation" && !app.policy.runsGlobalCommands(user)) {
                 return undefined;
             }
 

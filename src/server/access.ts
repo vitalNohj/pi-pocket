@@ -24,6 +24,11 @@ import type { WebAccess } from "./host.ts";
 /** The id of this server's own computer record, as `SessionMeta.runner` is absent for its sessions. */
 export const THIS_SERVER = "this-server";
 
+/** The permission that opens a trusted built-in module's owner parts to someone besides the owner. */
+const OWNER_WEB_PERMISSIONS: Readonly<Partial<Record<string, PersonRight>>> = {
+    "session-cleanup": "managesRunners",
+};
+
 /**
  * What a person is told who may not chat with one person, or not with that one (`AccessPolicy.requireMessage`, and
  * `direct.ts` where a message is stored).
@@ -456,6 +461,30 @@ export class AccessPolicy {
         return this.has(person, "managesServer");
     }
 
+    /** May `person` run and stop global extension commands: the owner, and the users the owner lets. */
+    runsGlobalCommands(person: Pick<Person, "id">): boolean {
+        return this.has(person, "runsGlobalCommands");
+    }
+
+    /**
+     * Which notification switches to offer (`GET /api/push`): security for who manages people, folder requests
+     * for who is in charge of a computer, and session renewals for other users not limited to sessions.
+     */
+    pushKinds(person: Pick<Person, "id">): {
+        security: boolean;
+        folders: "requests" | "renewals" | false;
+    } {
+        const current = this.#current(person);
+        const security = this.managesPeople(person);
+        const folders = this.#facts.computers().some((id) => this.inCharge(person, id))
+            ? "requests"
+            : current !== undefined && current.role !== "viewer" && current.sessions === undefined
+              ? "renewals"
+              : false;
+
+        return { security, folders };
+    }
+
     /**
      * May `by` change what `target` may do, or remove them. Nobody changes the owner. The owner changes everyone else.
      * A user who manages people changes nobody who manages people, which they do themselves: only the owner does, so
@@ -533,11 +562,15 @@ export class AccessPolicy {
 
     /**
      * May `person` use an extension's routes, browser module, or settings open to `access` on this server: the owner
-     * always; anyone else must be able to use this server, and then "steer" lets guests in and "view" viewers too. What
-     * a module does there is server wide, so a person invited to one session never may (`extension-web.ts` lets the
-     * trusted diagrams client through for them alone).
+     * always; for "owner", also who holds the permission named for a trusted built-in module, if any. For "steer"
+     * and "view", anyone else must be able to use this server, and then "steer" lets guests in and "view" viewers too.
+     * A person invited to one session never may (`extension-web.ts` lets the trusted diagrams client through).
      */
-    mayUseExtension(person: Pick<Person, "id">, access: WebAccess): boolean {
+    mayUseExtension(
+        person: Pick<Person, "id">,
+        access: WebAccess,
+        builtInModule?: string,
+    ): boolean {
         const current = this.#current(person);
 
         if (current === undefined) {
@@ -546,6 +579,15 @@ export class AccessPolicy {
 
         if (current.role === "owner") {
             return true;
+        }
+
+        if (access === "owner") {
+            const right =
+                builtInModule !== undefined && Object.hasOwn(OWNER_WEB_PERMISSIONS, builtInModule)
+                    ? OWNER_WEB_PERMISSIONS[builtInModule]
+                    : undefined;
+
+            return right !== undefined && this.has(current, right);
         }
 
         return (

@@ -23,13 +23,21 @@ export class ExtensionRequest implements RequestActor {
     readonly #by: string;
     readonly #access: WebAccess;
     readonly #source?: ConversationId;
+    readonly #builtInModule?: string;
     #settings: string | undefined;
 
-    constructor(app: PocketApp, by: string, access: WebAccess, source?: ConversationId) {
+    constructor(
+        app: PocketApp,
+        by: string,
+        access: WebAccess,
+        source?: ConversationId,
+        builtInModule?: string,
+    ) {
         this.#app = app;
         this.#by = by;
         this.#access = access;
         this.#source = source;
+        this.#builtInModule = builtInModule;
         this.context = withAbortSignal(this.#stopped.signal, BACKGROUND_CONTEXT);
     }
 
@@ -61,7 +69,10 @@ export class ExtensionRequest implements RequestActor {
 
         const user = this.#app.config.userById(this.#by);
 
-        if (user === undefined || !this.#app.policy.mayUseExtension(user, this.#access)) {
+        if (
+            user === undefined ||
+            !this.#app.policy.mayUseExtension(user, this.#access, this.#builtInModule)
+        ) {
             throw new HttpError(403, "You no longer have access to this extension route.");
         }
 

@@ -1,4 +1,5 @@
 import {
+    addPerson,
     cleanUp,
     context,
     modelTexts,
@@ -160,6 +161,44 @@ test("an archived session leaves the app with Pocket's own files; its transcript
         (await modelTexts(app, id)).some((text) => text.includes("hello")),
         "the transcript stays in storage for a later purge",
     );
+});
+
+test("only the owner and people who manage runners can plan, clean up, and remove archived sessions", async () => {
+    const id = await worktreeSession("Old work for a runner manager");
+    const worktree = app.sessionMeta(id)!.worktree!;
+    const plain = (await addPerson(app, "Plain user", "guest")).user;
+    const manager = app.config.addUser("Runner manager", "guest");
+    const ids = [id];
+
+    await archive(id);
+    assert.equal(app.canSee(plain, id), true);
+    const forbidden = {
+        status: 403,
+        message: "Only the owner, or someone who manages runners, can clean up sessions.",
+    };
+
+    await assert.rejects(app.sessionCleanup.plan(plain.id, ids), forbidden);
+    await assert.rejects(app.sessionCleanup.cleanUp(plain.id, ids), forbidden);
+    await assert.rejects(app.sessionCleanup.remove(plain.id, ids), forbidden);
+    assert.equal(existsSync(worktree.path), true);
+
+    app.setRight(owner(app), { person: manager.user.id, right: "managesRunners", on: true });
+    const plan = await call("/api/x/session-cleanup/plan", { ids }, manager.token);
+
+    assert.equal(plan.status, 200);
+    assert.equal(plan.data.sessions[0].id, id);
+    assert.equal(plan.data.sessions[0].worktree.state, "clean");
+    const clean = await call("/api/x/session-cleanup/clean-up", { ids }, manager.token);
+
+    assert.equal(clean.status, 200);
+    assert.equal(clean.data.outcomes[0].done, true);
+    assert.ok(app.sessionMeta(id) !== undefined, "cleanup keeps the session");
+    assert.equal(existsSync(worktree.path), false);
+    const remove = await call("/api/x/session-cleanup/remove", { ids }, manager.token);
+
+    assert.equal(remove.status, 200);
+    assert.equal(remove.data.outcomes[0].done, true);
+    assert.equal(app.sessionMeta(id), undefined);
 });
 
 test("uncommitted changes in its worktree keep a session; a live fork keeps the uploads it reads", async () => {

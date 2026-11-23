@@ -29,6 +29,7 @@ import { newIdentity } from "../src/runner/secure-link.ts";
 import { THIS_SERVER } from "../src/server/access.ts";
 import type { User } from "../src/server/config.ts";
 import { SessionsDoc, SubagentsDoc } from "../src/server/docs.ts";
+import { ExtensionWebs } from "../src/server/extension-web.ts";
 import createArtifacts from "../src/server/extensions/artifacts.ts";
 import type { PocketHost } from "../src/server/host.ts";
 import { createHandler } from "../src/server/http.ts";
@@ -216,6 +217,102 @@ describe("the session list", () => {
         assert.deepEqual(theirs.body.find((row) => row.id === Number(copy))?.forkedFrom, {});
         assert.equal(forkedFrom?.id, Number(source));
         assert.deepEqual(forkedFrom, app.sessionMeta(copy)?.forkedFrom);
+    });
+});
+
+describe("the session cleanup browser module", () => {
+    it("loads the built-in for a runner manager and updates an open tab when the permission changes", async () => {
+        const manager = person("Cleanup manager", "guest");
+        const tab = fakeTab(undefined, manager);
+        const hasCleanup = (modules: readonly { module: string }[]) =>
+            modules.some((each) => each.module === "session-cleanup");
+        const offered = () =>
+            hasCleanup((tab.last("hello")?.server as { ui: { module: string }[] }).ui);
+        const cleanup = () => app.webs.file("session-cleanup", ["index.js"], manager);
+
+        await app.attach(tab.client);
+
+        try {
+            assert.equal(offered(), false);
+            assert.equal(cleanup(), undefined);
+            app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: true });
+            await until(offered, "hello adding the cleanup browser module");
+            assert.equal(hasCleanup(app.webs.clients(manager)), true);
+            assert.equal(hasCleanup(app.webs.clients(guest)), false);
+            assert.ok(cleanup() !== undefined);
+            assert.equal(app.webs.file("session-cleanup", ["index.js"], guest), undefined);
+
+            app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: false });
+            await until(() => !offered(), "hello removing the cleanup browser module");
+            assert.equal(cleanup(), undefined);
+        } finally {
+            app.detach(tab.client);
+        }
+    });
+
+    it("keeps a drop-in named session-cleanup owner-only", async () => {
+        const manager = person("Another cleanup manager", "guest");
+
+        app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: true });
+        const directory = join(root, "cleanup-drop-in");
+
+        mkdirSync(directory);
+        writeFileSync(join(directory, "index.js"), "export {};\n");
+        const webs = new ExtensionWebs({
+            mayUse: (user, access, builtInModule) =>
+                app.policy.mayUseExtension(user, access, builtInModule),
+        });
+
+        try {
+            // Stage the same-named drop-in by itself: the loader prefers the built-in when both exist.
+            const { part, web } = webs.stage("session-cleanup.ts", directory, "Drop-in cleanup");
+
+            web.client("index.js", { access: "owner" });
+            web.route("POST", "plan", () => ({}), { access: "owner" });
+            webs.commit(part);
+
+            assert.equal(webs.clients(owner(app))[0]?.module, "session-cleanup");
+            assert.deepEqual(webs.clients(manager), []);
+            assert.equal(webs.match("session-cleanup", "POST", ["plan"], manager), undefined);
+            assert.equal(webs.file("session-cleanup", ["index.js"], manager), undefined);
+        } finally {
+            await webs.close();
+        }
+    });
+});
+
+describe("notification preferences", () => {
+    it("offers only the Security and folder or renewal switches that each person can use", async () => {
+        const peopleManager = person("People manager", "guest");
+        const runnerManager = person("Runner manager", "guest");
+        const linker = person("Notification linker", "guest");
+
+        app.setRight(owner(app), { person: peopleManager.id, right: "managesUsers", on: true });
+        app.setRight(owner(app), { person: runnerManager.id, right: "managesRunners", on: true });
+        const runner = app.config.addRunner(
+            "Notification laptop",
+            linker.id,
+            newIdentity().publicKey,
+        );
+
+        try {
+            for (const [user, security, folders] of [
+                [owner(app), true, "requests"],
+                [peopleManager, true, "renewals"],
+                [runnerManager, false, "requests"],
+                [linker, false, "requests"],
+                [guest, false, "renewals"],
+                [viewer, false, false],
+                [invited, false, false],
+            ] as const) {
+                const answer = await call(user, "push");
+
+                assert.equal(answer.status, 200, user.name);
+                assert.deepEqual(answer.body.kinds, { security, folders }, user.name);
+            }
+        } finally {
+            app.config.removeRunner(runner.id);
+        }
     });
 });
 

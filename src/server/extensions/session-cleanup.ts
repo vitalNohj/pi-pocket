@@ -1,4 +1,4 @@
-/** Session cleanup: the owner removes the worktrees of archived sessions, or takes archived sessions out of the app with Pocket's own files. */
+/** Session cleanup: the owner and people who manage runners remove archived sessions' worktrees, or remove the sessions and Pocket's own files. */
 // Types only: what it does is core's (`session-cleanup.ts`), through the host's internal `sessionCleanup`.
 import type { ExtensionWeb, PocketHost, WebRequest } from "../host.ts";
 
@@ -15,7 +15,7 @@ export default function createSessionCleanup(host: PocketHost, web?: ExtensionWe
         return;
     }
 
-    // The owner's alone: the browser module and every route (`access` is the owner by default).
+    // The policy opens this built-in module's owner parts to people who manage runners too.
     web.client("session-cleanup");
 
     /** The sessions a request names by id. A change acts only on those its confirm showed. */

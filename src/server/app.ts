@@ -712,7 +712,7 @@ export class PocketApp {
     readonly secrets: CoreSecrets;
     #websTimer: NodeJS.Timeout | undefined;
     /** Whose tabs the next `hello` for browser modules goes to: those who may use any of these. */
-    readonly #websFor = new Set<WebAccess>();
+    readonly #websFor = new Map<string | undefined, Set<WebAccess>>();
     /** Whether everyone's tabs must hear `hello` again, for a change to the modules' commands. */
     #websAll = false;
     readonly #clients = new Set<Client>();
@@ -1005,13 +1005,14 @@ export class PocketApp {
             log: (line) => this.#log(line),
         });
         this.webs = new ExtensionWebs({
-            mayUse: (user, access) => this.policy.mayUseExtension(user, access),
-            changed: (access) => this.#websChanged(access),
+            mayUse: (user, access, builtInModule) =>
+                this.policy.mayUseExtension(user, access, builtInModule),
+            changed: (access, builtInOwnerModule) => this.#websChanged(access, builtInOwnerModule),
             deliver: (part, access, event, data, to) => {
                 for (const client of this.#clients) {
                     if (
                         (to === undefined || client.user.id === to) &&
-                        this.policy.mayUseExtension(client.user, access)
+                        this.policy.mayUseExtension(client.user, access, part.builtInModule)
                     ) {
                         client.send("ext", { module: part.module, event, data });
                     }
@@ -1137,7 +1138,7 @@ export class PocketApp {
      * Browser modules came, went, or changed: the tabs of the people they are for hear which to load, once for changes
      * that come together.
      */
-    #websChanged(access: readonly WebAccess[] | "all"): void {
+    #websChanged(access: readonly WebAccess[] | "all", builtInOwnerModule?: string): void {
         if (this.#closing !== undefined) {
             return;
         }
@@ -1145,9 +1146,13 @@ export class PocketApp {
         if (access === "all") {
             this.#websAll = true;
         } else {
+            const changed = this.#websFor.get(builtInOwnerModule) ?? new Set<WebAccess>();
+
             for (const each of access) {
-                this.#websFor.add(each);
+                changed.add(each);
             }
+
+            this.#websFor.set(builtInOwnerModule, changed);
         }
 
         if (this.#websTimer !== undefined) {
@@ -1162,7 +1167,13 @@ export class PocketApp {
             this.#websFor.clear();
             this.#websAll = false;
             void this.#refreshClients(
-                (user) => all || changed.some((each) => this.policy.mayUseExtension(user, each)),
+                (user) =>
+                    all ||
+                    changed.some(([builtInModule, accesses]) =>
+                        [...accesses].some((each) =>
+                            this.policy.mayUseExtension(user, each, builtInModule),
+                        ),
+                    ),
             );
         }, 50);
     }
@@ -5386,6 +5397,7 @@ export class PocketApp {
         const runners = this.runners.list(user);
         const thisServer = this.thisServer(user);
         const managesServer = this.policy.managesServer(user);
+        const runsGlobalCommands = this.policy.runsGlobalCommands(user);
 
         return {
             ...(thisServer === undefined ? {} : { thisServer }),
@@ -5441,14 +5453,16 @@ export class PocketApp {
                 // The browser modules this person's tabs load (`extension-ui.js`), each with the tools its module
                 // installs: the only ones whose calls it may describe (`pocket.toolCall`).
                 ui: this.#browserModules(user),
-                // The commands this person may run: viewers none, guests the ones for conversations.
-                extensionCommands: this.webs
-                    .commands()
-                    .filter(
-                        (command) =>
-                            user.role === "owner" ||
-                            (user.role === "guest" && command.scope === "conversation"),
-                    ),
+                // Viewers get no commands. Others get conversation commands, and global ones with permission.
+                extensionCommands:
+                    user.role === "viewer"
+                        ? []
+                        : this.webs
+                              .commands()
+                              .filter(
+                                  (command) =>
+                                      command.scope === "conversation" || runsGlobalCommands,
+                              ),
                 // Tells the web app this server has people chat and typing indicators.
                 chat: true,
                 // Manual refresh reloads shared model configuration and catalogs.
@@ -7563,7 +7577,7 @@ export class PocketApp {
                 : {
                       ...module,
                       ...(web?.client === undefined ||
-                      !this.policy.mayUseExtension(user, web.client)
+                      !this.webs.mayUseClient(module.file.replace(/\.ts$/, ""), user)
                           ? {}
                           : { web: { routes: [], client: web.client } }),
                       ...(error === undefined ? {} : { error: "It failed to load." }),
@@ -7745,12 +7759,10 @@ export class PocketApp {
      */
     extensionSettings(user: User, module: string) {
         const fields = this.webs.settingsOf(module);
-        const access = this.webs.clientAccess(module);
 
         if (
             fields === undefined ||
-            (!this.policy.managesServer(user) &&
-                (access === undefined || !this.policy.mayUseExtension(user, access)))
+            (!this.policy.managesServer(user) && !this.webs.mayUseClient(module, user))
         ) {
             throw new HttpError(404, "That module has no settings here.");
         }

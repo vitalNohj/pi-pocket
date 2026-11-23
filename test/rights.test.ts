@@ -128,6 +128,7 @@ test("every right is declared once, and the app is told its words and none of it
         "managesUsers",
         "managesRunners",
         "managesServer",
+        "runsGlobalCommands",
         "keepsWarm",
         "chats",
     ]);
@@ -193,6 +194,11 @@ test("one check answers for every right: the owner has them all, a user what the
         assert.equal(app.policy.managesPeople(each), has(each, "managesUsers"), each.name);
         assert.equal(app.policy.managesRunners(each), has(each, "managesRunners"), each.name);
         assert.equal(app.policy.managesServer(each), has(each, "managesServer"), each.name);
+        assert.equal(
+            app.policy.runsGlobalCommands(each),
+            has(each, "runsGlobalCommands"),
+            each.name,
+        );
         assert.equal(app.policy.keepsWarm(each), has(each, "keepsWarm"), each.name);
         assert.equal(app.policy.chats(each), has(each, "chats"), each.name);
     }
@@ -204,6 +210,7 @@ test("one check answers for every right: the owner has them all, a user what the
         managesUsers: true,
         managesRunners: true,
         managesServer: true,
+        runsGlobalCommands: true,
         keepsWarm: true,
         chats: true,
         wheel: [THIS_SERVER],
@@ -216,6 +223,7 @@ test("one check answers for every right: the owner has them all, a user what the
         managesUsers: false,
         managesRunners: false,
         managesServer: false,
+        runsGlobalCommands: false,
         keepsWarm: true,
         chats: true,
         wheel: [],
@@ -273,7 +281,7 @@ test("one check answers for every right: the owner has them all, a user what the
     for (const right of COMPUTER_RIGHTS) {
         assert.throws(
             () => app.setRight(owner(app), { person: gil.id, right, on: true }),
-            /Send right \(linksRunners, invites, managesUsers, managesRunners, managesServer, keepsWarm, chats\) and on\./,
+            /Send right \(linksRunners, invites, managesUsers, managesRunners, managesServer, runsGlobalCommands, keepsWarm, chats\) and on\./,
             right,
         );
     }
@@ -298,6 +306,7 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
         managesUsers: "open",
         managesRunners: "open",
         managesServer: "open",
+        runsGlobalCommands: "open",
         keepsWarm: "open",
     });
     assert.deepEqual(told(owner(app), vera)?.offer, { chats: "open" });
@@ -309,11 +318,12 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
         managesUsers: "open",
         managesRunners: "open",
         managesServer: "open",
+        runsGlobalCommands: "open",
         keepsWarm: "open",
     });
     assert.deepEqual(told(owner(app), mona)?.rights, ["invites", "managesUsers", "chats"]);
     // A user who manages users gives only what they have themselves, and never a right only the owner gives: to
-    // manage users, runners, or the server.
+    // manage users, runners, or the server, or run global commands.
     assert.deepEqual(told(mona, gil)?.offer, {
         linksRunners: "lacking",
         invites: "open",
@@ -520,7 +530,12 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
     // Paused (their authenticator was removed): the ones that lapse are kept for when they link one again.
     const lapsing = PERSON_RIGHTS.filter((right) => declared(right).lapses === true);
 
-    assert.deepEqual(lapsing, ["managesUsers", "managesRunners", "managesServer"]);
+    assert.deepEqual(lapsing, [
+        "managesUsers",
+        "managesRunners",
+        "managesServer",
+        "runsGlobalCommands",
+    ]);
 
     for (const right of lapsing) {
         give(pia, right);

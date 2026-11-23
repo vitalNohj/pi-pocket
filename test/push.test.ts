@@ -1,3 +1,4 @@
+import { cleanUp, fakeTab, openApp, owner, scriptedModel } from "./helpers.ts";
 import assert from "node:assert/strict";
 import {
     createDecipheriv,
@@ -19,6 +20,7 @@ import {
     sendPush,
     vapidAuthorization,
     type PushKeys,
+    type PushMessage,
 } from "../src/server/push.ts";
 import { pushRoutes } from "../src/server/http/push-routes.ts";
 
@@ -289,6 +291,83 @@ test("PushStore persists, validates, and notify drops gone subscriptions", async
     // removeUser drops subscriptions.
     reopened.removeUser("u1");
     assert.equal(reopened.subscriptions("u1").length, 0);
+});
+
+test("lockout notices and pushes go to the owner and managers who may manage the affected person", async (t) => {
+    const now = Date.now();
+    const app = await openApp(scriptedModel(), undefined, () => now);
+
+    t.after(async () => {
+        await app.close();
+        cleanUp();
+    });
+    const first = owner(app);
+    const manager = app.config.addUser("Manager", "guest").user;
+    const second = app.config.addUser("Another manager", "guest").user;
+    const plain = app.config.addUser("Plain user", "guest").user;
+
+    for (const each of [manager, second]) {
+        app.setRight(first, { person: each.id, right: "managesUsers", on: true });
+    }
+
+    const tabs = [first, manager, second, plain].map((each) => fakeTab(undefined, each));
+
+    for (const tab of tabs) {
+        await app.attach(tab.client);
+    }
+
+    const store = app.pushStore!;
+    const pushes: { person: string; message: PushMessage }[] = [];
+
+    t.mock.method(store, "notify", async (person: string, message: PushMessage) => {
+        pushes.push({ person, message });
+
+        return 1;
+    });
+
+    const lock = (person: string, notices: string[], recipients: string[], body: string) => {
+        pushes.length = 0;
+
+        for (const tab of tabs) {
+            tab.events.length = 0;
+        }
+
+        app.alerts.lockout({ person, until: app.now() + 60_000, count: 1 });
+        assert.deepEqual(
+            tabs.flatMap(({ client, last }) => {
+                const notice = last("notice");
+
+                return notice === undefined ? [] : [{ person: client.user.id, notice }];
+            }),
+            notices.map((person) => ({ person, notice: { level: "warning", message: body } })),
+        );
+        assert.deepEqual(
+            pushes.map((push) => push.person),
+            recipients,
+        );
+        assert.ok(pushes.every((push) => push.message.body === body));
+    };
+
+    const hearsOfPlain = [first.id, manager.id, second.id];
+    const aboutPlain =
+        "Plain user entered 5 wrong authenticator codes. Codes for their account are refused for 60 s.";
+
+    lock(plain.id, hearsOfPlain, hearsOfPlain, aboutPlain);
+    store.setPrefs(manager.id, { security: false });
+    lock(plain.id, hearsOfPlain, [first.id, second.id], aboutPlain);
+    store.setPrefs(manager.id, { security: true });
+    lock(
+        first.id,
+        [first.id],
+        [first.id],
+        "You entered 5 wrong authenticator codes. Codes for your account are refused for 60 s.",
+    );
+    lock(
+        second.id,
+        [first.id],
+        [first.id],
+        "Another manager entered 5 wrong authenticator codes. Codes for their account are refused for 60 s.",
+    );
 });
 
 test("every push kind, the limit wait too, can be turned off through the prefs route", async () => {
