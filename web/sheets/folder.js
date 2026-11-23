@@ -30,9 +30,9 @@ import {
 } from "../folder-paths.js";
 import { APPLE, html, Icon, Sheet, shortPath } from "../ui.js";
 import { piSessionsAvailable } from "./pi-sessions.js";
-
-/** Whether hidden folders show: kept for the next time the picker opens. */
-const HIDDEN_KEY = "pocket.folderHidden";
+import { AHEAD_CHILDREN } from "../folder-cache.js";
+import { computerStarts, folderListings, HIDDEN_KEY } from "../folder-listings.js";
+import { FolderRows } from "../folder-rows.js";
 /** Whether new sessions always open in the server's default workspace: kept per browser. */
 const ALWAYS_DEFAULT_KEY = "pocket.folderAlwaysDefault";
 /** Touch screens go into a folder on a tap; a mouse selects on a click and goes in on a double click. */
@@ -207,26 +207,41 @@ export function CwdSheet({
     const load = (path, { showHidden = hidden, select = null, keepMissing = false } = {}) => {
         const ask = ++asked.current;
 
-        const where = runner ? `runners/${encodeURIComponent(runner)}/fs` : "fs";
+        const show = (result) => {
+            setListing(result);
+            setFailed(null);
+            setSelected(touch ? null : select);
 
-        return api(
-            `${where}?path=${encodeURIComponent(path)}${showHidden ? "&hidden=1" : ""}`,
-        ).then(
+            if (!keepMissing) {
+                setMissing(null);
+            }
+
+            setEditing(null);
+            setNaming(false);
+        };
+
+        // The listing read before (`folder-listings.js`) shows at once; the fresh read replaces it when it comes.
+        const kept = folderListings.cached(runner, path, showHidden);
+
+        if (kept) {
+            show(kept);
+        }
+
+        return folderListings.read(runner, path, showHidden).then(
             (result) => {
                 if (ask !== asked.current) {
                     return;
                 }
 
-                setListing(result);
-                setFailed(null);
-                setSelected(touch ? null : select);
-
-                if (!keepMissing) {
-                    setMissing(null);
+                if (!kept) {
+                    show(result);
+                } else if (result !== kept) {
+                    // Changed meanwhile: the selection stays while its folder is still there.
+                    setListing(result);
+                    setSelected((now) =>
+                        now !== null && result.dirs?.some((dir) => dir.path === now) ? now : null,
+                    );
                 }
-
-                setEditing(null);
-                setNaming(false);
             },
             (error) => {
                 if (ask !== asked.current) {
@@ -239,11 +254,11 @@ export function CwdSheet({
                     setMissingWhy(notThere(error, path) ? null : error.message);
                     setEditing(null);
 
-                    // The folder it opens in is gone: home shows under the banner, not an empty list that waits.
-                    if (listing === null && path !== "~") {
+                    // The folder it opens in is gone (or only its old listing showed): home shows under the banner.
+                    if ((listing === null || kept) && path !== "~") {
                         load("~", { showHidden, keepMissing: true });
                     }
-                } else if (listing) {
+                } else if (listing || kept) {
                     notify("error", error.message);
                 } else {
                     setFailed(error.message);
@@ -252,9 +267,31 @@ export function CwdSheet({
         );
     };
 
-    useEffect(() => {
+    // Before the first paint: a listing kept shows with no "Opening…" in between.
+    useLayoutEffect(() => {
         load(initial);
     }, [runner]);
+
+    // Read ahead what is likely opened next: the parent, the first folders here, the favorites, and where the other
+    // computers' pickers open (Runs on).
+    useEffect(() => {
+        if (!listing || listing.path === "") {
+            return;
+        }
+
+        folderListings.ahead(
+            [
+                ...(listing.parent ? [[runner, listing.parent]] : []),
+                ...(listing.dirs ?? []).slice(0, AHEAD_CHILDREN).map((dir) => [runner, dir.path]),
+                ...favorites.map((path) => [runner, path]),
+                ...(changing || picking ? [] : computerStarts(runner)),
+            ],
+            hidden,
+        );
+    }, [listing]);
+
+    // Closed: nothing more is read ahead for it.
+    useEffect(() => () => folderListings.ahead([], hidden), []);
 
     useEffect(() => {
         // The linked computers, for their names and for Runs on, when this tab has not got the list yet.
@@ -295,6 +332,26 @@ export function CwdSheet({
                 ?.scrollIntoView({ block: "nearest" });
         }
     }, [selected]);
+
+    // What a row does, kept current here so the rows (`folder-rows.js`) need not draw again for new handlers.
+    const rowActions = useRef(null);
+
+    rowActions.current = {
+        click: (path) => {
+            if (touch) {
+                load(path);
+
+                return;
+            }
+
+            // The list keeps the keys: a click gives the row the focus, which the list's keys ignore.
+            setSelected(path);
+            list.current?.focus({ preventScroll: true });
+        },
+        open: (path) => !touch && load(path),
+        // The folder the pointer is on is likely opened next.
+        hover: (path) => folderListings.soon(runner, path, hidden),
+    };
 
     const up = () => listing?.parent && load(listing.parent, { select: listing.path });
 
@@ -756,34 +813,12 @@ export function CwdSheet({
                 }
                 ${failed && html`<p class="fp-note">${failed}</p>`}
                 ${!listing && !failed && html`<p class="fp-note">Opening…</p>`}
-                ${dirs.map(
-                    (dir) => html`<button
-                        key=${dir.path}
-                        type="button"
-                        tabindex="-1"
-                        class=${`fp-row ${dir.path === selected ? "on" : ""}`}
-                        role="option"
-                        aria-selected=${dir.path === selected ? "true" : "false"}
-                        data-path=${dir.path}
-                        title=${touch ? undefined : "Double-click to open"}
-                        onClick=${() => {
-                            if (touch) {
-                                load(dir.path);
-
-                                return;
-                            }
-
-                            // The list keeps the keys: a click gives the row the focus, which the list's keys ignore.
-                            setSelected(dir.path);
-                            list.current?.focus({ preventScroll: true });
-                        }}
-                        onDblClick=${() => !touch && load(dir.path)}
-                    >
-                        <${Icon} name="folder" size=${16} />
-                        <span class="fp-name">${dir.name}</span>
-                        ${touch && html`<${Icon} name="chevron" size=${14} class="fp-chev" />`}
-                    </button>`,
-                )}
+                <${FolderRows}
+                    dirs=${dirs}
+                    selected=${selected}
+                    touch=${touch}
+                    actions=${rowActions}
+                />
                 ${listing && dirs.length === 0 && html`<p class="fp-note">No folders in here.</p>`}
             </div>
         </div>
