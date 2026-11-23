@@ -145,10 +145,9 @@ export async function canonical(path: string): Promise<string> {
     }
 }
 
-type Paths = { paths: string[]; folder: string | undefined };
-type Prepared = Paths | { listing: true; path: string | undefined };
+type Prepared = { paths: string[] } | { listing: true; path: string | undefined };
 type Checked = { prepared: Prepared } | { error: unknown };
-type Check = { epoch: number; result: Promise<Checked & { early: boolean }> };
+type Check = { epoch: number; barrierSends: number; result: Promise<Checked> };
 type Queued = {
     id: number;
     request: Request;
@@ -162,6 +161,7 @@ type Waiting = {
     requests: Set<Queued>;
     question?: AbortController;
     epoch: number;
+    barrierSends: number;
     draining: boolean;
 };
 
@@ -232,6 +232,8 @@ export type GateOptions = {
     name: () => string;
     /** Only the built-in daemon shares its filesystem with the runner. */
     readSnapshot?: boolean;
+    /** Resolve a request's path. Defaults to `canonical`. */
+    resolvePath?: typeof canonical;
     timing?: RunnerRequestTiming;
     /** A request of a session in `folder` reaches the daemon; the result is called when it ended (`activity.ts`). */
     working?: (folder: string) => () => void;
@@ -239,6 +241,7 @@ export type GateOptions = {
 
 export class RequestGate {
     readonly #options: GateOptions;
+    readonly #resolvePath: typeof canonical;
     readonly #requests = new Map<number, Request>();
     readonly #handles = new Map<number, Handle>();
     /** Each session's requests that wait for their check: its question stands while one of them still waits. */
@@ -250,6 +253,7 @@ export class RequestGate {
 
     constructor(options: GateOptions) {
         this.#options = options;
+        this.#resolvePath = options.resolvePath ?? canonical;
     }
 
     /** Allow one listed Pi file for at most 5 minutes, only with the still-valid session permission. */
@@ -380,6 +384,7 @@ export class RequestGate {
         const waiting = this.#waiting.get(key) ?? {
             requests: new Set<Queued>(),
             epoch: 0,
+            barrierSends: 0,
             draining: false,
         };
 
@@ -410,18 +415,13 @@ export class RequestGate {
             }
 
             if (job.check === undefined && !job.request.stop.signal.aborted) {
-                let early = false;
-
-                const resolved = () => {
-                    early ||= waiting.requests.values().next().value !== job;
-                };
-
                 this.#options.timing?.check(job.id);
                 job.check = {
                     epoch: waiting.epoch,
-                    result: this.#prepare(job, resolved).then(
-                        (prepared) => ({ prepared, early }),
-                        (error: unknown) => ({ error, early }),
+                    barrierSends: waiting.barrierSends,
+                    result: this.#prepare(job).then(
+                        (prepared) => ({ prepared }),
+                        (error: unknown) => ({ error }),
                     ),
                 };
             }
@@ -447,10 +447,15 @@ export class RequestGate {
                     throw new Error("The request was cancelled");
                 }
 
-                // Do not use a realpath that sat behind a slow check or a question. Resolve it again at its turn.
+                // Earlier read-only requests cannot change these paths. A question or a dispatch outside the
+                // read-only window can, so do not use a result from before either one.
                 let prepared: Prepared;
 
-                if (result === undefined || result.early || check?.epoch !== waiting.epoch) {
+                if (
+                    result === undefined ||
+                    check?.epoch !== waiting.epoch ||
+                    check.barrierSends !== waiting.barrierSends
+                ) {
                     prepared = await this.#prepare(job);
                 } else if ("error" in result) {
                     throw result.error;
@@ -469,6 +474,10 @@ export class RequestGate {
                     await this.#snapshot(id, request, json.path, json.maxBytes);
                 } else {
                     const outgoing = frame(FRAME.request, id, json, payload);
+
+                    if (!CHECK_AHEAD.has(request.op)) {
+                        waiting.barrierSends++;
+                    }
 
                     request.sent = true;
                     this.#options.timing?.checked(id, "daemon");
@@ -527,7 +536,7 @@ export class RequestGate {
     }
 
     /** Resolve the parts of the check that do not grant access or change session state. */
-    async #prepare({ request, json }: Queued, resolved?: () => void): Promise<Prepared> {
+    async #prepare({ request, json }: Queued): Promise<Prepared> {
         if (!KNOWN_OPS.has(request.op)) {
             throw new Error(
                 `The runner on ${this.#options.name()} does not know the request "${request.op}"`,
@@ -546,17 +555,13 @@ export class RequestGate {
             // A folder the picker cannot resolve still lists as the daemon decides.
             const real =
                 typeof path === "string" && isAbsolute(path)
-                    ? await canonical(path).catch(() => resolve(path))
+                    ? await this.#resolvePath(path).catch(() => resolve(path))
                     : undefined;
-
-            if (real !== undefined) {
-                resolved?.();
-            }
 
             return { listing: true, path: real };
         }
 
-        return this.#resolvePaths(json, request.scope, resolved);
+        return { paths: await this.#paths(json) };
     }
 
     #directoryListing(request: Request, json: Record<string, unknown>): boolean {
@@ -565,25 +570,6 @@ export class RequestGate {
             typeof json.handle === "number" &&
             this.#handles.get(json.handle)?.directory === true
         );
-    }
-
-    async #resolvePaths(
-        json: Record<string, unknown>,
-        scope?: SessionScope,
-        resolved?: () => void,
-    ): Promise<Paths> {
-        const paths = await this.#paths(json, resolved);
-        // Check the grant's folder after resolving request paths, which may take time. Keep the grant check live.
-        const folder =
-            scope === undefined
-                ? undefined
-                : await this.#options.approvals.resolveFolder(scope.folder);
-
-        if (folder !== undefined) {
-            resolved?.();
-        }
-
-        return { paths, folder };
     }
 
     /** Check current session state at this request's turn, not while waiting behind an earlier request. */
@@ -605,11 +591,13 @@ export class RequestGate {
         const scope = request.scope;
         const snapshot = request.op === READ_SNAPSHOT;
 
-        if (scope === undefined || prepared.folder === undefined) {
+        if (scope === undefined) {
             throw new Error(`A session permission on ${this.#options.name()} is required`);
         }
 
-        let permission = await this.#options.approvals.validAt(scope.id, prepared.folder);
+        // Resolve the grant's own folder at this request's turn. A folder replaced while it waited must not
+        // keep its permission just because the request paths were resolved before the change.
+        let permission = await this.#options.approvals.valid(scope);
 
         if (permission === undefined && snapshot) {
             // With no approved path to snapshot, let the normal open ask once, at its usual point in the read.
@@ -622,8 +610,8 @@ export class RequestGate {
             // Expired, revoked, or never approved: ask again, and wait. No later check starts while it is open.
             try {
                 if (await this.#options.ask(scope, whileWaiting(waiting))) {
-                    prepared = await this.#resolvePaths(json, scope);
-                    permission = await this.#options.approvals.validAt(scope.id, prepared.folder!);
+                    prepared = { paths: await this.#paths(json) };
+                    permission = await this.#options.approvals.valid(scope);
                 }
             } finally {
                 delete waiting.question;
@@ -714,7 +702,7 @@ export class RequestGate {
     }
 
     /** Each path a request names, made absolute and real. A relative or non-text path is refused. */
-    async #paths(json: Record<string, unknown>, resolved?: () => void): Promise<string[]> {
+    async #paths(json: Record<string, unknown>): Promise<string[]> {
         const given: unknown[] = [json.path, json.cwd, json.to];
 
         if (Array.isArray(json.targets)) {
@@ -739,17 +727,13 @@ export class RequestGate {
 
         const paths: string[] = [];
 
-        async function real(path: string) {
+        const real = async (path: string) => {
             try {
-                const value = await canonical(path);
-
-                resolved?.();
-
-                return { value } as const;
+                return { value: await this.#resolvePath(path) } as const;
             } catch (error) {
                 return { error } as const;
             }
-        }
+        };
 
         // Watch requests may name many paths. Keep each group bounded and wait for it even if one path fails.
         for (let i = 0; i < absolute.length; i += CHECK_LIMIT) {

@@ -15,7 +15,7 @@ import { after, describe, it, type TestContext } from "node:test";
 import { Approvals, type SessionScope } from "../src/runner/approvals.ts";
 import { RunnerRequestTiming } from "../src/runner/perf.ts";
 import { FRAME, frame, readFrame, SESSION_FIELD } from "../src/runner/protocol.ts";
-import { RequestGate } from "../src/runner/request-gate.ts";
+import { canonical, RequestGate } from "../src/runner/request-gate.ts";
 import type { RunnerSettings } from "../src/runner/runner.ts";
 
 const root = mkdtempSync(join(tmpdir(), "pi-pocket-request-gate-"));
@@ -29,6 +29,8 @@ async function fixture(
     options: {
         approved?: boolean;
         answer?: boolean | ((signal: AbortSignal) => Promise<boolean>);
+        resolvePath?: typeof canonical;
+        onSend?: (outgoing: ReturnType<typeof readFrame>) => void;
         shared?: (id: string) => Promise<void>;
     } = {},
 ) {
@@ -74,6 +76,10 @@ async function fixture(
         const parsed = readFrame(whole);
         const resolve = pending.get(parsed.id);
 
+        if (route === "send") {
+            options.onSend?.(parsed);
+        }
+
         settled.push(parsed.id);
         pending.delete(parsed.id);
         resolve?.({ ...parsed, route });
@@ -97,6 +103,7 @@ async function fixture(
         },
         send: collect("send", sent),
         reply: collect("reply", replies),
+        ...(options.resolvePath === undefined ? {} : { resolvePath: options.resolvePath }),
         timing,
         shared: async (id) => {
             await options.shared?.(id);
@@ -192,6 +199,49 @@ describe("runner RequestGate", () => {
         );
     });
 
+    it("resolves each path once and forwards a burst of 161 opens in order", async (t) => {
+        const release = Promise.withResolvers<void>();
+        const windowReady = Promise.withResolvers<void>();
+        const calls: string[] = [];
+        let resolvedAhead = 0;
+        const { request, folder, sent, settled } = await fixture(t, {
+            async resolvePath(path) {
+                const call = calls.push(path);
+
+                if (call === 1) {
+                    await release.promise;
+                }
+
+                const real = await canonical(path);
+
+                if (call !== 1 && ++resolvedAhead === 15) {
+                    windowReady.resolve();
+                }
+
+                return real;
+            },
+        });
+
+        t.after(() => release.resolve());
+        const file = join(folder, "file.txt");
+        const burst = Array.from({ length: 161 }, () => request({ op: "open", path: file }));
+
+        assert.equal(calls.length, 16, "only one window starts while the first check waits");
+        await windowReady.promise;
+        assert.deepEqual(settled, [], "completed checks cannot overtake the first one");
+        release.resolve();
+        await Promise.all(burst);
+
+        assert.deepEqual(
+            calls,
+            Array.from({ length: 161 }, () => file),
+        );
+        assert.deepEqual(
+            sent.map((whole) => readFrame(whole).id),
+            Array.from({ length: 161 }, (_, i) => i + 1),
+        );
+    });
+
     it("holds later requests behind a question but lets cancels and other sessions go on", async (t) => {
         const opened = Promise.withResolvers<AbortSignal>();
         const answer = Promise.withResolvers<boolean>();
@@ -229,29 +279,137 @@ describe("runner RequestGate", () => {
         assert.deepEqual(settled, [2, 4, 1, 3]);
     });
 
-    it("does not use a folder check that finished while an earlier request was blocked", async (t) => {
+    it("resolves paths again after an approval question", async (t) => {
+        const release = Promise.withResolvers<void>();
+        const checked = Promise.withResolvers<void>();
+        const opened = Promise.withResolvers<void>();
+        const answer = Promise.withResolvers<boolean>();
+        let delayed: string;
+        let laterPath: string;
+        let laterChecks = 0;
+        const { request, folder, outside, sent } = await fixture(t, {
+            approved: false,
+            async resolvePath(path) {
+                if (path === delayed) {
+                    await release.promise;
+                }
+
+                const real = await canonical(path);
+
+                if (path === laterPath && ++laterChecks === 1) {
+                    checked.resolve();
+                }
+
+                return real;
+            },
+            answer() {
+                opened.resolve();
+
+                return answer.promise;
+            },
+        });
+
+        t.after(() => {
+            release.resolve();
+            answer.resolve(false);
+        });
+        const child = join(folder, "child");
+
+        delayed = join(folder, "file.txt");
+        laterPath = join(child, "file.txt");
+        mkdirSync(child);
+        writeFileSync(laterPath, "inside");
+        const first = request({ op: "open", path: delayed });
+        const later = request({ op: "open", path: laterPath });
+
+        await checked.promise;
+        release.resolve();
+        await opened.promise;
+        renameSync(child, `${child}-moved`);
+        symlinkSync(outside, child, "junction");
+        answer.resolve(true);
+        const [allowed, denied] = await Promise.all([first, later]);
+
+        assert.equal(allowed.route, "send");
+        refused(denied, /outside the session's approved folder/);
+        assert.equal(laterChecks, 2);
+        assert.equal(sent.length, 1);
+    });
+
+    it("does not start a later path check before a rename reaches the daemon", async (t) => {
+        const release = Promise.withResolvers<void>();
+        let delayed: string;
+        let laterPath: string;
+        let renamed = false;
+        const checksAfterRename: boolean[] = [];
+        const { request, folder, outside, checks, sent } = await fixture(t, {
+            async resolvePath(path) {
+                if (path === delayed) {
+                    await release.promise;
+                }
+
+                if (path === laterPath) {
+                    checksAfterRename.push(renamed);
+                }
+
+                return canonical(path);
+            },
+            onSend({ json }) {
+                if (json.op === "rename") {
+                    const path = String(json.path);
+
+                    // Apply the rename in the fake daemon. Replace the old name before the next check.
+                    renameSync(path, String(json.to));
+                    symlinkSync(outside, path, "junction");
+                    renamed = true;
+                }
+            },
+        });
+
+        t.after(() => release.resolve());
+        const child = join(folder, "child");
+
+        delayed = join(folder, "file.txt");
+        laterPath = join(child, "file.txt");
+        mkdirSync(child);
+        writeFileSync(laterPath, "inside");
+        const first = request({ op: "open", path: delayed });
+        const rename = request({ op: "rename", path: child, to: `${child}-moved` });
+        const later = request({ op: "open", path: laterPath });
+
+        assert.deepEqual(checks, [1]);
+        release.resolve();
+        const [openedFile, moved, denied] = await Promise.all([first, rename, later]);
+
+        assert.equal(openedFile.route, "send");
+        assert.equal(moved.route, "send");
+        refused(denied, /outside the session's approved folder/);
+        assert.deepEqual(checksAfterRename, [true]);
+        assert.equal(sent.length, 2);
+    });
+
+    it("refuses a replaced approval folder even after a path check finished", async (t) => {
         const started = Promise.withResolvers<void>();
         const release = Promise.withResolvers<void>();
         const checked = Promise.withResolvers<void>();
-        const { request, approvals, folder, outside, shared, sent } = await fixture(t, {
+        let resolved = 0;
+        const { request, folder, outside, shared, sent } = await fixture(t, {
             async shared() {
                 started.resolve();
                 await release.promise;
             },
+            async resolvePath(path) {
+                const real = await canonical(path);
+
+                if (++resolved === 2) {
+                    checked.resolve();
+                }
+
+                return real;
+            },
         });
-        const resolveFolder = approvals.resolveFolder.bind(approvals);
-        let resolved = 0;
 
         t.after(() => release.resolve());
-        t.mock.method(approvals, "resolveFolder", async (path: string) => {
-            const real = await resolveFolder(path);
-
-            if (++resolved === 2) {
-                checked.resolve();
-            }
-
-            return real;
-        });
         const first = request({ op: "open", path: join(shared, "file.txt") });
 
         await started.promise;
