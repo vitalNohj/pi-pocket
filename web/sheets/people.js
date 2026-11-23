@@ -45,6 +45,8 @@ import {
     ComputerRights,
     countOf,
     groupsOf,
+    LevelMenu,
+    levelsFor,
     inCharge,
     loadComputers,
     SessionLine,
@@ -1172,30 +1174,13 @@ function OtherComputer({ card, person, sharing, find }) {
 
     const folderRoute = (part) => `runners/${encodeURIComponent(card.id)}/${part}`;
 
-    // The server tells this tab of no change on a computer it is not in charge of: asked again after each.
-    const give = (node, to) => {
+    // The server tells this tab of no change on a computer it is not in charge of: asked again after each. Taken
+    // back, the sessions they started in it go to whoever is in charge: said first.
+    const setLevel = (node, level) => {
         if (
-            !to &&
+            level === "none" &&
             !confirm(
-                `Remove ${node.folder} from ${person.name}? The sessions they started in it move to whoever is in charge of ${card.name}, with the tasks they set up there. Sessions shared with them stay.`,
-            )
-        ) {
-            return undefined;
-        }
-
-        return act(async () => {
-            await api(folderRoute("give"), { person: person.id, folder: node.folder, on: to });
-            sharing.reload();
-        });
-    };
-
-    const seeAll = (node) => {
-        const to = !node.info.sees;
-
-        if (
-            to &&
-            !confirm(
-                `Let ${person.name} access all sessions in ${node.folder}? Every session there, whoever started it, is theirs to open and prompt, and so is each one started there later.`,
+                `Take ${node.folder} from ${person.name}? The sessions they started in it move to whoever is in charge of ${card.name}, with the tasks they set up there. Sessions shared with them stay.`,
             )
         ) {
             return undefined;
@@ -1204,7 +1189,7 @@ function OtherComputer({ card, person, sharing, find }) {
         find.keep(node.rows.map((each) => each.id));
 
         return act(async () => {
-            await api(folderRoute("sees"), { person: person.id, folder: node.folder, on: to });
+            await api(folderRoute("level"), { person: person.id, folder: node.folder, level });
             sharing.reload();
         });
     };
@@ -1304,7 +1289,9 @@ function OtherComputer({ card, person, sharing, find }) {
                             open=${groups.isOpen(each.key)}
                             onToggle=${() => groups.toggle(each.key)}
                         >
-                            ${inside(each.key, each.listed, undefined)}
+                            <div class="at-group" role="group">
+                                ${inside(each.key, each.listed, undefined)}
+                            </div>
                         <//>`;
                     }
 
@@ -1320,49 +1307,32 @@ function OtherComputer({ card, person, sharing, find }) {
                         onToggle=${() => groups.toggle(each.key)}
                         words=${find.words}
                         off=${!info.has}
-                        actions=${
-                            info.has
-                                ? html`${
-                                      (info.sees || info.see) &&
-                                      html`<span
-                                                  class="at-sees"
-                                                  title="Every session in this folder, whoever started it: to open and to prompt."
-                                              >
-                                                  User accesses all sessions in folder
-                                              </span>
-                                              <${Switch}
-                                                  on=${info.sees}
-                                                  disabled=${busy || !info.see}
-                                                  label=${`${person.name} accesses all sessions in ${each.folder} on ${card.name}: ${info.sees ? "on" : "off"}`}
-                                                  onChange=${() => seeAll(each)}
-                                              />`
-                                  }
-                                      ${
-                                          info.take
-                                              ? html`<button
-                                                    class="button small ghost at-end"
-                                                    disabled=${busy}
-                                                    aria-label=${`Remove ${each.folder} from ${on}`}
-                                                    onClick=${() => give(each, false)}
-                                                >
-                                                    Remove
-                                                </button>`
-                                              : html`<span class="at-sees">
-                                                    ${info.by ? `given by ${info.by.name}` : "given to them"}
-                                                </span>`
-                                      }`
-                                : info.give &&
-                                  html`<button
-                                      class="button small at-end"
-                                      disabled=${busy}
-                                      aria-label=${`Give ${person.name} ${each.folder} on ${card.name}`}
-                                      onClick=${() => give(each, true)}
-                                  >
-                                      Add
-                                  </button>`
+                        actions=${html`${
+                            info.has &&
+                            info.by &&
+                            info.by.id !== me?.id &&
+                            html`<span class="at-sees">given by ${info.by.name}</span>`
                         }
+                            <${LevelMenu}
+                                person=${person}
+                                folder=${each.folder}
+                                where=${card.name}
+                                level=${info.level}
+                                levels=${levelsFor(person).filter((one) => info.levels.includes(one))}
+                                reason=${
+                                    info.levels.length > 1
+                                        ? undefined
+                                        : card.reason
+                                          ? "Cannot be given here"
+                                          : "Not yours to change"
+                                }
+                                busy=${busy}
+                                onPick=${(level) => setLevel(each, level)}
+                            />`}
                     >
-                        ${inside(each.key, each.listed, each.folder)}
+                        <div class="at-group" role="group">
+                            ${inside(each.key, each.listed, each.folder)}
+                        </div>
                     <//>`;
                 })}
             </div>`

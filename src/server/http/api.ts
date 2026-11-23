@@ -1409,6 +1409,29 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // What one person has of one folder on a computer, as one level (`app.ts` `setFolderLevel`): none, start, past,
+        // or all. Who is in charge there sets any; someone who passes on what they were given, what was theirs to give.
+        if (first === "runners" && second !== undefined && third === "level" && method === "POST") {
+            const body = await readJson<{
+                person?: unknown;
+                folder?: unknown;
+                level?: unknown;
+            } | null>(request);
+
+            await app.setFolderLevel(user, second, body?.person, body?.folder, body?.level);
+
+            // Who set it on a folder they gave, and is not in charge there, has no view of the computer.
+            return json(
+                response,
+                200,
+                (second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second)) ?? {
+                    ok: true,
+                },
+            );
+        }
+
         // One chosen person sees every session in one of their folders on a computer, or no longer (`app.ts` `seeFolder`).
         if (first === "runners" && second !== undefined && third === "sees" && method === "POST") {
             const body = await readJson<{

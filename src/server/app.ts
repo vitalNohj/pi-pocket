@@ -72,6 +72,8 @@ import {
     APPROVAL_DAYS,
     approvalDays,
     ConfigStore,
+    FOLDER_LEVELS,
+    type FolderLevel,
     helloUser,
     modulesWith,
     type User,
@@ -360,6 +362,8 @@ export type ServerView = {
     given: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id. */
     sees: Record<string, string[]>;
+    /** Of those, the ones they see only the sessions made up to a time in: that time, by person id, then by folder. */
+    seesUntil: Record<string, Record<string, number>>;
     /**
      * The chosen people who hold each right given one person at a time here (`rights.ts`): `wheel`, to take the wheel
      * from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to (`allowsOwn`).
@@ -457,8 +461,8 @@ function failedSubagents(
 
 /** Copy only what access reads, including when `meta` is a transaction draft. */
 function accessOf(meta: AccessMeta): AccessMeta {
-    const { cwd, runner, createdBy, sharedWith, sharedBy, pip, worktree } = meta;
-    const copy: AccessMeta = { cwd };
+    const { cwd, createdAt, runner, createdBy, sharedWith, sharedBy, pip, worktree } = meta;
+    const copy: AccessMeta = { cwd, createdAt };
 
     if (runner !== undefined) {
         copy.runner = runner;
@@ -3321,6 +3325,7 @@ export class PocketApp {
                     leaving: record.leaving ?? [],
                     given: (person) => config.givenFolders(id, person),
                     sees: (person) => config.seenFolders(id, person),
+                    seesUntil: (person) => config.seenUntil(id, person),
                     givenBy: (person) => config.givenBy(id, person),
                     holders: (right) => config.rightHolders(id, right),
                     shareNew: record.shareNew === true,
@@ -3345,6 +3350,7 @@ export class PocketApp {
                     : {
                           id: root,
                           computer: meta.runner ?? THIS_SERVER,
+                          createdAt: meta.createdAt,
                           ...(meta.createdBy === undefined ? {} : { createdBy: meta.createdBy }),
                           ...(meta.sharedWith === undefined ? {} : { sharedWith: meta.sharedWith }),
                           ...(meta.sharedBy === undefined ? {} : { sharedBy: meta.sharedBy }),
@@ -3389,6 +3395,12 @@ export class PocketApp {
                 (server.users ?? []).map((id) => [
                     id,
                     [...this.config.seenFolders(THIS_SERVER, id)],
+                ]),
+            ),
+            seesUntil: Object.fromEntries(
+                (server.users ?? []).map((id) => [
+                    id,
+                    { ...this.config.seenUntil(THIS_SERVER, id) },
                 ]),
             ),
             rights: this.config.rightsOn(THIS_SERVER),
@@ -3601,7 +3613,12 @@ export class PocketApp {
         return (
             meta !== undefined &&
             meta.pip === undefined &&
-            this.policy.seesFolder(person, meta.runner ?? THIS_SERVER, this.#accessFolder(meta))
+            this.policy.seesFolder(
+                person,
+                meta.runner ?? THIS_SERVER,
+                this.#accessFolder(meta),
+                meta.createdAt,
+            )
         );
     }
 
@@ -3902,6 +3919,124 @@ export class PocketApp {
             }
         });
         this.accessChanged();
+    }
+
+    /**
+     * `by` sets what `person` has of `folder` on computer `id` (the Access menu of a folder's row in People:
+     * `config.ts` `FolderLevel`), in one save: "none" takes it back, "start" gives it to start sessions in (a user),
+     * "past" also shows them every session made in it up to now, and "all" every one, also later ones. A viewer gets
+     * "past" and "all" alone: they read, and start nothing. Who may change what is `access.ts` `maySetLevel`, asked
+     * again where it is saved. A folder new to them is resolved to its real path there, as `giveFolders` does. What they
+     * lose by it (sessions they started in it, the tasks they set up on sessions they no longer see) moves to who is
+     * in charge, in the hand-over of that save.
+     */
+    async setFolderLevel(
+        by: User,
+        id: string,
+        person: unknown,
+        folder: unknown,
+        level: unknown,
+    ): Promise<void> {
+        if (
+            typeof person !== "string" ||
+            typeof folder !== "string" ||
+            folder.trim() === "" ||
+            !(FOLDER_LEVELS as readonly unknown[]).includes(level)
+        ) {
+            throw new HttpError(
+                400,
+                `Send person, folder, and level: ${FOLDER_LEVELS.join(", ")}.`,
+            );
+        }
+
+        const to = level as FolderLevel;
+
+        if (id !== THIS_SERVER) {
+            this.runners.require(id);
+        }
+
+        const target = this.policy.inCharge(by, id)
+            ? this.config.userById(person)
+            : this.#other(by, person);
+
+        if (target === undefined) {
+            throw new HttpError(404, "No such person.");
+        }
+
+        const place = this.#computerName(id);
+
+        if (
+            target.sessions !== undefined ||
+            this.policy.inCharge(target, id) ||
+            !this.policy.mayUse(target, id)
+        ) {
+            throw new HttpError(
+                400,
+                this.policy.inCharge(target, id)
+                    ? `${target.name} is in charge of ${place}: every folder there is theirs.`
+                    : `${target.name} cannot use ${place}. Whoever is in charge of it chooses who uses it.`,
+            );
+        }
+
+        if (target.role === "viewer" && to === "start") {
+            throw new HttpError(
+                400,
+                `${target.name} is a viewer: they start nothing. Choose Sessions so far or All sessions.`,
+            );
+        }
+
+        // The folder as their list has it, or, new to them, its real path there.
+        const listed = this.config.givenFolders(id, person).includes(folder);
+        const path =
+            listed || to === "none"
+                ? folder
+                : id === THIS_SERVER
+                  ? await this.#realFolderHere(folder)
+                  : await this.runners.checkFolder(id, folder);
+
+        const allowed = (): void => {
+            const from = this.config.folderLevel(id, person, path);
+
+            if (!this.policy.maySetLevel(by, id, target, path, from, to)) {
+                throw new HttpError(
+                    403,
+                    to === "none"
+                        ? `Only whoever gave ${target.name} that folder, or whoever is in charge of ${place}, can take it back.`
+                        : from === "none" && !this.policy.mayGiveFolder(by, id, path)
+                          ? this.policy.reshares(by, id)
+                              ? "You can give only a folder that was given to you."
+                              : `You cannot give folders on ${place}: Share what they were given is off for you there.`
+                          : `You can let ${target.name} see the sessions in it only in a folder you gave them, while you access all sessions in it yourself.`,
+                );
+            }
+        };
+
+        allowed();
+        await this.#inTurn(async () => {
+            // Asked again where it is saved: the folder was looked up meanwhile.
+            allowed();
+
+            if (this.config.folderLevel(id, person, path) === to) {
+                return;
+            }
+
+            this.config.setFolderLevel(id, person, path, to, this.now(), by.id);
+            await this.#finishHandOvers(id, person);
+        });
+        this.accessChanged();
+        this.runners.changed();
+    }
+
+    /** `folder` on this server, `~` its home, as its real path; refused when it is not a folder here. */
+    async #realFolderHere(folder: string): Promise<string> {
+        const path = resolvePath(this.#home, folder.trim().replace(/^~(?=\/|$)/, this.#home));
+        const found = await realpath(path).catch(() => undefined);
+
+        if (found === undefined || !(await stat(found)).isDirectory()) {
+            throw new HttpError(400, `${folder.trim()} is not a folder here.`);
+        }
+
+        return found;
     }
 
     /**
@@ -4422,10 +4557,12 @@ export class PocketApp {
                     continue;
                 }
 
+                // By the record, whatever their role: a viewer who started it as a user keeps it while its folder is
+                // still given to them (`access.ts` `holdsFolder`).
                 const stays =
                     only === undefined &&
                     !gone &&
-                    this.policy.mayUseFolder({ id: person }, where, this.#accessFolder(meta));
+                    this.policy.holdsFolder({ id: person }, where, this.#accessFolder(meta));
 
                 if (stays) {
                     continue;
@@ -4492,6 +4629,7 @@ export class PocketApp {
                     {
                         id,
                         computer,
+                        createdAt: meta.createdAt,
                         ...(meta.createdBy === undefined ? {} : { createdBy: meta.createdBy }),
                         ...(meta.sharedWith === undefined
                             ? {}

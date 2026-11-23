@@ -92,16 +92,115 @@ export function leaving(folder, folders, started, there) {
 
 /**
  * The folder of `sees` (the folders a person sees every session in) that gives them `session`, or undefined: the
- * server's rule (`src/server/access.ts` `seesFolder`), by the folder the session counts as working in.
+ * server's rule (`src/server/access.ts` `seesFolder`), by the folder the session counts as working in. `until`: the
+ * folders they see only the sessions made up to a time in ("Sessions so far"), with that time; a session made later
+ * is not theirs by such a folder.
  */
-export function seenBy(sees, session, there) {
+export function seenBy(sees, session, there, until = {}) {
     if (sees.length === 0) {
         return undefined;
     }
 
     const at = accessFolder(session, there);
 
-    return sees.find((each) => inFolder(at, each));
+    return sees.find(
+        (each) =>
+            inFolder(at, each) &&
+            (until[each] === undefined || (session.createdAt ?? 0) <= until[each]),
+    );
+}
+
+/**
+ * What a person has of one folder, as one level of the Access menu of its row (`src/server/config.ts` `FolderLevel`):
+ * "none"; "start", given to start sessions in; "past", and every session made in it up to a time; "all", and every
+ * session in it, also later ones. From a computer's record: `given`, `sees`, and `until` (`seesUntil`) of that person.
+ */
+export function levelOf(folder, given, sees, until) {
+    if (!given.includes(folder)) {
+        return "none";
+    }
+
+    if (!sees.includes(folder)) {
+        return "start";
+    }
+
+    return until[folder] === undefined ? "all" : "past";
+}
+
+/**
+ * The folders of one computer as nested rows, for a person's tree in People and Runners: the home folder (`home`),
+ * always a top row; every folder in `folders` (the ones given); and the folder each of `sessions` counts as working in
+ * (`accessFolder`, `there`: the computer's sessions). A row sits under the deepest other row that holds it, but Home,
+ * which is never under another: a folder above it (`/`) is a top row of its own. A session sits in its own folder's row.
+ *
+ * Returns the top rows, Home first, then the others by path; each row `{ folder, parent, children, sessions }`, its
+ * children by path.
+ */
+export function foldersOf(home, folders, sessions, there) {
+    const paths = new Map();
+
+    const add = (folder) => {
+        if (folder && !paths.has(baseOf(folder) || folder)) {
+            paths.set(baseOf(folder) || folder, {
+                folder: baseOf(folder) || folder,
+                parent: undefined,
+                children: [],
+                sessions: [],
+            });
+        }
+    };
+
+    const homePath = home ? baseOf(home) || home : undefined;
+
+    add(homePath);
+    folders.forEach(add);
+
+    const at = sessions.map((session) => [session, baseOf(accessFolder(session, there))]);
+
+    at.forEach(([, folder]) => add(folder));
+
+    const nodes = [...paths.values()];
+
+    for (const node of nodes) {
+        if (node.folder === homePath) {
+            continue;
+        }
+
+        for (const other of nodes) {
+            if (
+                other !== node &&
+                inFolder(node.folder, other.folder) &&
+                (node.parent === undefined || depthOf(other.folder) > depthOf(node.parent.folder))
+            ) {
+                node.parent = other;
+            }
+        }
+    }
+
+    for (const [session, folder] of at) {
+        paths.get(folder || accessFolder(session, there))?.sessions.push(session);
+    }
+
+    const byPath = (one, other) => one.folder.localeCompare(other.folder);
+
+    for (const node of nodes) {
+        node.parent?.children.push(node);
+    }
+
+    for (const node of nodes) {
+        node.children.sort(byPath);
+    }
+
+    return nodes
+        .filter((each) => each.parent === undefined)
+        .sort((one, other) =>
+            one.folder === homePath ? -1 : other.folder === homePath ? 1 : byPath(one, other),
+        );
+}
+
+/** A folder's row and every row under it, depth first. */
+export function rowsUnder(node) {
+    return [node, ...node.children.flatMap(rowsUnder)];
 }
 
 /** The words of what was typed in a search field, in lower case. */

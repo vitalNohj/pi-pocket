@@ -103,6 +103,7 @@ test("the owner sees this server as a computer they linked, with nobody chosen a
         users: [],
         given: {},
         sees: {},
+        seesUntil: {},
         rights: { wheel: [], allows: [], reshares: [] },
         shareNew: false,
         inCharge: true,
