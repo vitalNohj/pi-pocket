@@ -1,4 +1,13 @@
-import { type App, cleanUp, newSession, openApp, root, scriptedModel, until } from "./helpers.ts";
+import {
+    type App,
+    cleanUp,
+    newSession,
+    openApp,
+    root,
+    say,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -246,6 +255,78 @@ test("on a phone while Pi works, the model stays and the mode menu picks Queue",
     );
     assert.equal((await modes()).Queue, "true", "the same mode as the three buttons");
     await setBusy(false);
+});
+
+test("opening a waiting item scrolls only its list", real, async () => {
+    await say(app, two, "A line in the conversation.\n\n".repeat(32));
+    await page.setViewport(VIEWPORTS.mobile);
+    await page.navigate(`${base}/s/${Number(two)}`);
+    await opened(two);
+    await page.evaluate(`
+        const { store } = await import("/store.js");
+        const inbox = Array.from({ length: 6 }, (_, id) => ({
+            id: String(id),
+            mode: id === 2 ? "steer" : "followUp",
+            text: "A line waiting for Pi.\\n".repeat(20),
+            ...(id === 4 ? { reports: ["layout check"] } : {}),
+        }));
+        store.set((state) => ({ view: { ...state.view, inbox } }));
+    `);
+    await until(
+        () =>
+            inPage<boolean>(`
+                const queue = document.querySelector(".inbox");
+                return JSON.stringify(queue !== null && queue.scrollHeight > queue.clientHeight);
+            `),
+        "the scrollable list of waiting items",
+    );
+
+    for (const [index, mode] of [
+        [5, "Report"],
+        [6, "Queue"],
+        [3, "Steer"],
+    ] as const) {
+        const { before, after, opened, top, atEnd } = await inPage<{
+            before: [number, number, number];
+            after: [number, number, number];
+            opened: string | null;
+            top: number;
+            atEnd: boolean;
+        }>(`
+            const list = document.querySelector(".inbox");
+            const conversation = document.querySelector(".pane > .scroller");
+            const outerScroll = () => [window.scrollY, conversation.scrollTop, list.parentElement.scrollTop];
+            const row = list.children[${index - 1}];
+            const button = row.querySelector(".queued-text");
+            list.scrollTop = list.scrollHeight - list.clientHeight - 16;
+            conversation.scrollTop = 120;
+            const before = outerScroll();
+            // Open the row without a browser tool first scrolling it into view.
+            button.click();
+            for (let frame = 0; frame < 3; frame++) {
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+            }
+            return JSON.stringify({
+                before,
+                after: outerScroll(),
+                opened: button.getAttribute("aria-expanded") === "true"
+                    ? row.querySelector(".queued-mode").textContent.trim() : null,
+                top: row.getBoundingClientRect().top - list.getBoundingClientRect().top,
+                atEnd: Math.abs(list.scrollHeight - list.clientHeight - list.scrollTop) <= 1,
+            });
+        `);
+
+        assert.ok(before[1] > 0, "the conversation can scroll");
+        assert.equal(opened, mode);
+
+        if (mode === "Report") {
+            assert.ok(top > 1 && atEnd, "a short report near the end stops at the list's limit");
+        } else {
+            assert.ok(Math.abs(top) <= 1, `the ${mode} row starts ${top}px from the top`);
+        }
+
+        assert.deepEqual(after, before, "the page, conversation, and dock stay where they were");
+    }
 });
 
 test(
