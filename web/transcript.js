@@ -1560,7 +1560,7 @@ function ToolStep({
  * each call shows the lesson as it is now: by default (`newestOnly` false) every one does, and any of them approves it.
  * Set `newestOnly` to true to show it at the newest call that names it alone, folded or open.
  */
-export const LESSON_CARDS = { newestOnly: false };
+export const LESSON_CARDS = { newestOnly: true };
 /** Each lesson's newest call in the transcript shown, by the lesson's id: `Transcript` fills it from the results. */
 let newestLessonCall = new Map();
 
