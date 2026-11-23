@@ -56,6 +56,7 @@ import { ApprovalTime, TasksExpire } from "./approvals.js";
 import { MyAuthenticator } from "./authenticator.js";
 import { PageItem, Pages, PageTabs } from "./pages.js";
 import { canShare } from "./session-share.js";
+import { DirectChat } from "./direct.js";
 
 /** How long an invite may last: minutes, its button, and how the help text says it. */
 const LASTS = [
@@ -1698,11 +1699,16 @@ function PersonPage({ person, part, onPart }) {
     // A sign-in link: one's own, the owner's for anyone, and for a viewer whoever manages them (`access.ts`
     // `maySignInAs`).
     const device = collab() && (owner || (myself && !viewer) || (mine && viewer && !person.paused));
+    // A chat with them (`direct.js`): the server says who may (`access.ts` `mayMessage`). Its count is what I have not
+    // read of it.
+    const chat = !myself && person.mayMessage && collab();
     // The parts of another person's page; one part alone shows without tabs.
     const tabs = known
-        ? [access && ["access", "Folders and sessions"], rules && ["rules", "Permissions"]].filter(
-              Boolean,
-          )
+        ? [
+              access && ["access", "Folders and sessions"],
+              rules && ["rules", "Permissions"],
+              chat && ["chat", "Chat", store.state.directUnread[person.id] ?? 0],
+          ].filter(Boolean)
         : [];
     const shown = tabs.some(([id]) => id === part) ? part : tabs[0]?.[0];
     const change = (patch) =>
@@ -1828,8 +1834,17 @@ function PersonPage({ person, part, onPart }) {
             </div>`
         }
         ${
+            shown === "chat" &&
+            html`<div class="sheet-pane direct-chat" data-part="person-chat">
+                <${DirectChat} key=${person.id} person=${person} />
+            </div>`
+        }
+        ${
             !rules &&
             !places &&
+            // Not before the page's parts are known, nor under the chat: there it would read as a line about the chat.
+            known &&
+            shown !== "chat" &&
             // The owner's own page says nothing of what they may do: they know.
             !(myself && person.role === "owner") &&
             html`<p class="muted small">
@@ -1869,11 +1884,12 @@ function SettingsPage() {
  * server (`store.js` `managesServer`).
  */
 export function PeopleSheet() {
-    const { me, users } = store.state;
+    const { me, users, sheet } = store.state;
     const settings = managesServer();
-    const [view, setView] = useState(null);
+    // A notice or a link can ask for a person's page, and a part of it: their chat (`store.js` `applyDirect`).
+    const [view, setView] = useState(sheet?.person ? `person:${sheet.person}` : null);
     // The part of a person's page shown: it stays from one person to the next, to do one thing for several people.
-    const [part, setPart] = useState("access");
+    const [part, setPart] = useState(sheet?.part ?? "access");
     // A viewer has no list of the people here: their own page alone. The people they meet in the sessions shown to them
     // stay in `users`, for the names on messages there.
     const people = ordered(
@@ -1888,6 +1904,17 @@ export function PeopleSheet() {
             store.set({ users: list });
         });
     }, []);
+
+    // Asked again while open: a notice of a new message goes to that chat.
+    useEffect(() => {
+        if (sheet?.person) {
+            setView(`person:${sheet.person}`);
+        }
+
+        if (sheet?.part) {
+            setPart(sheet.part);
+        }
+    }, [sheet]);
 
     // One's own page first, for everyone: what is theirs to change is there. A removed person's page falls back the same
     // way.
@@ -1911,8 +1938,14 @@ export function PeopleSheet() {
                 lead=${html`<${Face} person=${person} />`}
                 title=${person.id === me?.id ? `${person.name} (you)` : person.name}
                 detail=${[roleText(person), lastSeen(person)].join(" · ")}
-                badge=${managesPeople() && person.request ? "Request" : null}
-                alert=${true}
+                badge=${
+                    managesPeople() && person.request
+                        ? "Request"
+                        : (store.state.directUnread[person.id] ?? 0) > 0
+                          ? store.state.directUnread[person.id]
+                          : null
+                }
+                alert=${managesPeople() && Boolean(person.request)}
             />`,
         )}
         ${

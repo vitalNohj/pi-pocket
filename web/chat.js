@@ -334,23 +334,12 @@ function mentionQuery(value, caret) {
     return match ? { query: match[2], start: caret - match[2].length - 1 } : null;
 }
 
-/** The chat. `focus` puts the caret in its box on desktops: not when a reload brings back the People panel. */
-function ChatTab({ highlight, focus }) {
-    const { chat, me, users, conversationId, chatQuote, view } = store.state;
-    const draftKey = `chat-${conversationId}`;
-    const [text, setText] = useState(() => drafts.get(draftKey));
-    const [sending, setSending] = useState(false);
-    const [selected, setSelected] = useState(highlight ?? null);
-    const [mention, setMention] = useState(null);
+/**
+ * A chat log that follows its newest message (`newest`: its id), unless the reader scrolled away, or `highlight` (a
+ * message's id) is shown instead. Returns the ref for the log's element.
+ */
+export function useFollowLog(newest, highlight) {
     const log = useRef(null);
-    const box = useRef(null);
-    const pinned = new Set((view.pins ?? []).map((pin) => pin.chatId).filter(Boolean));
-
-    // The newest message, not the count: the chat keeps its last 500, so the count stops changing.
-    const newest = chat.at(-1)?.id;
-
-    useEffect(() => markChatRead(), [newest]);
-    useEffect(() => chatLogShown(), []);
     // Whether the log follows its newest message, and where it last put itself: a scroll to anywhere else is the reader's.
     const follow = useRef({ on: !highlight, at: -1 });
 
@@ -422,6 +411,28 @@ function ChatTab({ highlight, focus }) {
             children.disconnect();
         };
     }, []);
+
+    return log;
+}
+
+/** The chat. `focus` puts the caret in its box on desktops: not when a reload brings back the People panel. */
+function ChatTab({ highlight, focus }) {
+    const { chat, me, users, conversationId, chatQuote, view } = store.state;
+    const draftKey = `chat-${conversationId}`;
+    const [text, setText] = useState(() => drafts.get(draftKey));
+    const [sending, setSending] = useState(false);
+    const [selected, setSelected] = useState(highlight ?? null);
+    const [mention, setMention] = useState(null);
+    const box = useRef(null);
+    const pinned = new Set((view.pins ?? []).map((pin) => pin.chatId).filter(Boolean));
+
+    // The newest message, not the count: the chat keeps its last 500, so the count stops changing.
+    const newest = chat.at(-1)?.id;
+
+    useEffect(() => markChatRead(), [newest]);
+    useEffect(() => chatLogShown(), []);
+    const log = useFollowLog(newest, highlight);
+
     useEffect(() => {
         if (focus && !coarse) {
             box.current?.focus();

@@ -725,6 +725,38 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
         }
 
+        // Chat with one person (`direct.ts`): only the two read it, and each asks as themselves, never for another.
+        if (first === "users" && second !== undefined && third === "chat") {
+            if (fourth === undefined && method === "GET") {
+                return json(response, 200, await app.direct.thread(user, second));
+            }
+
+            if (fourth === undefined && method === "POST") {
+                const body = await readJson<{ text?: unknown; requestId?: unknown } | null>(
+                    request,
+                );
+
+                if (typeof body?.text !== "string" || typeof body.requestId !== "string") {
+                    throw new HttpError(400, "text and requestId are required");
+                }
+
+                return json(
+                    response,
+                    200,
+                    await app.direct.post(user, second, {
+                        text: body.text,
+                        requestId: body.requestId,
+                    }),
+                );
+            }
+
+            if (fourth === "read" && method === "POST") {
+                await app.direct.read(user, second);
+
+                return json(response, 200, { ok: true });
+            }
+        }
+
         if (first === "users" && second !== undefined && third === undefined && method === "POST") {
             app.setAccess(user, second, await readJson(request));
             // Made a viewer, or limited to sessions: they manage runners no longer, and what they had by it moves on.

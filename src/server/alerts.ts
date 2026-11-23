@@ -7,7 +7,8 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { PocketApp } from "./app.ts";
-import { AuthorsDoc, ChatDoc } from "./docs.ts";
+import type { User } from "./config.ts";
+import { AuthorsDoc, ChatDoc, type DirectMessage } from "./docs.ts";
 import { describe } from "./errors.ts";
 import { entryText, projectEntry, snippet } from "./projection.ts";
 import { span, type WaitView } from "./limit-gate.ts";
@@ -130,6 +131,42 @@ export class Alerts {
         void store
             ?.notify(owner.id, message, {
                 urgency: "high",
+                ...(subject === undefined ? {} : { subject }),
+            })
+            .catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
+    }
+
+    /**
+     * `from` wrote to `to` in their chat with one person (`direct.ts`): `to` hears it as a push, unless they were
+     * removed, turned chat off, or have a tab in view, where the message arrives anyway. No session: it opens People.
+     */
+    direct(from: User, to: User, message: DirectMessage): void {
+        const app = this.#app;
+        const store = app.pushStore;
+
+        if (
+            app.config.userById(to.id) === undefined ||
+            !(store?.prefs(to.id) ?? DEFAULT_PREFS).chat ||
+            app.looking(to.id)
+        ) {
+            return;
+        }
+
+        const push = {
+            title: `${from.name} · Chat`,
+            body: snippet(message.text, 400),
+            url: `/?direct=${from.id}`,
+            tag: `direct-${from.id}`,
+        } satisfies PushMessage;
+
+        app.notifyEmbedders(to.id, { ...push, urgency: "normal" });
+
+        // Push services want a real contact; Apple rejects placeholders. A tunnel's https address will do.
+        const subject = app.access?.url?.startsWith("https://") ? app.access.url : undefined;
+
+        void store
+            ?.notify(to.id, push, {
+                urgency: "normal",
                 ...(subject === undefined ? {} : { subject }),
             })
             .catch((error: unknown) => app.log(`push failed: ${describe(error)}`));
