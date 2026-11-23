@@ -100,7 +100,7 @@ import {
     type ChatMessage,
     DecisionsDoc,
     DirectIndexDoc,
-    type DirectThread,
+    type DirectIndexValue,
     type FolderFavorites as FolderFavoritesValue,
     DeletedDoc,
     FolderFavoritesDoc,
@@ -1948,7 +1948,7 @@ export class PocketApp {
         } else if (kind === FolderFavoritesDoc.definition.kind) {
             this.folderFavorites.committed(value as FolderFavoritesValue | null);
         } else if (kind === DirectIndexDoc.definition.kind) {
-            this.direct.committed(value as { threads: Record<string, DirectThread> } | null);
+            this.direct.committed(value as DirectIndexValue | null);
         } else if (kind === PinnedSessionsDoc.definition.kind) {
             this.pinnedSessions.committed(value as PinnedSessionsValue | null);
         } else if (kind === MemoryDoc.definition.kind) {

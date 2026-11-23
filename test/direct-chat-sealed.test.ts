@@ -16,9 +16,11 @@ import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test, type TestContext } from "node:test";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { PocketApp } from "../src/server/app.ts";
 import type { User } from "../src/server/config.ts";
 import { directKey } from "../src/server/direct.ts";
 import { DirectDoc, DirectIndexDoc, type DirectMessage } from "../src/server/docs.ts";
@@ -46,6 +48,23 @@ const stored = async (app: App, a: User, b: User) =>
     (await app.harness.snapshot(DirectDoc, directKey(a.id, b.id), context))?.messages ?? [];
 const post = (app: App, from: User, to: User, text: string) =>
     app.direct.post(from, to.id, { text, requestId: randomUUID() });
+const index = (app: App) => app.harness.snapshot(DirectIndexDoc, context);
+
+async function keepLegacyMessage(app: App, from: User, to: User): Promise<DirectMessage> {
+    const key = directKey(from.id, to.id);
+    const message: DirectMessage = { id: "legacy", userId: from.id, at: 100, text: secretText() };
+
+    await app.harness.commit(async (tx) => {
+        (await tx.doc(DirectDoc, key, null)).messages.push(message);
+        (await tx.doc(DirectIndexDoc)).threads[key] = {
+            people: [from.id, to.id],
+            at: message.at,
+            unread: { [to.id]: 1 },
+        };
+    }, context);
+
+    return message;
+}
 
 function absentFromSqlite(data: string, ...texts: string[]): void {
     for (const file of ["pocket.sqlite", "pocket.sqlite-wal"]) {
@@ -58,6 +77,109 @@ function absentFromSqlite(data: string, ...texts: string[]): void {
 }
 
 after(cleanUp);
+
+test("startup with no legacy chats or pending scrub does not vacuum or checkpoint", async (t) => {
+    const exec = t.mock.method(DatabaseSync.prototype, "exec");
+    const prepare = t.mock.method(DatabaseSync.prototype, "prepare");
+    const app = await fixture(t).open();
+    const sql = [...exec.mock.calls, ...prepare.mock.calls].map(
+        ({ arguments: [statement] }) => statement,
+    );
+
+    // The adapter also checkpoints on close. Count only SQL issued during startup.
+    assert.ok(sql.includes("PRAGMA journal_mode = WAL"));
+    assert.deepEqual(
+        sql.filter((statement) => /\b(?:VACUUM|wal_checkpoint)\b/i.test(statement)),
+        [],
+    );
+    assert.equal(await index(app), undefined, "startup does not write the index");
+});
+
+test("startup with a busy checkpoint serves sealed chats and retries the scrub on restart", async (t) => {
+    const { data, open } = fixture(t);
+    let app = await open();
+    const from = owner(app);
+    const to = guest(app);
+    const message = await keepLegacyMessage(app, from, to);
+    const logged = t.mock.method(PocketApp.prototype, "log");
+
+    await app.close();
+    const reader = new DatabaseSync(join(data, "pocket.sqlite"), { readOnly: true });
+    const prepare = t.mock.method(DatabaseSync.prototype, "prepare");
+
+    try {
+        reader.exec("BEGIN");
+        assert.ok(reader.prepare("SELECT id FROM documents LIMIT 1").get());
+        // Leave the transaction open so its snapshot prevents truncating the WAL.
+        app = await open();
+        const [sealed] = await stored(app, from, to);
+
+        assert.ok(sealed !== undefined && "sealed" in sealed && !("text" in sealed));
+        assert.deepEqual(await app.direct.thread(to, from.id), { messages: [message] });
+        assert.equal((await index(app))?.scrub, true);
+        assert.ok(
+            prepare.mock.calls.some(
+                ({ arguments: [sql] }) => sql === "PRAGMA wal_checkpoint(TRUNCATE)",
+            ),
+        );
+        assert.deepEqual(
+            logged.mock.calls
+                .map(({ arguments: [line] }) => line)
+                .filter((line) => line.startsWith("Direct chat:")),
+            [
+                "Direct chat: old plaintext bytes may still be in SQLite. The next start will try again.",
+            ],
+        );
+    } finally {
+        reader.close();
+    }
+
+    await app.close();
+    app = await open();
+    assert.equal((await index(app))?.scrub, undefined);
+    absentFromSqlite(data, message.text);
+    assert.deepEqual(await app.direct.thread(to, from.id), { messages: [message] });
+});
+
+test("startup completes a pending scrub even when all messages are already sealed", async (t) => {
+    const { data, open } = fixture(t);
+    let app = await open();
+    const from = owner(app);
+    const to = guest(app);
+    const message = await keepLegacyMessage(app, from, to);
+
+    await app.close();
+    // Fail before VACUUM touches the file: the durable state is the same as a stop just after sealing.
+    const exec = DatabaseSync.prototype.exec;
+    let failVacuum = true;
+    const executed = t.mock.method(
+        DatabaseSync.prototype,
+        "exec",
+        function (this: DatabaseSync, sql: string) {
+            if (sql === "VACUUM" && failVacuum) {
+                throw new Error("simulated full disk");
+            }
+
+            exec.call(this, sql);
+        },
+    );
+
+    app = await open();
+    const sealed = await stored(app, from, to);
+
+    assert.equal(sealed.length, 1);
+    assert.ok("sealed" in sealed[0]! && !("text" in sealed[0]!));
+    assert.equal((await index(app))?.scrub, true);
+    assert.ok(readFileSync(join(data, "pocket.sqlite")).includes(message.text));
+    await app.close();
+
+    failVacuum = false;
+    app = await open();
+    assert.equal(executed.mock.calls.filter(({ arguments: [sql] }) => sql === "VACUUM").length, 2);
+    assert.equal((await index(app))?.scrub, undefined);
+    assert.deepEqual(await stored(app, from, to), sealed);
+    absentFromSqlite(data, message.text);
+});
 
 test("new messages are absent from SQLite and WAL and both people read them", async (t) => {
     const { data, keyFile, open } = fixture(t);

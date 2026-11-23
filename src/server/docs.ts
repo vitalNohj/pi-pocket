@@ -608,8 +608,14 @@ export const DirectDoc = defineDocFamily<{ messages: StoredDirectMessage[] }, nu
  */
 export type DirectThread = { people: [string, string]; at: number; unread: Record<string, number> };
 
+export type DirectIndexValue = {
+    threads: Record<string, DirectThread>;
+    /** Old plaintext bytes may still be in SQLite or its write-ahead log. */
+    scrub?: true;
+};
+
 /** Every thread between two people, by key, with the unread counts, so every device of a person shows the same. */
-export const DirectIndexDoc = defineDoc<{ threads: Record<string, DirectThread> }>({
+export const DirectIndexDoc = defineDoc<DirectIndexValue>({
     kind: "pocket.direct-index",
     version: 1,
     ...rebased,

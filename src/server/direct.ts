@@ -16,6 +16,7 @@ import {
     DIRECT_LIMIT,
     DirectDoc,
     DirectIndexDoc,
+    type DirectIndexValue,
     type DirectMessage,
     type DirectThread,
     type SealedDirectMessage,
@@ -184,12 +185,8 @@ export class Direct {
         return { id, userId, at, text: UNREADABLE };
     }
 
-    /** At startup, before tasks or requests: seal every legacy thread, then scrub old plaintext bytes. */
+    /** At startup: seal legacy threads and mark their old bytes for scrubbing. Retry unfinished scrubs on startup. */
     async sealLegacy(storage: Storage, database: SqliteDatabase): Promise<void> {
-        // Durable keeps its schema version separately. This database's user_version marks a completed scrub.
-        let clean =
-            (await database.get<{ user_version: number }>("PRAGMA user_version"))?.user_version ===
-            1;
         const harness = this.#app.harness;
         const query = {
             scope: { kind: "session" },
@@ -212,12 +209,6 @@ export class Direct {
                     continue;
                 }
 
-                if (clean) {
-                    // If an older build wrote again, a restart must still finish the scrub after the last seal.
-                    await database.exec("PRAGMA user_version = 0");
-                    clean = false;
-                }
-
                 const bytes = this.#key();
 
                 await harness.commit(async (tx) => {
@@ -226,36 +217,51 @@ export class Direct {
                     thread.messages = thread.messages.map((message) =>
                         "sealed" in message ? { ...message } : seal(key, message, bytes),
                     );
+                    (await tx.doc(DirectIndexDoc)).scrub = true;
                 }, context);
             }
 
             cursor = page.next;
         } while (cursor !== undefined);
 
-        if (!clean) {
+        if ((await harness.snapshot(DirectIndexDoc, context))?.scrub !== true) {
+            return;
+        }
+
+        let scrubbed = false;
+
+        try {
             // A base removes old rows, but their bytes can still be in free pages or frames in the WAL.
             await database.exec("VACUUM");
+            const checkpoint = await database.get<{ busy: number }>(
+                "PRAGMA wal_checkpoint(TRUNCATE)",
+            );
 
-            if (
-                (await database.get<{ busy: number }>("PRAGMA wal_checkpoint(TRUNCATE)"))?.busy !==
-                0
-            ) {
-                throw new Error(
-                    "Could not clear old direct chat bytes from SQLite's write-ahead log",
-                );
-            }
-
-            await database.exec("PRAGMA user_version = 1");
+            scrubbed = checkpoint?.busy === 0;
+        } catch {
+            // A cleanup failure, such as no space to rebuild the database, does not stop startup.
         }
+
+        if (!scrubbed) {
+            this.#app.log(
+                "Direct chat: old plaintext bytes may still be in SQLite. The next start will try again.",
+            );
+
+            return;
+        }
+
+        await harness.commit(async (tx) => {
+            delete (await tx.doc(DirectIndexDoc)).scrub;
+        }, context);
     }
 
-    /** At start, before any tab: the stored index. */
-    load(value: { threads: Record<string, DirectThread> } | null | undefined): void {
+    /** At start, before any tab: the threads and counts from the stored index. */
+    load(value: Readonly<DirectIndexValue> | null | undefined): void {
         this.#threads = structuredClone(value?.threads ?? {});
     }
 
     /** The index changed in a commit: keep it, and tell each tab whose counts changed. */
-    committed(value: { threads: Record<string, DirectThread> } | null | undefined): void {
+    committed(value: Readonly<DirectIndexValue> | null | undefined): void {
         this.load(value);
         this.tell();
     }
