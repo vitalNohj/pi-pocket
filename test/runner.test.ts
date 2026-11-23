@@ -372,6 +372,32 @@ describe("runner link", () => {
         }
     });
 
+    it("stops instead of respawning an executable that could not start", async () => {
+        const setup = await serve();
+        const lines: string[] = [];
+        const { runner } = startRunner(setup, "Laptop", lines, {
+            daemon: join(root, "missing-tool-process"),
+        });
+        const deadline = new Promise<void>((resolve) => {
+            setTimeout(resolve, 2000).unref();
+        });
+
+        try {
+            await assert.rejects(Promise.race([runner.finished, deadline]), (error: unknown) => {
+                assert.ok(error instanceof RunnerStopped);
+                assert.match(error.message, /could not start:.*ENOENT/);
+                assert.match(error.message, /PI_POCKET_RUNNER_DAEMON/);
+
+                return true;
+            });
+            assert.equal(lines.filter((line) => line.includes("could not start")).length, 1);
+            assert.equal(runner.connected, false);
+        } finally {
+            await runner.stop().catch(() => {});
+            await close(setup);
+        }
+    });
+
     it("when the runner started over, what was in flight fails as lost, and new work runs", async () => {
         const setup = await serve();
         const { runner, id } = startRunner(setup, "Desktop");
