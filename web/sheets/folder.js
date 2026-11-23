@@ -97,8 +97,8 @@ function LineInput({ value, placeholder, label, onSubmit, onCancel, class: class
 }
 
 /**
- * Where a new session runs, among the places: this server, or a linked computer (`computers.js`), and a way to
- * Runners to link one (owners only). Each person sees the computers they may use.
+ * Where a new session runs, pinned under the places: this server, or a linked computer (`computers.js`). Each person
+ * sees the computers they may use. Manage runners… is in the bottom row, beside the options.
  */
 function RunsOn({ runner, runners, onPick }) {
     // Only computers this person may start sessions on: the owner also lists runners someone else linked, to unlink.
@@ -124,17 +124,7 @@ function RunsOn({ runner, runners, onPick }) {
                 <span>${each.name}</span>
                 ${each.id !== null && html`<span class=${`runner-dot ${each.online ? "on" : ""}`}></span>`}
             </button>`,
-        )}
-        ${
-            runnersOffered() &&
-            html`<button
-                type="button"
-                class="link small fp-pi"
-                onClick=${() => openSheet({ type: "computers" })}
-            >
-                ${runners.length === 0 ? "Link a computer…" : "Manage runners…"}
-            </button>`
-        }`;
+        )}`;
 }
 
 /**
@@ -154,7 +144,7 @@ export function CwdSheet({
     const picking = mode === "pick";
     // The computer whose folders these are (`runners.ts`): the one asked for, or the session's when moving it. Its
     // folders are not this server's: no default workspace; its favorites and recent folders are its own.
-    // A new session can switch computer in the places list (Runs on); moving one keeps its computer, and so does a
+    // A new session can switch computer under the places (Runs on); moving one keeps its computer, and so does a
     // pick, whose computer the copy sheet chose.
     const [picked, setPicked] = useState(given);
     const runner = changing ? (view.conversation?.runner ?? null) : picked;
@@ -267,7 +257,7 @@ export function CwdSheet({
     }, [runner]);
 
     useEffect(() => {
-        // The linked computers, for their names and the Runs on places, when this tab has not got the list yet.
+        // The linked computers, for their names and for Runs on, when this tab has not got the list yet.
         if (owner && runners.length === 0) {
             api("runners").then(
                 (list) => store.set({ runners: list }),
@@ -717,35 +707,32 @@ export function CwdSheet({
             </div>`
         }
         <div class="fp-main">
-            <nav class="fp-places" aria-label="Places">
-                ${places.map((each) => place(each.path, each.name, each.icon, null, each.pin))}
-                ${favorites.length > 0 && html`<div class="fp-places-title">Favorites</div>`}
-                ${favorites.map((path, index) =>
-                    place(
-                        path,
-                        favoriteLabels[index],
-                        "star",
-                        !changing && !picking && !touch && index < 9
-                            ? `${APPLE ? "⌘" : "Ctrl+"}${index + 1}`
-                            : null,
-                    ),
-                )}
-                ${recent.length > 0 && html`<div class="fp-places-title">Recent</div>`}
-                ${recent.map((path, index) => place(path, labels[index], "folder"))}
-                ${!changing && !picking && runners.length > 0 && html`<${RunsOn} runner=${runner} runners=${runners} onPick=${pick} />`}
+            <div class="fp-side">
+                <nav class="fp-places" aria-label="Places">
+                    ${places.map((each) => place(each.path, each.name, each.icon, null, each.pin))}
+                    ${favorites.length > 0 && html`<div class="fp-places-title">Favorites</div>`}
+                    ${favorites.map((path, index) =>
+                        place(
+                            path,
+                            favoriteLabels[index],
+                            "star",
+                            !changing && !picking && !touch && index < 9
+                                ? `${APPLE ? "⌘" : "Ctrl+"}${index + 1}`
+                                : null,
+                        ),
+                    )}
+                    ${recent.length > 0 && html`<div class="fp-places-title">Recent</div>`}
+                    ${recent.map((path, index) => place(path, labels[index], "folder"))}
+                </nav>
                 ${
                     !changing &&
                     !picking &&
-                    piSessionsAvailable(runner) &&
-                    html`<button
-                        type="button"
-                        class="link small fp-pi"
-                        onClick=${() => openSheet({ type: "pi-sessions", runner })}
-                    >
-                        Continue a Pi session…
-                    </button>`
+                    runners.length > 0 &&
+                    html`<div class="fp-runs" role="group" aria-label="Runs on">
+                        <${RunsOn} runner=${runner} runners=${runners} onPick=${pick} />
+                    </div>`
                 }
-            </nav>
+            </div>
             <div
                 class="fp-list"
                 ref=${list}
@@ -839,6 +826,31 @@ export function CwdSheet({
                 <label class="check">
                     <input type="checkbox" checked=${hidden} onChange=${toggleHidden} /> Show hidden
                 </label>
+                ${
+                    !changing &&
+                    !picking &&
+                    runners.length > 0 &&
+                    runnersOffered() &&
+                    html`<button
+                        type="button"
+                        class="link small fp-link"
+                        onClick=${() => openSheet({ type: "computers" })}
+                    >
+                        Manage runners…
+                    </button>`
+                }
+                ${
+                    !changing &&
+                    !picking &&
+                    piSessionsAvailable(runner) &&
+                    html`<button
+                        type="button"
+                        class="link small fp-link"
+                        onClick=${() => openSheet({ type: "pi-sessions", runner })}
+                    >
+                        Continue a Pi session…
+                    </button>`
+                }
             </div>
             <div class="fp-buttons">
                 <button type="button" class="button" onClick=${cancel}>Cancel</button>
