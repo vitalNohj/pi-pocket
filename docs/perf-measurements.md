@@ -1072,3 +1072,204 @@ UTC	window	lag_ms	evidence	timed_phases_ms	sched_wait/PSI_ms	active_spans
 ```
 
 </details>
+
+## After perf/build (d70c0867)
+
+23 November 2026. Compared the exact `perf/build` commit `d70c0867` against the baseline above (`be8c9625`, recorded at `4de21c0e`). This section is measurement only; the branch does not change the application or protocol.
+
+**The clearest gains were Windows context discovery and remote file I/O.** The ordinary Windows context scan went from **674 / 989 to 346 / 407 ms**, with **161 → 1 runner RPCs**. The 50 KiB read went from 10 RPCs to 1 on all three runners; on Windows it went from **44.6 / 67.0 to 5.0 / 6.7 ms**. Edit used 4 RPCs instead of 13 and fell from **57.7 / 69.2 to 11.1 / 22.4 ms** on Windows. The request counts establish the shorter message chains; they do not separate each optimization's effect.
+
+**Not everything got faster.** Windows Changes on the original small fixture went from **137 / 165 to 147 / 177 ms** in its handler and **200 / 244 to 226 / 273 ms** through the panel paint probe. Native Changes paint also rose, **293 / 485 to 340 / 609 ms**. Loopback Changes paint fell, **158 / 337 to 133 / 191 ms**. The large Mac Bash command rose from **46 / 77 to 72 / 81 ms**. Switching to the Mac in the picker rose from **53 / 133 to 74 / 147 ms** on the existing revalidation mark. Cold session switching improved overall (**201 / 438 → 140 / 256 ms** to first rows), but the saved transcript and fork metadata are server-side; that is not a runner link speedup.
+
+### Repeat method and load
+
+- Used the same Linux server, native Linux and loopback fixture, MacBook and Monolith, same Chromium 153.0.8010.12 at 1440×960, and the same real tailnet path. The copy server had a separate data directory and tailnet bind on port 8897. Read the exact 20, 500 and 5,000 dialogue-entry fixtures from the 8898 SQLite copy in a read transaction, then imported them and forked each history to newly linked fixtures. The code, dependencies and link file of each new remote runner were isolated. The loopback runner used the same address via the local route on Linux. The selected Mac and Windows sessions served only as controls to start and stop the isolated runners. The benchmark ran only on 8897 and did not change the 8898 dataset or either production runner.
+- Kept the same 2-CPU limits, signed-in browser harness, same 20 rounds for opens and sheets (480 opens and 400 sheet actions), 12 rounds for tools and panels (432 outcomes), and 20 rounds per host and burst width (240 bursts, 1,040 HTTP requests). The new Windows runner disconnected during web round 13. It resumed with its same link. Kept 12 complete rounds, discarded the incomplete round, and re-ran the remaining 8. The first interrupted attempts at tools and bursts are not in their comparison windows. All 240 warm-device visits used the kept view before the confirmed view; larger histories still required the separate `loadEarlier()` request. Only the additional Windows controls restarted the 8897 server after the main runs.
+- All intervals below are milliseconds, **median / p95**; _n_ is the run count, not the number of RPCs. p95 is nearest rank; for 12 samples it is the maximum. `Δ` is new minus old, computed before rounding. Joined 16,714 of 16,714 new runner RPCs by link session and request ID, compared with 21,406 of 21,406 old. Pings are round-trip measurements, not one-way clock differences. The Windows request mix changed, notably by eliminating the 161-RPC context scan, so the overall gate percentiles are not an isolated gate experiment. The folder paint mark still fires on the fresh result, not the first paint from the new in-tab cache. The fresh HTTP columns recalculate both sides on the same unambiguous match, which uses a smaller set than the baseline's handler table. Prefetch requests can start before the action window.
+- To make the picker trade-off visible, all `folder-list` handler starts in the web windows (including the extra opens to switch computers and the interrupted Windows segment) were **403 old → 1,559 new**. **1,518** new spans ended without an error. This is total traffic, not requests on the click's critical path. Prefetch adds traffic; the stock paint mark alone cannot tell how much faster a cached list became visible.
+
+**Load gate (1-, 5-, 15-minute averages):** ready 21:21 UTC: 12.10 / 10.27 / 11.70; retry-1 21:26 UTC: 17.25 / 13.40 / 12.63; retry-2 21:31 UTC: 15.94 / 18.32 / 15.22; retry-3 21:36 UTC: 16.28 / 17.28 / 15.61; proceeding 21:36 UTC: 16.28 / 17.28 / 15.61. The 1-minute average stayed above 8 at the last retry, so the timed suite proceeded. The old run did not record `/proc/loadavg`; it was also on a shared host. These are observed comparisons, not isolated effects of the code.
+
+| Set                                  | UTC window        | Load at start (1 / 5 / 15 min) | At end                | 1-minute range (10-second samples + bounds) |
+| ------------------------------------ | ----------------- | ------------------------------ | --------------------- | ------------------------------------------- |
+| Web: opens and sheets, first segment | 21:36:34–21:40:35 | 16.28 / 17.28 / 15.61          | 15.89 / 16.85 / 15.81 | 14.85–18.18                                 |
+| Web: opens and sheets, resumed       | 21:43:44–21:46:16 | 8.77 / 13.03 / 14.51           | 18.90 / 15.25 / 15.11 | 8.77–18.90                                  |
+| Tools and panels                     | 21:46:16–21:48:31 | 18.90 / 15.25 / 15.11          | 13.56 / 14.65 / 14.92 | 13.56–18.99                                 |
+| Folder bursts                        | 21:48:31–21:48:39 | 13.56 / 14.65 / 14.92          | 13.84 / 14.69 / 14.93 | 13.56–13.84                                 |
+| Windows 60-file panel                | 21:48:41–21:49:06 | 14.25 / 14.77 / 14.95          | 15.16 / 14.94 / 15.01 | 14.25–15.27                                 |
+| Windows scan and Git-cap controls    | 21:50:19–21:51:13 | 15.02 / 14.97 / 15.01          | 12.32 / 14.26 / 14.77 | 12.32–15.02                                 |
+
+### Open and switch a session
+
+| Host   | Size   | Device copy | n old/new | First rows: old → new (Δ)               | Intact tail: old → new (Δ)              | Full history: old → new (Δ)             | First SSE: old → new (Δ)                  |
+| ------ | ------ | ----------- | --------- | --------------------------------------- | --------------------------------------- | --------------------------------------- | ----------------------------------------- |
+| Server | small  | cold        | 20/20     | 223 / 662 → 166 / 268 (-57.0 / -394)    | 223 / 662 → 166 / 268 (-57.0 / -394)    | 223 / 662 → 166 / 268 (-57.0 / -394)    | 48.1 / 169 → 52.0 / 82.6 (+3.94 / -86.5)  |
+| Server | medium | cold        | 20/20     | 328 / 455 → 192 / 353 (-136 / -102)     | 328 / 455 → 192 / 353 (-136 / -102)     | 429 / 560 → 262 / 455 (-168 / -106)     | 87.3 / 269 → 43.7 / 72.6 (-43.7 / -196)   |
+| Server | large  | cold        | 20/20     | 296 / 497 → 201 / 379 (-94.5 / -119)    | 296 / 498 → 201 / 379 (-94.5 / -119)    | 448 / 751 → 308 / 571 (-139 / -181)     | 76.2 / 200 → 52.2 / 120 (-24.0 / -79.3)   |
+| Server | small  | warm-device | 20/20     | 106 / 218 → 76.9 / 159 (-28.6 / -59.1)  | 106 / 218 → 76.9 / 159 (-28.7 / -59.1)  | 106 / 218 → 76.9 / 159 (-28.6 / -59.0)  | 6.99 / 285 → 3.82 / 85.4 (-3.17 / -200)   |
+| Server | medium | warm-device | 20/20     | 136 / 359 → 101 / 354 (-34.4 / -4.80)   | 136 / 359 → 101 / 356 (-34.4 / -3.10)   | 136 / 361 → 101 / 356 (-34.4 / -5.20)   | 17.5 / 252 → 5.14 / 59.9 (-12.4 / -192)   |
+| Server | large  | warm-device | 20/20     | 174 / 328 → 127 / 315 (-47.7 / -13.2)   | 174 / 328 → 127 / 315 (-47.6 / -13.2)   | 375 / 624 → 270 / 509 (-105 / -115)     | 7.38 / 156 → 15.2 / 79.2 (+7.85 / -77.0)  |
+| Mac    | small  | cold        | 20/20     | 159 / 357 → 97.2 / 237 (-61.8 / -121)   | 159 / 357 → 97.3 / 237 (-61.8 / -121)   | 159 / 357 → 97.3 / 237 (-61.8 / -121)   | 2.19 / 9.02 → 3.86 / 9.85 (+1.67 / +0.84) |
+| Mac    | medium | cold        | 20/20     | 191 / 457 → 141 / 215 (-49.6 / -242)    | 191 / 457 → 142 / 215 (-49.1 / -242)    | 333 / 636 → 231 / 353 (-102 / -283)     | 5.53 / 31.2 → 3.39 / 10.8 (-2.14 / -20.5) |
+| Mac    | large  | cold        | 20/20     | 193 / 595 → 171 / 420 (-21.7 / -175)    | 193 / 595 → 171 / 420 (-21.7 / -175)    | 388 / 775 → 315 / 808 (-72.3 / +32.6)   | 15.2 / 255 → 8.43 / 75.3 (-6.73 / -180)   |
+| Mac    | small  | warm-device | 20/20     | 92.9 / 242 → 86.0 / 191 (-6.85 / -51.6) | 94.7 / 242 → 86.1 / 191 (-8.65 / -51.6) | 94.7 / 242 → 86.1 / 191 (-8.65 / -51.5) | 1.90 / 7.90 → 3.63 / 14.4 (+1.73 / +6.47) |
+| Mac    | medium | warm-device | 20/20     | 146 / 289 → 121 / 221 (-25.5 / -68.7)   | 146 / 289 → 121 / 221 (-25.5 / -68.7)   | 146 / 289 → 121 / 221 (-25.5 / -68.7)   | 1.49 / 18.8 → 3.01 / 6.08 (+1.53 / -12.8) |
+| Mac    | large  | warm-device | 20/20     | 186 / 341 → 133 / 223 (-52.5 / -119)    | 186 / 341 → 133 / 223 (-52.4 / -119)    | 314 / 632 → 287 / 402 (-26.5 / -230)    | 4.58 / 14.7 → 6.24 / 16.1 (+1.66 / +1.39) |
+| Loop   | small  | cold        | 20/20     | 152 / 256 → 121 / 268 (-31.6 / +11.9)   | 152 / 256 → 121 / 268 (-31.6 / +11.9)   | 152 / 256 → 121 / 268 (-31.7 / +11.9)   | 3.49 / 26.0 → 4.47 / 10.9 (+0.98 / -15.1) |
+| Loop   | medium | cold        | 20/20     | 204 / 431 → 168 / 356 (-35.8 / -75.0)   | 204 / 431 → 168 / 356 (-35.8 / -75.0)   | 336 / 800 → 249 / 480 (-87.0 / -320)    | 5.52 / 18.4 → 4.69 / 14.0 (-0.83 / -4.40) |
+| Loop   | large  | cold        | 20/20     | 230 / 438 → 175 / 258 (-54.8 / -181)    | 230 / 438 → 176 / 258 (-54.7 / -181)    | 434 / 682 → 315 / 437 (-119 / -245)     | 9.68 / 154 → 11.9 / 54.9 (+2.17 / -99.2)  |
+| Loop   | small  | warm-device | 20/20     | 117 / 183 → 121 / 174 (+4.05 / -8.60)   | 117 / 183 → 121 / 174 (+4.05 / -8.60)   | 117 / 183 → 121 / 174 (+4.05 / -8.60)   | 1.83 / 9.57 → 2.74 / 10.5 (+0.91 / +0.92) |
+| Loop   | medium | warm-device | 20/20     | 183 / 303 → 135 / 215 (-48.0 / -88.7)   | 183 / 303 → 135 / 215 (-47.9 / -88.7)   | 183 / 303 → 135 / 215 (-47.9 / -88.6)   | 2.18 / 14.9 → 3.07 / 12.1 (+0.89 / -2.77) |
+| Loop   | large  | warm-device | 20/20     | 150 / 308 → 129 / 240 (-21.1 / -68.2)   | 151 / 308 → 129 / 240 (-21.1 / -68.2)   | 314 / 507 → 281 / 426 (-32.8 / -80.6)   | 4.89 / 17.1 → 6.73 / 16.0 (+1.84 / -1.16) |
+| Win    | small  | cold        | 20/20     | 128 / 305 → 105 / 193 (-23.6 / -112)    | 128 / 305 → 105 / 193 (-23.5 / -112)    | 128 / 305 → 105 / 193 (-23.5 / -112)    | 1.73 / 11.0 → 2.83 / 5.64 (+1.10 / -5.38) |
+| Win    | medium | cold        | 20/20     | 216 / 338 → 149 / 256 (-67.5 / -82.7)   | 216 / 338 → 149 / 256 (-67.5 / -82.7)   | 345 / 530 → 232 / 379 (-114 / -151)     | 5.48 / 22.0 → 3.75 / 12.1 (-1.73 / -9.90) |
+| Win    | large  | cold        | 20/20     | 252 / 454 → 139 / 219 (-112 / -235)     | 252 / 454 → 139 / 219 (-112 / -235)     | 412 / 723 → 277 / 427 (-135 / -296)     | 7.39 / 59.7 → 8.09 / 50.8 (+0.70 / -8.92) |
+| Win    | small  | warm-device | 20/20     | 95.3 / 169 → 90.4 / 213 (-4.85 / +43.8) | 95.3 / 169 → 90.5 / 213 (-4.80 / +43.7) | 95.3 / 169 → 90.5 / 213 (-4.80 / +43.7) | 1.62 / 5.08 → 3.18 / 6.71 (+1.56 / +1.63) |
+| Win    | medium | warm-device | 20/20     | 135 / 248 → 138 / 223 (+2.60 / -25.6)   | 135 / 248 → 138 / 223 (+2.65 / -25.7)   | 135 / 248 → 138 / 223 (+2.65 / -25.7)   | 1.69 / 5.78 → 3.12 / 7.60 (+1.43 / +1.82) |
+| Win    | large  | warm-device | 20/20     | 182 / 371 → 108 / 262 (-73.4 / -108)    | 182 / 371 → 108 / 262 (-73.4 / -108)    | 389 / 523 → 241 / 512 (-148 / -11.2)    | 3.59 / 19.1 → 6.48 / 17.9 (+2.89 / -1.24) |
+
+| Switch subset | n old/new | First rows old | New       | Δ             | Confirmed view old | New        | Δ            |
+| ------------- | --------- | -------------- | --------- | ------------- | ------------------ | ---------- | ------------ |
+| cold          | 220/220   | 201 / 438      | 140 / 256 | -61.1 / -183  | 63.6 / 266         | 47.3 / 123 | -16.3 / -143 |
+| warm-device   | 220/220   | 132 / 272      | 108 / 217 | -23.9 / -54.4 | 104 / 282          | 85.2 / 176 | -19.1 / -106 |
+
+### Fork sheet and folder picker
+
+| Host   | Action          | n old/new | Paint old   | New         | Δ             | Fresh HTTP old → new (matched n)  | RPCs per matched handler old → new |
+| ------ | --------------- | --------- | ----------- | ----------- | ------------- | --------------------------------- | ---------------------------------- |
+| Server | fork            | 20/20     | 97.4 / 181  | 64.4 / 162  | -33.0 / -19.9 | 0.28 / 2.80 → 0.30 / 1.24 (20/20) | 0.00 → 0.00                        |
+| Server | folder-open     | 20/20     | 112 / 263   | 79.8 / 149  | -31.7 / -114  | 0.49 / 1.81 → 0.57 / 9.03 (10/9)  | 0.00 → 0.00                        |
+| Server | folder-into     | 20/20     | 34.1 / 50.4 | 37.9 / 48.7 | +3.70 / -1.70 | 0.44 / 5.56 → 0.59 / 5.71 (17/5)  | 0.00 → 0.00                        |
+| Server | folder-up       | 20/20     | 41.5 / 54.1 | 41.3 / 50.3 | -0.30 / -3.80 | 0.45 / 1.59 → 1.11 / 4.27 (18/16) | 0.00 → 0.00                        |
+| Server | switch-computer | 20/20     | 41.5 / 86.3 | 46.4 / 99.5 | +4.85 / +13.2 | 0.48 / 1.95 → 0.48 / 1.38 (16/7)  | 0.00 → 0.00                        |
+| Mac    | fork            | 20/20     | 92.1 / 164  | 62.7 / 146  | -29.4 / -17.7 | 0.26 / 1.14 → 0.29 / 1.15 (20/20) | 0.00 → 0.00                        |
+| Mac    | folder-open     | 20/20     | 113 / 196   | 61.1 / 142  | -51.9 / -53.4 | 14.0 / 83.6 → 16.1 / 40.1 (20/12) | 5.00 → 5.00                        |
+| Mac    | folder-into     | 20/20     | 39.1 / 75.9 | 40.1 / 53.0 | +1.05 / -22.9 | 6.62 / 31.8 → 8.70 / 9.14 (17/2)  | 3.00 → 3.00                        |
+| Mac    | folder-up       | 20/20     | 42.6 / 59.4 | 42.0 / 67.8 | -0.60 / +8.40 | 11.2 / 47.4 → 13.6 / 28.2 (18/17) | 5.00 → 5.00                        |
+| Mac    | switch-computer | 20/20     | 53.2 / 133  | 73.9 / 147  | +20.6 / +13.9 | 18.9 / 52.8 → 7.70 / 72.0 (15/11) | 5.00 → 3.00                        |
+| Loop   | fork            | 20/20     | 80.3 / 150  | 58.8 / 121  | -21.6 / -29.3 | 0.26 / 4.44 → 0.26 / 0.87 (20/19) | 0.00 → 0.00                        |
+| Loop   | folder-open     | 20/20     | 110 / 253   | 67.8 / 122  | -42.4 / -131  | 9.48 / 137 → 11.5 / 53.7 (14/13)  | 5.00 → 5.00                        |
+| Loop   | folder-into     | 20/20     | 40.2 / 62.6 | 45.5 / 59.4 | +5.25 / -3.20 | 4.47 / 22.9 → 6.57 / 11.8 (18/4)  | 3.00 → 3.00                        |
+| Loop   | folder-up       | 20/20     | 42.8 / 71.6 | 47.3 / 56.9 | +4.45 / -14.7 | 10.5 / 21.1 → 12.6 / 28.4 (20/16) | 5.00 → 5.00                        |
+| Loop   | switch-computer | 20/20     | 84.2 / 199  | 83.5 / 137  | -0.65 / -62.6 | 16.6 / 135 → 16.7 / 55.0 (18/5)   | 3.00 → 3.00                        |
+| Win    | fork            | 20/20     | 77.0 / 168  | 61.3 / 119  | -15.7 / -49.1 | 0.32 / 3.96 → 0.26 / 1.57 (20/20) | 0.00 → 0.00                        |
+| Win    | folder-open     | 20/20     | 104 / 206   | 89.5 / 170  | -14.8 / -36.7 | 12.4 / 130 → 9.93 / 18.6 (14/13)  | 5.00 → 5.00                        |
+| Win    | folder-into     | 20/20     | 39.5 / 51.5 | 46.5 / 52.5 | +7.05 / +1.00 | 6.86 / 17.5 → 8.68 / 16.2 (20/5)  | 3.00 → 3.00                        |
+| Win    | folder-up       | 20/20     | 43.1 / 52.1 | 46.8 / 61.3 | +3.60 / +9.20 | 9.96 / 32.7 → 10.5 / 27.8 (19/17) | 5.00 → 5.00                        |
+| Win    | switch-computer | 20/20     | 90.7 / 164  | 73.0 / 130  | -17.7 / -34.1 | 48.2 / 80.7 → 12.3 / 17.8 (18/7)  | 23.0 → 7.00                        |
+
+### Pi tools, Files and Changes
+
+| Host   | Action      | n old/new | Total or paint old | New         | Δ             | First output old → new    | Handler old → new         | RPCs median old → new |
+| ------ | ----------- | --------- | ------------------ | ----------- | ------------- | ------------------------- | ------------------------- | --------------------- |
+| Server | read-small  | 12/12     | 2.15 / 21.9        | 1.63 / 6.06 | -0.52 / -15.8 | 2.16 / 21.9 → 1.64 / 6.07 | — → —                     | 0.00 → 0.00           |
+| Server | read-50KiB  | 12/12     | 2.21 / 18.3        | 1.65 / 4.23 | -0.56 / -14.1 | 2.22 / 18.3 → 1.66 / 4.23 | — → —                     | 0.00 → 0.00           |
+| Server | edit        | 12/12     | 3.31 / 49.8        | 1.77 / 13.6 | -1.54 / -36.2 | 3.31 / 49.8 → 1.78 / 13.6 | — → —                     | 0.00 → 0.00           |
+| Server | write       | 12/12     | 1.22 / 17.0        | 1.98 / 13.9 | +0.76 / -3.17 | 1.22 / 17.0 → 1.98 / 13.9 | — → —                     | 0.00 → 0.00           |
+| Server | bash-echo   | 12/12     | 15.9 / 48.5        | 15.4 / 31.2 | -0.54 / -17.3 | 13.5 / 36.7 → 14.3 / 30.4 | — → —                     | 0.00 → 0.00           |
+| Server | bash-output | 12/12     | 219 / 381          | 233 / 404   | +13.5 / +23.1 | 212 / 372 → 219 / 384     | — → —                     | 0.00 → 0.00           |
+| Server | files-tree  | 12/12     | 66.0 / 200         | 73.0 / 101  | +7.00 / -99.0 | — → —                     | — → —                     | — → —                 |
+| Server | file-index  | 12/12     | 12.0 / 27.0        | 12.5 / 68.0 | +0.50 / +41.0 | — → —                     | 0.30 / 15.4 → 0.35 / 35.5 | 0.00 → 0.00           |
+| Server | changes     | 12/12     | 293 / 485          | 340 / 609   | +47.0 / +124  | — → —                     | 195 / 360 → 216 / 371     | 0.00 → 0.00           |
+| Mac    | read-small  | 12/12     | 3.46 / 5.00        | 4.61 / 6.98 | +1.15 / +1.99 | 3.46 / 5.00 → 4.62 / 6.99 | — → —                     | 1.00 → 1.00           |
+| Mac    | read-50KiB  | 12/12     | 25.3 / 32.6        | 8.01 / 13.8 | -17.3 / -18.8 | 25.4 / 32.6 → 8.02 / 13.8 | — → —                     | 10.0 → 1.00           |
+| Mac    | edit        | 12/12     | 16.0 / 29.6        | 12.3 / 17.3 | -3.69 / -12.2 | 16.0 / 29.6 → 12.3 / 17.3 | — → —                     | 13.0 → 4.00           |
+| Mac    | write       | 12/12     | 4.58 / 6.78        | 6.78 / 8.77 | +2.21 / +1.99 | 4.58 / 6.78 → 6.79 / 8.77 | — → —                     | 2.00 → 2.00           |
+| Mac    | bash-echo   | 12/12     | 6.67 / 21.5        | 12.9 / 23.0 | +6.23 / +1.54 | 6.09 / 21.1 → 11.0 / 22.6 | — → —                     | 1.00 → 1.00           |
+| Mac    | bash-output | 12/12     | 46.2 / 76.6        | 71.8 / 80.7 | +25.7 / +4.09 | 41.3 / 60.2 → 65.9 / 75.2 | — → —                     | 1.00 → 1.00           |
+| Mac    | files-tree  | 12/12     | 69.0 / 116         | 77.0 / 88.0 | +8.00 / -28.0 | — → —                     | — → —                     | — → —                 |
+| Mac    | file-index  | 12/12     | 27.0 / 76.0        | 44.0 / 54.0 | +17.0 / -22.0 | — → —                     | 17.1 / 63.3 → 35.5 / 37.8 | 1.00 → 1.00           |
+| Mac    | changes     | 12/12     | 144 / 267          | 168 / 232   | +23.5 / -35.0 | — → —                     | 59.1 / 66.1 → 80.2 / 139  | 10.0 → 10.0           |
+| Loop   | read-small  | 12/12     | 2.75 / 5.68        | 2.74 / 5.29 | -0.01 / -0.39 | 2.75 / 5.68 → 2.76 / 5.29 | — → —                     | 1.00 → 1.00           |
+| Loop   | read-50KiB  | 12/12     | 23.3 / 32.5        | 3.60 / 7.08 | -19.7 / -25.4 | 23.3 / 32.5 → 3.60 / 7.09 | — → —                     | 10.0 → 1.00           |
+| Loop   | edit        | 12/12     | 24.0 / 53.5        | 8.24 / 49.6 | -15.8 / -3.92 | 24.0 / 53.5 → 8.25 / 49.6 | — → —                     | 13.0 → 4.00           |
+| Loop   | write       | 12/12     | 5.56 / 48.2        | 4.56 / 7.25 | -1.00 / -41.0 | 5.58 / 48.2 → 4.57 / 7.25 | — → —                     | 2.00 → 2.00           |
+| Loop   | bash-echo   | 12/12     | 8.57 / 45.9        | 7.20 / 16.4 | -1.37 / -29.5 | 7.31 / 45.5 → 6.22 / 14.1 | — → —                     | 1.00 → 1.00           |
+| Loop   | bash-output | 12/12     | 211 / 323          | 198 / 313   | -12.9 / -9.91 | 202 / 293 → 188 / 308     | — → —                     | 1.00 → 1.00           |
+| Loop   | files-tree  | 12/12     | 58.5 / 89.0        | 67.0 / 136  | +8.50 / +47.0 | — → —                     | — → —                     | — → —                 |
+| Loop   | file-index  | 12/12     | 22.5 / 47.0        | 19.0 / 24.0 | -3.50 / -23.0 | — → —                     | 7.96 / 23.3 → 7.02 / 9.85 | 1.00 → 1.00           |
+| Loop   | changes     | 12/12     | 158 / 337          | 133 / 191   | -24.5 / -146  | — → —                     | 69.7 / 200 → 56.0 / 114   | 10.0 → 10.0           |
+| Win    | read-small  | 12/12     | 4.29 / 20.4        | 3.95 / 7.50 | -0.34 / -12.9 | 4.30 / 20.4 → 3.95 / 7.51 | — → —                     | 1.00 → 1.00           |
+| Win    | read-50KiB  | 12/12     | 44.6 / 67.0        | 5.02 / 6.67 | -39.6 / -60.3 | 44.6 / 67.0 → 5.02 / 6.67 | — → —                     | 10.0 → 1.00           |
+| Win    | edit        | 12/12     | 57.7 / 69.2        | 11.1 / 22.4 | -46.7 / -46.8 | 57.8 / 69.2 → 11.1 / 22.4 | — → —                     | 13.0 → 4.00           |
+| Win    | write       | 12/12     | 4.93 / 7.64        | 4.67 / 7.93 | -0.27 / +0.29 | 4.94 / 7.65 → 4.67 / 7.94 | — → —                     | 2.00 → 2.00           |
+| Win    | bash-echo   | 12/12     | 37.6 / 41.9        | 38.3 / 42.0 | +0.77 / +0.12 | 34.8 / 39.3 → 35.4 / 37.9 | — → —                     | 1.00 → 1.00           |
+| Win    | bash-output | 12/12     | 68.6 / 82.4        | 68.1 / 72.2 | -0.58 / -10.2 | 61.8 / 71.2 → 61.1 / 64.5 | — → —                     | 1.00 → 1.00           |
+| Win    | files-tree  | 12/12     | 65.0 / 104         | 73.0 / 97.0 | +8.00 / -7.00 | — → —                     | — → —                     | — → —                 |
+| Win    | file-index  | 12/12     | 55.0 / 58.0        | 56.5 / 72.0 | +1.50 / +14.0 | — → —                     | 41.6 / 44.3 → 42.8 / 62.7 | 1.00 → 1.00           |
+| Win    | changes     | 12/12     | 200 / 244          | 226 / 273   | +26.5 / +29.0 | — → —                     | 137 / 165 → 147 / 177     | 10.0 → 10.0           |
+
+### Parallel folder listings and runner link
+
+| Host   | Parallel | n old/new | Burst old   | New         | Δ             | Individual HTTP old → new | Runner RPCs / burst old → new |
+| ------ | -------- | --------- | ----------- | ----------- | ------------- | ------------------------- | ----------------------------- |
+| Server | 1        | 20/20     | 2.30 / 9.10 | 2.05 / 3.60 | -0.25 / -5.51 | 2.28 / 9.09 → 2.04 / 3.58 | 0.00 → 0.00                   |
+| Server | 4        | 20/20     | 6.70 / 15.2 | 5.32 / 13.9 | -1.38 / -1.26 | 4.06 / 12.7 → 3.80 / 9.09 | 0.00 → 0.00                   |
+| Server | 8        | 20/20     | 12.0 / 29.9 | 9.78 / 22.8 | -2.20 / -7.08 | 7.27 / 21.0 → 5.50 / 18.0 | 0.00 → 0.00                   |
+| Mac    | 1        | 20/20     | 10.4 / 12.8 | 13.6 / 17.4 | +3.21 / +4.61 | 10.4 / 12.7 → 13.4 / 16.3 | 5.00 → 5.00                   |
+| Mac    | 4        | 20/20     | 19.2 / 29.0 | 20.2 / 26.8 | +0.97 / -2.16 | 16.9 / 25.2 → 18.1 / 23.3 | 20.0 → 20.0                   |
+| Mac    | 8        | 20/20     | 35.5 / 58.8 | 34.4 / 44.1 | -1.08 / -14.8 | 27.4 / 49.2 → 27.5 / 42.6 | 40.0 → 40.0                   |
+| Loop   | 1        | 20/20     | 8.49 / 31.3 | 11.2 / 15.3 | +2.75 / -16.1 | 8.48 / 31.3 → 11.2 / 15.2 | 5.00 → 5.00                   |
+| Loop   | 4        | 20/20     | 28.3 / 42.2 | 25.1 / 31.8 | -3.27 / -10.4 | 23.0 / 41.9 → 21.9 / 28.0 | 20.0 → 20.0                   |
+| Loop   | 8        | 20/20     | 43.1 / 63.6 | 44.8 / 58.5 | +1.69 / -5.06 | 37.2 / 61.3 → 38.0 / 50.5 | 40.0 → 40.0                   |
+| Win    | 1        | 20/20     | 11.3 / 18.1 | 11.3 / 13.8 | +0.01 / -4.31 | 11.3 / 18.1 → 11.3 / 13.8 | 5.00 → 5.00                   |
+| Win    | 4        | 20/20     | 18.5 / 34.0 | 15.9 / 22.5 | -2.60 / -11.4 | 14.5 / 30.5 → 13.7 / 21.8 | 20.0 → 20.0                   |
+| Win    | 8        | 20/20     | 34.1 / 59.7 | 28.8 / 39.7 | -5.25 / -20.0 | 26.3 / 58.6 → 20.6 / 31.4 | 40.0 → 40.0                   |
+
+| Host | Pings n old/new | RTT old → new (Δ)                         | RPC matches old → new   | First-send queue old → new | Request check old → new   | Gate wait old → new       |
+| ---- | --------------- | ----------------------------------------- | ----------------------- | -------------------------- | ------------------------- | ------------------------- |
+| Mac  | 60/53           | 1.63 / 71.1 → 1.87 / 40.2 (+0.23 / -30.9) | 4479/4479 → 5302/5302   | 0.04 / 1.13 → 0.04 / 1.01  | 0.17 / 0.65 → 0.21 / 0.80 | 0.02 / 0.57 → 0.02 / 0.41 |
+| Loop | 63/54           | 0.64 / 39.3 → 0.54 / 35.8 (-0.10 / -3.44) | 4460/4460 → 5338/5338   | 0.04 / 0.64 → 0.04 / 0.93  | 0.33 / 2.36 → 0.24 / 2.35 | 0.04 / 3.86 → 0.01 / 1.31 |
+| Win  | 61/52           | 1.69 / 52.2 → 1.01 / 43.9 (-0.68 / -8.33) | 12467/12467 → 6074/6074 | 0.03 / 1.78 → 0.05 / 1.69  | 0.69 / 7.68 → 0.20 / 0.64 | 0.05 / 350 → 0.00 / 0.55  |
+
+### Context discovery during the matched runs
+
+| Host | Scan n old/new | Old        | New       | Δ             | RPCs per scan, median old → new | One-exec samples old → new |
+| ---- | -------------- | ---------- | --------- | ------------- | ------------------------------- | -------------------------- |
+| Mac  | 49/46          | 93.0 / 249 | 109 / 158 | +15.5 / -90.9 | 1.00 → 1.00                     | 49 → 46                    |
+| Loop | 48/46          | 297 / 655  | 221 / 414 | -76.4 / -241  | 1.00 → 1.00                     | 48 → 46                    |
+| Win  | 48/46          | 674 / 989  | 346 / 407 | -328 / -582   | 161 → 1.00                      | 0 → 46                     |
+
+### Windows-only controls
+
+**Context, same session and no scan-cache reuse.** The 8897 server called the ordinary remote scan twice per round, alternating order. The fallback control set the existing internal `scanSettings.shell` switch to `false` for the call, so its time does not include a failed PowerShell attempt. Both paths read the same directories. The trace identifies a successful fast-path run by one `exec` and no listing RPCs, and a forced fallback by no `exec`.
+
+| Path       | n   | Elapsed   | RPCs (median, range) | Execs (median, range) | Verified path n | 1-min load range |
+| ---------- | --- | --------- | -------------------- | --------------------- | --------------- | ---------------- |
+| powershell | 12  | 328 / 374 | 1 (1–1)              | 1 (1–1)               | 12              | 14.62–15.05      |
+| fallback   | 12  | 504 / 584 | 161 (161–161)        | 0 (0–0)               | 12              | 14.62–15.05      |
+
+**Changes with 60 paths.** Each row used the normal panel in Chromium. A few panel requests joined a refresh already in flight; their handler measurements include that earlier start. On one repository all 60 files were tracked and modified; on the other all 60 were untracked. The tracked case uses a bulk Git diff. The untracked case permits a separate `git diff --no-index` per file. On this commit, the limit of 8 is for file stat and edit-path work; the remote untracked-diff limit is `8 × 4 = 32`.
+
+| Windows repository | n   | Panel paint | HTTP handler | Git execs (median, range) | Peak Git RPCs in flight (median, range) | Counts reported (median, range) | 1-min load range |
+| ------------------ | --- | ----------- | ------------ | ------------------------- | --------------------------------------- | ------------------------------- | ---------------- |
+| tracked            | 12  | 276 / 439   | 162 / 178    | 5 (5–5)                   | 4 (4–4)                                 | 60 (60–60)                      | 14.25–15.27      |
+| untracked          | 12  | 531 / 786   | 465 / 627    | 65 (65–65)                | 32 (32–32)                              | 60 (60–60)                      | 14.31–15.27      |
+
+**Git concurrency control.** The same Windows untracked repository, the same `changesIn` code and stat limit, no browser. Only the untracked per-file Git concurrency cap changed. Caps ran in rotating order on Monolith. The peaks count overlapping calls at the server, not CPU cores or proven simultaneous Git execution. This test had no equivalent 60-file baseline row.
+
+| Untracked Git cap | n   | Server operation | Peak per-file Git RPCs (median, range) | Git execs (median, range) | Counts reported (median, range) | 1-min load range |
+| ----------------- | --- | ---------------- | -------------------------------------- | ------------------------- | ------------------------------- | ---------------- |
+| 1                 | 12  | 2661 / 2771      | 1 (1–1)                                | 65 (65–65)                | 60 (60–60)                      | 12.32–14.89      |
+| 8                 | 12  | 520 / 584        | 8 (8–8)                                | 65 (65–65)                | 60 (60–60)                      | 12.32–14.89      |
+| 32 (stock)        | 12  | 446 / 473        | 32 (32–32)                             | 65 (65–65)                | 60 (60–60)                      | 12.61–14.89      |
+
+On this Windows fixture, 8 at once did not hurt: it beat serial work, and the stock 32 was faster again at both percentiles. This does not establish an optimum on other hardware or for tracked files. The slower untracked panel used 65 Git commands, whereas the tracked panel used 5; comparing the two panels is not a test of concurrency alone.
+
+**Request-check burst, real Windows runner.** These are gate spans from the same 20 folder bursts per width in the main table, joined by link session and request ID. Times show per-RPC duration pooled within a width, not an additive part of the end-to-end burst percentile.
+
+| Parallel HTTP requests | RPC sample count old → new | Check old → new               | Wait to check old → new       | Peak RPCs in flight old → new |
+| ---------------------- | -------------------------- | ----------------------------- | ----------------------------- | ----------------------------- |
+| 1                      | 100 → 100                  | 0.154 / 0.280 → 0.154 / 0.233 | 0.007 / 0.017 → 0.003 / 0.008 | 1.0 / 1.0 → 1.0 / 1.0         |
+| 4                      | 400 → 400                  | 0.149 / 0.268 → 0.150 / 0.247 | 0.006 / 0.032 → 0.003 / 0.006 | 4.0 / 4.0 → 4.0 / 4.0         |
+| 8                      | 800 → 800                  | 0.148 / 0.263 → 0.150 / 0.270 | 0.006 / 0.089 → 0.003 / 0.007 | 8.0 / 8.0 → 8.0 / 8.0         |
+
+### Server event-loop delays over 50 ms
+
+| Set      | Blocks old → new | Per minute old → new | Median / p95 old → new | Max old → new | With nearby scheduler wait old → new | Dropped new trace records |
+| -------- | ---------------- | -------------------- | ---------------------- | ------------- | ------------------------------------ | ------------------------- |
+| web      | 412 → 140        | 56.5 → 21.4          | 78 / 217 → 69 / 165    | 538 → 372     | 0 → 85                               | 0                         |
+| tools    | 394 → 378        | 142.8 → 168.0        | 66 / 127 → 62 / 117    | 334 → 311     | 95 → 62                              | 0                         |
+| pressure | 3 → 0            | 17.7 → 0.0           | 66 / 67 → —            | 67 → —        | 3 → 0                                | 0                         |
+
+The same 10 ms timer and threshold were used. “Nearby scheduler wait” means that the main-thread scheduler wait in a close sample window covered at least 60% of the delay, and no known timed synchronous phase covered at least half. This is corroboration, not an attribution of each delay to a cause. Rates normalize for the different window lengths.
