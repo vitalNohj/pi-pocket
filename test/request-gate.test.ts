@@ -1,10 +1,19 @@
 // Runner-side request authorization (`src/runner/request-gate.ts`), using real frames and folders.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it, type TestContext } from "node:test";
 import { Approvals, type SessionScope } from "../src/runner/approvals.ts";
+import { RunnerRequestTiming } from "../src/runner/perf.ts";
 import { FRAME, frame, readFrame, SESSION_FIELD } from "../src/runner/protocol.ts";
 import { RequestGate } from "../src/runner/request-gate.ts";
 import type { RunnerSettings } from "../src/runner/runner.ts";
@@ -15,7 +24,14 @@ after(() => rmSync(root, { recursive: true, force: true }));
 
 type Outcome = ReturnType<typeof readFrame> & { route: "send" | "reply" };
 
-async function fixture(t: TestContext, options: { approved?: boolean; answer?: boolean } = {}) {
+async function fixture(
+    t: TestContext,
+    options: {
+        approved?: boolean;
+        answer?: boolean | ((signal: AbortSignal) => Promise<boolean>);
+        shared?: (id: string) => Promise<void>;
+    } = {},
+) {
     const dir = realpathSync(mkdtempSync(join(root, "gate-")));
     const folder = join(dir, "project");
     const outside = join(dir, "outside");
@@ -47,12 +63,18 @@ async function fixture(t: TestContext, options: { approved?: boolean; answer?: b
     const replies: Buffer[] = [];
     const asked: { scope: SessionScope; signal: AbortSignal }[] = [];
     const pending = new Map<number, (outcome: Outcome) => void>();
+    const settled: number[] = [];
+    const checks: number[] = [];
+    const timing = new RunnerRequestTiming();
+
+    t.mock.method(timing, "check", (id: number) => checks.push(id));
 
     const collect = (route: Outcome["route"], frames: Buffer[]) => (whole: Buffer) => {
         frames.push(whole);
         const parsed = readFrame(whole);
         const resolve = pending.get(parsed.id);
 
+        settled.push(parsed.id);
         pending.delete(parsed.id);
         resolve?.({ ...parsed, route });
     };
@@ -62,15 +84,25 @@ async function fixture(t: TestContext, options: { approved?: boolean; answer?: b
         async ask(scope, signal) {
             asked.push({ scope, signal });
 
-            if (options.answer === true) {
+            const allow =
+                typeof options.answer === "function"
+                    ? await options.answer(signal)
+                    : options.answer === true;
+
+            if (allow) {
                 await approvals.approve(scope, "computer");
             }
 
-            return options.answer === true;
+            return allow;
         },
         send: collect("send", sent),
         reply: collect("reply", replies),
-        shared: async () => [shared],
+        timing,
+        shared: async (id) => {
+            await options.shared?.(id);
+
+            return [shared];
+        },
         tmpdir: async () => temporary,
         name: () => "Test computer",
     });
@@ -99,7 +131,21 @@ async function fixture(t: TestContext, options: { approved?: boolean; answer?: b
         return outcome.promise;
     }
 
-    return { gate, approvals, request, a, b, folder, outside, shared, sent, replies, asked };
+    return {
+        gate,
+        approvals,
+        request,
+        a,
+        b,
+        folder,
+        outside,
+        shared,
+        sent,
+        replies,
+        asked,
+        checks,
+        settled,
+    };
 }
 
 function refused(outcome: Outcome, message: RegExp): void {
@@ -110,6 +156,135 @@ function refused(outcome: Outcome, message: RegExp): void {
 }
 
 describe("runner RequestGate", () => {
+    it("bounds parallel checks and sends and refuses in arrival order", async (t) => {
+        const started = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const { request, folder, outside, shared, checks, settled } = await fixture(t, {
+            async shared() {
+                started.resolve();
+                await release.promise;
+            },
+        });
+
+        t.after(() => release.resolve());
+        const first = request({ op: "open", path: join(shared, "file.txt") });
+
+        await started.promise;
+        const second = request({ op: "open", path: join(outside, "file.txt") });
+        const later = Array.from({ length: 16 }, () =>
+            request({ op: "open", path: join(folder, "file.txt") }),
+        );
+
+        assert.deepEqual(
+            checks,
+            Array.from({ length: 16 }, (_, i) => i + 1),
+        );
+        assert.deepEqual(settled, [], "later requests cannot overtake the first check");
+        release.resolve();
+        const [allowed, denied, ...rest] = await Promise.all([first, second, ...later]);
+
+        assert.equal(allowed!.route, "send");
+        refused(denied!, /outside the session's approved folder/);
+        assert.ok(rest.every((result) => result.route === "send"));
+        assert.deepEqual(
+            settled,
+            Array.from({ length: 18 }, (_, i) => i + 1),
+        );
+    });
+
+    it("holds later requests behind a question but lets cancels and other sessions go on", async (t) => {
+        const opened = Promise.withResolvers<AbortSignal>();
+        const answer = Promise.withResolvers<boolean>();
+        const { gate, approvals, request, a, b, folder, asked, checks, settled } = await fixture(
+            t,
+            {
+                answer: (signal) => {
+                    opened.resolve(signal);
+
+                    return answer.promise;
+                },
+            },
+        );
+
+        t.after(() => answer.resolve(false));
+        await approvals.action({ action: "revoke", session: a.id });
+        const first = request({ op: "open", path: join(folder, "file.txt") });
+        const signal = await opened.promise;
+        const cancelled = request({ op: "open", path: join(folder, "file.txt") });
+        const later = request({ op: "lstat", path: folder });
+        const independent = request({ op: "open", path: join(folder, "file.txt") }, b);
+
+        gate.input(frame(FRAME.cancel, 2, { [SESSION_FIELD]: a }));
+        refused(await cancelled, /cancelled/);
+        assert.equal((await independent).route, "send");
+        assert.deepEqual(checks, [1, 4]);
+        assert.deepEqual(settled, [2, 4]);
+        assert.equal(signal.aborted, false, "other requests still wait for the answer");
+        answer.resolve(true);
+        const [allowed, listed] = await Promise.all([first, later]);
+
+        assert.equal(allowed.route, "send");
+        assert.equal(listed.route, "send");
+        assert.equal(asked.length, 1);
+        assert.deepEqual(settled, [2, 4, 1, 3]);
+    });
+
+    it("does not use a folder check that finished while an earlier request was blocked", async (t) => {
+        const started = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const checked = Promise.withResolvers<void>();
+        const { request, approvals, folder, outside, shared, sent } = await fixture(t, {
+            async shared() {
+                started.resolve();
+                await release.promise;
+            },
+        });
+        const resolveFolder = approvals.resolveFolder.bind(approvals);
+        let resolved = 0;
+
+        t.after(() => release.resolve());
+        t.mock.method(approvals, "resolveFolder", async (path: string) => {
+            const real = await resolveFolder(path);
+
+            if (++resolved === 2) {
+                checked.resolve();
+            }
+
+            return real;
+        });
+        const first = request({ op: "open", path: join(shared, "file.txt") });
+
+        await started.promise;
+        const second = request({ op: "open", path: join(folder, "file.txt") });
+
+        await checked.promise;
+        renameSync(folder, folder + "-moved");
+        symlinkSync(outside, folder, "junction");
+        release.resolve();
+        const [allowed, denied] = await Promise.all([first, second]);
+
+        assert.equal(allowed.route, "send");
+        refused(denied, /Session not approved/);
+        assert.equal(sent.length, 1);
+    });
+
+    it("refuses requests after an approved folder is replaced, without a grace period", async (t) => {
+        const { request, folder, outside, sent, asked } = await fixture(t);
+
+        assert.equal((await request({ op: "open", path: join(folder, "file.txt") })).route, "send");
+        renameSync(folder, `${folder}-moved`);
+        symlinkSync(outside, folder, "junction");
+        const [read, command] = await Promise.all([
+            request({ op: "open", path: join(folder, "file.txt") }),
+            request({ op: "exec", command: "printf ok" }),
+        ]);
+
+        refused(read, /Session not approved/);
+        refused(command, /Session not approved/);
+        assert.equal(sent.length, 1);
+        assert.equal(asked.length, 2);
+    });
+
     it("refuses a request without its session field", async (t) => {
         const { request, folder, sent, asked } = await fixture(t);
         const outcome = await request({ op: "open", path: join(folder, "file.txt") }, null);

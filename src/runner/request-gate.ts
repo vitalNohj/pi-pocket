@@ -70,6 +70,19 @@ const KNOWN_OPS = new Set([
 /** What works without a session permission: the folder picker's listing. */
 const LISTING = new Set(["hello", "lstat", "realpath", "opendir"]);
 
+/** These operations cannot change paths before a later request checks them. `open` only opens a reader. */
+const CHECK_AHEAD = new Set([
+    ...LISTING,
+    "open",
+    "pread",
+    "fstat",
+    "scanLines",
+    "listFiles",
+    "watch",
+    READ_SNAPSHOT,
+]);
+const CHECK_LIMIT = 16;
+
 /** What only reads a file opened with `open`. */
 const READING = new Set(["pread", "fstat", "scanLines", "close"]);
 
@@ -132,9 +145,25 @@ export async function canonical(path: string): Promise<string> {
     }
 }
 
-/** A session scope as the server sends it; undefined when it is not one. */
-/** One session's requests that wait for their check, and the question that asks for all of them. */
-type Waiting = { requests: Set<Request>; question?: AbortController };
+type Paths = { paths: string[]; folder: string | undefined };
+type Prepared = Paths | { listing: true; path: string | undefined };
+type Checked = { prepared: Prepared } | { error: unknown };
+type Check = { epoch: number; result: Promise<Checked & { early: boolean }> };
+type Queued = {
+    id: number;
+    request: Request;
+    json: Record<string, unknown>;
+    payload: Uint8Array;
+    check?: Check;
+};
+
+/** One session's requests, in arrival order, and the question that asks for all of them. */
+type Waiting = {
+    requests: Set<Queued>;
+    question?: AbortController;
+    epoch: number;
+    draining: boolean;
+};
 
 /**
  * A signal that aborts when every request of the session that waits was cancelled, also one that came later. A
@@ -144,14 +173,19 @@ function whileWaiting(waiting: Waiting): AbortSignal {
     const question = new AbortController();
 
     waiting.question = question;
+    // The answer may change the permission and the paths must be resolved anew after the wait.
+    waiting.epoch++;
     cancelled(waiting);
 
     return question.signal;
 }
 
 function cancelled(waiting: Waiting): void {
-    if ([...waiting.requests].every((request) => request.stop.signal.aborted)) {
-        waiting.question?.abort();
+    if (
+        waiting.question !== undefined &&
+        [...waiting.requests].every(({ request }) => request.stop.signal.aborted)
+    ) {
+        waiting.question.abort();
     }
 }
 
@@ -207,7 +241,6 @@ export class RequestGate {
     readonly #options: GateOptions;
     readonly #requests = new Map<number, Request>();
     readonly #handles = new Map<number, Handle>();
-    readonly #queues = new Map<string, Promise<void>>();
     /** Each session's requests that wait for their check: its question stands while one of them still waits. */
     readonly #waiting = new Map<string, Waiting>();
     /** The folders `mkdtemp` made for each session: codemode's work folders and temporary files. */
@@ -264,7 +297,7 @@ export class RequestGate {
             throw new Error(`Session not approved on ${this.#options.name()}`);
         }
 
-        const paths = await this.#paths(cwd === undefined ? {} : { cwd }, undefined);
+        const paths = await this.#paths(cwd === undefined ? {} : { cwd });
 
         if (!(await this.#inside(id, permission.folder, paths))) {
             throw new Error(
@@ -315,7 +348,8 @@ export class RequestGate {
                 if (request.sent) {
                     this.#options.send(frame(FRAME.cancel, id, json));
                 } else {
-                    // Not at the daemon yet: it ends now. Its session's question stays while another request waits.
+                    // Cancel is a control frame, not an auth decision. A caller may wait for this reply before
+                    // answering the question or releasing a snapshot read. The question can still have other waiters.
                     this.#refuse(id, request, "The request was cancelled");
                 }
             }
@@ -342,56 +376,113 @@ export class RequestGate {
         this.#requests.set(id, request);
         this.#options.timing?.begin(id, KNOWN_OPS.has(op) ? op : "unknown", whole.length);
 
-        // One session's requests wait in order, so a question for it holds them all, and other sessions go on.
         const key = request.scope?.id ?? "";
-        const waiting = this.#waiting.get(key) ?? { requests: new Set<Request>() };
+        const waiting = this.#waiting.get(key) ?? {
+            requests: new Set<Queued>(),
+            epoch: 0,
+            draining: false,
+        };
 
-        waiting.requests.add(request);
+        waiting.requests.add({ id, request, json, payload });
         this.#waiting.set(key, waiting);
         request.stop.signal.addEventListener("abort", () => cancelled(waiting), { once: true });
+        this.#fill(waiting);
 
-        const queued = (this.#queues.get(key) ?? Promise.resolve()).then(async () => {
-            this.#options.timing?.check(id);
+        if (!waiting.draining) {
+            waiting.draining = true;
+            void this.#drain(key, waiting);
+        }
+    }
+
+    /** Start a bounded window of independent checks, never past a question or an operation that can change paths. */
+    #fill(waiting: Waiting): void {
+        if (waiting.question !== undefined) {
+            return;
+        }
+
+        let count = 0;
+
+        for (const job of waiting.requests) {
+            const ahead = CHECK_AHEAD.has(job.request.op);
+
+            if (count === CHECK_LIMIT || (count > 0 && !ahead)) {
+                break;
+            }
+
+            if (job.check === undefined && !job.request.stop.signal.aborted) {
+                let early = false;
+
+                const resolved = () => {
+                    early ||= waiting.requests.values().next().value !== job;
+                };
+
+                this.#options.timing?.check(job.id);
+                job.check = {
+                    epoch: waiting.epoch,
+                    result: this.#prepare(job, resolved).then(
+                        (prepared) => ({ prepared, early }),
+                        (error: unknown) => ({ error, early }),
+                    ),
+                };
+            }
+
+            if (!ahead) {
+                break;
+            }
+
+            count++;
+        }
+    }
+
+    async #drain(key: string, waiting: Waiting): Promise<void> {
+        // Only the first request can ask, count as use of the permission, or go to the daemon. A send or refusal
+        // ends its turn, so later requests never observe a handle or permission decision out of order.
+        for (const job of waiting.requests) {
+            const { id, request, json, payload, check } = job;
 
             try {
-                if (request.stop.signal.aborted) {
-                    throw new Error("The request was cancelled");
-                }
-
-                await this.#authorize(request, json, waiting);
+                const result = await check?.result;
 
                 if (request.stop.signal.aborted) {
                     throw new Error("The request was cancelled");
                 }
 
-                waiting.requests.delete(request);
+                // Do not use a realpath that sat behind a slow check or a question. Resolve it again at its turn.
+                let prepared: Prepared;
 
-                if (op === READ_SNAPSHOT) {
+                if (result === undefined || result.early || check?.epoch !== waiting.epoch) {
+                    prepared = await this.#prepare(job);
+                } else if ("error" in result) {
+                    throw result.error;
+                } else {
+                    prepared = result.prepared;
+                }
+
+                await this.#authorize(job, prepared, waiting);
+
+                if (request.stop.signal.aborted) {
+                    throw new Error("The request was cancelled");
+                }
+
+                if (request.op === READ_SNAPSHOT) {
                     this.#options.timing?.checked(id, "snapshot");
                     await this.#snapshot(id, request, json.path, json.maxBytes);
                 } else {
-                    request.sent = true;
-                    const outgoing = frame(type, id, json, payload);
+                    const outgoing = frame(FRAME.request, id, json, payload);
 
+                    request.sent = true;
                     this.#options.timing?.checked(id, "daemon");
                     this.#options.send(outgoing);
                 }
             } catch (error) {
-                waiting.requests.delete(request);
                 this.#refuse(id, request, (error as Error).message);
+            } finally {
+                waiting.requests.delete(job);
+                this.#fill(waiting);
             }
-        });
+        }
 
-        this.#queues.set(key, queued);
-        void queued.finally(() => {
-            if (this.#queues.get(key) === queued) {
-                this.#queues.delete(key);
-            }
-
-            if (waiting.requests.size === 0 && this.#waiting.get(key) === waiting) {
-                this.#waiting.delete(key);
-            }
-        });
+        this.#waiting.delete(key);
     }
 
     /** Read only the path the gate authorized. Aliases and failures stay on the normal tool path. */
@@ -435,12 +526,8 @@ export class RequestGate {
         }
     }
 
-    /** Check a request; on success, it counts as use of its session until its result. */
-    async #authorize(
-        request: Request,
-        json: Record<string, unknown>,
-        waiting: Waiting,
-    ): Promise<void> {
+    /** Resolve the parts of the check that do not grant access or change session state. */
+    async #prepare({ request, json }: Queued, resolved?: () => void): Promise<Prepared> {
         if (!KNOWN_OPS.has(request.op)) {
             throw new Error(
                 `The runner on ${this.#options.name()} does not know the request "${request.op}"`,
@@ -453,30 +540,76 @@ export class RequestGate {
             throw new Error(`A file snapshot is not available on ${this.#options.name()}`);
         }
 
-        const handle = typeof json.handle === "number" ? this.#handles.get(json.handle) : undefined;
-        const listing =
-            LISTING.has(request.op) ||
-            (["readdir", "close"].includes(request.op) && handle?.directory === true);
-
-        if (!snapshot && typeof json.path === "string" && isAbsolute(json.path)) {
+        // Directory-handle listing is checked only in order, after earlier requests have reached the daemon.
+        if (LISTING.has(request.op) || this.#directoryListing(request, json)) {
             const path = json.path;
-
             // A folder the picker cannot resolve still lists as the daemon decides.
-            request.path = await canonical(path).catch(() => resolve(path));
+            const real =
+                typeof path === "string" && isAbsolute(path)
+                    ? await canonical(path).catch(() => resolve(path))
+                    : undefined;
+
+            if (real !== undefined) {
+                resolved?.();
+            }
+
+            return { listing: true, path: real };
         }
 
-        if (listing) {
+        return this.#resolvePaths(json, request.scope, resolved);
+    }
+
+    #directoryListing(request: Request, json: Record<string, unknown>): boolean {
+        return (
+            ["readdir", "close"].includes(request.op) &&
+            typeof json.handle === "number" &&
+            this.#handles.get(json.handle)?.directory === true
+        );
+    }
+
+    async #resolvePaths(
+        json: Record<string, unknown>,
+        scope?: SessionScope,
+        resolved?: () => void,
+    ): Promise<Paths> {
+        const paths = await this.#paths(json, resolved);
+        // Check the grant's folder after resolving request paths, which may take time. Keep the grant check live.
+        const folder =
+            scope === undefined
+                ? undefined
+                : await this.#options.approvals.resolveFolder(scope.folder);
+
+        if (folder !== undefined) {
+            resolved?.();
+        }
+
+        return { paths, folder };
+    }
+
+    /** Check current session state at this request's turn, not while waiting behind an earlier request. */
+    async #authorize(
+        { request, json }: Queued,
+        prepared: Prepared,
+        waiting: Waiting,
+    ): Promise<void> {
+        if ("listing" in prepared) {
+            if (!LISTING.has(request.op) && !this.#directoryListing(request, json)) {
+                throw new Error("The handle is no longer open for listing");
+            }
+
+            request.path = prepared.path;
+
             return;
         }
 
-        const paths = await this.#paths(json, handle);
         const scope = request.scope;
+        const snapshot = request.op === READ_SNAPSHOT;
 
-        if (scope === undefined) {
+        if (scope === undefined || prepared.folder === undefined) {
             throw new Error(`A session permission on ${this.#options.name()} is required`);
         }
 
-        let permission = await this.#options.approvals.valid(scope);
+        let permission = await this.#options.approvals.validAt(scope.id, prepared.folder);
 
         if (permission === undefined && snapshot) {
             // With no approved path to snapshot, let the normal open ask once, at its usual point in the read.
@@ -486,9 +619,14 @@ export class RequestGate {
         if (permission === undefined && !request.stop.signal.aborted) {
             this.revokeReads(scope.id);
 
-            // Expired, revoked, or never approved: ask again, and wait.
-            if (await this.#options.ask(scope, whileWaiting(waiting))) {
-                permission = await this.#options.approvals.valid(scope);
+            // Expired, revoked, or never approved: ask again, and wait. No later check starts while it is open.
+            try {
+                if (await this.#options.ask(scope, whileWaiting(waiting))) {
+                    prepared = await this.#resolvePaths(json, scope);
+                    permission = await this.#options.approvals.validAt(scope.id, prepared.folder!);
+                }
+            } finally {
+                delete waiting.question;
             }
         }
 
@@ -501,6 +639,9 @@ export class RequestGate {
         if ((request.op === "exec" || request.op === "pty") && typeof json.cwd !== "string") {
             json.cwd = permission.folder;
         }
+
+        const handle = typeof json.handle === "number" ? this.#handles.get(json.handle) : undefined;
+        const paths = handle === undefined ? prepared.paths : [handle.path, ...prepared.paths];
 
         if (
             typeof json.handle === "number" &&
@@ -528,7 +669,6 @@ export class RequestGate {
             snapshot ||
             request.op === "open" ||
             (handle?.readOnly === true && READING.has(request.op));
-        const home = reading ? await realFolder(homedir()) : "";
         const extra = this.#extraReads.get(scope.id);
 
         if (extra !== undefined && extra.approvedAt !== permission.approvedAt) {
@@ -544,17 +684,16 @@ export class RequestGate {
         if (
             !temporary &&
             !(await this.#inside(scope.id, permission.folder, paths)) &&
-            !(reading && paths.every((path) => piReads(permission.folder, home, path))) &&
-            !extraReading
+            !(reading && (extraReading || (await this.#piReads(permission.folder, paths))))
         ) {
             throw new Error(
                 `The path is outside the session's approved folder on ${this.#options.name()}`,
             );
         }
 
-        if (snapshot && paths[0] !== undefined) {
+        if (snapshot || typeof json.path === "string") {
             // The path as checked above, not a second resolution of the same name.
-            request.path = paths[0];
+            request.path = snapshot ? paths[0] : prepared.paths[0];
         }
 
         if (!request.stop.signal.aborted && request.op !== "watch") {
@@ -568,8 +707,14 @@ export class RequestGate {
         }
     }
 
+    async #piReads(folder: string, paths: string[]): Promise<boolean> {
+        const home = await realFolder(homedir());
+
+        return paths.every((path) => piReads(folder, home, path));
+    }
+
     /** Each path a request names, made absolute and real. A relative or non-text path is refused. */
-    async #paths(json: Record<string, unknown>, handle: Handle | undefined): Promise<string[]> {
+    async #paths(json: Record<string, unknown>, resolved?: () => void): Promise<string[]> {
         const given: unknown[] = [json.path, json.cwd, json.to];
 
         if (Array.isArray(json.targets)) {
@@ -578,7 +723,7 @@ export class RequestGate {
             }
         }
 
-        const paths = handle === undefined ? [] : [handle.path];
+        const absolute: string[] = [];
 
         for (const path of given) {
             if (path === undefined) {
@@ -589,13 +734,44 @@ export class RequestGate {
                 throw new Error("A request path must be absolute");
             }
 
-            paths.push(await canonical(path));
+            absolute.push(path);
+        }
+
+        const paths: string[] = [];
+
+        async function real(path: string) {
+            try {
+                const value = await canonical(path);
+
+                resolved?.();
+
+                return { value } as const;
+            } catch (error) {
+                return { error } as const;
+            }
+        }
+
+        // Watch requests may name many paths. Keep each group bounded and wait for it even if one path fails.
+        for (let i = 0; i < absolute.length; i += CHECK_LIMIT) {
+            const group = await Promise.all(absolute.slice(i, i + CHECK_LIMIT).map(real));
+
+            for (const result of group) {
+                if ("error" in result) {
+                    throw result.error;
+                }
+
+                paths.push(result.value);
+            }
         }
 
         return paths;
     }
 
     async #inside(session: string, folder: string, paths: readonly string[]): Promise<boolean> {
+        if (paths.every((path) => folderContains(folder, path))) {
+            return true;
+        }
+
         const shared = [
             ...(await this.#options.shared(session)),
             ...(this.#temporary.get(session) ?? []),

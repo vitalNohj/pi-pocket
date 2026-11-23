@@ -58,24 +58,35 @@ export class Approvals {
     }
 
     async valid(named: SessionScope | string): Promise<SessionPermission | undefined> {
-        // A failed save is reported where it was made; checks read what the file holds.
-        await this.#writes.catch(() => {});
-        const scope =
-            typeof named === "string"
-                ? (this.#read().sessions ?? []).find((entry) => entry.id === named)
-                : named;
+        let scope: SessionScope | undefined = typeof named === "string" ? undefined : named;
 
-        if (scope === undefined) {
-            return undefined;
+        if (typeof named === "string") {
+            await this.#writes.catch(() => {});
+            scope = (this.#read().sessions ?? []).find((entry) => entry.id === named);
         }
 
-        const folder = await realFolder(scope.folder);
+        return scope === undefined
+            ? undefined
+            : this.validAt(scope.id, await this.resolveFolder(scope.folder));
+    }
+
+    async resolveFolder(folder: string): Promise<string> {
+        // A failed save is reported where it was made; checks read what the file holds.
+        await this.#writes.catch(() => {});
+
+        // Resolve live. Even a short cache can keep granting access after an approved folder becomes a symlink.
+        return realFolder(folder);
+    }
+
+    /** Check the current grant for a folder the gate just resolved, not a grant saved by a check ahead of it. */
+    async validAt(id: string, folder: string): Promise<SessionPermission | undefined> {
+        await this.#writes.catch(() => {});
         const permission = (this.#read().sessions ?? []).find(
-            (entry) => entry.id === scope.id && entry.folder === folder,
+            (entry) => entry.id === id && entry.folder === folder,
         );
 
         return permission !== undefined &&
-            (this.#active.has(scope.id) ||
+            (this.#active.has(id) ||
                 permission.ttlMs === null ||
                 Date.now() < permission.idleAt + permission.ttlMs)
             ? permission

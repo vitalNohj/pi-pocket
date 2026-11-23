@@ -624,13 +624,17 @@ export class Runner {
         }
 
         const downloads = this.#settings().downloads;
+        const [home, downloadRoot] = await Promise.all([
+            realFolder(homedir()),
+            downloads === undefined ? undefined : realFolder(downloads),
+        ]);
 
         return [
             join(temporary, "pi-pocket-uploads", id),
             join(temporary, "pi-pocket-tasks", id),
             join(temporary, "pi-pocket-downloads", id),
-            join(await realFolder(homedir()), ".pi-pocket", "worktrees", id),
-            ...(downloads === undefined ? [] : [join(await realFolder(downloads), id)]),
+            join(home, ".pi-pocket", "worktrees", id),
+            ...(downloadRoot === undefined ? [] : [join(downloadRoot, id)]),
         ];
     }
 

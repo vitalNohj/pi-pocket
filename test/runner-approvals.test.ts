@@ -4,7 +4,16 @@ import assert from "node:assert/strict";
 import { linkInProcess, newIdentity } from "../src/runner/secure-link.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    statSync,
+    writeFileSync,
+    realpathSync,
+} from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { connect, createServer as createNetServer } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -1044,6 +1053,68 @@ describe("pi-pocket runner totp, sessions, and unlink", () => {
 
         return file;
     }
+
+    it("applies another process's settings change to the next request without a restart", async (t) => {
+        const setup = await serve();
+        const { code } = setup.runners.makeCode("Settings test", "owner");
+        const linked = linkInProcess((request) => setup.runners.redeem(request), code);
+        const link = setup.runners.link(linked.id);
+        const work = realpathSync(folder("settings-work"));
+        const scope = { id: sid("live-settings"), folder: work, person: "Owner" };
+        const oldRoot = join(realpathSync(root), "downloads-old");
+        const newRoot = join(realpathSync(root), "downloads-new");
+        const oldFile = join(oldRoot, scope.id, "test.txt");
+        const newFile = join(newRoot, scope.id, "test.txt");
+        const file = join(mkdtempSync(join(root, "live-settings-")), "runner.json");
+        const now = Date.now();
+        const settings: RunnerSettings = {
+            downloads: oldRoot,
+            sessions: [
+                { ...scope, approvedBy: "computer", approvedAt: now, idleAt: now, ttlMs: null },
+            ],
+        };
+
+        await Promise.all(
+            [oldFile, newFile].map(async (path) => {
+                await mkdir(dirname(path), { recursive: true });
+                await writeFile(path, "test");
+            }),
+        );
+
+        writeFileSync(
+            file,
+            `${JSON.stringify({ ...linked, server: setup.address, settings }, null, "\t")}\n`,
+            {
+                mode: 0o600,
+            },
+        );
+        const child = spawn(process.execPath, [launcher, "runner", "start", "--config", file], {
+            stdio: "ignore",
+        });
+        const exited = new Promise((resolve) => child.once("close", resolve));
+
+        t.after(async () => {
+            child.kill();
+            await Promise.all([exited, close(setup)]);
+        });
+        await until(() => link.state !== undefined, "the runner to connect");
+        const env = setup.runners.env(linked.id, work, scope);
+
+        assert.equal((await env.readTextFile(oldFile, context)).ok, true);
+        const size = statSync(file).size;
+        const updated = await run(file, ["settings", "downloads", newRoot, "--json"]);
+
+        assert.equal(updated.code, 0, updated.stderr);
+        assert.equal(statSync(file).size, size, "the settings change keeps the file size");
+        const refused = await env.readTextFile(oldFile, context);
+
+        assert.equal(refused.ok, false, "the old downloads folder is not approved any more");
+        assert.match(
+            refused.ok ? "" : refused.error.message,
+            /outside the session's approved folder/,
+        );
+        assert.equal((await env.readTextFile(newFile, context)).ok, true);
+    });
 
     it("settings confirm on|off is the same as stop-asking off|on", async () => {
         const file = linkFile();

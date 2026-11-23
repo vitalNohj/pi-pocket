@@ -38,7 +38,9 @@ import {
     realpathSync,
     renameSync,
     rmSync,
+    statSync,
     writeFileSync,
+    type BigIntStats,
 } from "node:fs";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
@@ -238,6 +240,43 @@ function readLink(file: string): Link | undefined {
     );
 }
 
+/** Keep the parsed link, but see edits by the CLI or desktop app on the next read. */
+export function linkReader(file: string): () => Link | undefined {
+    let cached: { stamp: BigIntStats; link: Link } | undefined;
+
+    return () => {
+        let stamp: BigIntStats | undefined;
+
+        try {
+            stamp = statSync(file, { bigint: true, throwIfNoEntry: false });
+        } catch {
+            // Let readLink handle a file we cannot stat as it did before.
+        }
+
+        // The CLI and desktop app replace the file. Compare its identity too, even for same-size writes.
+        if (
+            cached !== undefined &&
+            stamp !== undefined &&
+            stamp.dev === cached.stamp.dev &&
+            stamp.ino === cached.stamp.ino &&
+            stamp.mtimeNs === cached.stamp.mtimeNs &&
+            stamp.ctimeNs === cached.stamp.ctimeNs &&
+            stamp.size === cached.stamp.size
+        ) {
+            return cached.link;
+        }
+
+        cached = undefined;
+        const link = readLink(file);
+
+        if (link !== undefined && stamp !== undefined) {
+            cached = { stamp, link };
+        }
+
+        return link;
+    };
+}
+
 function writeLink(file: string, link: Link): void {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     const temp = `${file}.${process.pid}.tmp`;
@@ -308,8 +347,8 @@ function downloadsLine(settings: FullSettings): string {
 }
 
 /** Change settings in the link file, keeping the rest. */
-function changeSettings(file: string, change: RunnerSettings): Link {
-    const saved = readLink(file);
+function changeSettings(file: string, change: RunnerSettings, read = () => readLink(file)): Link {
+    const saved = read();
 
     if (saved === undefined) {
         throw new Problem("This computer is not linked yet. Link it first.");
@@ -1158,10 +1197,11 @@ async function serve(
     via: "terminal" | "stdio" | "none",
     asService = false,
 ): Promise<void> {
+    const read = linkReader(file);
     let saved: Link | undefined;
 
     try {
-        saved = readLink(file);
+        saved = read();
     } catch (error) {
         fail((error as Error).message);
     }
@@ -1186,16 +1226,15 @@ async function serve(
             ? {}
             : { daemon: process.env.PI_POCKET_RUNNER_DAEMON }),
         log,
-        // Read each time: `settings` from another terminal (or the desktop app) applies without a restart.
         settings: () => {
             try {
-                return readLink(file)?.settings ?? {};
+                return read()?.settings ?? {};
             } catch {
                 return saved.settings ?? {};
             }
         },
         saveSettings: (change) => {
-            changeSettings(file, change);
+            changeSettings(file, change, read);
         },
         ...(ask === undefined ? {} : { ask }),
         // For the program that runs it: whether sessions work here, and in which folders (`activity.ts`).
