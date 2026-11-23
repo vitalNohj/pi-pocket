@@ -24,6 +24,7 @@ import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { THIS_SERVER } from "../src/server/access.ts";
 import { Browsers } from "../src/server/browser.ts";
 import { Chromium } from "../src/server/browser/cdp.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
@@ -737,7 +738,7 @@ test("Browser Stop does not ask for renewal, but Clear does", real, async () => 
         const { user: guest, token } = app.config.addUser("Guest", "guest");
         const id = await newSession(app);
 
-        app.config.setServerUsers([guest.id]);
+        app.config.setUsers(THIS_SERVER, [guest.id]);
         await app.commands.shareSession(id, owner(app), [guest.id]);
         await app.browsers.open(Number(id), { restore: false });
         approveSession(app, id, guest);

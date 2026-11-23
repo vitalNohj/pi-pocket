@@ -93,7 +93,7 @@ before(async () => {
     lina = app.config.addUser("Lina", "guest").user;
     app.setRight(owner(app), { person: lina.id, right: "linksRunners", on: true });
     ({ id: linas, runner: linasRunner } = await link("Lina's laptop", lina));
-    app.config.setRunnerUsers(linas, [owner(app).id]);
+    app.config.setUsers(linas, [owner(app).id]);
     app.config.setGivenFolders(linas, owner(app).id, [root]);
     app.accessChanged();
 
@@ -269,7 +269,7 @@ test("a session on another computer that the owner may not see is not theirs to 
 test("tasks on a computer that is not reached any more are given up, and no process is signalled", async () => {
     const guest = app.config.addUser("Remy", "guest").user;
 
-    app.config.setRunnerUsers(computer, [guest.id]);
+    app.config.setUsers(computer, [guest.id]);
     app.config.setGivenFolders(computer, guest.id, [root]);
     app.config.updateUser(guest.id, { approvalDays: 0 });
     app.accessChanged();
@@ -288,7 +288,7 @@ test("tasks on a computer that is not reached any more are given up, and no proc
         await archive(id);
         // The person who started it may no longer use the computer, and the session is still theirs (the state a
         // hand-over that was cut off leaves): nothing of the session runs or is read there.
-        app.config.setRunnerUsers(computer, []);
+        app.config.setUsers(computer, []);
         assert.throws(() => app.runnerScope(id), { status: 403 });
 
         const asked = waiting();

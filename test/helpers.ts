@@ -8,6 +8,7 @@ import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { type ConversationId, UsageDoc } from "@earendil-works/pi-durable";
 import type { Attachment } from "../src/server/commands.ts";
+import { THIS_SERVER } from "../src/server/access.ts";
 import type { User } from "../src/server/config.ts";
 import type { FolderRequestView } from "../src/server/folder-requests.ts";
 import type { LimitTuning } from "../src/server/limit-gate.ts";
@@ -277,9 +278,9 @@ export async function addPerson(
         return added;
     }
 
-    app.config.setServerUsers([...(app.config.server.users ?? []), added.user.id]);
-    app.config.setComputerSettings(undefined, { shareNew: true });
-    app.config.setGivenFolders(undefined, added.user.id, [realpathSync(root)]);
+    app.config.setUsers(THIS_SERVER, [...(app.config.server.users ?? []), added.user.id]);
+    app.config.setComputerSettings(THIS_SERVER, { shareNew: true });
+    app.config.setGivenFolders(THIS_SERVER, added.user.id, [realpathSync(root)]);
     app.config.updateUser(added.user.id, { approvalDays: 0 });
     allowNeverAsked(app);
 

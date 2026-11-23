@@ -1330,7 +1330,7 @@ export class Commands {
         const starter = app.policy.starter({ id: String(root), computer, ...meta });
         const shared: string[] = [];
         // Who is leaving its computer (no longer chosen there, their shares not taken back yet) no longer has it.
-        const leaving = (): readonly string[] => app.config.leaving(meta.runner);
+        const leaving = (): readonly string[] => app.config.leaving(meta.runner ?? THIS_SERVER);
         const had = new Set(meta.sharedWith ?? []);
         const before = new Set([...had].filter((each) => !leaving().includes(each)));
 
@@ -1388,7 +1388,7 @@ export class Commands {
     ): Promise<string[]> {
         const app = this.#app;
         const computer = runner ?? THIS_SERVER;
-        const leaving = (): readonly string[] => app.config.leaving(runner);
+        const leaving = (): readonly string[] => app.config.leaving(computer);
         let saved: string[] = [];
         // Whom it was shared with as this change was saved, but who is leaving its computer.
         let was: string[] = [];
@@ -1583,7 +1583,7 @@ export class Commands {
                     : starter === person.id
                       ? "started"
                       : meta.sharedWith?.includes(person.id) === true &&
-                          !app.config.leaving(meta.runner).includes(person.id)
+                          !app.config.leaving(meta.runner ?? THIS_SERVER).includes(person.id)
                         ? "shared"
                         : app.seesByFolder(person, id)
                           ? "folder"
@@ -1636,10 +1636,9 @@ export class Commands {
                     return [];
                 }
 
-                const key = id === THIS_SERVER ? undefined : id;
-                const theirs = app.config.givenFolders(key, person.id);
-                const sees = app.config.seenFolders(key, person.id);
-                const givers = app.config.givenBy(key, person.id);
+                const theirs = app.config.givenFolders(id, person.id);
+                const sees = app.config.seenFolders(id, person.id);
+                const givers = app.config.givenBy(id, person.id);
                 const mine = app.policy.reshares(user, id)
                     ? (app.policy.givenFolders(user, id) ?? [])
                     : [];
@@ -1769,7 +1768,7 @@ export class Commands {
                     app.policy.inCharge(person, computer) ||
                     app.policy.starter({ id: String(root), computer, ...meta }) === person.id ||
                     (meta.sharedWith?.includes(person.id) === true &&
-                        !app.config.leaving(meta.runner).includes(person.id))
+                        !app.config.leaving(meta.runner ?? THIS_SERVER).includes(person.id))
                 ) {
                     return;
                 }

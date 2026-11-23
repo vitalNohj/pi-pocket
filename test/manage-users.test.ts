@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
+import { THIS_SERVER } from "../src/server/access.ts";
 import type { User } from "../src/server/config.ts";
 import { createHandler } from "../src/server/http.ts";
 
@@ -328,7 +329,7 @@ test("who manages users invites people, and signs a device in as a viewer and as
 
     // As for anyone who invites: to their own sessions, only where they start sessions.
     await refused(mona, "invite", { minutes: 15 }, 403, /Only people who may start sessions here/);
-    app.config.setServerUsers([...(app.config.server.users ?? []), mona.id]);
+    app.config.setUsers(THIS_SERVER, [...(app.config.server.users ?? []), mona.id]);
 
     const invite = await call<{ code: string }>(mona, "invite", { minutes: 15 });
 

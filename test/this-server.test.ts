@@ -364,7 +364,7 @@ test("an invite to every session passes on only the sessions its maker started",
     const gina = person("Gina", "guest");
     const ginas = app.config.addRunner("Gina's laptop", gina.id, newIdentity().publicKey).id;
 
-    app.config.setRunnerUsers(ginas, [alex.id]);
+    app.config.setUsers(ginas, [alex.id]);
     await call(owner(app), `runners/${THIS_SERVER}/users`, { users: [alex.id, vera.id] });
 
     const { id: local } = await app.commands.createSession(owner(app), { cwd: project });
@@ -613,7 +613,7 @@ test("a copy tells where it was forked from only to those who may see that sessi
 test("a tab whose person can no longer see a session gets none of its live events, before it is moved out", async () => {
     const { id } = await app.commands.createSession(owner(app), { cwd: project });
 
-    app.config.setServerUsers([alex.id, vera.id]);
+    app.config.setUsers(THIS_SERVER, [alex.id, vera.id]);
     await app.commands.shareSession(id, owner(app), [alex.id]);
 
     const alexTab = fakeTab(id, alex);

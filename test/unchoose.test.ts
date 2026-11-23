@@ -1,8 +1,8 @@
 // A person no longer chosen for a computer loses the sessions shared with them there at once. Who is chosen is saved in
 // the settings file and the shares with the sessions, so the two cannot be saved in one step: the settings mark the
-// person as leaving in the same save that drops them (`config.ts` `StoredRunner.leaving`), no share there counts for
-// them from then on (`access.ts` `Computer.leaving`), and the rest (`app.ts` `#finishLeaving`) is finished by the next
-// start when a restart cut it short. A real App.
+// person as leaving in the same save that drops them (`config.ts` `ComputerAccess.leaving`), no share there counts
+// for them from then on (`access.ts` `Computer.leaving`), and the rest (`app.ts` `#finishLeaving`) is finished by the
+// next start when a restart cut it short. A real App.
 import {
     type App,
     cleanUp,
@@ -65,9 +65,9 @@ test("an unchoose a restart cut short ends the shares at once, and the next star
     assert.equal(sees(vera, hers), true);
 
     // The settings are saved, and the server stops before anything else is.
-    app.config.setServerUsers([]);
+    app.config.setUsers(THIS_SERVER, []);
     assert.deepEqual(app.sessionMeta(shared)?.sharedWith, [vera.id], "the share is still saved");
-    assert.deepEqual(app.config.leaving(undefined), [vera.id]);
+    assert.deepEqual(app.config.leaving(THIS_SERVER), [vera.id]);
     assert.equal(sees(vera, shared), false, "but it no longer counts");
     assert.equal(steers(vera, shared), false);
     assert.equal(sees(vera, hers), false);
@@ -76,7 +76,7 @@ test("an unchoose a restart cut short ends the shares at once, and the next star
     app = await openApp(scriptedModel(), data);
     assert.equal(app.sessionMeta(shared)?.sharedWith, undefined, "the share is taken back");
     assert.equal(app.sessionMeta(hers)?.createdBy, owner(app).id, "her session is the owner's");
-    assert.deepEqual(app.config.leaving(undefined), [], "and nothing is left to finish");
+    assert.deepEqual(app.config.leaving(THIS_SERVER), [], "and nothing is left to finish");
     assert.equal(sees(vera, shared), false);
 
     // Chosen again, she sees nothing from before: only what is shared with her anew.
@@ -104,7 +104,7 @@ test("a share saved while its person is unchosen does not come back", async () =
     assert.equal(app.sessionMeta(id)?.sharedWith, undefined);
     assert.equal(sees(wes, id), false);
     assert.equal(steers(wes, id), false);
-    assert.deepEqual(app.config.leaving(undefined), []);
+    assert.deepEqual(app.config.leaving(THIS_SERVER), []);
 });
 
 test("a share is not kept for someone who is leaving, and turning them off again finishes it", async () => {
@@ -119,7 +119,10 @@ test("a share is not kept for someone who is leaving, and turning them off again
     await app.commands.shareSession(other, owner(app), [xan.id]);
 
     // Cut short, with no restart: the settings alone.
-    app.config.setServerUsers(chosen().filter((each) => each !== xan.id));
+    app.config.setUsers(
+        THIS_SERVER,
+        chosen().filter((each) => each !== xan.id),
+    );
     assert.equal(sees(xan, kept), false);
 
     // Saving the list he was on does not keep him on it.
@@ -129,8 +132,45 @@ test("a share is not kept for someone who is leaving, and turning them off again
     // The switch, turned off again, takes back the rest.
     await app.choosePerson(THIS_SERVER, xan.id, false);
     assert.equal(app.sessionMeta(other)?.sharedWith, undefined);
-    assert.deepEqual(app.config.leaving(undefined), []);
+    assert.deepEqual(app.config.leaving(THIS_SERVER), []);
     assert.equal(sees(xan, other), false);
+});
+
+test("a share still saved for someone who is leaving this server is not theirs: their page says so, and it is not shared again", async () => {
+    const quin = app.config.addUser("Quin", "guest").user;
+
+    await app.choosePerson(THIS_SERVER, quin.id, true);
+
+    const id = await newSession(app);
+
+    await app.commands.shareSession(id, owner(app), [quin.id]);
+
+    const row = () =>
+        app.commands
+            .sharingWith(owner(app), quin.id)
+            .sessions.find((each) => each.id === Number(id));
+
+    assert.equal(row()?.state, "shared");
+
+    // Cut short, with no restart: the settings alone. The share is still saved.
+    app.config.setUsers(
+        THIS_SERVER,
+        chosen().filter((each) => each !== quin.id),
+    );
+    assert.deepEqual(app.sessionMeta(id)?.sharedWith, [quin.id]);
+    assert.equal(row()?.state, "blocked");
+
+    const again = await app.commands.shareWith(owner(app), quin.id, { share: [Number(id)] });
+
+    assert.deepEqual(again.refused, [
+        { id: Number(id), reason: "Quin cannot use this server: choose them for it first." },
+    ]);
+    assert.deepEqual(app.sessionMeta(id)?.sharedWith, [quin.id]);
+
+    // The switch, turned off again, takes back the rest.
+    await app.choosePerson(THIS_SERVER, quin.id, false);
+    assert.equal(app.sessionMeta(id)?.sharedWith, undefined);
+    assert.deepEqual(app.config.leaving(THIS_SERVER), []);
 });
 
 test("two people changed at once both count", async () => {
@@ -149,7 +189,7 @@ test("two people changed at once both count", async () => {
     assert.equal(chosen().includes(zed.id), true);
     assert.equal(chosen().includes(yara.id), false);
     assert.equal(app.sessionMeta(id)?.sharedWith, undefined);
-    assert.deepEqual(app.config.leaving(undefined), []);
+    assert.deepEqual(app.config.leaving(THIS_SERVER), []);
 });
 
 test("leaving a linked computer ends the shares there, and no others", async () => {
@@ -172,7 +212,7 @@ test("leaving a linked computer ends the shares there, and no others", async () 
     assert.equal(sees(kim, there), true);
     assert.equal(sees(kim, here), true);
 
-    app.config.setRunnerUsers(laptop.id, []);
+    app.config.setUsers(laptop.id, []);
     assert.deepEqual(app.config.leaving(laptop.id), [kim.id]);
     assert.equal(sees(kim, there), false, "no share on the laptop counts");
     assert.equal(sees(kim, here), true, "the one on this server does");

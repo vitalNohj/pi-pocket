@@ -138,7 +138,7 @@ before(async () => {
     runner.finished.catch(() => {});
     await until(() => app.runners.link(runnerId).online, "the runner to connect");
     // Lina chooses Cho for it, and gives him the test folders there.
-    app.config.setRunnerUsers(runnerId, [cho.id]);
+    app.config.setUsers(runnerId, [cho.id]);
     app.config.setGivenFolders(runnerId, cho.id, [root]);
     app.config.updateUser(cho.id, { approvalDays: 0 });
     app.accessChanged();

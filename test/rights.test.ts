@@ -154,7 +154,7 @@ test("one check answers for every right: the owner has them all, a user what the
     const vera = person("Vera", "viewer");
     const sam = person("Sam", "guest", ["1"]);
 
-    app.config.setServerUsers([gil.id, vera.id]);
+    app.config.setUsers(THIS_SERVER, [gil.id, vera.id]);
 
     for (const right of PERSON_RIGHTS) {
         assert.equal(has(owner(app), right), true, right);
@@ -507,7 +507,7 @@ test("a file that kept each right in a field of its own has them gathered into o
     assert.deepEqual(next.userById(pat.id)?.paused, { rights: ["managesUsers"] });
     assert.deepEqual(next.server.rights, { wheel: [ann.id], allows: [ann.id] });
     assert.deepEqual(next.runnerById(laptop.id)?.rights, { allows: [ann.id] });
-    assert.deepEqual(next.rightHolders(undefined, "wheel"), [ann.id]);
+    assert.deepEqual(next.rightHolders(THIS_SERVER, "wheel"), [ann.id]);
     assert.deepEqual(next.rightsOn(laptop.id), { wheel: [], allows: [ann.id], reshares: [] });
 
     // Saved so, in that load: no field of the old shape is left.
@@ -545,9 +545,9 @@ test("a right that was a person's and is now given on each computer is dropped f
     const pat = first.addUser("Pat", "viewer").user;
     const laptop = first.addRunner("Laptop", boss.id, "key");
 
-    first.setServerUsers([ann.id, bea.id]);
-    first.setRunnerUsers(laptop.id, [ann.id]);
-    first.setComputerRight(undefined, ann.id, "wheel", true);
+    first.setUsers(THIS_SERVER, [ann.id, bea.id]);
+    first.setUsers(laptop.id, [ann.id]);
+    first.setComputerRight(THIS_SERVER, ann.id, "wheel", true);
 
     const read = () =>
         JSON.parse(readFileSync(first.file, "utf8")) as {
@@ -571,7 +571,7 @@ test("a right that was a person's and is now given on each computer is dropped f
     assert.equal(next.userById(bea.id)?.rights, undefined, "nothing held leaves no list");
     assert.deepEqual(next.userById(pat.id)?.paused, { rights: ["managesUsers"] });
     // Nobody is moved to a computer: it is off on each until who is in charge there turns it on.
-    assert.deepEqual(next.rightHolders(undefined, "reshares"), []);
+    assert.deepEqual(next.rightHolders(THIS_SERVER, "reshares"), []);
     assert.deepEqual(next.rightHolders(laptop.id, "reshares"), []);
     assert.deepEqual(next.server.rights, { wheel: [ann.id] }, "what was held there stays");
 
@@ -586,7 +586,7 @@ test("a right that was a person's and is now given on each computer is dropped f
     // Given on a computer since, it is kept there, and a later load leaves the file as it is.
     assert.equal(next.setComputerRight(laptop.id, ann.id, "reshares", true), true);
     assert.deepEqual(next.rightHolders(laptop.id, "reshares"), [ann.id]);
-    assert.deepEqual(next.rightHolders(undefined, "reshares"), []);
+    assert.deepEqual(next.rightHolders(THIS_SERVER, "reshares"), []);
 
     const text = readFileSync(first.file, "utf8");
     const again = new ConfigStore(directory);

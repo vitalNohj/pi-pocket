@@ -150,7 +150,7 @@ before(async () => {
     gale = person("Gale", "guest");
     vera = person("Vera", "viewer");
     stranger = person("Stranger", "guest");
-    app.config.setServerUsers([alex.id, gale.id, vera.id]);
+    app.config.setUsers(THIS_SERVER, [alex.id, gale.id, vera.id]);
     mkdirSync(join(root, "projects"), { recursive: true });
     given = realpathSync(join(root, "projects"));
     server = createServer(
@@ -167,7 +167,7 @@ before(async () => {
 
 beforeEach(() => {
     for (const each of [alex, gale, vera]) {
-        app.config.setGivenFolders(undefined, each.id, [given]);
+        app.config.setGivenFolders(THIS_SERVER, each.id, [given]);
         app.config.updateUser(each.id, { approvalDays: undefined });
     }
 
@@ -289,7 +289,7 @@ test("with no folder asked for, the picker opens in the first given folder, or a
     assert.equal(first.body.path, given);
 
     // Every folder is theirs (`/`, as a server from before the access rules gives its guests): home, as for the owner.
-    app.config.setGivenFolders(undefined, alex.id, ["/"]);
+    app.config.setGivenFolders(THIS_SERVER, alex.id, ["/"]);
 
     const home = await call<{ path: string; parent: unknown; given: string[] }>(alex, "fs");
 
@@ -922,12 +922,12 @@ test("outside data comes in for a person who steers the session, as a task: it a
     }
 
     // Nor Alex's, once the session is no longer theirs to steer.
-    app.config.setServerUsers([gale.id, vera.id]);
+    app.config.setUsers(THIS_SERVER, [gale.id, vera.id]);
 
     try {
         await assert.rejects(from(alex, "third"), { status: 410 });
     } finally {
-        app.config.setServerUsers([alex.id, gale.id, vera.id]);
+        app.config.setUsers(THIS_SERVER, [alex.id, gale.id, vera.id]);
     }
 });
 
@@ -997,7 +997,7 @@ test("a session's own worktree counts as the folder it came from: its copies and
     assert.equal(app.cwdOf((await app.commands.fork(id, gale, {})).id), worktree.path);
 
     // Not given the source folder, she is refused: the worktree counts as that folder, no more.
-    app.config.setGivenFolders(undefined, gale.id, [newFolder()]);
+    app.config.setGivenFolders(THIS_SERVER, gale.id, [newFolder()]);
     await assert.rejects(app.commands.fork(id, gale, {}), /not given this folder/);
 
     // Only the session's own worktree: from another session, it is a folder nobody was given.
@@ -1109,7 +1109,7 @@ test("a person removed from this server loses their waiting requests, and their 
         );
         assert.equal(app.canSee(gale, id), false);
     } finally {
-        app.config.setServerUsers([alex.id, gale.id, vera.id]);
+        app.config.setUsers(THIS_SERVER, [alex.id, gale.id, vera.id]);
     }
 });
 
@@ -1127,7 +1127,7 @@ test("taking a folder back moves sessions there to the owner, and leaves the oth
         ids.push((await started).id);
     }
 
-    app.config.setGivenFolders(undefined, alex.id, [kept]);
+    app.config.setGivenFolders(THIS_SERVER, alex.id, [kept]);
     await app.handOver(alex.id, THIS_SERVER);
     assert.equal(app.sessionMeta(ids[0]!)?.createdBy, alex.id);
     assert.equal(app.sessionMeta(ids[1]!)?.createdBy, owner(app).id);
@@ -1293,7 +1293,7 @@ test("a new session is checked again where it is saved: the folder was taken bac
     t.mock.method(app.harness, "createConversation", ((...args: Parameters<typeof create>) => {
         if (takeBack) {
             takeBack = false;
-            app.config.setGivenFolders(undefined, alex.id, []);
+            app.config.setGivenFolders(THIS_SERVER, alex.id, []);
         }
 
         return create(...args);

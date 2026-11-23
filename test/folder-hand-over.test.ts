@@ -1,6 +1,6 @@
 // What follows from a folder is finished whatever cuts it short. A folder taken back from a person, or all sessions in
 // one, is saved in the settings file, and the sessions and tasks that go with it are saved with the sessions: the
-// settings mark the hand-over as owed in that same save (`config.ts` `StoredRunner.handOver`), and the next start
+// settings mark the hand-over as owed in that same save (`config.ts` `ComputerAccess.handOver`), and the next start
 // finishes one a restart cut short (`app.ts` `#finishHandOvers`). A move is one save: where Pi works and the session's
 // record of it, which access is judged by, never differ (`commands.ts` `configure`, `removeWorktree`). And such
 // changes go one at a time, each checked again where it is saved (`app.ts` `#inTurn`, `#requireGiving`). A real App.
@@ -70,9 +70,9 @@ async function hookOf(id: string, by: User, target: ConversationId): Promise<voi
 const hookBy = async (id: string): Promise<string | undefined> =>
     (await app.harness.snapshot(HooksDoc, context))?.items[id]?.by;
 const starterOf = (id: ConversationId): string | undefined => app.sessionMeta(id)?.createdBy;
-const owed = (id?: string): readonly string[] => app.config.handOvers(id);
+const owed = (id?: string): readonly string[] => app.config.handOvers(id ?? THIS_SERVER);
 const given = (person: User, id?: string): readonly string[] =>
-    app.config.givenFolders(id, person.id);
+    app.config.givenFolders(id ?? THIS_SERVER, person.id);
 
 /**
  * Watch every save while `change` runs: where Pi works in session `id` and what the session's record says must agree
@@ -166,7 +166,7 @@ test("a folder taken back, cut short by a restart: the next start hands its sess
     await hookOf("vera-second", vera, kept);
 
     // The first folder is taken back: the settings are saved, and the server stops before anything else is.
-    app.config.setGivenFolders(undefined, vera.id, [second]);
+    app.config.setGivenFolders(THIS_SERVER, vera.id, [second]);
     assert.deepEqual(owed(), [vera.id], "the hand-over is owed, in that same save");
     assert.equal(starterOf(there), vera.id, "nothing is handed over yet");
     await restart();
@@ -194,7 +194,7 @@ test("all sessions in a folder, turned off and cut short by a restart: the next 
     await hookOf("vera-on-theirs", vera, theirs);
     await hookOf("vera-on-hers", vera, hers);
 
-    app.config.setSeenFolder(undefined, vera.id, second, false);
+    app.config.setSeenFolder(THIS_SERVER, vera.id, second, false);
     assert.deepEqual(owed(), [vera.id]);
     assert.equal(app.canSee(vera, theirs), false, "she left it at once");
     assert.equal(await hookBy("vera-on-theirs"), vera.id, "her task on it is not handed over yet");

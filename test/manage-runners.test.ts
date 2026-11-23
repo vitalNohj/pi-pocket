@@ -151,7 +151,7 @@ async function hookOf(id: string, by: User, target: ConversationId): Promise<voi
 const hookBy = async (id: string): Promise<string | undefined> =>
     (await app.harness.snapshot(HooksDoc, context))?.items[id]?.by;
 const starterOf = (id: ConversationId): string | undefined => app.sessionMeta(id)?.createdBy;
-const owed = (id?: string): readonly string[] => app.config.handOvers(id);
+const owed = (id?: string): readonly string[] => app.config.handOvers(id ?? THIS_SERVER);
 
 const nothingOwed = (): void => {
     for (const id of [undefined, owners.id, lins.id]) {

@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
+import { THIS_SERVER } from "../src/server/access.ts";
 import type { User } from "../src/server/config.ts";
 import { createHandler } from "../src/server/http.ts";
 
@@ -143,7 +144,7 @@ test("a viewer is told of themselves, and of the people in the sessions shown to
         ).status,
         200,
     );
-    app.config.setServerUsers([gil.id, vera.id, ann.id]);
+    app.config.setUsers(THIS_SERVER, [gil.id, vera.id, ann.id]);
 
     const gils = fakeTab(undefined, gil);
     const veras = fakeTab(undefined, vera);

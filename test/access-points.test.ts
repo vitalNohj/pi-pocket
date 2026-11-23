@@ -94,15 +94,15 @@ const listed = (user: User) => app.sessions(user).map((each) => String(each.id))
  * The app's own unchoose would take their shares and sessions here, which the tests after this one use.
  */
 async function withoutGuest(during: () => Promise<unknown>): Promise<void> {
-    app.config.setServerUsers([viewer.id]);
+    app.config.setUsers(THIS_SERVER, [viewer.id]);
     app.accessChanged();
 
     try {
         await during();
     } finally {
-        app.config.setServerUsers([guest.id, viewer.id]);
+        app.config.setUsers(THIS_SERVER, [guest.id, viewer.id]);
         // Nothing was taken back, so nothing is left to finish: what is shared with the guest counts again.
-        app.config.clearLeaving(undefined, [guest.id]);
+        app.config.clearLeaving(THIS_SERVER, [guest.id]);
         app.accessChanged();
     }
 }
@@ -147,12 +147,12 @@ before(async () => {
     viewer = person("Viewer", "viewer");
     invited = person("Invited", "guest", [String(shared)]);
     stranger = person("Stranger", "guest");
-    app.config.setServerUsers([guest.id, viewer.id]);
+    app.config.setUsers(THIS_SERVER, [guest.id, viewer.id]);
 
     // The folders here are given, and the owner allows every new session at once: who may start a session is what these
     // tests check, not approvals (`folder-requests.test.ts`).
     for (const each of [guest, viewer]) {
-        app.config.setGivenFolders(undefined, each.id, [realpathSync(root)]);
+        app.config.setGivenFolders(THIS_SERVER, each.id, [realpathSync(root)]);
         app.config.updateUser(each.id, { approvalDays: 0 });
     }
 
@@ -1328,8 +1328,8 @@ describe("seeing every session in a folder", () => {
 
         folder = realpathSync(seen);
         fellow = person("Fellow", "guest");
-        app.config.setServerUsers([guest.id, viewer.id, fellow.id]);
-        app.config.setGivenFolders(undefined, fellow.id, [folder]);
+        app.config.setUsers(THIS_SERVER, [guest.id, viewer.id, fellow.id]);
+        app.config.setGivenFolders(THIS_SERVER, fellow.id, [folder]);
         app.config.updateUser(fellow.id, { approvalDays: 0 });
         app.accessChanged();
         inside = await newSession(app, seen);
@@ -1454,7 +1454,7 @@ describe("seeing every session in a folder", () => {
             );
             gone(tab, inside);
             assert.equal((await call(fellow, `c/${inside}/history`)).status, 404);
-            assert.deepEqual(app.config.seenFolders(undefined, fellow.id), []);
+            assert.deepEqual(app.config.seenFolders(THIS_SERVER, fellow.id), []);
         } finally {
             app.detach(tab.client);
         }
@@ -1491,7 +1491,7 @@ describe("seeing every session in a folder", () => {
                 200,
             );
             gone(tab, below);
-            assert.deepEqual(app.config.seenFolders(undefined, fellow.id), []);
+            assert.deepEqual(app.config.seenFolders(THIS_SERVER, fellow.id), []);
             await call(owner(app), "runners/this-server/given", {
                 person: fellow.id,
                 folders: [folder],

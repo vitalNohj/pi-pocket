@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { THIS_SERVER } from "./access.ts";
 import type { AuthenticatorStore, StoredAuthenticator } from "./approval-methods.ts";
 import type { AccountMinutes } from "./auth.ts";
 import type { StoredLinkLimits } from "./link-limits.ts";
@@ -203,21 +204,12 @@ export type InviteFor =
       };
 
 /**
- * A computer whose runner (`pi-pocket runner`) may connect, so sessions can run their tools there (`runners.ts`). Kept by
- * its public key: its private key is only on that computer, and proves each connection (`secure-link.ts`).
+ * What a computer keeps about who may use it. This server's record and a runner's hold the same (`ConfigStore`
+ * `computer`), and `access.ts` judges both alike. Who is in charge of the computer needs none of it: the owner for
+ * this server, and for a runner who linked it.
  */
-export interface StoredRunner {
-    id: string;
-    name: string;
-    /**
-     * The runner's Ed25519 public key, raw base64url. Absent: linked before the secure link, so it must link again (a
-     * code made for this computer keeps its id, and so its sessions).
-     */
-    publicKey?: string;
-    createdAt: number;
-    /** Who linked it: the owner, who changes its settings and access. */
-    createdBy: string;
-    /** People the owner granted access to start sessions on this computer. */
+export interface ComputerAccess {
+    /** The people who is in charge chose: they may use this computer. Viewers among them only see. */
     users?: string[];
     /**
      * People no longer chosen here whose shares and sessions here are not taken back yet (`app.ts` `#finishLeaving`).
@@ -231,7 +223,7 @@ export interface StoredRunner {
      * the hand-over short still finishes it.
      */
     handOver?: string[];
-    /** The folders the owner gave each chosen person here, by person id (`access.ts`). The owner needs none. */
+    /** The folders given to each chosen person here (real paths there), by person id (`access.ts`). */
     given?: Record<string, string[]>;
     /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
     sees?: Record<string, string[]>;
@@ -248,6 +240,26 @@ export interface StoredRunner {
      * charge always may.
      */
     rights?: Partial<Record<ComputerRight, string[]>>;
+    /** New sessions here start shared with its people (`access.ts` `initialShares`). Absent: with no one. */
+    shareNew?: true;
+}
+
+/**
+ * A computer whose runner (`pi-pocket runner`) may connect, so sessions can run their tools there (`runners.ts`). Kept by
+ * its public key: its private key is only on that computer, and proves each connection (`secure-link.ts`). Who may
+ * use it is in the part it shares with this server (`ComputerAccess`).
+ */
+export interface StoredRunner extends ComputerAccess {
+    id: string;
+    name: string;
+    /**
+     * The runner's Ed25519 public key, raw base64url. Absent: linked before the secure link, so it must link again (a
+     * code made for this computer keeps its id, and so its sessions).
+     */
+    publicKey?: string;
+    createdAt: number;
+    /** Who linked it: the owner, who changes its settings and access. */
+    createdBy: string;
     /** When it last connected. */
     lastSeen?: number;
     /**
@@ -257,8 +269,6 @@ export interface StoredRunner {
     platform?: { os: string; arch: string; home: string; version: string; tmpdir?: string };
     /** Programs ready on this computer, as its runner last reported. */
     tools?: { git: boolean; gh: boolean; github: boolean };
-    /** New sessions on it start shared with its people (`access.ts` `initialShares`). Absent: with no one. */
-    shareNew?: true;
     /**
      * What its runner does for sessions, sent to it at each connection and on change (`runner-settings`): `network`
      * false, its sessions' browsers do not use its network; `downloads`, an absolute folder there for their downloads.
@@ -267,27 +277,11 @@ export interface StoredRunner {
 }
 
 /**
- * This server as a computer (`access.ts` `THIS_SERVER`): the same settings a runner has, with the owner as its linker.
- * Since the access policy; before it, everyone with access to the whole server could use it. Absent: no one chosen, no
- * saved folders, asking on, new sessions shared with no one.
+ * This server as a computer (`access.ts` `THIS_SERVER`): who may use it is kept as a runner keeps it (`ComputerAccess`),
+ * with the owner in charge. Since the access policy; before it, everyone with access to the whole server could use it.
+ * Absent: no one chosen, no folders given, new sessions shared with no one.
  */
-export interface StoredServer {
-    /** The people the owner chose: they may use this server. Viewers among them only see. */
-    users?: string[];
-    /** People no longer chosen here whose shares and sessions here are not taken back yet (`StoredRunner.leaving`). */
-    leaving?: string[];
-    /** People whose hand-over here, after a folder was taken back, is not saved yet (`StoredRunner.handOver`). */
-    handOver?: string[];
-    /** The folders the owner gave each chosen person (real paths here), by person id (`access.ts`). */
-    given?: Record<string, string[]>;
-    /** Of those folders, the ones in which that person sees every session, by person id (`access.ts` `seesFolder`). */
-    sees?: Record<string, string[]>;
-    /** Who gave each of those folders, as for a runner (`StoredRunner.givenBy`). */
-    givenBy?: Record<string, Record<string, string>>;
-    /** The chosen people who hold each right given one person at a time here, as for a runner (`StoredRunner.rights`). */
-    rights?: Partial<Record<ComputerRight, string[]>>;
-    /** New sessions here start shared with its people. */
-    shareNew?: true;
+export interface StoredServer extends ComputerAccess {
     /**
      * Tasks that run on their own (webhooks, schedules, watches) stop with their session's approval: a week after it
      * ends, with reminders, until someone renews it. Off (absent): they run for good once set up.
@@ -509,14 +503,8 @@ export function keepWarmFrom(raw: unknown): KeepWarmSettings {
 /** Who may allow a risky tool call: anyone who can steer, or (for guests) only someone other than who asked. */
 export type ApprovalRule = "anyone" | "others";
 
-/** What a computer's record keeps per person about folders: the ones given, and the ones they see every session in. */
-type FolderGrants = { given?: Record<string, string[]>; sees?: Record<string, string[]> };
-
-/** And who gave each of them (`StoredRunner.givenBy`). */
-type FolderGivers = { givenBy?: Record<string, Record<string, string>> };
-
 /** Keep `givers` as who gave `person` their folders; none leaves no entry, and no entries leave no record. */
-function setGivers(target: FolderGivers, person: string, givers: Record<string, string>): void {
+function setGivers(target: ComputerAccess, person: string, givers: Record<string, string>): void {
     const { [person]: _was, ...rest } = target.givenBy ?? {};
     const next = Object.keys(givers).length === 0 ? rest : { ...rest, [person]: givers };
 
@@ -528,7 +516,7 @@ function setGivers(target: FolderGivers, person: string, givers: Record<string, 
 }
 
 /** Forget that `giver` gave anyone a folder here: the folders stay given, for who is in charge to take back. */
-function dropGiver(target: FolderGivers, giver: string): void {
+function dropGiver(target: ComputerAccess, giver: string): void {
     for (const [person, givers] of Object.entries(target.givenBy ?? {})) {
         setGivers(
             target,
@@ -540,8 +528,8 @@ function dropGiver(target: FolderGivers, giver: string): void {
 
 /** Keep `list` as `person`'s under `key`; an empty one leaves no entry, and no entries leave no record. */
 function setList(
-    target: FolderGrants,
-    key: keyof FolderGrants,
+    target: ComputerAccess,
+    key: "given" | "sees",
     person: string,
     list: readonly string[],
 ): void {
@@ -588,7 +576,7 @@ function knowsAccess(config: PocketConfig): boolean {
  * holds them all, `access.ts` `inFolder`) and may invite. The sessions that are here are shared with them once the
  * app starts (`app.ts` `#finishUpgrade`), which takes the people returned here. It is what they had, not a rule for
  * what comes: a session started later is its starter's alone, as on any server, until the owner shares new ones
- * (`StoredServer.shareNew`). A person held to sessions has those as before, and nothing changes for them.
+ * (`ComputerAccess.shareNew`). A person held to sessions has those as before, and nothing changes for them.
  */
 function keepAccess(config: PocketConfig): string[] {
     const people = config.users.filter(
@@ -688,14 +676,8 @@ function gatherRights(config: PocketConfig): boolean {
     return changed;
 }
 
-/** What a computer's record keeps about the rights held on it (`StoredRunner.rights`), and the people chosen for it. */
-type Rights = { users?: string[]; rights?: Partial<Record<ComputerRight, string[]>> };
-
-/** What a computer's record keeps about the people chosen for it, and those leaving it (`StoredRunner.leaving`). */
-type Leaving = { users?: string[]; leaving?: string[] };
-
 /** The people `chosen` no longer names are leaving `target`: marked before its list changes, for the same save. */
-function markLeaving(target: Leaving, chosen: readonly string[]): void {
+function markLeaving(target: ComputerAccess, chosen: readonly string[]): void {
     const dropped = (target.users ?? []).filter((each) => !chosen.includes(each));
 
     if (dropped.length > 0) {
@@ -704,7 +686,7 @@ function markLeaving(target: Leaving, chosen: readonly string[]): void {
 }
 
 /** `people` are no longer leaving `target`; a list with nobody in it leaves no entry. Whether anything changed. */
-function dropLeaving(target: Leaving, people: readonly string[]): boolean {
+function dropLeaving(target: ComputerAccess, people: readonly string[]): boolean {
     const before = target.leaving ?? [];
     const rest = before.filter((each) => !people.includes(each));
 
@@ -717,18 +699,15 @@ function dropLeaving(target: Leaving, people: readonly string[]): boolean {
     return rest.length !== before.length;
 }
 
-/** What a computer's record keeps about the hand-overs it still owes (`StoredRunner.handOver`). */
-type Owed = { handOver?: string[] };
-
 /** `person`'s hand-over on `target` is owed: marked in the save that takes a folder back from them. */
-function markOwed(target: Owed, person: string): void {
+function markOwed(target: ComputerAccess, person: string): void {
     if (target.handOver?.includes(person) !== true) {
         target.handOver = [...(target.handOver ?? []), person];
     }
 }
 
 /** `people`'s hand-overs on `target` are saved; a list with nobody in it leaves no entry. Whether anything changed. */
-function dropOwed(target: Owed, people: readonly string[]): boolean {
+function dropOwed(target: ComputerAccess, people: readonly string[]): boolean {
     const before = target.handOver ?? [];
     const rest = before.filter((each) => !people.includes(each));
 
@@ -742,7 +721,7 @@ function dropOwed(target: Owed, people: readonly string[]): boolean {
 }
 
 /** Keep each right to the people `keep` names; a right nobody holds leaves no entry. */
-function trimRights(target: Rights, keep: (person: string) => boolean): void {
+function trimRights(target: ComputerAccess, keep: (person: string) => boolean): void {
     const rights: Partial<Record<ComputerRight, string[]>> = {};
 
     for (const right of COMPUTER_RIGHTS) {
@@ -1312,7 +1291,7 @@ export class ConfigStore {
      * `person` managed runners and no longer does: the right was taken back, or they can no longer hold it (a viewer
      * now, or limited to sessions). They were in charge of this server and of each runner the owner linked
      * (`access.ts` `inCharge`), so what they had there by that alone is owed a hand-over on each, marked in the save
-     * that ends it (`StoredRunner.handOver`): `app.ts` `settle` finishes it, also after a restart.
+     * that ends it (`ComputerAccess.handOver`): `app.ts` `settle` finishes it, also after a restart.
      */
     #oweManaged(person: string): void {
         const owner = this.#config.users.find((each) => each.role === "owner")?.id;
@@ -1564,21 +1543,39 @@ export class ConfigStore {
         }
     }
 
-    /** Choose the people who may use runner `id`: anyone but its linker, who is in charge of it. */
-    setRunnerUsers(id: string, users: string[]): void {
-        const runner = this.runnerById(id);
-
-        if (runner !== undefined) {
-            const chosen = this.#choosable(users, (user) => user.id === runner.createdBy);
-
-            markLeaving(runner, chosen);
-            runner.users = chosen;
-            trimRights(runner, (each) => chosen.includes(each));
-            this.save();
-        }
+    /** Computer `id`'s record of who may use it: this server's, or a runner's. Undefined: no such runner. */
+    computer(id: string): Readonly<ComputerAccess> | undefined {
+        return id === THIS_SERVER ? (this.#config.server ?? {}) : this.runnerById(id);
     }
 
-    /** This server as a computer (`StoredServer`): a copy, so a change goes through the setters below. */
+    /** Who is in charge of computer `id` by its record: the owner for this server, a runner's linker for it. */
+    linkerOf(id: string): string | undefined {
+        return id === THIS_SERVER
+            ? this.#config.users.find((each) => each.role === "owner")?.id
+            : this.runnerById(id)?.createdBy;
+    }
+
+    /**
+     * Choose the people who may use computer `id`: anyone but who is in charge of it (an owner here; a runner's
+     * linker).
+     */
+    setUsers(id: string, users: string[]): void {
+        const linker = this.runnerById(id)?.createdBy;
+
+        this.#change(id, (computer) => {
+            const chosen = this.#choosable(users, (user) =>
+                id === THIS_SERVER ? user.role === "owner" : user.id === linker,
+            );
+
+            markLeaving(computer, chosen);
+            computer.users = chosen;
+            trimRights(computer, (each) => chosen.includes(each));
+
+            return true;
+        });
+    }
+
+    /** This server as a computer (`StoredServer`), to read: a change goes through the setters below. */
     get server(): Readonly<StoredServer> {
         return this.#config.server ?? {};
     }
@@ -1599,65 +1596,30 @@ export class ConfigStore {
         }
     }
 
-    /** Choose the people who may use this server: anyone but the owner, who is in charge of it. */
-    setServerUsers(users: string[]): void {
-        this.#changeServer((server) => {
-            const chosen = this.#choosable(users, (user) => user.role === "owner");
-
-            markLeaving(server, chosen);
-            server.users = chosen;
-            trimRights(server, (each) => chosen.includes(each));
-        });
-    }
-
-    /** The people leaving computer `id` (undefined: this server): `StoredRunner.leaving`. */
-    leaving(id: string | undefined): readonly string[] {
-        return (id === undefined ? this.#config.server : this.runnerById(id))?.leaving ?? [];
+    /** The people leaving computer `id` (`THIS_SERVER` or a runner's id): `ComputerAccess.leaving`. */
+    leaving(id: string): readonly string[] {
+        return this.computer(id)?.leaving ?? [];
     }
 
     /**
-     * What `people` had on computer `id` (undefined: this server) is taken back: they are no longer leaving it. Only
-     * `app.ts` `#finishLeaving` says so, after its saves; choosing a person again does not.
+     * What `people` had on computer `id` is taken back: they are no longer leaving it. Only `app.ts` `#finishLeaving`
+     * says so, after its saves; choosing a person again does not.
      */
-    clearLeaving(id: string | undefined, people: readonly string[]): void {
-        if (id === undefined) {
-            if ((this.#config.server?.leaving ?? []).some((each) => people.includes(each))) {
-                this.#changeServer((server) => void dropLeaving(server, people));
-            }
-
-            return;
-        }
-
-        const runner = this.runnerById(id);
-
-        if (runner !== undefined && dropLeaving(runner, people)) {
-            this.save();
-        }
+    clearLeaving(id: string, people: readonly string[]): void {
+        this.#change(id, (computer) => dropLeaving(computer, people));
     }
 
-    /** The people whose hand-over on computer `id` (undefined: this server) is owed: `StoredRunner.handOver`. */
-    handOvers(id: string | undefined): readonly string[] {
-        return (id === undefined ? this.#config.server : this.runnerById(id))?.handOver ?? [];
+    /** The people whose hand-over on computer `id` is owed: `ComputerAccess.handOver`. */
+    handOvers(id: string): readonly string[] {
+        return this.computer(id)?.handOver ?? [];
     }
 
     /**
-     * `people`'s hand-overs on computer `id` (undefined: this server) are saved: no longer owed. Only `app.ts`
-     * `#finishHandOvers` says so, after its saves.
+     * `people`'s hand-overs on computer `id` are saved: no longer owed. Only `app.ts` `#finishHandOvers` says so,
+     * after its saves.
      */
-    clearHandOvers(id: string | undefined, people: readonly string[]): void {
-        if (id === undefined) {
-            if ((this.#config.server?.handOver ?? []).some((each) => people.includes(each))) {
-                this.#changeServer((server) => void dropOwed(server, people));
-            }
-
-            return;
-        }
-
-        const runner = this.runnerById(id);
-
-        if (runner !== undefined && dropOwed(runner, people)) {
-            this.save();
-        }
+    clearHandOvers(id: string, people: readonly string[]): void {
+        this.#change(id, (computer) => dropOwed(computer, people));
     }
 
     /** Give person `id` right `right` everywhere, or take it back (`User.rights`): what `updateUser` keeps of it. */
@@ -1667,94 +1629,58 @@ export class ConfigStore {
         this.updateUser(id, { rights: on ? [...rest, right] : rest });
     }
 
-    /** Every right held on computer `id` (undefined: this server), each with its people: its managers' view of it. */
-    rightsOn(id: string | undefined): Record<ComputerRight, string[]> {
+    /** Every right held on computer `id`, each with its people: its managers' view of it. */
+    rightsOn(id: string): Record<ComputerRight, string[]> {
         return Object.fromEntries(
             COMPUTER_RIGHTS.map((right) => [right, [...this.rightHolders(id, right)]]),
         ) as Record<ComputerRight, string[]>;
     }
 
-    /** The people who hold `right` on computer `id` (undefined: this server): `StoredRunner.rights`. */
-    rightHolders(id: string | undefined, right: ComputerRight): readonly string[] {
-        const computer = id === undefined ? this.#config.server : this.runnerById(id);
-
-        return computer?.rights?.[right] ?? [];
+    /** The people who hold `right` on computer `id`: `ComputerAccess.rights`. */
+    rightHolders(id: string, right: ComputerRight): readonly string[] {
+        return this.computer(id)?.rights?.[right] ?? [];
     }
 
     /**
-     * Give `person` `right` on computer `id` (undefined: this server), or take it back. Only someone chosen there: for
-     * anyone else nothing changes, and the answer is false.
+     * Give `person` `right` on computer `id`, or take it back. Only someone chosen there: for anyone else nothing
+     * changes, and the answer is false.
      */
-    setComputerRight(
-        id: string | undefined,
-        person: string,
-        right: ComputerRight,
-        on: boolean,
-    ): boolean {
-        const apply = (target: Rights): boolean => {
-            if (!(target.users ?? []).includes(person)) {
+    setComputerRight(id: string, person: string, right: ComputerRight, on: boolean): boolean {
+        return this.#change(id, (computer) => {
+            if (!(computer.users ?? []).includes(person)) {
                 return false;
             }
 
-            const rest = (target.rights?.[right] ?? []).filter((each) => each !== person);
+            const rest = (computer.rights?.[right] ?? []).filter((each) => each !== person);
 
-            target.rights = { ...target.rights, [right]: on ? [...rest, person] : rest };
-            trimRights(target, () => true);
+            computer.rights = { ...computer.rights, [right]: on ? [...rest, person] : rest };
+            trimRights(computer, () => true);
 
             return true;
-        };
-
-        if (id === undefined) {
-            let done = false;
-
-            this.#changeServer((server) => {
-                done = apply(server);
-            });
-
-            return done;
-        }
-
-        const runner = this.runnerById(id);
-
-        if (runner === undefined || !apply(runner)) {
-            return false;
-        }
-
-        this.save();
-
-        return true;
+        });
     }
 
     /**
-     * The folders the owner gave `person` on computer `id` (undefined: this server), real paths there. A folder given
-     * covers the folders in it.
+     * The folders the owner gave `person` on computer `id`, real paths there. A folder given covers the folders in
+     * it.
      */
-    givenFolders(id: string | undefined, person: string): readonly string[] {
-        const computer = id === undefined ? this.#config.server : this.runnerById(id);
-
-        return computer?.given?.[person] ?? [];
+    givenFolders(id: string, person: string): readonly string[] {
+        return this.computer(id)?.given?.[person] ?? [];
     }
 
-    /** Who gave `person` each folder they have on computer `id` (undefined: this server), by folder. */
-    givenBy(id: string | undefined, person: string): Readonly<Record<string, string>> {
-        const computer = id === undefined ? this.#config.server : this.runnerById(id);
-
-        return computer?.givenBy?.[person] ?? {};
+    /** Who gave `person` each folder they have on computer `id`, by folder. */
+    givenBy(id: string, person: string): Readonly<Record<string, string>> {
+        return this.computer(id)?.givenBy?.[person] ?? {};
     }
 
     /**
-     * Set the folders given to `person` on computer `id` (undefined: this server); an empty list takes them all. A
-     * folder taken back is no longer one they see every session in (`setSeenFolder`), and what they had by it is
-     * owed a hand-over, marked in this same save (`StoredRunner.handOver`). `by`: who gives the folders that are new
-     * in the list; one they had already keeps who gave it.
+     * Set the folders given to `person` on computer `id`; an empty list takes them all. A folder taken back is no
+     * longer one they see every session in (`setSeenFolder`), and what they had by it is owed a hand-over, marked in
+     * this same save (`ComputerAccess.handOver`). `by`: who gives the folders that are new in the list; one they had
+     * already keeps who gave it.
      */
-    setGivenFolders(
-        id: string | undefined,
-        person: string,
-        folders: readonly string[],
-        by?: string,
-    ): void {
-        const apply = (target: FolderGrants & FolderGivers & Owed): void => {
+    setGivenFolders(id: string, person: string, folders: readonly string[], by?: string): void {
+        this.#change(id, (target) => {
             const unique = [...new Set(folders)];
             const had = target.given?.[person] ?? [];
             const givers = target.givenBy?.[person] ?? {};
@@ -1781,42 +1707,29 @@ export class ConfigStore {
                 person,
                 (target.sees?.[person] ?? []).filter((each) => unique.includes(each)),
             );
-        };
 
-        if (id === undefined) {
-            this.#changeServer(apply);
-
-            return;
-        }
-
-        const runner = this.runnerById(id);
-
-        if (runner !== undefined) {
-            apply(runner);
-            this.save();
-        }
+            return true;
+        });
     }
 
     /**
-     * Of the folders given to `person` on computer `id` (undefined: this server), the ones in which they see every
-     * session, their own or not (`access.ts` `seesFolder`).
+     * Of the folders given to `person` on computer `id`, the ones in which they see every session, their own or not
+     * (`access.ts` `seesFolder`).
      */
-    seenFolders(id: string | undefined, person: string): readonly string[] {
-        const computer = id === undefined ? this.#config.server : this.runnerById(id);
-
-        return computer?.sees?.[person] ?? [];
+    seenFolders(id: string, person: string): readonly string[] {
+        return this.computer(id)?.sees?.[person] ?? [];
     }
 
     /**
-     * `person` sees every session in `folder` on computer `id` (undefined: this server), or no longer. Only a folder
-     * given to them there, as it is written in that list: any other changes nothing, and the answer is false.
+     * `person` sees every session in `folder` on computer `id`, or no longer. Only a folder given to them there, as it
+     * is written in that list: any other changes nothing, and the answer is false.
      */
-    setSeenFolder(id: string | undefined, person: string, folder: string, on: boolean): boolean {
+    setSeenFolder(id: string, person: string, folder: string, on: boolean): boolean {
         if (!this.givenFolders(id, person).includes(folder)) {
             return false;
         }
 
-        const apply = (target: FolderGrants & Owed): void => {
+        return this.#change(id, (target) => {
             const had = target.sees?.[person] ?? [];
             const rest = had.filter((each) => each !== folder);
 
@@ -1826,24 +1739,9 @@ export class ConfigStore {
             }
 
             setList(target, "sees", person, on ? [...rest, folder] : rest);
-        };
-
-        if (id === undefined) {
-            this.#changeServer(apply);
 
             return true;
-        }
-
-        const runner = this.runnerById(id);
-
-        if (runner === undefined) {
-            return false;
-        }
-
-        apply(runner);
-        this.save();
-
-        return true;
+        });
     }
 
     /**
@@ -1863,29 +1761,26 @@ export class ConfigStore {
                 server.tasksExpire = true;
                 server.tasksExpireSince = now;
             }
+
+            return true;
         });
     }
 
-    /** Change a computer's rules (`id` undefined: this server). */
-    setComputerSettings(id: string | undefined, change: ComputerSettings): void {
-        const apply = (target: { shareNew?: true }): void => {
+    /** Change the rules of computer `id` (`THIS_SERVER` or a runner's id). */
+    setComputerSettings(id: string, change: ComputerSettings): void {
+        this.#change(id, (computer) => {
             if (change.shareNew === true) {
-                target.shareNew = true;
+                computer.shareNew = true;
             } else if (change.shareNew === false) {
-                delete target.shareNew;
+                delete computer.shareNew;
             }
-        };
 
-        if (id === undefined) {
-            this.#changeServer(apply);
+            // A runner's own settings: on the same record. This server has none.
+            const runner = this.runnerById(id);
 
-            return;
-        }
-
-        const runner = this.runnerById(id);
-
-        if (runner !== undefined) {
-            apply(runner);
+            if (runner === undefined) {
+                return true;
+            }
 
             const settings = { ...runner.settings };
 
@@ -1907,8 +1802,8 @@ export class ConfigStore {
                 runner.settings = settings;
             }
 
-            this.save();
-        }
+            return true;
+        });
     }
 
     /** Every approval kept (`folder-approvals.ts` reads and changes them through `setFolderApprovals`). */
@@ -1950,10 +1845,36 @@ export class ConfigStore {
         this.save();
     }
 
-    #changeServer(change: (server: StoredServer) => void): void {
+    /**
+     * Change computer `id`'s record. `change` answers whether to save it: false when it changed nothing. Whether it was
+     * saved. No such runner: false.
+     */
+    #change(id: string, change: (computer: ComputerAccess) => boolean): boolean {
+        if (id === THIS_SERVER) {
+            return this.#changeServer(change);
+        }
+
+        const runner = this.runnerById(id);
+
+        if (runner === undefined || !change(runner)) {
+            return false;
+        }
+
+        this.save();
+
+        return true;
+    }
+
+    /**
+     * Change this server's record, on a copy: `change` answers whether to keep and save it. An empty list of people
+     * leaves no entry, and an empty record none. Whether it was saved.
+     */
+    #changeServer(change: (server: StoredServer) => boolean): boolean {
         const server: StoredServer = structuredClone(this.#config.server ?? {});
 
-        change(server);
+        if (!change(server)) {
+            return false;
+        }
 
         if (server.users?.length === 0) {
             delete server.users;
@@ -1966,6 +1887,8 @@ export class ConfigStore {
         }
 
         this.save();
+
+        return true;
     }
 
     /** Forget a computer: its key stops working. */

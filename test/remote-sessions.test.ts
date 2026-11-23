@@ -121,13 +121,13 @@ async function asking<T>(run: (guest: User) => Promise<T>): Promise<T> {
     // Their requests wait for the owner's answer: an approval time, not "never".
     app.config.updateUser(guest.id, { approvalDays: 7 });
 
-    app.config.setRunnerUsers(runnerId, [guest.id]);
+    app.config.setUsers(runnerId, [guest.id]);
     app.config.setGivenFolders(runnerId, guest.id, [root]);
 
     try {
         return await run(guest);
     } finally {
-        app.config.setRunnerUsers(runnerId, []);
+        app.config.setUsers(runnerId, []);
         await app.removeUser(owner(app), guest.id);
     }
 }
@@ -318,7 +318,7 @@ describe("a session on another computer", () => {
             app.commands.shareSession(id as never, owner(app), [other.id]),
             /choose them for it first/,
         );
-        app.config.setRunnerUsers(runnerId, [other.id]);
+        app.config.setUsers(runnerId, [other.id]);
         app.setAccess(owner(app), other.id, { role: "viewer" });
         await app.commands.shareSession(id as never, owner(app), [other.id]);
 
@@ -335,7 +335,7 @@ describe("a session on another computer", () => {
             );
         } finally {
             await app.commands.shareSession(id as never, owner(app), []);
-            app.config.setRunnerUsers(runnerId, []);
+            app.config.setUsers(runnerId, []);
             linkAuthenticator(app, other);
             app.setAccess(owner(app), other.id, { role: "guest" });
         }
@@ -465,7 +465,7 @@ describe("a session on another computer", () => {
         // A guest given the computer's folders, asked for each new one (the owner's one approval covers it all).
         const { user: mover } = await addPerson(app, "Mover", "guest");
 
-        app.config.setRunnerUsers(runnerId, [mover.id]);
+        app.config.setUsers(runnerId, [mover.id]);
         app.config.setGivenFolders(runnerId, mover.id, [root]);
 
         try {
@@ -494,7 +494,7 @@ describe("a session on another computer", () => {
             assert.equal(app.folderApprovals.get(String(session))?.folder, folder);
         } finally {
             answer = () => true;
-            app.config.setRunnerUsers(runnerId, []);
+            app.config.setUsers(runnerId, []);
             await app.removeUser(owner(app), mover.id);
         }
     });

@@ -441,7 +441,7 @@ test("finishing it gives only what still holds: nothing to someone no longer cho
     const alone = new ConfigStore(dirname(file));
 
     assert.deepEqual(alone.accessUpgrade, [gail.id, vic.id]);
-    alone.setServerUsers([gail.id]);
+    alone.setUsers(THIS_SERVER, [gail.id]);
     alone.setFolderApprovals([
         {
             session: String(revoked),
