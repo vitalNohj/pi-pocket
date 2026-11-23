@@ -368,7 +368,7 @@ export class RequestGate {
 
                 if (op === READ_SNAPSHOT) {
                     this.#options.timing?.checked(id, "snapshot");
-                    await this.#snapshot(id, request, json.path);
+                    await this.#snapshot(id, request, json.path, json.maxBytes);
                 } else {
                     request.sent = true;
                     const outgoing = frame(type, id, json, payload);
@@ -395,13 +395,13 @@ export class RequestGate {
     }
 
     /** Read only the path the gate authorized. Aliases and failures stay on the normal tool path. */
-    async #snapshot(id: number, request: Request, path: unknown): Promise<void> {
+    async #snapshot(id: number, request: Request, path: unknown, maxBytes: unknown): Promise<void> {
         const signal = request.stop.signal;
         const real = request.path;
         let snapshot;
 
         if (real !== undefined && real === path) {
-            const before = await snapshotCandidate(real);
+            const before = await snapshotCandidate(real, maxBytes);
 
             if (before !== undefined) {
                 snapshot = await captureSnapshot(real, before, signal);
