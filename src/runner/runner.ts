@@ -25,6 +25,8 @@ import { join } from "node:path";
 import { localDaemon } from "@earendil-works/pi-env";
 import { WebSocket as RawWebSocket } from "ws";
 import { RunnerLinkSocket } from "./secure-link.ts";
+import { perf } from "../perf.ts";
+import { RunnerRequestTiming } from "./perf.ts";
 import { checkTransport, pinnedLookup, refusal, type Transport } from "./transport.ts";
 
 /** The link to the server, sealed with the link's keys (`secure-link.ts`). */
@@ -303,6 +305,7 @@ class Daemon {
 /** One daemon and its link session with the server: what both sides keep across drops. */
 class Session {
     readonly outbox = new Outbox();
+    readonly timing = perf ? new RunnerRequestTiming() : undefined;
     readonly inbox = new Inbox();
     readonly splitter = new FrameSplitter();
     readonly daemon: Daemon;
@@ -507,6 +510,7 @@ export class Runner {
             return;
         }
 
+        from.timing?.output(from.id, from.outbox.end, bytes);
         const message = from.outbox.write(bytes);
 
         // Only once the server welcomed this socket: before that, the welcome's resend sends what is kept, from
@@ -516,6 +520,7 @@ export class Runner {
             from.id !== null &&
             this.#welcomed === this.#socket
         ) {
+            from.timing?.outbox.send(message, this.#socket.bufferedAmount);
             this.#socket.send(message);
         }
 
@@ -544,6 +549,7 @@ export class Runner {
             tmpdir: () => temporary,
             name: () => this.#options.link.name,
             readSnapshot: this.#options.daemon === undefined,
+            ...(made.timing === undefined ? {} : { timing: made.timing }),
             working: (folder) => this.#activity.begin(folder),
         });
         void made.daemon.exited.then((code) => {
@@ -762,6 +768,7 @@ export class Runner {
 
         let welcomed = false;
         let silent = Date.now();
+        let probe: Buffer | undefined;
         const pinger = setInterval(() => {
             if (Date.now() - silent > SILENT_MS) {
                 ws.terminate();
@@ -770,7 +777,13 @@ export class Runner {
             }
 
             if (ws.readyState === WebSocket.OPEN) {
-                ws.ping();
+                if (perf && welcomed) {
+                    probe = Buffer.allocUnsafe(8);
+                    probe.writeDoubleBE(perf.now());
+                    ws.ping(probe);
+                } else {
+                    ws.ping();
+                }
             }
         }, PING_MS);
 
@@ -800,7 +813,18 @@ export class Runner {
                 } satisfies ControlMessage),
             );
         });
-        ws.on("pong", () => (silent = Date.now()));
+        ws.on("pong", (data: Buffer) => {
+            silent = Date.now();
+
+            if (perf && probe?.equals(data)) {
+                perf.log("runner.ping", {
+                    runner: link.id,
+                    session: this.#session.id,
+                    ms: perf.now() - probe.readDoubleBE(),
+                });
+                probe = undefined;
+            }
+        });
         ws.on("message", (data, binary) => {
             silent = Date.now();
 
@@ -921,6 +945,7 @@ export class Runner {
                 }
 
                 for (const each of resent) {
+                    session.timing?.outbox.send(each, ws.bufferedAmount);
                     ws.send(each);
                 }
 
@@ -952,6 +977,7 @@ export class Runner {
 
             // Output the daemon gave before this session was welcomed (none, normally).
             for (const each of current.outbox.resend(0) ?? []) {
+                current.timing?.outbox.send(each, ws.bufferedAmount);
                 ws.send(each);
             }
 

@@ -26,6 +26,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ExecutionEnv, FileError, FileInfo } from "@earendil-works/pi-durable/env";
 import { isConnectionLost, type RemoteInfo } from "@earendil-works/pi-env";
+import { perf } from "../perf.ts";
 import {
     decides,
     type ProjectTrust,
@@ -182,7 +183,13 @@ function refresh(env: RemoteEnv, cwd: string): Promise<FolderScan> {
 }
 
 /** The folder `cwd` on another computer, read now (no cache). Throws when the computer cannot be reached. */
-export async function readFolder(env: RemoteEnv, cwd: string): Promise<FolderScan> {
+export function readFolder(env: RemoteEnv, cwd: string): Promise<FolderScan> {
+    return (
+        perf?.operation("context-scan", {}, () => gatherFolder(env, cwd)) ?? gatherFolder(env, cwd)
+    );
+}
+
+async function gatherFolder(env: RemoteEnv, cwd: string): Promise<FolderScan> {
     const info = await env.connection.info();
     const paths = pathsFor(info.os);
     const folder = paths.resolve(cwd);

@@ -6,6 +6,7 @@ import { liveMessage } from "./live.js";
 import { fitClock, moment } from "./clock.js";
 import { fingerprint } from "./text-hash.js";
 import * as disk from "./session-cache.js";
+import { webPerf } from "./perf.js";
 import { personStorage } from "./person-storage.js";
 import { notesDrafts } from "./notes-drafts.js";
 import {
@@ -387,6 +388,10 @@ export const store = {
     set(patch) {
         const change = typeof patch === "function" ? patch(this.state) : patch;
 
+        if (webPerf && change?.sheet !== undefined && change.sheet !== this.state.sheet) {
+            webPerf.sheet(change.sheet);
+        }
+
         this.state = { ...this.state, ...change };
 
         for (const listener of this.listeners) {
@@ -441,6 +446,7 @@ function opened(id) {
 }
 
 opened(store.state.conversationId);
+webPerf?.navigate(store.state.conversationId, null, "direct");
 
 function routeConversation() {
     const match = /^\/s\/(\d+)/.exec(location.pathname);
@@ -1609,6 +1615,7 @@ function applyView(data) {
     }
 
     if (data.full) {
+        webPerf?.received(data.conversation.id);
         synced = data.conversation.id;
     }
 
@@ -2662,6 +2669,10 @@ export function navigate(
     conversationId,
     { replace = false, sheet = null, over = null, back = false } = {},
 ) {
+    if (webPerf && conversationId !== store.state.conversationId) {
+        webPerf.navigate(conversationId, store.state.conversationId, "navigate");
+    }
+
     const path = conversationId === null ? "/" : `/s/${conversationId}`;
 
     // A new route says what it is over; the same route keeps what its entry already says.
@@ -2763,6 +2774,7 @@ onRoute(() => {
             store.set(over);
         }
     } else {
+        webPerf?.navigate(id, store.state.conversationId, "history");
         opened(id);
         keepView(store.state.view);
         store.set({

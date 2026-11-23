@@ -30,6 +30,7 @@ import { runningBoard, runningNow } from "../running.ts";
 import { serveImage } from "./assets.ts";
 import { browserRoutes } from "./browser-routes.ts";
 import { conversationRoutes } from "./conversation-routes.ts";
+import { perf } from "../../perf.ts";
 import { createEventStreams, keptPart } from "./events.ts";
 import { extensionRoute } from "./extension-routes.ts";
 import { isIconColors, storeIconColors } from "../icon-store.ts";
@@ -287,6 +288,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // A tab shows another session, or the list (`c` null), on the connection it has; `have` is what it kept of it.
         if (first === "switch" && method === "POST") {
+            const start = perf?.now();
             const body = await readJson<{
                 connection?: unknown;
                 c?: unknown;
@@ -306,6 +308,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                     : conversationId(String(body.c)),
                 keptPart(typeof body.have === "string" ? body.have : null),
                 body.seq as number,
+                start,
             );
 
             if (!switched) {
@@ -894,6 +897,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             const showHidden = url.searchParams.get("hidden") === "1";
             const dirs: { name: string; path: string }[] = [];
             let entries;
+            const list = perf?.phase("folder-list.local");
 
             try {
                 entries = readdirSync(path, { withFileTypes: true });
@@ -928,6 +932,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
 
             dirs.sort((a, b) => a.name.localeCompare(b.name));
+            list?.();
             // The folders of this person's newest sessions here: another computer's folders are not on this one.
             const recent = app.recentFolders(user, undefined);
 

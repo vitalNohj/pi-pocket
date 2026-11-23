@@ -27,6 +27,7 @@ import {
 } from "./http/assets.ts";
 import { type HttpOptions, json, readJson } from "./http/io.ts";
 import { LINK_CODE_PATH } from "../runner/protocol.ts";
+import { perf } from "../perf.ts";
 import { clientAddress } from "./link-limits.ts";
 import { join as joinPage, login, sharePage } from "./http/sign-in.ts";
 import { themeFile } from "./http/theme-routes.ts";
@@ -48,6 +49,31 @@ function pageFacts(
     return user === undefined || process.env.PI_POCKET_SESSION_CACHE === "off"
         ? undefined
         : { user: helloUser(user), build: app.build };
+}
+
+function measureGet(parts: string[]) {
+    const [, first, second, third, fourth] = parts;
+
+    if (first === "fs" || (first === "runners" && third === "fs")) {
+        return { op: "folder-list", runner: first === "runners" ? second : undefined };
+    }
+
+    if (first === "runners" && second === undefined) {
+        return { op: "runners-list" };
+    }
+
+    if (first === "c" && fourth === undefined) {
+        if (
+            third === "copy-place" ||
+            third === "changes" ||
+            third === "files" ||
+            third === "context"
+        ) {
+            return { op: third === "context" ? "history" : third, conversation: Number(second) };
+        }
+    }
+
+    return undefined;
 }
 
 export function createHandler(options: HttpOptions) {
@@ -79,6 +105,17 @@ export function createHandler(options: HttpOptions) {
             }
 
             if (parts[0] === "api") {
+                const measurement =
+                    perf && request.method === "GET" ? measureGet(parts) : undefined;
+
+                if (perf && measurement) {
+                    const { op, ...fields } = measurement;
+
+                    return await perf.operation(op, fields, () =>
+                        api(request, response, url, parts.slice(1)),
+                    );
+                }
+
                 return await api(request, response, url, parts.slice(1));
             }
 

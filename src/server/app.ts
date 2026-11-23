@@ -48,6 +48,8 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { CodingTools, createCodingTools } from "@earendil-works/pi-durable/tools";
 import { withRunnerRead } from "./runner-read.ts";
+import { perf } from "../perf.ts";
+import { timedTool } from "./perf-tool.ts";
 import { Alerts } from "./alerts.ts";
 import { sweepAssets } from "./artifacts.ts";
 import { Attribution, type Missing } from "./attribution.ts";
@@ -894,8 +896,11 @@ export class PocketApp {
         return app;
     }
 
+    #stopPerfLoop: (() => void) | undefined;
+
     async #open(): Promise<void> {
         this.#releaseLock = takeLock(this.#lockFile);
+        this.#stopPerfLoop = perf?.watchEventLoop();
 
         try {
             this.pushStore = new PushStore(this.dataDir);
@@ -2187,6 +2192,7 @@ export class PocketApp {
         id: ConversationId | undefined,
         have: Client["have"],
         seq: number,
+        start?: number,
     ): boolean {
         let found = false;
 
@@ -2210,6 +2216,10 @@ export class PocketApp {
 
             client.conversationId = id;
 
+            if (perf) {
+                client.perfOpen = start === undefined ? undefined : { start, via: "switch" };
+            }
+
             if (have === undefined) {
                 delete client.have;
             } else {
@@ -2231,7 +2241,17 @@ export class PocketApp {
      * Put a tab in the room of the session it shows (`client.conversationId`), and send it what that session has: its
      * view, chat, notes, and browser. A later switch while the room opens wins: this one then leaves nothing behind.
      */
-    async #enter(client: Client): Promise<void> {
+    #enter(client: Client): Promise<void> {
+        return perf && client.conversationId !== undefined
+            ? perf.operation(
+                  "room-enter",
+                  { conversation: Number(client.conversationId), connection: client.connection },
+                  () => this.#enterView(client),
+              )
+            : this.#enterView(client);
+    }
+
+    async #enterView(client: Client): Promise<void> {
         const visit = (client.visit = (client.visit ?? 0) + 1);
         const id = client.conversationId;
 
@@ -4859,6 +4879,7 @@ export class PocketApp {
 
     close(): Promise<void> {
         this.#closing ??= (async () => {
+            this.#stopPerfLoop?.();
             clearTimeout(this.#sessionsTimer);
             // Runners reconnect to the next server; their daemons keep running meanwhile (offline is offline).
             this.runners.close();
@@ -4996,6 +5017,10 @@ async function codingTools(log: (line: string) => void) {
 
     return {
         ...coding,
-        tools: coding.tools?.map((tool) => (tool.name === "read" ? withRunnerRead(tool) : tool)),
+        tools: coding.tools?.map((tool) => {
+            const registered = tool.name === "read" ? withRunnerRead(tool) : tool;
+
+            return perf ? timedTool(registered) : registered;
+        }),
     };
 }

@@ -432,7 +432,7 @@ export class LinkSocket extends EventEmitter {
         this.#ws = ws;
         ws.on("close", (code, reason) => this.emit("close", code, reason));
         ws.on("error", (error) => this.emit("error", error));
-        ws.on("pong", () => this.emit("pong"));
+        ws.on("pong", (data) => this.emit("pong", data));
         ws.on("unexpected-response", (request, response) =>
             this.emit("unexpected-response", request, response),
         );
@@ -510,8 +510,12 @@ export class LinkSocket extends EventEmitter {
         this.#ws.send(this.#send.seal(plain), { binary: true }, done);
     }
 
-    ping(): void {
-        this.#ws.ping();
+    get bufferedAmount(): number {
+        return this.#ws.bufferedAmount;
+    }
+
+    ping(data?: Buffer): void {
+        this.#ws.ping(data);
     }
 
     close(code?: number, reason?: string): void {

@@ -2,6 +2,7 @@
 // into one line that opens into a timeline), then Pi's reply, any approval, and the live line while Pi works.
 import { Component } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { webPerf } from "./perf.js";
 import { activityOpen } from "./activity-fold.js";
 import {
     noteRevealed,
@@ -3732,6 +3733,7 @@ export function Transcript() {
         catchUp(element);
         place(element);
         counted.current = rows.length;
+        webPerf?.transcript(view, rows.length, unloaded, viewSynced(view.conversation?.id));
 
         // The first rows on screen are what the tab or the device kept: the server's view of them is still to come.
         if (!shown.current && rows.length > 0 && !viewSynced(view.conversation?.id)) {

@@ -6,6 +6,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { chooseFolder, copyDraft, modelOf, updateDraft, useCopyDraft } from "../copy-draft.js";
 import { shortPath } from "../folder-paths.js";
+import { webPerf } from "../perf.js";
 import { waitOnComputer } from "../runner-wait.js";
 import {
     actions,
@@ -414,6 +415,12 @@ export function ForkSessionSheet({ id }) {
     const draft = usePlace(id, `session:${id}`);
     const [busy, setBusy] = useState(false);
     const starts = canSteer() && !scoped();
+
+    webPerf?.forkRows({
+        loaded: draft.source !== undefined,
+        folder: Boolean(draft.cwd),
+        worktree: draft.runner != null || draft.inRepository !== undefined,
+    });
 
     const go = () => {
         if (busy || !starts) {

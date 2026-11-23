@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { folderContains, realFolder } from "./folders.ts";
 import type { Approvals, SessionScope } from "./approvals.ts";
+import type { RunnerRequestTiming } from "./perf.ts";
 import { FRAME, frame, readFrame, SESSION_FIELD } from "./protocol.ts";
 import { captureSnapshot, READ_SNAPSHOT, snapshotCandidate } from "./read-snapshot.ts";
 
@@ -197,6 +198,7 @@ export type GateOptions = {
     name: () => string;
     /** Only the built-in daemon shares its filesystem with the runner. */
     readSnapshot?: boolean;
+    timing?: RunnerRequestTiming;
     /** A request of a session in `folder` reaches the daemon; the result is called when it ended (`activity.ts`). */
     working?: (folder: string) => () => void;
 };
@@ -338,6 +340,7 @@ export class RequestGate {
 
         delete json[SESSION_FIELD];
         this.#requests.set(id, request);
+        this.#options.timing?.begin(id, KNOWN_OPS.has(op) ? op : "unknown", whole.length);
 
         // One session's requests wait in order, so a question for it holds them all, and other sessions go on.
         const key = request.scope?.id ?? "";
@@ -348,6 +351,8 @@ export class RequestGate {
         request.stop.signal.addEventListener("abort", () => cancelled(waiting), { once: true });
 
         const queued = (this.#queues.get(key) ?? Promise.resolve()).then(async () => {
+            this.#options.timing?.check(id);
+
             try {
                 if (request.stop.signal.aborted) {
                     throw new Error("The request was cancelled");
@@ -362,10 +367,14 @@ export class RequestGate {
                 waiting.requests.delete(request);
 
                 if (op === READ_SNAPSHOT) {
+                    this.#options.timing?.checked(id, "snapshot");
                     await this.#snapshot(id, request, json.path);
                 } else {
                     request.sent = true;
-                    this.#options.send(frame(type, id, json, payload));
+                    const outgoing = frame(type, id, json, payload);
+
+                    this.#options.timing?.checked(id, "daemon");
+                    this.#options.send(outgoing);
                 }
             } catch (error) {
                 waiting.requests.delete(request);

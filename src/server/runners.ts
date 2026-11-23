@@ -21,6 +21,8 @@ import {
     type RequestOptions,
 } from "@earendil-works/pi-env";
 import { type RawData, WebSocketServer } from "ws";
+import { perf } from "../perf.ts";
+import { OutboxTiming } from "../runner/perf.ts";
 import {
     checkLinkRequest,
     CLOSE_IDENTITY,
@@ -192,7 +194,16 @@ export function readableEntries(reply: Reply): Reply {
         : { ...reply, json: { ...reply.json, entries: readable } };
 }
 
+type RequestTiming = {
+    start: number;
+    sent?: number;
+    firstReply?: number;
+    bytesIn: number;
+    bufferedBytes?: number;
+};
+
 type Pending = {
+    timing?: RequestTiming;
     resolve: (reply: Reply) => void;
     reject: (error: Error) => void;
     onEvent?: (json: Record<string, unknown>, payload: Uint8Array) => void;
@@ -204,6 +215,7 @@ type Pending = {
 class LinkSession {
     readonly id = randomUUID();
     readonly outbox = new Outbox();
+    readonly timing = perf ? new OutboxTiming() : undefined;
     readonly inbox = new Inbox();
     readonly splitter = new FrameSplitter();
     readonly pending = new Map<number, Pending>();
@@ -390,6 +402,8 @@ export class RunnerLink {
         options: RequestOptions = {},
         scope?: SessionScope,
     ): Promise<Reply> {
+        const start = perf?.now();
+
         if (scope !== undefined) {
             json = { ...json, [SESSION_FIELD]: scope };
         }
@@ -401,12 +415,12 @@ export class RunnerLink {
                 throw lost(`${this.name}: its connection was lost`);
             }
 
-            return this.#answer(op, this.#send(current, op, json, options));
+            return this.#answer(op, this.#send(current, op, json, options, start));
         }
 
         await this.info();
 
-        return this.#answer(op, this.#send(this.#ready(), op, json, options));
+        return this.#answer(op, this.#send(this.#ready(), op, json, options, start));
     }
 
     /** The daemon's answer as the env gets it: a folder's page without entries it could not read. */
@@ -488,6 +502,7 @@ export class RunnerLink {
         op: string,
         json: Record<string, unknown>,
         options: RequestOptions,
+        start = perf?.now(),
     ): Promise<Reply> {
         if (!session.live) {
             return Promise.reject(lost(`${this.name}: its connection was lost`));
@@ -502,15 +517,49 @@ export class RunnerLink {
         return new Promise<Reply>((resolve, reject) => {
             const onAbort = () =>
                 this.#write(session, frame(FRAME.cancel, id, this.#cancel(session, id, {})));
-            const done = () => options.signal?.removeEventListener("abort", onAbort);
+            const timing: RequestTiming | undefined =
+                start === undefined ? undefined : { start, bytesIn: 0 };
+            const span = perf?.current();
+            let bytesOut = 0;
+
+            const done = (ok: boolean) => {
+                options.signal?.removeEventListener("abort", onAbort);
+
+                if (timing && perf) {
+                    const { sent, firstReply, bytesIn, bufferedBytes } = timing;
+                    const end = perf.now();
+
+                    perf.log("server.request", {
+                        runner: this.id,
+                        session: session.id,
+                        id,
+                        op,
+                        span,
+                        start,
+                        sent,
+                        ms: end - timing.start,
+                        queueMs: (sent ?? end) - timing.start,
+                        replyMs: sent === undefined ? undefined : end - sent,
+                        firstReplyMs:
+                            sent === undefined || firstReply === undefined
+                                ? undefined
+                                : firstReply - sent,
+                        bytesIn,
+                        bytesOut,
+                        bufferedBytes,
+                        ok,
+                    });
+                }
+            };
 
             session.pending.set(id, {
+                ...(timing === undefined ? {} : { timing }),
                 resolve: (value) => {
-                    done();
+                    done(true);
                     resolve(value);
                 },
                 reject: (error) => {
-                    done();
+                    done(false);
                     reject(error);
                 },
                 ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
@@ -518,7 +567,17 @@ export class RunnerLink {
             });
             options.signal?.addEventListener("abort", onAbort, { once: true });
             options.onStart?.(id, session.number);
-            this.#write(session, frame(FRAME.request, id, { ...json, op }, options.payload));
+            const bytes = frame(FRAME.request, id, { ...json, op }, options.payload);
+
+            if (timing && session.timing) {
+                bytesOut = bytes.length;
+                session.timing.keep(session.outbox.end, (sent, bufferedBytes) => {
+                    timing.sent = sent;
+                    timing.bufferedBytes = bufferedBytes;
+                });
+            }
+
+            this.#write(session, bytes);
 
             if (options.signal?.aborted === true) {
                 onAbort();
@@ -535,6 +594,10 @@ export class RunnerLink {
         const message = session.outbox.write(bytes);
 
         if (this.#socket !== undefined && this.#session === session) {
+            if (session.timing && this.#socket.readyState === this.#socket.OPEN) {
+                session.timing.send(message, this.#socket.bufferedAmount);
+            }
+
             this.#socket.send(message);
         }
     }
@@ -582,6 +645,7 @@ export class RunnerLink {
             });
 
             for (const message of resent) {
+                session.timing?.send(message, socket.bufferedAmount);
                 socket.send(message);
             }
 
@@ -786,7 +850,7 @@ export class RunnerLink {
                 return;
             }
 
-            this.#dispatch(session, parsed);
+            this.#dispatch(session, parsed, whole.length);
         }
 
         if (session.inbox.unacknowledged >= ACK_BYTES) {
@@ -812,9 +876,15 @@ export class RunnerLink {
         this.#control({ type: "ack", received: session.inbox.received });
     }
 
-    #dispatch(session: LinkSession, parsed: ReturnType<typeof readFrame>): void {
+    #dispatch(session: LinkSession, parsed: ReturnType<typeof readFrame>, bytes: number): void {
         const { type, id, json, payload } = parsed;
         const pending = session.pending.get(id);
+        const timing = pending?.timing;
+
+        if (timing && (type === FRAME.event || type === FRAME.result || type === FRAME.error)) {
+            timing.bytesIn += bytes;
+            timing.firstReply ??= perf?.now();
+        }
 
         if (type === FRAME.event) {
             pending?.onEvent?.(json, payload);

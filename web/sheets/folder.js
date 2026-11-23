@@ -20,6 +20,7 @@ import { sessionStarted } from "../extension-ui.js";
 import { chooseFolder } from "../copy-draft.js";
 import { goBack } from "../back.js";
 import { waitOnComputer } from "../runner-wait.js";
+import { webPerf } from "../perf.js";
 import {
     crumbsOf,
     isWholePath,
@@ -211,6 +212,7 @@ export function CwdSheet({
      */
     const load = (path, { showHidden = hidden, select = null, keepMissing = false } = {}) => {
         const ask = ++asked.current;
+        const measured = webPerf?.folderRequest(runner);
 
         const where = runner ? `runners/${encodeURIComponent(runner)}/fs` : "fs";
 
@@ -232,6 +234,7 @@ export function CwdSheet({
 
                 setEditing(null);
                 setNaming(false);
+                measured?.(result.dirs.length, () => ask === asked.current);
             },
             (error) => {
                 if (ask !== asked.current) {

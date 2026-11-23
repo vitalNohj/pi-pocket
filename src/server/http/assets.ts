@@ -4,6 +4,7 @@ import { closeSync, createReadStream, openSync, readFileSync, readSync, statSync
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, posix } from "node:path";
 import { APP_ROOT, modulesWith } from "../config.ts";
+import { perf } from "../../perf.ts";
 import { HttpError } from "../errors.ts";
 import { type FolderAccess, Unreachable } from "../folder-access.ts";
 import {
@@ -297,6 +298,10 @@ export function serveApp(
         // The static boot screen must not flash before IndexedDB has its chance. `start` reveals the root once it
         // has either a checked view to paint or no copy (then the normal boot screen, while `/api/me` answers).
         body = body.replace('<div id="app">', '<div id="app" hidden>');
+    }
+
+    if (perf) {
+        body = body.replace("</head>", '<meta name="pocket-perf" content="1" /></head>');
     }
 
     // The policy is of the page as it is served: the facts above are a script, allowed by their hash.

@@ -49,6 +49,7 @@ import {
 } from "./docs.ts";
 import { COMMAND_ENTRY, SHELL_ENTRY } from "./entry-format.ts";
 import { describe } from "./errors.ts";
+import { perf } from "../perf.ts";
 import { presentationOptions, queuePresentation } from "./entry-presentation.ts";
 import { agentInfo } from "./models.ts";
 import {
@@ -143,6 +144,7 @@ export interface Client {
     /** The conversation this tab watches; cleared when the person may not (or no longer may) see it. */
     conversationId: ConversationId | undefined;
     send(event: string, data: unknown): void;
+    perfOpen?: { start: number; via: "events" | "poll" | "switch" };
     /** End this tab's connection, for someone who was removed. */
     close?(): void;
     /** False while the tab is hidden: the person is away, and push notifications may reach them. */
@@ -425,7 +427,11 @@ export class Room {
         this.#view = {
             conversation: watch.value.conversation,
             docs: watch.value.docs,
-            entries: (await conversation.context(context)).entries,
+            entries: (
+                await (perf?.operation("room-context", { conversation: Number(this.id) }, () =>
+                    conversation.context(context),
+                ) ?? conversation.context(context))
+            ).entries,
         };
         watch.start(async (call) => {
             if (call.kind === "value") {
@@ -752,6 +758,7 @@ export class Room {
             return;
         }
 
+        const built = perf?.phase("room.view");
         const sentFields = (client.sentFields ??= new Map());
 
         if (full) {
@@ -761,7 +768,10 @@ export class Room {
             client.liveBlocks = undefined;
         }
 
+        const project = perf?.phase("room.project");
         const projected = this.#projectedEntries(view.entries);
+
+        project?.();
         const order = projected.map((entry) => entry.id);
         // What the tab kept from before, when it is what this server would send it: those entries count as sent.
         const kept = full ? this.#kept(client, order) : 0;
@@ -976,6 +986,7 @@ export class Room {
             approvals: this.#app.approvals.forConversation(this.id),
             ...fields,
         });
+        built?.();
     }
 
     /**

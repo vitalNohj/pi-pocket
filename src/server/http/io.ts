@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync }
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { PocketApp } from "../app.ts";
+import { perf } from "../../perf.ts";
 import type { User } from "../config.ts";
 import { HttpError } from "../errors.ts";
 import { accepted, compressed, compressible, MIN_COMPRESS_BYTES } from "./compress.ts";
@@ -48,7 +49,10 @@ export function send(
             : undefined;
 
     if (encoding !== undefined) {
+        const compressedPhase = perf?.phase("http.compress");
+
         body = compressed(body, encoding);
+        compressedPhase?.();
         headers = {
             ...headers,
             "content-encoding": encoding,
@@ -62,7 +66,11 @@ export function send(
 }
 
 export function json(response: ServerResponse, status: number, value: unknown): void {
-    send(response, status, JSON.stringify(value), "application/json");
+    const stringify = perf?.phase("http.stringify");
+    const encoded = JSON.stringify(value);
+
+    stringify?.();
+    send(response, status, encoded, "application/json");
 }
 
 /** How long a JSON or form body may take to arrive: a client that stops sending must not hold the connection. */

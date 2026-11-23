@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PocketApp } from "../app.ts";
+import { perf } from "../../perf.ts";
 import type { User } from "../config.ts";
 import { isLocalRequest } from "../local-browser.ts";
 import type { Client } from "../room.ts";
@@ -94,6 +95,57 @@ export function keptPart(text: string | null): Client["have"] {
           };
 }
 
+function viewMark(client: Client, event: string, data: unknown, rawBytes: number) {
+    const trace = perf;
+
+    if (!trace || event !== "view") {
+        return undefined;
+    }
+
+    const view = data as {
+        full: boolean;
+        conversation: { id: number };
+        entries: { partial?: boolean }[];
+        order?: number[];
+        orderFrom?: number;
+    };
+
+    if (!view.full && view.entries.length === 0) {
+        return undefined;
+    }
+
+    const opening =
+        view.full && view.conversation.id === Number(client.conversationId)
+            ? client.perfOpen
+            : undefined;
+
+    if (opening !== undefined) {
+        client.perfOpen = undefined;
+    }
+
+    const serialized = trace.now();
+    const fields = {
+        conversation: view.conversation.id,
+        connection: client.connection,
+        span: trace.current(),
+        full: view.full,
+        rawBytes,
+        entries: view.entries.length,
+        partialEntries: view.entries.filter((each) => each.partial).length,
+        order: view.order?.length,
+        orderFrom: view.orderFrom,
+    };
+
+    return (bytes?: number) =>
+        trace.log("server.view", {
+            ...fields,
+            ...opening,
+            bytes,
+            serialized,
+            ms: opening === undefined ? undefined : trace.now() - opening.start,
+        });
+}
+
 /** The event routes of one HTTP handler, with their own pollers. */
 export function createEventStreams(app: PocketApp) {
     const events = async (
@@ -104,20 +156,38 @@ export function createEventStreams(app: PocketApp) {
     ): Promise<void> => {
         // What went to the stream, and of it what the tab took (left the stream's buffer), and when it last took some.
         // Compressed, these count the compressed bytes: what the server holds, and what the tab takes.
+        const start = perf?.now();
         let written = 0;
+        let lastFlush = 0;
         let taken = 0;
         let tookAt = Date.now();
         const encoding = accepted(request);
         const compressor = encoding === undefined ? undefined : streamCompressor(encoding);
 
         // One compressor for the whole stream, flushed after each event and ping, so each goes out whole at once.
-        const write = (text: string) => {
+        const write = (text: string, mark?: (bytes: number) => void) => {
             if (compressor === undefined) {
-                written += Buffer.byteLength(text);
+                const bytes = Buffer.byteLength(text);
+
+                written += bytes;
                 response.write(text);
+                mark?.(bytes);
             } else {
                 compressor.stream.write(text);
-                compressor.stream.flush(compressor.flush);
+
+                if (!perf) {
+                    compressor.stream.flush(compressor.flush);
+                } else {
+                    compressor.stream.flush(compressor.flush, () => {
+                        const bytes = written - lastFlush;
+
+                        lastFlush = written;
+
+                        if (!response.destroyed) {
+                            mark?.(bytes);
+                        }
+                    });
+                }
             }
         };
 
@@ -163,9 +233,22 @@ export function createEventStreams(app: PocketApp) {
 
         const client = newClient(request, url, user, (event, data) => {
             if (keepsUp()) {
-                write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+                const serialize = perf?.phase("sse.stringify");
+                const text = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+
+                serialize?.();
+                write(
+                    text,
+                    perf && event === "view"
+                        ? viewMark(client, event, data, Buffer.byteLength(text))
+                        : undefined,
+                );
             }
         });
+
+        if (start !== undefined && client.conversationId !== undefined) {
+            client.perfOpen = { start, via: "events" };
+        }
 
         client.close = () => (compressor === undefined ? response.end() : compressor.stream.end());
         response.writeHead(200, {
@@ -209,6 +292,12 @@ export function createEventStreams(app: PocketApp) {
                 hold: POLL_HOLD_MS,
                 events: poller.queue.map(({ seq, event, data }) => ({ seq, event, data })),
             });
+
+            if (perf) {
+                for (const { event, data, size } of poller.queue) {
+                    viewMark(poller.client, event, data, size)?.();
+                }
+            }
 
             // Until it polls again it takes this: a large answer on a slow link takes long, and only it knows when it is in.
             if (poller.queue.length > 0) {
@@ -269,6 +358,7 @@ export function createEventStreams(app: PocketApp) {
         url: URL,
         user: User,
     ): Promise<void> => {
+        const start = perf?.now();
         let poller = pollers.get(url.searchParams.get("session") ?? "");
 
         if (poller !== undefined && poller.userId !== user.id) {
@@ -358,6 +448,11 @@ export function createEventStreams(app: PocketApp) {
                     created.timer = setTimeout(() => answerPoll(created), 30);
                 }
             });
+
+            if (start !== undefined && created.client.conversationId !== undefined) {
+                created.client.perfOpen = { start, via: "poll" };
+            }
+
             created.client.close = () => closePoller(created);
             pollers.set(created.id, created);
             // Its time runs while its first view is built, however long that takes, as long as the tab waits for it: a
