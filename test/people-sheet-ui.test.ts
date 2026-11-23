@@ -388,7 +388,6 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "Gina can prompt: on",
         "Gina links runners: off",
         "Gina invites people: off",
-        "Gina shares what they were given: off",
         "Gina manages users: off",
         "Gina manages runners: off",
         "Gina manages the server: off",
@@ -492,6 +491,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "Gina may use Laptop: on",
         "Gina overrides take turns on Laptop: off",
         "Gina allows their own calls on Laptop: off",
+        "Gina shares what they were given on Laptop: off",
         "Vera may use Laptop: off",
     ]);
     assert.deepEqual(await folds(), [], "this server's folder is not the Laptop's");
@@ -2702,6 +2702,7 @@ test(
                 "This server": [
                     "Gina overrides take turns on This server: off",
                     "Gina allows their own calls on This server: off",
+                    "Gina shares what they were given on This server: off",
                 ],
             });
             await showPart("Folders and sessions");
@@ -2889,7 +2890,7 @@ test(
             assert.equal(await signsIn(), true);
             assert.match(await text(), /Sign in a device of theirs/);
 
-            // She has none of these three herself, so they are not hers to turn on; and whether Uma manages users is
+            // She has neither of these two herself, so they are not hers to turn on; and whether Uma manages users is
             // the owner's. Inviting people she has with managing users. No link signs a device in as a user.
             await show("Uma");
             await showPart("Permissions");
@@ -2897,12 +2898,11 @@ test(
                 "Uma can prompt: on",
                 "Uma links runners: off (disabled)",
                 "Uma invites people: off",
-                "Uma shares what they were given: off (disabled)",
                 "Uma keeps sessions warm: off (disabled)",
             ]);
             assert.equal(
                 (await text()).split("Off: you can only give what you have yourself.").length - 1,
-                3,
+                2,
             );
             assert.equal(await signsIn(), false);
             // No approval time longer than her own.
@@ -3941,7 +3941,12 @@ test(
             await app.choosePerson(THIS_SERVER, kay.user.id, true);
             await app.choosePerson(THIS_SERVER, lou.user.id, true);
             await app.giveFolders(owner(app), THIS_SERVER, kay.user.id, [amber, beryl]);
-            app.setRight(owner(app), { person: kay.user.id, right: "reshares", on: true });
+            app.setRight(owner(app), {
+                computer: THIS_SERVER,
+                person: kay.user.id,
+                right: "reshares",
+                on: true,
+            });
 
             // Vee views, and is chosen for this server.
             vee = app.config.addUser("Vee", "viewer");
@@ -4090,7 +4095,12 @@ test(
             // With the permission off again she gives nothing more, and still takes back what she gave: the folder,
             // and the share she made. The session the owner shared is no longer hers to share, so it is not listed,
             // and neither is the folder the owner gave. Her card follows at once.
-            app.setRight(owner(app), { person: kay.user.id, right: "reshares", on: false });
+            app.setRight(owner(app), {
+                computer: THIS_SERVER,
+                person: kay.user.id,
+                right: "reshares",
+                on: false,
+            });
             await until(
                 async () => (await folds()).length === 1,
                 "her card for Lou, with the permission off",

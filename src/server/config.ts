@@ -243,8 +243,9 @@ export interface StoredRunner {
     /**
      * The chosen people who hold each right given one person at a time here (`rights.ts`), by person id: `wheel`, to
      * take the wheel from a driver and turn take turns off under them (`access.ts` `overridesTurns`); `allows`, to
-     * allow a call their own message led to while approvals need someone else (`allowsOwn`). Who is in charge always
-     * may.
+     * allow a call their own message led to while approvals need someone else (`allowsOwn`); `reshares`, to share a
+     * session that is shared with them here and give a folder that was given to them here (`reshares`). Who is in
+     * charge always may.
      */
     rights?: Partial<Record<ComputerRight, string[]>>;
     /** When it last connected. */
@@ -615,6 +616,9 @@ function keepAccess(config: PocketConfig): string[] {
  * A file from before `rights.ts` kept each right in a field of its own: on a person (`linksRunners: true` and the
  * like, also inside `paused`), and on a computer (`wheel`, `allows`: lists of people). Each field had the name its
  * right has now, so they are gathered into `rights` by name. Whether anything changed.
+ *
+ * A right that was a person's and is now given on each computer (`reshares`) is not carried over: it is dropped from
+ * the person, and is off on every computer until who is in charge there turns it on.
  */
 function gatherRights(config: PocketConfig): boolean {
     let changed = false;
@@ -632,6 +636,20 @@ function gatherRights(config: PocketConfig): boolean {
             }
 
             delete old[key];
+            changed = true;
+        }
+
+        const kept = (target.rights ?? []).filter(
+            (each) => !(COMPUTER_RIGHTS as readonly string[]).includes(each),
+        );
+
+        if (target.rights !== undefined && kept.length !== target.rights.length) {
+            if (kept.length === 0) {
+                delete target.rights;
+            } else {
+                target.rights = kept;
+            }
+
             changed = true;
         }
     };

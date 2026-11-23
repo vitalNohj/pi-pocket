@@ -2,7 +2,8 @@
 // /api/users/:id/sharing`): what Invite and Revoke on a session's row do on a person's page in People. Whoever prompts
 // shares the sessions that are theirs to share (`access.ts` `mayShare`) and takes them back; each rule here has someone who
 // gets in and someone who is refused. So has what someone who shares what they were given does (`rights.ts`
-// `reshares`): a session shared with them, and a folder given to them (`POST /api/runners/:id/give`).
+// `reshares`, given on each computer by who is in charge of it): a session shared with them there, and a folder given
+// to them there (`POST /api/runners/:id/give`).
 import {
     type App,
     approveSession,
@@ -531,7 +532,7 @@ test("someone who shares what they were given shares a session shared with them,
     const mayShare = (user: User) =>
         app.sessions(now(user)).find((each) => each.id === Number(given))?.mayShare;
 
-    app.setRight(boss, { person: lea.id, right: "reshares", on: true });
+    app.setRight(boss, { computer: THIS_SERVER, person: lea.id, right: "reshares", on: true });
     await app.commands.shareSession(given, boss, [lea.id, pat.id]);
     await app.commands.shareSession(also, boss, [lea.id]);
 
@@ -544,11 +545,11 @@ test("someone who shares what they were given shares a session shared with them,
     ]);
     await assert.rejects(
         app.commands.shareSession(given, now(pat), [ana.id]),
-        /or someone who shares what they were given can share it/,
+        /or someone who shares what they were given there can share it/,
     );
     assert.throws(
         () => app.commands.sharing(given, now(pat)),
-        /or someone who shares what they were given can share it/,
+        /or someone who shares what they were given there can share it/,
     );
     assert.equal(app.canSee(now(ana), given), false);
 
@@ -664,7 +665,7 @@ test("someone who shares what they were given shares a session shared with them,
 
     // The right taken back: what they shared is still theirs to take back, and they share nothing more.
     assert.deepEqual((await call(lea, sharing(ana), { share: [Number(given)] })).body.refused, []);
-    app.setRight(boss, { person: lea.id, right: "reshares", on: false });
+    app.setRight(boss, { computer: THIS_SERVER, person: lea.id, right: "reshares", on: false });
     assert.equal(mayShare(lea), undefined);
     assert.deepEqual(
         [rows(lea, ana).get(title)].map((each) => [each?.state, each?.give, each?.take]),
@@ -681,7 +682,7 @@ test("someone who shares what they were given shares a session shared with them,
 
     // Removed: a share they made stays, for its starter or who is in charge to end; who made it is forgotten.
     await app.commands.shareSession(pats, now(pat), [lea.id]);
-    app.setRight(boss, { person: lea.id, right: "reshares", on: true });
+    app.setRight(boss, { computer: THIS_SERVER, person: lea.id, right: "reshares", on: true });
     assert.deepEqual((await call(lea, sharing(tom), { share: [Number(pats)] })).body.refused, []);
     assert.deepEqual(app.sessionMeta(pats)?.sharedBy, { [lea.id]: pat.id, [tom.id]: lea.id });
     await app.removeUser(boss, lea.id);
@@ -783,7 +784,7 @@ test("someone who shares what they were given gives a folder that was given to t
     const told = (by: User, target: User) => app.commands.sharingWith(now(by), target.id).computers;
     const folder = (by: User, target: User) => told(by, target)[0]?.folders[0];
 
-    app.setRight(boss, { person: lea.id, right: "reshares", on: true });
+    app.setRight(boss, { computer: THIS_SERVER, person: lea.id, right: "reshares", on: true });
 
     for (const each of [lea, pat, tom]) {
         await app.giveFolders(boss, THIS_SERVER, each.id, [work]);
@@ -814,7 +815,11 @@ test("someone who shares what they were given gives a folder that was given to t
     // Refused: without the right; a folder that is not theirs, also one inside theirs; to someone who does not prompt
     // there; to themselves, and to no one; and any viewer.
     for (const [answer, status, reason] of [
-        [await give(pat, ana.id, work, true), 403, /Share what they were given is off for you/],
+        [
+            await give(pat, ana.id, work, true),
+            403,
+            /You cannot give folders on this server: Share what they were given is off for you there/,
+        ],
         [await give(lea, ana.id, `${work}/sub`, true), 403, /only a folder that was given to you/],
         [await give(lea, ana.id, "/", true), 403, /only a folder that was given to you/],
         [await give(lea, nia.id, work, true), 400, /Give Nia cannot use this server\. Whoever is/],
@@ -891,7 +896,7 @@ test("someone who shares what they were given gives a folder that was given to t
     const anas = await session("give: Ana's in the folder", ana);
 
     // The right taken back: they give nothing more, and what they gave is still theirs to turn off and take back.
-    app.setRight(boss, { person: lea.id, right: "reshares", on: false });
+    app.setRight(boss, { computer: THIS_SERVER, person: lea.id, right: "reshares", on: false });
     assert.equal((await give(lea, pat.id, work, true)).status, 403);
     assert.deepEqual(
         [folder(lea, ana)].map((each) => [each?.has, each?.give, each?.take, each?.see]),
@@ -922,9 +927,148 @@ test("someone who shares what they were given gives a folder that was given to t
     assert.deepEqual(app.config.givenBy(undefined, tom.id), { [work]: boss.id });
 
     // A removed person is forgotten as who gave a folder: it stays given, for who is in charge to take back.
-    app.setRight(boss, { person: lea.id, right: "reshares", on: true });
+    app.setRight(boss, { computer: THIS_SERVER, person: lea.id, right: "reshares", on: true });
     assert.equal((await give(lea, ana.id, work, true)).status, 200);
     await app.removeUser(boss, lea.id);
     assert.deepEqual(has(ana), [work]);
     assert.deepEqual(app.config.givenBy(undefined, ana.id), {});
+});
+
+test("what was given is shared on by computer: on for one is not on for another, its one in charge gives it, and the owner needs it too on a runner someone else linked", async () => {
+    const boss = owner(app);
+    const lin = await person("Each Lin", "guest", { chosen: false });
+    const lea = await person("Each Lea", "guest");
+    const ana = await person("Each Ana", "guest");
+    const tom = await person("Each Tom", "guest");
+    const vera = await person("Each Vera", "viewer");
+    const laptop = app.config.addRunner("Each laptop", lin.id, newIdentity().publicKey).id;
+    const folder = "/srv/each";
+
+    for (const each of [lea, ana, tom, boss]) {
+        await app.choosePerson(laptop, each.id, true);
+    }
+
+    // A session of the owner's here, and one of Lin's on the laptop: both shared with Lea, the one there with the owner
+    // too. Lea has a folder here, and one there, which the owner has as well.
+    const here = await session("each: here");
+    const there = await session("each: there", lin);
+
+    await app.harness.commit(async (tx) => {
+        (await tx.doc(SessionsDoc)).items[String(there)]!.runner = laptop;
+    }, context);
+    await app.commands.shareSession(here, boss, [lea.id]);
+    await app.commands.shareSession(there, now(lin), [lea.id, boss.id]);
+    await app.giveFolders(boss, THIS_SERVER, lea.id, [work]);
+    app.config.setGivenFolders(laptop, lea.id, [folder]);
+    app.config.setGivenFolders(laptop, boss.id, [folder]);
+    app.accessChanged();
+
+    const cannot = "Not a session you can share.";
+    const off = /Share what they were given is off for you there/;
+    const share = async (by: User, id: ConversationId, target: User = ana) =>
+        (await call(by, sharing(target), { share: [Number(id)] })).body.refused?.map(
+            (each) => each.reason,
+        );
+    const give = (by: User, computer: string, path: string, target: User = ana) =>
+        call(by, `runners/${computer}/give`, { person: target.id, folder: path, on: true });
+    const set = (by: User, computer: string, target: User, on: boolean) =>
+        call(by, `runners/${computer}/rights`, { person: target.id, right: "reshares", on });
+    /** Whether `user` shares what they were given on this server, and on the laptop. */
+    const holds = (user: User) =>
+        [THIS_SERVER, laptop].map((each) => app.policy.reshares(now(user), each));
+    const offered = (user: User, id: ConversationId) =>
+        app.sessions(now(user)).find((each) => each.id === Number(id))?.mayShare;
+    /** The folders `by` is offered on `target`'s page, by computer. */
+    const told = (by: User, target: User) =>
+        app.commands
+            .sharingWith(now(by), target.id)
+            .computers.map((each) => [each.id, each.folders.map((one) => one.path)]);
+
+    // Off for everyone until it is given: only who is in charge of a computer has it there. The owner is in charge
+    // here, and no one special on the laptop.
+    assert.deepEqual(holds(lea), [false, false]);
+    assert.deepEqual(holds(boss), [true, false]);
+    assert.deepEqual(holds(lin), [false, true]);
+    assert.deepEqual(await share(lea, here), [cannot]);
+    assert.deepEqual(await share(lea, there), [cannot]);
+
+    // The owner turns it on for Lea here: she shares on what she was given here, and nothing on the laptop.
+    assert.equal((await set(boss, THIS_SERVER, lea, true)).status, 200);
+    assert.deepEqual(holds(lea), [true, false]);
+    assert.deepEqual([offered(lea, here), offered(lea, there)], [true, undefined]);
+    // A person's page offers her the folders given to her here, and none of the laptop's.
+    assert.deepEqual(told(lea, ana), [[THIS_SERVER, [work]]]);
+    assert.deepEqual(await share(lea, here), []);
+    assert.deepEqual(sharedWith(here), [ana.id, lea.id].sort());
+    assert.equal((await give(lea, THIS_SERVER, work)).status, 200);
+    assert.deepEqual(await share(lea, there), [cannot]);
+    assert.equal(app.canSee(now(ana), there), false);
+
+    const refused = await give(lea, laptop, folder);
+
+    assert.equal(refused.status, 403);
+    assert.match(String(refused.body.error), /You cannot give folders on Each laptop: /);
+    assert.match(String(refused.body.error), off);
+    assert.deepEqual([...app.config.givenFolders(laptop, ana.id)], []);
+
+    // On the laptop its linker gives it: not the owner, and not Lea herself.
+    for (const by of [boss, lea]) {
+        const answer = await set(by, laptop, lea, true);
+
+        assert.equal(answer.status, 403, by.name);
+        assert.match(String(answer.body.error), /Only whoever is in charge of this computer/);
+    }
+
+    assert.equal((await set(lin, laptop, lea, true)).status, 200);
+    assert.deepEqual(holds(lea), [true, true]);
+    assert.deepEqual(app.config.rightHolders(laptop, "reshares"), [lea.id]);
+    assert.deepEqual((await app.hello(now(lea))).user.rights.reshares, [THIS_SERVER, laptop]);
+    assert.equal(offered(lea, there), true);
+    assert.deepEqual(await share(lea, there), []);
+    assert.equal(app.canSee(now(ana), there), true);
+    assert.equal((await give(lea, laptop, folder)).status, 200);
+    assert.deepEqual(app.config.givenBy(laptop, ana.id), { [folder]: lea.id });
+
+    // The owner there: what was shared with them and given to them they pass on only once Lin lets them.
+    assert.equal(offered(boss, there), undefined);
+    assert.deepEqual(await share(boss, there, tom), [cannot]);
+
+    const notYet = await give(boss, laptop, folder, tom);
+
+    assert.equal(notYet.status, 403);
+    assert.match(String(notYet.body.error), off);
+    assert.equal((await set(lin, laptop, boss, true)).status, 200);
+    assert.deepEqual(holds(boss), [true, true]);
+    assert.equal(offered(boss, there), true);
+    assert.deepEqual(await share(boss, there, tom), []);
+    assert.equal(app.canSee(now(tom), there), true);
+    assert.equal((await give(boss, laptop, folder, tom)).status, 200);
+    assert.deepEqual(app.config.givenBy(laptop, tom.id), { [folder]: boss.id });
+
+    // Only someone chosen there who prompts gets it: no viewer, nobody who is not chosen, and who is in charge needs
+    // none.
+    for (const [answer, said] of [
+        [await set(boss, THIS_SERVER, vera, true), /A viewer cannot prompt/],
+        [await set(boss, THIS_SERVER, lin, true), /Choose them for this computer first/],
+        [await set(lin, laptop, lin, true), /needs no such permission there/],
+    ] as const) {
+        assert.equal(answer.status, 400, String(said));
+        assert.match(String(answer.body.error), said);
+    }
+
+    // Taken back here, it stays on the laptop, and what she shared and gave stays.
+    assert.equal((await set(boss, THIS_SERVER, lea, false)).status, 200);
+    assert.deepEqual(holds(lea), [false, true]);
+    // Now a person's page offers her the laptop's folder, and none here.
+    assert.deepEqual(told(lea, tom), [[laptop, [folder]]]);
+    assert.deepEqual(sharedWith(here), [ana.id, lea.id].sort());
+    assert.deepEqual([...app.config.givenFolders(undefined, ana.id)], [work]);
+    assert.deepEqual(await share(lea, here, tom), [cannot]);
+
+    // No longer chosen for the laptop, she holds nothing there, also when chosen again.
+    await app.choosePerson(laptop, lea.id, false);
+    assert.deepEqual(app.config.rightHolders(laptop, "reshares"), [boss.id]);
+    await app.choosePerson(laptop, lea.id, true);
+    assert.deepEqual(holds(lea), [false, false]);
+    assert.deepEqual(app.config.rightHolders(laptop, "reshares"), [boss.id]);
 });

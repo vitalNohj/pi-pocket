@@ -161,7 +161,7 @@ export type RunnerView = {
     /**
      * The granted people who hold each right given one person at a time there (`rights.ts`): `wheel`, to take the
      * wheel from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to
-     * (`allowsOwn`). Managers' list.
+     * (`allowsOwn`); `reshares`, to share what they were given there (`reshares`). Managers' list.
      */
     rights?: Record<ComputerRight, string[]>;
     /** New sessions there start shared with its people. */

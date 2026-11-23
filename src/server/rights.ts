@@ -63,14 +63,6 @@ export const RIGHTS = {
         withHint:
             "On with Manage users: they invite people, who join as viewers and see what the invite shares.",
     },
-    reshares: {
-        scope: "person",
-        whole: true,
-        label: "Share what they were given",
-        says: "shares what they were given",
-        on: "On: they share sessions that are shared with them, and give folders that were given to them.",
-        off: "Off: they share only the sessions they started.",
-    },
     managesUsers: {
         scope: "person",
         whole: true,
@@ -130,6 +122,13 @@ export const RIGHTS = {
         says: "allows their own calls on",
         on: "On: they allow their own ! commands and calls that Lancet Guard asks about here.",
         off: "Off: whoever is in charge allows their ! commands. While Approvals need someone else is on, someone else allows their calls.",
+    },
+    reshares: {
+        scope: "computer",
+        label: "Share what they were given",
+        says: "shares what they were given on",
+        on: "On: they share sessions that are shared with them here, and give folders that were given to them here.",
+        off: "Off: they share only the sessions they started here.",
     },
 } as const satisfies Record<string, Right>;
 

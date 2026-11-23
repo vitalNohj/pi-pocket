@@ -307,7 +307,8 @@ export class AccessPolicy {
 
     /**
      * Does `person` hold `right`: the one check for every right given one person at a time (`rights.ts`). The methods
-     * that name a right (`mayLink`, `managesPeople`, `invites`, `keepsWarm`, `overridesTurns`, `allowsOwn`) ask here.
+     * that name a right (`mayLink`, `managesPeople`, `invites`, `keepsWarm`, `overridesTurns`, `allowsOwn`, `reshares`)
+     * ask here.
      *
      * A person's right, held everywhere: the owner has them all; a user has one they were given, or one that comes
      * with another they hold, while they can hold it at all (`rights.ts` `holds`).
@@ -533,12 +534,13 @@ export class AccessPolicy {
     }
 
     /**
-     * Does `person` pass on what they were given: share a session that is shared with them (`mayShare`), and give a
-     * folder that was given to them (`mayGiveFolder`). Off unless who manages them turns it on. What is their own
-     * (a session they started, a computer they are in charge of) they share without it.
+     * Does `person` pass on what they were given on computer `id`: share a session that is shared with them there
+     * (`mayShare`), and give a folder that was given to them there (`mayGiveFolder`). Who is in charge of it always
+     * does. Anyone else does once who is in charge turns it on for them there: the owner too, on a computer someone
+     * else linked. What is their own (a session they started) they share without it.
      */
-    reshares(person: Pick<Person, "id">): boolean {
-        return this.has(person, "reshares");
+    reshares(person: Pick<Person, "id">, id: string): boolean {
+        return this.has(person, "reshares", id);
     }
 
     /**
@@ -662,7 +664,7 @@ export class AccessPolicy {
 
         return (
             this.inCharge(current, id) ||
-            (this.reshares(current) &&
+            (this.reshares(current, id) &&
                 !this.blocked(id) &&
                 (this.givenFolders(current, id) ?? []).includes(folder))
         );
@@ -715,7 +717,7 @@ export class AccessPolicy {
             return false;
         }
 
-        return !on || (this.reshares(current) && this.seesFolder(current, id, folder));
+        return !on || (this.reshares(current, id) && this.seesFolder(current, id, folder));
     }
 
     /**
@@ -918,8 +920,8 @@ export class AccessPolicy {
     /**
      * May `person` share session `id` with someone, or invite someone to it alone (an invite shares it too): who is in
      * charge of its computer; its starter while they may steer it; and anyone else who steers it (it is shared with
-     * them, or theirs by its folder) while they pass on what they were given (`reshares`). Nobody shares what they do
-     * not have. Ending a share is `mayUnshare`.
+     * them, or theirs by its folder) while they pass on what they were given there (`reshares`). Nobody shares what
+     * they do not have. Ending a share is `mayUnshare`.
      */
     mayShare(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -932,7 +934,7 @@ export class AccessPolicy {
         return (
             this.inCharge(current, facts.computer) ||
             (this.maySteer(current, id) &&
-                (this.starter(facts) === current.id || this.reshares(current)))
+                (this.starter(facts) === current.id || this.reshares(current, facts.computer)))
         );
     }
 

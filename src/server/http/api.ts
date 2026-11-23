@@ -1397,8 +1397,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
             );
         }
 
-        // One chosen person may take the wheel from a driver on a computer, or allow their own calls there, or no longer
-        // (`app.ts` `setRight`).
+        // One chosen person may take the wheel from a driver on a computer, allow their own calls there, or share what
+        // they were given there, or no longer (`app.ts` `setRight`).
         if (
             first === "runners" &&
             second !== undefined &&

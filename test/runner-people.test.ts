@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { Runner } from "../src/runner/runner.ts";
+import { THIS_SERVER } from "../src/server/access.ts";
 import { ConfigStore, type User } from "../src/server/config.ts";
 import { SessionsDoc, SubagentsDoc } from "../src/server/docs.ts";
 import { HttpError } from "../src/server/errors.ts";
@@ -1202,9 +1203,11 @@ describe("review drill fixes for people on a computer", () => {
                 { mayShare?: true } | undefined;
 
         // Who is in charge of its computer, and its starter: Share. The owner is not in charge there, and it is only
-        // shared with them: they share it as anyone does who shares what they were given (`rights.ts` `reshares`),
-        // which the owner holds like every right. They are no one special there for the rest: only its linker chooses
-        // who uses the computer, so the owner shares it with no one else.
+        // shared with them: they are no one special on a computer someone else linked, and share it on only once its
+        // linker lets them there (`rights.ts` `reshares`, given on each computer), as anyone does.
+        const cannot = /or someone who shares what they were given there can share it/;
+        const shares = { person: owner(app).id, right: "reshares", on: true };
+
         assert.equal(row(host)?.mayShare, true, "in charge of its computer");
         assert.equal(row(worker)?.mayShare, true, "its starter");
         assert.equal(
@@ -1212,6 +1215,45 @@ describe("review drill fixes for people on a computer", () => {
             false,
             "the owner is not in charge there",
         );
+        assert.equal(row(owner(app))?.mayShare, undefined, "not without its linker's leave");
+
+        for (const body of [undefined, { people: [owner(app).id, invited.id, worker.id] }]) {
+            const refused = await request<{ error?: string }>(
+                owner(app),
+                `sessions/${session}/share`,
+                body,
+            );
+
+            assert.equal(refused.status, 403);
+            assert.match(String(refused.body.error), cannot);
+        }
+
+        assert.equal(
+            (await request(owner(app), "invite", { session: String(session) })).status,
+            403,
+            "nor an invite link to it",
+        );
+        assert.deepEqual(app.sessionMeta(session)?.sharedWith, [owner(app).id, invited.id]);
+
+        // Held on this server, where the owner is in charge, it is not held there; and the owner does not give it to
+        // themselves on a computer they are not in charge of. Its linker does.
+        assert.equal(app.policy.reshares(owner(app), THIS_SERVER), true);
+        assert.equal(app.policy.reshares(owner(app), theirs), false);
+
+        const own = await request<{ error?: string }>(
+            owner(app),
+            `runners/${theirs}/rights`,
+            shares,
+        );
+
+        assert.equal(own.status, 403);
+        assert.match(String(own.body.error), /Only whoever is in charge of this computer/);
+        assert.equal((await request(host, `runners/${theirs}/rights`, shares)).status, 200);
+        assert.deepEqual(app.config.rightHolders(theirs, "reshares"), [owner(app).id]);
+        assert.equal(app.policy.reshares(owner(app), theirs), true);
+
+        // With it they share it as anyone does who shares what they were given. For the rest they are still no one
+        // special there: only its linker chooses who uses the computer, so the owner shares it with no one else.
         assert.equal(row(owner(app))?.mayShare, true, "the owner shares what was shared with them");
         assert.equal((await request(owner(app), `sessions/${session}/share`)).status, 200);
         const unchosen = await request<{ error?: string }>(

@@ -3724,9 +3724,9 @@ export class PocketApp {
             if (!this.policy.mayGiveFolder(by, id, folder)) {
                 throw new HttpError(
                     403,
-                    this.policy.reshares(by)
+                    this.policy.reshares(by, id)
                         ? "You can give only a folder that was given to you."
-                        : "You cannot give folders: Share what they were given is off for you.",
+                        : `You cannot give folders on ${place}: Share what they were given is off for you there.`,
                 );
             }
 
@@ -3953,9 +3953,10 @@ export class PocketApp {
 
     /**
      * Who is in charge of computer `id` gives `person` one right there, or takes it back: to take the wheel from a
-     * driver (`wheel`, `access.ts` `overridesTurns`), or to allow a call their own message led to while approvals need
-     * someone else (`allows`, `allowsOwn`). Only someone chosen there who prompts. Taking it back undoes nothing done
-     * with it: who took the wheel keeps it, and a call they allowed stays allowed.
+     * driver (`wheel`, `access.ts` `overridesTurns`), to allow a call their own message led to while approvals need
+     * someone else (`allows`, `allowsOwn`), or to pass on what they were given there (`reshares`). Only someone chosen
+     * there who prompts: the owner too, on a computer someone else linked. Taking it back undoes nothing done with it:
+     * who took the wheel keeps it, a call they allowed stays allowed, and what they shared or gave stays so.
      */
     #setComputerRight(by: User, id: string, person: unknown, right: unknown, on: unknown): void {
         if (id !== THIS_SERVER) {
@@ -3965,10 +3966,7 @@ export class PocketApp {
         this.policy.requireManage(by, id);
 
         if (typeof person !== "string" || !isRight(right, "computer") || typeof on !== "boolean") {
-            throw new HttpError(
-                400,
-                `Send person, right (${COMPUTER_RIGHTS.join(" or ")}), and on.`,
-            );
+            throw new HttpError(400, `Send person, right (${COMPUTER_RIGHTS.join(", ")}), and on.`);
         }
 
         const target = this.config.userById(person);
@@ -6984,8 +6982,8 @@ export class PocketApp {
     /**
      * What a hello tells `user` of computers: may they start sessions on this server, may they invite someone new to
      * their sessions (`access.ts` `mayInvite`: they start sessions on some computer, and the owner lets them invite),
-     * and the computers where they may take the wheel from a driver (`overridesTurns`) or allow their own calls
-     * (`allowsOwn`).
+     * and the computers where they may take the wheel from a driver (`overridesTurns`), allow their own calls
+     * (`allowsOwn`), or pass on what they were given (`reshares`).
      */
     #rightsOf(user: User): Rights {
         const computers = [THIS_SERVER, ...this.config.runners.map((each) => each.id)];

@@ -115,7 +115,8 @@ export function choosePerson(computer, person, on) {
 
 /**
  * Give `person` one right on `computer`, or take it back (`app.ts` `setRight`): `wheel`, to take the wheel from a
- * driver there; `allows`, to allow a call their own message led to there. True when it was saved.
+ * driver there; `allows`, to allow a call their own message led to there; `reshares`, to share what they were given
+ * there. True when it was saved.
  */
 export function setRight(computer, person, right, on) {
     return attempt(async () => {

@@ -429,7 +429,7 @@ function settle(
 
 /** What someone who sees a session but may not share it is told (`access.ts` `mayShare`). */
 const CANNOT_SHARE =
-    "Only the person who started this session, whoever is in charge of its computer, or someone who shares what they were given can share it.";
+    "Only the person who started this session, whoever is in charge of its computer, or someone who shares what they were given there can share it.";
 
 /**
  * One session `user` may share with one person, or take back from them, with how that person has it now (`Commands`
@@ -1640,7 +1640,7 @@ export class Commands {
                 const theirs = app.config.givenFolders(key, person.id);
                 const sees = app.config.seenFolders(key, person.id);
                 const givers = app.config.givenBy(key, person.id);
-                const mine = app.policy.reshares(user)
+                const mine = app.policy.reshares(user, id)
                     ? (app.policy.givenFolders(user, id) ?? [])
                     : [];
                 const paths = [

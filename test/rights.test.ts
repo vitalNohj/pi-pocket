@@ -122,13 +122,12 @@ test("every right is declared once, and the app is told its words and none of it
     assert.deepEqual(PERSON_RIGHTS, [
         "linksRunners",
         "invites",
-        "reshares",
         "managesUsers",
         "managesRunners",
         "managesServer",
         "keepsWarm",
     ]);
-    assert.deepEqual(COMPUTER_RIGHTS, ["wheel", "allows"]);
+    assert.deepEqual(COMPUTER_RIGHTS, ["wheel", "allows", "reshares"]);
     assert.deepEqual([...PERSON_RIGHTS, ...COMPUTER_RIGHTS], Object.keys(RIGHTS));
 
     const said = (await app.hello(owner(app))).server.rights;
@@ -187,7 +186,6 @@ test("one check answers for every right: the owner has them all, a user what the
     for (const each of [owner(app), gil, vera, sam]) {
         assert.equal(app.policy.mayLink(each), has(each, "linksRunners"), each.name);
         assert.equal(app.policy.invites(each), has(each, "invites"), each.name);
-        assert.equal(app.policy.reshares(each), has(each, "reshares"), each.name);
         assert.equal(app.policy.managesPeople(each), has(each, "managesUsers"), each.name);
         assert.equal(app.policy.managesRunners(each), has(each, "managesRunners"), each.name);
         assert.equal(app.policy.managesServer(each), has(each, "managesServer"), each.name);
@@ -198,24 +196,24 @@ test("one check answers for every right: the owner has them all, a user what the
     assert.deepEqual((await app.hello(owner(app))).user.rights, {
         linksRunners: true,
         invites: true,
-        reshares: true,
         managesUsers: true,
         managesRunners: true,
         managesServer: true,
         keepsWarm: true,
         wheel: [THIS_SERVER],
         allows: [THIS_SERVER],
+        reshares: [THIS_SERVER],
     });
     assert.deepEqual((await app.hello(kept(gil))).user.rights, {
         linksRunners: true,
         invites: false,
-        reshares: false,
         managesUsers: false,
         managesRunners: false,
         managesServer: false,
         keepsWarm: true,
         wheel: [],
         allows: [],
+        reshares: [],
     });
 
     // What is kept is one list: only declared rights, each once, in their order. The owner keeps none.
@@ -237,6 +235,22 @@ test("one check answers for every right: the owner has them all, a user what the
     app.setRight(owner(app), { computer: THIS_SERVER, person: gil.id, right: "wheel", on: false });
     assert.equal(app.config.server.rights, undefined, "nobody holds one: no entry is kept");
 
+    // To share what they were given is held on a computer too: who is in charge of it has it, a user once they are
+    // given it there.
+    const shares = { computer: THIS_SERVER, person: gil.id, right: "reshares" };
+
+    assert.equal(app.policy.reshares(owner(app), THIS_SERVER), true);
+    assert.equal(app.policy.reshares(gil, THIS_SERVER), false);
+    app.setRight(owner(app), { ...shares, on: true });
+    assert.equal(app.policy.reshares(gil, THIS_SERVER), true);
+    assert.equal(app.policy.has(gil, "reshares", THIS_SERVER), true);
+    assert.equal(app.policy.reshares(gil, "no such computer"), false);
+    assert.deepEqual(app.config.server.rights, { reshares: [gil.id] });
+    assert.deepEqual((await app.hello(kept(gil))).user.rights.reshares, [THIS_SERVER]);
+    app.setRight(owner(app), { ...shares, on: false });
+    assert.equal(app.policy.reshares(gil, THIS_SERVER), false);
+    assert.equal(app.config.server.rights, undefined);
+
     // Each scope takes only its own rights.
     assert.throws(
         () =>
@@ -246,12 +260,18 @@ test("one check answers for every right: the owner has them all, a user what the
                 right: "keepsWarm",
                 on: true,
             }),
-        /Send person, right \(wheel or allows\), and on\./,
+        /Send person, right \(wheel, allows, reshares\), and on\./,
     );
-    assert.throws(
-        () => app.setRight(owner(app), { person: gil.id, right: "wheel", on: true }),
-        /Send right \(linksRunners, invites, reshares, managesUsers, managesRunners, managesServer, keepsWarm\) and on\./,
-    );
+
+    for (const right of COMPUTER_RIGHTS) {
+        assert.throws(
+            () => app.setRight(owner(app), { person: gil.id, right, on: true }),
+            /Send right \(linksRunners, invites, managesUsers, managesRunners, managesServer, keepsWarm\) and on\./,
+            right,
+        );
+    }
+
+    assert.equal(kept(gil).rights?.includes("reshares" as PersonRight), false);
 });
 
 test("one rule says who gives a right, to the setter and to the app alike", async () => {
@@ -268,7 +288,6 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     assert.deepEqual(told(owner(app), gil)?.offer, {
         linksRunners: "open",
         invites: "open",
-        reshares: "open",
         managesUsers: "open",
         managesRunners: "open",
         managesServer: "open",
@@ -280,7 +299,6 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     assert.deepEqual(told(owner(app), mona)?.offer, {
         linksRunners: "open",
         invites: "with",
-        reshares: "open",
         managesUsers: "open",
         managesRunners: "open",
         managesServer: "open",
@@ -292,7 +310,6 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     assert.deepEqual(told(mona, gil)?.offer, {
         linksRunners: "lacking",
         invites: "open",
-        reshares: "lacking",
         keepsWarm: "lacking",
     });
     // They change nobody who manages users, nor themselves; a person reads their own rights, and offers none.
@@ -408,7 +425,7 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
 
     // Made a viewer: they hold none; the rights to manage (users, runners, the server) lapse, the others wait for them.
     app.config.updateUser(pia.id, { role: "viewer" });
-    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "reshares", "keepsWarm"]);
+    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "keepsWarm"]);
 
     for (const right of PERSON_RIGHTS) {
         assert.equal(has(pia, right), false, right);
@@ -432,7 +449,7 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
     linkAuthenticator(app, pia);
     app.removeAuthenticator(pia.id, owner(app));
     assert.equal(kept(pia).role, "viewer");
-    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "reshares", "keepsWarm"]);
+    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "keepsWarm"]);
     assert.deepEqual(kept(pia).paused, { rights: lapsing });
 
     for (const right of PERSON_RIGHTS) {
@@ -491,7 +508,7 @@ test("a file that kept each right in a field of its own has them gathered into o
     assert.deepEqual(next.server.rights, { wheel: [ann.id], allows: [ann.id] });
     assert.deepEqual(next.runnerById(laptop.id)?.rights, { allows: [ann.id] });
     assert.deepEqual(next.rightHolders(undefined, "wheel"), [ann.id]);
-    assert.deepEqual(next.rightsOn(laptop.id), { wheel: [], allows: [ann.id] });
+    assert.deepEqual(next.rightsOn(laptop.id), { wheel: [], allows: [ann.id], reshares: [] });
 
     // Saved so, in that load: no field of the old shape is left.
     const saved = read();
@@ -516,5 +533,65 @@ test("a file that kept each right in a field of its own has them gathered into o
     const text = readFileSync(first.file, "utf8");
 
     assert.deepEqual(new ConfigStore(directory).userById(ann.id)?.rights, then);
+    assert.equal(readFileSync(first.file, "utf8"), text);
+});
+
+test("a right that was a person's and is now given on each computer is dropped from the person at load: off everywhere", () => {
+    const directory = mkdtempSync(join(root, "rights-moved-"));
+    const first = new ConfigStore(directory);
+    const boss = first.users.find((each) => each.role === "owner")!;
+    const ann = first.addUser("Ann", "guest").user;
+    const bea = first.addUser("Bea", "guest").user;
+    const pat = first.addUser("Pat", "viewer").user;
+    const laptop = first.addRunner("Laptop", boss.id, "key");
+
+    first.setServerUsers([ann.id, bea.id]);
+    first.setRunnerUsers(laptop.id, [ann.id]);
+    first.setComputerRight(undefined, ann.id, "wheel", true);
+
+    const read = () =>
+        JSON.parse(readFileSync(first.file, "utf8")) as {
+            users: { id: string; rights?: string[]; paused?: { rights?: string[] } }[];
+            server?: { rights?: Record<string, string[]> };
+            runners: { rights?: Record<string, string[]> }[];
+        };
+    const old = read();
+    const of = (file: ReturnType<typeof read>, id: string) =>
+        file.users.find((each) => each.id === id)!;
+
+    // As the server kept it while it was a person's right: among their rights, alone, and inside a pause.
+    of(old, ann.id).rights = ["invites", "reshares", "keepsWarm"];
+    of(old, bea.id).rights = ["reshares"];
+    of(old, pat.id).paused = { rights: ["managesUsers", "reshares"] };
+    writeFileSync(first.file, JSON.stringify(old, null, 2));
+
+    const next = new ConfigStore(directory);
+
+    assert.deepEqual(next.userById(ann.id)?.rights, ["invites", "keepsWarm"]);
+    assert.equal(next.userById(bea.id)?.rights, undefined, "nothing held leaves no list");
+    assert.deepEqual(next.userById(pat.id)?.paused, { rights: ["managesUsers"] });
+    // Nobody is moved to a computer: it is off on each until who is in charge there turns it on.
+    assert.deepEqual(next.rightHolders(undefined, "reshares"), []);
+    assert.deepEqual(next.rightHolders(laptop.id, "reshares"), []);
+    assert.deepEqual(next.server.rights, { wheel: [ann.id] }, "what was held there stays");
+
+    // Saved so, in that load.
+    const saved = read();
+
+    assert.deepEqual(of(saved, ann.id).rights, ["invites", "keepsWarm"]);
+    assert.equal("rights" in of(saved, bea.id), false);
+    assert.deepEqual(of(saved, pat.id).paused, { rights: ["managesUsers"] });
+    assert.equal(JSON.stringify(saved).includes("reshares"), false);
+
+    // Given on a computer since, it is kept there, and a later load leaves the file as it is.
+    assert.equal(next.setComputerRight(laptop.id, ann.id, "reshares", true), true);
+    assert.deepEqual(next.rightHolders(laptop.id, "reshares"), [ann.id]);
+    assert.deepEqual(next.rightHolders(undefined, "reshares"), []);
+
+    const text = readFileSync(first.file, "utf8");
+    const again = new ConfigStore(directory);
+
+    assert.deepEqual(again.rightHolders(laptop.id, "reshares"), [ann.id]);
+    assert.deepEqual(again.userById(ann.id)?.rights, ["invites", "keepsWarm"]);
     assert.equal(readFileSync(first.file, "utf8"), text);
 });

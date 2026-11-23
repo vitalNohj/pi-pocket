@@ -1,13 +1,14 @@
 // Share a session with people, one at a time (`commands.ts` `sharing` and `shareSession`): its starter, who is in
-// charge of its computer, and someone who shares what they were given pick from everyone chosen for it. Someone taken
-// off leaves it at once. A share that is not one's own to end (`access.ts` `mayUnshare`) shows, and cannot be changed.
+// charge of its computer, and someone who shares what they were given there pick from everyone chosen for it. Someone
+// taken off leaves it at once. A share that is not one's own to end (`access.ts` `mayUnshare`) shows, and cannot be
+// changed.
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, closeSheet, notify, store } from "../store.js";
 import { html, Loader, Sheet } from "../ui.js";
 
 /**
  * May this tab share session `session` (a row of the list): the server says so on the row (`access.ts` `mayShare`): who
- * is in charge of its computer, its starter while they steer it, and someone who shares what they were given.
+ * is in charge of its computer, its starter while they steer it, and someone who shares what they were given there.
  */
 export function canShare(session) {
     return Boolean(store.state.me) && session?.mayShare === true;
