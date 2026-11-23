@@ -899,6 +899,7 @@ test(
     real,
     async () => {
         const id = await newSession(app);
+
         // Each turn ends with Pi's words: after a memory call, the echo of its result.
         const turn = async (text: string, requestId: string, ends: string) => {
             await app.commands.submit(id, owner(app), { text, requestId });
