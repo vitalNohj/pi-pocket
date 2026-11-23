@@ -49,6 +49,7 @@ import {
 } from "./docs.ts";
 import { COMMAND_ENTRY, SHELL_ENTRY } from "./entry-format.ts";
 import { describe } from "./errors.ts";
+import { limitParallel } from "./folder-access.ts";
 import { perf } from "../perf.ts";
 import { presentationOptions, queuePresentation } from "./entry-presentation.ts";
 import { agentInfo } from "./models.ts";
@@ -423,80 +424,98 @@ export class Room {
         const watch = await conversation.watch(context);
 
         this.#watch = watch;
-        // Read after the watch starts: what lands between the two comes again as the window's appends.
+        // Register the watch before reading the transcript. The watch keeps later updates until start().
+        const initial = watch.value;
+        const owner = initial.conversation.owner;
+        // Take turns belongs to the session: a subagent's view shows (and follows) its session's.
+        const root = owner === undefined ? this.id : this.#app.rootOf(owner.conversationId);
+        const harness = this.#app.harness;
+        const run = limitParallel(8);
+        const [
+            transcript,
+            authors,
+            artifacts,
+            subagents,
+            chat,
+            reactions,
+            pins,
+            notes,
+            turns,
+            decisions,
+            plan,
+            schedules,
+            held,
+            goal,
+            prWatch,
+            peers,
+            siblings,
+            parentTitle,
+        ] = await Promise.all([
+            run(
+                () =>
+                    perf?.operation("room-context", { conversation: Number(this.id) }, () =>
+                        conversation.context(context),
+                    ) ?? conversation.context(context),
+            ),
+            run(() => harness.snapshot(AuthorsDoc, this.id, context)),
+            run(() => harness.snapshot(ArtifactsDoc, this.id, context)),
+            run(() => harness.snapshot(SubagentsDoc, this.id, context)),
+            run(() => harness.snapshot(ChatDoc, this.id, context)),
+            run(() => harness.snapshot(ReactionsDoc, this.id, context)),
+            run(() => harness.snapshot(PinsDoc, this.id, context)),
+            run(() => harness.snapshot(NotesDoc, this.id, context)),
+            run(() => harness.snapshot(TurnsDoc, root, context)),
+            run(() => harness.snapshot(DecisionsDoc, this.id, context)),
+            run(() => harness.snapshot(PlanDoc, this.id, context)),
+            run(() => harness.snapshot(ScheduleDoc, this.id, context)),
+            run(() => harness.snapshot(HeldDoc, this.id, context)),
+            run(() => harness.snapshot(GoalDoc, this.id, context)),
+            run(() => harness.snapshot(WatchDoc, this.id, context)),
+            run(() => harness.snapshot(LinkedSessionPeersDoc, this.id, context)),
+            owner === undefined
+                ? undefined
+                : run(() => harness.snapshot(SubagentsDoc, owner.conversationId, context)),
+            owner === undefined
+                ? undefined
+                : run(() => this.#app.conversationTitle(owner.conversationId)),
+        ]);
+
         this.#view = {
-            conversation: watch.value.conversation,
-            docs: watch.value.docs,
-            entries: (
-                await (perf?.operation("room-context", { conversation: Number(this.id) }, () =>
-                    conversation.context(context),
-                ) ?? conversation.context(context))
-            ).entries,
+            conversation: initial.conversation,
+            docs: initial.docs,
+            entries: transcript.entries,
         };
+        this.authors = { ...(authors?.entries ?? {}) };
+        this.artifacts = { ...(artifacts?.items ?? {}) } as Record<string, ArtifactMeta>;
+        this.artifactsEnded = { ...(artifacts?.ended ?? {}) };
+        this.subagents = { ...(subagents?.agents ?? {}) } as Record<string, SubagentRecord>;
+        this.#reporting = reportingOf(subagents);
+        this.#held = subagents?.held;
+        this.chat = [...(chat?.messages ?? [])] as ChatMessage[];
+        this.reactions = { ...(reactions?.entries ?? {}) };
+        this.pins = [...(pins?.items ?? [])] as Pin[];
+        this.notes = { ...(notes ?? { text: "", rev: 0 }) };
+        this.turns = { ...(turns ?? { on: false, asks: [] }) } as Turns;
+        this.decisions = { ...(decisions?.calls ?? {}) };
+        this.plan = { ...(plan ?? { on: false }) };
+        this.schedules = { ...(schedules?.items ?? {}) };
+        this.held = [...(held?.items ?? [])];
+        this.goal = goal?.goal;
+        this.watch = prWatch?.watch;
+        this.peers = { ...(peers?.peers ?? {}) };
+
+        if (owner !== undefined && parentTitle !== undefined) {
+            this.subagentName = Object.entries(siblings?.agents ?? {}).find(
+                ([, record]) => record.conversationId === this.id,
+            )?.[0];
+            this.parent = { id: owner.conversationId, title: parentTitle };
+        }
+
         watch.start(async (call) => {
             if (call.kind === "value") {
                 await this.#follow(conversation, call.value);
             }
         });
-        const harness = this.#app.harness;
-
-        this.authors = {
-            ...((await harness.snapshot(AuthorsDoc, this.id, context))?.entries ?? {}),
-        };
-        const artifacts = await harness.snapshot(ArtifactsDoc, this.id, context);
-
-        this.artifacts = { ...(artifacts?.items ?? {}) } as Record<string, ArtifactMeta>;
-        this.artifactsEnded = { ...(artifacts?.ended ?? {}) };
-        const subagents = await harness.snapshot(SubagentsDoc, this.id, context);
-
-        this.subagents = { ...(subagents?.agents ?? {}) } as Record<string, SubagentRecord>;
-        this.#reporting = reportingOf(subagents);
-        this.#held = subagents?.held;
-        this.chat = [
-            ...((await harness.snapshot(ChatDoc, this.id, context))?.messages ?? []),
-        ] as ChatMessage[];
-        this.reactions = {
-            ...((await harness.snapshot(ReactionsDoc, this.id, context))?.entries ?? {}),
-        };
-        this.pins = [
-            ...((await harness.snapshot(PinsDoc, this.id, context))?.items ?? []),
-        ] as Pin[];
-        this.notes = {
-            ...((await harness.snapshot(NotesDoc, this.id, context)) ?? { text: "", rev: 0 }),
-        };
-        const owner = this.#view.conversation.owner;
-        // Take turns belongs to the session: a subagent's view shows (and follows) its session's.
-        const root = owner === undefined ? this.id : this.#app.rootOf(owner.conversationId);
-
-        this.turns = {
-            ...((await harness.snapshot(TurnsDoc, root, context)) ?? { on: false, asks: [] }),
-        } as Turns;
-        this.decisions = {
-            ...((await harness.snapshot(DecisionsDoc, this.id, context))?.calls ?? {}),
-        };
-        this.plan = { ...((await harness.snapshot(PlanDoc, this.id, context)) ?? { on: false }) };
-        this.schedules = {
-            ...((await harness.snapshot(ScheduleDoc, this.id, context))?.items ?? {}),
-        };
-        this.held = [...((await harness.snapshot(HeldDoc, this.id, context))?.items ?? [])];
-        this.goal = (await harness.snapshot(GoalDoc, this.id, context))?.goal;
-        this.watch = (await harness.snapshot(WatchDoc, this.id, context))?.watch;
-        this.peers = {
-            ...((await harness.snapshot(LinkedSessionPeersDoc, this.id, context))?.peers ?? {}),
-        };
-
-        if (owner !== undefined) {
-            const siblings =
-                (await harness.snapshot(SubagentsDoc, owner.conversationId, context))?.agents ?? {};
-
-            this.subagentName = Object.entries(siblings).find(
-                ([, record]) => record.conversationId === this.id,
-            )?.[0];
-            this.parent = {
-                id: owner.conversationId,
-                title: await this.#app.conversationTitle(owner.conversationId),
-            };
-        }
 
         // Every update reads the branch; this catches a switch made in a terminal while nothing else changes. Started
         // last, so a room that failed to open leaves no timer behind.

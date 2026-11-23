@@ -179,6 +179,7 @@ import {
     projectThere,
     readRemoteText,
     saveTrust,
+    withScanScope,
 } from "./remote-context.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -1957,17 +1958,16 @@ export class PocketApp {
         this.secrets.sync();
 
         const runner = this.runnerOf(id);
-        const base =
-            runner === undefined
-                ? this.#env(cwd)
-                : this.runners.env(runner, cwd, this.runnerScope(id));
-
-        return withQuietLimit(
+        const scope = runner === undefined ? undefined : this.runnerScope(id);
+        const base = runner === undefined ? this.#env(cwd) : this.runners.env(runner, cwd, scope);
+        const wrapped = withQuietLimit(
             wrapEnv(base, Number(id), cwd, this.commandEnvs, this.hidden),
             () => this.background.commandQuietMs,
             // An offline computer's command waits (`runners.ts`): that wait is no quiet time.
             runner === undefined ? undefined : () => !this.runners.link(runner).online,
         );
+
+        return scope === undefined ? wrapped : withScanScope(wrapped, scope.folder);
     }
 
     /**
@@ -2163,6 +2163,7 @@ export class PocketApp {
             return;
         }
 
+        // The tab needs hello and the session list before it can use the room's events.
         client.send("hello", this.#helloFor(client, hello));
         this.#sendSessions(client, this.sessions(client.user));
         this.#sendPip(client);
@@ -3079,11 +3080,12 @@ export class PocketApp {
     }
 
     async hello(user: User) {
-        const models = await this.modelList();
-        const guard = await this.guardStatus();
+        const [models, guard] = await Promise.all([this.modelList(), this.guardStatus()]);
         // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
-        const folderFavorites = await this.folderFavorites.list(user);
-        const runnerFavorites = await this.folderFavorites.runners(user);
+        const [folderFavorites, runnerFavorites] = await Promise.all([
+            this.folderFavorites.list(user),
+            this.folderFavorites.runners(user),
+        ]);
         const runners = this.runners.list(user);
 
         return {
@@ -4100,7 +4102,12 @@ export class PocketApp {
 
     /** The environment there of a session on another computer, unwrapped: what `remote-context.ts` reads through. */
     #remoteEnv(id: ConversationId) {
-        return this.runners.env(this.runnerOf(id)!, this.cwdOf(id), this.runnerScope(id));
+        const scope = this.runnerScope(id);
+
+        return withScanScope(
+            this.runners.env(this.runnerOf(id)!, this.cwdOf(id), scope),
+            scope.folder,
+        );
     }
 
     /** Pi wrote or edited `path`: on another computer, a context file or skill there is read again (`changedThere`). */

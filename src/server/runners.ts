@@ -1571,32 +1571,34 @@ export class Runners {
             );
         }
 
-        const dirs: { name: string; path: string }[] = [];
+        const entries = listed.value.filter((entry) => hidden || !entry.name.startsWith("."));
+        const links = entries.filter((entry) => entry.kind === "symlink");
+        const folders = new Set<(typeof entries)[number]>();
+        let next = 0;
 
-        for (const entry of listed.value) {
-            if (!hidden && entry.name.startsWith(".")) {
-                continue;
-            }
+        await Promise.all(
+            Array.from({ length: Math.min(8, links.length) }, async () => {
+                while (next < links.length) {
+                    const entry = links[next++]!;
+                    // The stat needs the real path of this link, but not of any other link.
+                    const real = await resolved.env.canonicalPath(entry.path, BACKGROUND);
+                    const target = await resolved.env.fileInfo(
+                        real.ok ? real.value : entry.path,
+                        BACKGROUND,
+                    );
 
-            let folder = entry.kind === "directory";
+                    if (target.ok && target.value.kind === "directory") {
+                        folders.add(entry);
+                    }
+                }
+            }),
+        );
 
-            if (entry.kind === "symlink") {
-                const target = await resolved.env.fileInfo(
-                    await resolved.env
-                        .canonicalPath(entry.path, BACKGROUND)
-                        .then((real) => (real.ok ? real.value : entry.path)),
-                    BACKGROUND,
-                );
-
-                folder = target.ok && target.value.kind === "directory";
-            }
-
-            if (folder) {
-                dirs.push({ name: entry.name, path: entry.path });
-            }
-        }
-
-        dirs.sort((a, b) => a.name.localeCompare(b.name));
+        // Use the listing order for names that compare equal, not the order of replies.
+        const dirs = entries
+            .filter((entry) => entry.kind === "directory" || folders.has(entry))
+            .map(({ name, path }) => ({ name, path }))
+            .sort((a, b) => a.name.localeCompare(b.name));
 
         const sep = resolved.separator;
         const trimmed = resolved.path.replace(/[\\/]+$/, "");

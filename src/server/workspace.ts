@@ -8,6 +8,7 @@
 import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, resolve, sep, win32 } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { RemoteInfo } from "@earendil-works/pi-env";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { PocketApp } from "./app.ts";
@@ -168,14 +169,20 @@ export class Workspace {
             return localAccess;
         }
 
+        return this.#accessOn(id, runner, await this.#remoteInfo(runner));
+    }
+
+    #remoteInfo(runner: string): Promise<RemoteInfo> {
         // What a person waits on: a computer that is offline says so at once.
-        const info = await this.#app.runners
+        return this.#app.runners
             .link(runner)
             .infoNow()
             .catch((error: unknown) => {
                 throw error instanceof HttpError ? error : new HttpError(409, describe(error));
             });
+    }
 
+    #accessOn(id: ConversationId, runner: string, info: RemoteInfo): FolderAccess {
         return remoteAccess(
             this.#app.runners.env(runner, this.#app.cwdOf(id), this.#app.runnerScope(id)),
             info,
@@ -343,6 +350,7 @@ export class Workspace {
                 ? `made the branch ${name}${track ? `, following ${track},` : ""} and switched to it${from}`
                 : `switched the branch${from} to ${name}`;
 
+        // Tell the others only after Pi has its note about the switch.
         await this.#app.commands.note(id, user, what);
         await this.#app.collab.activity(id, user, what);
 
@@ -454,8 +462,7 @@ export class Workspace {
             return;
         }
 
-        const { access, file } = await this.remoteFile(user, id, path);
-        const info = await this.#app.runners.link(runner).infoNow();
+        const { access, file, os } = await this.remoteFile(user, id, path);
         const kind = await access
             .peek(file, 0)
             .then((found) => found.kind)
@@ -472,7 +479,7 @@ export class Workspace {
             this.#app.runners.name(runner),
             file,
             kind === "directory",
-            info.os,
+            os,
             async ([command, args]) => {
                 const result = await env.exec(
                     [command, ...args],
@@ -604,10 +611,11 @@ export class Workspace {
         user: User,
         id: ConversationId,
         path: string,
-    ): Promise<{ access: FolderAccess; file: string; home: string }> {
+    ): Promise<{ access: FolderAccess; file: string; home: string; os: RemoteInfo["os"] }> {
         const runner = this.#app.runnerOf(id)!;
-        const access = await this.#access(id);
-        const { home } = await this.#app.runners.link(runner).infoNow();
+        const info = await this.#remoteInfo(runner);
+        const { home, os } = info;
+        const access = this.#accessOn(id, runner, info);
         const paths = access.path;
         const trimmed = path.trim();
         const expanded =
@@ -626,7 +634,7 @@ export class Workspace {
             (this.#app.runners.mayUse(runner, user) &&
                 this.#app.sessionMeta(this.#app.rootOf(id))?.createdBy === user.id)
         ) {
-            return { access, file, home };
+            return { access, file, home, os };
         }
 
         // Both at once: each is a round trip.
@@ -650,7 +658,7 @@ export class Workspace {
             throw new HttpError(404, "Not found");
         }
 
-        return { access, file: target, home };
+        return { access, file: target, home, os };
     }
 
     /** Normalize without a remote read, so a kept image can load while its computer is offline, also after restart. */
@@ -678,6 +686,7 @@ export class Workspace {
         id: ConversationId,
         source: ImageSource,
     ): Promise<string | undefined> {
+        // Look in an ancestor's storage only if the current session has no copy that this person may read.
         for (const each of this.#lineage(id)) {
             const file = await this.#images.latest(each, source, user.role !== "owner");
 
@@ -814,9 +823,23 @@ export class Workspace {
         this.#app.requireSee(user, id);
         this.requireLocal(id);
         this.#app.requireSteer(user);
-        await this.#app.conversation(id);
+        const runner = this.#app.runnerOf(id);
+        // The runner's platform does not depend on the conversation read. Do not send a file request until both pass.
+        const [conversation, platform] = await Promise.allSettled([
+            this.#app.conversation(id),
+            runner === undefined ? undefined : this.#remoteInfo(runner),
+        ]);
 
-        const access = await this.#access(id);
+        if (conversation.status === "rejected") {
+            throw conversation.reason;
+        }
+
+        if (platform.status === "rejected") {
+            throw platform.reason;
+        }
+
+        const access =
+            runner === undefined ? localAccess : this.#accessOn(id, runner, platform.value!);
 
         return this.#files.get(this.#app.cwdOf(id), access).catch(unreachable);
     }
@@ -857,6 +880,7 @@ export class Workspace {
                     }
                 }
 
+                // Resolve the allowed target before reading bytes or listing entries on the computer.
                 const remote = await this.remoteFile(user, id, path);
 
                 return {
@@ -925,6 +949,7 @@ export class Workspace {
                 : `undid the uncommitted changes to ${path}`;
 
         this.#forgetChanges(id);
+        // Tell the others only after Pi has its note about the change.
         await this.#app.commands.note(id, user, what);
         await this.#app.collab.activity(id, user, what);
     }

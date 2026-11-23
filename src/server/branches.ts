@@ -136,6 +136,7 @@ export async function headIn(
         return { branch };
     }
 
+    // Only a detached HEAD needs its commit. The symbolic ref also handles a branch with no commits.
     const commit = await access
         .git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], { timeoutMs })
         .then(
