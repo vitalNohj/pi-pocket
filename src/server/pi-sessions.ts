@@ -26,8 +26,8 @@ import {
     type Tx,
     UserEntry,
 } from "@earendil-works/pi-durable";
-import { COMPANION_SUFFIX } from "../runner/protocol.ts";
 import { inFolder, THIS_SERVER } from "./access.ts";
+import { COMPANION_SUFFIX } from "./runner-link/protocol.ts";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import { FROM_PI_ENTRY, type FromPiData } from "./entry-format.ts";

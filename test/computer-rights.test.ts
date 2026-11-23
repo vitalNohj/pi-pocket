@@ -1,7 +1,7 @@
 // The rights who is in charge of a computer gives one person at a time there (`access.ts` `overridesTurns`,
 // `allowsOwn`): to take the wheel from a driver, and to allow a call their own message led to while approvals need
 // someone else. Set over `POST /api/runners/:id/rights`, by the owner for this server and by a runner's linker there.
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import {
     addPerson,
     type App,

@@ -1,8 +1,8 @@
-// Sessions on another computer, end to end (`src/server/runners.ts`, `src/runner/`): the app links a computer, its runner
+// Sessions on another computer, end to end (`src/server/runners.ts`, `packages/runner/`): the app links a computer, its runner
 // connects over a real WebSocket to a real pi-env daemon, and Pi's tools in a session there run there. Here the "other
 // computer" is this one, in a folder of its own that the server's sessions never use.
 import assert from "node:assert/strict";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -15,7 +15,7 @@ import {
     fauxToolCall,
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Runner, type RunnerOptions } from "../src/runner/runner.ts";
+import { Runner, type RunnerOptions } from "../packages/runner/src/runner.ts";
 import { REMOTE_EXTENSIONS } from "../src/server/runners.ts";
 import { AgentDoc } from "@earendil-works/pi-durable";
 import { SubagentsDoc } from "../src/server/docs.ts";

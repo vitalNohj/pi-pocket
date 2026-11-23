@@ -26,7 +26,7 @@ import {
     WEB,
 } from "./http/assets.ts";
 import { type HttpOptions, json, readJson } from "./http/io.ts";
-import { LINK_CODE_PATH } from "../runner/protocol.ts";
+import { LINK_CODE_PATH } from "./runner-link/protocol.ts";
 import { clientAddress } from "./link-limits.ts";
 import { join as joinPage, login, sharePage } from "./http/sign-in.ts";
 import { themeFile } from "./http/theme-routes.ts";

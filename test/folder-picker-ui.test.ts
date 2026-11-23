@@ -16,7 +16,7 @@ import { mkdtempSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { Chromium, type Json } from "../src/server/browser/cdp.ts";
 import { findBrowser, profileFolder } from "../src/server/browser/discovery.ts";
 import { createHandler } from "../src/server/http.ts";

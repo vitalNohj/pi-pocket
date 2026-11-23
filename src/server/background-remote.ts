@@ -3,7 +3,7 @@ import { posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import type { BackgroundTask } from "./docs.ts";
-import type { SessionScope } from "../runner/protocol.ts";
+import type { SessionScope } from "./runner-link/protocol.ts";
 import type { RunnerEnv } from "./runners.ts";
 
 const context = BACKGROUND_CONTEXT;

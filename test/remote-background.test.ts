@@ -1,5 +1,5 @@
 // A real runner and pi-env daemon: tasks and their logs belong to the session's computer, not this server.
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import {
     type App,
     cleanUp,
@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner, type RunnerOptions } from "../src/runner/runner.ts";
+import { Runner, type RunnerOptions } from "../packages/runner/src/runner.ts";
 import { StartCutOff } from "../src/server/background.ts";
 import { RemoteBackground } from "../src/server/background-remote.ts";
 import { BackgroundDoc } from "../src/server/docs.ts";

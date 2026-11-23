@@ -1,9 +1,9 @@
-// The browser of a session on another computer (`src/server/browser/proxy.ts`, `src/runner/tunnels.ts`): a real
+// The browser of a session on another computer (`src/server/browser/proxy.ts`, `packages/runner/src/tunnels.ts`): a real
 // Chromium on this server, a real runner and pi-env daemon, a real WebSocket link. Every page the session opens loads
 // through the runner, which opens the connections on its computer; here that computer is this machine, so the runner's
 // count of opened connections proves the path, and the test sites count what reaches them.
 import assert from "node:assert/strict";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { type AddressInfo, connect } from "node:net";
@@ -12,8 +12,8 @@ import { after, before, describe, it } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { WebSocketServer } from "ws";
-import { Runner } from "../src/runner/runner.ts";
-import type { RunnerOptions } from "../src/runner/runner.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
+import type { RunnerOptions } from "../packages/runner/src/runner.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
 import {
     type App,

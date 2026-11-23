@@ -4,11 +4,16 @@ import { join } from "node:path";
 import { APP_ROOT } from "./config.ts";
 
 /** Pi Pocket's own package: its version, and the packages a drop-in can import by name. */
-export const pocketPackage: { version?: string; dependencies?: Record<string, string> } = (() => {
+export const pocketPackage: {
+    version?: string;
+    dependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+} = (() => {
     try {
         return JSON.parse(readFileSync(join(APP_ROOT, "package.json"), "utf8")) as {
             version?: string;
             dependencies?: Record<string, string>;
+            optionalDependencies?: Record<string, string>;
         };
     } catch {
         return {};
@@ -17,6 +22,10 @@ export const pocketPackage: { version?: string; dependencies?: Record<string, st
 
 /** This Pi Pocket's version, from its package. */
 export const pocketVersion = (): string => pocketPackage.version ?? "0.0.0";
+
+/** The runner's version that this Pi Pocket pins (`optionalDependencies`): what another computer installs. */
+export const runnerPin = (): string =>
+    pocketPackage.optionalDependencies?.["pi-pocket-runner"] ?? "latest";
 
 /** A Pi Pocket version: `0.14.0`. */
 export const POCKET_VERSION = /^(\d{1,4})\.(\d{1,4})\.(\d{1,4})$/;

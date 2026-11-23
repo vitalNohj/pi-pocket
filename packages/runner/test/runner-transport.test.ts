@@ -1,8 +1,8 @@
-// Runner HTTP safety (`src/runner/transport.ts`): address-only loopback checks and checks without
+// Runner HTTP safety (`src/transport.ts`): address-only loopback checks and checks without
 // external DNS or the machine's Tailscale. Neither dependency can be injected into checkTransport.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { checkTransport, loopback } from "../src/runner/transport.ts";
+import { checkTransport, loopback } from "../src/transport.ts";
 
 describe("runner loopback addresses", () => {
     for (const address of [

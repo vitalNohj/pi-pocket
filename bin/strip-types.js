@@ -1,19 +1,20 @@
-// Lets Node run Pi Pocket's TypeScript from an npm install. Node strips types itself, but never from a file under a
-// node_modules folder, which is where npm puts Pi Pocket. Imported before any of Pi Pocket's code (by
-// bin/pi-pocket.js, and with `--import` in the server the launcher starts), it strips the types of Pi Pocket's own
-// .ts files there with Node's own stripper, and leaves every other file to Node. In a git checkout it does nothing.
+// Lets Node run this package's TypeScript from an npm install. Node strips types itself, but never from a file under a
+// node_modules folder, which is where npm puts this package. Imported before any of this package's code (by its
+// command or entry, and with `--import` in a process it starts), it strips the types of this package's own .ts files
+// there with Node's own stripper, and leaves every other file to Node. In a git checkout it does nothing. Pi Pocket
+// and its runner (packages/runner/) each have a copy of this file, the same bytes: test/runner-copies.test.ts.
 import { readFileSync } from "node:fs";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
 import { sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Pi Pocket's folder, as a URL that ends in `/`. */
+/** This package's folder, as a URL that ends in `/`. */
 const ROOT = new URL("..", import.meta.url).href;
 
-/** Whether Pi Pocket runs from a node_modules folder, where Node does not strip types. */
+/** Whether this package runs from a node_modules folder, where Node does not strip types. */
 export const needed = fileURLToPath(ROOT).split(sep).includes("node_modules");
 
-/** Node's stripper, without the warning that it is experimental above the launcher's panel at every start. */
+/** Node's stripper, without the warning that it is experimental at every start. */
 function strip(source) {
     const warn = process.emitWarning;
 
@@ -30,7 +31,7 @@ function strip(source) {
     }
 }
 
-/** One of Pi Pocket's own TypeScript files (not one of a package inside it), as a file path; else undefined. */
+/** One of this package's own TypeScript files (not one of a package inside it), as a file path; else undefined. */
 function ownTypeScript(url) {
     const bare = url.split(/[?#]/)[0];
 

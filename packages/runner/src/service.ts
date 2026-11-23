@@ -1,5 +1,5 @@
 /**
- * `pi-pocket runner service`: keep the runner running as a systemd user service (Linux), a scheduled task
+ * `pi-pocket-runner service`: keep the runner running as a systemd user service (Linux), a scheduled task
  * (Windows), or a launch agent (macOS).
  *
  * The runner asks nobody at the computer: the server approves sessions, with each person's own authenticator code in
@@ -128,30 +128,33 @@ export function serviceMenu(platform: NodeJS.Platform = process.platform): {
           };
 }
 
-/** The service commands' help. The Linux text stays the same. */
-export function serviceHelp(platform: NodeJS.Platform = process.platform): string {
+/**
+ * The service commands' help. The Linux text stays the same. `command`: what a person types to run the runner here
+ * (`invoked.ts`).
+ */
+export function serviceHelp(command: string, platform: NodeJS.Platform = process.platform): string {
     if (platform === "win32") {
-        return `  pi-pocket runner service
+        return `  ${command} service
     Windows: register the "${TASK}" scheduled task, as your user without
     admin rights. Starts now and at sign-in.
     View task history in Task Scheduler; runner output is not saved.
-  pi-pocket runner service remove
+  ${command} service remove
     Stop and remove the scheduled task. Keep the saved link.`;
     }
 
     if (platform === "darwin") {
-        return `  pi-pocket runner service
+        return `  ${command} service
     macOS: install the ${LAUNCH_AGENT} launch agent. Starts now and at
     sign-in.
     Logs: ~/Library/Logs/pi-pocket-runner.log
-  pi-pocket runner service remove
+  ${command} service remove
     Stop and remove the launch agent. Keep the saved link.`;
     }
 
-    return `  pi-pocket runner service
+    return `  ${command} service
     Linux with systemd: keep the runner running as a user service, for a
     computer nobody sits at.
-  pi-pocket runner service remove
+  ${command} service remove
     Stop and remove the service. Keep the saved link.`;
 }
 
@@ -159,16 +162,28 @@ export function serviceHelp(platform: NodeJS.Platform = process.platform): strin
 const quote = (value: string) => `"${value.replace(/(["\\])/g, "\\$1").replace(/%/g, "%%")}"`;
 
 /**
- * The unit: this Node, this Pi Pocket, this link file, and this PATH (the tools sessions run find what this shell
- * finds). `noRestart`: exit codes after which starting again would not help.
+ * The unit: this Node, this runner's launcher, this link file, and this PATH (the tools sessions run find what this
+ * shell finds). `words`: what goes between the launcher and the runner's own words (`invoked.ts`): `runner` through
+ * Pi Pocket, none for `pi-pocket-runner`. `noRestart`: exit codes after which starting again would not help.
  */
 export function serviceUnit(options: {
     node: string;
     launcher: string;
+    words: readonly string[];
     file: string;
     path: string;
     noRestart: readonly number[];
 }): string {
+    const start = [
+        quote(options.node),
+        quote(options.launcher),
+        ...options.words,
+        "start",
+        "--service",
+        "--config",
+        quote(options.file),
+    ];
+
     return [
         "[Unit]",
         "Description=Pi Pocket runner: run session tools on this computer",
@@ -177,7 +192,7 @@ export function serviceUnit(options: {
         "",
         "[Service]",
         // `--service`: run without a terminal.
-        `ExecStart=${quote(options.node)} ${quote(options.launcher)} runner start --service --config ${quote(options.file)}`,
+        `ExecStart=${start.join(" ")}`,
         `Environment=${quote(`PATH=${options.path}`)}`,
         "Restart=on-failure",
         "RestartSec=5",
@@ -201,6 +216,7 @@ const xml = (value: string) =>
 export function servicePlist(options: {
     node: string;
     launcher: string;
+    words: readonly string[];
     file: string;
     path: string;
     log: string;
@@ -208,7 +224,7 @@ export function servicePlist(options: {
     const args = [
         options.node,
         options.launcher,
-        "runner",
+        ...options.words,
         "start",
         "--service",
         "--config",
@@ -259,10 +275,18 @@ const windowsQuote = (value: string) =>
 export function serviceTaskScript(options: {
     node: string;
     launcher: string;
+    words: readonly string[];
     file: string;
     home: string;
 }): string {
-    const args = `${windowsQuote(options.launcher)} runner start --service --config ${windowsQuote(options.file)}`;
+    const args = [
+        windowsQuote(options.launcher),
+        ...options.words,
+        "start",
+        "--service",
+        "--config",
+        windowsQuote(options.file),
+    ].join(" ");
 
     return [
         "$ErrorActionPreference = 'Stop'",
@@ -294,7 +318,10 @@ function systemctl(...args: string[]): boolean {
     return spawnSync("systemctl", ["--user", ...args], { stdio: "inherit" }).status === 0;
 }
 
-/** Install only from a stable install: a service started from npx's cache would stop starting. */
+/**
+ * Install only from a stable install: a service started from npx's cache would stop starting. `command`, `words`, and
+ * `install`: how this runner was started (`invoked.ts`).
+ */
 export function installService(
     options: {
         node: string;
@@ -302,18 +329,21 @@ export function installService(
         file: string;
         path: string;
         home: string;
+        command: string;
+        words: readonly string[];
+        install: string;
     },
     platform: NodeJS.Platform = process.platform,
 ): string[] {
     // npx's copy is a cache npm can clear: the service would stop starting.
     if (options.launcher.includes("_npx")) {
         throw new Error(
-            "A service cannot use Pi Pocket from the npx cache. Install it with: npm install -g pi-pocket@latest\nThen run: pi-pocket runner service",
+            `A service cannot run from the npx cache. Install it with: npm install -g ${options.install}\nThen run: ${options.command} service`,
         );
     }
 
     const approval = "  Choose who may use it, and which folders, in Pi Pocket: Menu > Runners.";
-    const remove = "  To stop and remove it: pi-pocket runner service remove";
+    const remove = `  To stop and remove it: ${options.command} service remove`;
 
     if (platform === "win32") {
         // A task starts in the home folder, not necessarily the shell's current folder.

@@ -1,4 +1,4 @@
-// Runner autostart (`src/runner/service.ts`): systemd, Task Scheduler, and launchd.
+// Runner autostart (`src/service.ts`): systemd, Task Scheduler, and launchd.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
-import { STOPPED_BY_SERVER } from "../src/runner/main.ts";
+import { ALONE } from "../src/invoked.ts";
+import { STOPPED_BY_SERVER } from "../src/main.ts";
 import {
     canService,
     installService,
@@ -23,9 +24,9 @@ import {
     serviceUnit,
     TASK,
     unitPath,
-} from "../src/runner/service.ts";
+} from "../src/service.ts";
 
-const launcher = fileURLToPath(new URL("../bin/pi-pocket.js", import.meta.url));
+const launcher = fileURLToPath(new URL("../bin/pi-pocket-runner.js", import.meta.url));
 const root = mkdtempSync(join(tmpdir(), "pi-pocket-service-test-"));
 
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -50,7 +51,7 @@ function linkFile(): string {
 }
 
 const runner = (...args: string[]) =>
-    spawnSync(process.execPath, [launcher, "runner", ...args], {
+    spawnSync(process.execPath, [launcher, ...args], {
         encoding: "utf8",
         env: { ...process.env, PI_POCKET_RUNNER_CONFIG: "" },
         timeout: 30_000,
@@ -61,14 +62,28 @@ describe("the runner service", () => {
         const unit = serviceUnit({
             node: "/usr/bin/node",
             launcher: "/opt/pi pocket/bin/pi-pocket.js",
+            words: ["runner"],
             file: "/home/me/.pi-pocket/runner.json",
             path: "/usr/bin:/bin",
             noRestart: [STOPPED_BY_SERVER],
         });
 
+        // Through Pi Pocket (`pi-pocket runner`): the same line as before the runner was its own package.
         assert.match(
             unit,
             /^ExecStart="\/usr\/bin\/node" "\/opt\/pi pocket\/bin\/pi-pocket.js" runner start --service --config "\/home\/me\/.pi-pocket\/runner.json"$/m,
+        );
+        // Started by its own command: no `runner` word.
+        assert.match(
+            serviceUnit({
+                node: "/usr/bin/node",
+                launcher: "/opt/runner/bin/pi-pocket-runner.js",
+                words: ALONE.words,
+                file: "/home/me/.pi-pocket/runner.json",
+                path: "/usr/bin:/bin",
+                noRestart: [STOPPED_BY_SERVER],
+            }),
+            /^ExecStart="\/usr\/bin\/node" "\/opt\/runner\/bin\/pi-pocket-runner.js" start --service --config "\/home\/me\/.pi-pocket\/runner.json"$/m,
         );
         assert.match(unit, /^RestartPreventExitStatus=3$/m);
         assert.match(unit, /^Environment="PATH=\/usr\/bin:\/bin"$/m);
@@ -82,6 +97,7 @@ describe("the runner service", () => {
         const options = {
             node: "/opt/Node & tools/<node>\"'",
             launcher: "/Applications/Pi & Pocket/<launcher>\"'.js",
+            words: ["runner"],
             file: "/Users/O'Brien & me/<runner>\".json",
             path: '/opt/<bin>:/Users/O\'Brien & me/"tools"',
             log: "/Users/O'Brien & me/Library/Logs/<runner>\".log",
@@ -92,6 +108,10 @@ describe("the runner service", () => {
         assert.match(
             plist,
             /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/opt\/Node &amp; tools\/&lt;node&gt;&quot;&apos;<\/string>\s*<string>\/Applications\/Pi &amp; Pocket\/&lt;launcher&gt;&quot;&apos;\.js<\/string>\s*<string>runner<\/string>\s*<string>start<\/string>\s*<string>--service<\/string>\s*<string>--config<\/string>\s*<string>\/Users\/O&apos;Brien &amp; me\/&lt;runner&gt;&quot;\.json<\/string>\s*<\/array>/,
+        );
+        assert.match(
+            servicePlist({ ...options, words: ALONE.words }),
+            /<key>ProgramArguments<\/key>\s*<array>\s*<string>\/opt\/Node &amp; tools\/&lt;node&gt;&quot;&apos;<\/string>\s*<string>\/Applications\/Pi &amp; Pocket\/&lt;launcher&gt;&quot;&apos;\.js<\/string>\s*<string>start<\/string>\s*<string>--service<\/string>/,
         );
         assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
         assert.match(
@@ -119,12 +139,14 @@ describe("the runner service", () => {
     });
 
     it("quotes Windows task paths literally and uses the current user at log-on without admin rights", () => {
-        const script = serviceTaskScript({
+        const options = {
             node: String.raw`C:\Users\O'Brien & me\Node\node.exe`,
             launcher: String.raw`C:\Users\O'Brien & me\Pi Pocket\pi-pocket.js`,
+            words: ["runner"],
             file: String.raw`C:\Users\O'Brien & me\$config; $(throw 'bad')\runner.json`,
             home: String.raw`C:\Users\O'Brien & me`,
-        });
+        };
+        const script = serviceTaskScript(options);
 
         assert.match(script, /^\$ErrorActionPreference = 'Stop'$/m);
         assert.ok(script.includes(`$taskName = '${TASK}'`));
@@ -137,6 +159,16 @@ describe("the runner service", () => {
         assert.equal(
             argument[1]!.replace(/''/g, "'"),
             String.raw`"C:\Users\O'Brien & me\Pi Pocket\pi-pocket.js" runner start --service --config "C:\Users\O'Brien & me\$config; $(throw 'bad')\runner.json"`,
+        );
+        // Started by its own command: no `runner` word.
+        const alone = serviceTaskScript({ ...options, words: ALONE.words }).match(
+            /-Argument '((?:''|[^'])*)' -WorkingDirectory/,
+        );
+
+        assert.ok(alone);
+        assert.equal(
+            alone[1]!.replace(/''/g, "'"),
+            String.raw`"C:\Users\O'Brien & me\Pi Pocket\pi-pocket.js" start --service --config "C:\Users\O'Brien & me\$config; $(throw 'bad')\runner.json"`,
         );
         assert.match(script, /^\$trigger = New-ScheduledTaskTrigger -AtLogOn -User \$user$/m);
         assert.match(
@@ -160,6 +192,7 @@ describe("the runner service", () => {
             const script = serviceTaskScript({
                 node: String.raw`C:\O${quote}Brien\node.exe`,
                 launcher: String.raw`C:\Apps${quote}Pi Pocket${quote}\pi-pocket.js`,
+                words: ["runner"],
                 file: String.raw`C:\runner${quote}; throw 'bad'; #.json`,
                 home: String.raw`C:\O${quote}Brien`,
             });
@@ -186,21 +219,40 @@ describe("the runner service", () => {
     });
 
     for (const platform of ["linux", "win32", "darwin"] as const) {
-        it(`refuses an npx-cache install on ${platform}`, () => {
-            assert.throws(
-                () =>
-                    installService(
-                        {
-                            node: process.execPath,
-                            launcher: join(root, "_npx", "cache", "pi-pocket.js"),
-                            file: linkFile(),
-                            path: process.env.PATH ?? "",
-                            home: root,
-                        },
-                        platform,
-                    ),
-                /A service cannot use Pi Pocket from the npx cache/,
-            );
+        it(`refuses an npx-cache install on ${platform}, and names the command it was started with`, () => {
+            const through = {
+                command: "pi-pocket runner",
+                words: ["runner"],
+                install: "pi-pocket@latest",
+            };
+
+            for (const [invoked, install, command] of [
+                [ALONE, "npm install -g pi-pocket-runner\n", "Then run: pi-pocket-runner service"],
+                [
+                    through,
+                    "npm install -g pi-pocket@latest\n",
+                    "Then run: pi-pocket runner service",
+                ],
+            ] as const) {
+                assert.throws(
+                    () =>
+                        installService(
+                            {
+                                node: process.execPath,
+                                launcher: join(root, "_npx", "cache", "pi-pocket.js"),
+                                file: linkFile(),
+                                path: process.env.PATH ?? "",
+                                home: root,
+                                ...invoked,
+                            },
+                            platform,
+                        ),
+                    (error: Error) =>
+                        error.message.startsWith("A service cannot run from the npx cache.") &&
+                        error.message.includes(install) &&
+                        error.message.endsWith(command),
+                );
+            }
         });
 
         it(`uses the correct permanent-stop exit codes on ${platform}`, () => {
@@ -232,12 +284,23 @@ describe("the runner service", () => {
             assert.ok(serviceName(platform).includes(mechanism));
             assert.ok(serviceMenu(platform).start.includes(mechanism));
             assert.ok(serviceMenu(platform).stop.includes(mechanism));
-            assert.ok(serviceHelp(platform).includes(mechanism));
-            assert.ok(serviceHelp(platform).includes("pi-pocket runner service remove"));
+
+            for (const command of ["pi-pocket-runner", "pi-pocket runner"]) {
+                assert.ok(serviceHelp(command, platform).includes(mechanism));
+                assert.ok(serviceHelp(command, platform).includes(`${command} service remove`));
+            }
+
+            assert.ok(!serviceHelp("pi-pocket-runner", platform).includes("pi-pocket runner"));
         }
 
-        assert.match(serviceHelp("win32"), /Task Scheduler; runner output is not saved/);
-        assert.match(serviceHelp("darwin"), /Logs: ~\/Library\/Logs\/pi-pocket-runner\.log/);
+        assert.match(
+            serviceHelp(ALONE.command, "win32"),
+            /Task Scheduler; runner output is not saved/,
+        );
+        assert.match(
+            serviceHelp(ALONE.command, "darwin"),
+            /Logs: ~\/Library\/Logs\/pi-pocket-runner\.log/,
+        );
     });
 
     it("the runner has no authenticator, settings, folders, or sessions commands: the server decides", () => {

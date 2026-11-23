@@ -1,0 +1,51 @@
+{
+    "name": "pi-pocket-runner",
+    "version": "0.1.0",
+    "description": "Runs the tools of a Pi Pocket server's sessions on this computer",
+    "type": "module",
+    "license": "MIT",
+    "author": "Tanner Middleton",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/TannerMidd/pi-pocket.git",
+        "directory": "packages/runner"
+    },
+    "homepage": "https://tannermidd.github.io/pi-pocket/",
+    "bugs": {
+        "url": "https://github.com/TannerMidd/pi-pocket/issues"
+    },
+    "bin": {
+        "pi-pocket-runner": "bin/pi-pocket-runner.js"
+    },
+    "exports": {
+        ".": "./main.js",
+        "./main": "./main.js",
+        "./package.json": "./package.json"
+    },
+    "files": [
+        "bin/",
+        "src/",
+        "main.js",
+        "README.md",
+        "LICENSE"
+    ],
+    "engines": {
+        "node": ">=22.19"
+    },
+    "scripts": {
+        "check": "tsc --noEmit -p .",
+        "test": "node --test --test-concurrency=2 test/*.test.ts"
+    },
+    "dependencies": {
+        "@earendil-works/pi-coding-agent": "1.6.0",
+        "@earendil-works/pi-env": "1.6.0",
+        "undici": "8.12.4",
+        "ws": "8.21.0"
+    },
+    "devDependencies": {
+        "@earendil-works/pi-ai": "1.6.0",
+        "@types/node": "^26.6.5",
+        "@types/ws": "^8.18.2",
+        "typescript": "^6.0.3"
+    }
+}

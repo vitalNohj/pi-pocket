@@ -1,11 +1,11 @@
 /**
- * The server's side of a runner link's network streams (`src/runner/tunnels.ts`): TCP connections that the computer
- * opens for the server, so a session's browser reaches the web from that computer, never from this server. One per link
- * connection: when the connection drops, every stream ends, and the browser opens them again.
+ * The server's side of a runner link's network streams (`src/server/runner-link/tunnels.ts`): TCP connections that the
+ * computer opens for the server, so a session's browser reaches the web from that computer, never from this server. One
+ * per link connection: when the connection drops, every stream ends, and the browser opens them again.
  */
 import type { Duplex } from "node:stream";
-import type { NetFailure, NetMessage } from "../runner/protocol.ts";
-import { CONNECT_MS, MAX_STREAMS, StreamLink } from "../runner/tunnels.ts";
+import type { NetFailure, NetMessage } from "./runner-link/protocol.ts";
+import { CONNECT_MS, MAX_STREAMS, StreamLink } from "./runner-link/tunnels.ts";
 
 /** Why a connection through a computer did not open: its runner's reason, or the link's. */
 export type NetProblem = NetFailure | "offline";
@@ -23,7 +23,7 @@ export class NetError extends Error {
 export type OpenOptions = {
     /** Bytes for the computer, ahead of what the socket gives. */
     first?: Buffer[];
-    session?: import("../runner/protocol.ts").SessionScope;
+    session?: import("./runner-link/protocol.ts").SessionScope;
     /** Called as the computer connected, before anything from it reaches the socket: write a reply, say. */
     opened?: () => void;
 };

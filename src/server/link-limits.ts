@@ -30,7 +30,7 @@ import {
     loopback as runnerLoopback,
     tailscalePeer,
     type TailscaleAnswer,
-} from "../runner/transport.ts";
+} from "./runner-link/transport.ts";
 import { HttpError } from "./errors.ts";
 
 export const ADDRESS_WRONG = 5;

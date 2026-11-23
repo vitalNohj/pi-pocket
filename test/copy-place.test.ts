@@ -3,7 +3,7 @@
 // this machine, each in a folder of its own. Also: each session's repository (`repo.ts`), the folder a copy suggests,
 // and the folder picker's Recent and Favorites per computer.
 import assert from "node:assert/strict";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -16,7 +16,7 @@ import {
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
 import type { User } from "../src/server/config.ts";
 import type { FolderRequestView } from "../src/server/folder-requests.ts";
 import { ChatDoc, FolderFavoritesDoc } from "../src/server/docs.ts";

@@ -1,5 +1,5 @@
 /**
- * Computers that run sessions' tools: each one's runner (`pi-pocket runner`, `src/runner/`) connects out to this server
+ * Computers that run sessions' tools: each one's runner (`pi-pocket-runner`, `packages/runner/`) connects out to this server
  * over a WebSocket and relays Earendil's pi-env protocol to a pi-env daemon on that computer. Here, each computer has
  * one `RunnerLink`, which talks to its daemon as pi-env's own `Connection` does to a daemon it started; a session that
  * runs there gets a `RemoteExecutionEnv` on that link (`RunnerEnv`). The agent, models, keys, and history stay here.
@@ -30,7 +30,7 @@ import {
     type LinkAnswer,
     type LinkRequest,
     ServerLinkSocket,
-} from "../runner/secure-link.ts";
+} from "./runner-link/secure-link.ts";
 import {
     type ControlMessage,
     FRAME,
@@ -56,8 +56,8 @@ import {
     SESSION_FIELD,
     readStreamData,
     STREAM_DATA,
-} from "../runner/protocol.ts";
-import { MAX_SNAPSHOT_BYTES, READ_SNAPSHOT } from "../runner/read-snapshot.ts";
+} from "./runner-link/protocol.ts";
+import { MAX_SNAPSHOT_BYTES, READ_SNAPSHOT } from "./runner-link/read-snapshot.ts";
 import { LinkNetwork, NetError, type OpenOptions } from "./runner-network.ts";
 import { BACKGROUND_CONTEXT as BACKGROUND, type Context } from "@earendil-works/chord/context";
 import type { FileInfo } from "@earendil-works/pi-durable/env";
@@ -65,6 +65,7 @@ import type { ConfigStore, StoredRunner, User } from "./config.ts";
 import type { ComputerRight } from "./rights.ts";
 import { HttpError } from "./errors.ts";
 import { LinkLimits, type LinkLocks, WRONG_CODE } from "./link-limits.ts";
+import { runnerPin } from "./versions.ts";
 
 /**
  * The built-in extensions a session on another computer runs with: exactly these, in order. Drop-ins that say they work
@@ -109,13 +110,22 @@ export const REMOTE_SUBAGENT_WITHOUT: readonly string[] = [
 export const CODE_MINUTES = 10;
 
 /**
- * What another computer installs to get `pi-pocket runner`, as `npm install -g` takes it: this release from npm, or
- * `PI_POCKET_RUNNER_PACKAGE` (a fork's tarball, say) on a server that runs a build npm does not have.
+ * What another computer installs to get a runner, and the command that runs it there. By default the runner's package
+ * at the version this Pi Pocket pins, from npm. On a server that runs a build npm does not have,
+ * `PI_POCKET_RUNNER_PACKAGE` names what to install (a fork's tarball, say): its command is `pi-pocket-runner` when the
+ * value contains `pi-pocket-runner`, else `pi-pocket runner`, for a whole Pi Pocket (as the desktop app sets it).
  */
-export function runnerPackage(): string {
+export function runnerInstall(): { package: string; command: string } {
     const given = process.env.PI_POCKET_RUNNER_PACKAGE?.trim();
 
-    return given || "pi-pocket@latest";
+    if (!given) {
+        return { package: `pi-pocket-runner@${runnerPin()}`, command: "pi-pocket-runner" };
+    }
+
+    return {
+        package: given,
+        command: given.includes("pi-pocket-runner") ? "pi-pocket-runner" : "pi-pocket runner",
+    };
 }
 
 /** Send an acknowledgement once this many bytes came in, or within ACK_MS. */
@@ -141,7 +151,7 @@ export type RunnerView = {
     online: boolean;
     /** Linked before the secure link: it must link again, with a code made for it (`makeCode` with its id). */
     relink?: true;
-    /** Its runner's key, as a person can compare it with what `pi-pocket runner status` shows there. */
+    /** Its runner's key, as a person can compare it with what `pi-pocket-runner status` shows there. */
     fingerprint?: string;
     /** Offline, with its work waiting for it (its daemon session is kept until it is back). */
     away: boolean;
@@ -1613,14 +1623,14 @@ export class Runners {
     }
 
     /**
-     * A one-time code that links a computer named `name`: `pi-pocket runner link <server> <code>` on it. With `runner`, a
+     * A one-time code that links a computer named `name`: `pi-pocket-runner link <server> <code>` on it. With `runner`, a
      * code that links that computer again: its runner gets a new key, and it keeps its id, people, and sessions.
      */
     makeCode(
         name: string,
         createdBy: string,
         runner?: string,
-    ): { code: string; expiresAt: number; package: string; fingerprint: string } {
+    ): { code: string; expiresAt: number; package: string; command: string; fingerprint: string } {
         const again = runner === undefined ? undefined : this.#config.runnerById(runner);
 
         if (runner !== undefined && again === undefined) {
@@ -1651,7 +1661,7 @@ export class Runners {
         return {
             code,
             expiresAt,
-            package: runnerPackage(),
+            ...runnerInstall(),
             fingerprint: fingerprint(this.#config.serverIdentity.publicKey),
         };
     }

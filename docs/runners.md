@@ -8,11 +8,13 @@ As the server owner, you link a computer with a one-time code:
     - **Any other computer:** install Node.js 22.19 or newer, then run:
 
         ```sh
-        npm install -g pi-pocket@latest
-        pi-pocket runner
+        npm install -g pi-pocket-runner
+        pi-pocket-runner
         ```
 
-        `pi-pocket runner` opens a menu: use the arrow keys and Enter. Choose **Link this computer**, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. Then choose **Start**, and leave the terminal open. Press Ctrl+C to stop the runner and its commands.
+        `pi-pocket-runner` opens a menu: use the arrow keys and Enter. Choose **Link this computer**, enter the server address, such as `https://pocket.example.com`, then paste the code. The runner checks that Pi Pocket answers at that address and saves the link. Then choose **Start**, and leave the terminal open. Press Ctrl+C to stop the runner and its commands.
+
+The runner is its own npm package, `pi-pocket-runner`. Where Pi Pocket is installed with its runner, `pi-pocket runner` does the same as `pi-pocket-runner`: use either. The commands below say `pi-pocket-runner`.
 
 The server owner links computers, and so do the guests the owner lets (**Link runners** in **People**). A link code is worth its maker's permission to link at the moment it is used: when the owner takes that permission back, or removes the person, their open codes link nothing. Only link a server you trust: its session commands run as your user account on the linked computer.
 
@@ -26,14 +28,14 @@ The computer connects out to the server over a WebSocket. It needs no open port,
 
 ## Secure link
 
-The link has its own keys, like SSH, on top of HTTPS (`src/runner/secure-link.ts`):
+The link has its own keys, like SSH, on top of HTTPS (`secure-link.ts`, in `packages/runner/src/` and `src/server/runner-link/`):
 
 - The server has one key, made once and kept in its data folder. It does not change when the website certificate renews.
 - Each computer makes its own key when it links. Its private key stays on that computer; the server keeps only its public key.
 - The link code never travels. The runner proves it knows the code, and the server proves it knows the code too, so someone in the middle at link time cannot put in their own key.
 - The runner keeps the server's key. On each connection, each side proves its key, and every message after that is encrypted and signed. A server without the key, even one with a valid certificate, is refused: the runner sends it nothing, says once "… did not prove it is the server this computer linked to", and tries again.
 - Only the server the computer linked to can stop its runner for good, and it proves that each time: inside the encrypted link, or with a signed refusal when the computer was removed or linked again. An HTTP error, a close code, or another program at the server's address never stops a runner. It tries again.
-- `pi-pocket runner status` shows both keys' fingerprints. **Runners** shows the server's where it makes the code, and each computer's on its card. They should match.
+- `pi-pocket-runner status` shows both keys' fingerprints. **Runners** shows the server's where it makes the code, and each computer's on its card. They should match.
 
 A computer linked by an older runner shows **Link again** in **Runners**. It makes a code for that computer: link it with that code, and it keeps its sessions and people. Linking a computer again ends every connection of its old key, also one that was still connecting. Replacing the server's data folder makes a new server key: every computer must link again.
 
@@ -43,37 +45,39 @@ Run these commands on the linked computer:
 
 | Command                                                | What it does                                                                                                                                                                 |
 | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pi-pocket runner`                                     | In a terminal, opens a menu: start, run as a service, link again, unlink, and help.                                                                                          |
-| `pi-pocket runner start`                               | Runs with the saved link in this terminal or a program that runs the runner, such as the desktop app.                                                                        |
-| `pi-pocket runner link <server> <code> [--allow-http]` | Saves a link without questions. Use the server address and a one-time code from **Runners**. See [Plain HTTP](#plain-http).                                                  |
-| `pi-pocket runner service [remove]`                    | Runs as a systemd user service on Linux, or starts at sign-in with a Windows scheduled task or macOS launch agent. `service remove` stops and removes it and keeps the link. |
-| `pi-pocket runner status`                              | Shows the saved link, both keys' fingerprints, and whether git and GitHub are ready. It does not check the connection.                                                       |
-| `pi-pocket runner unlink`                              | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                                                              |
+| `pi-pocket-runner`                                     | In a terminal, opens a menu: start, run as a service, link again, unlink, and help.                                                                                          |
+| `pi-pocket-runner start`                               | Runs with the saved link in this terminal or a program that runs the runner, such as the desktop app.                                                                        |
+| `pi-pocket-runner link <server> <code> [--allow-http]` | Saves a link without questions. Use the server address and a one-time code from **Runners**. See [Plain HTTP](#plain-http).                                                  |
+| `pi-pocket-runner service [remove]`                    | Runs as a systemd user service on Linux, or starts at sign-in with a Windows scheduled task or macOS launch agent. `service remove` stops and removes it and keeps the link. |
+| `pi-pocket-runner status`                              | Shows the saved link, both keys' fingerprints, and whether git and GitHub are ready. It does not check the connection.                                                       |
+| `pi-pocket-runner unlink`                              | Deletes the saved link on this computer. Also remove the computer in **Runners** to stop it and cancel its key.                                                              |
 
 The runner asks nothing on the computer. Everything about who may use it, and where, is decided in Pi Pocket ([Who may use a computer](#who-may-use-a-computer)).
 
 ### A computer nobody sits at (Linux)
 
-`pi-pocket runner service` keeps the runner running as a systemd user service (`pi-pocket-runner.service`), for a computer such as a build server. Nobody needs to sit at the computer: approvals happen in Pi Pocket.
+`pi-pocket-runner service` keeps the runner running as a systemd user service (`pi-pocket-runner.service`), for a computer such as a build server. Nobody needs to sit at the computer: approvals happen in Pi Pocket.
 
-The service uses the Node.js, Pi Pocket, link file, and `PATH` of the shell that installed it. Install Pi Pocket with npm first (`npm install -g pi-pocket`): a copy in the npx cache is refused, because npm can clear it. Its log is in `journalctl --user -u pi-pocket-runner.service`. To keep it running while you are logged out, run `loginctl enable-linger $USER`. `pi-pocket runner service remove` stops and removes it.
+The service uses the Node.js, runner, link file, and `PATH` of the shell that installed it. Install the runner with npm first (`npm install -g pi-pocket-runner`): a copy in the npx cache is refused, because npm can clear it. Its log is in `journalctl --user -u pi-pocket-runner.service`. To keep it running while you are logged out, run `loginctl enable-linger $USER`. `pi-pocket-runner service remove` stops and removes it.
 
 ### Start at sign-in (Windows and macOS)
 
-On Windows and macOS, `pi-pocket runner service` starts the runner now and each time you sign in. These are per-user sign-in jobs, not system services: they do not run while you are signed out. A copy of Pi Pocket in the npx cache is refused on all three systems; install with `npm install -g pi-pocket@latest` first.
+On Windows and macOS, `pi-pocket-runner service` starts the runner now and each time you sign in. These are per-user sign-in jobs, not system services: they do not run while you are signed out. A copy in the npx cache is refused on all three systems; install with `npm install -g pi-pocket-runner` first.
 
-- **Windows:** installs the **Pi Pocket runner** scheduled task in Task Scheduler. It runs as the current user at log-on, without admin rights or a password. It uses the selected Node.js, Pi Pocket, and link file, and starts in your home folder. The task can run on battery power, has no time limit, and retries failures up to 3 times, 1 minute apart. If Windows refuses registration, the command prints the PowerShell error and fails; it does not try another installation method. To check task history, open Task Scheduler → Task Scheduler Library → **Pi Pocket runner** → **History** (enable task history if needed). This history records task events; it does not save the runner's console output.
-- **macOS:** writes `~/Library/LaunchAgents/dev.pi-pocket.runner.plist` and loads it into your signed-in GUI session. It uses the selected Node.js, Pi Pocket, link file, and the current shell's `PATH`. Both output and errors go to `~/Library/Logs/pi-pocket-runner.log`. launchd restarts failures with a 10-second throttle. A runner stopped permanently by the server prints its message and exits with code 0 in macOS service mode so launchd does not restart it. Other modes and platforms keep exit code 3 for this.
+- **Windows:** installs the **Pi Pocket runner** scheduled task in Task Scheduler. It runs as the current user at log-on, without admin rights or a password. It uses the selected Node.js, runner, and link file, and starts in your home folder. The task can run on battery power, has no time limit, and retries failures up to 3 times, 1 minute apart. If Windows refuses registration, the command prints the PowerShell error and fails; it does not try another installation method. To check task history, open Task Scheduler → Task Scheduler Library → **Pi Pocket runner** → **History** (enable task history if needed). This history records task events; it does not save the runner's console output.
+- **macOS:** writes `~/Library/LaunchAgents/dev.pi-pocket.runner.plist` and loads it into your signed-in GUI session. It uses the selected Node.js, runner, link file, and the current shell's `PATH`. Both output and errors go to `~/Library/Logs/pi-pocket-runner.log`. launchd restarts failures with a 10-second throttle. A runner stopped permanently by the server prints its message and exits with code 0 in macOS service mode so launchd does not restart it. Other modes and platforms keep exit code 3 for this.
 
-`pi-pocket runner status` names a running scheduled task or launch agent. The terminal menu names the same mechanism. `pi-pocket runner service remove` stops and removes the scheduled task or launch agent, but keeps the saved link.
+`pi-pocket-runner status` names a running scheduled task or launch agent. The terminal menu names the same mechanism. `pi-pocket-runner service remove` stops and removes the scheduled task or launch agent, but keeps the saved link.
 
-For scripts, use `pi-pocket runner link <server> <code>`, then `pi-pocket runner start`.
+For scripts, use `pi-pocket-runner link <server> <code>`, then `pi-pocket-runner start`.
 
 The link file is `~/.pi-pocket/runner.json`. It contains this computer's key, and only your user account can read it. Do not share it. Use `--config FILE` or `PI_POCKET_RUNNER_CONFIG` to choose another file; `--config` takes priority. `PI_POCKET_RUNNER_DAEMON` selects a pi-env daemon instead of the packaged one.
 
-Run `pi-pocket runner` again to start, change, or replace a saved link. Deleting the link file alone does not stop a runner that is already running.
+Run `pi-pocket-runner` again to start, change, or replace a saved link. Deleting the link file alone does not stop a runner that is already running.
 
-If your server uses a build that is not on npm, set `PI_POCKET_RUNNER_PACKAGE` on the server. For example, use the URL of a fork's package tarball. This changes the install command shown in **Runners**.
+**Where a build comes from.** **Runners** shows the install command for the runner's version that this Pi Pocket pins, from npm (`npm install -g pi-pocket-runner@<version>`). Each release also has the runner's tarball, which the `Runner` workflow attaches to it. A server that offers another build sets `PI_POCKET_RUNNER_PACKAGE`, for example to the URL of a fork's tarball. This changes the install command shown in **Runners**. When the value contains `pi-pocket-runner`, the command shown is `pi-pocket-runner`; else it is a whole Pi Pocket, and the command shown is `pi-pocket runner`.
+
+**Its version.** The runner has its own version, apart from Pi Pocket's. It sends it to the server when it connects, and the computer's card in **Runners** shows it.
 
 ## Who may use a computer
 
@@ -127,7 +131,7 @@ Files that extensions keep beside Pi's file come along too (with companion files
 
 ## Programs that run the runner
 
-A program that runs the runner, such as the desktop app, starts it with `pi-pocket runner start --confirm-via stdio`.
+A program that runs the runner, such as the desktop app, starts it with `pi-pocket runner start --confirm-via stdio` (or `pi-pocket-runner start --confirm-via stdio`).
 
 The runner says when sessions work on the computer, for a tray icon, keeping the computer awake, or a warning on quit. It writes a line `PI-POCKET-ACTIVITY` and a JSON object, `{ "working": true, "folders": ["/Users/me/project"] }`, each time the state changes. The first line comes when work starts, so a program that saw none can take the runner as idle.
 
@@ -155,7 +159,7 @@ The link encrypts every command (see [Secure link](#secure-link)), but the runne
 - To this computer (`localhost`, `127.x`).
 - To a device on your tailnet. The runner asks Tailscale itself (`tailscale whois`), so an address that only looks like a Tailscale address is not enough. Tailscale encrypts the traffic.
 
-To link a server on another plain HTTP address, choose **Allow plain HTTP** when the runner asks, or add `--allow-http` to `pi-pocket runner link`. Do this only on a network you trust. The choice is saved with the link.
+To link a server on another plain HTTP address, choose **Allow plain HTTP** when the runner asks, or add `--allow-http` to `pi-pocket-runner link`. Do this only on a network you trust. The choice is saved with the link.
 
 ## What works in a session
 
@@ -165,7 +169,7 @@ Pi's `read`, `write`, `edit`, and `bash` tools run on that computer through Eare
 
 Lessons stay with each project on its own computer; worktrees of that project share them. In **Memory**, **From …** sections offer approved lessons from other copies of the same GitHub repository. Choose **Add** to save one in this project; they never apply here automatically. PR watches read the origin and current branch on the linked computer, but poll GitHub from the server with the server's `gh` sign-in, not the computer's.
 
-The runner checks git, the GitHub CLI (`gh`), and its GitHub sign-in when it starts and reconnects. **Runners** and `pi-pocket runner status` show whether git and GitHub are ready, with an install command or `gh auth login` when needed. A computer without them still works.
+The runner checks git, the GitHub CLI (`gh`), and its GitHub sign-in when it starts and reconnects. **Runners** and `pi-pocket-runner status` show whether git and GitHub are ready, with an install command or `gh auth login` when needed. A computer without them still works.
 
 These also work, on that computer:
 

@@ -1,5 +1,6 @@
+// This file exists twice: src/server/runner-link/protocol.ts and packages/runner/src/protocol.ts. test/runner-copies.test.ts keeps them the same.
 /**
- * The link between a Pi Pocket server and a runner (`pi-pocket runner`), shared by both sides.
+ * The link between a Pi Pocket server and a runner (`pi-pocket-runner`), shared by both sides.
  *
  * The runner runs Earendil's pi-env daemon on its computer and connects out to the server over one WebSocket. The link
  * carries two byte streams: pi-env frames from the server to the daemon, and the daemon's frames back. Pi Pocket does
@@ -160,12 +161,12 @@ export type Hello = {
     session: string | null;
     /** Bytes of the server's stream the runner received in that session. */
     received: number;
-    /** The runner's Pi Pocket version, for the computers list. */
+    /** The runner's own version (its package's), for the computers list. */
     version: string;
     tools: RunnerTools;
     /** The runner can answer a scoped `pocket-read-snapshot` request itself. */
     readSnapshot?: true;
-    /** Plain HTTP to this server is allowed on this computer (`pi-pocket runner link --allow-http`), for the sheet. */
+    /** Plain HTTP to this server is allowed on this computer (`pi-pocket-runner link --allow-http`), for the sheet. */
     allowHttp?: boolean;
 };
 

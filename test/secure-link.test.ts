@@ -14,8 +14,8 @@ import {
     LINK_PROTOCOL,
     LINK_SUBPROTOCOL,
     parseControl,
-} from "../src/runner/protocol.ts";
-import { Runner, RunnerStopped } from "../src/runner/runner.ts";
+} from "../src/server/runner-link/protocol.ts";
+import { Runner, RunnerStopped } from "../packages/runner/src/runner.ts";
 import {
     checkLinkAnswer,
     checkLinkRequest,
@@ -31,7 +31,7 @@ import {
     publicOf,
     RunnerLinkSocket,
     ServerLinkSocket,
-} from "../src/runner/secure-link.ts";
+} from "../src/server/runner-link/secure-link.ts";
 import { ConfigStore } from "../src/server/config.ts";
 import { Runners } from "../src/server/runners.ts";
 

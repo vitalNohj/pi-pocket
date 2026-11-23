@@ -11,7 +11,7 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { THIS_SERVER } from "../src/server/access.ts";
 import type { User } from "../src/server/config.ts";
 import { HooksDoc, SessionsDoc } from "../src/server/docs.ts";

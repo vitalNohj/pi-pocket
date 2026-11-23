@@ -175,7 +175,7 @@ try {
     const helpers = await import("../helpers.ts");
     const { lastText, openApp, owner, scriptedModel, until } = helpers;
     const { createHandler } = await import("../../src/server/http.ts");
-    const { READ_SNAPSHOT } = await import("../../src/runner/read-snapshot.ts");
+    const { READ_SNAPSHOT } = await import("../../src/server/runner-link/read-snapshot.ts");
     const { fauxAssistantMessage, fauxText, fauxToolCall } =
         await import("@earendil-works/pi-ai/providers/faux");
     const started = new Map();

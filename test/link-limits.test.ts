@@ -1,6 +1,6 @@
 // Wrong runner link codes (`src/server/link-limits.ts`): per client address, bans after repeated lockouts, a ceiling for
 // the server that voids the open codes, and which address counts.
-import { linkInProcess, publicOf } from "../src/runner/secure-link.ts";
+import { linkInProcess, publicOf } from "../src/server/runner-link/secure-link.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

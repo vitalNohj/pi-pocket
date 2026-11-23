@@ -22,7 +22,7 @@ import {
     say,
     scriptedModel,
 } from "./helpers.ts";
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createServer } from "node:http";
 import { join } from "node:path";

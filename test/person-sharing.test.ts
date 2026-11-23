@@ -20,7 +20,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { THIS_SERVER } from "../src/server/access.ts";
 import type { SharingComputer, SharingRow } from "../src/server/commands.ts";
 import type { User } from "../src/server/config.ts";

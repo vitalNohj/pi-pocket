@@ -18,9 +18,9 @@ import { join } from "node:path";
 import { after, before, test, type TestContext } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { READ_SNAPSHOT } from "../src/runner/read-snapshot.ts";
-import { Runner } from "../src/runner/runner.ts";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { READ_SNAPSHOT } from "../src/server/runner-link/read-snapshot.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import { createHandler } from "../src/server/http.ts";
 
 const PNG = Buffer.from(

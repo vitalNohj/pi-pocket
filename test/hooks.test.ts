@@ -18,7 +18,7 @@ import { type ClientRequest, createServer, request as httpRequest, type Server }
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { HooksDoc, RepoWatchesDoc, SessionsDoc } from "../src/server/docs.ts";
 import { defang } from "../src/server/fence.ts";
 import { LEFT_OUT, screen } from "../src/server/hooks.ts";

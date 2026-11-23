@@ -1,6 +1,6 @@
 // Design uses a server mirror but the session's existing runner permission supplies every project read and write.
 import { cleanUp, context, openApp, owner, root, scriptedModel, until } from "./helpers.ts";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
 import type { PocketHost } from "../src/server/host.ts";
 import { designTools } from "../src/server/design/index.ts";
 import { designGuide } from "../src/server/design/guide.ts";

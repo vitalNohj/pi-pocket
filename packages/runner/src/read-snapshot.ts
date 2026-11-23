@@ -1,3 +1,4 @@
+// This file exists twice: src/server/runner-link/read-snapshot.ts and packages/runner/src/read-snapshot.ts. test/runner-copies.test.ts keeps them the same.
 /** A bounded, per-call snapshot for Pi's read tool. Both sides fall back to pi-env if there is no snapshot. */
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
