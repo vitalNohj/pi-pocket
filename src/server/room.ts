@@ -172,8 +172,9 @@ export interface Client {
     /**
      * What the tab's code understands of updates (`PROTOCOL` in `web/store.js`): 2 keeps the queue an update leaves out;
      * 3 also takes the live message as what changed (`liveMessageDelta`); 4 also takes a full view with only the newest
-     * entries (`firstEntries`); 5 also takes them light at first (`lightEntry`), whole in the update after. A tab below
-     * 3 gets the whole live message with each update; older code, which names none, also gets the queue.
+     * entries (`firstEntries`); 5 also takes them light at first (`lightEntry`), whole in the update after. 7 also gets
+     * the full draft on its own queue cards. A tab below 3 gets the whole live message with each update; older code,
+     * which names none, also gets the queue.
      */
     readonly protocol?: number;
     /** The blocks of the live message this tab has, for protocol 3: undefined when it has none. */
@@ -886,7 +887,10 @@ export class Room {
         const inbox = (view.docs["pi.inbox"] ?? { items: [] }) as unknown as InboxState;
         // These grow with the session (authors has one item per message) but rarely change. Do not repeat them on
         // each streaming update: send each only when it differs from what this client has.
-        const queue = this.#inbox(inbox.items, client.user);
+        const queue = this.#inbox(
+            inbox.items,
+            (client.protocol ?? 1) >= 7 ? client.user : undefined,
+        );
         const fields: Record<string, unknown> = {
             // A turn's updates would repeat it, and a waiting paste or batch of reports can be large.
             inbox: queue,
@@ -1203,8 +1207,8 @@ export class Room {
         };
     }
 
-    /** The queue as its rows show it: each message's start, who sent it, and the subagents a message of reports is from. */
-    #inbox(items: InboxItem[], user: User) {
+    /** The queue as its rows show it: preview, sender, reports, and the draft for a sender's Edit. */
+    #inbox(items: InboxItem[], draftsFor: User | undefined) {
         const waiting = new Set<number>();
         const rows = items.map((item) => {
             const id = item.id as unknown as number;
@@ -1240,7 +1244,9 @@ export class Room {
             const submitter = this.#app.attribution.submitterOf(id, this);
             // The public row holds only a preview. Only its sender can Edit and needs the full draft and files.
             const draft =
-                submitter.by === user.id && user.role !== "viewer"
+                draftsFor !== undefined &&
+                submitter.by === draftsFor.id &&
+                draftsFor.role !== "viewer"
                     ? (queued.draft ??= this.#app.commands.queuedDraft(this.id, item.content))
                     : undefined;
             const presented = queuePresentation(

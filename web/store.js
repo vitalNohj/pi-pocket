@@ -2416,10 +2416,10 @@ const handlers = {
  * leaves it out. 3: it takes the message being written as what changed (`mergeLive`). 4: a full view brings only the
  * entries of the newest rows, and it loads earlier ones as it shows them (`loadEarlier`). 5: those entries come light
  * (`partial`) at first, whole in the update after. 6: it names what it kept of the session it opens (`have`), and takes a
- * view that leaves that out (`orderFrom`). The server sends a tab below 3 the whole message with each update, and one
- * whose code names none (as a tab asleep through an update keeps) the queue too.
+ * view that leaves that out (`orderFrom`). 7: its own queue cards include the full draft for Edit. The server sends a
+ * tab below 3 the whole message with each update, and one whose code names none the queue too.
  */
-const PROTOCOL = 6;
+const PROTOCOL = 7;
 const TRANSPORT_KEY = "pocket.transport";
 const local = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
 /** After an event stream stalls on this address, poll for a day, then try the stream again: one slow start is not forever. */
