@@ -448,7 +448,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
         submit: true,
     });
     await until(
-        () => app.config.givenFolders(undefined, guest.id).includes(given),
+        () => app.config.givenFolders(THIS_SERVER, guest.id).includes(given),
         "the folder to be given",
     );
     assert.equal(app.policy.mayStart(guest, THIS_SERVER), true);
@@ -740,7 +740,7 @@ test(
         assert.match((await asked())[0]!, /The session they started in it moves to you/);
         assert.match((await asked())[0]!, /Sessions shared with them stay/);
         await until(
-            () => app.config.givenFolders(undefined, guest.id).length === 0,
+            () => app.config.givenFolders(THIS_SERVER, guest.id).length === 0,
             "the folder to be taken back",
         );
         assert.equal(app.policy.mayUse(guest, THIS_SERVER), true, "she is still chosen");
@@ -824,7 +824,7 @@ test(
         // Gina may link her own, and did; she chose Vera for it.
         const ginas = app.config.addRunner("Gina's desktop", guest.id, newIdentity().publicKey).id;
 
-        app.config.setRunnerUsers(ginas, [viewer.id]);
+        app.config.setUsers(ginas, [viewer.id]);
 
         try {
             await open("computers");
@@ -1926,7 +1926,7 @@ test(
 
         try {
             // She is shown one session of the owner's, so she is told the owner's name, for the messages there.
-            app.config.setServerUsers([...new Set([...chosen, user.id])]);
+            app.config.setUsers(THIS_SERVER, [...new Set([...chosen, user.id])]);
             await app.commands.shareSession(session, owner(app), [user.id]);
             ritas = await theirs.open(1);
             page = ritas;
@@ -2052,7 +2052,7 @@ test(
                 app.config.removeUser(user.id);
             }
 
-            app.config.setServerUsers(chosen);
+            app.config.setUsers(THIS_SERVER, chosen);
             app.accessChanged();
         }
     },
@@ -2444,7 +2444,7 @@ test(
 
         assert.ok(token !== undefined);
         // Chosen for this server, so that starting sessions here is not what keeps her from inviting.
-        app.config.setServerUsers([...new Set([...chosen, guest.id])]);
+        app.config.setUsers(THIS_SERVER, [...new Set([...chosen, guest.id])]);
         app.setRight(owner(app), { person: guest.id, right: "invites", on: false });
         app.accessChanged();
 
@@ -2498,7 +2498,7 @@ test(
             page = owners;
             await theirs.closeAll({ final: true });
             app.setRight(owner(app), { person: guest.id, right: "invites", on: false });
-            app.config.setServerUsers(chosen);
+            app.config.setUsers(THIS_SERVER, chosen);
             app.accessChanged();
         }
     },
@@ -2530,7 +2530,7 @@ test(
 
         assert.ok(token !== undefined);
         // A session of the owner's, shared with her: she prompts in it, and so may change it.
-        app.config.setServerUsers([...new Set([...chosen, guest.id])]);
+        app.config.setUsers(THIS_SERVER, [...new Set([...chosen, guest.id])]);
         app.setRight(owner(app), { person: guest.id, right: "keepsWarm", on: false });
         app.accessChanged();
 
@@ -2601,7 +2601,7 @@ test(
             page = owners;
             await theirs.closeAll({ final: true });
             app.setRight(owner(app), { person: guest.id, right: "keepsWarm", on: false });
-            app.config.setServerUsers(chosen);
+            app.config.setUsers(THIS_SERVER, chosen);
             app.accessChanged();
         }
     },
@@ -2739,7 +2739,7 @@ test(
         };
 
         try {
-            app.config.setServerUsers([...new Set([...chosen, ines.id])]);
+            app.config.setUsers(THIS_SERVER, [...new Set([...chosen, ines.id])]);
             app.accessChanged();
             await app.giveFolders(owner(app), THIS_SERVER, ines.id, [tall]);
             assert.equal(hers(), 0, "nothing of the owner's is hers yet");
@@ -2762,7 +2762,7 @@ test(
             assert.ok(scrolls.last, "to its last session");
         } finally {
             await app.removeUser(owner(app), ines.id);
-            app.config.setServerUsers(chosen);
+            app.config.setUsers(THIS_SERVER, chosen);
             app.accessChanged();
         }
     },
@@ -2808,8 +2808,8 @@ test(
 
         assert.ok(token !== undefined);
         // Chosen for this server, both; for the Laptop, neither.
-        app.config.setServerUsers([...new Set([...chosen, guest.id, viewer.id])]);
-        app.config.setRunnerUsers(runnerId, []);
+        app.config.setUsers(THIS_SERVER, [...new Set([...chosen, guest.id, viewer.id])]);
+        app.config.setUsers(runnerId, []);
         app.accessChanged();
 
         // A session of the owner's, shared with her, in which the owner is here and drives.
@@ -2908,8 +2908,8 @@ test(
             page = owners;
             app.detach(ownerTab.client);
             await theirs.closeAll({ final: true });
-            app.config.setServerUsers(chosen);
-            app.config.setRunnerUsers(runnerId, there);
+            app.config.setUsers(THIS_SERVER, chosen);
+            app.config.setUsers(runnerId, there);
             app.accessChanged();
         }
     },
@@ -4151,8 +4151,8 @@ test(
             await press(give(amber));
             await until(() => has(remove(amber)), "the folder she gave, to be taken back");
             assert.deepEqual(await asked(), [], "giving a folder asks nothing");
-            assert.deepEqual([...app.config.givenFolders(undefined, lou.user.id)], [amber]);
-            assert.equal(app.config.givenBy(undefined, lou.user.id)[amber], kay.user.id);
+            assert.deepEqual([...app.config.givenFolders(THIS_SERVER, lou.user.id)], [amber]);
+            assert.equal(app.config.givenBy(THIS_SERVER, lou.user.id)[amber], kay.user.id);
             assert.deepEqual([await has(give(amber)), await has(give(beryl))], [false, true]);
 
             // A session the owner shared with Lou says who shared it, and has no button after Go to session: that
@@ -4271,7 +4271,7 @@ test(
             await until(async () => !(await has(remove(amber))), "the folder, taken back");
             assert.match((await asked())[0] ?? "", /^Remove .+ from Lou\?/);
             assert.deepEqual(
-                [...app.config.givenFolders(undefined, lou.user.id)],
+                [...app.config.givenFolders(THIS_SERVER, lou.user.id)],
                 [beryl],
                 "hers is taken back, the owner's stays",
             );

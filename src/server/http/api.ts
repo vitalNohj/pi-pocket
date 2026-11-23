@@ -1354,7 +1354,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 change.downloads = body.downloads;
             }
 
-            app.config.setComputerSettings(second === THIS_SERVER ? undefined : second, change);
+            app.config.setComputerSettings(second, change);
 
             if (second !== THIS_SERVER) {
                 app.runners.link(second).sendSettings();

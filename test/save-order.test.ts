@@ -27,7 +27,7 @@ async function setup(t: TestContext) {
     t.after(() => app.close());
     const bob = app.config.addUser("Bob", "guest").user;
 
-    app.config.setServerUsers([bob.id]);
+    app.config.setUsers(THIS_SERVER, [bob.id]);
 
     return { app, bob, boss: owner(app) };
 }

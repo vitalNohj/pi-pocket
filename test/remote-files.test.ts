@@ -134,7 +134,7 @@ before(async () => {
 
     guestToken = guest.token;
     // A guest the owner chose for the computer, with this one session shared with them.
-    app.config.setRunnerUsers(linked.id, [guest.user.id]);
+    app.config.setUsers(linked.id, [guest.user.id]);
     await app.commands.shareSession(id, owner(app), [guest.user.id]);
 });
 

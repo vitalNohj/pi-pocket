@@ -113,7 +113,7 @@ before(async () => {
     host = linked.user;
     tokens.set(host.id, linked.token);
     laptop = app.config.addRunner("Laptop", host.id, newIdentity().publicKey).id;
-    app.config.setRunnerUsers(laptop, [owner(app).id, alex.id]);
+    app.config.setUsers(laptop, [owner(app).id, alex.id]);
 
     server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),

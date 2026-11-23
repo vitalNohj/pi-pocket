@@ -3293,38 +3293,22 @@ export class PocketApp {
             person: (id) => this.config.userById(id),
             computers: () => [THIS_SERVER, ...this.config.runners.map((each) => each.id)],
             computer: (id) => {
-                if (id === THIS_SERVER) {
-                    const server = this.config.server;
+                const record = config.computer(id);
 
-                    return {
-                        id,
-                        linker: config.users.find((each) => each.role === "owner")?.id ?? "",
-                        chosen: server.users ?? [],
-                        leaving: server.leaving ?? [],
-                        given: (person) => config.givenFolders(undefined, person),
-                        sees: (person) => config.seenFolders(undefined, person),
-                        givenBy: (person) => config.givenBy(undefined, person),
-                        holders: (right) => config.rightHolders(undefined, right),
-                        shareNew: server.shareNew === true,
-                    };
-                }
-
-                const runner = this.config.runnerById(id);
-
-                if (runner === undefined) {
+                if (record === undefined) {
                     return undefined;
                 }
 
                 return {
                     id,
-                    linker: runner.createdBy,
-                    chosen: runner.users ?? [],
-                    leaving: runner.leaving ?? [],
+                    linker: config.linkerOf(id) ?? "",
+                    chosen: record.users ?? [],
+                    leaving: record.leaving ?? [],
                     given: (person) => config.givenFolders(id, person),
                     sees: (person) => config.seenFolders(id, person),
                     givenBy: (person) => config.givenBy(id, person),
                     holders: (right) => config.rightHolders(id, right),
-                    shareNew: runner.shareNew === true,
+                    shareNew: record.shareNew === true,
                 };
             },
             approved: (id) => this.folderApprovals.live(id),
@@ -3383,13 +3367,16 @@ export class PocketApp {
             given: Object.fromEntries(
                 (server.users ?? []).map((id) => [
                     id,
-                    [...this.config.givenFolders(undefined, id)],
+                    [...this.config.givenFolders(THIS_SERVER, id)],
                 ]),
             ),
             sees: Object.fromEntries(
-                (server.users ?? []).map((id) => [id, [...this.config.seenFolders(undefined, id)]]),
+                (server.users ?? []).map((id) => [
+                    id,
+                    [...this.config.seenFolders(THIS_SERVER, id)],
+                ]),
             ),
-            rights: this.config.rightsOn(undefined),
+            rights: this.config.rightsOn(THIS_SERVER),
             shareNew: server.shareNew === true,
             inCharge: true,
             managers: this.#managersOf(THIS_SERVER),
@@ -3662,7 +3649,7 @@ export class PocketApp {
         await this.#inTurn(async () => {
             // Checked again where it is saved: the folders were looked up meanwhile.
             this.#requireGiving(by, id, person);
-            this.config.setGivenFolders(id === THIS_SERVER ? undefined : id, person, real, by.id);
+            this.config.setGivenFolders(id, person, real, by.id);
             await this.#finishHandOvers(id, person);
         });
         this.accessChanged();
@@ -3716,10 +3703,8 @@ export class PocketApp {
             this.runners.require(id);
         }
 
-        const key = id === THIS_SERVER ? undefined : id;
-
         if (this.policy.inCharge(by, id)) {
-            const had = this.config.givenFolders(key, person);
+            const had = this.config.givenFolders(id, person);
 
             await this.giveFolders(
                 by,
@@ -3736,7 +3721,7 @@ export class PocketApp {
 
         /** Whether there is a change to save; refused when it is not `by`'s to make. Asked again where it is saved. */
         const changes = (): boolean => {
-            const has = this.config.givenFolders(key, person).includes(folder);
+            const has = this.config.givenFolders(id, person).includes(folder);
 
             if (!on) {
                 if (has && !this.policy.mayTakeFolder(by, id, person, folder)) {
@@ -3786,10 +3771,10 @@ export class PocketApp {
                 return;
             }
 
-            const had = this.config.givenFolders(key, person);
+            const had = this.config.givenFolders(id, person);
 
             this.config.setGivenFolders(
-                key,
+                id,
                 person,
                 on ? [...had, folder] : had.filter((each) => each !== folder),
                 by.id,
@@ -3860,9 +3845,7 @@ export class PocketApp {
         const lead =
             !this.policy.mayManage(by, id) &&
             typeof person === "string" &&
-            Object.values(
-                this.config.givenBy(id === THIS_SERVER ? undefined : id, person),
-            ).includes(by.id);
+            Object.values(this.config.givenBy(id, person)).includes(by.id);
 
         if (!lead) {
             this.policy.requireManage(by, id);
@@ -3895,9 +3878,7 @@ export class PocketApp {
         await this.#inTurn(async () => {
             allowed();
 
-            if (
-                !this.config.setSeenFolder(id === THIS_SERVER ? undefined : id, person, folder, on)
-            ) {
+            if (!this.config.setSeenFolder(id, person, folder, on)) {
                 throw new HttpError(400, "Give them that folder first.");
             }
 
@@ -4017,7 +3998,7 @@ export class PocketApp {
             throw new HttpError(400, "A viewer cannot prompt: make them a user first.");
         }
 
-        if (!this.config.setComputerRight(id === THIS_SERVER ? undefined : id, person, right, on)) {
+        if (!this.config.setComputerRight(id, person, right, on)) {
             throw new HttpError(400, "Choose them for this computer first.");
         }
 
@@ -4656,7 +4637,7 @@ export class PocketApp {
             // it is asked of the record as it is published: the move is not saved yet.
             if (
                 person.id === starter ||
-                this.config.seenFolders(was.runner, person.id).length === 0 ||
+                this.config.seenFolders(was.runner ?? THIS_SERVER, person.id).length === 0 ||
                 !this.policy.maySee(person, id)
             ) {
                 continue;
@@ -4787,7 +4768,7 @@ export class PocketApp {
             }
 
             for (const each of chosen) {
-                if (this.config.seenFolders(undefined, each).length > 0) {
+                if (this.config.seenFolders(THIS_SERVER, each).length > 0) {
                     people.add(each);
                 }
             }
@@ -6466,7 +6447,7 @@ export class PocketApp {
 
         // Someone's charge of computers just ended (`config.ts` `#oweManaged`): what they had there by it moves on.
         if (
-            [undefined, ...this.config.runners.map((each) => each.id)].some(
+            [THIS_SERVER, ...this.config.runners.map((each) => each.id)].some(
                 (id) => this.config.handOvers(id).length > 0,
             )
         ) {
@@ -6576,22 +6557,14 @@ export class PocketApp {
      * (`#finishLeaving`), and a second change in between could end the mark of someone the first has not finished.
      *
      * The list is saved first, with everyone it drops marked as leaving in that same save (`config.ts`
-     * `StoredRunner.leaving`): from then on no share there counts for them (`access.ts` `Computer.leaving`), though the
-     * shares themselves are saved elsewhere and are removed a moment later.
+     * `ComputerAccess.leaving`): from then on no share there counts for them (`access.ts` `Computer.leaving`), though
+     * the shares themselves are saved elsewhere and are removed a moment later.
      */
     async #choose(id: string, next: (now: readonly string[]) => string[]): Promise<void> {
         await this.#inTurn(async () => {
-            const users = next(
-                id === THIS_SERVER
-                    ? (this.config.server.users ?? [])
-                    : (this.config.runnerById(id)?.users ?? []),
-            );
+            const users = next(this.config.computer(id)?.users ?? []);
 
-            if (id === THIS_SERVER) {
-                this.config.setServerUsers(users);
-            } else {
-                this.config.setRunnerUsers(id, users);
-            }
+            this.config.setUsers(id, users);
 
             // Their tabs leave at once, before the saves below: no event of a session there reaches them meanwhile.
             this.accessChanged();
@@ -6701,14 +6674,13 @@ export class PocketApp {
     }
 
     /**
-     * Take back what the people leaving computer `id` still have there (`config.ts` `StoredRunner.leaving`): their
+     * Take back what the people leaving computer `id` still have there (`config.ts` `ComputerAccess.leaving`): their
      * shares, in one commit; then their sessions and tasks, which move to who is in charge (`handOver`). Only then are
      * they no longer marked: a restart in between leaves the mark, and the next start finishes it. Chosen again later,
      * they see only what is shared with them anew.
      */
     async #finishLeaving(id: string): Promise<void> {
-        const key = id === THIS_SERVER ? undefined : id;
-        const leaving = [...this.config.leaving(key)];
+        const leaving = [...this.config.leaving(id)];
 
         if (leaving.length === 0) {
             return;
@@ -6736,30 +6708,29 @@ export class PocketApp {
             await this.handOver(person, id);
         }
 
-        this.config.clearLeaving(key, leaving);
+        this.config.clearLeaving(id, leaving);
         this.accessChanged();
     }
 
     /**
-     * Hand over what the people marked on computer `id` may no longer use there (`config.ts` `StoredRunner.handOver`),
-     * and `also`'s: a folder was taken back from them, or all sessions in one. Their sessions in folders no longer
-     * theirs, and the tasks they set up on sessions they no longer steer, move on (`handOver`). The settings were saved
-     * first, with the mark in that save; only after the hand-overs is it ended, so a restart in between leaves it and
-     * the next start finishes it.
+     * Hand over what the people marked on computer `id` may no longer use there (`config.ts`
+     * `ComputerAccess.handOver`), and `also`'s: a folder was taken back from them, or all sessions in one. Their sessions
+     * in folders no longer theirs, and the tasks they set up on sessions they no longer steer, move on (`handOver`). The
+     * settings were saved first, with the mark in that save; only after the hand-overs is it ended, so a restart in
+     * between leaves it and the next start finishes it.
      */
     async #finishHandOvers(id: string, also?: string): Promise<void> {
-        const key = id === THIS_SERVER ? undefined : id;
-        const owed = [...this.config.handOvers(key)];
+        const owed = [...this.config.handOvers(id)];
 
         for (const person of new Set(also === undefined ? owed : [...owed, also])) {
             await this.handOver(person, id);
         }
 
-        this.config.clearHandOvers(key, owed);
+        this.config.clearHandOvers(id, owed);
     }
 
     /**
-     * Finish the hand-overs the settings still owe (`config.ts` `StoredRunner.handOver`), on every computer: after a
+     * Finish the hand-overs the settings still owe (`config.ts` `ComputerAccess.handOver`), on every computer: after a
      * change that ended someone's charge of computers (they managed runners and no longer do: `config.ts`
      * `#oweManaged`), their sessions outside the folders given to them, and the tasks they set up on sessions they no
      * longer steer, move to who is in charge (`handOver`). The mark was saved with the change, so a restart in between
@@ -6771,7 +6742,7 @@ export class PocketApp {
             let owed = false;
 
             for (const id of [THIS_SERVER, ...this.config.runners.map((each) => each.id)]) {
-                if (this.config.handOvers(id === THIS_SERVER ? undefined : id).length > 0) {
+                if (this.config.handOvers(id).length > 0) {
                     owed = true;
                     await this.#finishHandOvers(id);
                 }

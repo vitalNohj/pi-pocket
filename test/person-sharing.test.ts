@@ -779,8 +779,8 @@ test("someone who shares what they were given gives a folder that was given to t
         call(by, `runners/${THIS_SERVER}/give`, { person: target, folder, on });
     const sees = (by: User, target: string, folder: string, on: boolean) =>
         call(by, `runners/${THIS_SERVER}/sees`, { person: target, folder, on });
-    const has = (user: User) => [...app.config.givenFolders(undefined, user.id)];
-    const seen = (user: User) => [...app.config.seenFolders(undefined, user.id)];
+    const has = (user: User) => [...app.config.givenFolders(THIS_SERVER, user.id)];
+    const seen = (user: User) => [...app.config.seenFolders(THIS_SERVER, user.id)];
     const told = (by: User, target: User) => app.commands.sharingWith(now(by), target.id).computers;
     const folder = (by: User, target: User) => told(by, target)[0]?.folders[0];
 
@@ -841,7 +841,7 @@ test("someone who shares what they were given gives a folder that was given to t
     assert.equal(given.status, 200, JSON.stringify(given.body));
     assert.deepEqual(given.body, { ok: true });
     assert.deepEqual(has(ana), [work]);
-    assert.deepEqual(app.config.givenBy(undefined, ana.id), { [work]: lea.id });
+    assert.deepEqual(app.config.givenBy(THIS_SERVER, ana.id), { [work]: lea.id });
     assert.equal(app.policy.mayUseFolder(now(ana), THIS_SERVER, work), true);
     assert.deepEqual(folder(lea, ana), {
         path: work,
@@ -855,10 +855,10 @@ test("someone who shares what they were given gives a folder that was given to t
 
     // The whole list saved again by who is in charge (Runners) keeps who gave a folder that stays in it.
     await app.giveFolders(boss, THIS_SERVER, ana.id, [work]);
-    assert.deepEqual(app.config.givenBy(undefined, ana.id), { [work]: lea.id });
+    assert.deepEqual(app.config.givenBy(THIS_SERVER, ana.id), { [work]: lea.id });
 
     // A folder someone else gave is not theirs to take back, nor its switch theirs to set.
-    assert.deepEqual(app.config.givenBy(undefined, tom.id), { [work]: boss.id });
+    assert.deepEqual(app.config.givenBy(THIS_SERVER, tom.id), { [work]: boss.id });
     assert.deepEqual(
         [folder(lea, tom)].map((each) => [each?.has, each?.give, each?.take, each?.see]),
         [[true, false, false, false]],
@@ -911,7 +911,7 @@ test("someone who shares what they were given gives a folder that was given to t
 
     assert.equal(taken.status, 200, JSON.stringify(taken.body));
     assert.deepEqual(has(ana), []);
-    assert.deepEqual(app.config.givenBy(undefined, ana.id), {});
+    assert.deepEqual(app.config.givenBy(THIS_SERVER, ana.id), {});
     assert.equal(
         app.sessionMeta(anas)?.createdBy,
         boss.id,
@@ -924,14 +924,14 @@ test("someone who shares what they were given gives a folder that was given to t
     assert.equal((await give(boss, tom.id, work, false)).status, 200);
     assert.deepEqual(has(tom), []);
     assert.equal((await give(boss, tom.id, work, true)).status, 200);
-    assert.deepEqual(app.config.givenBy(undefined, tom.id), { [work]: boss.id });
+    assert.deepEqual(app.config.givenBy(THIS_SERVER, tom.id), { [work]: boss.id });
 
     // A removed person is forgotten as who gave a folder: it stays given, for who is in charge to take back.
     app.setRight(boss, { computer: THIS_SERVER, person: lea.id, right: "reshares", on: true });
     assert.equal((await give(lea, ana.id, work, true)).status, 200);
     await app.removeUser(boss, lea.id);
     assert.deepEqual(has(ana), [work]);
-    assert.deepEqual(app.config.givenBy(undefined, ana.id), {});
+    assert.deepEqual(app.config.givenBy(THIS_SERVER, ana.id), {});
 });
 
 test("what was given is shared on by computer: on for one is not on for another, its one in charge gives it, and the owner needs it too on a runner someone else linked", async () => {
@@ -1062,7 +1062,7 @@ test("what was given is shared on by computer: on for one is not on for another,
     // Now a person's page offers her the laptop's folder, and none here.
     assert.deepEqual(told(lea, tom), [[laptop, [folder]]]);
     assert.deepEqual(sharedWith(here), [ana.id, lea.id].sort());
-    assert.deepEqual([...app.config.givenFolders(undefined, ana.id)], [work]);
+    assert.deepEqual([...app.config.givenFolders(THIS_SERVER, ana.id)], [work]);
     assert.deepEqual(await share(lea, here, tom), [cannot]);
 
     // No longer chosen for the laptop, she holds nothing there, also when chosen again.

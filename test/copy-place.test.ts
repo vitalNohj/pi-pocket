@@ -75,7 +75,7 @@ async function asking<T>(run: (guest: User) => Promise<T>): Promise<T> {
     app.config.updateUser(guest.id, { approvalDays: 7 });
 
     for (const computer of [laptop, desk]) {
-        app.config.setRunnerUsers(computer.id, [guest.id]);
+        app.config.setUsers(computer.id, [guest.id]);
         app.config.setGivenFolders(computer.id, guest.id, [root]);
     }
 
@@ -83,7 +83,7 @@ async function asking<T>(run: (guest: User) => Promise<T>): Promise<T> {
         return await run(guest);
     } finally {
         for (const computer of [laptop, desk]) {
-            app.config.setRunnerUsers(computer.id, []);
+            app.config.setUsers(computer.id, []);
         }
 
         await app.removeUser(owner(app), guest.id);

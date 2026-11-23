@@ -122,7 +122,7 @@ test("a person no longer chosen hands over the tasks they set up on a session sh
     const alex = app.config.addUser("Alex", "guest").user;
     const bea = app.config.addUser("Bea", "guest").user;
 
-    app.config.setServerUsers([alex.id, bea.id]);
+    app.config.setUsers(THIS_SERVER, [alex.id, bea.id]);
 
     // Bea's session, shared with Alex; Alex set up a webhook and a schedule on it.
     const beas = await newSession(app);
@@ -147,7 +147,7 @@ test("a person no longer chosen hands over the tasks they set up on a session sh
     // A task on a session still shared with the person stays theirs.
     const kept = await newSession(app);
 
-    app.config.setServerUsers([alex.id, bea.id]);
+    app.config.setUsers(THIS_SERVER, [alex.id, bea.id]);
     await sessionOf(kept, bea.id, [alex.id]);
     await hookOf("alex-kept", alex.id, kept);
     await app.handOver(alex.id, THIS_SERVER);
@@ -157,7 +157,7 @@ test("a person no longer chosen hands over the tasks they set up on a session sh
 test("a removal a restart cut short is finished at the next start", async () => {
     const carl = app.config.addUser("Carl", "guest").user;
 
-    app.config.setServerUsers([carl.id]);
+    app.config.setUsers(THIS_SERVER, [carl.id]);
 
     const his = await newSession(app);
 
@@ -178,7 +178,7 @@ test("a removal a restart cut short is finished at the next start", async () => 
 test("Pi works for who has the session now, and a linked session still starts", async () => {
     const dana = app.config.addUser("Dana", "guest").user;
 
-    app.config.setServerUsers([dana.id]);
+    app.config.setUsers(THIS_SERVER, [dana.id]);
 
     const hers = await newSession(app);
 
@@ -268,7 +268,7 @@ test("a session no longer shared with a person: the tasks they set up on it go t
     const bo = app.config.addUser("Bo", "guest").user;
     const cy = app.config.addUser("Cy", "guest").user;
 
-    app.config.setServerUsers([...(app.config.server.users ?? []), ana.id, bo.id, cy.id]);
+    app.config.setUsers(THIS_SERVER, [...(app.config.server.users ?? []), ana.id, bo.id, cy.id]);
 
     // On this server the owner is in charge. Bo's session, shared with Ana, who set up tasks on it.
     const here = await newSession(app);

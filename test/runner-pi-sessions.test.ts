@@ -456,7 +456,7 @@ test("only a person who may start sessions on the computer can list, preview, or
         403,
     );
     assert.equal(app.policy.mayStart(other, runnerId), false);
-    app.config.setRunnerUsers(runnerId, [user.id]);
+    app.config.setUsers(runnerId, [user.id]);
     // Chosen, with no folder given: the list is empty, and a preview names nothing of theirs.
     assert.deepEqual(await statuses(token), [200, 404]);
     app.config.setGivenFolders(runnerId, user.id, [project]);
@@ -468,10 +468,7 @@ test("a person given one folder sees and previews only Pi's sessions in it, and 
     const inside = file("Checkout total");
     const { user, token } = app.config.addUser("Given one", "guest");
 
-    app.config.setRunnerUsers(runnerId, [
-        ...(app.config.runnerById(runnerId)?.users ?? []),
-        user.id,
-    ]);
+    app.config.setUsers(runnerId, [...(app.config.runnerById(runnerId)?.users ?? []), user.id]);
     app.config.setGivenFolders(runnerId, user.id, [project]);
 
     // The owner continues the session in the given folder, privately: the guest's list must not name it.
@@ -547,7 +544,7 @@ test("on a computer a guest linked, its linker reaches Pi's sessions there and t
     assert.equal(app.policy.inCharge(host.user, theirs), true);
     assert.deepEqual(await statuses(host.token), [409, 409, 409]);
     // Chosen by its linker, the owner is let in as anyone chosen is.
-    app.config.setRunnerUsers(theirs, [owner(app).id]);
+    app.config.setUsers(theirs, [owner(app).id]);
     assert.deepEqual(await statuses(), [409, 409, 409]);
 });
 

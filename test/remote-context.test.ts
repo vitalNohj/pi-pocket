@@ -192,7 +192,7 @@ describe("a session on another computer", () => {
         // Chosen for the laptop, with the owner's session shared: they prompt in it, and are not in charge of it.
         const fellow = app.config.addUser("Fellow", "guest").user;
 
-        app.config.setRunnerUsers(runnerId, [fellow.id]);
+        app.config.setUsers(runnerId, [fellow.id]);
         await app.harness.commit(async (tx) => {
             (await tx.doc(SessionsDoc)).items[String(id)]!.sharedWith = [fellow.id];
         }, context);

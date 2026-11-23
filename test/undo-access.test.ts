@@ -21,6 +21,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "../src/server/access.ts";
 import type { User } from "../src/server/config.ts";
 import { createHandler } from "../src/server/http.ts";
 
@@ -107,10 +108,10 @@ before(async () => {
     guest = person("Guest", "guest");
     viewer = person("Viewer", "viewer");
     other = person("Other", "guest");
-    app.config.setServerUsers([guest.id, viewer.id, other.id]);
+    app.config.setUsers(THIS_SERVER, [guest.id, viewer.id, other.id]);
 
     for (const each of [guest, viewer, other]) {
-        app.config.setGivenFolders(undefined, each.id, [realpathSync(root)]);
+        app.config.setGivenFolders(THIS_SERVER, each.id, [realpathSync(root)]);
         app.config.updateUser(each.id, { approvalDays: 0 });
     }
 

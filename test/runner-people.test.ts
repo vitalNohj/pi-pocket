@@ -430,7 +430,7 @@ describe("people granted a computer", () => {
         const scoped = person("One session", "guest", [String(id)]);
         const empty = person("No sessions", "guest", []);
 
-        app.config.setRunnerUsers(runnerId, [guest.id, scoped.id, empty.id]);
+        app.config.setUsers(runnerId, [guest.id, scoped.id, empty.id]);
         assert.deepEqual(app.runners.stored(runnerId)?.users, [guest.id]);
         assert.equal(app.policy.mayStart(scoped, runnerId), false);
         assert.equal(app.policy.mayStart(empty, runnerId), false);
@@ -661,7 +661,7 @@ describe("review drill fixes for people on a computer", () => {
             },
             tools: { git: true, gh: true, github: true },
         });
-        app.config.setRunnerUsers(linas, [cho.id]);
+        app.config.setUsers(linas, [cho.id]);
 
         try {
             const seenBy = async (user: User) =>
@@ -799,7 +799,7 @@ describe("review drill fixes for people on a computer", () => {
             cwd: home,
         });
 
-        app.config.setRunnerUsers(runnerId, [
+        app.config.setUsers(runnerId, [
             ...(app.runners.stored(runnerId)?.users ?? []),
             visitor().id,
         ]);
@@ -876,7 +876,7 @@ describe("review drill fixes for people on a computer", () => {
         // On this server the owner is in charge, so they are never among its chosen people.
         const here = [...(app.config.server.users ?? [])];
 
-        app.config.setServerUsers([...here, owner(app).id]);
+        app.config.setUsers(THIS_SERVER, [...here, owner(app).id]);
         assert.deepEqual(app.config.server.users ?? [], here);
     });
 
@@ -905,7 +905,7 @@ describe("review drill fixes for people on a computer", () => {
         const inside = await sessionIn("/srv/app/api");
         const beside = await sessionIn("/srv/apple");
 
-        app.config.setRunnerUsers(theirs, [fellow.id, other.id]);
+        app.config.setUsers(theirs, [fellow.id, other.id]);
         app.config.setGivenFolders(theirs, fellow.id, ["/srv/app"]);
         app.config.setGivenFolders(theirs, other.id, ["/srv/app"]);
         assert.equal(
@@ -965,7 +965,7 @@ describe("review drill fixes for people on a computer", () => {
         assert.equal((await lists(fellow))?.sees, undefined);
 
         // No longer chosen: it ends, and a person removed leaves no record behind.
-        app.config.setRunnerUsers(theirs, [other.id]);
+        app.config.setUsers(theirs, [other.id]);
         app.accessChanged();
         assert.equal(app.canSee(fellow, inside), false);
         await app.removeUser(owner(app), fellow.id);
@@ -981,7 +981,7 @@ describe("review drill fixes for people on a computer", () => {
         const { id: here } = await app.commands.createSession(owner(app), { cwd: root });
 
         // A session on the host's computer, the host's own, shared with a person chosen there and with the owner.
-        app.config.setRunnerUsers(theirs, [fellow.id, owner(app).id]);
+        app.config.setUsers(theirs, [fellow.id, owner(app).id]);
         await app.harness.commit(async (tx) => {
             const items = (await tx.doc(SessionsDoc)).items;
 
@@ -1171,7 +1171,7 @@ describe("review drill fixes for people on a computer", () => {
             app.detach(tab.client);
             app.detach(other.client);
             await app.setApprovalRule(owner(app), "anyone");
-            app.config.setRunnerUsers(theirs, []);
+            app.config.setUsers(theirs, []);
             app.accessChanged();
         }
     });
@@ -1189,7 +1189,7 @@ describe("review drill fixes for people on a computer", () => {
 
         // The worker's session on the host's computer. The owner is chosen there; the invitee came with an invite, and is
         // chosen for nothing.
-        app.config.setRunnerUsers(theirs, [worker.id, owner(app).id]);
+        app.config.setUsers(theirs, [worker.id, owner(app).id]);
         await app.harness.commit(async (tx) => {
             const meta = (await tx.doc(SessionsDoc)).items[String(session)]!;
 
