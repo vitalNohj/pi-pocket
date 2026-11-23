@@ -115,11 +115,7 @@ function modelText(ref, level) {
 
 /** Ask the server for a computer's suggested folder (or about `cwd`, one picked), and the session's own place. */
 function askPlace(sessionId, runner, cwd = null) {
-    const query = new URLSearchParams();
-
-    if (runner !== undefined) {
-        query.set("runner", runner ?? "");
-    }
+    const query = new URLSearchParams({ runner: runner ?? "" });
 
     if (cwd) {
         query.set("cwd", cwd);
@@ -128,53 +124,165 @@ function askPlace(sessionId, runner, cwd = null) {
     return api(`c/${sessionId}/copy-place?${query}`);
 }
 
-/**
- * The choices of one copy: kept while a picker over the sheet is open, loaded from the server when the sheet first
- * opens. `extra`, more initial choices (an edited message's text).
- */
-export function usePlace(sessionId, key, extra = () => ({})) {
-    const draft = useCopyDraft(key, () => ({ ...extra(), worktree: false, computers: false }));
+/** Prefer the source's computer. With no choices, still show the source's place. */
+function preferredRunner(source, choices) {
+    const own = source?.runner;
+    const choice = choices.find((each) => each.id === own) ?? choices[0];
+
+    return choice ? choice.id : own;
+}
+
+/** Show the catalogue's folder without waiting if the copy stays on the source's computer. */
+function knownFolder(source, runner) {
+    return source && source.runner === runner
+        ? { cwd: source.cwd, reason: "current", inRepository: undefined }
+        : { cwd: null, reason: null, inRepository: undefined };
+}
+
+const suggestedFolder = ({ cwd, reason, inRepository }) => ({ cwd, reason, inRepository });
+
+/** The first answer for a chosen computer confirms the source, without taking back a model or level choice. */
+function confirmSource(draft, source) {
+    return draft.confirmed
+        ? {}
+        : {
+              source,
+              confirmed: true,
+              ...(draft.modelPicked
+                  ? {}
+                  : { model: source.model ?? null, thinkingLevel: source.thinkingLevel ?? "off" }),
+          };
+}
+
+/** One request per computer at a time. The map also identifies this opening of the sheet, even under a picker. */
+function loadPlace(sessionId, runner, places) {
+    if (places.has(runner)) {
+        return;
+    }
+
+    places.set(runner, null);
+    askPlace(sessionId, runner).then(
+        (place) => {
+            places.set(runner, place);
+            const now = copyDraft();
+
+            if (now?.places === places && now.runner === runner && canStart(runner)) {
+                updateDraft({
+                    ...confirmSource(now, place.from),
+                    ...(now.picked === undefined ? suggestedFolder(place) : {}),
+                    failed: undefined,
+                });
+            }
+        },
+        (error) => {
+            places.delete(runner);
+            const now = copyDraft();
+
+            if (now?.places === places && now.runner === runner && canStart(runner)) {
+                updateDraft({ failed: error.message });
+            }
+        },
+    );
+}
+
+/** Another computer chosen: show its saved answer in the same draw, or ask if one is not on its way. */
+function chooseComputer(sessionId, runner) {
+    const now = copyDraft();
+
+    if (!now || !canStart(runner)) {
+        return;
+    }
+
+    if (runner === now.runner) {
+        updateDraft({ computers: false });
+    } else {
+        const place = now.places.get(runner);
+
+        updateDraft({
+            ...(place
+                ? { ...confirmSource(now, place.from), ...suggestedFolder(place) }
+                : knownFolder(now.source, runner)),
+            runner,
+            computers: false,
+            picked: undefined,
+            worktree: false,
+            failed: undefined,
+        });
+    }
+
+    loadPlace(sessionId, runner, now.places);
+}
+
+/** Start with the facts in this tab and ask for all allowed computers at once. Pickers keep the same draft. */
+export function usePlace(sessionId, key, { enabled = true, extra = () => ({}) } = {}) {
+    const { me, runners, sessions, view } = store.state;
+    const choices = [{ id: null, name: "This server", online: true }, ...runners].filter((each) =>
+        canStart(each.id),
+    );
+    const draft = useCopyDraft(key, () => {
+        const open = view.conversation?.id === sessionId;
+        const session =
+            sessions.find((each) => each.id === sessionId) ?? (open ? view.conversation : null);
+        const agent = open ? view.agent : null;
+        const model = agent ? (agent.model ?? null) : undefined;
+        const thinkingLevel = agent?.thinkingLevel ?? "off";
+        const source = session
+            ? { runner: session.runner ?? null, cwd: session.cwd, model, thinkingLevel }
+            : undefined;
+        const runner = preferredRunner(source, choices);
+
+        return {
+            ...extra(),
+            ...knownFolder(source, runner),
+            source,
+            runner,
+            model,
+            thinkingLevel,
+            places: new Map(),
+            worktree: false,
+            computers: false,
+        };
+    });
 
     useEffect(() => {
-        if (draft.source || draft.asking) {
+        const now = copyDraft();
+
+        if (!enabled || now?.places !== draft.places) {
             return;
         }
 
-        updateDraft({ asking: true });
-        askPlace(sessionId, undefined).then(
-            (place) =>
-                updateDraft({
-                    asking: false,
-                    source: place.from,
-                    runner: place.runner,
-                    cwd: place.cwd,
-                    reason: place.reason,
-                    inRepository: place.inRepository,
-                    model: place.from.model ?? null,
-                    thinkingLevel: place.from.thinkingLevel ?? "off",
-                }),
-            (error) => {
-                updateDraft({ asking: false, failed: error.message });
-            },
-        );
-    }, [key]);
+        if (choices.length > 0 && !choices.some((each) => each.id === now.runner)) {
+            chooseComputer(sessionId, preferredRunner(now.source, choices));
+        }
+
+        for (const { id } of choices) {
+            loadPlace(sessionId, id, now.places);
+        }
+    }, [draft.places, enabled, me, runners]);
 
     // A folder picked on this server: whether it is a git repository, for the worktree row.
     useEffect(() => {
         const now = copyDraft();
 
         if (
-            !now?.source ||
+            now?.places !== draft.places ||
             now.runner !== null ||
             now.inRepository !== undefined ||
-            now.picked === undefined
+            now.picked === undefined ||
+            !canStart(null)
         ) {
             return;
         }
 
         askPlace(sessionId, null, now.picked).then(
             (place) => {
-                if (copyDraft()?.picked === now.picked) {
+                const latest = copyDraft();
+
+                if (
+                    latest?.places === now.places &&
+                    latest.runner === null &&
+                    latest.picked === now.picked
+                ) {
                     updateDraft({
                         inRepository: place.inRepository,
                         ...(place.inRepository ? {} : { worktree: false }),
@@ -183,55 +291,22 @@ export function usePlace(sessionId, key, extra = () => ({})) {
             },
             () => {},
         );
-    }, [draft.picked]);
+    }, [draft.places, draft.picked]);
 
-    return draft;
-}
-
-/** Another computer chosen: its suggested folder, and no worktree. */
-function chooseComputer(sessionId, runner) {
-    updateDraft({ computers: false });
-
-    if (runner === copyDraft()?.runner) {
-        return;
-    }
-
-    updateDraft({ runner, cwd: null, reason: null, worktree: false, inRepository: undefined });
-    askPlace(sessionId, runner).then(
-        (place) => {
-            if (copyDraft()?.runner === runner) {
-                updateDraft({
-                    cwd: place.cwd,
-                    reason: place.reason,
-                    picked: undefined,
-                    inRepository: place.inRepository,
-                });
-            }
-        },
-        (error) => notify("error", error.message),
-    );
+    return { draft, choices };
 }
 
 /**
  * The rows that choose where a copy runs: computer, folder, model, worktree; and, for another computer, that it asks
  * first. `verb`, the action in the folder picker's title ("Fork", "Send again").
  */
-export function PlaceRows({ sessionId, draft, verb }) {
+export function PlaceRows({ sessionId, draft, choices, verb }) {
     const { runners, me } = store.state;
     const owner = me?.role === "owner";
-    const loaded = draft.source !== undefined;
-    const runner = loaded ? draft.runner : undefined;
-    const name = loaded ? computerName(runner) : "…";
+    const runner = draft.runner;
+    const name = runner === undefined ? "…" : computerName(runner);
     const there = runner !== null && runner !== undefined;
-    const choices = [
-        { id: null, name: "This server", online: true },
-        // Each person gets only the linked computers they may use.
-        ...runners,
-        // The session's own computer, when the list does not have it.
-        ...(there && !runners.some((each) => each.id === runner)
-            ? [{ id: runner, name, online: true }]
-            : []),
-    ];
+    const allowed = runner !== undefined && canStart(runner);
 
     useEffect(() => {
         // The linked computers, when this tab has not got the list yet.
@@ -263,7 +338,7 @@ export function PlaceRows({ sessionId, draft, verb }) {
                 </span>`}
                 sub=${there && online === false ? "offline" : null}
                 open=${draft.computers}
-                onPick=${loaded && choices.length > 1 ? () => updateDraft({ computers: !draft.computers }) : null}
+                onPick=${choices.length > 1 ? () => updateDraft({ computers: !draft.computers }) : null}
             />
             ${
                 draft.computers &&
@@ -292,23 +367,24 @@ export function PlaceRows({ sessionId, draft, verb }) {
                 value=${html`<bdi dir="ltr">${draft.cwd ? shortPath(draft.cwd, homeOf(runner)) : "…"}</bdi>`}
                 sub=${draft.reason ? REASONS[draft.reason] : null}
                 title=${draft.cwd ?? undefined}
-                onPick=${loaded && draft.cwd ? pickFolder : null}
+                onPick=${allowed && draft.cwd ? pickFolder : null}
             />
             <${ChoiceRow}
                 label="Model"
-                value=${loaded ? modelText(draft.model, draft.thinkingLevel) : "…"}
-                onPick=${loaded ? pickModel : null}
+                value=${draft.model === undefined ? "…" : modelText(draft.model, draft.thinkingLevel)}
+                onPick=${allowed && draft.model !== undefined ? pickModel : null}
             />
             <${SwitchRow}
                 label="Own git worktree"
                 on=${draft.worktree}
-                disabled=${!loaded || (!there && !draft.inRepository)}
-                note=${loaded && draft.inRepository === false ? "not a git repository" : null}
+                disabled=${!allowed || !draft.cwd || (!there && !draft.inRepository)}
+                note=${draft.inRepository === false ? "not a git repository" : null}
                 onChange=${() => updateDraft({ worktree: !draft.worktree })}
             />
         <//>
         ${
             there &&
+            allowed &&
             html`<p class="muted small copy-asks">
                 ${name} asks before the copy starts. Its tools run there.
             </p>`
@@ -323,7 +399,7 @@ export function PlaceRows({ sessionId, draft, verb }) {
 export function placeOf(draft) {
     const source = draft.source;
 
-    if (!source) {
+    if (!source || !draft.cwd || draft.runner === undefined) {
         return undefined;
     }
 
@@ -334,7 +410,7 @@ export function placeOf(draft) {
         place.runner = draft.runner;
     }
 
-    if (draft.cwd && (moved || draft.cwd !== source.cwd)) {
+    if (moved || draft.cwd !== source.cwd) {
         place.cwd = draft.cwd;
     }
 
@@ -403,23 +479,47 @@ export function useMainKey(type, press) {
     }, [type, press]);
 }
 
+/** The main action needs a complete place and the right to start a session on its computer. */
+export const copyReady = (draft) =>
+    !!draft?.source && !!draft.cwd && draft.runner !== undefined && canStart(draft.runner);
+
+/** Read the place again at the tap or keypress, in case the rows have not drawn the latest choice yet. */
+export function readyDraft(draft) {
+    const now = copyDraft();
+
+    return now?.places === draft.places && copyReady(now) ? now : null;
+}
+
+/** The main button and its note, shared by the three copy sheets. */
+export function CopyAction({ label, choices, disabled, onClick, children }) {
+    return html`<div class="copy-go">
+        <button type="button" class="button primary wide" disabled=${disabled} onClick=${onClick}>
+            ${label}
+        </button>
+        <p class="muted small">
+            ${choices.length === 0 ? "You cannot start sessions on any computer." : children}
+        </p>
+    </div>`;
+}
+
 // ─── Fork a whole session ─────────────────────────────────────────────────────────
 
 /** Session menu → Fork: a copy of the whole session, with the place rows. */
 export function ForkSessionSheet({ id }) {
     const session = store.state.sessions.find((each) => each.id === id);
-    const draft = usePlace(id, `session:${id}`);
+    const { draft, choices } = usePlace(id, `session:${id}`);
     const [busy, setBusy] = useState(false);
-    const starts = canStart();
 
     const go = () => {
-        if (busy || !starts) {
+        const now = readyDraft(draft);
+
+        if (busy || !now) {
             return;
         }
 
         setBusy(true);
         startCopy(
-            (signal) => actions.forkSession(id, placeOf(draft), signal),
+            (signal) => actions.forkSession(id, placeOf(now), signal),
             "Opened the fork. The original is unchanged.",
         ).finally(() => setBusy(false));
     };
@@ -428,14 +528,14 @@ export function ForkSessionSheet({ id }) {
 
     return html`<${Sheet} title="Fork this session" onClose=${closeSheet} className="copy-sheet">
         <div class="copy-what">${session?.title ?? "New session"}</div>
-        <${PlaceRows} sessionId=${id} draft=${draft} verb="Fork" />
-        <div class="copy-go">
-            <button type="button" class="button primary wide" disabled=${busy} onClick=${go}>
-                Fork
-            </button>
-            <p class="muted small">
-                A new session with everything up to the last reply. The original stays as it is.
-            </p>
-        </div>
+        <${PlaceRows} sessionId=${id} draft=${draft} choices=${choices} verb="Fork" />
+        <${CopyAction}
+            label="Fork"
+            choices=${choices}
+            disabled=${busy || !copyReady(draft)}
+            onClick=${go}
+        >
+            A new session with everything up to the last reply. The original stays as it is.
+        <//>
     <//>`;
 }
