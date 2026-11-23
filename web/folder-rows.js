@@ -26,6 +26,7 @@ class Row extends Component {
             aria-selected=${on ? "true" : "false"}
             data-path=${dir.path}
             title=${touch ? undefined : "Double-click to open"}
+            onPointerEnter=${() => actions.current.hover(dir.path)}
             onClick=${() => actions.current.click(dir.path)}
             onDblClick=${() => actions.current.open(dir.path)}
         >
@@ -37,7 +38,7 @@ class Row extends Component {
 }
 
 /**
- * The rows of `dirs`, `selected` marked. `actions` is a ref to `{ click, open }`, each given a folder's path:
+ * The rows of `dirs`, `selected` marked. `actions` is a ref to `{ click, open, hover }`, each given a folder's path:
  * kept current by the picker, so the rows need not draw again when its handlers are made anew.
  */
 export class FolderRows extends Component {
