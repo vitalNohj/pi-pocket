@@ -9133,10 +9133,11 @@ div.group-head {
 
 /*
  * The folder picker, laid out as a desktop's file dialog: the path and New folder on top, places beside the folders,
- * and the folder Open takes with Cancel and Open at the bottom. A fixed height: only the places and the folders scroll.
+ * and the folder Open takes with Cancel and Open at the bottom. A fixed height, as tall as the screen allows up to
+ * 800 px: only the places and the folders scroll, and Runs on stays under the places.
  */
 .sheet.folder-sheet {
-    height: min(86dvh, 600px);
+    height: min(86dvh, 800px);
 }
 
 .folder-sheet .sheet-body {
@@ -9305,16 +9306,39 @@ div.group-head {
     overflow: hidden;
 }
 
-.fp-places {
+/* The left column: the places scroll, and Runs on stays pinned at its foot. */
+.fp-side {
     flex: none;
     width: clamp(7rem, 28%, 11rem);
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+}
+
+/* The places, favorites, and recent folders: the only part of the left column that scrolls with many. */
+.fp-places {
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 1px;
     padding: 0.3rem;
     overflow-y: auto;
     overscroll-behavior: contain;
-    background: var(--bg);
+}
+
+/* Where a new session runs, under the places: it does not scroll with them, and scrolls by itself past many computers. */
+.fp-runs {
+    flex: none;
+    max-height: 45%;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 0 0.3rem 0.3rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-top: 1px solid var(--hair);
 }
 
 .fp-place {
@@ -9406,13 +9430,6 @@ div.group-head {
     font-size: 12px;
     font-weight: 500;
     color: var(--faint);
-}
-
-.fp-pi {
-    margin: auto 0.45rem 0.2rem;
-    padding-top: 0.6rem;
-    text-align: left;
-    font-size: 0.78rem;
 }
 
 .fp-list {
@@ -9530,14 +9547,24 @@ div.group-head {
     }
 }
 
+/* The options and the links wrap in their own box, so Cancel and Open stay at the right of the same row. */
 .fp-options {
+    flex: 1 1 0;
+    min-width: 0;
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 0.2rem 0.9rem;
 }
 
 .fp-options .check {
     margin-bottom: 0;
+}
+
+/* Manage runners… and Continue a Pi session…, beside the options: small, and each on one line. */
+.fp-link {
+    font-size: 0.78rem;
+    white-space: nowrap;
 }
 
 .fp-buttons {
@@ -9562,8 +9589,12 @@ div.group-head {
     .fp-buttons .button {
         flex: 1;
     }
-    .fp-places {
+    .fp-side {
         width: 8.5rem;
+    }
+    /* A finger's target for the links in the bottom row. */
+    .fp-link {
+        padding-block: 0.35rem;
     }
     .fp-row,
     .fp-place {
