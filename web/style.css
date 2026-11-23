@@ -8502,24 +8502,288 @@ div.group-head {
     color: var(--faint);
 }
 
-/* The branch picker: what is checked out beside its title, and how far each branch is from its remote one. */
-.branch-picker {
+/*
+ * The Branches board (`branch-board.js`), in the conversation's place as Running now is: the branches on the left, the
+ * worktree maps on the right. Below 900px the two stack, the list first, and the board scrolls as one.
+ */
+.branch-board .board-sub b {
+    font-weight: 500;
+    color: var(--text);
+}
+
+.branch-board-asking {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 10px;
+    color: var(--faint);
+}
+
+.branch-board-asking .spinner {
+    width: 10px;
+    height: 10px;
+}
+
+.branch-board-body {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
+}
+
+.branch-list {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-right: 1px solid var(--hair);
     background: var(--bg);
 }
 
-.branch-picker.down {
-    animation-name: pop;
-}
-
-.branch-picker .pop-menu-head {
-    padding: 12px 14px;
-    border-color: var(--hair);
-    font-size: 13px;
-    font-weight: 600;
+.branch-search {
+    flex: none;
+    padding: 6px 6px 2px;
 }
 
 .branch-picker .pop-menu-list {
-    padding: 6px;
+    padding: 6px 10px 10px;
+}
+
+.branch-picker .pop-menu-note .loader {
+    padding: 4px 0;
+}
+
+.branch-maps {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    padding: 12px calc(16px + var(--inset-r)) 12px 16px;
+}
+
+.branch-maps-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* One row of tabs: on a phone it scrolls sideways rather than wrapping. */
+.branch-maps-head .branch-map-tabs {
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.branch-map-tabs button {
+    flex: none;
+    white-space: nowrap;
+}
+
+.branch-maps-note {
+    margin: 0;
+    padding: 8px 2px;
+}
+
+/* Each map is a page of its own; one shows, those opened before wait behind it, loaded. */
+.branch-map-frames {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+}
+
+.branch-map-slot {
+    flex: 1;
+    display: flex;
+    min-width: 0;
+}
+
+.branch-map-slot[hidden] {
+    display: none;
+}
+
+.branch-map-frame {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--bg);
+}
+
+/* The picker: Sessions or Branches, then folded groups of rows, each with a tick that puts it on the map. */
+.work-modes {
+    margin: 0 0 6px;
+}
+
+.work-modes button {
+    flex: 1;
+}
+
+.work-list {
+    padding: 4px 6px 12px;
+}
+
+.work-group + .work-group {
+    border-top: 1px solid var(--line);
+}
+
+.work-row,
+.work-repo-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 2px 4px 2px 6px;
+    border-radius: var(--r-control);
+}
+
+.work-row.on {
+    background: var(--card-2);
+}
+
+.work-row.child {
+    min-height: 38px;
+}
+
+.work-children {
+    padding-left: 18px;
+}
+
+.work-row-main,
+.work-repo-name {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    text-align: left;
+    color: var(--text);
+}
+
+.work-row-main:disabled {
+    cursor: default;
+    opacity: 1;
+}
+
+.work-row-main:disabled > .icon {
+    visibility: hidden;
+}
+
+.work-row-main > .icon,
+.work-repo-name > .icon {
+    flex: none;
+    color: var(--faint);
+    transition: transform var(--t-fade) var(--ease-almost);
+}
+
+.work-row-main > .icon.open,
+.work-repo-name > .icon.open {
+    transform: rotate(90deg);
+}
+
+.work-repo-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.work-repo-path {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.7rem;
+    color: var(--faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.work-count {
+    flex: none;
+    min-width: 1.6em;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--card-2);
+    font-size: 0.7rem;
+    text-align: center;
+    color: var(--muted);
+}
+
+.work-main {
+    margin-left: 4px;
+    font-family: var(--font);
+    font-size: 0.68rem;
+    color: var(--accent);
+}
+
+.check.work-tick {
+    margin: 0;
+    padding: 6px 2px;
+}
+
+.work-tick-space {
+    flex: none;
+    width: 18px;
+}
+
+.work-switch {
+    flex: none;
+    font-size: 0.72rem;
+    color: var(--accent);
+}
+
+.work-own .pop-menu-row {
+    gap: 8px;
+}
+
+/* Over the maps: whether connected sessions come along, how many are on the map, and Clear. */
+.work-map-bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+}
+
+.work-map-bar .check {
+    margin: 0;
+}
+
+.branch-maps-foot {
+    flex: none;
+    margin: 0;
+}
+
+@media (max-width: 899px) {
+    .branch-board-body {
+        display: block;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+
+    .branch-list {
+        max-height: 55dvh;
+        border-right: 0;
+        border-bottom: 1px solid var(--hair);
+    }
+
+    .branch-maps {
+        padding: 10px calc(12px + var(--inset-r)) 16px calc(12px + var(--inset-l));
+    }
+
+    .branch-map-frames {
+        flex: none;
+        height: 75dvh;
+    }
+}
+
+@media (max-width: 699px) {
+    .branch-maps-head .button {
+        display: none;
+    }
 }
 
 .branch-picker .pop-menu-foot {
@@ -8546,22 +8810,6 @@ div.group-head {
 .branch-picker .pop-menu-row-sub {
     font-size: 11.5px;
     color: var(--faint);
-}
-
-.branch-head {
-    display: inline-flex;
-    padding: 2px 8px;
-    border-radius: calc(var(--r-tag) + 1px);
-    background: var(--card);
-    font-size: 12px;
-    align-items: center;
-    gap: 0.3rem;
-    min-width: 0;
-    overflow: hidden;
-    font-weight: 400;
-    color: var(--muted);
-    white-space: nowrap;
-    text-overflow: ellipsis;
 }
 
 .branch-track {

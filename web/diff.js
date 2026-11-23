@@ -8,8 +8,8 @@ import { jumpToEntry } from "./chat.js";
 import { fingerprint, firstLine, hunkRows, markRanges, parseDiff } from "./diff-parse.js";
 import { highlight, highlightLines, langOf } from "./highlight.js";
 import { personStorage } from "./person-storage.js";
-import { branchAvailable } from "./sheets/branch.js";
-import { actions, attempt, canSteer, notify, openSheet, store } from "./store.js";
+import { prefetchBranches, workAvailable } from "./branch-board.js";
+import { actions, attempt, canSteer, notify, openBranches, store } from "./store.js";
 import { html, Icon, Loader, openFile, shortPath } from "./ui.js";
 
 // ─── Preferences ────────────────────────────────────────────────────────────────────
@@ -1546,12 +1546,14 @@ export function DiffReview({ active = true, autoFocus = false, covering = false 
                               html`<span class="dr-path">${shortPath(changes.repo.root, server?.home)}</span>`
                           }${
                               changes.repo.branch &&
-                              (branchAvailable()
+                              (workAvailable()
                                   ? html`<button
                                         class="dr-branch"
                                         type="button"
-                                        title="Switch or make a branch"
-                                        onClick=${() => openSheet({ type: "branch" })}
+                                        title="Branches, sessions, and what they work in"
+                                        onPointerEnter=${prefetchBranches}
+                                        onPointerDown=${prefetchBranches}
+                                        onClick=${() => openBranches()}
                                     >
                                         <${Icon} name="fork" size=${12} />
                                         ${changes.repo.branch}

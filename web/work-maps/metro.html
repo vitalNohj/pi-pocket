@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+        <title>V2 · Metro map</title>
+        <script>
+            window.onerror = function (m) {
+                var b =
+                    document.getElementById("err") ||
+                    document.body.appendChild(
+                        Object.assign(document.createElement("div"), {
+                            id: "err",
+                            className: "err",
+                        }),
+                    );
+                b.textContent = "Something went wrong: " + m;
+            };
+        </script>
+        <link rel="stylesheet" href="common.css" />
+        <style>
+            #wrap {
+                overflow: auto;
+                -webkit-overflow-scrolling: touch;
+                padding-bottom: 140px;
+            }
+            svg text {
+                font-family: var(--font);
+            }
+            .st {
+                cursor: pointer;
+            }
+            .st text {
+                font-size: 10.5px;
+                fill: var(--text);
+            }
+            .st .sub {
+                font-size: 9px;
+                fill: var(--muted);
+            }
+            .ln {
+                cursor: pointer;
+            }
+            .dim {
+                opacity: 0.13;
+            }
+            .hdr {
+                font-size: 11px;
+                fill: var(--muted);
+                text-transform: uppercase;
+                letter-spacing: 0.08em;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="loading" id="loading">Loading the map…</div>
+        <script src="common.js"></script>
+        <script>
+            WT.guard(() => {
+                const { repos, sessions, esc, h, svg, home, ago } = WT;
+                document.getElementById("loading").remove();
+                const head = WT.toolbar({
+                    about: "Each session is a coloured line through every folder it touched. Main copies are the big stations; worktrees hang below them. A line that crosses repos is one session working in several. Tap a line or a station; drag sideways when there are many repos.",
+                    legend: `<span><span class="dot" style="background:#3fb950;width:14px;height:14px"></span>main copy</span><span><span class="ring" style="color:#c9d1d9"></span>worktree</span><span><span class="ring" style="color:#f85149;border-width:3px"></span>2+ sessions changed it</span><span><span class="sw" style="background:#58a6ff;height:4px"></span>session</span>`,
+                });
+                const wrap = h(`<div id="wrap"></div>`);
+                document.body.append(head.el, wrap);
+
+                let sel = null;
+                WT.setOnSelect((x) => {
+                    sel = (x && x.s) || null;
+                    render();
+                });
+
+                // Layout: one column per touched repo; main station at the top of each column, touched worktrees in a spur beneath.
+                const cols = repos
+                    .filter((r) => r.touched || r.main.sessions.length)
+                    .sort(
+                        (a, b) =>
+                            b.wts.reduce((n, w) => n + w.sessions.length, 0) -
+                            a.wts.reduce((n, w) => n + w.sessions.length, 0),
+                    );
+                // put the busiest repo in the middle
+                const mid = [];
+                cols.forEach((r, i) => (i % 2 ? mid.push(r) : mid.unshift(r)));
+                const COLW = 205,
+                    ROW = 34,
+                    TOP = 70;
+                const pos = new Map();
+                mid.forEach((r, ci) => {
+                    const x = 70 + ci * COLW;
+                    pos.set(r.main, { x, y: TOP, main: true });
+                    const spur = r.wts
+                        .filter((w) => !w.isMain && w.sessions.length)
+                        .sort((a, b) => b.sessions.length - a.sessions.length || b.w - a.w);
+                    spur.forEach((w, i) =>
+                        pos.set(w, { x: x + (i % 2 ? 28 : -28) * 0 + 0, y: TOP + 60 + i * ROW }),
+                    );
+                    r._spur = spur;
+                    r._x = x;
+                });
+                const maxSpur = Math.max(...mid.map((r) => r._spur.length));
+                const W = 70 + mid.length * COLW,
+                    Hh = TOP + 60 + maxSpur * ROW + 40;
+
+                function render() {
+                    wrap.innerHTML = "";
+                    const g = svg("svg", { width: W, height: Hh, viewBox: `0 0 ${W} ${Hh}` }, wrap);
+                    // repo headers + spur track
+                    for (const r of mid) {
+                        const t = svg(
+                            "text",
+                            { x: r._x, y: 22, "text-anchor": "middle", class: "hdr" },
+                            g,
+                        );
+                        t.textContent = r.label.length > 26 ? r.label.slice(0, 25) + "…" : r.label;
+                        if (r._spur.length)
+                            svg(
+                                "line",
+                                {
+                                    x1: r._x,
+                                    x2: r._x,
+                                    y1: TOP,
+                                    y2: TOP + 60 + (r._spur.length - 1) * ROW,
+                                    stroke: "#3fb95055",
+                                    "stroke-width": 8,
+                                    "stroke-linecap": "round",
+                                },
+                                g,
+                            );
+                    }
+                    // session lines
+                    const visible = sessions;
+                    const lineG = svg("g", {}, g);
+                    // offset parallel lines through a shared station so they do not overlap
+                    const slot = new Map();
+                    let si = 0;
+                    for (const s of visible) {
+                        const bulge = 16 + (si++ % 9) * 5;
+                        const pts = s.wts
+                            .map((L) => ({ L, p: pos.get(L.w) }))
+                            .filter((x) => x.p)
+                            .sort((a, b) => a.p.x - b.p.x || a.p.y - b.p.y);
+                        if (!pts.length) continue;
+                        const off = pts.map(({ L, p }) => {
+                            const k = L.w.id;
+                            const n = slot.get(k) || 0;
+                            slot.set(k, n + 1);
+                            return {
+                                ...p,
+                                dx: ((n % 6) - 2.5) * 2.4,
+                                dy: ((Math.floor(n / 6) % 3) - 1) * 2.4,
+                            };
+                        });
+                        let d = "";
+                        off.forEach((p, i) => {
+                            const x = p.x + p.dx,
+                                y = p.y + p.dy;
+                            if (!i) d = `M${x},${y}`;
+                            else {
+                                const a = off[i - 1],
+                                    ax = a.x + a.dx,
+                                    ay = a.y + a.dy;
+                                if (Math.abs(ax - x) < 1)
+                                    d += ` C${x - bulge},${ay} ${x - bulge},${y} ${x},${y}`;
+                                else {
+                                    const my = Math.min(ay, y) - 24 - Math.abs(ax - x) * 0.06;
+                                    d += ` C${ax},${my} ${x},${my} ${x},${y}`;
+                                }
+                            }
+                        });
+                        const wrote = s.w > 0;
+                        const p = svg(
+                            "path",
+                            {
+                                d,
+                                fill: "none",
+                                stroke: s.color,
+                                "stroke-width": sel === s ? 4.5 : 2.2,
+                                "stroke-linecap": "round",
+                                "stroke-linejoin": "round",
+                                opacity: sel ? (sel === s ? 1 : 0.08) : wrote ? 0.75 : 0.4,
+                                "stroke-dasharray": wrote ? null : "5 4",
+                                class: "ln",
+                            },
+                            lineG,
+                        );
+                        p.onclick = () => {
+                            sel = s;
+                            WT.showSession(s);
+                            render();
+                        };
+                        if (off.length === 1) {
+                            const q = svg(
+                                "circle",
+                                {
+                                    cx: off[0].x + off[0].dx + 10,
+                                    cy: off[0].y + off[0].dy,
+                                    r: 3,
+                                    fill: s.color,
+                                    opacity: sel && sel !== s ? 0.08 : 0.9,
+                                    class: "ln",
+                                },
+                                lineG,
+                            );
+                            q.onclick = p.onclick;
+                        }
+                    }
+                    if (sel) {
+                        const sp = [...lineG.children].find(
+                            (c) =>
+                                c.getAttribute("stroke") === sel.color &&
+                                c.getAttribute("stroke-width") === "4.5",
+                        );
+                        if (sp) lineG.appendChild(sp);
+                    }
+                    // stations
+                    for (const [w, p] of pos) {
+                        const live = w.sessions;
+                        const on = !sel || w.sessions.some((L) => L.s === sel);
+                        const st = svg("g", { class: "st" + (on ? "" : " dim") }, g);
+                        const clash = w.writers > 1;
+                        if (p.main) {
+                            svg(
+                                "rect",
+                                {
+                                    x: p.x - 22,
+                                    y: p.y - 13,
+                                    width: 44,
+                                    height: 26,
+                                    rx: 13,
+                                    fill: "#0d1117",
+                                    stroke: "#3fb950",
+                                    "stroke-width": 4,
+                                },
+                                st,
+                            );
+                            const t = svg(
+                                "text",
+                                {
+                                    x: p.x,
+                                    y: p.y + 4,
+                                    "text-anchor": "middle",
+                                    style: "font-weight:700;font-size:10px;fill:#7ee787",
+                                },
+                                st,
+                            );
+                            t.textContent = w.name.length > 8 ? w.name.slice(0, 7) + "…" : w.name;
+                            const s2 = svg(
+                                "text",
+                                { x: p.x, y: p.y + 30, "text-anchor": "middle", class: "sub" },
+                                st,
+                            );
+                            s2.textContent = `${live.length} sess · ${w.repo.commits.filter((c) => c >= 0).length} commits`;
+                        } else {
+                            svg(
+                                "circle",
+                                {
+                                    cx: p.x,
+                                    cy: p.y,
+                                    r: clash ? 9 : 7,
+                                    fill: "#0d1117",
+                                    stroke: clash ? "#f85149" : "#c9d1d9",
+                                    "stroke-width": clash ? 4 : 2.5,
+                                },
+                                st,
+                            );
+                            if (w.dirty)
+                                svg("circle", { cx: p.x, cy: p.y, r: 3, fill: "#d29922" }, st);
+                            const lab = w.short.length > 24 ? w.short.slice(0, 23) + "…" : w.short;
+                            const t = svg("text", { x: p.x + 13, y: p.y - 1 }, st);
+                            t.textContent = lab;
+                            const s2 = svg("text", { x: p.x + 13, y: p.y + 10, class: "sub" }, st);
+                            s2.textContent = `${w.locShort} · ${live.length} line${live.length === 1 ? "" : "s"}`;
+                        }
+                        svg(
+                            "rect",
+                            {
+                                x: p.x - 20,
+                                y: p.y - 16,
+                                width: p.main ? 44 : COLW - 20,
+                                height: 32,
+                                fill: "transparent",
+                            },
+                            st,
+                        ).onclick = () => {
+                            sel = null;
+                            WT.showWt(w);
+                            render();
+                        };
+                    }
+                }
+                render();
+                // start scrolled so the busiest repo (middle) is visible
+                requestAnimationFrame(() => {
+                    const busiest =
+                        mid[Math.floor(mid.length / 2) - (mid.length % 2 ? 0 : 1)] || mid[0];
+                    wrap.scrollLeft = Math.max(
+                        0,
+                        (mid.find((r) => r === cols[0]) || busiest)._x - wrap.clientWidth / 2,
+                    );
+                });
+            });
+        </script>
+    </body>
+</html>

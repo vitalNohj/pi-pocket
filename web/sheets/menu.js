@@ -4,6 +4,7 @@ import { browserAvailable, displayUrl, setBrowserOpen } from "../browser.js";
 import { chatUnread } from "../chat.js";
 import { schedulesAvailable, triggersOn, watchAvailable, watchPr } from "../commands.js";
 import { extensionMenuItems, safeMode } from "../extension-ui.js";
+import { workAvailable } from "../branch-board.js";
 import { hostMenu } from "../embedder.js";
 import { useChanges } from "../diff.js";
 import { filesAvailable, setFilesOpen } from "../files-panel.js";
@@ -24,6 +25,7 @@ import {
     managesServer,
     navigate,
     notify,
+    openBranches,
     openRunning,
     openSheet,
     runnersOffered,
@@ -35,7 +37,6 @@ import {
 import { defineItem, slotItems } from "../slots.js";
 import { isPinned, lookLabel, togglePin } from "../theme.js";
 import { currentTrust, trustAvailable } from "../trust.js";
-import { branchAvailable } from "./branch.js";
 import { runnersHint } from "./computers.js";
 import { KeepWarmCard, keepWarmAvailable, keepWarmHint } from "./keep-warm.js";
 import { canShare, sharedHint } from "./session-share.js";
@@ -188,9 +189,8 @@ const PLACES = [
     },
     {
         id: "core:branch",
-        label: "Branch",
-        place: () =>
-            branchAvailable() && { icon: "fork", run: () => openSheet({ type: "branch" }) },
+        label: "Work map",
+        place: () => workAvailable() && { icon: "fork", run: () => openBranches() },
     },
     {
         id: "core:pip",

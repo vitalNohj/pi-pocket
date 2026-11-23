@@ -1,0 +1,388 @@
+:root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel2: #1c2330;
+    --line: #30363d;
+    --line2: #21262d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --faint: #6e7681;
+    --accent: #58a6ff;
+    --main: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+* {
+    box-sizing: border-box;
+}
+html,
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 var(--font);
+    -webkit-text-size-adjust: 100%;
+}
+button {
+    font: inherit;
+    color: inherit;
+}
+code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: #0006;
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    padding: 0 4px;
+    word-break: break-all;
+}
+a {
+    color: var(--accent);
+}
+.loading {
+    padding: 40px 16px;
+    text-align: center;
+    color: var(--muted);
+}
+.err {
+    margin: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--bad);
+    border-radius: 8px;
+    background: #f8514922;
+    color: #ffb3ad;
+    font-size: 13px;
+    white-space: pre-wrap;
+}
+
+/* One slim row of controls; the how-to-read text and key fold away behind the info button. */
+.head {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line2);
+}
+.head .tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    min-height: 40px;
+}
+.head .ctl {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+.head .ctl::-webkit-scrollbar {
+    display: none;
+}
+.head .info {
+    flex: none;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: none;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.head .info.on,
+.head .info:hover {
+    color: var(--text);
+    border-color: var(--muted);
+}
+.head .about {
+    padding: 2px 12px 10px;
+    font-size: 12px;
+    color: var(--muted);
+}
+.head .about p {
+    margin: 6px 0 0;
+    max-width: 720px;
+}
+.head .about .legend {
+    padding: 8px 0 0;
+    border: 0;
+}
+.head .about .live:empty {
+    display: none;
+}
+.head .about .stats {
+    color: var(--faint);
+}
+.pick,
+.pick-one {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0 4px 0 8px;
+    min-height: 28px;
+    background: var(--panel2);
+}
+.pick-one {
+    border-color: transparent;
+    background: none;
+    padding-left: 2px;
+}
+.pick select {
+    font: inherit;
+    color: var(--text);
+    background: transparent;
+    border: 0;
+    padding: 4px 2px;
+    max-width: 180px;
+    cursor: pointer;
+}
+.pick select option {
+    background: var(--panel);
+}
+.seg {
+    flex: none;
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.seg button {
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font-size: 12px;
+    padding: 4px 9px;
+    min-height: 26px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.seg button + button {
+    border-left: 1px solid var(--line);
+}
+.seg button[aria-pressed="true"] {
+    background: var(--panel2);
+    color: var(--text);
+}
+.toggle {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+    cursor: pointer;
+}
+.ctl .sep {
+    flex: none;
+    width: 1px;
+    height: 18px;
+    background: var(--line);
+}
+
+.dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex: none;
+}
+.ring {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex: none;
+    border: 2px solid currentColor;
+}
+
+.legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    font-size: 11.5px;
+    color: var(--muted);
+}
+.legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+.sw {
+    display: inline-block;
+    width: 18px;
+    height: 3px;
+    border-radius: 2px;
+}
+
+.sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 64vh;
+    overflow: auto;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -10px 40px #000a;
+    transform: translateY(105%);
+    transition: transform 0.22s ease;
+    z-index: 50;
+    padding: 14px 16px calc(22px + env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+}
+.sheet.open {
+    transform: none;
+}
+.sheet .x {
+    position: sticky;
+    float: right;
+    top: 0;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--panel2);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+}
+@media (min-width: 900px) {
+    .sheet {
+        left: auto;
+        right: 16px;
+        bottom: 16px;
+        width: 430px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        max-height: 82vh;
+    }
+}
+.sheet .kicker {
+    font-size: 11.5px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.sheet h2 {
+    font-size: 16px;
+    margin: 4px 40px 8px 0;
+    word-break: break-word;
+}
+.sheet h3 {
+    font-size: 12px;
+    margin: 14px 0 6px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.kv {
+    font-size: 12.5px;
+    margin: 3px 0;
+    color: var(--muted);
+}
+.kv b {
+    color: var(--text);
+    font-weight: 600;
+}
+.flags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin: 8px 0;
+}
+.flag {
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+}
+.flag.good {
+    border-color: #2ea04366;
+    color: #7ee787;
+}
+.flag.warn {
+    border-color: #d2992266;
+    color: #e3b341;
+}
+.flag.bad {
+    border-color: #f8514966;
+    color: #ff9b93;
+}
+.flag.info {
+    border-color: #58a6ff66;
+    color: #a5d6ff;
+}
+ul.list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+ul.list li {
+    display: flex;
+    gap: 9px;
+    align-items: flex-start;
+    padding: 8px 6px;
+    border-top: 1px solid var(--line2);
+    cursor: pointer;
+    border-radius: 6px;
+}
+ul.list li:hover {
+    background: #ffffff08;
+}
+ul.list li .dot {
+    margin-top: 4px;
+}
+ul.list li .m {
+    flex: 1;
+    min-width: 0;
+}
+ul.list li .t {
+    font-size: 13px;
+    word-break: break-word;
+}
+ul.list li small {
+    display: block;
+    color: var(--muted);
+    font-size: 11.5px;
+    word-break: break-all;
+}
+.repo-badge {
+    font-size: 10.5px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #30363d;
+    color: #c9d1d9;
+    white-space: nowrap;
+}
+.spark {
+    width: 100%;
+    height: 34px;
+    display: block;
+    margin-top: 4px;
+}
+.collide {
+    margin-top: 6px;
+    padding: 7px 9px;
+    border-radius: 6px;
+    background: #f8514914;
+    border: 1px solid #f8514944;
+    font-size: 12px;
+    color: #ffb3ad;
+}

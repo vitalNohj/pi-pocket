@@ -18,7 +18,7 @@ import { togglePeeks } from "./peeks.js";
 import { modelRefreshAvailable, refreshModels } from "./model-refresh.js";
 import { openPip, pipAvailable } from "./pip.js";
 import { setArchived, toggleBoard } from "./sessions.js";
-import { branchAvailable, headLabel } from "./sheets/branch.js";
+import { headLabel, workAvailable } from "./branch-board.js";
 import { recentLabels } from "./sheets/folder.js";
 import { canShare, sharedHint } from "./sheets/session-share.js";
 import { galleryAvailable } from "./sheets/gallery.js";
@@ -36,6 +36,7 @@ import {
     managesServer,
     navigate,
     notify,
+    openBranches,
     openSheet,
     runnersOffered,
     scoped,
@@ -267,11 +268,14 @@ function actionItems() {
                 run: () => toggleFiles("changes"),
             },
         conversation &&
-            branchAvailable() && {
-                label: "Switch branch",
-                detail: `on ${headLabel(view.branch)}`,
+            workAvailable() && {
+                label: "Work map",
+                detail: view.branch
+                    ? `branches and sessions · on ${headLabel(view.branch)}`
+                    : "sessions and what they work in",
+                keywords: "branch switch worktree sessions",
                 icon: "fork",
-                run: () => openSheet({ type: "branch" }),
+                run: () => openBranches(),
             },
         conversation &&
             collab() && {

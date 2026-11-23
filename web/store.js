@@ -357,10 +357,13 @@ export const store = {
         /** The conversation whose subagents bar shows a row for each subagent (`subagents.js`); null for none. */
         subagentsOpen: null,
         /**
-         * What shows in the conversation's place: `"subagents"`, the subagents board (`subagents-board.js`), or
-         * `"running"`, the Running now board (`running-board.js`); false for neither.
+         * What shows in the conversation's place: `"subagents"`, the subagents board (`subagents-board.js`),
+         * `"running"`, the Running now board (`running-board.js`), or `"branches"`, the Branches board
+         * (`branch-board.js`); false for none.
          */
         board: false,
+        /** What the Branches board searches for as it opens: `{ text, n }`, `n` counting each open (`openBranches`). */
+        branchQuery: null,
         /** Every subagent in every session, while the board shows; null until the server's first list arrives. */
         boardAgents: null,
         /** An extension's page in the conversation's place, as the board shows (`extension-ui.js`): `{ module, id }`. */
@@ -3739,9 +3742,14 @@ export function peopleDocked(state = store.state) {
  * takes the Browser panel's place: both beside the conversation leave it too narrow.
  */
 function sheetChange(sheet, state) {
-    // Running now was a sheet; it is a board in the conversation's place now, wherever an old caller asks for it.
+    // Running now and the branches were sheets; they are boards in the conversation's place now, wherever an old caller
+    // asks for them.
     if (sheet?.type === "running") {
         return { sheet: null, board: "running", boardAgents: null, page: null };
+    }
+
+    if (sheet?.type === "branch") {
+        return { sheet: null, ...branchesChange(sheet.query, state) };
     }
 
     if (sheet?.type !== "chat" || !PEOPLE_DOCK.matches) {
@@ -3960,6 +3968,23 @@ export function closeSheet() {
 /** Show the Running now board in the conversation's place (`running-board.js`), over whatever sheet was open. */
 export function openRunning() {
     store.set({ board: "running", boardAgents: null, drawer: false, page: null, sheet: null });
+}
+
+function branchesChange(query, state) {
+    return {
+        board: "branches",
+        boardAgents: null,
+        page: null,
+        branchQuery: { text: query ?? "", n: (state.branchQuery?.n ?? 0) + 1 },
+    };
+}
+
+/**
+ * Show the Branches board in the conversation's place (`branch-board.js`), over whatever sheet was open: searching for
+ * `query` when given, also when it already shows.
+ */
+export function openBranches(query) {
+    store.set((state) => ({ ...branchesChange(query, state), drawer: false, sheet: null }));
 }
 
 // Per-person, per-conversation drafts survive reloads, including the automatic ones after a live edit.

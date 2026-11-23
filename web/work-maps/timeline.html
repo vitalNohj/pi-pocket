@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+        <title>V3 · Timeline</title>
+        <script>
+            window.onerror = function (m) {
+                var b =
+                    document.getElementById("err") ||
+                    document.body.appendChild(
+                        Object.assign(document.createElement("div"), {
+                            id: "err",
+                            className: "err",
+                        }),
+                    );
+                b.textContent = "Something went wrong: " + m;
+            };
+        </script>
+        <link rel="stylesheet" href="common.css" />
+        <style>
+            #wrap {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                padding-bottom: 140px;
+                position: relative;
+            }
+            svg text {
+                font-family: var(--font);
+            }
+            .lane-l {
+                font-size: 11px;
+                fill: var(--text);
+                font-weight: 600;
+                cursor: pointer;
+                paint-order: stroke;
+                stroke: #0d1117;
+                stroke-width: 4px;
+            }
+            .lane-m {
+                font-size: 9.5px;
+                fill: var(--muted);
+                paint-order: stroke;
+                stroke: #0d1117;
+                stroke-width: 4px;
+            }
+            .ax {
+                font-size: 10px;
+                fill: var(--faint);
+            }
+            .bar-s {
+                cursor: pointer;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="loading" id="loading">Loading the map…</div>
+        <script src="common.js"></script>
+        <script>
+            WT.guard(() => {
+                const { repos, esc, h, svg, home, ago, fmtDay, H } = WT;
+                document.getElementById("loading").remove();
+                const head = WT.toolbar({
+                    about: "Time runs left to right over the last 14 days, with now at the right. Main is the green line, with its commits as ticks. Each worktree splits off main where its branch was made. The bars on a lane are sessions working there. Tap one to line up everything it did at that moment.",
+                    legend: `<span><span class="sw" style="background:var(--main);height:5px"></span>main</span><span><span class="sw" style="background:#3fb950;width:3px;height:10px"></span>commit</span><span><span class="sw" style="background:#58a6ff;height:6px"></span>changing files</span><span><span class="sw" style="background:#58a6ff66;height:6px"></span>reading</span><span><span class="sw" style="background:#f85149;height:3px"></span>2+ sessions changed it</span><span>◀ split before the 14 days</span>`,
+                });
+                const wrap = h(`<div id="wrap"></div>`);
+                document.body.append(head.el, wrap);
+
+                const activity = (r) => r.wts.reduce((n, w) => n + w.sessions.length, 0);
+                const ordered = [...repos].sort((a, b) => activity(b) - activity(a));
+                let repo = ordered[0],
+                    zoom = 4,
+                    pxh = 4,
+                    sel = null;
+                WT.setOnSelect((x) => {
+                    const next = x ? x.s || sel : null;
+                    if (next !== sel) {
+                        sel = next;
+                        render(false);
+                    }
+                });
+                function chips() {
+                    head.ctl.replaceChildren(
+                        WT.repoPicker(ordered, repo, (r) => {
+                            repo = r;
+                            sel = null;
+                            WT.closeSheet();
+                            render(true);
+                        }),
+                        WT.segmented(
+                            [
+                                [0, "14 days"],
+                                [4, "Days"],
+                                [12, "Hours"],
+                            ],
+                            zoom,
+                            (v) => {
+                                zoom = v;
+                                pxh = v || Math.max(1, (wrap.clientWidth - 20) / H);
+                                render(true);
+                            },
+                        ),
+                    );
+                }
+
+                function render(scroll) {
+                    const keep = wrap.scrollLeft;
+                    wrap.innerHTML = "";
+                    const lanes = repo.wts
+                        .filter((w) => !w.isMain && w.sessions.length)
+                        .sort((a, b) => (a.fork ?? -1e9) - (b.fork ?? -1e9));
+                    const X = (hr) => 10 + Math.max(0, Math.min(H, hr)) * pxh,
+                        W = 20 + H * pxh;
+                    const laneH = (w) => 18 + Math.min(w.sessions.length, 6) * 7;
+                    // alternate lanes above and below main; the earliest split sits closest to main
+                    const above = [],
+                        below = [];
+                    lanes.forEach((w, i) => (i % 2 ? below : above).push(w));
+                    const mainH = laneH(repo.main) + 10;
+                    const aboveH = above.reduce((n, w) => n + laneH(w), 0),
+                        TOP = 28;
+                    const mainY = TOP + aboveH + mainH / 2;
+                    const Hh = mainY + mainH / 2 + below.reduce((n, w) => n + laneH(w), 0) + 24;
+                    const g = svg("svg", { width: W, height: Hh, viewBox: `0 0 ${W} ${Hh}` }, wrap);
+                    // day grid
+                    for (let d = 0; d <= H; d += 24) {
+                        const x = X(d);
+                        svg("line", { x1: x, x2: x, y1: 16, y2: Hh, stroke: "#ffffff0d" }, g);
+                        if (d < H - 6) {
+                            const t = svg("text", { x: x + 3, y: 12, class: "ax" }, g);
+                            t.textContent = fmtDay(d);
+                        }
+                    }
+                    svg(
+                        "line",
+                        {
+                            x1: X(H),
+                            x2: X(H),
+                            y1: 16,
+                            y2: Hh,
+                            stroke: "#58a6ff55",
+                            "stroke-dasharray": "3 3",
+                        },
+                        g,
+                    );
+                    // lane positions
+                    const Y = new Map();
+                    Y.set(repo.main, mainY);
+                    let y = mainY - mainH / 2;
+                    for (const w of above) {
+                        y -= laneH(w);
+                        Y.set(w, y + laneH(w) / 2);
+                    }
+                    y = mainY + mainH / 2;
+                    for (const w of below) {
+                        Y.set(w, y + laneH(w) / 2);
+                        y += laneH(w);
+                    }
+                    const thread = [];
+                    const labels = svg("g", {});
+                    // branches
+                    for (const w of lanes) {
+                        const ly = Y.get(w),
+                            fx = X(w.fork ?? 0),
+                            pre = w.fork == null || w.fork < 0,
+                            clash = w.writers > 1;
+                        const col = clash ? "#f85149" : w.repo.color;
+                        if (pre)
+                            svg(
+                                "path",
+                                {
+                                    d: `M${X(0)},${ly} L${X(H)},${ly}`,
+                                    stroke: col,
+                                    "stroke-width": 2,
+                                    opacity: 0.55,
+                                    fill: "none",
+                                },
+                                g,
+                            );
+                        else
+                            svg(
+                                "path",
+                                {
+                                    d: `M${fx},${mainY} C${fx + 14},${mainY} ${fx + 6},${ly} ${fx + 22},${ly} L${X(H)},${ly}`,
+                                    stroke: col,
+                                    "stroke-width": 2,
+                                    opacity: 0.75,
+                                    fill: "none",
+                                },
+                                g,
+                            );
+                        for (const c of w.commits)
+                            if (c >= 0)
+                                svg("circle", { cx: X(c), cy: ly, r: 2.2, fill: "#3fb950" }, g);
+                        const lx = 6;
+                        const t = svg(
+                            "text",
+                            { x: lx, y: ly - laneH(w) / 2 + 10, class: "lane-l" },
+                            labels,
+                        );
+                        t.textContent = (pre ? "◀ " : "") + w.short;
+                        t.onclick = () => WT.showWt(w);
+                        const m = svg(
+                            "text",
+                            {
+                                x: lx + Math.min(210, (w.short.length + 3) * 7.3),
+                                y: ly - laneH(w) / 2 + 10,
+                                class: "lane-m",
+                            },
+                            labels,
+                        );
+                        m.textContent = `${w.locShort} · +${w.ahead}${w.dirty ? " · " + w.dirty + " uncommitted" : ""}`;
+                    }
+                    // main line
+                    svg(
+                        "line",
+                        {
+                            x1: X(0),
+                            x2: X(H),
+                            y1: mainY,
+                            y2: mainY,
+                            stroke: "#3fb950",
+                            "stroke-width": 5,
+                            "stroke-linecap": "round",
+                        },
+                        g,
+                    );
+                    for (const c of repo.commits)
+                        if (c >= 0)
+                            svg(
+                                "line",
+                                {
+                                    x1: X(c),
+                                    x2: X(c),
+                                    y1: mainY - 7,
+                                    y2: mainY + 7,
+                                    stroke: "#7ee787",
+                                    "stroke-width": 1.6,
+                                },
+                                g,
+                            );
+                    const ml = svg(
+                        "text",
+                        { x: 6, y: mainY - mainH / 2 + 10, class: "lane-l", style: "fill:#7ee787" },
+                        labels,
+                    );
+                    ml.textContent = `main · ${repo.main.name}`;
+                    ml.onclick = () => WT.showWt(repo.main);
+                    // session bars
+                    for (const w of [repo.main, ...lanes]) {
+                        const ly = Y.get(w),
+                            lh = laneH(w),
+                            n = Math.min(w.sessions.length, 6);
+                        w.sessions.slice(0, 6).forEach((L, k) => {
+                            const s = L.s,
+                                by = ly - lh / 2 + 14 + k * 7 + (w.isMain ? 2 : 0);
+                            const grp = svg(
+                                "g",
+                                { class: "bar-s", opacity: sel && sel !== s ? 0.12 : 1 },
+                                g,
+                            );
+                            for (const [hr, r, wr] of L.h) {
+                                const x = X(hr);
+                                svg(
+                                    "rect",
+                                    {
+                                        x,
+                                        y: by,
+                                        width: Math.max(2, pxh),
+                                        height: 5,
+                                        rx: 1,
+                                        fill: s.color,
+                                        opacity: wr ? 1 : 0.35,
+                                    },
+                                    grp,
+                                );
+                                if (sel === s) thread.push({ x: x + pxh / 2, y: by + 2.5, hr });
+                            }
+                            grp.onclick = () => {
+                                sel = s;
+                                WT.showSession(s);
+                                render(false);
+                            };
+                        });
+                        if (w.sessions.length > 6) {
+                            const t = svg(
+                                "text",
+                                {
+                                    x: X(H) - 4,
+                                    y: ly + lh / 2 - 2,
+                                    "text-anchor": "end",
+                                    class: "lane-m",
+                                },
+                                g,
+                            );
+                            t.textContent = `+${w.sessions.length - 6} more sessions`;
+                        }
+                    }
+                    // line up a selected session's simultaneous work across lanes
+                    if (sel) {
+                        const byHr = {};
+                        for (const p of thread) (byHr[p.hr] = byHr[p.hr] || []).push(p);
+                        for (const ps of Object.values(byHr))
+                            if (ps.length > 1) {
+                                ps.sort((a, b) => a.y - b.y);
+                                svg(
+                                    "line",
+                                    {
+                                        x1: ps[0].x,
+                                        x2: ps[0].x,
+                                        y1: ps[0].y,
+                                        y2: ps[ps.length - 1].y,
+                                        stroke: sel.color,
+                                        "stroke-width": 1.2,
+                                        "stroke-dasharray": "2 2",
+                                        opacity: 0.9,
+                                    },
+                                    g,
+                                );
+                            }
+                    }
+                    if (!lanes.length && !repo.main.sessions.length) {
+                        const t = svg(
+                            "text",
+                            { x: 20, y: mainY - 20, class: "ax", style: "font-size:12px" },
+                            g,
+                        );
+                        t.textContent = "No session touched this repo in the last 14 days.";
+                    }
+                    g.appendChild(labels);
+                    const stick = () =>
+                        labels.setAttribute("transform", `translate(${wrap.scrollLeft},0)`);
+                    wrap.onscroll = stick;
+                    if (scroll) wrap.scrollLeft = wrap.scrollWidth;
+                    else wrap.scrollLeft = keep;
+                    stick();
+                }
+                chips();
+                render(true);
+            });
+        </script>
+    </body>
+</html>

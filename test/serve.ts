@@ -18,12 +18,15 @@ import {
     lastText,
     newSession,
     openApp,
+    owner,
     root,
     say,
     scriptedModel,
 } from "./helpers.ts";
 import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { APP_ROOT } from "../src/server/config.ts";
@@ -98,6 +101,53 @@ if (process.env.PI_POCKET_TEST_PEOPLE) {
     app.config.addRunner("Guest's desktop", guest.user.id, newIdentity().publicKey);
     console.log(`  viewer, not chosen: ${base}/login?token=${encodeURIComponent(viewer.token)}`);
     console.log(`  invited to one session: ${base}/login?token=${encodeURIComponent(one.token)}`);
+}
+
+// PI_POCKET_TEST_WORK=1: a repository with two worktrees, and sessions that worked in them, to look at the Work map.
+if (process.env.PI_POCKET_TEST_WORK) {
+    const repo = join(root, "shop");
+    const run = (cwd: string, ...args: string[]) =>
+        execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=T", ...args], {
+            cwd,
+        });
+
+    mkdirSync(repo, { recursive: true });
+    run(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "cart.ts"), "export {};\n");
+    run(repo, "add", "-A");
+    run(repo, "commit", "-qm", "Start the shop");
+    run(repo, "worktree", "add", "-q", join(root, "shop-checkout"), "-b", "feat/checkout");
+    run(repo, "worktree", "add", "-q", join(root, "shop-search"), "-b", "feat/search");
+    writeFileSync(join(root, "shop-checkout", "pay.ts"), "export {};\n");
+    run(join(root, "shop-checkout"), "add", "-A");
+    run(join(root, "shop-checkout"), "commit", "-qm", "Pay at checkout");
+    writeFileSync(join(root, "shop-search", "draft.md"), "wip\n");
+
+    for (const [title, folder, steps] of [
+        ["Checkout flow", "shop-checkout", ["edit pay.ts", "read cart.ts in main"]],
+        ["Search box", "shop-search", ["edit draft.md", "read pay.ts in checkout"]],
+        ["Shop review", "shop", ["read cart.ts"]],
+    ] as const) {
+        const id = await newSession(app, join(root, folder));
+
+        await app.commands.updateSession(id, owner(app), { title });
+
+        for (const step of steps) {
+            const target = step.endsWith("in main")
+                ? join(repo, "cart.ts")
+                : step.endsWith("in checkout")
+                  ? join(root, "shop-checkout", "pay.ts")
+                  : join(root, folder, step.split(" ")[1]!);
+
+            await say(
+                app,
+                id,
+                step.startsWith("edit")
+                    ? `call: write ${JSON.stringify({ path: target, content: "changed\n" })}`
+                    : `call: read ${JSON.stringify({ path: target })}`,
+            );
+        }
+    }
 }
 
 console.log(`A copy of Pi Pocket, with its own data in ${root}`);

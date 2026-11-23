@@ -207,6 +207,7 @@ import { Spend } from "./spend.ts";
 import { Transcripts } from "./transcripts.ts";
 import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
+import { WorkMaps } from "./work-map.ts";
 import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.ts";
 import { AccessPolicy, forgetPerson, inFolder, noteShares, THIS_SERVER } from "./access.ts";
 import { realFolder } from "./runner-link/folders.ts";
@@ -665,6 +666,8 @@ export class PocketApp {
     readonly workspace = new Workspace(this);
     /** The conversation's stored history, as people read it. */
     readonly transcripts = new Transcripts(this);
+    /** Which sessions worked in which git worktrees on this server, for the Work map board (`work-map.ts`). */
+    readonly workMaps = new WorkMaps(this);
     /** Pi's sessions from the terminal, to list, preview, and continue. */
     readonly piSessions = new PiSessions(this);
     /** PiP, the owner's assistant: its conversation, what its tools do, and the follows that report to it. */

@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+        <title>V1 · Trunk</title>
+        <script>
+            window.onerror = function (m) {
+                var b =
+                    document.getElementById("err") ||
+                    document.body.appendChild(
+                        Object.assign(document.createElement("div"), {
+                            id: "err",
+                            className: "err",
+                        }),
+                    );
+                b.textContent = "Something went wrong: " + m;
+            };
+        </script>
+        <link rel="stylesheet" href="common.css" />
+        <style>
+            #tree {
+                position: relative;
+                padding: 0 0 140px;
+                overflow: hidden;
+            }
+            .crown {
+                margin: 14px auto 0;
+                max-width: 560px;
+                width: calc(100% - 24px);
+                border: 1.5px solid var(--main);
+                border-radius: 12px;
+                background: linear-gradient(#3fb95018, #3fb95008);
+                padding: 10px 12px;
+                position: relative;
+                z-index: 1;
+            }
+            .crown .k {
+                font-size: 11px;
+                color: #7ee787;
+                text-transform: uppercase;
+                letter-spacing: 0.07em;
+            }
+            .crown .n {
+                font-size: 16px;
+                font-weight: 700;
+                margin: 2px 0;
+                cursor: pointer;
+            }
+            .crown .f {
+                font-size: 12px;
+                color: var(--muted);
+            }
+            .avs {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 4px;
+                margin-top: 8px;
+            }
+            .av {
+                width: 24px;
+                height: 24px;
+                border-radius: 50%;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 8.5px;
+                font-weight: 800;
+                cursor: pointer;
+                border: 2px solid;
+                letter-spacing: -0.02em;
+            }
+            .av.dim {
+                opacity: 0.18;
+            }
+            .av.hi {
+                box-shadow: 0 0 0 3px #fff;
+            }
+            svg text {
+                font-family: var(--font);
+            }
+            .row {
+                cursor: pointer;
+            }
+            .row .lbl {
+                font-size: 12.5px;
+                fill: var(--text);
+                font-weight: 600;
+            }
+            .row .meta {
+                font-size: 10.5px;
+                fill: var(--muted);
+            }
+            .row.dim {
+                opacity: 0.18;
+            }
+            .date {
+                font-size: 9.5px;
+                fill: var(--faint);
+            }
+            .empty {
+                color: var(--muted);
+                text-align: center;
+                padding: 24px 14px;
+                font-size: 13px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="loading" id="loading">Loading the map…</div>
+        <script src="common.js"></script>
+        <script>
+            WT.guard(() => {
+                const { repos, esc, h, svg, home, ago, fmtDay, sById } = WT;
+                document.getElementById("loading").remove();
+                const head = WT.toolbar({
+                    about: "The repo's main copy is the trunk. Its worktrees branch off left and right, oldest at the top. The circles on a branch are the sessions that worked there. Tap a circle to trace every branch that session touched.",
+                    legend: `<span><span class="sw" style="background:var(--main);height:5px"></span>main</span><span><span class="dot" style="background:#58a6ff"></span>changed files</span><span><span class="ring" style="color:#58a6ff"></span>only read</span><span><span class="sw" style="background:#f85149"></span>2+ sessions changed it</span><span><span class="dot" style="background:#d29922"></span>uncommitted</span><span><span class="sw" style="background:#6e7681"></span>no session in 14 days</span>`,
+                });
+                const tree = h(`<div id="tree"></div>`);
+                document.body.append(head.el, tree);
+
+                const activity = (r) => r.wts.reduce((n, w) => n + w.sessions.length, 0);
+                const ordered = [...repos].sort((a, b) => activity(b) - activity(a));
+                let repo = ordered[0],
+                    showIdle = false,
+                    sel = null;
+                WT.setOnSelect((x) => {
+                    const next = x ? x.s || sel : null;
+                    if (next !== sel) {
+                        sel = next;
+                        render();
+                    }
+                });
+
+                function chips() {
+                    head.ctl.replaceChildren(
+                        WT.repoPicker(ordered, repo, (r) => {
+                            repo = r;
+                            sel = null;
+                            WT.closeSheet();
+                            chips();
+                            render();
+                        }),
+                    );
+                    const idle = repo.wts.filter((w) => !w.isMain && !w.sessions.length).length;
+                    if (idle) {
+                        const o = h(
+                            `<label class="toggle"><input type="checkbox"${showIdle ? " checked" : ""}> Idle worktrees (${idle})</label>`,
+                        );
+                        o.querySelector("input").onchange = (e) => {
+                            showIdle = e.target.checked;
+                            render();
+                        };
+                        head.ctl.appendChild(o);
+                    }
+                }
+
+                function render() {
+                    const W = Math.max(340, tree.clientWidth || document.body.clientWidth),
+                        cx = W / 2;
+                    const main = repo.main;
+                    const branches = repo.wts
+                        .filter((w) => !w.isMain && (showIdle || w.sessions.length))
+                        .sort(
+                            (a, b) =>
+                                (a.fork ?? -1e9) - (b.fork ?? -1e9) || a.name.localeCompare(b.name),
+                        );
+                    const inRepo = new Set();
+                    for (const w of repo.wts) for (const L of w.sessions) inRepo.add(L.s);
+                    if (sel && !inRepo.has(sel)) sel = null;
+                    tree.innerHTML = "";
+
+                    // crown: the main copy
+                    const ms = main ? main.sessions : [];
+                    const crown =
+                        h(`<div class="crown"><div class="k">Main copy · trunk</div><div class="n">${esc(main ? main.name : "main")}</div>
+    <div class="f"><code>${esc(main ? home(main.id) : "")}</code> · ${repo.commits.filter((c) => c >= 0).length} commits landed in 14 days · ${ms.length} session${ms.length === 1 ? "" : "s"} worked directly here</div>
+    <div class="avs"></div></div>`);
+                    crown.querySelector(".n").onclick = () => main && WT.showWt(main);
+                    const avs = crown.querySelector(".avs");
+                    for (const L of ms) {
+                        const s = L.s,
+                            a = h(
+                                `<span class="av${sel && sel !== s ? " dim" : ""}${sel === s ? " hi" : ""}" title="${esc(s.title)}" style="border-color:${s.color};${L.w_ ? `background:${s.color};color:#0d1117` : `color:${s.color}`}">${esc(s.ini)}</span>`,
+                            );
+                        a.onclick = () => {
+                            sel = s;
+                            WT.showSession(s);
+                            render();
+                        };
+                        avs.appendChild(a);
+                    }
+                    tree.appendChild(crown);
+
+                    const ROW = 56,
+                        TOP = 26,
+                        Hh = TOP + branches.length * ROW + 40;
+                    const g = svg(
+                        "svg",
+                        {
+                            width: W,
+                            height: Hh,
+                            viewBox: `0 0 ${W} ${Hh}`,
+                            style: "display:block;margin-top:-2px",
+                        },
+                        tree,
+                    );
+                    svg(
+                        "line",
+                        {
+                            x1: cx,
+                            x2: cx,
+                            y1: 0,
+                            y2: Hh - 24,
+                            stroke: "#3fb950",
+                            "stroke-width": 6,
+                            "stroke-linecap": "round",
+                        },
+                        g,
+                    );
+                    svg("circle", { cx, cy: Hh - 24, r: 7, fill: "#3fb950" }, g);
+                    const now = svg("text", { x: cx + 12, y: Hh - 20, class: "date" }, g);
+                    now.textContent = "now";
+                    if (!branches.length) {
+                        const t = svg(
+                            "text",
+                            {
+                                x: cx,
+                                y: 40,
+                                "text-anchor": "middle",
+                                class: "date",
+                                style: "font-size:12px",
+                            },
+                            g,
+                        );
+                        t.textContent = showIdle
+                            ? "This repo has no worktrees besides main."
+                            : "No worktree here was touched in 14 days. Turn on idle worktrees to see them.";
+                    }
+                    const thread = [];
+                    branches.forEach((w, i) => {
+                        const side = i % 2 ? 1 : -1,
+                            y = TOP + i * ROW + 22,
+                            jy = y - 14,
+                            inner = cx + side * 50,
+                            outer = side > 0 ? W - 6 : 6;
+                        const touchedBySel = sel && w.sessions.some((L) => L.s === sel);
+                        const row = svg(
+                            "g",
+                            { class: "row" + (sel && !touchedBySel ? " dim" : "") },
+                            g,
+                        );
+                        const idle = !w.sessions.length,
+                            clash = w.writers > 1;
+                        const stroke = clash ? "#f85149" : idle ? "#6e7681" : w.repo.color;
+                        svg(
+                            "path",
+                            {
+                                d: `M${cx},${jy} C${cx + side * 22},${jy} ${cx + side * 26},${y} ${cx + side * 46},${y} L${outer},${y}`,
+                                fill: "none",
+                                stroke,
+                                "stroke-width": idle ? 1.5 : 3,
+                                "stroke-dasharray": idle ? "4 4" : null,
+                                opacity: idle ? 0.7 : 0.9,
+                            },
+                            row,
+                        );
+                        svg("circle", { cx, cy: jy, r: 4, fill: stroke }, row);
+                        const d = svg(
+                            "text",
+                            {
+                                x: cx - side * 8,
+                                y: jy + 3,
+                                "text-anchor": side > 0 ? "end" : "start",
+                                class: "date",
+                            },
+                            row,
+                        );
+                        d.textContent = w.fork == null ? "?" : fmtDay(w.fork);
+                        const avail = Math.abs(outer - inner) - 4,
+                            maxCh = Math.floor(avail / 7.6);
+                        const cut = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+                        const label = cut(w.short, maxCh);
+                        const t = svg(
+                            "text",
+                            {
+                                x: inner,
+                                y: y - 9,
+                                "text-anchor": side > 0 ? "start" : "end",
+                                class: "lbl",
+                            },
+                            row,
+                        );
+                        t.textContent = label;
+                        const meta = svg(
+                            "text",
+                            {
+                                x: inner,
+                                y: y + 24,
+                                "text-anchor": side > 0 ? "start" : "end",
+                                class: "meta",
+                            },
+                            row,
+                        );
+                        meta.textContent = cut(
+                            `+${w.ahead} −${w.behind}${w.dirty ? " · " + w.dirty + " uncommitted" : ""} · ${w.locShort}`,
+                            Math.floor(avail / 5.9),
+                        );
+                        if (w.dirty)
+                            svg(
+                                "circle",
+                                { cx: outer - side * 4, cy: y, r: 4.5, fill: "#d29922" },
+                                row,
+                            );
+                        const hit = svg(
+                            "rect",
+                            {
+                                x: Math.min(inner, outer) - 4,
+                                y: y - 24,
+                                width: Math.abs(outer - inner) + 8,
+                                height: ROW - 4,
+                                fill: "transparent",
+                            },
+                            row,
+                        );
+                        hit.onclick = () => {
+                            WT.showWt(w);
+                        };
+                        t.onclick = hit.onclick;
+                        const maxAv = Math.max(1, Math.floor((avail - 20) / 18));
+                        w.sessions.slice(0, maxAv).forEach((L, k) => {
+                            const s = L.s,
+                                ax = inner + side * (9 + k * 18);
+                            const ag = svg(
+                                "g",
+                                { style: "cursor:pointer", opacity: sel && sel !== s ? 0.25 : 1 },
+                                row,
+                            );
+                            svg(
+                                "circle",
+                                {
+                                    cx: ax,
+                                    cy: y,
+                                    r: 8.5,
+                                    fill: L.w_ ? s.color : "#0d1117",
+                                    stroke: s.color,
+                                    "stroke-width": sel === s ? 3 : 1.8,
+                                },
+                                ag,
+                            );
+                            const it = svg(
+                                "text",
+                                {
+                                    x: ax,
+                                    y: y + 3,
+                                    "text-anchor": "middle",
+                                    style: `font-size:7.5px;font-weight:800;fill:${L.w_ ? "#0d1117" : s.color}`,
+                                },
+                                ag,
+                            );
+                            it.textContent = s.ini;
+                            ag.onclick = (e) => {
+                                e.stopPropagation();
+                                sel = s;
+                                WT.showSession(s);
+                                render();
+                            };
+                            if (sel === s) thread.push({ x: ax, y });
+                        });
+                        if (w.sessions.length > maxAv) {
+                            const m = svg(
+                                "text",
+                                {
+                                    x: inner + side * (9 + maxAv * 18),
+                                    y: y + 3,
+                                    "text-anchor": "middle",
+                                    class: "meta",
+                                },
+                                row,
+                            );
+                            m.textContent = "+" + (w.sessions.length - maxAv);
+                        }
+                    });
+                    if (sel && thread.length > 1) {
+                        let d = `M${thread[0].x},${thread[0].y}`;
+                        for (let i = 1; i < thread.length; i++) {
+                            const a = thread[i - 1],
+                                b = thread[i];
+                            d += ` C${cx},${a.y} ${cx},${b.y} ${b.x},${b.y}`;
+                        }
+                        const p = svg("path", {
+                            d,
+                            fill: "none",
+                            stroke: sel.color,
+                            "stroke-width": 2.5,
+                            "stroke-dasharray": "2 5",
+                            "stroke-linecap": "round",
+                            opacity: 0.95,
+                            style: "pointer-events:none",
+                        });
+                        g.appendChild(p);
+                    }
+                }
+                chips();
+                render();
+                WT.onResize(render);
+            });
+        </script>
+    </body>
+</html>

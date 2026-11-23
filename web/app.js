@@ -49,7 +49,7 @@ import { takeShare } from "./share.js";
 import { QuoteReplyButton } from "./quote-reply.js";
 import { Sheets } from "./sheets.js";
 import { defineItem, slotItems } from "./slots.js";
-import { branchAvailable, headLabel } from "./sheets/branch.js";
+import { BranchBoard, headLabel, prefetchBranches, workAvailable } from "./branch-board.js";
 import { SignIn } from "./signin.js";
 import { openSubagents } from "./subagents.js";
 import { RunningBoard } from "./running-board.js";
@@ -64,6 +64,7 @@ import {
     holdNotice,
     navigate,
     notify,
+    openBranches,
     openId,
     openSheet,
     panelsBeside,
@@ -315,12 +316,14 @@ function Topbar() {
                           }
                           ${
                               branch &&
-                              (branchAvailable()
+                              (workAvailable()
                                   ? html`<button
                                         class="title-branch"
-                                        aria-label=${view.branch?.detached ? `No branch, at ${branch}: switch to one` : `Branch ${branch}: switch or make a branch`}
-                                        title=${view.branch?.detached ? "No branch: switch to one" : "Switch or make a branch"}
-                                        onClick=${() => openSheet({ type: "branch" })}
+                                        aria-label=${view.branch?.detached ? `No branch, at ${branch}: the work map` : `Branch ${branch}: the work map`}
+                                        title="Branches, sessions, and what they work in"
+                                        onPointerEnter=${prefetchBranches}
+                                        onPointerDown=${prefetchBranches}
+                                        onClick=${() => openBranches()}
                                     >
                                         <${Icon} name="fork" size=${10} /><span class="title-branch-name">${branch}</span>
                                     </button>`
@@ -586,12 +589,14 @@ function App() {
             ${
                 board === "running"
                     ? html`<${RunningBoard} />`
-                    : board
-                      ? html`<${SubagentsBoard} />`
-                      : page
-                        ? html`<${ExtensionPage} key=${`${state.page.module}:${state.page.id}`} />`
-                        : inConversation
-                          ? html`${prefs().sessionTabs && html`<${SessionTabs} />`}<${Topbar} />
+                    : board === "branches"
+                      ? html`<${BranchBoard} key=${state.conversationId} />`
+                      : board
+                        ? html`<${SubagentsBoard} />`
+                        : page
+                          ? html`<${ExtensionPage} key=${`${state.page.module}:${state.page.id}`} />`
+                          : inConversation
+                            ? html`${prefs().sessionTabs && html`<${SessionTabs} />`}<${Topbar} />
                     ${
                         peeking &&
                         tiles.length > 0 &&
@@ -607,7 +612,7 @@ function App() {
                             ? html`<${PipBoardBox}><${StatusLine} /><//>`
                             : html`<${Composer} key=${state.conversationId} />`)
                     }`
-                          : html`<div class="home-list" data-part="home-list">
+                            : html`<div class="home-list" data-part="home-list">
                           <${RailNav} />
                           <${SessionList} />
                       </div>

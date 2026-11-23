@@ -1080,6 +1080,13 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, await app.artifactOverview(user));
         }
 
+        // Which sessions worked in which worktrees: every session's history and every repository here, so the owner's.
+        if (first === "work-map" && second === undefined && method === "GET") {
+            requireOwner(user);
+
+            return json(response, 200, await app.workMaps.map());
+        }
+
         // Pi's sessions from the terminal. On this server they are for whoever is in charge.
         if (first === "pi-sessions" && second === undefined && method === "GET") {
             return json(

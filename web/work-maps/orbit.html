@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+        <title>V5 · Orbit</title>
+        <script>
+            window.onerror = function (m) {
+                var b =
+                    document.getElementById("err") ||
+                    document.body.appendChild(
+                        Object.assign(document.createElement("div"), {
+                            id: "err",
+                            className: "err",
+                        }),
+                    );
+                b.textContent = "Something went wrong: " + m;
+            };
+        </script>
+        <link rel="stylesheet" href="common.css" />
+        <style>
+            #stage {
+                display: flex;
+                justify-content: center;
+                padding: 4px 0 150px;
+            }
+            svg text {
+                font-family: var(--font);
+            }
+            .wt text {
+                font-size: 9.5px;
+                fill: var(--text);
+            }
+            .ss text {
+                font-size: 9px;
+                fill: var(--muted);
+            }
+            .wt,
+            .ss {
+                cursor: pointer;
+            }
+            .dim {
+                opacity: 0.1;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="loading" id="loading">Loading the map…</div>
+        <script src="common.js"></script>
+        <script>
+            WT.guard(() => {
+                const { repos, sessions, esc, h, svg, home, ago, fmtDay, H } = WT;
+                document.getElementById("loading").remove();
+                const head = WT.toolbar({
+                    about: "The main copy is in the centre. Worktrees sit on the inner ring, sessions on the outer ring. Each thread joins a session to a folder it touched: thick when it changed files, faint when it only read. Tap anything to isolate it.",
+                    legend: `${WT.legendSessions()}<span><span class="sw" style="background:#c9d1d9;height:3px"></span>changed files</span><span><span class="sw" style="background:#c9d1d955;height:1px"></span>read only</span><span><span class="ring" style="color:#f85149"></span>2+ writers</span>`,
+                });
+                const cap = head.live;
+                const stage = h(`<div id="stage"></div>`);
+                document.body.append(head.el, stage);
+
+                const activity = (r) => r.wts.reduce((n, w) => n + w.sessions.length, 0);
+                const ordered = [...repos]
+                    .filter((r) => activity(r))
+                    .sort((a, b) => activity(b) - activity(a));
+                let repo = ordered[0],
+                    focus = null; // focus: {s} or {wt}
+                WT.setOnSelect((x) => {
+                    focus = x;
+                    render();
+                });
+                function chips() {
+                    head.ctl.replaceChildren(
+                        WT.repoPicker(ordered, repo, (r) => {
+                            repo = r;
+                            focus = null;
+                            WT.closeSheet();
+                            render();
+                        }),
+                    );
+                }
+                const KORD = {
+                    firstmate: 0,
+                    supervision: 1,
+                    worker: 2,
+                    chat: 3,
+                    fork: 4,
+                    linked: 5,
+                };
+                function render() {
+                    stage.innerHTML = "";
+                    const S = Math.min(760, Math.max(330, (document.body.clientWidth || 360) - 8)),
+                        c = S / 2;
+                    const R1 = S * 0.26,
+                        R2 = S * 0.43;
+                    const inner = repo.wts
+                        .filter((w) => !w.isMain && w.sessions.length)
+                        .sort((a, b) => (a.fork ?? -1e9) - (b.fork ?? -1e9));
+                    const outerSet = new Set();
+                    for (const w of repo.wts) for (const L of w.sessions) outerSet.add(L.s);
+                    const outer = [...outerSet].sort(
+                        (a, b) => KORD[a.kind] - KORD[b.kind] || a.created - b.created,
+                    );
+                    cap.textContent = `${repo.label}: ${inner.length} worktree${inner.length === 1 ? "" : "s"} touched by ${outer.length} session${outer.length === 1 ? "" : "s"} in 14 days. ${repo.main.sessions.length} worked directly on main (${repo.main.name}), which got ${repo.commits.filter((x) => x >= 0).length} commits.`;
+                    const g = svg("svg", { width: S, height: S, viewBox: `0 0 ${S} ${S}` }, stage);
+                    const at = (i, n, r, gap = 0) => {
+                        const a = -Math.PI / 2 + (n <= 1 ? 0 : ((i + 0.5) / n) * Math.PI * 2) + gap;
+                        return { x: c + r * Math.cos(a), y: c + r * Math.sin(a), a };
+                    };
+                    // rings
+                    svg(
+                        "circle",
+                        {
+                            cx: c,
+                            cy: c,
+                            r: R1,
+                            fill: "none",
+                            stroke: "#ffffff12",
+                            "stroke-dasharray": "2 4",
+                        },
+                        g,
+                    );
+                    svg("circle", { cx: c, cy: c, r: R2, fill: "none", stroke: "#ffffff0c" }, g);
+                    const P = new Map();
+                    inner.forEach((w, i) => P.set(w, at(i, inner.length, R1)));
+                    outer.forEach((s, i) => P.set(s, at(i, outer.length, R2)));
+                    P.set(repo.main, { x: c, y: c, a: 0 });
+                    // kind arcs on the outer ring
+                    let start = 0;
+                    for (const k of Object.keys(KORD)) {
+                        const n = outer.filter((s) => s.kind === k).length;
+                        if (!n) continue;
+                        const a0 = -Math.PI / 2 + (start / outer.length) * Math.PI * 2 + 0.02,
+                            a1 = -Math.PI / 2 + ((start + n) / outer.length) * Math.PI * 2 - 0.02,
+                            r = R2 + 15;
+                        const large = a1 - a0 > Math.PI ? 1 : 0;
+                        svg(
+                            "path",
+                            {
+                                d: `M${c + r * Math.cos(a0)},${c + r * Math.sin(a0)} A${r},${r} 0 ${large} 1 ${c + r * Math.cos(a1)},${c + r * Math.sin(a1)}`,
+                                fill: "none",
+                                stroke: outer.find((s) => s.kind === k).color,
+                                "stroke-width": 3,
+                                opacity: 0.6,
+                            },
+                            g,
+                        );
+                        start += n;
+                    }
+                    const inFocus = (x) =>
+                        !focus ||
+                        (focus.s
+                            ? x === focus.s ||
+                              (x.sessions && x.sessions.some((L) => L.s === focus.s)) ||
+                              (x === repo.main && repo.main.sessions.some((L) => L.s === focus.s))
+                            : focus.wt
+                              ? x === focus.wt || (x.wts && x.wts.some((L) => L.w === focus.wt))
+                              : true);
+                    // spokes main->worktree
+                    for (const w of inner) {
+                        const p = P.get(w);
+                        svg(
+                            "line",
+                            {
+                                x1: c,
+                                y1: c,
+                                x2: p.x,
+                                y2: p.y,
+                                stroke: w.writers > 1 ? "#f8514966" : "#3fb95033",
+                                "stroke-width": 2,
+                            },
+                            g,
+                        );
+                    }
+                    // threads session->folder
+                    const mx = Math.max(
+                        1,
+                        ...WT.links.filter((L) => L.w.repo === repo).map((L) => L.n),
+                    );
+                    const threads = svg("g", {}, g);
+                    for (const w of [repo.main, ...inner])
+                        for (const L of w.sessions) {
+                            const a = P.get(L.s),
+                                b = P.get(w);
+                            if (!a || !b) continue;
+                            const on = !focus || focus.s === L.s || focus.wt === w;
+                            const k = w.isMain ? 0.15 : 0.45;
+                            const cx1 = c + (a.x - c) * k,
+                                cy1 = c + (a.y - c) * k;
+                            svg(
+                                "path",
+                                {
+                                    d: `M${a.x},${a.y} Q${cx1},${cy1} ${b.x},${b.y}`,
+                                    fill: "none",
+                                    stroke: L.s.color,
+                                    "stroke-width": L.w_ ? 1.2 + 3.5 * Math.sqrt(L.n / mx) : 0.8,
+                                    opacity: on ? (L.w_ ? 0.85 : 0.35) : 0.04,
+                                    "stroke-dasharray": L.w_ ? null : "3 3",
+                                },
+                                threads,
+                            );
+                        }
+                    // sun
+                    const sun = svg("g", { class: "wt" + (inFocus(repo.main) ? "" : " dim") }, g);
+                    const mr = Math.max(16, S * 0.05);
+                    svg("circle", { cx: c, cy: c, r: mr + 6, fill: "#3fb95022" }, sun);
+                    svg(
+                        "circle",
+                        {
+                            cx: c,
+                            cy: c,
+                            r: mr,
+                            fill: "#0d1117",
+                            stroke: "#3fb950",
+                            "stroke-width": 4,
+                        },
+                        sun,
+                    );
+                    const mt = svg(
+                        "text",
+                        {
+                            x: c,
+                            y: c + 3,
+                            "text-anchor": "middle",
+                            style: "font-weight:700;fill:#7ee787;font-size:11px",
+                        },
+                        sun,
+                    );
+                    mt.textContent =
+                        repo.main.name.length > 9
+                            ? repo.main.name.slice(0, 8) + "…"
+                            : repo.main.name;
+                    sun.onclick = () => {
+                        focus = { wt: repo.main };
+                        WT.showWt(repo.main);
+                        render();
+                    };
+                    // worktree nodes
+                    const showWtLabels = inner.length <= 28;
+                    for (const w of inner) {
+                        const p = P.get(w),
+                            clash = w.writers > 1,
+                            r = 4 + Math.min(5, Math.sqrt(w.sessions.length) * 1.8);
+                        const n = svg("g", { class: "wt" + (inFocus(w) ? "" : " dim") }, g);
+                        svg("circle", { cx: p.x, cy: p.y, r: r + 8, fill: "transparent" }, n);
+                        svg(
+                            "circle",
+                            {
+                                cx: p.x,
+                                cy: p.y,
+                                r,
+                                fill: w.dirty ? "#d29922" : "#0d1117",
+                                stroke: clash ? "#f85149" : w.repo.color,
+                                "stroke-width": clash ? 3 : 2,
+                            },
+                            n,
+                        );
+                        if (showWtLabels || (focus && inFocus(w))) {
+                            const cos = Math.cos(p.a),
+                                inward = -1;
+                            const tx = p.x + inward * cos * (r + 4),
+                                ty = p.y + inward * Math.sin(p.a) * (r + 4) + 3;
+                            const t = svg(
+                                "text",
+                                {
+                                    x: tx,
+                                    y: ty,
+                                    "text-anchor":
+                                        cos > 0.2 ? "end" : cos < -0.2 ? "start" : "middle",
+                                },
+                                n,
+                            );
+                            const lab = w.short;
+                            t.textContent = lab.length > 14 ? lab.slice(0, 13) + "…" : lab;
+                        }
+                        n.onclick = () => {
+                            focus = { wt: w };
+                            WT.showWt(w);
+                            render();
+                        };
+                    }
+                    // session nodes
+                    const showSLabels = outer.length <= 36;
+                    for (const s of outer) {
+                        const p = P.get(s);
+                        const n = svg("g", { class: "ss" + (inFocus(s) ? "" : " dim") }, g);
+                        svg("circle", { cx: p.x, cy: p.y, r: 12, fill: "transparent" }, n);
+                        const wrote = s.wts.some((L) => L.w.repo === repo && L.w_);
+                        svg(
+                            "circle",
+                            {
+                                cx: p.x,
+                                cy: p.y,
+                                r: 6.5,
+                                fill: wrote ? s.color : "#0d1117",
+                                stroke: s.color,
+                                "stroke-width": 2,
+                            },
+                            n,
+                        );
+                        if (showSLabels || (focus && focus.s === s)) {
+                            const cos = Math.cos(p.a),
+                                sin = Math.sin(p.a);
+                            const t = svg(
+                                "text",
+                                {
+                                    x: p.x + cos * 10,
+                                    y: p.y + sin * 10 + 3,
+                                    "text-anchor":
+                                        cos > 0.25 ? "start" : cos < -0.25 ? "end" : "middle",
+                                },
+                                n,
+                            );
+                            t.textContent =
+                                s.label.length > 15 ? s.label.slice(0, 14) + "…" : s.label;
+                        }
+                        n.onclick = () => {
+                            focus = { s };
+                            WT.showSession(s);
+                            render();
+                        };
+                    }
+                    if (!inner.length && !repo.main.sessions.length) {
+                        const t = svg(
+                            "text",
+                            {
+                                x: c,
+                                y: c - mr - 20,
+                                "text-anchor": "middle",
+                                style: "fill:var(--muted);font-size:12px",
+                            },
+                            g,
+                        );
+                        t.textContent = "No session touched this repo in 14 days.";
+                    }
+                }
+                chips();
+                render();
+                WT.onResize(render);
+            });
+        </script>
+    </body>
+</html>

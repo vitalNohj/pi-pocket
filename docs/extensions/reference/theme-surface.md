@@ -211,6 +211,7 @@ Each is a `data-part` attribute. Some elements have two (`data-part="composer-bu
 | `pip`                | PiP's panel                                                               |
 | `subagents-board`    | The subagents board                                                       |
 | `running-board`      | The Running now board                                                     |
+| `branch-board`       | The Work board: sessions, branches, and the work maps                     |
 | `running-timeline`   | Its Coming up timeline                                                    |
 | `running-needs`      | Its Needs you list                                                        |
 | `running-next`       | Its Next up list                                                          |

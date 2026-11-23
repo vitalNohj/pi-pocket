@@ -1,11 +1,20 @@
 // Slash commands in the message box ("/compact", "/model sonnet", …). They run here in the app and are never sent to Pi.
 import { browserAvailable, openInBrowser, toggleBrowser } from "./browser.js";
 import { filesAvailable, toggleFiles } from "./files-panel.js";
-import { branchAvailable } from "./sheets/branch.js";
+import { branchAvailable } from "./branch-board.js";
 import { memoryAvailable, remember } from "./sheets/memory.js";
 import { togglePeeks } from "./peeks.js";
 import { askPip, openPip, pipAvailable } from "./pip.js";
-import { actions, collab, navigate, notify, openSheet, scoped, store } from "./store.js";
+import {
+    actions,
+    collab,
+    navigate,
+    notify,
+    openBranches,
+    openSheet,
+    scoped,
+    store,
+} from "./store.js";
 import {
     BASE_LOOK,
     chooseLook,
@@ -401,7 +410,7 @@ const COMMANDS = [
         args: "[name]",
         description: "Switch the folder to another git branch, or make one",
         available: branchAvailable,
-        run: (arg) => openSheet({ type: "branch", query: arg }),
+        run: (arg) => openBranches(arg),
     },
     {
         name: "pip",
