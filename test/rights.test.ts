@@ -93,6 +93,9 @@ const has = (user: User, right: PersonRight) => app.policy.has(user, right);
 const give = (user: User, right: PersonRight, on = true) =>
     app.setRight(owner(app), { person: user.id, right, on });
 
+/** The person rights a user is given: all but a viewer's (`Right.viewers`), which a user has by role. */
+const USERS_RIGHTS = PERSON_RIGHTS.filter((right) => declared(right).viewers !== true);
+
 /** The owner lets `name` manage users. */
 function manager(name: string): User {
     const user = person(name, "guest");
@@ -126,6 +129,7 @@ test("every right is declared once, and the app is told its words and none of it
         "managesRunners",
         "managesServer",
         "keepsWarm",
+        "chats",
     ]);
     assert.deepEqual(COMPUTER_RIGHTS, ["wheel", "allows", "reshares"]);
     assert.deepEqual([...PERSON_RIGHTS, ...COMPUTER_RIGHTS], Object.keys(RIGHTS));
@@ -143,7 +147,7 @@ test("every right is declared once, and the app is told its words and none of it
         assert.equal(each.on, declared(each.key).on);
 
         // Who may hold or give it is the server's to decide (`access.ts` `has`, `offer`), never the app's.
-        for (const rule of ["whole", "gives", "with", "lapses"]) {
+        for (const rule of ["whole", "viewers", "gives", "with", "lapses"]) {
             assert.equal(rule in each, false, `${each.key} ${rule}`);
         }
     }
@@ -156,7 +160,7 @@ test("one check answers for every right: the owner has them all, a user what the
 
     app.config.setServerUsers([gil.id, vera.id]);
 
-    for (const right of PERSON_RIGHTS) {
+    for (const right of USERS_RIGHTS) {
         assert.equal(has(owner(app), right), true, right);
         assert.equal(has(gil, right), false, right);
         assert.equal(has({ id: "nobody" } as User, right), false, right);
@@ -190,6 +194,7 @@ test("one check answers for every right: the owner has them all, a user what the
         assert.equal(app.policy.managesRunners(each), has(each, "managesRunners"), each.name);
         assert.equal(app.policy.managesServer(each), has(each, "managesServer"), each.name);
         assert.equal(app.policy.keepsWarm(each), has(each, "keepsWarm"), each.name);
+        assert.equal(app.policy.chats(each), has(each, "chats"), each.name);
     }
 
     // A hello says each of them: a person's right held or not, a computer's by the computers it is held on.
@@ -200,6 +205,7 @@ test("one check answers for every right: the owner has them all, a user what the
         managesRunners: true,
         managesServer: true,
         keepsWarm: true,
+        chats: true,
         wheel: [THIS_SERVER],
         allows: [THIS_SERVER],
         reshares: [THIS_SERVER],
@@ -211,6 +217,7 @@ test("one check answers for every right: the owner has them all, a user what the
         managesRunners: false,
         managesServer: false,
         keepsWarm: true,
+        chats: true,
         wheel: [],
         allows: [],
         reshares: [],
@@ -266,7 +273,7 @@ test("one check answers for every right: the owner has them all, a user what the
     for (const right of COMPUTER_RIGHTS) {
         assert.throws(
             () => app.setRight(owner(app), { person: gil.id, right, on: true }),
-            /Send right \(linksRunners, invites, managesUsers, managesRunners, managesServer, keepsWarm\) and on\./,
+            /Send right \(linksRunners, invites, managesUsers, managesRunners, managesServer, keepsWarm, chats\) and on\./,
             right,
         );
     }
@@ -283,8 +290,8 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     const path = (user: User) => `users/${user.id}/rights`;
     const more = /You can only give what you have yourself/;
 
-    // What each switch offers: the owner turns each on for a user; for a viewer there is none, and for someone
-    // limited to one session only what does not take the whole server.
+    // What each switch offers: the owner turns each on for a user but a viewer's, which a user has by role; for a
+    // viewer only a viewer's, and for someone limited to one session only what does not take the whole server.
     assert.deepEqual(told(owner(app), gil)?.offer, {
         linksRunners: "open",
         invites: "open",
@@ -293,7 +300,7 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
         managesServer: "open",
         keepsWarm: "open",
     });
-    assert.equal(told(owner(app), vera)?.offer, undefined);
+    assert.deepEqual(told(owner(app), vera)?.offer, { chats: "open" });
     assert.deepEqual(told(owner(app), sam)?.offer, { keepsWarm: "open" });
     // Who manages users has Invite people with that: it stays on, and is no switch of its own.
     assert.deepEqual(told(owner(app), mona)?.offer, {
@@ -304,7 +311,7 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
         managesServer: "open",
         keepsWarm: "open",
     });
-    assert.deepEqual(told(owner(app), mona)?.rights, ["invites", "managesUsers"]);
+    assert.deepEqual(told(owner(app), mona)?.rights, ["invites", "managesUsers", "chats"]);
     // A user who manages users gives only what they have themselves, and never a right only the owner gives: to
     // manage users, runners, or the server.
     assert.deepEqual(told(mona, gil)?.offer, {
@@ -314,15 +321,15 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     });
     // They change nobody who manages users, nor themselves; a person reads their own rights, and offers none.
     assert.equal(told(mona, max)?.offer, undefined);
-    assert.deepEqual(told(mona, max)?.rights, ["invites", "managesUsers"]);
+    assert.deepEqual(told(mona, max)?.rights, ["invites", "managesUsers", "chats"]);
     assert.equal(told(mona, mona)?.offer, undefined);
-    assert.deepEqual(told(mona, mona)?.rights, ["invites", "managesUsers"]);
+    assert.deepEqual(told(mona, mona)?.rights, ["invites", "managesUsers", "chats"]);
     assert.equal(told(gil, gil)?.offer, undefined);
     assert.equal(told(gil, mona)?.rights, undefined, "nobody else reads them");
     assert.equal(told(owner(app), owner(app))?.offer, undefined);
     assert.equal(told(owner(app), owner(app))?.rights, undefined, "the owner has them all");
 
-    for (const right of PERSON_RIGHTS) {
+    for (const right of USERS_RIGHTS) {
         const { gives, whole, label } = declared(right);
         const owners = gives === "owner";
         const body = (on: boolean) => ({ right, on });
@@ -414,14 +421,87 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     }
 });
 
+test("a viewer's right: a full viewer holds it once given, a user by role, a temporary account or anyone held to sessions never", async () => {
+    const right: PersonRight = "chats";
+    const tia = person("Tia", "viewer");
+    const tom = app.config.addUser("Tom", "viewer", undefined, true).user;
+    const ula = person("Ula", "viewer", ["1"]);
+    const gus = person("Gus 5", "guest");
+    const sid = person("Sid", "guest", ["1"]);
+    const mona = manager("Mona 5");
+    const path = (user: User) => `users/${user.id}/rights`;
+    const must = (name: string) =>
+        new RegExp(`${name} must be a viewer with a full account to chat with one person\\.`);
+
+    assert.equal(declared(right).viewers, true);
+    assert.equal(tom.temporary, true);
+
+    // The owner, and a user not held to sessions, have it by their role, without being given it; nothing is kept.
+    assert.equal(has(owner(app), right), true);
+    assert.equal(has(gus, right), true);
+    assert.equal(kept(gus).rights, undefined);
+    assert.equal((await app.hello(kept(gus))).user.rights.chats, true);
+    // A user held to sessions has it not, also with it in their record.
+    assert.equal(has(sid, right), false);
+    app.config.updateUser(sid.id, { rights: [right] });
+    assert.equal(has(sid, right), false);
+    // Nobody is offered it for a user: it is theirs by role, not a switch.
+    assert.equal(told(owner(app), gus)?.offer?.[right], undefined);
+    assert.equal(told(owner(app), sid)?.offer?.[right], undefined);
+
+    // A full viewer: only once given.
+    assert.equal(has(tia, right), false);
+    assert.equal((await app.hello(kept(tia))).user.rights.chats, false);
+    assert.equal(told(owner(app), tia)?.offer?.[right], "open");
+    await done(owner(app), path(tia), { right, on: true });
+    assert.equal(has(tia, right), true);
+    assert.deepEqual(kept(tia).rights, [right]);
+    assert.deepEqual(told(owner(app), tia)?.rights, [right]);
+    assert.deepEqual(told(tia, tia)?.rights, [right]);
+    assert.equal((await app.hello(kept(tia))).user.rights.chats, true);
+    await done(owner(app), path(tia), { right, on: false });
+    assert.equal(has(tia, right), false);
+
+    // A temporary account, and a viewer held to sessions: never, whatever their record says.
+    for (const [each, name] of [
+        [tom, "Tom"],
+        [ula, "Ula"],
+    ] as const) {
+        assert.equal(told(owner(app), each)?.offer?.[right], undefined, name);
+        await refused(owner(app), path(each), { right, on: true }, 400, must(name));
+        assert.equal(kept(each).rights, undefined, name);
+        app.config.updateUser(each.id, { rights: [right] });
+        assert.equal(has(each, right), false, name);
+    }
+
+    // Who manages users has it by role, so it is theirs to give a full viewer.
+    assert.equal(told(mona, tia)?.offer?.[right], "open");
+    await done(mona, path(tia), { right, on: true });
+    assert.equal(has(tia, right), true);
+    assert.equal(told(mona, tom)?.offer?.[right], undefined);
+    await refused(mona, path(tom), { right, on: true }, 400, must("Tom"));
+
+    // A viewer is offered nothing, and gives nothing.
+    assert.equal(told(tia, gus)?.offer, undefined);
+    assert.equal(told(tia, tom)?.offer, undefined);
+    await refused(tia, path(tom), { right, on: true }, 403, /Only someone who manages users/);
+
+    // It does not lapse: made a user, and a viewer again, she has it as before.
+    app.config.updateUser(tia.id, { role: "guest" });
+    assert.equal(has(tia, right), true);
+    assert.deepEqual(kept(tia).rights, [right]);
+    app.config.updateUser(tia.id, { role: "viewer" });
+    assert.equal(has(tia, right), true);
+});
+
 test("a right stays kept while its person cannot hold it, unless it lapses; a pause keeps one that lapses", () => {
     const pia = person("Pia", "guest");
 
-    for (const right of PERSON_RIGHTS) {
+    for (const right of USERS_RIGHTS) {
         give(pia, right);
     }
 
-    assert.deepEqual(kept(pia).rights, PERSON_RIGHTS);
+    assert.deepEqual(kept(pia).rights, USERS_RIGHTS);
 
     // Made a viewer: they hold none; the rights to manage (users, runners, the server) lapse, the others wait for them.
     app.config.updateUser(pia.id, { role: "viewer" });
@@ -460,7 +540,7 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
 
     app.confirmAuthenticator(kept(pia), totp(secret, Math.floor(app.now() / STEP_MS)));
     assert.equal(kept(pia).role, "guest");
-    assert.deepEqual(kept(pia).rights, PERSON_RIGHTS);
+    assert.deepEqual(kept(pia).rights, USERS_RIGHTS);
     assert.equal(Object.hasOwn(kept(pia), "paused"), false);
 
     for (const right of PERSON_RIGHTS) {

@@ -1,6 +1,7 @@
-// Chat with one person (`direct.ts`): two people, each the owner or a user, write to each other on a person's page in
-// People. Only the two read a thread, through real HTTP here; the counts are kept on the server; a viewer has none;
-// a removed person's threads go; a restart keeps them; a push reaches the receiver only when they are not looking.
+// Chat with one person (`direct.ts`): two people, each the owner, a user, or a viewer who was given it, write to each
+// other on a person's page in People. Only the two read a thread, through real HTTP here; the counts are kept on the
+// server; a viewer without it has none; a removed person's threads go; a restart keeps them; a push reaches the
+// receiver only when they are not looking.
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -216,15 +217,45 @@ test("refused: viewers, people held to sessions, yourself, nobody, empty text, a
     const sam = person("Sam", "guest", ["1"]);
     const missing = { ...gus, id: "nobody-here", name: "Nobody" };
     const cases: [User, User, number, RegExp][] = [
-        [vic, gus, 403, /Chat with one person is for the owner and users\./],
-        [gus, vic, 403, /Chat with one person is for the owner and users\./],
-        [sam, gus, 403, /Chat with one person is for the owner and users\./],
-        [gus, sam, 403, /Chat with one person is for the owner and users\./],
+        [
+            vic,
+            gus,
+            403,
+            /Chat with one person is for the owner, for users, and for viewers who were given it\./,
+        ],
+        [
+            gus,
+            vic,
+            403,
+            /Chat with one person is for the owner, for users, and for viewers who were given it\./,
+        ],
+        [
+            sam,
+            gus,
+            403,
+            /Chat with one person is for the owner, for users, and for viewers who were given it\./,
+        ],
+        [
+            gus,
+            sam,
+            403,
+            /Chat with one person is for the owner, for users, and for viewers who were given it\./,
+        ],
         [gus, gus, 400, /That is you\./],
         [gus, missing, 404, /No such person/],
         // One who has no such chat is not told whether an id is someone's.
-        [vic, missing, 403, /Chat with one person is for the owner and users\./],
-        [sam, missing, 403, /Chat with one person is for the owner and users\./],
+        [
+            vic,
+            missing,
+            403,
+            /Chat with one person is for the owner, for users, and for viewers who were given it\./,
+        ],
+        [
+            sam,
+            missing,
+            403,
+            /Chat with one person is for the owner, for users, and for viewers who were given it\./,
+        ],
     ];
 
     for (const [from, to, status, said] of cases) {
@@ -270,8 +301,8 @@ test("a user made a viewer loses the thread and its count; made a user again, bo
         await until(() => ivyTab.unread()?.[hal.id] === 1, "Ivy's count");
 
         await done(owner(app), `users/${hal.id}`, { role: "viewer" });
-        await refused(hal, `users/${ivy.id}/chat`, undefined, 403, /for the owner and users/);
-        await refused(ivy, `users/${hal.id}/chat`, undefined, 403, /for the owner and users/);
+        await refused(hal, `users/${ivy.id}/chat`, undefined, 403, /for viewers who were given it/);
+        await refused(ivy, `users/${hal.id}/chat`, undefined, 403, /for viewers who were given it/);
         await until(() => ivyTab.unread()?.[hal.id] === undefined, "Ivy's count no longer told");
         assert.deepEqual(app.direct.unread(kept(ivy.id)), {});
 
@@ -374,6 +405,156 @@ test("the people list says mayMessage only of the people that viewer may chat wi
     assert.equal(told(owner(app)).get(ned.id), true);
     assert.equal([...told(ola).values()].some(Boolean), false);
     assert.equal([...told(pat).values()].some(Boolean), false);
+});
+
+/** The owner turns the chat with one person on or off for `viewer`, as the switch on their page does. */
+const allow = (viewer: User, on: boolean) =>
+    done(owner(app), `users/${viewer.id}/rights`, { right: "chats", on });
+
+test("a viewer given the chat writes to a user: both read it, and the counts are right", async () => {
+    const sia = person("Sia", "viewer");
+    const tad = person("Tad", "guest");
+    const siaTab = await tab(sia);
+    const tadTab = await tab(tad);
+
+    try {
+        await refused(sia, `users/${tad.id}/chat`, undefined, 403, /viewers who were given it/);
+        await allow(sia, true);
+        assert.deepEqual(kept(sia.id).rights, ["chats"]);
+
+        const ask = await post(sia, tad, "may I ask?");
+
+        await until(() => tadTab.unread()?.[sia.id] === 1, "Tad's count");
+        assert.deepEqual(app.direct.unread(kept(tad.id)), { [sia.id]: 1 });
+        assert.deepEqual(app.direct.unread(kept(sia.id)), {});
+        assert.deepEqual((await thread(tad, sia)).messages, [ask]);
+        await done(tad, `users/${sia.id}/chat/read`, {});
+        assert.deepEqual(app.direct.unread(kept(tad.id)), {});
+
+        const answer = await post(tad, sia, "sure");
+
+        await until(() => siaTab.unread()?.[tad.id] === 1, "Sia's count");
+        assert.deepEqual(app.direct.unread(kept(sia.id)), { [tad.id]: 1 });
+        assert.deepEqual((await thread(sia, tad)).messages, [ask, answer]);
+        await done(sia, `users/${tad.id}/chat/read`, {});
+        await until(() => siaTab.unread()?.[tad.id] === undefined, "Sia's count cleared");
+        assert.deepEqual(app.direct.unread(kept(sia.id)), {});
+        assert.deepEqual((await thread(tad, sia)).messages, [ask, answer]);
+    } finally {
+        app.detach(siaTab.client);
+        app.detach(tadTab.client);
+    }
+});
+
+test("the switch off again takes a viewer's chat and its count; on again, both come back", async () => {
+    const uma = person("Uma", "viewer");
+    const val = person("Val", "guest");
+    const umaTab = await tab(uma);
+
+    try {
+        await allow(uma, true);
+        const message = await post(val, uma, "hello");
+
+        await until(() => umaTab.unread()?.[val.id] === 1, "Uma's count");
+
+        await allow(uma, false);
+        await refused(uma, `users/${val.id}/chat`, undefined, 403, /viewers who were given it/);
+        await refused(
+            uma,
+            `users/${val.id}/chat`,
+            { text: "hi", requestId: "r1" },
+            403,
+            /viewers who were given it/,
+        );
+        await refused(val, `users/${uma.id}/chat`, undefined, 403, /viewers who were given it/);
+        await until(() => umaTab.unread()?.[val.id] === undefined, "Uma's count no longer told");
+        assert.deepEqual(app.direct.unread(kept(uma.id)), {});
+
+        await allow(uma, true);
+        await until(() => umaTab.unread()?.[val.id] === 1, "Uma's count back");
+        assert.deepEqual(app.direct.unread(kept(uma.id)), { [val.id]: 1 });
+        assert.deepEqual((await thread(uma, val)).messages, [message]);
+    } finally {
+        app.detach(umaTab.client);
+    }
+});
+
+test("a viewer with the chat is told the people they may chat with, bare; one without it none of them", async () => {
+    const wes = person("Wes", "viewer");
+    const xia = person("Xia", "viewer");
+    const yul = person("Yul", "guest");
+    const zed = person("Zed", "guest", ["1"]);
+
+    // Each is online, so a list that tells more than the name would show it.
+    const tabs = await Promise.all([owner(app), yul, zed].map((each) => tab(each)));
+
+    try {
+        await allow(wes, true);
+        const byWes = app.people(kept(wes.id));
+        const others = byWes.filter((each) => each.id !== wes.id);
+        const users = app.config.users.filter((each) => app.policy.mayMessage(kept(wes.id), each));
+
+        assert.ok(users.some((each) => each.id === owner(app).id));
+        assert.ok(users.some((each) => each.id === yul.id));
+        assert.deepEqual(others.map((each) => each.id).sort(), users.map((each) => each.id).sort());
+
+        for (const each of others) {
+            assert.equal(each.mayMessage, true, each.name);
+            assert.equal((each as { online?: boolean }).online, undefined, each.name);
+            assert.equal((each as { lastSeen?: number }).lastSeen, undefined, each.name);
+        }
+
+        assert.equal(
+            byWes.some((each) => each.id === zed.id),
+            false,
+        );
+        assert.equal(
+            byWes.some((each) => each.id === xia.id),
+            false,
+        );
+
+        // Without the chat, and meeting nobody: only themselves.
+        assert.deepEqual(
+            app.people(kept(xia.id)).map((each) => each.id),
+            [xia.id],
+        );
+    } finally {
+        for (const each of tabs) {
+            app.detach(each.client);
+        }
+    }
+});
+
+test("two viewers who both have the chat chat; a viewer with it and one without it cannot", async () => {
+    const abe = person("Abe", "viewer");
+    const bea = person("Bea", "viewer");
+    const cal = person("Cal", "viewer");
+
+    await allow(abe, true);
+    await allow(bea, true);
+
+    const message = await post(abe, bea, "two viewers");
+
+    assert.deepEqual((await thread(bea, abe)).messages, [message]);
+    assert.equal(app.policy.mayMessage(abe, bea), true);
+    assert.equal(app.policy.mayMessage(abe, cal), false);
+    assert.equal(app.policy.mayMessage(cal, abe), false);
+    await refused(
+        abe,
+        `users/${cal.id}/chat`,
+        { text: "hi", requestId: "r2" },
+        403,
+        /viewers who were given it/,
+    );
+    await refused(cal, `users/${abe.id}/chat`, undefined, 403, /viewers who were given it/);
+    assert.equal(
+        app.people(kept(abe.id)).some((each) => each.id === cal.id),
+        false,
+    );
+    assert.equal(
+        app.people(kept(cal.id)).some((each) => each.id === abe.id),
+        false,
+    );
 });
 
 // Last: it opens the app again on the same data folder.

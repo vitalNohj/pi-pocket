@@ -4,6 +4,7 @@
  * live on the server, in the index, so every device of a person shows the same.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { NO_CHAT } from "./access.ts";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import {
@@ -63,7 +64,7 @@ export class Direct {
 
     /**
      * What `user` has not read, by the other person's id: only from people they may chat with now. A count of someone
-     * made a viewer stays stored, and shows again when they are a user again.
+     * who lost the chat stays stored, and shows again when they have it again.
      */
     unread(user: User): Record<string, number> {
         const counts: Record<string, number> = {};
@@ -134,9 +135,9 @@ export class Direct {
         const messageId = `${user.id.slice(0, 8)}-${clientKey(request.requestId)}`;
         let created = false;
         const message = await app.harness.commit(async (tx) => {
-            // A role can change while the request waits: judged again where the message is stored.
+            // A role or a right can change while the request waits: judged again where the message is stored.
             if (!app.policy.mayMessage(user, { id: otherId })) {
-                throw new HttpError(403, "Chat with one person is for the owner and users.");
+                throw new HttpError(403, NO_CHAT);
             }
 
             const doc = await tx.doc(DirectDoc, key, null);

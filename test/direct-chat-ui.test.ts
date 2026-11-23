@@ -640,6 +640,239 @@ test("a page's line about what its person may do is not under the chat", real, a
     }
 });
 
+/** The names in the list of People, as their rows say them. */
+const names = () =>
+    inPage<string[]>(`
+        return JSON.stringify(
+            [...document.querySelectorAll(".pages-item .pages-item-title")].map((each) => each.textContent.trim()),
+        );
+    `);
+
+/** The switches of the page shown that say what a person may do, as they read. */
+const rights = () =>
+    inPage<string[]>(`
+        const group = [...document.querySelectorAll(".pages-detail .group")]
+            .find((each) => each.querySelector(".group-title")?.textContent.trim() === "What they may do");
+
+        return JSON.stringify(
+            [...(group?.querySelectorAll("[role=switch]") ?? [])].map(
+                (each) => each.getAttribute("aria-label") + (each.disabled ? " (disabled)" : ""),
+            ),
+        );
+    `);
+
+/** Tap the tab of the page shown that starts with `label`, and wait until it shows. */
+const showTab = (label: string) =>
+    until(
+        async () =>
+            await inPage<boolean>(`
+                const tab = [...document.querySelectorAll(".pages-detail [role=tab]")]
+                    .find((each) => each.textContent.trim().startsWith(${JSON.stringify(label)}));
+
+                if (tab !== undefined && tab.getAttribute("aria-selected") !== "true") {
+                    tab.click();
+                }
+
+                return JSON.stringify(tab?.getAttribute("aria-selected") === "true");
+            `),
+        `the ${label} tab`,
+    );
+
+/** Run `steps` in a browser of its own, signed in with `token`; the owner's page is `page` again after. */
+async function signedIn(token: string, steps: () => Promise<void>): Promise<void> {
+    const theirs = new Browsers({
+        dataDir: mkdtempSync(join(root, "direct-chat-viewer-")),
+        load: async () => undefined,
+        save: () => {},
+    });
+    const owners = page;
+
+    try {
+        page = await theirs.open(1);
+        await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+        await steps();
+    } finally {
+        page = owners;
+        await theirs.closeAll({ final: true });
+    }
+}
+
+test(
+    "a full viewer's page has the switch for the chat, off, and the owner turns it on; a user's and a temporary account's have none",
+    real,
+    async () => {
+        const wren = app.config.addUser("Wren", "viewer").user;
+        const tess = app.config.addUser("Tess", "viewer", undefined, true).user;
+
+        try {
+            await openPeople();
+            await show("Wren");
+            await showTab("Permissions");
+            await until(
+                async () => (await rights()).includes("Wren chats with one person: off"),
+                "the switch on Wren's page",
+            );
+            await inPage(`
+                [...document.querySelectorAll(".pages-detail [role=switch]")]
+                    .find((each) => each.getAttribute("aria-label").startsWith("Wren chats with one person"))
+                    .click();
+
+                return JSON.stringify(true);
+            `);
+            await until(() => app.policy.chats(wren), "the server to give Wren the chat");
+            assert.deepEqual(app.config.userById(wren.id)?.rights, ["chats"]);
+            await until(
+                async () => (await rights()).includes("Wren chats with one person: on"),
+                "the switch on",
+            );
+            // With the chat, her page has the Chat tab.
+            await until(
+                async () => (await tabs()).some((each) => each.startsWith("Chat")),
+                "the Chat tab on Wren's page",
+            );
+
+            for (const name of ["Gina", "Tess"]) {
+                await show(name);
+                await showTab("Permissions");
+                await until(async () => (await rights()).length > 0, `${name}'s switches`);
+                assert.equal(
+                    (await rights()).some((each) => each.includes("chats with one person")),
+                    false,
+                    name,
+                );
+            }
+
+            assert.equal(app.policy.chats(tess), false);
+        } finally {
+            app.config.removeUser(wren.id);
+            app.config.removeUser(tess.id);
+        }
+    },
+);
+
+test(
+    "a viewer with the chat sees the people they may chat with, and a page of one is the chat alone",
+    real,
+    async () => {
+        const { user: wade, token } = app.config.addUser("Wade", "viewer");
+
+        app.config.updateUser(wade.id, { rights: ["chats"] });
+
+        try {
+            // The owner looks at their chat with Wade, to see his message come.
+            await openPeople();
+            await show("Wade");
+            await openChat();
+
+            await signedIn(token, async () => {
+                await openPeople();
+                await until(
+                    async () => (await names()).includes("Gina"),
+                    "the people Wade may chat with",
+                );
+                const listed = await names();
+
+                assert.ok(listed.includes("Wade (you)"), JSON.stringify(listed));
+                assert.ok(listed.includes("Owner"), JSON.stringify(listed));
+                assert.equal(listed.includes("Vera"), false, JSON.stringify(listed));
+                // Of the owner, who is here in another browser, Wade is told the name alone: his row says nothing
+                // of when the owner is here, and draws no mark for it. Wade's own row says both.
+                assert.deepEqual(
+                    await inPage<Record<string, { detail: string; mark: boolean }>>(`
+                        const rows = {};
+
+                        for (const row of document.querySelectorAll(".pages-item")) {
+                            const title = row.querySelector(".pages-item-title")?.textContent.trim();
+
+                            if (title === "Owner" || title === "Wade (you)") {
+                                rows[title] = {
+                                    detail: row.querySelector(".pages-item-text .muted")?.textContent.trim() ?? "",
+                                    mark: row.querySelector(".online-mark") !== null,
+                                };
+                            }
+                        }
+
+                        return JSON.stringify(rows);
+                    `),
+                    {
+                        Owner: { detail: "owner", mark: false },
+                        "Wade (you)": { detail: "viewer · here now", mark: true },
+                    },
+                );
+
+                await show("Owner");
+                await until(
+                    async () =>
+                        await inPage<boolean>(
+                            `return JSON.stringify(document.querySelector('[data-part="person-chat"] .chat-compose textarea') !== null)`,
+                        ),
+                    "the chat on the owner's page",
+                );
+                assert.deepEqual(await tabs(), [], "the chat is the page's only part");
+
+                await inPage(`
+                    const box = document.querySelector('[data-part="person-chat"] textarea');
+
+                    box.focus();
+                    document.execCommand("insertText", false, "Hello from Wade");
+
+                    return JSON.stringify(true);
+                `);
+                await until(
+                    async () =>
+                        await inPage<boolean>(`
+                            const send = document.querySelector('[data-part="person-chat"] .chat-compose .send');
+
+                            if (send !== null && !send.disabled) {
+                                send.click();
+                            }
+
+                            return JSON.stringify(send !== null && !send.disabled);
+                        `),
+                    "Wade's send button",
+                );
+                await until(
+                    async () => (await messages()).some(([text]) => text === "Hello from Wade"),
+                    "the message in Wade's chat",
+                );
+            });
+
+            await until(
+                async () => (await messages()).some(([text]) => text === "Hello from Wade"),
+                "the message in the owner's chat with Wade",
+            );
+            assert.deepEqual((await messages()).at(-1), ["Hello from Wade", false]);
+        } finally {
+            app.config.removeUser(wade.id);
+        }
+    },
+);
+
+test("a viewer without the chat sees only their own page", real, async () => {
+    const { user: will, token } = app.config.addUser("Will", "viewer");
+
+    try {
+        await signedIn(token, async () => {
+            await openPeople();
+            await until(async () => (await names()).includes("Will (you)"), "Will's own row");
+            // The list as the server's answer leaves it.
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            assert.deepEqual(
+                (await names()).filter((each) => ["Owner", "Gina", "Vera"].includes(each)),
+                [],
+            );
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify(document.querySelector('[data-part="person-chat"]') !== null)`,
+                ),
+                false,
+            );
+        });
+    } finally {
+        app.config.removeUser(will.id);
+    }
+});
+
 test("the session chat still follows its newest message", real, async () => {
     const id = await newSession(app);
 
