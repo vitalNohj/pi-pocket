@@ -775,7 +775,7 @@ describe("the whole-session fork sheet", () => {
     it("forks on the runner for a person chosen only for that runner", withBrowser, async () => {
         const { user, token } = app.config.addUser("Runner only", "guest");
 
-        app.config.setRunnerUsers(laptop.id, [
+        app.config.setUsers(laptop.id, [
             ...(app.config.runnerById(laptop.id)?.users ?? []),
             user.id,
         ]);
