@@ -392,6 +392,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
         "Gina manages users: off",
         "Gina manages runners: off",
         "Gina manages the server: off",
+        "Gina runs global commands: off",
         "Gina keeps sessions warm: off",
     ]);
 
