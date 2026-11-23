@@ -144,7 +144,7 @@ export class RunnerStopped extends Error {}
 /** The pi-env daemon on this computer: started with a fresh token, its output read after its sync line. */
 class Daemon {
     readonly child: ChildProcessWithoutNullStreams;
-    readonly exited: Promise<number | null>;
+    readonly exited: Promise<number | null | Error>;
     #synced = false;
     #pending: Buffer[] = [];
     readonly #token = randomBytes(16).toString("hex");
@@ -163,11 +163,12 @@ class Daemon {
         });
         this.exited = new Promise((resolve) => {
             this.child.once("exit", (code) => resolve(code));
-            this.child.once("error", (error) => {
-                log(
-                    `The tool process could not start: ${error.message}\nCheck PI_POCKET_RUNNER_DAEMON, or reinstall Pi Pocket.`,
-                );
-                resolve(null);
+            this.child.on("error", (error) => {
+                if (this.child.pid === undefined) {
+                    resolve(error);
+                } else {
+                    log(`Tool process: ${error.message}`);
+                }
             });
         });
         this.child.stdin.on("error", () => {});
@@ -209,6 +210,7 @@ class Daemon {
         });
         this.#ping = setInterval(() => this.write(frame(FRAME.ping, 0, {})), DAEMON_PING_MS);
         this.#ping.unref();
+        void this.exited.then(() => clearInterval(this.#ping));
     }
 
     /** Write whole frames only: the runner's pings go between them. */
@@ -227,7 +229,7 @@ class Daemon {
     }
 
     /** Stop it: it kills every process group it started when its input ends. */
-    stop(): Promise<number | null> {
+    stop(): Promise<number | null | Error> {
         clearInterval(this.#ping);
         this.child.stdin.end();
 
@@ -455,6 +457,14 @@ export class Runner {
                 return;
             }
 
+            if (code instanceof Error) {
+                this.#fail(
+                    `The tool process could not start: ${code.message}\nCheck PI_POCKET_RUNNER_DAEMON, or reinstall Pi Pocket.`,
+                );
+
+                return;
+            }
+
             this.#log(
                 `The tool process stopped (exit code ${String(code)}). Restarting it automatically. If this repeats, reinstall Pi Pocket.`,
             );
@@ -481,7 +491,9 @@ export class Runner {
 
         this.#stopping = true;
         clearTimeout(this.#retryTimer);
+        clearTimeout(this.#ackTimer);
         this.#session.gate.stop();
+        this.#socket?.close(1000, "Stopped");
         this.#log(message);
         void Promise.all([this.#session.daemon.stop(), this.#tasks.stop()]).then(() =>
             this.#done(new RunnerStopped(message)),
@@ -588,7 +600,7 @@ export class Runner {
 
                 if (this.#attempt === 0 && transport.why === "allowed") {
                     this.#log(
-                        `Warning: plain HTTP to ${this.#options.link.server}, as allowed in this runner's settings. Anyone on the network can read this computer's key and its commands.`,
+                        `Warning: plain HTTP to ${this.#options.link.server}, as allowed in this runner's settings. This exposes connection details, but the runner link still encrypts commands.`,
                     );
                 }
 

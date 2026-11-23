@@ -10,7 +10,7 @@ import {
     scriptedModel,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import fs, { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import fs, { mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import type { AddressInfo } from "node:net";
@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { after, before, test, type TestContext } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { READ_SNAPSHOT } from "../src/server/runner-link/read-snapshot.ts";
+import { MAX_SNAPSHOT_BYTES, READ_SNAPSHOT } from "../src/server/runner-link/read-snapshot.ts";
 import { Runner } from "../packages/runner/src/runner.ts";
 import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import { createHandler } from "../src/server/http.ts";
@@ -45,7 +45,8 @@ before(async () => {
         writeFile(join(folder, "small.txt"), "Remote line one\nRemote line two\nfin\n"),
         writeFile(join(folder, "bom.txt"), "\ufeffFørste\r\nAndre\nTredje\n"),
         writeFile(join(folder, "lines.txt"), "x\n".repeat(2_500)),
-        writeFile(join(folder, "large.txt"), "x".repeat(60 * 1024)),
+        writeFile(join(folder, "medium.txt"), "Runner line\n".repeat(5_000)),
+        writeFile(join(folder, "large.txt"), "x".repeat(MAX_SNAPSHOT_BYTES + 1)),
         writeFile(join(folder, "binary.bin"), Buffer.from([0, 0xff, 0x80, 0x0a, 0xc3])),
         writeFile(join(folder, "pixel.png"), PNG),
         writeFile(join(folder, "cafe\u0301.txt"), "Normalized name."),
@@ -56,10 +57,10 @@ before(async () => {
     app = await openApp(
         scriptedModel((input) => {
             const { role, text } = lastText(input as never);
-            const args = role === "user" && /(?:^|\n)read: (\{.*\})$/.exec(text)?.[1];
+            const call = role === "user" && /(?:^|\n)(read|edit): (\{.*\})$/.exec(text);
 
-            return args
-                ? fauxAssistantMessage([fauxToolCall("read", JSON.parse(args))], {
+            return call
+                ? fauxAssistantMessage([fauxToolCall(call[1]!, JSON.parse(call[2]!))], {
                       stopReason: "toolUse",
                   })
                 : fauxAssistantMessage([fauxText("Done.")]);
@@ -154,6 +155,7 @@ test("the runner snapshot and the existing path give Pi the same results", async
         { path: "bom.txt", range: { offset: 2.5, limit: -1 }, snapshot: true },
         { path: "bom.txt", range: { offset: 20 }, snapshot: true, error: /beyond end of file/ },
         { path: "lines.txt", snapshot: true },
+        { path: "medium.txt", range: { offset: 7, limit: 3 }, snapshot: true },
         { path: "large.txt", snapshot: false },
         { path: "binary.bin", snapshot: true },
         { path: "pixel.png", snapshot: true },
@@ -196,6 +198,77 @@ test("the runner snapshot and the existing path give Pi the same results", async
             assert.equal(ops.includes(READ_SNAPSHOT), false);
         });
     }
+});
+
+test("edit reads a fresh snapshot inside the mutation slot and still writes through pi-env", async (t) => {
+    const ops = record(t);
+    const path = "editable.txt";
+    const absolute = join(folder, path);
+
+    const edit = async (oldText: string, newText: string) => {
+        await say(app, id, `edit: ${JSON.stringify({ path, edits: [{ oldText, newText }] })}`);
+        const { messages } = await (await app.conversation(id)).context(context);
+        const result = messages.findLast((message) => message.role === "toolResult");
+
+        assert.equal(result?.toolName, "edit");
+        assert.equal(result?.isError, false);
+    };
+
+    await writeFile(absolute, "\ufefforiginal\r\nother\r\n");
+    await edit("original", "first");
+    assert.equal(await readFile(absolute, "utf8"), "\ufefffirst\r\nother\r\n");
+    assert.equal(ops[0], "realpath", "the stock mutation queue canonicalizes its key first");
+    assert.deepEqual(ops.slice(1).sort(), ["lstat", READ_SNAPSHOT, "write"].sort());
+
+    ops.length = 0;
+    await edit("first", "second");
+    assert.equal(await readFile(absolute, "utf8"), "\ufeffsecond\r\nother\r\n");
+    assert.ok(ops.includes(READ_SNAPSHOT));
+    assert.ok(!ops.includes("pread"));
+
+    ops.length = 0;
+    t.mock.getter(app.runners.link(runnerId), "supportsReadSnapshot", () => false);
+    await edit("second", "third");
+    assert.equal(await readFile(absolute, "utf8"), "\ufeffthird\r\nother\r\n");
+    assert.ok(ops.includes("pread"));
+    assert.ok(!ops.includes(READ_SNAPSHOT));
+});
+
+test("larger snapshots are opt-in and bounded on the runner", async () => {
+    const link = app.runners.link(runnerId);
+    const scope = app.runnerScope(id)!;
+    const path = join(folder, "medium.txt");
+    const reply = (json: Record<string, unknown>) => link.request(READ_SNAPSHOT, json, {}, scope);
+
+    // An older server omits the field and can only receive an 8 KiB snapshot.
+    assert.deepEqual((await reply({ path })).json, {});
+    assert.ok((await reply({ path: join(folder, "small.txt") })).payload.length > 0);
+    assert.equal((await reply({ path, maxBytes: MAX_SNAPSHOT_BYTES })).payload.length, 60_000);
+    assert.deepEqual(
+        (await reply({ path: join(folder, "large.txt"), maxBytes: Number.MAX_SAFE_INTEGER })).json,
+        {},
+    );
+});
+
+test("a runner that does not return a larger snapshot still uses the ordinary read", async (t) => {
+    const link = app.runners.link(runnerId);
+    const request = link.request.bind(link);
+    const path = "medium.txt";
+    const range = { offset: 7, limit: 3 };
+    const before = await read(path, range);
+    const ops: string[] = [];
+
+    t.mock.method(link, "request", (...args: Parameters<typeof request>) => {
+        const [op, json, options, scope] = args;
+
+        ops.push(op);
+
+        // An older runner knows the operation, but ignores the field and keeps its original limit.
+        return request(op, op === READ_SNAPSHOT ? { path: json.path } : json, options, scope);
+    });
+    assert.deepEqual(await read(path, range), before);
+    assert.ok(ops.includes(READ_SNAPSHOT));
+    assert.ok(ops.includes("open"));
 });
 
 test("the snapshot operation itself requires a session and checks its folder", async () => {

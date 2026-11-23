@@ -352,26 +352,27 @@ async function listingScan(
     ]);
     const has = (index: number, name: string): FileInfo | undefined =>
         listings[index]?.find((entry) => entry.name === name);
-    const contextFiles = await Promise.all(
-        ancestors.map(async (folder, index) => {
-            for (const name of CANDIDATES) {
-                const entry = has(index, name);
+    const readContext = () =>
+        Promise.all(
+            ancestors.map(async (folder, index) => {
+                for (const name of CANDIDATES) {
+                    const entry = has(index, name);
 
-                if (entry === undefined || entry.kind === "directory") {
-                    continue;
+                    if (entry === undefined || entry.kind === "directory") {
+                        continue;
+                    }
+
+                    const path = paths.join(folder, name);
+                    const content = await read(path);
+
+                    if (content !== undefined) {
+                        return [{ path, content }];
+                    }
                 }
 
-                const path = paths.join(folder, name);
-                const content = await read(path);
-
-                if (content !== undefined) {
-                    return [{ path, content }];
-                }
-            }
-
-            return [];
-        }),
-    );
+                return [];
+            }),
+        );
     const git = ancestors.findIndex((_, index) => has(index, ".git") !== undefined);
     const homeAgents = paths.join(home, ".agents", "skills");
     const agentsAt = ancestors
@@ -424,25 +425,34 @@ async function listingScan(
         return inner.flat();
     };
 
-    const places = [...(ownAt === undefined ? [] : [ownAt]), ...agentsAt, ...userAt];
-    const walked = await Promise.all(places.map((place) => walk(place, true, 0)));
-    const exists = (place: string) => walked[places.indexOf(place)] !== undefined;
-    const listed = places.flatMap((place, index) =>
-        (walked[index] ?? []).map((path) => ({ place, path })),
-    );
-    const texts = await Promise.all(listed.map(({ path }) => read(path)));
+    const readSkills = async () => {
+        const places = [...(ownAt === undefined ? [] : [ownAt]), ...agentsAt, ...userAt];
+        const walked = await Promise.all(places.map((place) => walk(place, true, 0)));
+        const exists = (place: string) => walked[places.indexOf(place)] !== undefined;
+        const listed = places.flatMap((place, index) =>
+            (walked[index] ?? []).map((path) => ({ place, path })),
+        );
+        const texts = await Promise.all(listed.map(({ path }) => read(path)));
+
+        return {
+            ...(ownAt !== undefined && exists(ownAt) ? { own: ownAt } : {}),
+            agents: agentsAt.filter(exists),
+            user: userAt.filter(exists),
+            files: listed.flatMap((file, index) => {
+                const text = texts[index];
+
+                return text === undefined ? [] : [{ ...file, text }];
+            }),
+        };
+    };
+
+    // Neither stage needs the other's result. On a slow link, reading a context file can take several trips.
+    const [contextFiles, skills] = await Promise.all([readContext(), readSkills()]);
 
     return {
         folder: real.ok ? real.value : (failed(real.error) ?? cwd),
         context: contextFiles.flat().reverse(),
-        ...(ownAt !== undefined && exists(ownAt) ? { own: ownAt } : {}),
-        agents: agentsAt.filter(exists),
-        user: userAt.filter(exists),
-        files: listed.flatMap((file, index) => {
-            const text = texts[index];
-
-            return text === undefined ? [] : [{ ...file, text }];
-        }),
+        ...skills,
     };
 }
 

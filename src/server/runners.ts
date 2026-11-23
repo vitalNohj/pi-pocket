@@ -1186,7 +1186,8 @@ export class RunnerEnv extends RemoteExecutionEnv {
 
             const { json, payload } = await this.link.request(
                 READ_SNAPSHOT,
-                { path },
+                // An older runner ignores maxBytes and returns a snapshot only up to 8 KiB.
+                { path, maxBytes: MAX_SNAPSHOT_BYTES },
                 { signal: context.abortSignal, session },
                 this.scope,
             );

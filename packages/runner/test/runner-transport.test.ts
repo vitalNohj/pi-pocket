@@ -2,7 +2,7 @@
 // external DNS or the machine's Tailscale. Neither dependency can be injected into checkTransport.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { checkTransport, loopback } from "../src/transport.ts";
+import { checkTransport, loopback, refusal } from "../src/transport.ts";
 
 describe("runner loopback addresses", () => {
     for (const address of [
@@ -73,6 +73,18 @@ describe("runner transport checks", () => {
             ok: true,
             why: "https",
         });
+    });
+
+    it("explains the plain HTTP refusal without misrepresenting the sealed link", () => {
+        const message = refusal("http://203.0.113.5", {
+            ok: false,
+            address: "203.0.113.5",
+            tailscale: "not-a-peer",
+        });
+
+        assert.match(message, /exposes connection details/);
+        assert.match(message, /runner link still encrypts commands/);
+        assert.ok(message.includes("Use an https:// address or Tailscale"));
     });
 
     // Public HTTP addresses still invoke tailscalePeer even with allowHttp=true. Unresolved HTTP

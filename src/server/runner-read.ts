@@ -10,8 +10,20 @@ import {
 } from "@earendil-works/pi-durable/env";
 import { RunnerEnv } from "./runners.ts";
 
-/** Give the stock read tool one immutable view of a small runner file. No other tool uses this environment. */
+/** Give the stock read tool one immutable view of a small runner file. */
 export function withRunnerRead<T extends ToolRegistration>(tool: T): T {
+    return withSnapshot(tool, readEnv);
+}
+
+/** Reuse the snapshot only for the read of this edit, after the stock tool takes its mutation slot. */
+export function withRunnerEdit<T extends ToolRegistration>(tool: T): T {
+    return withSnapshot(tool, editEnv);
+}
+
+function withSnapshot<T extends ToolRegistration>(
+    tool: T,
+    wrapEnv: (base: RunnerEnv) => ExecutionEnv,
+): T {
     return {
         ...tool,
         execute(args, api, context) {
@@ -21,7 +33,7 @@ export function withRunnerRead<T extends ToolRegistration>(tool: T): T {
                 return tool.execute(args, api, context);
             }
 
-            const env = snapshotEnv(base);
+            const env = wrapEnv(base);
 
             return tool.execute(
                 args,
@@ -36,7 +48,7 @@ export function withRunnerRead<T extends ToolRegistration>(tool: T): T {
     };
 }
 
-function snapshotEnv(base: RunnerEnv): ExecutionEnv {
+function readEnv(base: RunnerEnv): ExecutionEnv {
     let probed = false;
     let snapshot: Awaited<ReturnType<RunnerEnv["readSnapshot"]>>;
 
@@ -86,14 +98,44 @@ function snapshotEnv(base: RunnerEnv): ExecutionEnv {
         return cancelled(path, context) ?? ok(reader);
     };
 
+    return withMethods(base, { exists, openBinaryReader });
+}
+
+function editEnv(base: RunnerEnv): ExecutionEnv {
+    let snapshot: Awaited<ReturnType<RunnerEnv["readSnapshot"]>>;
+
+    const fileInfo: ExecutionEnv["fileInfo"] = async (path, context) => {
+        // A decline (large file, alias, or old runner) does not cost an extra round trip.
+        const [info, captured] = await Promise.all([
+            base.fileInfo(path, context),
+            base.readSnapshot(path, context),
+        ]);
+
+        snapshot = info.ok && info.value.kind === "file" ? captured : undefined;
+
+        return info;
+    };
+
+    const readTextFile: ExecutionEnv["readTextFile"] = async (path, context) => {
+        const captured = snapshot;
+
+        snapshot = undefined;
+
+        if (captured?.info.path !== path) {
+            return base.readTextFile(path, context);
+        }
+
+        return cancelled(path, context) ?? ok(Buffer.from(captured.bytes).toString("utf8"));
+    };
+
+    return withMethods(base, { fileInfo, readTextFile });
+}
+
+function withMethods(base: RunnerEnv, methods: Partial<ExecutionEnv>): ExecutionEnv {
     return new Proxy(base, {
         get(target, property) {
-            if (property === "exists") {
-                return exists;
-            }
-
-            if (property === "openBinaryReader") {
-                return openBinaryReader;
+            if (Object.hasOwn(methods, property)) {
+                return Reflect.get(methods, property) as unknown;
             }
 
             const value = Reflect.get(target, property, target) as unknown;
