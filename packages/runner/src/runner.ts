@@ -20,7 +20,8 @@ import {
     SESSION_DIR_VARIABLE,
     readPiTail,
     titleOf,
-} from "../server/pi-session-files.ts";
+} from "./pi-session-files.ts";
+import { ALONE } from "./invoked.ts";
 import { privateFolders } from "./private-folders.ts";
 import { localDaemon } from "@earendil-works/pi-env";
 import { WebSocket as RawWebSocket } from "ws";
@@ -86,7 +87,7 @@ const TOOLS_FOR_MS = 5 * 60_000;
 const PING_MS = 10_000;
 const SILENT_MS = 30_000;
 
-/** What a runner needs to connect: kept in `runner.json` by `pi-pocket runner link`. */
+/** What a runner needs to connect: kept in `runner.json` by `pi-pocket-runner link`. */
 export type RunnerLinkFile = {
     server: string;
     id: string;
@@ -115,6 +116,8 @@ export type RunnerSettings = {
 export type RunnerOptions = {
     link: RunnerLinkFile;
     version: string;
+    /** The command that its texts name (`invoked.ts`). Default: `pi-pocket-runner`. */
+    command?: string;
     /** The pi-env daemon to start; default the one packaged for this computer. */
     daemon?: string;
     /** Pi's session folder; tests keep it separate from the person's own sessions. */
@@ -566,7 +569,7 @@ export class Runner {
 
                 // Refused: it tries again, since Tailscale may only be starting (at boot, say), and says why once.
                 if (!transport.ok) {
-                    const why = refusal(this.#options.link.server, transport);
+                    const why = refusal(this.#options.link.server, transport, this.#command());
 
                     if (why !== this.#refused) {
                         this.#refused = why;
@@ -903,15 +906,21 @@ export class Runner {
         return welcomed;
     }
 
+    /** The command that texts tell a person to run: how this runner was started (`invoked.ts`). */
+    #command(): string {
+        return this.#options.command ?? ALONE.command;
+    }
+
     /** What to say when this computer's server sent the runner away for good (`stop`), with the server's `reason`. */
     #sentAway(stop: Stop, reason: string): string {
         const server = this.#options.link.server;
+        const command = this.#command();
 
         switch (stop) {
             case "removed":
-                return `${server} removed this computer. To link again, run pi-pocket runner and choose Link again.`;
+                return `${server} removed this computer. To link again, run ${command} and choose Link again.`;
             case "relinked":
-                return `${server} linked this computer again with a new key, so this runner's key no longer works. Run pi-pocket runner and choose Link again, with a new code from Menu > Runners.`;
+                return `${server} linked this computer again with a new key, so this runner's key no longer works. Run ${command} and choose Link again, with a new code from Menu > Runners.`;
             case "replaced":
                 return "Another runner is using this computer's link. This runner has stopped. Stop the other runner before you start this one again.";
             case "protocol":

@@ -1,3 +1,4 @@
+// This file exists twice: src/server/runner-link/tunnels.ts and packages/runner/src/tunnels.ts. test/runner-copies.test.ts keeps them the same.
 /**
  * Network streams on a runner link, shared by both sides (`protocol.ts`): TCP connections that the runner opens on its
  * computer for the server, so a session's browser reaches the web from that computer.

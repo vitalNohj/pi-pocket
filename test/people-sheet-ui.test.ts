@@ -3,7 +3,7 @@
 // they may use it, and under it one tree of that computer alone, with the rows of the Files panel's: the folders given
 // to them there, closed until opened, and in each the sessions they have in it. Each row is taken back alone. A runner
 // someone else linked is the owner's to read in Runners, and no choice in People.
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import {
     type App,
     answerRequests,

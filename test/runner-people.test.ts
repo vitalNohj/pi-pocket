@@ -1,5 +1,5 @@
 // Per-person access to linked computers: a real App, a real WebSocket, and a real runner with its pi-env daemon.
-import { linkInProcess, newIdentity } from "../src/runner/secure-link.ts";
+import { linkInProcess, newIdentity } from "../src/server/runner-link/secure-link.ts";
 import {
     type App,
     cleanUp,
@@ -21,7 +21,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
 import { THIS_SERVER } from "../src/server/access.ts";
 import { ConfigStore, type User } from "../src/server/config.ts";
 import { SessionsDoc, SubagentsDoc } from "../src/server/docs.ts";

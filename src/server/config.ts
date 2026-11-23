@@ -15,7 +15,7 @@ import {
     type ComputerRight,
     type PersonRight,
 } from "./rights.ts";
-import { codeHash, newIdentity, type Identity } from "../runner/secure-link.ts";
+import { codeHash, newIdentity, type Identity } from "./runner-link/secure-link.ts";
 
 /** The repository root: `web/` and `src/` live here, and `node_modules/` too, except in an npx or local install. */
 export const APP_ROOT = fileURLToPath(new URL("../..", import.meta.url));

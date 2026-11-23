@@ -1,0 +1,115 @@
+# Builds the runner's package (packages/runner/, the npm package pi-pocket-runner) and checks it: its type check, its
+# tests, and the tests of the line between it and Pi Pocket (the files that exist twice, the imports, the bridge, and
+# the install line). It packs the tarball, installs it in an empty prefix, runs `pi-pocket-runner --help` from there,
+# and keeps the tarball as the artifact pi-pocket-runner. For a published release, it also attaches the tarball to the
+# release. It publishes nothing to npm.
+#
+# Publishing to npm comes later, as a job here after `build`, the way publish.yml publishes Pi Pocket. Before that, the
+# npm owner must set up trusted publishing for the new package pi-pocket-runner on npmjs.com (Settings → Trusted
+# publishing → GitHub Actions, repository TannerMidd/pi-pocket, workflow runner.yml).
+name: Runner
+
+on:
+    pull_request:
+        paths:
+            - "packages/runner/**"
+            - "src/server/runner-link/**"
+            - "src/server/pi-session-files.ts"
+            - "src/runner/**"
+            - "bin/strip-types.js"
+            - "bin/pi-pocket.js"
+            - "test/runner-*.test.ts"
+            - "package.json"
+            - "package-lock.json"
+            - ".github/workflows/runner.yml"
+    push:
+        branches: [main, live]
+        paths:
+            - "packages/runner/**"
+            - "src/server/runner-link/**"
+            - "src/server/pi-session-files.ts"
+            - "src/runner/**"
+            - "bin/strip-types.js"
+            - "bin/pi-pocket.js"
+            - "test/runner-*.test.ts"
+            - "package.json"
+            - "package-lock.json"
+            - ".github/workflows/runner.yml"
+    workflow_dispatch:
+    release:
+        types: [published]
+
+permissions:
+    contents: read
+
+concurrency:
+    group: runner-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    build:
+        name: Check, test, and pack
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              with:
+                  node-version: 24
+                  cache: npm
+
+            - run: npm ci
+
+            - name: The runner's type check
+              run: npm run check --workspace pi-pocket-runner
+
+            - name: The runner's tests, and the tests of its line with Pi Pocket
+              run: >
+                  node --test --test-concurrency=2 --test-timeout=240000
+                  packages/runner/test/*.test.ts
+                  test/runner-copies.test.ts
+                  test/runner-boundary.test.ts
+                  test/runner-bridge.test.ts
+                  test/runner-install.test.ts
+
+            - name: Pack the runner
+              run: |
+                  mkdir -p "$RUNNER_TEMP/out"
+                  npm pack --workspace pi-pocket-runner --pack-destination "$RUNNER_TEMP/out"
+                  ls -l "$RUNNER_TEMP/out"
+
+            # The tarball alone, as `npm install -g pi-pocket-runner` gets it: no checkout, no workspace.
+            - name: Install the tarball in an empty prefix and run it
+              working-directory: ${{ runner.temp }}
+              run: |
+                  npm install -g --prefix "$RUNNER_TEMP/prefix" --no-audit --no-fund "$RUNNER_TEMP"/out/pi-pocket-runner-*.tgz
+                  "$RUNNER_TEMP/prefix/bin/pi-pocket-runner" --help
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: pi-pocket-runner
+                  path: ${{ runner.temp }}/out/pi-pocket-runner-*.tgz
+                  if-no-files-found: error
+                  retention-days: 14
+
+    attach:
+        needs: build
+        if: github.event_name == 'release'
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: pi-pocket-runner
+                  path: out
+
+            - name: Attach the runner's tarball to the release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  TAG: ${{ github.event.release.tag_name }}
+              run: gh release upload "$TAG" out/pi-pocket-runner-*.tgz --repo "$GITHUB_REPOSITORY" --clobber

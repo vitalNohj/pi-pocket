@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { THIS_SERVER } from "../src/server/access.ts";
 import { BackgroundDoc, HooksDoc, ScheduleDoc, SessionsDoc } from "../src/server/docs.ts";
 

@@ -4,7 +4,7 @@
  * pi-env daemon on this machine, with its own home folder, so nothing comes from the server's.
  */
 import assert from "node:assert/strict";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -18,7 +18,7 @@ import {
     fauxToolCall,
     type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Runner, type RunnerOptions } from "../src/runner/runner.ts";
+import { Runner, type RunnerOptions } from "../packages/runner/src/runner.ts";
 import { attachedFile } from "../src/server/commands.ts";
 import { attachmentsHeading, splitAttachments } from "../src/server/entry-format.ts";
 import { SessionsDoc } from "../src/server/docs.ts";

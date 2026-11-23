@@ -12,6 +12,8 @@ FROM node:24-bookworm-slim AS deps
 
 WORKDIR /app
 COPY package.json package-lock.json ./
+# The runner is a workspace (packages/runner/): npm ci needs its package.json to install its dependencies.
+COPY packages/runner/package.json ./packages/runner/
 # No native modules: a plain install is enough, and the runtime image stays small.
 RUN npm ci --omit=dev --ignore-scripts=false \
     && npm cache clean --force
@@ -64,6 +66,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json ./
 COPY bin ./bin
 COPY src ./src
+COPY packages ./packages
 COPY web ./web
 COPY docs ./docs
 COPY types ./types

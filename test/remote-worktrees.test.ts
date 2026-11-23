@@ -1,6 +1,6 @@
 // Worktrees on a linked computer: the real runner gate, git, copies, tools, forks, and removal on its disk.
 import assert from "node:assert/strict";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
 import { localAccess, Unreachable } from "../src/server/folder-access.ts";
 import { removeWorktree } from "../src/server/worktrees.ts";
 import {

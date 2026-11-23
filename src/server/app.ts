@@ -205,7 +205,7 @@ import { Watches } from "./watches.ts";
 import { Workspace } from "./workspace.ts";
 import { REMOTE_EXTENSIONS, REMOTE_SUBAGENT_WITHOUT, Runners } from "./runners.ts";
 import { AccessPolicy, forgetPerson, inFolder, noteShares, THIS_SERVER } from "./access.ts";
-import { realFolder } from "../runner/folders.ts";
+import { realFolder } from "./runner-link/folders.ts";
 import { FolderRequests } from "./folder-requests.ts";
 import { TrustRequests, type TrustWait } from "./trust-requests.ts";
 import { checkedContext } from "./admission.ts";

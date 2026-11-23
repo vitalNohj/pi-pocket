@@ -1,7 +1,7 @@
 // "This server" in the Runners sheet: the server as a computer (`access.ts` `THIS_SERVER`), with the owner as its
 // linker. The owner chooses its people, its rules, and its saved folders over the same routes as a runner's; it cannot be
 // removed, and nobody else learns of its people or folders, also not from live updates.
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import {
     type App,
     cleanUp,

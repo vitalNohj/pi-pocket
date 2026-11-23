@@ -3,7 +3,7 @@
 // runner, and never this server's disk. Here the "other computer" is this one, in a git repository of its own; with the
 // runner stopped, the folder is still on this disk, so anything that falls back to it would still answer.
 import assert from "node:assert/strict";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -11,7 +11,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
 import { HttpError } from "../src/server/errors.ts";
 import {
     addPerson,

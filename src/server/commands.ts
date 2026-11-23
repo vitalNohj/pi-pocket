@@ -42,8 +42,8 @@ import {
     type Tx,
     type UserInput,
 } from "@earendil-works/pi-durable";
-import { realFolder } from "../runner/folders.ts";
-import type { SessionScope } from "../runner/protocol.ts";
+import { realFolder } from "./runner-link/folders.ts";
+import type { SessionScope } from "./runner-link/protocol.ts";
 import { checkedContext } from "./admission.ts";
 import type { Approved, PocketApp } from "./app.ts";
 import type { User } from "./config.ts";

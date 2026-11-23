@@ -2,7 +2,7 @@
 // in charge of it, and what the server was doing there stops, while its runner stays connected and everyone keeps
 // seeing what they saw. A rule, not a record: it ends when its linker prompts again. A real App, a real WebSocket, and
 // a real runner with its pi-env daemon, linked by a guest.
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import {
     type App,
     cleanUp,
@@ -21,7 +21,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
 import type { User } from "../src/server/config.ts";
 import { createHandler } from "../src/server/http.ts";
 import type { RunnerView } from "../src/server/runners.ts";

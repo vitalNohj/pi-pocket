@@ -1,3 +1,4 @@
+// This file exists twice: src/server/runner-link/transport.ts and packages/runner/src/transport.ts. test/runner-copies.test.ts keeps them the same.
 /**
  * Whether the runner may talk to its server over plain HTTP. HTTPS is always fine. Plain HTTP carries the computer's
  * key and every command in the clear, so it is allowed only where nobody else can read it:
@@ -221,7 +222,14 @@ export function unsafe(server: string, transport: Extract<Transport, { ok: false
     return `${server} uses plain HTTP: anyone on the network could read this computer's key and the commands it runs.\n${tailscale}`;
 }
 
-/** Why the runner will not use plain HTTP to `server`, and what to do: for its log, `link`, and the desktop app. */
-export function refusal(server: string, transport: Extract<Transport, { ok: false }>): string {
-    return `${unsafe(server, transport)}\nUse an https:// address or Tailscale. To allow plain HTTP to this server anyway, link with: pi-pocket runner link <server> <code> --allow-http`;
+/**
+ * Why the runner will not use plain HTTP to `server`, and what to do: for its log, `link`, and the desktop app.
+ * `command`: what a person types to run the runner here (`pi-pocket-runner`, or `pi-pocket runner`).
+ */
+export function refusal(
+    server: string,
+    transport: Extract<Transport, { ok: false }>,
+    command = "pi-pocket-runner",
+): string {
+    return `${unsafe(server, transport)}\nUse an https:// address or Tailscale. To allow plain HTTP to this server anyway, link with: ${command} link <server> <code> --allow-http`;
 }

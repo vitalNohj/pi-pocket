@@ -1,18 +1,12 @@
-// Runner-side request checks (`src/runner/request-gate.ts`), using real frames and folders. The runner trusts its
+// Runner-side request checks (`src/request-gate.ts`), using real frames and folders. The runner trusts its
 // server on who may use which session; it still keeps each request inside the folder its session names.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it, type TestContext } from "node:test";
-import {
-    FRAME,
-    frame,
-    readFrame,
-    SESSION_FIELD,
-    type SessionScope,
-} from "../src/runner/protocol.ts";
-import { RequestGate } from "../src/runner/request-gate.ts";
+import { FRAME, frame, readFrame, SESSION_FIELD, type SessionScope } from "../src/protocol.ts";
+import { RequestGate } from "../src/request-gate.ts";
 
 const root = mkdtempSync(join(tmpdir(), "pi-pocket-request-gate-"));
 

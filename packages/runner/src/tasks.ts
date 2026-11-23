@@ -20,11 +20,12 @@ export type TaskInput = {
 
 /**
  * The task host's `--import` flags: this process's own (never its inspector or test-runner flags), and from an npm install
- * (a node_modules folder, where Node strips no types) the hook that does (`bin/strip-types.js`), which `bin/pi-pocket.js`
- * loads in its own process rather than with a flag, so `process.execArgv` does not have it.
+ * (a node_modules folder, where Node strips no types) the hook that does (`bin/strip-types.js`), which the package's
+ * entry (`main.js`) loads in its own process rather than with a flag, so `process.execArgv` does not have it. The
+ * package's root is one folder up from `src/`.
  */
-export function taskImports(root = fileURLToPath(new URL("../..", import.meta.url))): string[] {
-    const hook = new URL("../../bin/strip-types.js", import.meta.url).href;
+export function taskImports(root = fileURLToPath(new URL("..", import.meta.url))): string[] {
+    const hook = new URL("../bin/strip-types.js", import.meta.url).href;
     const args: string[] = root.split(sep).includes("node_modules") ? ["--import", hook] : [];
 
     for (let index = 0; index < process.execArgv.length; index++) {

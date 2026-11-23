@@ -1,3 +1,4 @@
+// This file exists twice: src/server/runner-link/secure-link.ts and packages/runner/src/secure-link.ts. test/runner-copies.test.ts keeps them the same.
 /**
  * The runner link's own security, on top of HTTPS: like SSH, each side holds a key, and every message between them is
  * encrypted and signed with keys only they hold. A server in the middle, even one with a valid certificate, can

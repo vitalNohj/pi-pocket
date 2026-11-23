@@ -1,7 +1,7 @@
-// Whether sessions work on the computer, for a program that runs the runner (`src/runner/activity.ts`): the smoothing
+// Whether sessions work on the computer, for a program that runs the runner (`packages/runner/src/activity.ts`): the smoothing
 // on its own with a clock of its own, then a real runner with the server's `Runners` and the real pi-env daemon.
 import assert from "node:assert/strict";
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -10,9 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { Activity, activityLine, type ActivityState } from "../src/runner/activity.ts";
-import { realFolder } from "../src/runner/folders.ts";
-import { Runner } from "../src/runner/runner.ts";
+import { Activity, activityLine, type ActivityState } from "../packages/runner/src/activity.ts";
+import { realFolder } from "../src/server/runner-link/folders.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
 import { ConfigStore } from "../src/server/config.ts";
 import { Runners } from "../src/server/runners.ts";
 

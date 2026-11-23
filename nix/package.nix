@@ -40,6 +40,8 @@ stdenv.mkDerivation {
     fileset = lib.fileset.unions [
       ../bin
       ../src
+      # The runner, a workspace of the lock file (`pi-pocket runner` starts it).
+      ../packages
       ../web
       ../test
       ../docs
@@ -112,7 +114,7 @@ stdenv.mkDerivation {
     # node refuses to strip typescript under node_modules; keep the app outside it
     app="$out/share/pi-pocket"
     mkdir -p "$app" "$out/bin"
-    cp -r bin src web docs types node_modules package.json README.md AGENTS.md SECURITY.md LICENSE "$app/"
+    cp -r bin src packages web docs types node_modules package.json README.md AGENTS.md SECURITY.md LICENSE "$app/"
     # npm's hidden lock contains build-time tarball paths, not runtime dependencies
     rm -f "$app/node_modules/.package-lock.json"
 

@@ -1,10 +1,10 @@
-// Runner network stream flow control (`src/runner/tunnels.ts`) with half-open in-memory sockets.
+// Runner network stream flow control (`src/tunnels.ts`) with half-open in-memory sockets.
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { Duplex } from "node:stream";
 import { describe, it, type TestContext } from "node:test";
-import { type NetMessage, readStreamData } from "../src/runner/protocol.ts";
-import { MAX_STREAMS, StreamLink, WINDOW } from "../src/runner/tunnels.ts";
+import { type NetMessage, readStreamData } from "../src/protocol.ts";
+import { MAX_STREAMS, StreamLink, WINDOW } from "../src/tunnels.ts";
 
 /** Reading and writing are independent; a held write models a socket that has not consumed bytes. */
 class Socket extends Duplex {

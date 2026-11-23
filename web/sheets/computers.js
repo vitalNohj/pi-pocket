@@ -87,12 +87,18 @@ function LinkSteps({ made, onDone }) {
         <div class="group-title">No runner there yet?</div>
         <ol class="runner-steps">
             <li>
-                <div>Install Pi Pocket (Node.js 22.19 or newer):</div>
-                <${Copyable} text=${`npm install -g ${made.package ?? "pi-pocket@latest"}`} />
+                <div>
+                    ${
+                        made.command === "pi-pocket-runner"
+                            ? "Install the runner (Node.js 22.19 or newer):"
+                            : "Install Pi Pocket (Node.js 22.19 or newer):"
+                    }
+                </div>
+                <${Copyable} text=${`npm install -g ${made.package}`} />
             </li>
             <li>
                 <div>Run the runner, choose Link this computer, and enter the address and code:</div>
-                <${Copyable} text="pi-pocket runner" />
+                <${Copyable} text=${made.command} />
             </li>
         </ol>
         <p class="muted small">
@@ -101,7 +107,7 @@ function LinkSteps({ made, onDone }) {
         ${
             made.fingerprint &&
             html`<p class="muted small">
-                This server's key: <code>${made.fingerprint}</code>. <code>pi-pocket runner status</code> on
+                This server's key: <code>${made.fingerprint}</code>. <code>${made.command} status</code> on
                 ${made.name} shows the same.
             </p>`
         }
@@ -455,7 +461,7 @@ function Overview({ computer }) {
                         computer.away
                             ? `${computer.name} is offline. Its sessions wait, and continue when it is back.`
                             : mine
-                              ? `${computer.name} is not connected. Start its runner: pi-pocket runner.`
+                              ? `${computer.name} is not connected. Start its runner there (pi-pocket-runner, or pi-pocket runner).`
                               : `${computer.name} is not connected.`
                     }
                 </div>

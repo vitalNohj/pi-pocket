@@ -1,3 +1,4 @@
+// This file exists twice: src/server/pi-session-files.ts and packages/runner/src/pi-session-files.ts. test/runner-copies.test.ts keeps them the same.
 /** Pure readers for Pi session files. Neither the server nor the runner writes these files. */
 import { createReadStream } from "node:fs";
 import { open } from "node:fs/promises";

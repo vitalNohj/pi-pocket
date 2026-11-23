@@ -1,5 +1,5 @@
 // Artifacts and kept images across a real runner link. The server must not fall back to its disk for session files.
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import {
     addPerson,
     type App,
@@ -30,7 +30,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
 import { createHandler } from "../src/server/http.ts";
 import { MAX_ASSET_BYTES, MAX_BYTES } from "../src/server/extensions/artifacts.ts";
 import { MAX_IMAGE_FILE } from "../src/server/http/assets.ts";

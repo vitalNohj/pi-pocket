@@ -1,4 +1,4 @@
-// Runner framing and reconnect byte accounting (`src/runner/protocol.ts`), without a WebSocket.
+// Runner framing and reconnect byte accounting (`src/protocol.ts`), without a WebSocket.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
@@ -11,7 +11,7 @@ import {
     Outbox,
     readData,
     readFrame,
-} from "../src/runner/protocol.ts";
+} from "../src/protocol.ts";
 
 describe("runner frames", () => {
     it("round-trips a frame's type, id, JSON, and binary payload", () => {

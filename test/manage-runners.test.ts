@@ -22,7 +22,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { newIdentity } from "../src/runner/secure-link.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { THIS_SERVER } from "../src/server/access.ts";
 import type { StoredRunner, User } from "../src/server/config.ts";
 import { HooksDoc } from "../src/server/docs.ts";

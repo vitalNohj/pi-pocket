@@ -2,7 +2,7 @@
 // are on that computer, so they go there, and only while that computer can be reached and the session's approval is
 // live for the owner, so nobody is asked to renew anything. Two computers: one the owner linked, and is in charge of,
 // and one a guest linked, where the owner is a person she chose.
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import {
     type App,
     cleanUp,
@@ -22,7 +22,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner } from "../src/runner/runner.ts";
+import { Runner } from "../packages/runner/src/runner.ts";
 import type { User } from "../src/server/config.ts";
 import { BackgroundDoc, DeletedDoc } from "../src/server/docs.ts";
 import { createHandler } from "../src/server/http.ts";

@@ -25,7 +25,8 @@ if (fixed && (minor < fixed[0] || (minor === fixed[0] && patch < fixed[1]))) {
 // From an npm install, Node needs help to run TypeScript: strip-types.js gives it.
 await import("./strip-types.js");
 
-// `pi-pocket runner`: this computer runs another server's sessions' tools (`src/runner/main.ts`), no server here.
+// `pi-pocket runner`: this computer runs another server's sessions' tools, no server here. `src/runner/main.ts` starts
+// the runner (the package `pi-pocket-runner`) when it is here.
 if (process.argv[2] === "runner") {
     const { main } = await import("../src/runner/main.ts");
 

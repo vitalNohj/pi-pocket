@@ -1,8 +1,8 @@
-// A session's environment on another computer (`src/server/runners.ts`, `src/runner/`): the server's `RunnerEnv`, a
+// A session's environment on another computer (`src/server/runners.ts`, `packages/runner/`): the server's `RunnerEnv`, a
 // real WebSocket, the runner, and the real pi-env daemon, all on this machine. Pi Durable's own conformance suite checks
 // that it acts as `NodeExecutionEnv` does; the rest checks linking, keys, and what survives a drop.
 import assert from "node:assert/strict";
-import { linkInProcess, newIdentity, publicOf } from "../src/runner/secure-link.ts";
+import { linkInProcess, newIdentity, publicOf } from "../src/server/runner-link/secure-link.ts";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -14,9 +14,9 @@ import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { folderContains, realFolder } from "../src/runner/folders.ts";
-import { Runner, type RunnerOptions, RunnerStopped } from "../src/runner/runner.ts";
-import { checkTools, toolsStatus } from "../src/runner/tools.ts";
+import { folderContains, realFolder } from "../src/server/runner-link/folders.ts";
+import { Runner, type RunnerOptions, RunnerStopped } from "../packages/runner/src/runner.ts";
+import { checkTools, toolsStatus } from "../packages/runner/src/tools.ts";
 import { ConfigStore } from "../src/server/config.ts";
 import { readableEntries, Runners } from "../src/server/runners.ts";
 
@@ -50,7 +50,7 @@ async function serve(): Promise<Setup> {
     return { server, address: `http://127.0.0.1:${port}`, config, runners, lines };
 }
 
-/** Link a computer the way `pi-pocket runner link` does, and start its runner. */
+/** Link a computer the way `pi-pocket-runner link` does, and start its runner. */
 function startRunner(
     setup: Setup,
     name: string,

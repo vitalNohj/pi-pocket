@@ -1,3 +1,4 @@
+// This file exists twice: src/server/runner-link/folders.ts and packages/runner/src/folders.ts. test/runner-copies.test.ts keeps them the same.
 /** Folder paths as this computer compares them: its own case rules, its own real paths. */
 import { realpath } from "node:fs/promises";
 import { posix, win32 } from "node:path";

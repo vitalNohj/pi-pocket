@@ -1,5 +1,5 @@
 // Real app, runner, and pi-env: task lifetime belongs only to the runner process.
-import { linkInProcess } from "../src/runner/secure-link.ts";
+import { linkInProcess } from "../src/server/runner-link/secure-link.ts";
 import {
     type App,
     cleanUp,
@@ -22,8 +22,8 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { Runner, type RunnerOptions } from "../src/runner/runner.ts";
-import { taskImports } from "../src/runner/tasks.ts";
+import { Runner, type RunnerOptions } from "../packages/runner/src/runner.ts";
+import { taskImports } from "../packages/runner/src/tasks.ts";
 import { RemoteBackground } from "../src/server/background-remote.ts";
 import { BackgroundDoc } from "../src/server/docs.ts";
 import { createHandler } from "../src/server/http.ts";
@@ -499,7 +499,7 @@ test("SIGKILL of a separate runner stops running and ended task groups within 7 
     await runner.stop();
     await until(() => !app.runners.link(computer).online, "runner offline");
     const source = `
-        import { Runner } from ${JSON.stringify(new URL("../src/runner/runner.ts", import.meta.url).href)};
+        import { Runner } from ${JSON.stringify(new URL("../packages/runner/src/runner.ts", import.meta.url).href)};
         const runner = new Runner(${JSON.stringify(options)});
         process.stdin.resume();
         process.stdin.once("end", () => void runner.stop());

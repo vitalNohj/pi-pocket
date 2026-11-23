@@ -4,8 +4,8 @@
  * connection: when the connection drops, every stream ends, and the browser opens them again.
  */
 import type { Duplex } from "node:stream";
-import type { NetFailure, NetMessage } from "../runner/protocol.ts";
-import { CONNECT_MS, MAX_STREAMS, StreamLink } from "../runner/tunnels.ts";
+import type { NetFailure, NetMessage } from "./runner-link/protocol.ts";
+import { CONNECT_MS, MAX_STREAMS, StreamLink } from "./runner-link/tunnels.ts";
 
 /** Why a connection through a computer did not open: its runner's reason, or the link's. */
 export type NetProblem = NetFailure | "offline";
@@ -23,7 +23,7 @@ export class NetError extends Error {
 export type OpenOptions = {
     /** Bytes for the computer, ahead of what the socket gives. */
     first?: Buffer[];
-    session?: import("../runner/protocol.ts").SessionScope;
+    session?: import("./runner-link/protocol.ts").SessionScope;
     /** Called as the computer connected, before anything from it reaches the socket: write a reply, say. */
     opened?: () => void;
 };
