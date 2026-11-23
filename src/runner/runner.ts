@@ -597,7 +597,7 @@ export class Runner {
 
                 if (this.#attempt === 0 && transport.why === "allowed") {
                     this.#log(
-                        `Warning: plain HTTP to ${this.#options.link.server}, as allowed in this runner's settings. Anyone on the network can read this computer's key and its commands.`,
+                        `Warning: plain HTTP to ${this.#options.link.server}, as allowed in this runner's settings. This exposes connection details, but the runner link still encrypts commands.`,
                     );
                 }
 
