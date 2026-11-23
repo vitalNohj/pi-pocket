@@ -523,18 +523,20 @@ test(
             user.id,
         );
 
-        const places = ".sheet-host:not(.leaving) .fp-places";
+        // The links of the sheet's bottom row: Manage runners… is there too, for who manages runners.
+        const links = ".sheet-host:not(.leaving) .fp-options";
 
         const option = async (): Promise<string | null> => {
             await guestPage.press("Alt+n");
-            assert.ok(
-                await guestPage.waitFor({ selector: places }),
-                "the New session folder sheet",
-            );
+            assert.ok(await guestPage.waitFor({ selector: links }), "the New session folder sheet");
 
             return JSON.parse(
                 await guestPage.evaluate(`
-                return JSON.stringify(document.querySelector(${JSON.stringify(`${places} .fp-pi`)})?.textContent.trim() ?? null);
+                return JSON.stringify(
+                    [...document.querySelectorAll(${JSON.stringify(`${links} .fp-link`)})]
+                        .map((each) => each.textContent.trim())
+                        .find((each) => each.startsWith("Continue a Pi session")) ?? null,
+                );
             `),
             ) as string | null;
         };
