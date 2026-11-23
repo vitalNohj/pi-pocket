@@ -45,6 +45,13 @@ const route: FauxResponseStep = (request) => {
         });
     }
 
+    if (text.startsWith("remember ")) {
+        return fauxAssistantMessage(
+            [fauxToolCall("memory", { action: "add", text: text.slice(9), scope: "project" })],
+            { stopReason: "toolUse" },
+        );
+    }
+
     if (text === "ask me") {
         const options = [
             { label: "Postgres", description: "One server" },
@@ -777,6 +784,106 @@ test("an open activity group draws a thought step", real, async () => {
         "the thought step in the open group",
     );
 });
+
+test(
+    "a folded group keeps a lesson that waits in sight, as a card or a badge, until it is decided",
+    real,
+    async () => {
+        // A real run: the model calls the memory tool, and the server stores and sends the call and its result.
+        const id = await newSession(app);
+
+        await fresh();
+        await goTo(id);
+        await app.commands.submit(id, owner(app), {
+            text: "remember Folded lesson that waits.",
+            requestId: "fold-lesson-1",
+        });
+        await until(
+            async () => (await modelTexts(app, id)).join().includes("echo:"),
+            "the run that saved the lesson",
+            20_000,
+        );
+        // A later turn: the group is no longer the newest, so it folds.
+        await app.commands.submit(id, owner(app), { text: "again", requestId: "fold-lesson-2" });
+        await until(
+            async () => (await modelTexts(app, id)).join().includes("echo: again"),
+            "the later turn",
+            20_000,
+        );
+
+        const lesson = (await app.memory.view(id, owner(app))).lessons.find(
+            (each) => each.text === "Folded lesson that waits.",
+        )!;
+
+        assert.equal(lesson.pending, true);
+
+        const shown = () =>
+            inPage<{ open: boolean; cards: string[]; badge: string | null }>(`
+            const group = document.querySelector(".activity");
+
+            return JSON.stringify({
+                open: group?.classList.contains("open") ?? false,
+                cards: [...document.querySelectorAll(".activity > .activity-lessons .lesson-text")]
+                    .map((each) => each.textContent),
+                badge: document.querySelector(".activity-head .activity-lessons-badge")?.textContent.trim() ?? null,
+            });
+        `);
+        const setLook = (value: string) =>
+            page.evaluate(`(async () => {
+            (await import("/theme.js")).setPrefs({ foldedLessons: "${value}" });
+        })()`);
+
+        try {
+            await until(async () => {
+                const now = await shown();
+
+                return !now.open && now.cards.join() === "Folded lesson that waits.";
+            }, "the folded group, with the lesson's card under its line");
+            await setLook("badge");
+            await until(async () => {
+                const now = await shown();
+
+                return now.cards.length === 0 && now.badge === "1 lesson waits";
+            }, "the badge on the line instead of the card");
+            // Opened, the card shows at its step alone.
+            await tap(".activity-head");
+            await until(async () => {
+                const now = await shown();
+
+                return now.open && now.badge === null && now.cards.length === 0;
+            }, "the open group, without the badge");
+            await tap(".activity-head");
+            await setLook("card");
+            await until(async () => (await shown()).cards.length === 1, "the card again");
+            // Decided elsewhere: the server's word takes it away, with no polling.
+            await app.memory.change(
+                id,
+                work,
+                { userId: owner(app).id, byPi: false, name: "Owner" },
+                lesson.id,
+                "approve",
+                { text: lesson.text },
+            );
+            await until(async () => {
+                const now = await shown();
+
+                return now.cards.length === 0 && now.badge === null;
+            }, "no card once the lesson is approved");
+        } finally {
+            await setLook("card");
+            // The tests after this one count the project's lessons.
+            await app.memory
+                .change(
+                    id,
+                    work,
+                    { userId: owner(app).id, byPi: false, name: "Owner" },
+                    lesson.id,
+                    "remove",
+                )
+                .catch(() => undefined);
+        }
+    },
+);
 
 test("earlier history does not repeat a message kept after compaction", real, async () => {
     await compactedView();
