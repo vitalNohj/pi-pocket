@@ -377,8 +377,8 @@ test("what a person may use is set in People, and shows in Runners", real, async
 
     await open("people");
     await show("Gina");
-    // Her page has two parts. Where she may work shows first; what she may do is beside it.
-    assert.deepEqual(await shownParts(), ["Folders and sessions (shown)", "Permissions"]);
+    // Her page has three parts. Where she may work shows first; what she may do is beside it, then the chat with her.
+    assert.deepEqual(await shownParts(), ["Folders and sessions (shown)", "Permissions", "Chat"]);
     assert.deepEqual(await switches(), [
         "Gina may use This server: off",
         "Gina may use Laptop: off",
@@ -3112,14 +3112,15 @@ test(
             await session("reach: Eli's own", eli.user.id);
             await app.commands.shareSession(owned, owner(app), [dee.user.id]);
 
-            // Dee is in charge of no computer. Her page for Eli has one part, so no tabs, and no button for the session
-            // open behind People: a session is given on its own row. Her one button is greyed out, and a line says why.
+            // Dee is in charge of no computer. Her page for Eli has what she gives him and the chat with him, and no
+            // button for the session open behind People: a session is given on its own row. Her one button is greyed
+            // out, and a line says why.
             const dees = await browserOf(dee.token);
 
             page = dees;
             await over("Eli", `/s/${String(first)}`);
             await until(async () => (await buttons()).length === 1, "her one button");
-            assert.deepEqual(await shownParts(), []);
+            assert.deepEqual(await shownParts(), ["Folders and sessions (shown)", "Chat"]);
             assert.deepEqual(await buttons(), ["Invite to your runner (disabled)"]);
             assert.match(await text(), /You have no runner of your own\./);
             assert.doesNotMatch(await pane(), /Invite to your session|Open a session/);
@@ -3272,7 +3273,11 @@ test(
                 async () => (await folds()).some((each) => each.startsWith(`${group}: 1 of `)),
                 "his sessions on this server",
             );
-            assert.deepEqual(await shownParts(), ["Folders and sessions (shown)", "Permissions"]);
+            assert.deepEqual(await shownParts(), [
+                "Folders and sessions (shown)",
+                "Permissions",
+                "Chat",
+            ]);
             assert.deepEqual(await buttons(), [], "no button over the trees");
             assert.doesNotMatch(await pane(), /Invite to your session|Open a session/);
             await fold(group);

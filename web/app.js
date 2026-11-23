@@ -1002,6 +1002,15 @@ if (new URLSearchParams(location.search).has("chat")) {
     openSheet({ type: "chat" });
 }
 
+// A chat with one person's notification opens it, on their page in People: `/?direct=<their id>`.
+const direct = new URLSearchParams(location.search).get("direct");
+
+if (direct) {
+    skipSetupPrompt();
+    replaceAddress(location.pathname);
+    openSheet({ type: "people", person: direct, part: "chat" });
+}
+
 // PiP's notifications open its panel, over whatever was open: `/?pip=1`. Opened once the server says PiP is here.
 if (new URLSearchParams(location.search).has("pip")) {
     skipSetupPrompt();

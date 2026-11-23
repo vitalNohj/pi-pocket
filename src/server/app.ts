@@ -62,6 +62,7 @@ import { Browsers } from "./browser.ts";
 import type { BrowserState } from "./browser/page.ts";
 import { Collab, REACTIONS } from "./collab.ts";
 import { Commands } from "./commands.ts";
+import { Direct } from "./direct.ts";
 import { ExtensionSessions } from "./extension-sessions.ts";
 import { LinkedSessions } from "./linked-sessions.ts";
 import { removeAvatar, saveAvatar } from "./avatars.ts";
@@ -97,6 +98,8 @@ import {
     ChatDoc,
     type ChatMessage,
     DecisionsDoc,
+    DirectIndexDoc,
+    type DirectThread,
     type FolderFavorites as FolderFavoritesValue,
     DeletedDoc,
     FolderFavoritesDoc,
@@ -621,6 +624,8 @@ export class PocketApp {
     readonly linkedSessions = new LinkedSessions(this);
     readonly extensionSessions = new ExtensionSessions(this);
     readonly collab = new Collab(this);
+    /** Chat between two people, on a person's page in People. */
+    readonly direct = new Direct(this);
     readonly alerts = new Alerts(this);
     readonly providers = new Providers(this);
     /** OpenAI-compatible endpoints the owner adds in the Providers sheet, kept in Pi's `models.json`. */
@@ -1569,6 +1574,7 @@ export class PocketApp {
     async #recover(storage: Storage): Promise<ConversationId[]> {
         this.#sessions = { ...((await this.harness.snapshot(SessionsDoc, context))?.items ?? {}) };
         this.#noteRemoved((await this.harness.snapshot(DeletedDoc, context))?.items);
+        this.direct.load(await this.harness.snapshot(DirectIndexDoc, context));
         const conversations: ConversationId[] = [];
         const unrecorded = new Map<ConversationId, Missing[]>();
         let cursor: Cursor | undefined;
@@ -1937,6 +1943,8 @@ export class PocketApp {
             }
         } else if (kind === FolderFavoritesDoc.definition.kind) {
             this.folderFavorites.committed(value as FolderFavoritesValue | null);
+        } else if (kind === DirectIndexDoc.definition.kind) {
+            this.direct.committed(value as { threads: Record<string, DirectThread> } | null);
         } else if (kind === PinnedSessionsDoc.definition.kind) {
             this.pinnedSessions.committed(value as PinnedSessionsValue | null);
         } else if (kind === MemoryDoc.definition.kind) {
@@ -2580,6 +2588,7 @@ export class PocketApp {
         client.send("hello", this.#helloFor(client, hello));
         this.#sendSessions(client, this.sessions(client.user));
         this.#sendPip(client);
+        this.direct.tell(client);
 
         if (this.policy.managesServer(client.user) && this.themes.failure !== undefined) {
             client.send("notice", { level: "warning", message: this.themes.failure });
@@ -3035,6 +3044,17 @@ export class PocketApp {
         return false;
     }
 
+    /** Has this person a tab in view now, whatever it shows? A chat with one person pushes only when not. */
+    looking(userId: string): boolean {
+        for (const client of this.#clients) {
+            if (client.user.id === userId && client.visible !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** Change someone's name: shown at once on their messages, in the people lists, and on their avatar. */
     rename(user: User, name: string): void {
         this.config.updateUser(user.id, { name });
@@ -3086,6 +3106,9 @@ export class PocketApp {
             this.#peopleTold.set(client, JSON.stringify(people));
             client.send("users", people);
         }
+
+        // A role change can add or take away a chat with one person, and its count.
+        this.direct.tell();
     }
 
     /**
@@ -3185,6 +3208,8 @@ export class PocketApp {
                 ...(each.paused !== undefined && (manages || viewer.id === each.id)
                     ? { paused: true }
                     : {}),
+                // Whether this viewer may chat with them (`direct.ts`): the Chat tab on their page.
+                ...(this.policy.mayMessage(viewer, each) ? { mayMessage: true } : {}),
                 // What this viewer asked for access with (`requestAccess`), for who manages people, who answers it, and
                 // for themselves.
                 ...(each.accessRequest !== undefined && (manages || viewer.id === each.id)
@@ -4826,6 +4851,9 @@ export class PocketApp {
         for (const person of left) {
             await this.handOver(person);
         }
+
+        // Their chats with one person too.
+        await this.direct.forgetGone();
     }
 
     /** Each person's tabs hear the approvals they may list. */
@@ -6959,6 +6987,7 @@ export class PocketApp {
         this.runners.changed();
         removeAvatar(this.dataDir, userId);
         this.pushStore?.removeUser(userId);
+        await this.direct.forget(userId);
         this.#peopleChanged();
     }
 

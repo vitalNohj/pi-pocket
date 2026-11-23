@@ -486,6 +486,27 @@ export class AccessPolicy {
     }
 
     /**
+     * May `a` and `b` chat with one another (`direct.ts`): two different people, each the owner or a user, and neither
+     * held to sessions. A viewer has no such chat, and nobody has one with a viewer. Read from the live records, so a
+     * person made a viewer loses it at once; their threads stay, for when they are a user again.
+     */
+    mayMessage(a: Pick<Person, "id">, b: Pick<Person, "id">): boolean {
+        const current = this.#current(a);
+        const other = this.#current(b);
+
+        if (current === undefined || other === undefined || current.id === other.id) {
+            return false;
+        }
+
+        return (
+            current.role !== "viewer" &&
+            other.role !== "viewer" &&
+            current.sessions === undefined &&
+            other.sessions === undefined
+        );
+    }
+
+    /**
      * May `person` use a workspace a provider module opens (a URI, not a folder on a computer): the owner alone, as its
      * provider, not this policy, decides what it reaches.
      */
@@ -1049,6 +1070,30 @@ export class AccessPolicy {
     requireManagesServer(person: Pick<Person, "id">): void {
         if (!this.managesServer(person)) {
             throw new HttpError(403, "Only someone who manages the server can do that.");
+        }
+    }
+
+    /**
+     * Refuse a chat between `a` and `b` (`mayMessage`): not for `a` at all, no such person, yourself, or not for the two
+     * of them. `a` is judged first: one who has no such chat is not told whether an id is someone's.
+     */
+    requireMessage(a: Pick<Person, "id">, b: Pick<Person, "id">): void {
+        const asker = this.#current(a);
+
+        if (asker === undefined || asker.role === "viewer" || asker.sessions !== undefined) {
+            throw new HttpError(403, "Chat with one person is for the owner and users.");
+        }
+
+        if (this.#current(b) === undefined) {
+            throw new HttpError(404, "No such person");
+        }
+
+        if (a.id === b.id) {
+            throw new HttpError(400, "That is you.");
+        }
+
+        if (!this.mayMessage(a, b)) {
+            throw new HttpError(403, "Chat with one person is for the owner and users.");
         }
     }
 

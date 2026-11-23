@@ -125,7 +125,7 @@ const KINDS = [
         "when a subagent or linked session makes no progress past its hard limit, on a computer you are in charge of",
     ],
     ["mention", "Mentions", "when someone writes @your name in a chat"],
-    ["chat", "Chat messages", "in sessions you take part in"],
+    ["chat", "Chat messages", "in sessions you take part in, and from one person to you"],
     [
         "security",
         "Security",

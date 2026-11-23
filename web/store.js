@@ -312,6 +312,10 @@ export const store = {
         view: emptyView(),
         /** How far this browser has read each session's chat, by id: what `pocket.chatRead.<id>` keeps. */
         chatReads: firstReads,
+        /** The chats with one person loaded in this tab (`sheets/direct.js`): the other person's id → messages. */
+        directs: {},
+        /** What this person has not read of each chat with one person, by the other's id: the server keeps it. */
+        directUnread: {},
         ...peopleFor(routeConversation(), firstReads),
         history: null,
         /** The id of the oldest transcript entry shown, or null for the newest `TRANSCRIPT_ROWS` rows. */
@@ -800,6 +804,87 @@ export function markChatRead() {
     setChatReadAt(conversationId, last);
 }
 
+/** The notices that announce messages of a chat with one person, by id: the other person's. Reading it takes them down. */
+const directNotices = new Map();
+
+/** The person whose chat with this one is on screen now (`directShown`), or null. */
+let directOnScreen = null;
+
+/**
+ * The loads of a chat with one person that are in flight, by the other person's id: the messages that came as events
+ * since the newest load began. Its answer can be from before them, so they are added to it (`actions.loadDirect`).
+ */
+const directLoads = new Map();
+
+/** A chat with one person is on screen: call when it shows, and what it returns when it goes. */
+export function directShown(person) {
+    directOnScreen = person;
+
+    return () => {
+        if (directOnScreen === person) {
+            directOnScreen = null;
+        }
+    };
+}
+
+/** Take down the notices of `person`'s messages: their chat is read. */
+export function dismissDirectNotices(person) {
+    for (const [id, from] of directNotices) {
+        if (from === person) {
+            dismiss(id);
+        }
+    }
+}
+
+/** Every message not read yet in this person's chats with one person, from all the others. */
+export function directUnreadTotal(state = store.state) {
+    return Object.values(state.directUnread ?? {}).reduce((sum, count) => sum + count, 0);
+}
+
+/** A message of a chat with one person, the sender's or the receiver's: added where it is loaded, and announced. */
+function applyDirect(data) {
+    const state = store.state;
+    const loaded = state.directs[data.person];
+
+    // A load in flight may answer with the thread as it was before these: kept for it.
+    directLoads.get(data.person)?.push(...data.messages);
+
+    if (loaded !== undefined) {
+        const known = new Set(loaded.map((message) => message.id));
+        const added = data.messages.filter((message) => !known.has(message.id));
+
+        // The server keeps the newest 1000 of a thread, and so does this tab.
+        if (added.length > 0) {
+            store.set((now) => ({
+                directs: {
+                    ...now.directs,
+                    [data.person]: [...now.directs[data.person], ...added].slice(-1000),
+                },
+            }));
+        }
+    }
+
+    const fresh = data.messages.filter((message) => message.userId === data.person);
+
+    if (fresh.length === 0 || directOnScreen === data.person) {
+        return;
+    }
+
+    const name = state.users.find((user) => user.id === data.person)?.name ?? "Someone";
+    const open = () => openSheet({ type: "people", person: data.person, part: "chat" });
+    let message;
+
+    if (fresh.length > 1) {
+        message = `${fresh.length} new messages from ${name}`;
+    } else {
+        const text = fresh[0].text.replace(/\s+/g, " ");
+
+        message = `${name}: ${text.length > 120 ? `${text.slice(0, 119)}…` : text}`;
+    }
+
+    directNotices.set(notify("info", message, open), data.person);
+}
+
 function applyChat(data) {
     const state = store.state;
 
@@ -959,6 +1044,7 @@ export function dismiss(id) {
     clearTimeout(countdowns.get(id)?.timer);
     countdowns.delete(id);
     chatNotices.delete(id);
+    directNotices.delete(id);
     store.set((state) => ({ notices: state.notices.filter((notice) => notice.id !== id) }));
 }
 
@@ -2250,6 +2336,9 @@ const handlers = {
     // PiP's conversation, while this tab's PiP panel is open.
     pipview: applyPipView,
     chat: applyChat,
+    // Chat with one person (`sheets/direct.js`): a new message of mine or to me, and what I have not read.
+    direct: applyDirect,
+    "direct-unread": (data) => store.set({ directUnread: data }),
     presence: (data) =>
         data.conversationId === store.state.conversationId && store.set({ presence: data.people }),
     notes: (data) =>
@@ -3273,6 +3362,50 @@ export const actions = {
             requestId: uid(),
             ...(quote ? { quote: { entryId: quote.entryId } } : {}),
         }),
+    /** Write to `person` in the chat between the two of us. */
+    direct: (person, text) =>
+        api(`users/${encodeURIComponent(person)}/chat`, { text, requestId: uid() }),
+    /**
+     * Load the chat with `person`: what the server has replaces what this tab had, with the messages that came as events
+     * while it was asked, which the answer may not have. Only the newest load of a chat counts: true once its thread is
+     * the one kept, false for a load that a newer one overtook.
+     */
+    loadDirect: async (person) => {
+        const since = [];
+
+        directLoads.set(person, since);
+
+        try {
+            const { messages } = await api(`users/${encodeURIComponent(person)}/chat`);
+
+            if (directLoads.get(person) !== since) {
+                return false;
+            }
+
+            const known = new Set(messages.map((message) => message.id));
+            const thread = [...messages];
+
+            for (const message of since) {
+                if (!known.has(message.id)) {
+                    known.add(message.id);
+                    thread.push(message);
+                }
+            }
+
+            // The server keeps the newest 1000 of a thread, and so does this tab.
+            store.set((state) => ({
+                directs: { ...state.directs, [person]: thread.slice(-1000) },
+            }));
+
+            return true;
+        } finally {
+            if (directLoads.get(person) === since) {
+                directLoads.delete(person);
+            }
+        }
+    },
+    /** Everything `person` wrote to me counts as read, on every device. */
+    readDirect: (person) => api(`users/${encodeURIComponent(person)}/chat/read`, {}),
     react: (entryId, emoji) => api(`c/${current()}/react`, { entryId, emoji }),
     pin: (target) => api(`c/${current()}/pin`, target),
     saveNotes: (text, rev) => api(`c/${current()}/notes`, { text, rev }),

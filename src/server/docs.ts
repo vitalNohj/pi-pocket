@@ -572,6 +572,46 @@ export const ChatDoc = defineDoc<{ messages: ChatMessage[] }>({
 /** Messages a chat keeps; older ones drop off. */
 export const CHAT_LIMIT = 500;
 
+export type DirectMessage = {
+    /** Made from the client's request id, so a retried send does not post twice. */
+    id: string;
+    /** Who wrote it: one of the two. */
+    userId: string;
+    text: string;
+    at: number;
+};
+
+/** Messages a thread keeps; older ones drop off. */
+export const DIRECT_LIMIT = 1000;
+
+/**
+ * The chat between two people (`direct.ts`), oldest first, keyed by their two ids, sorted and joined with `:`. Only the
+ * two read it; Pi never sees it.
+ */
+export const DirectDoc = defineDocFamily<{ messages: DirectMessage[] }, null>({
+    kind: "pocket.direct",
+    version: 1,
+    ...rebased,
+    family: true,
+    scope: "session",
+    initial: () => ({ messages: [] }),
+});
+
+/**
+ * One thread in the index: its two people, the time of its newest message, and each person's unread count, kept only
+ * while it is above 0.
+ */
+export type DirectThread = { people: [string, string]; at: number; unread: Record<string, number> };
+
+/** Every thread between two people, by key, with the unread counts, so every device of a person shows the same. */
+export const DirectIndexDoc = defineDoc<{ threads: Record<string, DirectThread> }>({
+    kind: "pocket.direct-index",
+    version: 1,
+    ...rebased,
+    scope: "session",
+    initial: () => ({ threads: {} }),
+});
+
 /** Emoji reactions to transcript entries: entry id → emoji → user ids. */
 export const ReactionsDoc = defineDoc<{ entries: Record<string, Record<string, string[]>> }>({
     kind: "pocket.reactions",

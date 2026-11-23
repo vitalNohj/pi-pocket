@@ -11347,6 +11347,31 @@ body.plain-page {
     }
 }
 
+/* Chat with one person, on their page in People: the log scrolls inside it, and the box stays in view under it. */
+.direct-chat {
+    display: flex;
+    flex-direction: column;
+    height: clamp(260px, 56dvh, 560px);
+    gap: 6px;
+}
+
+.direct-chat > .chat-label,
+.direct-chat > .chat-compose,
+.direct-chat > .direct-failed {
+    flex: none;
+}
+
+/* A load that failed: what happened, and the way to try again. */
+.direct-failed {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.direct-chat > .chat-log {
+    min-height: 0;
+}
+
 /* Codemode: the tool calls a script made, under its code. */
 .nested-calls {
     display: flex;

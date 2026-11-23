@@ -25,6 +25,7 @@ import {
     canSteer,
     chatReadStored,
     collab,
+    directUnreadTotal,
     managesServer,
     navigate,
     notify,
@@ -2904,6 +2905,11 @@ function Rail({ foldable = false, folded = false }) {
                     onClick=${() => openSheet({ type: "people" })}
                 >
                     <${Icon} name="users" size=${19} />
+                    ${
+                        // What this person has not read of their chats with one person.
+                        directUnreadTotal() > 0 &&
+                        html`<span class="rail-count attn">${directUnreadTotal()}</span>`
+                    }
                 </button>`
                 : html`<button
                     class="rail-button"
@@ -2965,6 +2971,7 @@ const RAIL_KEYS = [
     "over",
     "chatRead",
     "chatReads",
+    "directUnread",
     "appearance",
     "board",
     "pip",
