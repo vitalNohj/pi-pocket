@@ -88,7 +88,7 @@ function newestPrompt(view, history) {
 
 /**
  * Whether Pi's answer to the newest prompt failed: its last reply after `entryId` ended in an error (the request did
- * not go through). Undo then reads as Retry: the same action, named for what the person wants.
+ * not go through), or the run failed. Undo then reads as Retry: the same action, named for what the person wants.
  */
 function answerFailed(view, entryId) {
     const at = view.order.indexOf(entryId);
@@ -102,7 +102,14 @@ function answerFailed(view, entryId) {
         .map((id) => view.entries.get(id))
         .findLast((each) => each?.kind === "assistant");
 
-    return reply?.stopReason === "error";
+    // A run can also fail with no answer that says so (its compaction failed, say): the session's row says it, and
+    // the conversation shows its "Run failed" line.
+    return (
+        reply?.stopReason === "error" ||
+        store.state.sessions.some(
+            (each) => each.id === view.conversation.id && each.failed === true,
+        )
+    );
 }
 
 /** An undo on its way: a second tap waits for it. */
