@@ -3,9 +3,9 @@
  * Durable sees one slow request, not a failure. `install` wraps `models.streamSimple` (as `timing.ts` does), outside
  * the timing wrapper, so each attempt is measured on its own.
  *
- * A request that fails before any content, with a limit `classify` (`limits.ts`) says clears with time, opens a gate
- * for the limit's key: the sign-in for a limit that covers the account, the model for one that does not. Every
- * request that meets a closed gate waits, until the reset time (or a backoff when there is none). Then ONE request, the
+ * A request that fails before any content, with a limit `classify` (`limits.ts`) says clears with time, closes a gate
+ * for that provider and model. One provider can route requests to many accounts, so other models keep running.
+ * Requests that meet a closed gate wait until the next try. Then ONE request, the
  * canary, goes out. That is the real request: one the provider rejects costs nothing. When it gets content, the gate
  * opens and the others leave one by one, a second or more apart. A conversation failure instead backs off inside
  * that request, with its own time and try count; it never closes a shared gate.
@@ -14,8 +14,8 @@
  * and waits again; `provider-limits.json` only keeps the gates, so each waiting session does not send one rejected
  * request first. A lost or damaged file means no limit is known.
  *
- * It never spends beyond that, chooses no other model, and gives up (`refusing`) rather than wait for a reset too far
- * away, so a limit that does not clear ends the run as it does without this.
+ * A window of days is checked again after a short delay, not at its reset. When the owner's wait budget runs out,
+ * the gate refuses for that delay, then lets one request check again. The gate never chooses another model.
  */
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import {
@@ -35,10 +35,11 @@ import {
     messageStatus,
     type ResponseFacts,
     responseFacts,
-    type Scope,
     serverErrorHint,
     type Source,
 } from "./limits.ts";
+
+type Limit = Extract<ReturnType<typeof classify>, { type: "limit" }>;
 
 /** The adapters that send their requests through `options.fetch`, so the status and headers of a failure can be seen. */
 const RECORDS_FETCH = new Set([
@@ -124,7 +125,7 @@ export type LimitTuning = {
     subscriptionBackoffMs: number;
     /** Between the sessions a gate lets go after its canary got content: from, to. */
     spacingMs: [number, number];
-    /** How long a gate that gave up fails requests at once. */
+    /** The interval between checks on a long limit, and how long a gate that gave up refuses new requests. */
     refuseMs: number;
     /** Tries of one gate before it gives up. */
     maxTries: number;
@@ -154,10 +155,9 @@ type GateKey = string | symbol;
 export type WaitView = {
     key: GateKey;
     provider: string;
-    /** The model, for a model gate or a single request's wait. */
-    modelId?: string;
-    scope: Scope | "request";
-    /** `reset`: until a known time. `backoff`: no time is known. */
+    modelId: string;
+    scope: "model" | "request";
+    /** `reset`: a reset time is known. `backoff`: no reset time is known. */
     kind: "reset" | "backoff";
     since: number;
     /** When the next request goes out (the canary). */
@@ -184,8 +184,8 @@ type Waiter = {
     poke?: () => void;
     told: boolean;
     /**
-     * When this request first met a limit, and how many limit failures it has had since: kept across every gate it
-     * moves through, so a limit that changes scope does not start its wait again.
+     * When this request first met a model limit, and how many model limit failures it has had since. A gate
+     * that was removed while this request was out does not give the request a new wait budget.
      */
     since?: number;
     tries: number;
@@ -199,13 +199,15 @@ type Gate = {
     key: GateKey;
     scope: WaitView["scope"];
     provider: string;
-    modelId?: string;
+    modelId: string;
     kind: "reset" | "backoff";
     since: number;
     until: number;
     resetAt?: number;
     source?: Source;
     subscription?: true;
+    /** The reset is a window of days. Check again at the cooldown instead of waiting for the reported reset. */
+    long?: true;
     reason: string;
     tries: number;
     state: "waiting" | "probing" | "refusing";
@@ -272,7 +274,7 @@ function isAborted(signal: AbortSignal | undefined): boolean {
  */
 function describeLimit(
     provider: string,
-    scope: WaitView["scope"],
+    kind: "request" | "usage" | "rate",
     message = "",
     facts?: ResponseFacts,
 ): string {
@@ -285,7 +287,7 @@ function describeLimit(
     };
     const name = names[provider] ?? provider;
 
-    if (scope === "request") {
+    if (kind === "request") {
         return `${name} could not continue this conversation`;
     }
 
@@ -297,7 +299,7 @@ function describeLimit(
         return `${name} is restarting`;
     }
 
-    if (scope === "account") {
+    if (kind === "usage") {
         return `${name}'s usage limit`;
     }
 
@@ -517,7 +519,7 @@ export class LimitGate {
     }
 
     /**
-     * The owner changed how long runs wait: each waiting gate's time is cut to its new deadline, and one past it gives up.
+     * The owner changed how long runs wait. Cut ordinary waits to the new deadline. Do not move a long check earlier.
      */
     reconsider(): void {
         const now = this.#now();
@@ -526,6 +528,16 @@ export class LimitGate {
             const deadline = this.#deadline(gate);
 
             if (gate.state === "refusing") {
+                continue;
+            }
+
+            if (gate.long && gate.resetAt !== undefined && gate.state === "waiting") {
+                const why = this.#tooFar(gate, gate.resetAt, gate.until, now);
+
+                if (why !== undefined) {
+                    this.#giveUp(gate, why);
+                }
+
                 continue;
             }
 
@@ -657,8 +669,6 @@ export class LimitGate {
 
                 // The attempt failed before any content, and the failure is not an abort.
                 const verdict = classify({
-                    provider: model.provider,
-                    modelId: model.id,
                     message: attempt.message.errorMessage ?? "",
                     facts: attempt.facts,
                     now: this.#now(),
@@ -696,11 +706,11 @@ export class LimitGate {
 
                 const reason = describeLimit(
                     model.provider,
-                    verdict.scope,
+                    verdict.usage || verdict.subscription ? "usage" : "rate",
                     verdict.reason,
                     attempt.facts,
                 );
-                const gated = this.#limited(model, verdict, reason, waiter, canary);
+                const gated = this.#limited(model, verdict, reason, waiter);
 
                 this.#leave(waiter);
 
@@ -878,10 +888,6 @@ export class LimitGate {
     // The key has no sign-in in it: a token changes at each renewal, and a counter starts again at each start, so
     // neither could name the account across a wait or a restart. A sign-in or sign-out here drops the provider's
     // gates (`reset`), and `#run` ignores a failure of a request sent before one.
-    #accountKey(provider: string): string {
-        return provider;
-    }
-
     #modelKey(provider: string, modelId: string): string {
         return `${provider}/${modelId}`;
     }
@@ -900,7 +906,6 @@ export class LimitGate {
 
     #backoff(gate: Gate): number {
         const { backoffMs, minWaitMs, subscriptionBackoffMs } = this.#tuning;
-        // No tries are counted yet when a manual try moved the scope: the first delay.
         const step = Math.max(0, Math.min(gate.tries - 1, backoffMs.length - 1));
         const delay = gate.subscription ? subscriptionBackoffMs : backoffMs[step]!;
         const varied = delay * (0.8 + this.#random() * 0.4);
@@ -908,175 +913,129 @@ export class LimitGate {
         return Number.isFinite(varied) ? Math.max(varied, minWaitMs) : minWaitMs;
     }
 
-    /** The closed shared gate a request for this model meets: its account's first, then its model's. */
+    /** The closed shared gate a request for this model meets. */
     #closed(model: Model<Api>): Gate | undefined {
-        const keys = [this.#accountKey(model.provider), this.#modelKey(model.provider, model.id)];
+        const gate = this.#gates.get(this.#modelKey(model.provider, model.id));
 
-        for (const key of keys) {
-            const gate = this.#gates.get(key);
-
-            if (gate === undefined) {
-                continue;
-            }
-
-            // A gate nobody waits at, past its deadline (stopped waits, or one kept from before a restart): the limit may
-            // have cleared long ago, so it does not refuse. It lets one request go as canary now, and keeps its first
-            // time: a canary that meets the limit again finds the deadline passed and gives up, so it is no new wait.
-            if (
-                gate.waiters.size === 0 &&
-                gate.state === "waiting" &&
-                this.#now() >= this.#deadline(gate)
-            ) {
-                gate.until = Math.min(gate.until, this.#now());
-            }
-
-            return gate;
+        // A gate nobody waits at, past its deadline (stopped waits, or one kept from before a restart): one canary
+        // can check if it cleared, without a new wait budget. For long limits, keep the interval between checks.
+        if (
+            gate !== undefined &&
+            !gate.long &&
+            gate.waiters.size === 0 &&
+            gate.state === "waiting" &&
+            this.#now() >= this.#deadline(gate)
+        ) {
+            gate.until = Math.min(gate.until, this.#now());
         }
 
-        return undefined;
+        return gate;
     }
 
-    /**
-     * A request failed on a limit: open the gate of its key (or move it on), and say when the next try is. A gate that
-     * gives up (`refusing`) says no wait is worth it.
-     */
-    #limited(
-        model: Model<Api>,
-        verdict: Extract<ReturnType<typeof classify>, { type: "limit" }>,
-        reason: string,
-        waiter: Waiter,
-        held: Gate | undefined,
-    ): Gate {
+    /** A failed model request closes its gate or moves its next try. */
+    #limited(model: Model<Api>, verdict: Limit, reason: string, waiter: Waiter): Gate {
         const tuning = this.#tuning;
         const now = this.#now();
+        const key = this.#modelKey(model.provider, model.id);
+        const existing = this.#gates.get(key);
+        const late = existing !== undefined && existing.canary !== waiter;
 
-        waiter.since ??= now;
-
-        const key =
-            verdict.scope === "account"
-                ? this.#accountKey(model.provider)
-                : this.#modelKey(model.provider, model.id);
-        // The gate this request held as canary: its failure settles that gate, whichever scope it now reads.
-        const owned = held?.canary === waiter ? held : undefined;
-
-        // The scope moved (an overload, then a plan's usage limit): the old gate closes now, and its waiters go on
-        // to the new one. It must not stay probing with a canary that is no longer there.
-        if (owned !== undefined && owned.key !== key) {
-            this.#open(owned, true);
+        // A request sent before the gate closed is not its canary. Its failure cannot settle an active probe,
+        // restart a cooldown, or postpone a long limit's scheduled check.
+        if (late && (existing.state !== "waiting" || existing.long)) {
+            return existing;
         }
 
-        // A try a person sent (Retry now) counts toward no cap: pressing it cannot make the shared gate give up.
-        const manual = owned?.manual === true;
+        const resetAt = verdict.resetAt;
+        const due = resetAt === undefined ? undefined : this.#resetDue(resetAt, verdict.long, now);
 
-        if (!manual) {
-            waiter.tries++;
-        }
-
-        if (owned !== undefined) {
-            delete owned.manual;
-        }
-
-        let gate = this.#gates.get(key);
-
-        // A failure of a request that was out before the gate closed (or before this canary went) says nothing about
-        // the canary: it must not free the canary or move the state. It can only move the time on, when its reset is
-        // later, and only to a time within the deadline.
-        if (gate !== undefined && gate !== owned) {
-            if (verdict.subscription) {
-                gate.subscription = true;
+        if (late && (due === undefined || (!verdict.long && due <= existing.until))) {
+            if (verdict.subscription && !existing.subscription) {
+                existing.subscription = true;
                 this.#save();
             }
 
-            if (gate.state !== "refusing" && verdict.resetAt !== undefined) {
-                const jitter =
-                    tuning.resetJitterMs[0] +
-                    this.#random() * (tuning.resetJitterMs[1] - tuning.resetJitterMs[0]);
-                const later = Math.max(verdict.resetAt + jitter, now + tuning.minWaitMs);
-                const far = this.#tooFar(verdict, gate.since, later, now);
-
-                // A window of days, or a reset past the longest wait: the account is blocked for good, whoever found it
-                // first. The gate refuses now, and its waiters fail with the reset.
-                if (far !== undefined) {
-                    this.#giveUp(gate, far);
-
-                    return gate;
-                }
-
-                if (later > gate.until) {
-                    gate.until = later;
-                    gate.kind = "reset";
-                    gate.resetAt = verdict.resetAt;
-                    gate.reason = reason;
-                    this.#poke(gate);
-                    this.#save();
-                    this.#deps.changed();
-                }
-            }
-
-            return gate;
+            return existing;
         }
 
-        if (gate === undefined) {
-            gate = {
-                key,
-                scope: verdict.scope,
-                provider: model.provider,
-                ...(verdict.scope === "model" ? { modelId: model.id } : {}),
-                kind: "backoff",
-                // The wait is the request's as well as the gate's: a gate made as the scope moves takes the earlier time.
-                since: Math.min(now, waiter.since, owned?.since ?? now),
-                until: now,
-                reason,
-                tries: 0,
-                state: "waiting",
-                waiters: new Set(),
-            };
+        waiter.since ??= now;
+
+        const gate: Gate = existing ?? {
+            key,
+            scope: verdict.scope,
+            provider: model.provider,
+            modelId: model.id,
+            kind: "backoff",
+            since: waiter.since,
+            until: now,
+            reason,
+            tries: 0,
+            state: "waiting",
+            waiters: new Set(),
+        };
+
+        if (existing === undefined) {
             this.#gates.set(key, gate);
-            // The provider's own text can hold ids of someone else's organisation: only the owner's log has it.
+            // The provider's text may contain private details. Only the owner's log sees it.
             this.#deps.log(`Limit at ${key}: ${verdict.reason}`);
         }
 
-        if (!manual) {
-            gate.tries++;
+        if (!late) {
+            // A probe after a long refusal found a different limit. Do not give up on it with the old budget.
+            if (gate.long && gate.refusal !== undefined && !verdict.long) {
+                gate.since = waiter.since = now;
+                gate.tries = waiter.tries = 0;
+            }
+
+            // Retry now is not counted against the cap.
+            if (!gate.manual) {
+                gate.tries++;
+                waiter.tries++;
+            }
+
+            delete gate.manual;
+            gate.since = Math.min(gate.since, waiter.since);
         }
 
-        gate.since = Math.min(gate.since, waiter.since);
         gate.reason = reason;
         gate.canary = undefined;
+        delete gate.refusal;
 
         if (verdict.subscription) {
             gate.subscription = true;
+        } else if (!late) {
+            delete gate.subscription;
         }
 
-        // One deadline for the whole wait, from when the gate closed: a reset after it, or a backoff that comes to it,
-        // gives up. A new reset does not start the wait again.
-        const maxReset = this.#deps.hours() * 3_600_000;
+        if (verdict.long) {
+            gate.long = true;
+        } else {
+            delete gate.long;
+        }
+
+        // One deadline for the whole wait. Another reset or a re-check of a long window does not start it again.
         let until: number;
         let why: string | undefined;
 
-        if (verdict.resetAt !== undefined) {
-            const jitter =
-                tuning.resetJitterMs[0] +
-                this.#random() * (tuning.resetJitterMs[1] - tuning.resetJitterMs[0]);
-
-            until = Math.max(verdict.resetAt + jitter, now + tuning.minWaitMs);
+        if (resetAt !== undefined && due !== undefined) {
             gate.kind = "reset";
-            gate.resetAt = verdict.resetAt;
+            gate.resetAt = resetAt;
 
             if (verdict.source !== undefined) {
                 gate.source = verdict.source;
             }
 
-            why = this.#tooFar(verdict, gate.since, until, now);
+            until = due;
+            why = this.#tooFar(gate, resetAt, until, now);
         } else {
-            const total = gate.subscription ? maxReset : Math.min(tuning.maxBackoffMs, maxReset);
-            const deadline = gate.since + total;
-
-            // The last try is at the deadline, not after it.
-            until = Math.min(now + this.#backoff(gate), deadline);
             gate.kind = "backoff";
             delete gate.resetAt;
             delete gate.source;
+
+            const deadline = this.#deadline(gate);
+
+            // The last try is at the deadline, not after it.
+            until = Math.min(now + this.#backoff(gate), deadline);
 
             if (now >= deadline) {
                 why = `it did not clear in ${span(now - gate.since)}`;
@@ -1084,7 +1043,9 @@ export class LimitGate {
         }
 
         if (
+            !late &&
             why === undefined &&
+            !gate.long &&
             !gate.subscription &&
             Math.max(gate.tries, waiter.tries) > tuning.maxTries
         ) {
@@ -1107,36 +1068,31 @@ export class LimitGate {
         return gate;
     }
 
-    /**
-     * Why a limit's reset is not waited for, if it is not: a window of days, or after the owner's longest wait, counted
-     * from when the gate closed (`since`). Undefined: it can be waited for.
-     */
-    #tooFar(
-        verdict: Extract<ReturnType<typeof classify>, { type: "limit" }>,
-        since: number,
-        until: number,
-        now: number,
-    ): string | undefined {
-        if (verdict.resetAt === undefined) {
+    #resetDue(resetAt: number, long: true | undefined, now: number): number {
+        if (long) {
+            return now + this.#tuning.refuseMs;
+        }
+
+        const [from, to] = this.#tuning.resetJitterMs;
+        const jitter = from + this.#random() * (to - from);
+
+        return Math.max(resetAt + jitter, now + this.#tuning.minWaitMs);
+    }
+
+    /** Why the reset or next check does not fit the owner's wait budget. */
+    #tooFar(gate: Gate, resetAt: number, until: number, now: number): string | undefined {
+        if (until <= this.#deadline(gate)) {
             return undefined;
         }
 
-        const maxReset = this.#deps.hours() * 3_600_000;
-        const resets = `it resets in ${span(verdict.resetAt - now)}${when(verdict.resetAt)}`;
+        const resets = `it resets in ${span(resetAt - now)}${when(resetAt)}`;
 
-        if (verdict.long) {
-            return `${resets}, a limit of days that Pi Pocket does not wait for`;
-        }
-
-        return until > since + maxReset
-            ? `${resets}, and Pi Pocket waits at most ${span(maxReset)}`
-            : undefined;
+        return gate.long
+            ? `${resets}, and the next check is after Pi Pocket's wait limit`
+            : `${resets}, and Pi Pocket waits at most ${span(this.#deps.hours() * 3_600_000)}`;
     }
 
-    /**
-     * A gate that will not wait: its requests fail with fixed wording, never the provider's own text. Shared gates
-     * refuse new requests for a few minutes; a request-specific wait has no other requests to refuse.
-     */
+    /** Refuse new requests for a short time. After a long limit, keep the gate so only one request can re-check it. */
     #giveUp(gate: Gate, why: string): void {
         gate.state = "refusing";
         gate.refusal = gaveUp(gate.reason, why);
@@ -1145,8 +1101,12 @@ export class LimitGate {
         if (typeof gate.key === "string") {
             gate.until = this.#now() + this.#tuning.refuseMs;
             clearTimeout(gate.timer);
-            gate.timer = setTimeout(() => this.#drop(gate), this.#tuning.refuseMs);
-            gate.timer.unref();
+
+            if (!gate.long) {
+                gate.timer = setTimeout(() => this.#drop(gate), this.#tuning.refuseMs);
+                gate.timer.unref();
+            }
+
             this.#deps.log(`Limit at ${gate.key}: ${gate.refusal}`);
             this.#save();
         }
@@ -1254,11 +1214,11 @@ export class LimitGate {
                     return (turn = "go");
                 }
 
-                if (gate.state === "refusing") {
+                const left = gate.until - this.#now();
+
+                if (gate.state === "refusing" && (!gate.long || left > 0)) {
                     return (turn = "refuse");
                 }
-
-                const left = gate.until - this.#now();
 
                 if (left > 0) {
                     await this.#nap(left, waiter);
@@ -1361,7 +1321,7 @@ export class LimitGate {
         return {
             key: gate.key,
             provider: gate.provider,
-            ...(gate.modelId === undefined ? {} : { modelId: gate.modelId }),
+            modelId: gate.modelId,
             scope: gate.scope,
             kind: gate.kind,
             since: gate.since,
@@ -1387,7 +1347,7 @@ export class LimitGate {
         const gates = [...this.#gates.values()]
             .filter((gate) => typeof gate.key === "string")
             .map((gate) => ({
-                state: gate.state === "refusing" ? "refusing" : "waiting",
+                state: gate.refusal === undefined ? "waiting" : "refusing",
                 refusal: gate.refusal,
                 key: gate.key,
                 scope: gate.scope,
@@ -1399,6 +1359,7 @@ export class LimitGate {
                 resetAt: gate.resetAt,
                 source: gate.source,
                 subscription: gate.subscription,
+                long: gate.long,
                 reason: gate.reason,
                 tries: gate.tries,
             }));
@@ -1438,13 +1399,8 @@ export class LimitGate {
 
             for (const each of saved.gates.slice(0, 200) as Record<string, unknown>[]) {
                 const gate = this.#restored(each, now);
-                // Before 0.30.1 a Fable limit was kept as the whole Claude sign-in's: one canary finds out again.
-                const fable =
-                    saved.version === 1 &&
-                    gate?.provider === "anthropic" &&
-                    gate.scope === "account";
 
-                if (gate !== undefined && !fable) {
+                if (gate !== undefined) {
                     this.#gates.set(gate.key, gate);
                 }
             }
@@ -1460,6 +1416,7 @@ export class LimitGate {
             typeof value === "number" && Number.isFinite(value) ? value : undefined;
         const key = text(each.key, 200);
         const provider = text(each.provider, 100);
+        const modelId = text(each.modelId, 200);
         const since = number(each.since);
         const until = number(each.until);
         const tries = number(each.tries);
@@ -1467,10 +1424,12 @@ export class LimitGate {
         if (
             key === undefined ||
             provider === undefined ||
+            modelId === undefined ||
             since === undefined ||
             until === undefined ||
             tries === undefined ||
-            (each.scope !== "account" && each.scope !== "model") ||
+            // Do not restore old provider-wide gates. Their records do not identify the affected model.
+            each.scope !== "model" ||
             (each.kind !== "reset" && each.kind !== "backoff") ||
             // Waiting is off, or the file is from long ago (or from a clock that was wrong): it says nothing now.
             this.#deps.hours() <= 0 ||
@@ -1482,19 +1441,18 @@ export class LimitGate {
             return undefined;
         }
 
-        const modelId = text(each.modelId, 200);
         const resetAt = number(each.resetAt);
 
-        // A key other than the one its scope gives (a file from another version) holds nothing.
-        if (key !== (each.scope === "account" ? provider : `${provider}/${modelId ?? ""}`)) {
+        if (key !== this.#modelKey(provider, modelId)) {
             return undefined;
         }
 
         const source = each.source === "header" || each.source === "body" || each.source === "text";
         const refusing = each.state === "refusing";
+        const long = each.long === true && each.kind === "reset" && resetAt !== undefined;
 
-        // A refusal that ended while the server was down holds nothing.
-        if (refusing && until <= now) {
+        // An old refusal can be discarded, except a long limit that still needs one request to check it.
+        if (refusing && until <= now && !long) {
             return undefined;
         }
 
@@ -1502,13 +1460,14 @@ export class LimitGate {
             key,
             scope: each.scope,
             provider,
-            ...(modelId === undefined ? {} : { modelId }),
+            modelId,
             kind: each.kind,
             since,
             until,
             ...(resetAt === undefined ? {} : { resetAt }),
             ...(source ? { source: each.source as Source } : {}),
-            ...(each.subscription === true ? { subscription: true as const } : {}),
+            ...(each.subscription === true ? { subscription: true } : {}),
+            ...(long ? { long: true } : {}),
             reason: text(each.reason) ?? "",
             tries,
             state: refusing ? "refusing" : "waiting",
@@ -1517,9 +1476,12 @@ export class LimitGate {
 
         if (refusing) {
             gate.refusal = text(each.refusal, 700) ?? gate.reason;
-            gate.timer = setTimeout(() => this.#drop(gate), until - now);
-            gate.timer.unref();
-        } else if (now >= this.#deadline(gate)) {
+
+            if (!long) {
+                gate.timer = setTimeout(() => this.#drop(gate), until - now);
+                gate.timer.unref();
+            }
+        } else if (!long && now >= this.#deadline(gate)) {
             // The wait ran out while the server was down: the limit may have cleared. One request goes as canary at
             // once, and the first time is kept, so a canary that meets the limit again gives up (see `#closed`).
             gate.until = Math.min(gate.until, now);
