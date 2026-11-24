@@ -59,18 +59,15 @@ const KEY = [
 ];
 
 /**
- * The key of the access levels: one row, small and muted, that scrolls sideways where it is too long for the screen.
- * Its "i" explains the people columns, the same for every person.
+ * The key of the access levels, small and muted: one row where it fits, and a second where it does not. On a phone it
+ * is one row that scrolls sideways. Its "i" explains the people columns, the same for every person.
  */
 export function AccessKey() {
     return html`<div class="ak-key" role="note" aria-label="Access levels">
         <${InfoTip} about="the people columns" text=${TIPS.people} />
         ${KEY.map(
-            ([level, name, line], index) =>
-                html`${index > 0 && html`<span class="ak-dot" aria-hidden="true">·</span>`}<span
-                        class="ak-item"
-                        ><b class=${`lv-${level}`}>${name}:</b> ${line}</span
-                    >`,
+            ([level, name, line]) =>
+                html`<span class="ak-item"><b class=${`lv-${level}`}>${name}:</b> ${line}</span>`,
         )}
     </div>`;
 }

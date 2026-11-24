@@ -8154,8 +8154,27 @@ div.group-head {
 
 /* ─── The Access sheet (`sheets/access-sheet.js`): By person, By computer, Settings ─── */
 
+/*
+ * 1040 px wide: there a computer's head row holds its name, Group by, and New session. By computer is as wide as its
+ * widest grid needs, and no wider: the list of computers (240 px and its line), the page's padding, the grid's two
+ * first columns, a column for each person who has one (`--columns`, from `AccessSheet`: the most on one computer, so
+ * the sheet stays as it is from one computer to the next), and room for the grid's own scrollbar. Up to 1400 px: more
+ * people than fit scroll sideways, or are chosen in the People filter.
+ */
 .sheet.access-sheet {
-    max-width: min(1400px, calc(100vw - 32px));
+    --fw: 260px;
+    --tw: 172px;
+    --cw: 116px;
+    --columns: 0;
+    max-width: min(1040px, calc(100vw - 32px));
+    transition: max-width 0.2s var(--ease-out);
+}
+
+.sheet.access-sheet.view-computer {
+    max-width: min(
+        clamp(1040px, calc(307px + var(--fw) + var(--tw) + var(--columns) * var(--cw)), 1400px),
+        calc(100vw - 32px)
+    );
 }
 
 /* Its head's switch of views, after the title. */
@@ -8277,16 +8296,23 @@ div.group-head {
 
 /* The key: one row, small and muted, each level's name in its button's colour; it scrolls sideways where it is too
  * long. Its "i" explains the people columns. */
+/* The key of the levels: one row where it fits, else two of the same length. No level is cut in two. */
 .ak-key {
-    display: flex;
-    align-items: center;
     min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
     color: var(--faint);
     font-size: 11.5px;
     line-height: 18px;
+    text-wrap: balance;
+}
+
+.ak-item {
+    display: inline-block;
+    margin-right: 18px;
     white-space: nowrap;
+}
+
+.ak-item:last-child {
+    margin-right: 0;
 }
 
 .ak-key::-webkit-scrollbar {
@@ -8299,15 +8325,11 @@ div.group-head {
 
 .ak-key > .info-tip {
     margin: 0 6px 0 0;
+    vertical-align: middle;
 }
 
 .ak-key b {
     font-weight: 600;
-}
-
-.ak-dot {
-    margin: 0 8px;
-    color: var(--hair-2);
 }
 
 /* The colours of the levels: the key's names and the Access buttons say each level the same way. */
@@ -8453,6 +8475,14 @@ div.group-head {
     white-space: nowrap;
 }
 
+/* A window too narrow for a computer's name, Group by, and New session in one row: Group by goes under the name. */
+@media (max-width: 1019px) {
+    .ac-head > .ak-group {
+        order: 1;
+        flex: 1 1 100%;
+    }
+}
+
 /* By computer: the page is as tall as the sheet allows, and only its grid scrolls up and down. */
 @media (min-width: 720px) {
     .sheet.access-sheet.view-computer {
@@ -8505,6 +8535,11 @@ div.group-head {
     gap: 10px;
 }
 
+/* Its name gives way to Group by and New session beside it: its line under it goes on to a second one. */
+.ac-head > .grow {
+    min-width: 0;
+}
+
 .ac-icon {
     display: grid;
     place-items: center;
@@ -8527,9 +8562,6 @@ div.group-head {
 }
 
 .ag-scroll {
-    --fw: 260px;
-    --tw: 172px;
-    --cw: 116px;
     --cols: var(--fw) var(--cells);
     position: relative;
     min-width: 0;
@@ -8924,8 +8956,22 @@ div.group-head {
         flex: none;
     }
 
+    /* One row that scrolls sideways. */
     .ak-key {
+        display: flex;
+        align-items: center;
+        overflow-x: auto;
+        scrollbar-width: none;
         font-size: 12px;
+    }
+
+    /* Group by, on its line under the computer's name, is as wide as the sheet. */
+    .ac-head > .ak-group .segmented {
+        flex: 1;
+    }
+
+    .ac-head > .ak-group .segmented button {
+        flex: 1;
     }
 
     /* No height of its own: the sheet scrolls up and down, the grid only sideways. Each cell says whose it is. */

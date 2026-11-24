@@ -509,6 +509,14 @@ function ComputerView({ computer }) {
                 <div class="muted small">${head}</div>
             </div>
             ${
+                mine &&
+                html`<${GroupBy}
+                    value=${group}
+                    projects=${projects !== undefined}
+                    onChange=${state.setGroup}
+                />`
+            }
+            ${
                 (computer.mayStart !== false || unlinks) &&
                 html`<div class="sheet-page-actions">
                     ${
@@ -570,11 +578,6 @@ function ComputerView({ computer }) {
                                 />`
                             }
                         </div>
-                        <${GroupBy}
-                            value=${group}
-                            projects=${projects !== undefined}
-                            onChange=${state.setGroup}
-                        />
                     </div>
                 </div>
                 <${AccessKey} />
@@ -798,6 +801,9 @@ export function AccessSheet() {
     }, [sheet]);
 
     const shown = views.some(([key]) => key === view) ? view : views[0][0];
+    // The sheet is as wide as the widest grid of By computer needs (`style.css` `.sheet.access-sheet`): the most people
+    // with a column on one computer. One width for every view and every computer, so nothing moves under the pointer.
+    const columns = Math.max(0, ...allComputers().map((each) => columnPeople(each).length));
     const pick = html`<div class="segmented ac-views" role="tablist" aria-label="Access views">
         ${views.map(
             ([key, label]) => html`<button
@@ -817,6 +823,7 @@ export function AccessSheet() {
         title="Access"
         onClose=${closeSheet}
         className=${`pages-sheet access-sheet view-${shown}`}
+        style=${`--columns:${columns}`}
         actions=${views.length > 1 ? pick : null}
     >
         ${!loaded && store.state.users.length === 0 && html`<${Loader} />`}

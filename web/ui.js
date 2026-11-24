@@ -1969,7 +1969,15 @@ export const scrimPress = (close) => (event) =>
     close();
 
 /** A bottom sheet on phones, a centered dialog on wide screens. */
-export function Sheet({ title, onClose, children, wide = false, actions = null, className = "" }) {
+export function Sheet({
+    title,
+    onClose,
+    children,
+    wide = false,
+    actions = null,
+    className = "",
+    style = undefined,
+}) {
     const ref = useRef(null);
     const onBack = useContext(SheetBack);
     const info = useContext(SheetInfo);
@@ -2008,6 +2016,7 @@ export function Sheet({ title, onClose, children, wide = false, actions = null, 
     >
         <section
             class=${`sheet ${wide ? "wide" : ""} ${className}`}
+            style=${style}
             data-part="sheet"
             data-sheet=${info?.type ?? undefined}
             data-size=${wide ? "wide" : undefined}

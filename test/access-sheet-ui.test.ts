@@ -860,3 +860,101 @@ test(
         }
     },
 );
+
+// The last test of the file: it changes who is chosen for this server.
+test(
+    "By computer is as wide as the people with a column need, and Group by stands beside New session",
+    real,
+    async () => {
+        const all = people.map((each) => each.id);
+        const WIDE: Viewport = { width: 1440, height: 900, scale: 1, mobile: false };
+        const NARROW: Viewport = { width: 900, height: 800, scale: 1, mobile: false };
+
+        type Look = {
+            sheet: number;
+            group: [number, number] | null;
+            start: [number, number];
+            inTools: boolean;
+            grid: [number, number];
+        };
+        const look = () =>
+            inPage<Look>(`
+                const middle = (selector) => {
+                    const at = document.querySelector(selector)?.getBoundingClientRect();
+
+                    return at ? [Math.round(at.left), Math.round(at.top + at.height / 2)] : null;
+                };
+                const scroller = document.querySelector(".ag-scroll");
+
+                return JSON.stringify({
+                    sheet: Math.round(document.querySelector(".sheet").getBoundingClientRect().width),
+                    group: middle(".ac-head > .ak-group"),
+                    start: middle(".ac-head .sheet-page-actions"),
+                    inTools: document.querySelector(".ak-tools .ak-group") !== null,
+                    grid: [scroller.clientWidth, scroller.scrollWidth],
+                });
+            `);
+
+        /** By computer with `count` people chosen for this server, once the sheet has `width`. */
+        const at = async (count: number, viewport: Viewport, width: number): Promise<Look> => {
+            app.config.setUsers(THIS_SERVER, all.slice(0, count));
+            app.accessChanged();
+            await load(viewport);
+            await openAt("computer", THIS_SERVER);
+            await until(
+                async () =>
+                    await inPage<boolean>(`
+                        return JSON.stringify(
+                            document.querySelectorAll(".ag-head .ag-who").length === ${count} &&
+                                Math.round(document.querySelector(".sheet").getBoundingClientRect().width) === ${width},
+                        );
+                    `),
+                `${count} people in a sheet of ${width} px at ${viewport.width} px`,
+            );
+
+            return await look();
+        };
+
+        try {
+            // One person: the least width, with Group by and New session in one row, and nothing to scroll.
+            const one = await at(1, WIDE, 1040);
+
+            assert.equal(one.inTools, false, "Group by is not among the filters");
+            assert.ok(one.group, "Group by is in the head row");
+            assert.ok(Math.abs(one.group[1] - one.start[1]) < 4, JSON.stringify(one));
+            assert.ok(one.group[0] < one.start[0], "Group by is before New session");
+            assert.equal(one.grid[1], one.grid[0], "one person: no sideways scroll");
+
+            // Five people: 3 columns more than the least width holds, and still nothing to scroll.
+            const five = await at(5, WIDE, 1319);
+
+            assert.equal(five.grid[1], five.grid[0], "5 people fit");
+
+            // Eight people: the most width, and the people who do not fit scroll sideways.
+            const eight = await at(8, WIDE, 1400);
+
+            assert.ok(eight.grid[1] > eight.grid[0], "8 people scroll sideways");
+
+            // By person keeps the least width, whoever is chosen.
+            await openAt("person");
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(Math.round(document.querySelector(".sheet").getBoundingClientRect().width) === 1040)`,
+                    ),
+                "By person at 1040 px",
+            );
+
+            // A narrow window: Group by is under the computer's name, New session stays beside the name.
+            const narrow = await at(1, NARROW, 868);
+
+            assert.ok(
+                narrow.group && narrow.group[1] > narrow.start[1] + 20,
+                JSON.stringify(narrow),
+            );
+        } finally {
+            app.config.setUsers(THIS_SERVER, all);
+            app.accessChanged();
+        }
+    },
+);
