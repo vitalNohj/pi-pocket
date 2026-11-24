@@ -79,24 +79,77 @@ test("an overload with a full 10080-minute usage window uses the normal backoff"
     }
 });
 
-test("an explicit rate limit honors Retry-After, not the usage window", () => {
-    const message = "429 rate_limit_error";
+test("a Claude subscription rejection keeps its reset even with generic rate-limit text", () => {
+    const message =
+        '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit."}}';
+
+    for (const [window, seconds, long] of [
+        ["unified-5h", 4 * 3600, false],
+        ["unified-7d", 3 * 86_400, true],
+        ["unified", 3600, false],
+    ] as const) {
+        const headers = {
+            [`anthropic-ratelimit-${window}-status`]: "rejected",
+            [`anthropic-ratelimit-${window}-reset`]: String(now / 1000 + seconds),
+        };
+
+        assert.deepEqual(ask(message, 429, headers), {
+            type: "limit",
+            scope: "model",
+            resetAt: now + seconds * 1000,
+            source: "header",
+            backoff: false,
+            usage: true,
+            ...(long ? { long: true } : {}),
+            reason: message,
+        });
+    }
+});
+
+test("even a rejected usage window does not override an explicit overload", () => {
+    const headers = {
+        "anthropic-ratelimit-unified-7d-status": "rejected",
+        "anthropic-ratelimit-unified-7d-reset": String(now / 1000 + 3 * 86_400),
+    };
+
+    for (const message of ["server_is_overloaded", "429 overloaded_error"]) {
+        assert.deepEqual(ask(message, 429, headers), {
+            type: "limit",
+            scope: "model",
+            backoff: true,
+            reason: message,
+        });
+    }
+
+    const message = "Proxy returned an error";
 
     assert.deepEqual(
-        ask(message, 429, {
-            "anthropic-ratelimit-unified-7d-status": "rejected",
-            "anthropic-ratelimit-unified-7d-reset": String(now / 1000 + 3 * 86_400),
-            "retry-after": "30",
-        }),
+        classify({ message, facts: { status: 503, headers, hint: "overload" }, now }),
+        { type: "limit", scope: "model", backoff: true, reason: message },
+    );
+});
+
+test("an ordinary rate limit honors Retry-After, not an incidental usage window", () => {
+    const message = "429 rate_limit_error";
+    const windows: Record<string, string>[] = [
         {
+            "x-codex-secondary-used-percent": "100",
+            "x-codex-secondary-window-minutes": "10080",
+            "x-codex-secondary-reset-after-seconds": "86400",
+        },
+        { "anthropic-ratelimit-unified-reset": String(now / 1000 + 3 * 86_400) },
+    ];
+
+    for (const window of windows) {
+        assert.deepEqual(ask(message, 429, { ...window, "retry-after": "30" }), {
             type: "limit",
             scope: "model",
             resetAt: now + 30_000,
             source: "header",
             backoff: false,
             reason: message,
-        },
-    );
+        });
+    }
 });
 
 test("a person's problem, a refused request, or a monthly plan limit never waits", () => {

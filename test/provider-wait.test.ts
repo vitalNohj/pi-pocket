@@ -5,6 +5,8 @@ import { classify, type Classified } from "../src/server/limits.ts";
 const now = Date.parse("2026-10-22T12:00:00Z");
 const minute = 60_000;
 const hour = 3_600_000;
+const claudeRateLimit =
+    '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit."}}';
 const cases: {
     name: string;
     message: string;
@@ -15,7 +17,7 @@ const cases: {
     long?: boolean;
     other?: boolean;
 }[] = [
-    // Real provider errors come from usage-limits.test.ts; some cases isolate header behavior.
+    // The provider error strings come from usage-limits.test.ts.
     {
         name: "OpenAI 429 rate limit",
         message:
@@ -53,20 +55,19 @@ const cases: {
     },
     {
         name: "Anthropic rate limit",
-        message:
-            '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit."}}',
+        message: claudeRateLimit,
         status: 429,
     },
     {
         name: "Anthropic rejected 5h without reset",
-        message: "Request rejected",
+        message: claudeRateLimit,
         status: 429,
         headers: { "anthropic-ratelimit-unified-5h-status": "rejected" },
         subscription: true,
     },
     {
         name: "Anthropic model five-hour cap without reset",
-        message: "429 usage limit reached",
+        message: "429 rate_limit_error",
         status: 429,
         headers: {
             "anthropic-ratelimit-unified-5h-status": "rejected",
@@ -76,7 +77,7 @@ const cases: {
     },
     {
         name: "Anthropic five-hour cap uses Retry-After when the named reset is missing",
-        message: "429 usage limit reached",
+        message: "429 rate_limit_error",
         status: 429,
         headers: {
             "anthropic-ratelimit-unified-5h-status": "rejected",
@@ -86,7 +87,7 @@ const cases: {
     },
     {
         name: "Anthropic rejected weekly without reset",
-        message: "Request rejected",
+        message: claudeRateLimit,
         status: 429,
         headers: { "anthropic-ratelimit-unified-7d-status": "rejected" },
         other: true,

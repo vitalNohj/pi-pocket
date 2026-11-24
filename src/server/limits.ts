@@ -107,7 +107,7 @@ const CONVERSATION_TEXT =
     /\b(?:(?:invalid|unknown|missing|expired|no such) (?:previous response|conversation)|(?:previous response|conversation)(?: id| owner(?: account)?)? (?:is )?(?:unavailable|invalid|missing|expired|not found|does not exist))\b/i;
 const RESTART = /\b(?:server|service) (?:is )?(?:draining|restarting)\b/i;
 const OVERLOAD =
-    /\boverloaded(?:_error)?\b|server[ _-]busy|servers are currently busy|high demand|at capacity/i;
+    /(?:\b|_)overloaded(?:_error)?\b|server[ _-]busy|servers are currently busy|high demand|at capacity/i;
 
 /** Some adapters put the HTTP status at the start of the error, but do not take a recording fetch. */
 export function messageStatus(message: string): number | undefined {
@@ -272,12 +272,14 @@ function retryAfter(headers: Record<string, string>, now: number): number | unde
     return Number.isNaN(date) ? undefined : date;
 }
 
-/** A full usage window in the headers, if one is present. Its reset time can be missing. */
+/** A full usage window, or only an explicit rejection when the error is a generic 429. */
 function fromUsageHeaders(
     headers: Record<string, string>,
     now: number,
+    rejectedOnly: boolean,
 ): { resetAt: number | undefined; long?: true } | undefined {
     const unified = headers["anthropic-ratelimit-unified-status"];
+    const unifiedReset = headers["anthropic-ratelimit-unified-reset"];
 
     // The windows by name: a rejected 5-hour window waits for its reset; a rejected 7-day window is days away.
     const week = headers["anthropic-ratelimit-unified-7d-status"] === "rejected";
@@ -285,22 +287,20 @@ function fromUsageHeaders(
 
     if (week || hours5) {
         const named = headers[`anthropic-ratelimit-unified-${week ? "7d" : "5h"}-reset`];
-        const reset =
-            moment(named) ??
-            moment(headers["anthropic-ratelimit-unified-reset"]) ??
-            retryAfter(headers, now);
+        const reset = moment(named) ?? moment(unifiedReset) ?? retryAfter(headers, now);
 
         return { resetAt: reset, ...(week ? { long: true } : {}) };
     }
 
-    if (unified !== undefined || headers["anthropic-ratelimit-unified-reset"] !== undefined) {
-        const rejected = unified === undefined || unified === "rejected";
-        const reset =
-            moment(headers["anthropic-ratelimit-unified-reset"]) ?? retryAfter(headers, now);
+    if (
+        unified === "rejected" ||
+        (!rejectedOnly && unified === undefined && unifiedReset !== undefined)
+    ) {
+        return { resetAt: moment(unifiedReset) ?? retryAfter(headers, now) };
+    }
 
-        if (rejected) {
-            return { resetAt: reset };
-        }
+    if (rejectedOnly) {
+        return undefined;
     }
 
     // ChatGPT sign-in (Codex): a window is full at 100 percent; the later of two full windows decides, and a full
@@ -493,9 +493,14 @@ export function classify(input: LimitInput): Classified {
     const headers = facts?.headers ?? {};
     const usageMessage = USAGE.test(message);
     const transientMessage = LOAD.test(message) || TRANSIENT.test(message);
-    // An OpenAI-compatible provider can route to several accounts. A usage window in the headers does not explain
-    // an error that says it is overload or rate limiting, unless the message itself also names a usage limit.
-    const window = transientMessage && !usageMessage ? undefined : fromUsageHeaders(headers, now);
+    const overload = reported === 529 || facts?.hint === "overload" || OVERLOAD.test(message);
+    // A generic 429 can carry an explicit rejection of a usage window. A reset time or full counter alone does
+    // not prove that the window caused it. An overload can carry even a rejected window from another account.
+    const rejectedOnly = transientMessage && !usageMessage;
+    const window =
+        usageMessage || (!overload && (!transientMessage || reported === 429))
+            ? fromUsageHeaders(headers, now, rejectedOnly)
+            : undefined;
     const headerReset = window === undefined ? fromHeaders(headers, now) : window.resetAt;
 
     // A conflict is a refusal of this request, not of load: it waits only when the response itself says when to try
