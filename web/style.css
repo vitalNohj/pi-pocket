@@ -2904,6 +2904,11 @@ kbd {
     }
 }
 
+.step-head > time {
+    flex: none;
+    font-size: var(--text-xs);
+}
+
 /* Just finished: the line flashes its success color once. */
 .step.settled > .step-line > .step-head {
     animation: settle 0.9s var(--ease-out);

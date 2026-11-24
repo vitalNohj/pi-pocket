@@ -830,7 +830,7 @@ export const ShellRequestsDoc = defineDoc<{ items: Record<string, number> }>({
  * Why a session's last run failed, in the same short line the session list shows. A later run clears it when that run
  * starts, so a process that starts again still knows a run that gave up. A stop is not a failure and writes nothing.
  */
-export const RunFailureDoc = defineDoc<{ text?: string }>({
+export const RunFailureDoc = defineDoc<{ text?: string; at?: number }>({
     kind: "pocket.run-failure",
     version: 1,
     ...rebased,

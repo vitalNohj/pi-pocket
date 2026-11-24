@@ -334,7 +334,7 @@ function CodedText({ text }) {
 }
 
 /** A subagent's report: who, whether it answered or failed, and what it said. */
-function Report({ report, view, fresh }) {
+function Report({ report, view, fresh, at }) {
     const [, name, verb, after, text] = report;
     const child = view.subagents.find((agent) => agent.name === name);
     // One that did not answer says why: "failed: Bad request", "stalled again: no progress for 1 h…". Its words
@@ -348,6 +348,7 @@ function Report({ report, view, fresh }) {
     >
         <div class="report-head">
             <span class="report-name">${name}</span> ${verb}${more && ` ${more}`}
+            ${verb !== "answered" && standaloneMessageTime(at)}
             ${
                 child &&
                 html`<button class="link" onClick=${() => openSubagent(child.conversationId)}>
@@ -361,13 +362,14 @@ function Report({ report, view, fresh }) {
 }
 
 /** A background task that ended, as a card for people: its id and outcome, its command, and its output folded away. */
-function BackgroundReport({ match }) {
+function BackgroundReport({ match, at }) {
     const [, id, outcome, took, command, rest] = match;
     const output = fencedOutput(rest);
 
     return html`<div class="report background-report">
         <div class="report-head">
             <span class="report-name">${id}</span> ${outcome} · ${took}
+            ${outcome !== "exited with code 0" && standaloneMessageTime(at)}
         </div>
         ${command !== undefined && html`<div class="background-command muted small mono">${command}</div>`}
         ${
@@ -596,6 +598,7 @@ function LinkedMessage({ entry, view, address, text, attachments, fresh }) {
     const name = session ? (session.title ?? "New session") : undefined;
     const lines = text.split("\n").length;
     const folds = lines > LINKED_FOLD_LINES || text.length > LINKED_FOLD_CHARS;
+    const time = standaloneMessageTime(entry.at);
 
     return html`<div
         class=${`user-row ${fresh ? "enter" : ""}`}
@@ -627,7 +630,7 @@ function LinkedMessage({ entry, view, address, text, attachments, fresh }) {
                 <span class="linked-who">
                     <span class="linked-kicker">
                         <span class="linked-tag">Linked session</span>
-                        ${entry.at && html`<span>· ${clock(entry.at)}</span>`}
+                        ${time && html`<span aria-hidden="true">·</span>`}${time}
                     </span>
                     <span
                         class=${`linked-name ${name ? "" : "unknown"}`}
@@ -690,9 +693,16 @@ function UserMessage({ entry, view, users }) {
         const reports = parts.map((part) => REPORT.exec(part)).filter(Boolean);
 
         return reports.length === 1
-            ? html`<${Report} report=${reports[0]} view=${view} fresh=${fresh} />`
+            ? html`<${Report} report=${reports[0]} view=${view} fresh=${fresh} at=${entry.at} />`
             : html`<div class="report-group">
-                  ${reports.map((report) => html`<${Report} report=${report} view=${view} fresh=${fresh} />`)}
+                  ${reports.map(
+                      (report) => html`<${Report}
+                          report=${report}
+                          view=${view}
+                          fresh=${fresh}
+                          at=${entry.at}
+                      />`,
+                  )}
               </div>`;
     }
 
@@ -716,9 +726,9 @@ function UserMessage({ entry, view, users }) {
         const tasks = parts.map((part) => BACKGROUND.exec(part)).filter(Boolean);
 
         return tasks.length === 1
-            ? html`<${BackgroundReport} match=${tasks[0]} />`
+            ? html`<${BackgroundReport} match=${tasks[0]} at=${entry.at} />`
             : html`<div class="report-group">
-                  ${tasks.map((match) => html`<${BackgroundReport} match=${match} />`)}
+                  ${tasks.map((match) => html`<${BackgroundReport} match=${match} at=${entry.at} />`)}
               </div>`;
     }
 
@@ -730,6 +740,7 @@ function UserMessage({ entry, view, users }) {
         return html`<div class="report failed">
             <div class="report-head">
                 <span class="report-name mono">${command}</span> ${what} · ${how}
+                ${standaloneMessageTime(entry.at)}
             </div>
             <${Collapsible} text=${output} limit=${300} />
         </div>`;
@@ -1211,12 +1222,13 @@ function ToolStep({
     result,
     slot,
     approval,
-    entryId,
+    entry,
     streaming,
     canRun,
     busy,
     conversationId,
 }) {
+    const entryId = entry?.id;
     const [open, setOpen] = useState(false);
     const unrolled = useRef(-Infinity);
     const [full, setFull] = useState(null);
@@ -1477,6 +1489,12 @@ function ToolStep({
                                 : said.text
                         }
                     </span>`
+                }
+                ${
+                    (status === "error" || status === "stopped" || status === "denied") &&
+                    standaloneMessageTime(
+                        result?.at ?? (status === "denied" ? decision?.at : entry?.at),
+                    )
                 }
             </button>
             ${
@@ -1838,7 +1856,7 @@ function ActivityGroup({
                             result=${results.get(block.id)}
                             slot=${slot}
                             approval=${approval}
-                            entryId=${entry?.id}
+                            entry=${entry}
                             streaming=${entry === undefined}
                             canRun=${canRun}
                             busy=${busy}
@@ -1890,7 +1908,7 @@ function InlineRow({ item, results, slots, approvals, busy, conversationId }) {
                               result=${result}
                               slot=${slot}
                               approval=${approval}
-                              entryId=${entry?.id}
+                              entry=${entry}
                               streaming=${entry === undefined}
                               canRun=${canRun}
                               busy=${busy}
@@ -2315,6 +2333,26 @@ function ApprovalCard({ approval }) {
 
 // ─── Pi's words ───────────────────────────────────────────────────────────────────────
 
+/** The message time as people see it, using the server's time in their own clock. */
+function messageTime(stamp) {
+    if (!stamp) {
+        return null;
+    }
+
+    const at = new Date(fromServer(stamp));
+
+    return html`<time class="muted" dateTime=${at.toISOString()} title=${at.toLocaleString()}>
+        ${clock(stamp)}
+    </time>`;
+}
+
+/** Cards without reply actions use the same Message time setting, but show no other actions. */
+function standaloneMessageTime(at) {
+    return arranged("reply").some(({ item, hidden }) => item.id === "core:time" && !hidden)
+        ? messageTime(at)
+        : null;
+}
+
 // The actions under Pi's answers, after its reactions: the app's own items of the `reply` slot (slots.js), which a
 // person can hide and reorder in Appearance, with extensions' before More, which stays last. Each gets the answer
 // (`entry`, its `text`), whether it is pinned, and the reaction picker's state.
@@ -2322,17 +2360,7 @@ defineItem("reply", {
     id: "core:time",
     label: "Message time",
     order: 0,
-    render: ({ entry }) => {
-        if (!entry.at) {
-            return null;
-        }
-
-        const at = new Date(fromServer(entry.at));
-
-        return html`<time class="muted" dateTime=${at.toISOString()} title=${at.toLocaleString()}>
-            ${clock(entry.at)}
-        </time>`;
-    },
+    render: ({ entry }) => messageTime(entry.at),
 });
 defineItem("reply", {
     id: "core:react",
@@ -2452,19 +2480,13 @@ function AnswerEnd({ entry }) {
     // A final answer (not a step between tool calls) with something to say gets reactions and the discuss row.
     const answer = collab() && entry.stopReason !== "toolUse" && entry.blocks.some(says);
     const failed = entry.stopReason === "error";
-
-    // A failed request with no actions still shows its time, unless the person hid it in Layout.
-    const time =
-        failed && !answer
-            ? arranged("reply")
-                  .find(({ item, hidden }) => item.id === "core:time" && !hidden)
-                  ?.item.render({ entry })
-            : null;
+    const stopped = entry.stopReason === "aborted";
+    const time = (failed || stopped) && !answer ? standaloneMessageTime(entry.at) : null;
 
     return html`${
         failed && html`<div class="error-box">${entry.error ?? "The model request failed."}</div>`
     }
-    ${entry.stopReason === "aborted" && html`<div class="muted small">Stopped.</div>`}
+    ${stopped && html`<div class="muted small">Stopped.</div>`}
     ${answer && html`<${AnswerActions} entry=${entry} />`}
     ${time && html`<div class="answer-actions" data-part="reply-actions">${time}</div>`}`;
 }
@@ -2603,6 +2625,7 @@ function OutputCard({ entry, command, meta, failed = false, longCommand = false,
             <div class="shell-head">
                 <span class="mono shell-command">${command}</span>
                 <span class="muted small">${meta}</span>
+                ${failed && standaloneMessageTime(entry.at)}
             </div>
             ${
                 output !== "" &&
@@ -2838,11 +2861,17 @@ function rowDeps(entry) {
         markdownRevision(),
     ];
 
+    if (entry.kind === "shell") {
+        deps.push(slotKey("reply"));
+    }
+
     if (entry.kind === "user") {
         deps.push(view.authors?.[entry.id]);
 
         if (entry.text.startsWith("[subagent ")) {
-            deps.push(agentsKey(view));
+            deps.push(agentsKey(view), slotKey("reply"));
+        } else if (entry.text.startsWith("[background] ") || entry.text.startsWith("[goal] ")) {
+            deps.push(slotKey("reply"));
         }
 
         // A linked session's message names its session: it shows again when the session's name or access changes.
@@ -2852,7 +2881,11 @@ function rowDeps(entry) {
             const id = view.linkedPeers?.[address];
             const session = store.state.sessions.find((each) => each.id === id);
 
-            deps.push(id, session === undefined ? undefined : (session.title ?? ""));
+            deps.push(
+                id,
+                session === undefined ? undefined : (session.title ?? ""),
+                slotKey("reply"),
+            );
         }
     }
 
@@ -2868,6 +2901,7 @@ function callDeps(block, results, slots, approvals) {
         results.get(block.id),
         slot === undefined ? "" : JSON.stringify(slot),
         decision === undefined ? "" : JSON.stringify(decision),
+        slotKey("reply"),
         // How extensions describe their tools' calls (`pocket.toolCall`).
         describersRevision(),
     ];
@@ -3066,21 +3100,20 @@ function Items({ items, results, slots, approvals, busy, past = false, conversat
             />
         <//>`;
         const lastCall = item.steps.findLast((step) => step.block.type === "toolCall");
+        const lastResult = results.get(lastCall?.block.id);
 
         // Stopped in a call, no answer follows to say so: the run ends here, as a stopped answer does.
-        if (
-            past ||
-            busy ||
-            index !== items.length - 1 ||
-            !STOPPED.test(results.get(lastCall?.block.id)?.text ?? "")
-        ) {
+        if (past || busy || index !== items.length - 1 || !STOPPED.test(lastResult?.text ?? "")) {
             return group;
         }
+
+        const time = standaloneMessageTime(lastResult.at ?? lastCall?.entry?.at);
 
         return [
             group,
             html`<div key=${`${item.key}:stopped`} class="reply" data-part="reply">
                 <div class="muted small">Stopped.</div>
+                ${time && html`<div class="answer-actions" data-part="reply-actions">${time}</div>`}
             </div>`,
         ];
     });
@@ -4135,10 +4168,11 @@ export function Transcript() {
     const said =
         entries.findLast((entry) => entry?.kind === "assistant" || entry?.kind === "user")
             ?.stopReason === "error";
-    const failure =
+    const failed =
         busy || said
             ? undefined
-            : sessions.find((each) => each.id === conversation.id && each.failed === true)?.failure;
+            : sessions.find((each) => each.id === conversation.id && each.failed === true);
+    const failureTime = standaloneMessageTime(failed?.failureAt);
 
     return html`<main class="scroller" ref=${scroller} onScroll=${onScroll}>
         <div
@@ -4197,9 +4231,10 @@ export function Transcript() {
                 (approval) => html`<${ApprovalCard} key=${approval.id} approval=${approval} />`,
             )}
             ${
-                failure &&
+                failed?.failure &&
                 html`<div class="error-box run-failure" data-part="run-failure" role="alert">
-                    Run failed: ${failure}
+                    Run failed: ${failed.failure}
+                    ${failureTime && html`<div class="small">${failureTime}</div>`}
                 </div>`
             }
             ${

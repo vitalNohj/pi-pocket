@@ -113,6 +113,9 @@ test("a run that gives up says so, and the failure lasts across a restart", asyn
     assert.equal(event.failure, "Invalid request: unsupported parameter temperature");
     assert.equal(event.session, Number(session));
     assert.equal(row(app, session).failure, event.failure);
+    const stamp = row(app, session).failureAt;
+
+    assert.ok(stamp);
 
     const [linked] = await app.linkedSessions.list(id);
 
@@ -127,6 +130,7 @@ test("a run that gives up says so, and the failure lasts across a restart", asyn
 
     assert.equal(row(again, session).failed, true);
     assert.equal(row(again, session).failure, event.failure);
+    assert.equal(row(again, session).failureAt, stamp);
     assert.equal((await again.linkedSessions.list(id))[0]?.failed, event.failure);
     assert.equal(row(again, id).failed, undefined, "the source finished");
 });

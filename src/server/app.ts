@@ -489,7 +489,7 @@ export class PocketApp {
      * Conversations whose last run ended because the model or provider failed (not stopped by someone), since this
      * server started: the session list marks them until their next run starts.
      */
-    readonly #failed = new Map<ConversationId, string>();
+    readonly #failed = new Map<ConversationId, { text: string; at?: number }>();
     /** How many commands each session runs in the background now (`background.ts`): the list and status line show it. */
     readonly #background = new Map<ConversationId, number>();
     readonly #agents = new Map<ConversationId, AgentState>();
@@ -1287,8 +1287,10 @@ export class PocketApp {
                     this.#sessions[String(change.value.conversationId)] !== undefined &&
                     !this.#failed.has(change.value.conversationId)
                 ) {
-                    this.#failed.set(change.value.conversationId, text);
-                    this.#storeRunFailure(change.value.conversationId, text);
+                    const failure = { text, at: Date.now() };
+
+                    this.#failed.set(change.value.conversationId, failure);
+                    this.#storeRunFailure(change.value.conversationId, failure);
                     sessionsChanged = true;
                 }
             }
@@ -1351,7 +1353,9 @@ export class PocketApp {
 
             if (busy !== this.#busy.has(id)) {
                 const session = Number(this.rootOf(id));
-                const failure = busy ? undefined : (failedNow.get(id) ?? this.#failed.get(id));
+                const failure = busy
+                    ? undefined
+                    : (failedNow.get(id) ?? this.#failed.get(id)?.text);
                 const outcome =
                     failure !== undefined ? "failed" : abortedNow.has(id) ? "aborted" : "done";
 
@@ -2946,7 +2950,13 @@ export class PocketApp {
                     waiting: waiting.has(id),
                     ...(limited.has(id) ? { limited: limited.get(id)! } : {}),
                     ...(endedAt === undefined ? {} : { endedAt }),
-                    ...(failure === undefined ? {} : { failed: true, failure }),
+                    ...(failure === undefined
+                        ? {}
+                        : {
+                              failed: true,
+                              failure: failure.text,
+                              ...(failure.at === undefined ? {} : { failureAt: failure.at }),
+                          }),
                     ...(failedAgents.length === 0 ? {} : { failedAgents }),
                     ...(ask === undefined ? {} : { approval: ask }),
                     ...(model === undefined ? {} : { model: model.modelId }),
@@ -2993,7 +3003,7 @@ export class PocketApp {
      * a compaction that could not be written. Undefined once a run starts again.
      */
     runFailure(id: ConversationId): string | undefined {
-        return this.#busy.has(id) ? undefined : this.#failed.get(id);
+        return this.#busy.has(id) ? undefined : this.#failed.get(id)?.text;
     }
 
     /** The conversations with a run going. */
@@ -3047,11 +3057,11 @@ export class PocketApp {
         storage: Storage,
         id: ConversationId,
         live: { run?: unknown } | null | undefined,
-    ): Promise<string | undefined> {
-        const stored = (await this.harness.snapshot(RunFailureDoc, id, context))?.text;
+    ): Promise<{ text: string; at?: number } | undefined> {
+        const stored = await this.harness.snapshot(RunFailureDoc, id, context);
 
         if (live?.run !== undefined) {
-            if (stored !== undefined) {
+            if (stored?.text !== undefined) {
                 this.#storeRunFailure(id, undefined);
             }
 
@@ -3086,15 +3096,25 @@ export class PocketApp {
                 ? failureText(record.status, record.reason, record.detail)
                 : undefined;
 
-        if (text !== stored) {
-            this.#storeRunFailure(id, text);
+        const failure =
+            text === undefined
+                ? undefined
+                : {
+                      text,
+                      ...(stored?.text === text && stored.at !== undefined
+                          ? { at: stored.at }
+                          : {}),
+                  };
+
+        if (text !== stored?.text) {
+            this.#storeRunFailure(id, failure);
         }
 
-        return text;
+        return failure;
     }
 
     /** Keep or clear a session's failure line, so the next process still knows. A listener may not commit. */
-    #storeRunFailure(id: ConversationId, text: string | undefined): void {
+    #storeRunFailure(id: ConversationId, failure: { text: string; at?: number } | undefined): void {
         if (this.#sessions[String(id)] === undefined) {
             return;
         }
@@ -3104,10 +3124,16 @@ export class PocketApp {
                 .commit(async (tx) => {
                     const record = await tx.doc(RunFailureDoc, id);
 
-                    if (text === undefined) {
+                    if (failure === undefined) {
                         delete record.text;
                     } else {
-                        record.text = text;
+                        record.text = failure.text;
+                    }
+
+                    if (failure?.at === undefined) {
+                        delete record.at;
+                    } else {
+                        record.at = failure.at;
                     }
                 }, context)
                 .catch((error: unknown) => this.log(`run failure not stored: ${describe(error)}`));
