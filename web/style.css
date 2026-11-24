@@ -8231,8 +8231,10 @@ div.group-head {
 }
 
 /* The People filter's list: a check box, a face, the name, the role. */
+/* Over the grid under it: the grid's head, kept in sight, is a layer of its own and comes later in the page. */
 .ak-people-menu {
     position: fixed;
+    z-index: 60;
     width: min(18rem, calc(100vw - 32px));
     overflow-y: auto;
 }

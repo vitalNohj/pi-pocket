@@ -638,6 +638,54 @@ for (const [name, viewport] of [
     );
 }
 
+for (const [name, viewport] of [
+    ["1280 px", DESKTOP],
+    ["390 px", PHONE],
+] as const) {
+    test(
+        `the People filter's list is drawn over the grid under it: each person is what a click at their place hits, at ${name}`,
+        real,
+        async () => {
+            await load(viewport);
+            await openAt("computer", THIS_SERVER);
+            await grid();
+            // A real click: a click by script would open the list whatever is drawn over it.
+            await page.click({ selector: ".ak-people" });
+            await until(
+                async () =>
+                    await inPage<boolean>(`
+                        const menu = document.querySelector(".ak-people-menu");
+
+                        return JSON.stringify(
+                            menu !== null &&
+                                menu.querySelectorAll("[role=menuitemcheckbox]").length === 8 &&
+                                getComputedStyle(menu).visibility === "visible" &&
+                                menu.getAnimations().every((each) => each.playState === "finished"),
+                        );
+                    `),
+                "the people list, open and still",
+            );
+
+            const hits = await inPage<[string, boolean, string][]>(`
+                return JSON.stringify([...document.querySelectorAll(".ak-people-menu [role=menuitemcheckbox]")].map((each) => {
+                    const box = each.getBoundingClientRect();
+                    const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+
+                    return [each.querySelector(".grow").textContent.trim(), each.contains(top), top?.className ?? "nothing"];
+                }));
+            `);
+
+            assert.equal(hits.length, 8);
+            assert.deepEqual(
+                hits.filter(([, onTop]) => !onTop),
+                [],
+                `every person is on top: ${JSON.stringify(hits)}`,
+            );
+            await page.press("Escape");
+        },
+    );
+}
+
 test(
     "Settings holds a computer's approvals: each person's time, and its sharing",
     real,
