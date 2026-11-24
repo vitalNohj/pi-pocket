@@ -138,10 +138,10 @@ const messages = () =>
         );
     `);
 
-/** The count on the rail's People button: its text, or null for none. */
+/** The count on the rail's Access button: its text, or null for none. */
 const railCount = () =>
     inPage<string | null>(
-        `return JSON.stringify(document.querySelector('.rail-button[aria-label="People"] .rail-count')?.textContent.trim() ?? null)`,
+        `return JSON.stringify(document.querySelector('.rail-button[aria-label="Access"] .rail-count')?.textContent.trim() ?? null)`,
     );
 
 /** The count on `name`'s row in People: its text, or null for none. */

@@ -2900,8 +2900,8 @@ function Rail({ foldable = false, folded = false }) {
                 ? html`<button
                     class="rail-button"
                     data-part="rail-button"
-                    title=${canInviteNew() ? "People and invites" : "People"}
-                    aria-label="People"
+                    title=${canInviteNew() ? "Access: people, computers, and invites" : "Access"}
+                    aria-label="Access"
                     onClick=${() => openSheet({ type: "access", view: "person" })}
                 >
                     <${Icon} name="users" size=${19} />

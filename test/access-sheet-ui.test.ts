@@ -195,8 +195,8 @@ test("the sheet opens from each opener at the right view", real, async () => {
     const openers: [string, string, string][] = [
         // [what is pressed, how, the view it opens]
         [
-            "the rail's People button",
-            `document.querySelector('[data-part="rail-button"][aria-label="People"]').click()`,
+            "the rail's Access button",
+            `document.querySelector('[data-part="rail-button"][aria-label="Access"]').click()`,
             "By person",
         ],
         [
@@ -368,6 +368,31 @@ for (const [name, viewport] of [
         `);
 
             assert.equal(first[0], first[1], "the first column is sticky");
+
+            // Project trust is a column like a person's: it scrolls sideways with the people, and leaves them its
+            // width. On a phone it is a line of its own under the row's name, and stays there.
+            const trust = await inPage<[number, number, number]>(`
+            const scroller = document.querySelector(".ag-scroll");
+            const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const at = () => Math.round(document.querySelector(".ag-group .ag-trust-cell").getBoundingClientRect().left);
+
+            scroller.scrollLeft = 0;
+            await frame();
+
+            const before = at();
+
+            scroller.scrollLeft = 200;
+            await frame();
+
+            return JSON.stringify([before, at(), Math.round(scroller.scrollLeft)]);
+        `);
+
+            assert.equal(trust[2], 200);
+            assert.equal(
+                trust[0] - trust[1],
+                viewport === DESKTOP ? 200 : 0,
+                "Project trust scrolls with the people on a desktop, and stays on a phone",
+            );
 
             // The key is one row, and nothing but what scrolls sideways is wider than the screen.
             const layout = await inPage<{ keyLines: number; wider: string[] }>(`
@@ -572,6 +597,46 @@ test(
         );
     },
 );
+
+for (const [name, viewport] of [
+    ["1280 px", DESKTOP],
+    ["390 px", PHONE],
+] as const) {
+    test(
+        `the Project trust menu is drawn over the rows under it: each choice is what a click at its place hits, at ${name}`,
+        real,
+        async () => {
+            await load(viewport);
+            await openAt("computer", THIS_SERVER);
+            await grid();
+            // A real click: a click by script would open the menu whatever is drawn over it.
+            await page.click({ selector: ".ag-group .ag-trust-button" });
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(document.querySelectorAll(".ag-trust-cell .at-level-menu [role=menuitemradio]").length === 3 && document.querySelector(".ag-trust-cell .at-level-menu").getAnimations().every((each) => each.playState === "finished"))`,
+                    ),
+                "the trust menu, open and still",
+            );
+
+            const hits = await inPage<[string, boolean][]>(`
+                return JSON.stringify([...document.querySelectorAll(".ag-trust-cell .at-level-menu [role=menuitemradio]")].map((each) => {
+                    const box = each.getBoundingClientRect();
+                    const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+
+                    return [each.querySelector(".at-level-name").textContent.trim(), each.contains(top)];
+                }));
+            `);
+
+            assert.deepEqual(
+                hits.map(([, onTop]) => onTop),
+                [true, true, true],
+                `every choice is on top: ${JSON.stringify(hits)}`,
+            );
+            await page.press("Escape");
+        },
+    );
+}
 
 test(
     "Settings holds a computer's approvals: each person's time, and its sharing",

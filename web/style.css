@@ -8515,7 +8515,8 @@ div.group-head {
 }
 
 /* The grid of a computer (`access-grid.js` `ComputerGrid`): one scroller, so its head row and its rows always move
- * together. Its first column (and Project trust) and its head row stay in sight. */
+ * together. Its first column and its head row stay in sight; Project trust is a column like a person's, and scrolls
+ * sideways with the people, so who looks at people has the width for them. */
 .ag-wrap {
     position: relative;
     min-width: 0;
@@ -8581,24 +8582,20 @@ div.group-head {
     background: var(--bg);
 }
 
-.ag-scroll:not(.with-trust) .ag-first {
+.ag-scroll .ag-first {
     border-right: 1px solid var(--hair);
 }
 
+/* Project trust: not kept in sight, and no layer of its own, so its open menu is drawn over the rows after it. */
 .ag-trust-cell {
-    position: sticky;
-    left: var(--fw);
-    z-index: 2;
     display: flex;
     align-items: center;
     min-width: 0;
     padding: 6px 8px;
     border-right: 1px solid var(--hair);
-    background: var(--bg);
 }
 
-.ag-head > .ag-first,
-.ag-head > .ag-trust-cell {
+.ag-head > .ag-first {
     z-index: 6;
     background: var(--card);
 }
@@ -8774,14 +8771,19 @@ div.group-head {
     font-weight: 500;
 }
 
-/* The note under a project that is not trusted, at the left, under its name. */
+/* The note under a project that is not trusted: under its trust menu, and it scrolls sideways with it. */
 .ag-note {
-    position: sticky;
-    left: 0;
-    grid-column: 1 / span 2;
-    padding: 0 10px 8px calc(46px + var(--depth, 0) * 18px);
+    grid-column: 2 / -1;
+    padding: 0 8px 8px;
     color: var(--warn);
     font-size: 12px;
+}
+
+/* The name's cell takes the note's line too, so the note goes under it as it scrolls. */
+@media (min-width: 720px) {
+    .ag-group.untrusted > .ag-first {
+        grid-row: 1 / span 2;
+    }
 }
 
 .ag-group.untrusted > .ag-first,
@@ -8950,12 +8952,17 @@ div.group-head {
         padding-right: 10px;
     }
 
+    /* Project trust takes a line of its own under the name, kept at the left: there it takes no width from the
+     * people. Kept in sight, it is a layer of its own, so with its menu open it goes over the rows after it. */
     .ag-row > .ag-trust-cell {
+        position: sticky;
+        left: 0;
+        z-index: 2;
         grid-column: 1 / -1;
         grid-row: 2;
         width: var(--view-w, 100%);
         max-width: var(--view-w, 100%);
-        left: 0;
+        background: var(--bg);
         gap: 10px;
         justify-content: space-between;
         padding: 0 10px 6px calc(10px + var(--depth, 0) * 18px);
@@ -8964,6 +8971,10 @@ div.group-head {
 
     .ag-row > .ag-trust-cell.empty {
         display: none;
+    }
+
+    .ag-row > .ag-trust-cell:has(.at-level-menu) {
+        z-index: 6;
     }
 
     .ag-trust-label {
@@ -9018,8 +9029,10 @@ div.group-head {
     }
 
     .ag-head > .ag-trust-head {
+        z-index: 6;
         justify-content: flex-start;
         gap: 0;
+        background: var(--card);
         min-height: 30px;
         padding-bottom: 2px;
     }
@@ -9040,6 +9053,8 @@ div.group-head {
     }
 
     .ag-note {
+        position: sticky;
+        left: 0;
         grid-row: 3;
         padding: 0 10px 2px calc(10px + var(--depth, 0) * 18px);
     }
