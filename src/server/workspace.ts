@@ -10,6 +10,7 @@ import { isAbsolute, join, posix, resolve, sep, win32 } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import type { RemoteInfo } from "@earendil-works/pi-env";
 import { THIS_SERVER } from "./access.ts";
 import type { PocketApp } from "./app.ts";
 import {
@@ -30,6 +31,7 @@ import { describe, HttpError } from "./errors.ts";
 import { FileLists, type FileListing, type FileView, viewFile } from "./files.ts";
 import {
     type FolderAccess,
+    limitParallel,
     localAccess,
     type PathKit,
     remoteAccess,
@@ -197,14 +199,20 @@ export class Workspace {
             return localAccess;
         }
 
+        return this.#accessOn(id, runner, await this.#remoteInfo(runner), folder);
+    }
+
+    #remoteInfo(runner: string): Promise<RemoteInfo> {
         // What a person waits on: a computer that is offline says so at once.
-        const info = await this.#app.runners
+        return this.#app.runners
             .link(runner)
             .infoNow()
             .catch((error: unknown) => {
                 throw error instanceof HttpError ? error : new HttpError(409, describe(error));
             });
+    }
 
+    #accessOn(id: ConversationId, runner: string, info: RemoteInfo, folder?: string): FolderAccess {
         const scope = this.#app.runnerScope(id);
 
         return remoteAccess(
@@ -380,6 +388,7 @@ export class Workspace {
                 ? `made the branch ${name}${track ? `, following ${track},` : ""} and switched to it${from}`
                 : `switched the branch${from} to ${name}`;
 
+        // Tell the others only after Pi has its note about the switch.
         await this.#app.commands.note(id, user, what);
         await this.#app.collab.activity(id, user, what);
 
@@ -505,8 +514,7 @@ export class Workspace {
             return;
         }
 
-        const { access, file } = await this.remoteFile(user, id, path);
-        const info = await this.#app.runners.link(runner).infoNow();
+        const { access, file, os } = await this.remoteFile(user, id, path);
         const kind = await access
             .peek(file, 0)
             .then((found) => found.kind)
@@ -523,7 +531,7 @@ export class Workspace {
             this.#app.runners.name(runner),
             file,
             kind === "directory",
-            info.os,
+            os,
             async ([command, args]) => {
                 const result = await env.exec(
                     [command, ...args],
@@ -664,10 +672,11 @@ export class Workspace {
         user: User,
         id: ConversationId,
         path: string,
-    ): Promise<{ access: FolderAccess; file: string; home: string }> {
+    ): Promise<{ access: FolderAccess; file: string; home: string; os: RemoteInfo["os"] }> {
         const runner = this.#app.runnerOf(id)!;
-        const access = await this.#access(id);
-        const { home } = await this.#app.runners.link(runner).infoNow();
+        const info = await this.#remoteInfo(runner);
+        const { home, os } = info;
+        const access = this.#accessOn(id, runner, info);
         const paths = access.path;
         const trimmed = path.trim();
         const expanded =
@@ -684,14 +693,15 @@ export class Workspace {
         // Pi's own read access (`docs/runners.md`): whoever is in charge of that computer. Anyone else reads the
         // session's folder and the folders given to them there (`access.ts` `readableFolders`), links followed.
         if (given === undefined) {
-            return { access, file, home };
+            return { access, file, home, os };
         }
 
-        // At once: each is a round trip. A given folder that is gone there gives nothing.
+        // At once, with a limit even if a person was given many folders. A folder that is gone gives nothing.
+        const run = limitParallel(8);
         const [target, root, ...folders] = await Promise.all([
-            access.realpath(file),
-            access.realpath(cwd),
-            ...given.map((each) => access.realpath(each).catch(() => undefined)),
+            run(() => access.realpath(file)),
+            run(() => access.realpath(cwd)),
+            ...given.map((each) => run(() => access.realpath(each).catch(() => undefined))),
         ]).catch((error: unknown) => {
             if (error instanceof Unreachable) {
                 throw new HttpError(409, describe(error));
@@ -718,9 +728,11 @@ export class Workspace {
             : folders.find((base) => base !== undefined && inside(base));
 
         return {
+            // Only after the path check may this read name the given folder. Check the link and scope for that read.
             access: elsewhere === undefined ? access : await this.#access(id, elsewhere),
             file: target,
             home,
+            os,
         };
     }
 
@@ -749,6 +761,7 @@ export class Workspace {
         id: ConversationId,
         source: ImageSource,
     ): Promise<string | undefined> {
+        // Look in an ancestor's storage only if the current session has no copy that this person may read.
         for (const each of this.#lineage(id)) {
             const file = await this.#images.latest(each, source, user.role !== "owner");
 
@@ -884,9 +897,23 @@ export class Workspace {
     async fileList(id: ConversationId, user: User): Promise<FileListing> {
         this.#app.requireSteer(user, id);
         this.requireLocal(id);
-        await this.#app.conversation(id);
+        const runner = this.#app.runnerOf(id);
+        // Check the platform and conversation together. Only use the scoped file environment if both pass.
+        const [conversation, platform] = await Promise.allSettled([
+            this.#app.conversation(id),
+            runner === undefined ? undefined : this.#remoteInfo(runner),
+        ]);
 
-        const access = await this.#access(id);
+        if (conversation.status === "rejected") {
+            throw conversation.reason;
+        }
+
+        if (platform.status === "rejected") {
+            throw platform.reason;
+        }
+
+        const access =
+            runner === undefined ? localAccess : this.#accessOn(id, runner, platform.value!);
 
         return this.#files.get(this.#app.cwdOf(id), access).catch(unreachable);
     }
@@ -926,6 +953,7 @@ export class Workspace {
                     }
                 }
 
+                // Resolve the allowed target before reading bytes or listing entries on the computer.
                 const remote = await this.remoteFile(user, id, path);
 
                 return {
@@ -998,6 +1026,7 @@ export class Workspace {
                 : `undid the uncommitted changes to ${path}`;
 
         this.#forgetChanges(id);
+        // Tell the others only after Pi has its note about the change.
         await this.#app.commands.note(id, user, what);
         await this.#app.collab.activity(id, user, what);
     }

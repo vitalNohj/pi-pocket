@@ -32,7 +32,9 @@ import {
     realpathSync,
     renameSync,
     rmSync,
+    statSync,
     writeFileSync,
+    type BigIntStats,
 } from "node:fs";
 import { homedir } from "node:os";
 import { createInterface as createQuestions } from "node:readline/promises";
@@ -192,6 +194,43 @@ function readLink(file: string): Link | undefined {
     );
 }
 
+/** Keep the parsed link, but see changes from another process on the next read. */
+function linkReader(file: string): () => Link | undefined {
+    let cached: { stamp: BigIntStats; link: Link } | undefined;
+
+    return () => {
+        let stamp: BigIntStats | undefined;
+
+        try {
+            stamp = statSync(file, { bigint: true, throwIfNoEntry: false });
+        } catch {
+            // Let readLink report its usual result when a file cannot be read.
+        }
+
+        // Another process can replace the file with one of the same size and modification time.
+        if (
+            cached !== undefined &&
+            stamp !== undefined &&
+            stamp.dev === cached.stamp.dev &&
+            stamp.ino === cached.stamp.ino &&
+            stamp.mtimeNs === cached.stamp.mtimeNs &&
+            stamp.ctimeNs === cached.stamp.ctimeNs &&
+            stamp.size === cached.stamp.size
+        ) {
+            return cached.link;
+        }
+
+        cached = undefined;
+        const link = readLink(file);
+
+        if (link !== undefined && stamp !== undefined) {
+            cached = { stamp, link };
+        }
+
+        return link;
+    };
+}
+
 function writeLink(file: string, link: Link): void {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     const temp = `${file}.${process.pid}.tmp`;
@@ -337,10 +376,11 @@ async function serve(
     via: "terminal" | "stdio" | "none",
     asService = false,
 ): Promise<void> {
+    const read = linkReader(file);
     let saved: Link | undefined;
 
     try {
-        saved = readLink(file);
+        saved = read();
     } catch (error) {
         fail((error as Error).message);
     }
@@ -349,8 +389,25 @@ async function serve(
         fail(`This computer is not linked. In a terminal, run: ${started.command}`);
     }
 
+    const pinned = saved;
     const runner = new Runner({
-        link: saved,
+        link: pinned,
+        // Only plain HTTP is set locally. Never take identity or keys from a replacement link while running.
+        allowHttp: () => {
+            try {
+                const current = read();
+
+                return (
+                    current?.allowHttp === true &&
+                    current.id === pinned.id &&
+                    current.server === pinned.server &&
+                    current.serverKey === pinned.serverKey &&
+                    current.key === pinned.key
+                );
+            } catch {
+                return false;
+            }
+        },
         version: runnerVersion(),
         command: started.command,
         ...(process.env.PI_POCKET_RUNNER_DAEMON === undefined

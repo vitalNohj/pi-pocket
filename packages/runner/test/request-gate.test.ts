@@ -1,12 +1,20 @@
 // Runner-side request checks (`src/request-gate.ts`), using real frames and folders. The runner trusts its
 // server on who may use which session; it still keeps each request inside the folder its session names.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it, type TestContext } from "node:test";
 import { FRAME, frame, readFrame, SESSION_FIELD, type SessionScope } from "../src/protocol.ts";
-import { RequestGate } from "../src/request-gate.ts";
+import { canonical, RequestGate, type GateOptions } from "../src/request-gate.ts";
 
 const root = mkdtempSync(join(tmpdir(), "pi-pocket-request-gate-"));
 
@@ -14,7 +22,10 @@ after(() => rmSync(root, { recursive: true, force: true }));
 
 type Outcome = ReturnType<typeof readFrame> & { route: "send" | "reply" };
 
-async function fixture(t: TestContext) {
+async function fixture(
+    t: TestContext,
+    options: Partial<Pick<GateOptions, "resolvePath" | "shared">> = {},
+) {
     const dir = realpathSync(mkdtempSync(join(root, "gate-")));
     const folder = join(dir, "project");
     const outside = join(dir, "outside");
@@ -32,15 +43,17 @@ async function fixture(t: TestContext) {
 
     const sent: Buffer[] = [];
     const replies: Buffer[] = [];
+    const outcomes: Outcome[] = [];
     const pending = new Map<number, (outcome: Outcome) => void>();
 
     const collect = (route: Outcome["route"], frames: Buffer[]) => (whole: Buffer) => {
         frames.push(whole);
-        const parsed = readFrame(whole);
-        const resolve = pending.get(parsed.id);
+        const outcome = { ...readFrame(whole), route };
+        const resolve = pending.get(outcome.id);
 
-        pending.delete(parsed.id);
-        resolve?.({ ...parsed, route });
+        outcomes.push(outcome);
+        pending.delete(outcome.id);
+        resolve?.(outcome);
     };
 
     const gate = new RequestGate({
@@ -49,6 +62,7 @@ async function fixture(t: TestContext) {
         shared: async () => [shared],
         tmpdir: async () => temporary,
         name: () => "Test computer",
+        ...options,
     });
     let nextId = 1;
 
@@ -75,7 +89,7 @@ async function fixture(t: TestContext) {
         return outcome.promise;
     }
 
-    return { gate, request, a, b, folder, outside, shared, sent, replies };
+    return { gate, request, a, b, folder, outside, shared, sent, replies, outcomes };
 }
 
 function refused(outcome: Outcome, message: RegExp): void {
@@ -130,6 +144,135 @@ describe("runner RequestGate", () => {
         assert.deepEqual(replies, []);
     });
 
+    it("resolves 161 open paths once each in a bounded window and sends in order", async (t) => {
+        const release = Promise.withResolvers<void>();
+        const ahead = Promise.withResolvers<void>();
+        const checks = new Map<string, number>();
+        let first = "";
+        let finished = 0;
+
+        const { request, folder, sent, replies } = await fixture(t, {
+            resolvePath: async (path) => {
+                checks.set(path, (checks.get(path) ?? 0) + 1);
+                const real = await canonical(path);
+
+                if (path === first) {
+                    await release.promise;
+                } else if (++finished === 15) {
+                    ahead.resolve();
+                }
+
+                return real;
+            },
+            shared: async () => assert.fail("an in-folder request does not need shared roots"),
+        });
+        const paths = Array.from({ length: 161 }, (_, index) => join(folder, `file-${index}.txt`));
+
+        first = paths[0]!;
+        const burst = paths.map((path) => request({ op: "open", path }));
+
+        try {
+            await ahead.promise;
+            assert.equal(checks.size, 16, "only the first window starts while the head waits");
+            assert.deepEqual(sent, [], "completed checks cannot overtake the head");
+            assert.deepEqual(replies, []);
+        } finally {
+            release.resolve();
+        }
+
+        await Promise.all(burst);
+        assert.deepEqual(
+            sent.map((whole) => readFrame(whole).json.path),
+            paths,
+        );
+        assert.deepEqual(checks, new Map(paths.map((path) => [path, 1])));
+        assert.deepEqual(replies, []);
+    });
+
+    it("keeps an outside-folder refusal between the sends before and after it", async (t) => {
+        const release = Promise.withResolvers<void>();
+        const ahead = Promise.withResolvers<void>();
+        let first = "";
+        let denied = "";
+
+        const { request, folder, outside, outcomes } = await fixture(t, {
+            resolvePath: async (path) => {
+                const real = await canonical(path);
+
+                if (path === first) {
+                    await release.promise;
+                } else if (path === denied) {
+                    ahead.resolve();
+                }
+
+                return real;
+            },
+        });
+
+        first = join(folder, "file.txt");
+        denied = join(outside, "file.txt");
+        const burst = [first, denied, join(folder, "later")].map((path) =>
+            request({ op: "open", path }),
+        );
+
+        try {
+            await ahead.promise;
+            assert.deepEqual(outcomes, []);
+        } finally {
+            release.resolve();
+        }
+
+        const [before, blocked, after] = await Promise.all(burst);
+
+        refused(blocked!, /outside the session's folder/);
+        assert.equal(before!.route, "send");
+        assert.equal(after!.route, "send");
+        assert.deepEqual(outcomes, [before, blocked, after]);
+    });
+
+    it("resolves a path behind a rename only after the rename is sent", async (t) => {
+        const release = Promise.withResolvers<void>();
+        const started = Promise.withResolvers<void>();
+        let first = "";
+        let later = "";
+        let sendsAtLaterCheck: unknown[] | undefined;
+
+        const { request, folder, sent } = await fixture(t, {
+            resolvePath: async (path) => {
+                if (path === first) {
+                    started.resolve();
+                    await release.promise;
+                } else if (path === later) {
+                    sendsAtLaterCheck = sent.map((whole) => readFrame(whole).json.op);
+                }
+
+                return canonical(path);
+            },
+        });
+
+        first = join(folder, "first");
+        later = join(folder, "later");
+        const burst = [
+            request({ op: "open", path: first }),
+            request({ op: "rename", path: join(folder, "file.txt"), to: join(folder, "moved") }),
+            request({ op: "open", path: later }),
+        ];
+
+        try {
+            await started.promise;
+            assert.equal(sendsAtLaterCheck, undefined);
+        } finally {
+            release.resolve();
+        }
+
+        await Promise.all(burst);
+        assert.deepEqual(sendsAtLaterCheck, ["open", "rename"]);
+        assert.deepEqual(
+            sent.map((whole) => readFrame(whole).json.op),
+            ["open", "rename", "open"],
+        );
+    });
+
     it("refuses a path outside the approved folder", async (t) => {
         const { request, outside, sent } = await fixture(t);
         const outcome = await request({ op: "open", path: join(outside, "file.txt") });
@@ -147,13 +290,26 @@ describe("runner RequestGate", () => {
         assert.deepEqual(sent, []);
     });
 
-    it("refuses a rename destination outside the approved folder", async (t) => {
-        const { request, folder, outside, sent } = await fixture(t);
-        const outcome = await request({
-            op: "rename",
-            path: join(folder, "file.txt"),
-            to: join(outside, "renamed.txt"),
+    it("checks both rename paths in parallel and refuses an outside destination", async (t) => {
+        const checkingTo = Promise.withResolvers<void>();
+        let from = "";
+        let to = "";
+
+        const { request, folder, outside, sent } = await fixture(t, {
+            resolvePath: async (path) => {
+                if (path === from) {
+                    await checkingTo.promise;
+                } else if (path === to) {
+                    checkingTo.resolve();
+                }
+
+                return canonical(path);
+            },
         });
+
+        from = join(folder, "file.txt");
+        to = join(outside, "renamed.txt");
+        const outcome = await request({ op: "rename", path: from, to });
 
         refused(outcome, /outside the session's folder/);
         assert.deepEqual(sent, []);
@@ -185,6 +341,52 @@ describe("runner RequestGate", () => {
         symlinkSync(outside, link, "dir");
         refused(await request({ op: "open", path: join(link, "file.txt") }), /outside/);
         assert.deepEqual(sent, []);
+    });
+
+    it("refuses a prepared path when the session folder's symlink changed before its turn", async (t) => {
+        const release = Promise.withResolvers<void>();
+        const ahead = Promise.withResolvers<void>();
+        let slow = "";
+        let preparing = "";
+
+        const { request, a, folder, outside, sent } = await fixture(t, {
+            resolvePath: async (path) => {
+                if (path === slow) {
+                    await release.promise;
+                }
+
+                const real = await canonical(path);
+
+                if (path === preparing) {
+                    ahead.resolve();
+                }
+
+                return real;
+            },
+        });
+        const alias = join(dirname(folder), "chosen-folder");
+        const type = process.platform === "win32" ? "junction" : "dir";
+        const scope = { ...a, folder: alias };
+        const open = { op: "open", path: join(folder, "file.txt") };
+
+        symlinkSync(folder, alias, type);
+        assert.equal((await request(open, scope)).route, "send");
+        slow = join(folder, "slow");
+        preparing = open.path;
+        const head = request({ op: "open", path: slow });
+        const waiting = request(open, scope);
+
+        try {
+            await ahead.promise;
+            renameSync(alias, `${alias}-old`);
+            symlinkSync(outside, alias, type);
+        } finally {
+            release.resolve();
+        }
+
+        assert.equal((await head).route, "send");
+        refused(await waiting, /outside the session's folder/);
+        assert.equal(sent.length, 2);
     });
 
     it("refuses a missing child below a symlink to an outside folder", async (t) => {
@@ -277,6 +479,50 @@ describe("runner RequestGate", () => {
         assert.equal(sent.length, before + 1, "its own session's cancel does");
         assert.equal(readFrame(sent.at(-1)!).type, FRAME.cancel);
         assert.equal(readFrame(sent.at(-1)!).json[SESSION_FIELD], undefined, "without the field");
+    });
+
+    it("cancels a queued request at once and does not hold other sessions", async (t) => {
+        const release = Promise.withResolvers<void>();
+        let first = "";
+
+        const { gate, request, a, b, folder, sent, replies } = await fixture(t, {
+            resolvePath: async (path) => {
+                if (path === first) {
+                    await release.promise;
+                }
+
+                return canonical(path);
+            },
+        });
+
+        first = join(folder, "slow");
+        const before = request({ op: "open", path: first });
+        const open = { op: "open", path: join(folder, "file.txt") };
+        const cancelled = request(open);
+        const after = request(open);
+
+        try {
+            gate.input(frame(FRAME.cancel, 2, { [SESSION_FIELD]: b }));
+            assert.deepEqual(replies, [], "a different session cannot cancel it");
+            gate.input(frame(FRAME.cancel, 2, { [SESSION_FIELD]: a }));
+            refused(await cancelled, /The request was cancelled/);
+
+            const independent = await request(open, b);
+
+            assert.equal(independent.route, "send");
+            assert.deepEqual(
+                sent.map((whole) => readFrame(whole).id),
+                [independent.id],
+            );
+        } finally {
+            release.resolve();
+        }
+
+        await Promise.all([before, after]);
+        assert.deepEqual(
+            sent.map((whole) => readFrame(whole).id),
+            [4, 1, 3],
+        );
     });
 
     it("fills a command's missing cwd with the session's approved folder", async (t) => {

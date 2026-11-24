@@ -64,6 +64,7 @@ import type { FileInfo } from "@earendil-works/pi-durable/env";
 import type { ConfigStore, StoredRunner, User } from "./config.ts";
 import type { ComputerRight } from "./rights.ts";
 import { HttpError } from "./errors.ts";
+import { limitParallel } from "./folder-access.ts";
 import { LinkLimits, type LinkLocks, WRONG_CODE } from "./link-limits.ts";
 import { runnerPin } from "./versions.ts";
 
@@ -1492,32 +1493,37 @@ export class Runners {
             );
         }
 
-        const dirs: { name: string; path: string }[] = [];
+        const run = limitParallel(8);
+        const picked = await Promise.all(
+            listed.value
+                .filter((entry) => hidden || !entry.name.startsWith("."))
+                .map(({ kind, name, path }) => {
+                    if (kind === "directory") {
+                        return { name, path };
+                    }
 
-        for (const entry of listed.value) {
-            if (!hidden && entry.name.startsWith(".")) {
-                continue;
-            }
+                    if (kind !== "symlink") {
+                        return undefined;
+                    }
 
-            let folder = entry.kind === "directory";
+                    return run(async () => {
+                        // Only this link's real path is needed for its stat.
+                        const real = await resolved.env.canonicalPath(path, BACKGROUND);
+                        const target = await resolved.env.fileInfo(
+                            real.ok ? real.value : path,
+                            BACKGROUND,
+                        );
 
-            if (entry.kind === "symlink") {
-                const target = await resolved.env.fileInfo(
-                    await resolved.env
-                        .canonicalPath(entry.path, BACKGROUND)
-                        .then((real) => (real.ok ? real.value : entry.path)),
-                    BACKGROUND,
-                );
-
-                folder = target.ok && target.value.kind === "directory";
-            }
-
-            if (folder) {
-                dirs.push({ name: entry.name, path: entry.path });
-            }
-        }
-
-        dirs.sort((a, b) => a.name.localeCompare(b.name));
+                        return target.ok && target.value.kind === "directory"
+                            ? { name, path }
+                            : undefined;
+                    });
+                }),
+        );
+        // Equal names keep their listing order, not the order of replies.
+        const dirs = picked
+            .filter((entry) => entry !== undefined)
+            .sort((a, b) => a.name.localeCompare(b.name));
 
         const sep = resolved.separator;
         const trimmed = resolved.path.replace(/[\\/]+$/, "");

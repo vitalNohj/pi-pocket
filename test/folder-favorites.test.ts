@@ -12,6 +12,7 @@ import {
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
+import { setImmediate } from "node:timers/promises";
 
 let app: App;
 
@@ -22,6 +23,64 @@ before(async () => {
 after(async () => {
     await app.close();
     cleanUp();
+});
+
+test("hello starts independent reads together, with favorites and pins still after the guard", async (t) => {
+    const [models, guard] = await Promise.all([app.modelList(), app.guardStatus()]);
+    const modelRead = Promise.withResolvers<void>();
+    const guardRead = Promise.withResolvers<void>();
+    const favorites = Promise.withResolvers<void>();
+    const model = t.mock.method(app, "modelList", async () => {
+        await modelRead.promise;
+
+        return models;
+    });
+    const guardStatus = t.mock.method(app, "guardStatus", async () => {
+        await guardRead.promise;
+
+        return guard;
+    });
+    const local = t.mock.method(app.folderFavorites, "list", async () => {
+        await favorites.promise;
+
+        return [root];
+    });
+    const runners = t.mock.method(app.folderFavorites, "runners", async () => ({}));
+    const pins = t.mock.method(app.pinnedSessions, "list", async () => [42]);
+    const pending = app.hello(owner(app));
+
+    try {
+        assert.equal(model.mock.callCount(), 1);
+        assert.equal(guardStatus.mock.callCount(), 1);
+        modelRead.resolve();
+        await setImmediate();
+        assert.equal(local.mock.callCount(), 0);
+        assert.equal(runners.mock.callCount(), 0);
+        assert.equal(pins.mock.callCount(), 0);
+        guardRead.resolve();
+        await setImmediate();
+        assert.equal(local.mock.callCount(), 1);
+        assert.equal(runners.mock.callCount(), 1);
+        assert.equal(pins.mock.callCount(), 1);
+    } finally {
+        modelRead.resolve();
+        guardRead.resolve();
+        favorites.resolve();
+    }
+
+    const hello = await pending;
+
+    assert.deepEqual(hello.folderFavorites, [root]);
+    assert.deepEqual(hello.pinnedSessions, [42]);
+
+    const viewer = (await addPerson(app, "Pin viewer", "viewer")).user;
+
+    try {
+        assert.equal((await app.hello(viewer)).pinnedSessions, undefined);
+        assert.equal(pins.mock.callCount(), 1);
+    } finally {
+        await app.removeUser(owner(app), viewer.id);
+    }
 });
 
 test("each person reads, changes, and hears only their own favorites", async () => {

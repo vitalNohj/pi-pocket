@@ -74,6 +74,32 @@ export type FolderAccess = {
  */
 export class Unreachable extends Error {}
 
+/** Limit concurrent work for one request. A failed call still releases its place. */
+export function limitParallel(max: number) {
+    let active = 0;
+    const waiting: (() => void)[] = [];
+
+    return async function run<T>(work: () => Promise<T>): Promise<T> {
+        if (active < max) {
+            active++;
+        } else {
+            await new Promise<void>((resolve) => waiting.push(resolve));
+        }
+
+        try {
+            return await work();
+        } finally {
+            const next = waiting.shift();
+
+            if (next === undefined) {
+                active--;
+            } else {
+                next();
+            }
+        }
+    };
+}
+
 /** An error with the code Node gives the same failure, so callers tell "not there" apart as they do here. */
 function nodeError(error: FileError | Error): NodeJS.ErrnoException {
     const codes: Record<string, string> = {
@@ -136,6 +162,7 @@ export const localAccess: FolderAccess = {
             return { kind: "file", size: info.size, mtimeMs: info.mtimeMs, bytes: Buffer.alloc(0) };
         }
 
+        // Open only a regular file, after stat determines its kind and the size to read.
         const handle = await open(path, "r");
 
         try {
@@ -157,7 +184,7 @@ export const localAccess: FolderAccess = {
         const entries: { name: string; dir: boolean }[] = [];
         const dir = await opendir(path, { bufferSize: 256 });
 
-        // Leaving the loop early closes the folder.
+        // One directory cursor advances in order. Leaving the loop early closes the folder.
         for await (const entry of dir) {
             if (
                 entries.length >= limit ||
@@ -360,7 +387,7 @@ export function remoteAccess(env: ExecutionEnv, info: Pick<RemoteInfo, "os">): F
 
             try {
                 while (true) {
-                    // One past the limit says whether there are more.
+                    // The reader advances one cursor. The previous page sets what is left of the limit.
                     const page = await reader.next(limit + 1 - entries.length, context);
 
                     if (!page.ok) {

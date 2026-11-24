@@ -30,6 +30,17 @@ type Request = {
 
 type Handle = { scope?: SessionScope; path: string; directory: boolean; readOnly: boolean };
 
+type Prepared =
+    { listing: true; path: string | undefined } | { scope: SessionScope; paths: string[] };
+type Checked = { prepared: Prepared } | { error: unknown };
+type Queued = {
+    id: number;
+    request: Request;
+    json: Record<string, unknown>;
+    payload: Uint8Array;
+    check?: Promise<Checked>;
+};
+
 /**
  * The requests of pi-env's client (protocol 1) that Pi Pocket uses. Anything else is refused, so an op a later pi-env
  * adds, with a path in a field this gate does not read, cannot pass its folder check unseen. pi-env 1.5.2 added
@@ -67,6 +78,19 @@ const KNOWN_OPS = new Set([
 
 /** What works without a session: the folder picker's listing. */
 const LISTING = new Set(["hello", "lstat", "realpath", "opendir"]);
+
+/** These operations cannot change paths before a later request checks them. `open` only opens a reader. */
+const CHECK_AHEAD = new Set([
+    ...LISTING,
+    "open",
+    "pread",
+    "fstat",
+    "scanLines",
+    "listFiles",
+    "watch",
+    READ_SNAPSHOT,
+]);
+const CHECK_LIMIT = 16;
 
 /** What only reads a file opened with `open`. */
 const READING = new Set(["pread", "fstat", "scanLines", "close"]);
@@ -170,13 +194,16 @@ export type GateOptions = {
     readSnapshot?: boolean;
     /** A request of a session in `folder` reaches the daemon; the result is called when it ended (`activity.ts`). */
     working?: (folder: string) => () => void;
+    /** Request path resolver; tests can delay or count path checks. */
+    resolvePath?: typeof canonical;
 };
 
 export class RequestGate {
     readonly #options: GateOptions;
+    readonly #resolvePath: typeof canonical;
     readonly #requests = new Map<number, Request>();
     readonly #handles = new Map<number, Handle>();
-    readonly #queues = new Map<string, Promise<void>>();
+    readonly #queues = new Map<string, Set<Queued>>();
     /** The folders `mkdtemp` made for each session: codemode's work folders and temporary files. */
     readonly #temporary = new Map<string, Set<string>>();
     /** Exact real files, never folders, that a session may read for a short time (`allowRead`), by session id. */
@@ -184,6 +211,7 @@ export class RequestGate {
 
     constructor(options: GateOptions) {
         this.#options = options;
+        this.#resolvePath = options.resolvePath ?? canonical;
     }
 
     /**
@@ -211,7 +239,7 @@ export class RequestGate {
     /** A background task of session `scope`, as the server named it: its folder must be in the session's folder. */
     async task(scope: SessionScope, cwd?: string): Promise<() => void> {
         const folder = await realFolder(scope.folder);
-        const paths = await this.#paths(cwd === undefined ? {} : { cwd }, undefined);
+        const paths = await this.#paths(cwd === undefined ? {} : { cwd });
 
         if (!(await this.#inside(scope.id, folder, paths))) {
             throw new Error(`The path is outside the session's folder on ${this.#options.name()}`);
@@ -227,6 +255,11 @@ export class RequestGate {
             request.finish?.();
         }
 
+        for (const queue of this.#queues.values()) {
+            queue.clear();
+        }
+
+        this.#queues.clear();
         this.#requests.clear();
         this.#handles.clear();
         this.#temporary.clear();
@@ -280,38 +313,89 @@ export class RequestGate {
         delete json[SESSION_FIELD];
         this.#requests.set(id, request);
 
-        // One session's requests go in order; other sessions go on.
         const key = request.scope?.id ?? "";
+        const active = this.#queues.get(key);
+        const queue = active ?? new Set<Queued>();
 
-        const queued = (this.#queues.get(key) ?? Promise.resolve()).then(async () => {
+        queue.add({ id, request, json, payload });
+        this.#queues.set(key, queue);
+        this.#fill(queue);
+
+        if (active === undefined) {
+            void this.#drain(key, queue);
+        }
+    }
+
+    /** Prepare at most 16 requests per session. Do not resolve paths past a request that could change them. */
+    #fill(queue: Set<Queued>): void {
+        let count = 0;
+
+        for (const job of queue) {
+            if (count === CHECK_LIMIT || !CHECK_AHEAD.has(job.request.op)) {
+                break;
+            }
+
+            if (job.check === undefined && !job.request.stop.signal.aborted) {
+                job.check = this.#prepare(job).then(
+                    (prepared) => ({ prepared }),
+                    (error: unknown) => ({ error }),
+                );
+            }
+
+            count++;
+        }
+    }
+
+    async #drain(key: string, queue: Set<Queued>): Promise<void> {
+        // Authorize, record activity, and send or refuse in arrival order. Handle, folder, and shared-folder
+        // checks use current state. The server asks for access before sending requests, not inside this gate.
+        for (const job of queue) {
+            const { id, request, json, payload } = job;
+
             try {
-                if (request.stop.signal.aborted) {
-                    throw new Error("The request was cancelled");
-                }
-
-                await this.#authorize(request, json);
+                // Even a cancelled check occupies its slot until the path lookups end; they cannot be aborted.
+                const checked = await job.check;
 
                 if (request.stop.signal.aborted) {
-                    throw new Error("The request was cancelled");
+                    continue;
                 }
 
-                if (op === READ_SNAPSHOT) {
+                if (checked !== undefined && "error" in checked) {
+                    throw checked.error;
+                }
+
+                const prepared = checked?.prepared ?? (await this.#prepare(job));
+
+                if (request.stop.signal.aborted) {
+                    continue;
+                }
+
+                await this.#authorize(job, prepared);
+
+                if (request.stop.signal.aborted) {
+                    continue;
+                }
+
+                if (request.op === READ_SNAPSHOT) {
                     await this.#snapshot(id, request, json.path, json.maxBytes);
                 } else {
+                    const outgoing = frame(FRAME.request, id, json, payload);
+
                     request.sent = true;
-                    this.#options.send(frame(type, id, json, payload));
+                    this.#options.send(outgoing);
                 }
             } catch (error) {
                 this.#refuse(id, request, (error as Error).message);
+            } finally {
+                // Start the next window only after a request that can change paths has sent or been refused.
+                queue.delete(job);
+                this.#fill(queue);
             }
-        });
+        }
 
-        this.#queues.set(key, queued);
-        void queued.finally(() => {
-            if (this.#queues.get(key) === queued) {
-                this.#queues.delete(key);
-            }
-        });
+        if (this.#queues.get(key) === queue) {
+            this.#queues.delete(key);
+        }
     }
 
     /** Read only the path the gate authorized. Aliases and failures stay on the normal tool path. */
@@ -355,8 +439,8 @@ export class RequestGate {
         }
     }
 
-    /** Check a request; on success, it counts as work of its session until its result (`activity.ts`). */
-    async #authorize(request: Request, json: Record<string, unknown>): Promise<void> {
+    /** Resolve only request paths ahead of time; this does not grant access or change session state. */
+    async #prepare({ request, json }: Queued): Promise<Prepared> {
         if (!KNOWN_OPS.has(request.op)) {
             throw new Error(
                 `The runner on ${this.#options.name()} does not know the request "${request.op}"`,
@@ -369,29 +453,47 @@ export class RequestGate {
             throw new Error(`A file snapshot is not available on ${this.#options.name()}`);
         }
 
-        const handle = typeof json.handle === "number" ? this.#handles.get(json.handle) : undefined;
+        // Directory-handle listings (readdir and close) are not checked ahead of their turn.
         const listing =
             LISTING.has(request.op) ||
-            (["readdir", "close"].includes(request.op) && handle?.directory === true);
+            (["readdir", "close"].includes(request.op) &&
+                typeof json.handle === "number" &&
+                this.#handles.get(json.handle)?.directory === true);
 
-        if (!snapshot && typeof json.path === "string" && isAbsolute(json.path)) {
+        if (listing) {
             const path = json.path;
 
             // A folder the picker cannot resolve still lists as the daemon decides.
-            request.path = await canonical(path).catch(() => resolve(path));
+            return {
+                listing: true,
+                path:
+                    typeof path === "string" && isAbsolute(path)
+                        ? await this.#resolvePath(path).catch(() => resolve(path))
+                        : undefined,
+            };
         }
 
-        if (listing) {
-            return;
-        }
-
-        const scope = request.scope;
-
-        if (scope === undefined) {
+        if (request.scope === undefined) {
             throw new Error(`A session on ${this.#options.name()} is required`);
         }
 
-        const paths = await this.#paths(json, handle);
+        return { scope: request.scope, paths: await this.#paths(json) };
+    }
+
+    /** Check live authorization; on success, count this work for the session until its result (`activity.ts`). */
+    async #authorize({ request, json }: Queued, prepared: Prepared): Promise<void> {
+        if ("listing" in prepared) {
+            if (prepared.path !== undefined) {
+                request.path = prepared.path;
+            }
+
+            return;
+        }
+
+        const { scope } = prepared;
+        const handle = typeof json.handle === "number" ? this.#handles.get(json.handle) : undefined;
+        const paths = handle === undefined ? prepared.paths : [handle.path, ...prepared.paths];
+        // The session's folder can move or become a symlink. Do not use a cached folder to grant access.
         const folder = await realFolder(scope.folder);
 
         // A command runs in a folder of its session: with none named, the session's folder, never the runner's own.
@@ -422,29 +524,31 @@ export class RequestGate {
 
         // Pi's context files and skills: read only, in a file opened to read.
         const reading =
-            snapshot ||
+            request.op === READ_SNAPSHOT ||
             request.op === "open" ||
             (handle?.readOnly === true && READING.has(request.op));
-        const home = reading ? await realFolder(homedir()) : "";
-        const extra = this.#extraReads.get(scope.id);
-        const extraReading =
-            reading &&
-            extra !== undefined &&
-            paths.length > 0 &&
-            paths.every((path) => (extra.get(path) ?? 0) > Date.now());
+        let allowed = temporary || (await this.#inside(scope.id, folder, paths));
 
-        if (
-            !temporary &&
-            !(await this.#inside(scope.id, folder, paths)) &&
-            !(reading && paths.every((path) => piReads(folder, home, path))) &&
-            !extraReading
-        ) {
+        if (!allowed && reading) {
+            const home = await realFolder(homedir());
+            const extra = this.#extraReads.get(scope.id);
+
+            allowed =
+                paths.every((path) => piReads(folder, home, path)) ||
+                (extra !== undefined &&
+                    paths.length > 0 &&
+                    paths.every((path) => (extra.get(path) ?? 0) > Date.now()));
+        }
+
+        if (!allowed) {
             throw new Error(`The path is outside the session's folder on ${this.#options.name()}`);
         }
 
-        if (snapshot && paths[0] !== undefined) {
-            // The path as checked above, not a second resolution of the same name.
-            request.path = paths[0];
+        // Use the checked path, without a second lookup. A snapshot uses the first path the gate checked.
+        const real = request.op === READ_SNAPSHOT ? paths[0] : prepared.paths[0];
+
+        if (typeof json.path === "string" && real !== undefined) {
+            request.path = real;
         }
 
         if (!request.stop.signal.aborted && request.op !== "watch") {
@@ -453,7 +557,7 @@ export class RequestGate {
     }
 
     /** Each path a request names, made absolute and real. A relative or non-text path is refused. */
-    async #paths(json: Record<string, unknown>, handle: Handle | undefined): Promise<string[]> {
+    async #paths(json: Record<string, unknown>): Promise<string[]> {
         const given: unknown[] = [json.path, json.cwd, json.to];
 
         if (Array.isArray(json.targets)) {
@@ -462,7 +566,7 @@ export class RequestGate {
             }
         }
 
-        const paths = handle === undefined ? [] : [handle.path];
+        const absolute: string[] = [];
 
         for (const path of given) {
             if (path === undefined) {
@@ -473,13 +577,34 @@ export class RequestGate {
                 throw new Error("A request path must be absolute");
             }
 
-            paths.push(await canonical(path));
+            absolute.push(path);
+        }
+
+        const paths: string[] = [];
+
+        // A watch can name many paths. Bound each group, and wait for every lookup in it even on error.
+        for (let i = 0; i < absolute.length; i += CHECK_LIMIT) {
+            const group = await Promise.allSettled(
+                absolute.slice(i, i + CHECK_LIMIT).map(async (path) => this.#resolvePath(path)),
+            );
+
+            for (const result of group) {
+                if (result.status === "rejected") {
+                    throw result.reason;
+                }
+
+                paths.push(result.value);
+            }
         }
 
         return paths;
     }
 
     async #inside(session: string, folder: string, paths: readonly string[]): Promise<boolean> {
+        if (paths.every((path) => folderContains(folder, path))) {
+            return true;
+        }
+
         const shared = [
             ...(await this.#options.shared(session)),
             ...(this.#temporary.get(session) ?? []),

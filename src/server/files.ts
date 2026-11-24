@@ -86,7 +86,7 @@ async function walkFiles(
     ms: number,
     access: FolderAccess,
 ): Promise<{ files: string[]; truncated: boolean }> {
-    // A computer that lists files itself does it there, in one round trip.
+    // Walk only if the computer cannot list files itself in one round trip.
     const listed = await access.listFiles?.(cwd, { exclude: [...SKIP], max, timeoutMs: ms });
 
     if (listed !== undefined) {
@@ -99,6 +99,7 @@ async function walkFiles(
     const queue = [""];
     let truncated = false;
 
+    // The remaining entry budget and the next breadth-first folders depend on what the previous read found.
     for (let index = 0; index < queue.length; index++) {
         if (files.length >= max || Date.now() > deadline) {
             return { files, truncated: true };
@@ -182,6 +183,7 @@ export async function listFiles(
     max = MAX_FILES,
     access: FolderAccess = localAccess,
 ): Promise<FileList> {
+    // A walk reads paths Git can ignore, so it must not start until the Git list falls back.
     const listed = await gitFiles(cwd, access);
     const { files, truncated } =
         listed === undefined
@@ -276,6 +278,7 @@ export async function viewFile(
     const peek = await access.peek(file, IMAGE_EXTENSIONS.test(file) ? 0 : VIEW_BYTES);
 
     if (peek.kind === "directory") {
+        // Only a directory can be listed. For other paths the peek already has the result.
         const { entries, more } = await access.list(file, VIEW_ENTRIES);
         const listed = entries.sort(
             (a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name),

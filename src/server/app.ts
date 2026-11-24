@@ -5519,13 +5519,13 @@ export class PocketApp {
     }
 
     async hello(user: User) {
-        const models = await this.modelList();
-        const guard = await this.guardStatus();
+        const [models, guard] = await Promise.all([this.modelList(), this.guardStatus()]);
         // Read after the guard's wait, so a connecting device does not replace a live update with an older list.
-        const folderFavorites = await this.folderFavorites.list(user);
-        const runnerFavorites = await this.folderFavorites.runners(user);
-        const pinnedSessions =
-            user.role === "viewer" ? undefined : await this.pinnedSessions.list(user);
+        const [folderFavorites, runnerFavorites, pinnedSessions] = await Promise.all([
+            this.folderFavorites.list(user),
+            this.folderFavorites.runners(user),
+            user.role === "viewer" ? undefined : this.pinnedSessions.list(user),
+        ]);
         const runners = this.runners.list(user);
         const thisServer = this.thisServer(user);
         const managesServer = this.policy.managesServer(user);

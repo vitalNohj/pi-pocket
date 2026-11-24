@@ -100,21 +100,10 @@ export type RunnerLinkFile = {
     allowHttp?: boolean;
 };
 
-/**
- * This computer's settings, kept on the server and sent with `runner-settings` (`protocol.ts`). Only `allowHttp` is
- * kept here, in the link file: the runner needs it before it can reach the server.
- */
-export type RunnerSettings = {
-    /** Use plain HTTP to this server even where it is not this computer or a tailnet device. Default: false. */
-    allowHttp?: boolean;
-    /** Open the network connections of sessions' browsers from this computer. Default: true. */
-    network?: boolean;
-    /** Where sessions' browser downloads go, an absolute folder: `<folder>/<session>/`. Default: the temporary folder. */
-    downloads?: string;
-};
-
 export type RunnerOptions = {
     link: RunnerLinkFile;
+    /** The link's local plain-HTTP setting, read before each connection attempt. Default: from `link`. */
+    allowHttp?: () => boolean;
     version: string;
     /** The command that its texts name (`invoked.ts`). Default: `pi-pocket-runner`. */
     command?: string;
@@ -513,14 +502,18 @@ export class Runner {
             return [];
         }
 
-        const downloads = this.#settings().downloads;
+        const downloads = this.#server.downloads;
+        const [home, downloadFolder] = await Promise.all([
+            realFolder(homedir()),
+            downloads === undefined ? undefined : realFolder(downloads),
+        ]);
 
         return [
             join(temporary, "pi-pocket-uploads", id),
             join(temporary, "pi-pocket-tasks", id),
             join(temporary, "pi-pocket-downloads", id),
-            join(await realFolder(homedir()), ".pi-pocket", "worktrees", id),
-            ...(downloads === undefined ? [] : [join(await realFolder(downloads), id)]),
+            join(home, ".pi-pocket", "worktrees", id),
+            ...(downloadFolder === undefined ? [] : [join(downloadFolder, id)]),
         ];
     }
 
@@ -556,15 +549,6 @@ export class Runner {
         }
     }
 
-    /** This computer's settings now: plain HTTP from its link, the rest from the server. */
-    #settings(): RunnerSettings {
-        return {
-            ...(this.#options.link.allowHttp === true ? { allowHttp: true } : {}),
-            network: this.#server.network,
-            ...(this.#server.downloads === undefined ? {} : { downloads: this.#server.downloads }),
-        };
-    }
-
     /** Check that the server may be reached this way (`transport.ts`), then connect; refused, it stops for good. */
     #connect(): void {
         if (this.#stopping) {
@@ -572,8 +556,9 @@ export class Runner {
         }
 
         const check = this.#options.transport ?? checkTransport;
+        const allowHttp = this.#options.allowHttp?.() ?? this.#options.link.allowHttp === true;
 
-        void check(this.#options.link.server, this.#settings().allowHttp === true).then(
+        void check(this.#options.link.server, allowHttp).then(
             (transport) => {
                 if (this.#stopping) {
                     return;
@@ -604,7 +589,9 @@ export class Runner {
                     );
                 }
 
-                void this.#tools().then((tools) => this.#open(tools, pinnedLookup(transport)));
+                void this.#tools().then((tools) =>
+                    this.#open(tools, pinnedLookup(transport), allowHttp),
+                );
             },
             (error: unknown) => this.#fail(`Could not check the server address: ${String(error)}`),
         );
@@ -624,7 +611,7 @@ export class Runner {
         return this.#toolsChecked.tools;
     }
 
-    #open(tools: RunnerTools, lookup: LookupFunction | undefined): void {
+    #open(tools: RunnerTools, lookup: LookupFunction | undefined, allowHttp: boolean): void {
         if (this.#stopping) {
             return;
         }
@@ -703,7 +690,7 @@ export class Runner {
                     version: this.#options.version,
                     tools,
                     ...(this.#options.daemon === undefined ? { readSnapshot: true } : {}),
-                    ...(link.allowHttp === true ? { allowHttp: true } : {}),
+                    ...(allowHttp ? { allowHttp: true } : {}),
                 } satisfies ControlMessage),
             );
         });
@@ -1173,7 +1160,7 @@ export class Runner {
             return;
         }
 
-        if (this.#settings().network === false) {
+        if (!this.#server.network) {
             fail("refused", `${this.#options.link.name} does not share its network`);
 
             return;

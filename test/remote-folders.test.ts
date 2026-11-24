@@ -11,6 +11,7 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { err, FileError, type FileInfo, ok } from "@earendil-works/pi-durable/env";
 import { Runner } from "../packages/runner/src/runner.ts";
 import { HttpError } from "../src/server/errors.ts";
 import {
@@ -127,8 +128,12 @@ after(async () => {
 });
 
 describe("a session's folder on another computer", () => {
-    it("shows a path in that computer's file manager, through its runner", async () => {
+    it("shows a path in that computer's file manager, through its runner", async (t) => {
+        const link = app.runners.link(app.runnerOf(id)!);
+        const infoNow = t.mock.method(link, "infoNow");
+
         await app.workspace.reveal(owner(app), id, "sub/b.txt");
+        assert.equal(infoNow.mock.callCount(), 1);
         await app.workspace.reveal(owner(app), id, "sub");
 
         const lines = readFileSync(revealed, "utf8").trim().split("\n");
@@ -152,6 +157,127 @@ describe("a session's folder on another computer", () => {
             "sub/b.txt",
             "sub/out.txt",
         ]);
+    });
+
+    it("starts the Files platform lookup while checking the conversation, but keeps its error first", async (t) => {
+        const released = Promise.withResolvers<void>();
+        const link = app.runners.link(app.runnerOf(id)!);
+        const offline = new HttpError(409, "offline");
+        const missing = new HttpError(404, "no conversation");
+        const info = t.mock.method(link, "infoNow", async () => {
+            throw offline;
+        });
+        const env = t.mock.method(app.runners, "env");
+
+        t.mock.method(app, "conversation", async () => {
+            await released.promise;
+
+            throw missing;
+        });
+        const pending = assert.rejects(app.workspace.fileList(id, owner(app)), missing);
+
+        try {
+            await until(
+                () => info.mock.callCount() !== 0,
+                "the platform lookup before the conversation reply",
+            );
+        } finally {
+            released.resolve();
+            await pending;
+        }
+
+        assert.equal(
+            env.mock.callCount(),
+            0,
+            "do not use a file environment after a missing conversation",
+        );
+    });
+
+    it("resolves at most eight folder links at once and keeps the listing order for ties", async (t) => {
+        const runnerId = app.runnerOf(id)!;
+        const info = await app.runners.link(runnerId).infoNow();
+        const env = app.runners.env(runnerId, info.home);
+        const links = [
+            "é",
+            "é",
+            "broken",
+            "a file",
+            "fallback",
+            ".hidden",
+            ...Array.from({ length: 8 }, (_, i) => `link-${i}`),
+        ];
+        const entry = (name: string, kind: FileInfo["kind"]): FileInfo => ({
+            name,
+            path: join(there, name),
+            kind,
+            size: 0,
+            mtimeMs: 0,
+        });
+
+        t.mock.method(env, "listDir", async () =>
+            ok([entry("real", "directory"), ...links.map((link) => entry(link, "symlink"))]),
+        );
+        const release = Promise.withResolvers<void>();
+        const first = Promise.withResolvers<void>();
+        const seen: string[] = [];
+        let active = 0;
+        let peak = 0;
+
+        t.mock.method(env, "canonicalPath", async (path: string) => {
+            seen.push(path);
+            peak = Math.max(peak, ++active);
+            await release.promise;
+
+            return path.endsWith("fallback")
+                ? err(new FileError("not_found", path))
+                : ok(path + ".target");
+        });
+        t.mock.method(env, "fileInfo", async (path: string) => {
+            try {
+                if (path.endsWith("é.target")) {
+                    await first.promise;
+                } else if (path.endsWith("é.target")) {
+                    first.resolve();
+                }
+
+                if (path.endsWith("broken.target")) {
+                    return err(new FileError("not_found", path));
+                }
+
+                return ok(entry(path, path.endsWith("a file.target") ? "file" : "directory"));
+            } finally {
+                active--;
+            }
+        });
+        const pending = app.runners.folders(runnerId, there, false);
+
+        try {
+            await until(() => active >= 8, "eight independent link resolutions");
+            assert.equal(active, 8);
+        } finally {
+            if (active < 8) {
+                first.resolve();
+            }
+
+            release.resolve();
+        }
+
+        const { dirs } = await pending;
+        const expected = [
+            "real",
+            ...links.filter((name) => !["broken", "a file", ".hidden"].includes(name)),
+        ].sort((a, b) => a.localeCompare(b));
+
+        assert.equal(peak, 8);
+        assert.ok(!seen.includes(join(there, ".hidden")));
+        assert.deepEqual(
+            dirs,
+            expected.map((name) => ({ name, path: join(there, name) })),
+        );
+        assert.deepEqual(
+            dirs.filter(({ name }) => name.normalize() === "é").map(({ name }) => name),
+            ["é", "é"],
+        );
     });
 
     it("shows a file and a folder in the viewer", async () => {
