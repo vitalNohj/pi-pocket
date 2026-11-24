@@ -156,8 +156,8 @@ test("a restart in the middle of a wait: the run waits again with no request, an
     }
 });
 
-test("an account limit keeps its gate through a sign-in renewal and a restart, and a new sign-in clears it", async () => {
-    const dir = join(root, "limit-account");
+test("a model limit keeps its gate through a sign-in renewal and a restart, and a new sign-in clears it", async () => {
+    const dir = join(root, "limit-model");
     const { state, model } = limited(
         "You have hit your ChatGPT usage limit (plus plan). Try again in ~1 min.",
     );
@@ -171,7 +171,7 @@ test("an account limit keeps its gate through a sign-in renewal and a restart, a
 
     const [gate] = app.limits.gates();
 
-    assert.equal(gate?.scope, "account");
+    assert.equal(gate?.scope, "model");
     await app.providers.check("faux");
     assert.equal(waits(app, id)?.until, gate?.until, "a renewal keeps the gate");
     await app.close();

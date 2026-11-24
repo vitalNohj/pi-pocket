@@ -262,10 +262,10 @@ export type ClientToolSlot = {
 /** A run waiting to retry (`limit-gate.ts`), as a tab shows it. Times are the server's clock. */
 export type ClientLimit = {
     provider: string;
-    modelId?: string;
-    /** `account`: every model waits. `model`: one model waits. `request`: only this request waits. */
+    modelId: string;
+    /** `model`: one model waits. `request`: only this request waits. */
     scope: WaitView["scope"];
-    /** `reset`: until a time the provider gave. `backoff`: no time is known, so it tries again at intervals. */
+    /** `reset`: a reset time is known. `backoff`: no reset time is known. */
     kind: "reset" | "backoff";
     /** When the next request goes out. */
     until: number;
@@ -709,11 +709,11 @@ export function projectEntry(
     }
 }
 
-/** A wait for a limit as a tab gets it: no gate key, which names the sign-in. */
+/** A wait for a limit as a tab gets it, without the internal gate key. */
 export function projectLimit(wait: WaitView): ClientLimit {
     return {
         provider: wait.provider,
-        ...(wait.modelId === undefined ? {} : { modelId: wait.modelId }),
+        modelId: wait.modelId,
         scope: wait.scope,
         kind: wait.kind,
         until: wait.until,
