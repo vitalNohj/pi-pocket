@@ -329,25 +329,100 @@ export function readProjectTrust(cwd: string, sources: SkillSources): ProjectTru
     };
 }
 
-/** Save an answer to "trust this project?" for a session in `cwd` in Pi's trust store, as Pi's `/trust` saves it. */
-export function saveProjectTrust(cwd: string, agentDir: string, choice: TrustChoice): void {
+/**
+ * How Pi trusts one folder, as the Access sheet shows it (`projects.ts`): the folder as the trust store names it, the
+ * folder above it, whether Pi trusts it now, and the decision that holds for it (saved for it or the nearest folder
+ * above it; null for none, then `defaultProjectTrust` decides). The same for a folder here and on a runner.
+ */
+export type FolderTrust = {
+    folder: string;
+    parent?: string;
+    trusted: boolean;
+    saved: Saved | null;
+};
+
+/** `FolderTrust` from a folder, the folder above it, and its saved decision; undefined for a store that cannot be read. */
+export function folderTrustOf(
+    folder: string,
+    parent: string,
+    saved: Saved | null | undefined,
+    defaultProjectTrust: SkillSources["defaultProjectTrust"],
+): FolderTrust | undefined {
+    return saved === undefined
+        ? undefined
+        : {
+              folder,
+              ...(parent === folder ? {} : { parent }),
+              trusted: decides(saved, { defaultProjectTrust }) === "trusted",
+              saved,
+          };
+}
+
+/** How Pi trusts folder `cwd` here (`FolderTrust`): undefined when Pi's trust store cannot be read. */
+export function folderTrust(
+    cwd: string,
+    agentDir: string,
+    defaultProjectTrust: SkillSources["defaultProjectTrust"],
+): FolderTrust | undefined {
     const folder = canonical(cwd);
-    const parent = dirname(folder);
-    const store = new ProjectTrustStore(agentDir);
 
+    return folderTrustOf(
+        folder,
+        dirname(folder),
+        savedDecision(folder, agentDir),
+        defaultProjectTrust,
+    );
+}
+
+/**
+ * The decisions one answer saves for `folders`, by path (null: the folder's own decision goes), with `dirname` the path
+ * rules of their computer. "trust" and "distrust" save it for each folder. "trust-parent" takes one folder: the folder
+ * above it becomes trusted, and the folder's own decision goes, so the one above applies to it.
+ */
+export function trustDecisions(
+    folders: readonly string[],
+    choice: TrustChoice,
+    dirnameOf: (path: string) => string,
+): { path: string; decision: boolean | null }[] {
     if (choice !== "trust-parent") {
-        store.set(folder, choice === "trust");
-
-        return;
+        return folders.map((path) => ({ path, decision: choice === "trust" }));
     }
+
+    const [folder] = folders;
+
+    if (folders.length !== 1 || folder === undefined) {
+        throw new Error("Trust the folder above it takes one folder.");
+    }
+
+    const parent = dirnameOf(folder);
 
     if (parent === folder) {
         throw new Error(`${folder} has no folder above it.`);
     }
 
-    // The folder's own decision goes, so the one for the folder above applies to it.
-    store.setMany([
+    return [
         { path: parent, decision: true },
         { path: folder, decision: null },
-    ]);
+    ];
+}
+
+/**
+ * Save one answer to "trust this project?" for `folders` here (`trustDecisions`) in Pi's trust store, in one write, as
+ * Pi's `/trust` saves it. Each folder as the store names it: links resolved.
+ */
+export function saveFoldersTrust(
+    folders: readonly string[],
+    agentDir: string,
+    choice: TrustChoice,
+): { path: string; decision: boolean | null }[] {
+    const decisions = trustDecisions(folders.map(canonical), choice, dirname);
+
+    new ProjectTrustStore(agentDir).setMany(decisions);
+
+    return decisions;
+}
+
+/** Save an answer to "trust this project?" for a session in `cwd` in Pi's trust store, as Pi's `/trust` saves it. */
+export function saveProjectTrust(cwd: string, agentDir: string, choice: TrustChoice): void {
+    saveFoldersTrust([cwd], agentDir, choice);
 }

@@ -132,15 +132,15 @@ test(
                 says: "Link an authenticator app to your account. Its codes are for approvals and 2FA sign-in.",
                 buttons: [
                     ["Not now", false],
-                    ["Open People", true],
+                    ["Open Access", true],
                 ],
             },
         );
 
-        // Open People is not Not now: their own page, with the Authenticator group.
-        await press("Open People");
+        // Open Access is not Not now: their own page, with the Authenticator group.
+        await press("Open Access");
         await until(async () => (await group()) !== null, "the Authenticator group on their page");
-        assert.equal(await sheet(), "people");
+        assert.equal(await sheet(), "access");
         assert.ok(
             (
                 await inPage<string>(
@@ -156,7 +156,7 @@ test(
         // The prompt comes again at the next load: nothing is linked yet.
         await load();
         await until(async () => (await sheet()) === "owner-setup", "the prompt again");
-        await press("Open People");
+        await press("Open Access");
         await until(async () => (await group()) !== null, "the group again");
 
         // Link one there, with a real code.
@@ -240,7 +240,7 @@ test("on a phone, the Authenticator group fits the owner's page in People", real
     await load(VIEWPORTS.mobile);
     await until(async () => (await sheet()) === "owner-setup", "the prompt on a phone");
     assert.deepEqual(await wider(), [], "the prompt fits");
-    await press("Open People");
+    await press("Open Access");
     await until(async () => (await group()) !== null, "the group on a phone");
     assert.deepEqual(await wider(), [], "the page fits");
     // Every row of the account is there, and Sign out, last, is reached by scrolling.

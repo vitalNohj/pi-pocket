@@ -16,9 +16,12 @@ import {
 } from "../store.js";
 import { html, Icon, Marked, Switch } from "../ui.js";
 import {
+    accessFolder as accessFolderOf,
     ago,
+    arrange,
     below,
     foldersOf,
+    inFolder as inFolderOf,
     hitsOf,
     keeps,
     keepsFolder,
@@ -103,6 +106,160 @@ function keep(view) {
 }
 
 const route = (computer, part) => `runners/${encodeURIComponent(computer.id)}/${part}`;
+
+/**
+ * Take `computer` from `person`, or let them use it, as its switch does: said first what that takes from them. True
+ * when it was saved.
+ */
+export function toggleUse(computer, person) {
+    const { chosen, manager } = standing(computer, person);
+
+    if (
+        chosen &&
+        !confirm(
+            manager
+                ? `Take ${computer.name} from ${person.name}? They manage runners, so they stay in charge of it and nothing moves now. They keep nothing here once that ends.`
+                : `Take ${computer.name} from ${person.name}? They leave its sessions at once, and the sessions they started there move to ${heir(computer)}.`,
+        )
+    ) {
+        return Promise.resolve(false);
+    }
+
+    return choosePerson(computer, person, !chosen);
+}
+
+/**
+ * Change what `person` has of `folder` on `computer` to `level` (`app.ts` `setFolderLevel`). Taking it back says first
+ * which of the sessions they started go with it, to who is in charge. True when it was saved.
+ */
+export async function setLevelOf(computer, person, folder, level) {
+    if (level === "none") {
+        const there = store.state.sessions.filter(
+            (each) => (each.runner ?? THIS_SERVER) === computer.id,
+        );
+        const gone = leaving(
+            folder,
+            computer.given?.[person.id] ?? [],
+            there.filter((each) => each.createdBy === person.id),
+            there.filter((each) => each.worktree),
+        ).length;
+
+        if (
+            gone > 0 &&
+            !confirm(
+                `Take ${folder} from ${person.name}? ${gone === 1 ? "The session they started in it moves" : `The ${gone} sessions they started in it move`} to ${heir(computer)}, with the tasks they set up there. Sessions shared with them stay.`,
+            )
+        ) {
+            return false;
+        }
+    }
+
+    return attempt(async () => {
+        keep(await api(route(computer, "level"), { person: person.id, folder, level }));
+
+        return true;
+    });
+}
+
+/**
+ * What `person` has of `folder` on `computer` (`access-tree.js` `levelOf`), and with none of its own, the nearest
+ * folder above it they have, with its level (`from`): they have that one here too.
+ */
+export function levelFor(computer, person, folder) {
+    const given =
+        chosenFor(computer, person) && !person.sessions ? (computer.given?.[person.id] ?? []) : [];
+    const sees = seenFolders(computer, person);
+    const until = untilOf(computer, person);
+    const level = levelOf(folder, given, sees, until);
+
+    if (level !== "none") {
+        return { level };
+    }
+
+    const holder = given
+        .filter((each) => each !== folder && inFolderOf(folder, each))
+        .sort((one, other) => other.length - one.length)[0];
+
+    return holder === undefined
+        ? { level }
+        : { level, from: { folder: holder, level: levelOf(holder, given, sees, until) } };
+}
+
+/**
+ * The projects on a computer I am in charge of and how Pi trusts their folders (`GET /api/runners/:id/projects`), as
+ * the server last said: kept in the store, so the sheet shows them at once when it opens again. Undefined until known.
+ */
+export function projectsOf(computer) {
+    return store.state.accessProjects?.[computer.id];
+}
+
+/** Keep what the server said of a computer's projects (`projectsOf`). */
+export function keepProjects(id, answer) {
+    store.set({ accessProjects: { ...store.state.accessProjects, [id]: answer } });
+}
+
+/**
+ * Ask again for the projects of every computer I am in charge of, all at once. One that cannot be asked keeps what was
+ * known of it.
+ */
+export function loadProjects() {
+    return Promise.all(
+        computers()
+            .filter(inCharge)
+            .map((computer) =>
+                api(route(computer, "projects")).then(
+                    (answer) => keepProjects(computer.id, answer),
+                    () => undefined,
+                ),
+            ),
+    );
+}
+
+/**
+ * Save how Pi trusts `folders` on `computer` (`POST /api/runners/:id/trust`: `choice` is "trust", "trust-parent", or
+ * "distrust"), and keep the projects the server answers: a decision for a folder above changes other projects too.
+ */
+export function setTrust(computer, folders, choice) {
+    return attempt(async () =>
+        keepProjects(computer.id, await api(route(computer, "trust"), { folders, choice })),
+    );
+}
+
+/**
+ * How Pi trusts a project's folders (`src/server/projects.ts` `ProjectView.trust`: its root first, then each folder
+ * outside it): `mixed` when they do not all have one answer. Undefined when the server could not read it.
+ */
+export function trustOfProject(project) {
+    const entries = project.trust;
+
+    if (entries === undefined || entries.length === 0) {
+        return undefined;
+    }
+
+    return {
+        entries,
+        root: entries[0],
+        mixed: entries.some((each) => each.trusted !== entries[0].trusted),
+    };
+}
+
+/**
+ * The small tag beside a project's name where nobody changes its trust (By person): "Not trusted" for a decision
+ * against it, "Mixed" where its folders differ; nothing when it is trusted or nobody decided yet.
+ */
+export function trustTag(project) {
+    const trust = trustOfProject(project);
+
+    if (trust === undefined) {
+        return undefined;
+    }
+
+    if (trust.mixed) {
+        return "Mixed";
+    }
+
+    return trust.root.saved !== null && !trust.root.trusted ? "Not trusted" : undefined;
+}
 
 /** Choose one person for a computer, or no longer: the others stay as they are now. True when it was saved. */
 export function choosePerson(computer, person, on) {
@@ -260,7 +417,7 @@ export function seenFolders(computer, person) {
 }
 
 /** Of those, the ones `person` sees only the sessions made up to a time in ("Sessions so far"): that time, by folder. */
-const untilOf = (computer, person) => computer.seesUntil?.[person.id] ?? {};
+export const untilOf = (computer, person) => computer.seesUntil?.[person.id] ?? {};
 
 /** The home folder of `computer`, as the tree's top row: this server's, or a runner's as it said when it connected. */
 export function homeOf(computer) {
@@ -268,7 +425,7 @@ export function homeOf(computer) {
 }
 
 /** Whether `person` has `session` in their own right: they started it, it is shared with them, or they were invited to it. */
-const holds = (person, session) =>
+export const holds = (person, session) =>
     session.createdBy === person.id ||
     session.sharedWith?.includes(person.id) === true ||
     person.sessions?.includes(session.id) === true;
@@ -290,7 +447,7 @@ export function sessionsOf(computer, person) {
 }
 
 /** Whether a session is locked now: its approval ended, or was revoked, and nobody renewed it (`folder-approvals.ts`). */
-function locked(session) {
+export function locked(session) {
     return (store.state.folderApprovals ?? []).some(
         (each) =>
             each.session === String(session.id) &&
@@ -309,7 +466,7 @@ const ownerId = () => store.state.users.find((each) => each.role === "owner")?.i
  * sessions there, so with folders (`starts`); and someone sessions there can be given to one at a time (`offers`:
  * chosen, not held to one session, not in charge).
  */
-function standing(computer, person) {
+export function standing(computer, person) {
     const chosen = chosenFor(computer, person);
     const manager = computer.managers?.includes(person.id) === true;
 
@@ -335,7 +492,7 @@ function standing(computer, person) {
  * sessions of (`by`), when whoever reads last used it (`usedAt`), who started it, and the folders a search finds it by
  * (`places`).
  */
-export function treeOf(computer, person, giving) {
+export function treeOf(computer, person, giving, { group = "folders", projects } = {}) {
     const { chosen, manager, starts, offers } = standing(computer, person);
     const there = store.state.sessions.filter(
         (each) => (each.runner ?? THIS_SERVER) === computer.id,
@@ -391,9 +548,10 @@ export function treeOf(computer, person, giving) {
         const rows = node.sessions.map((each) => row(each, node.folder));
 
         return {
-            key: node.folder,
+            key: node.project ? `project:${node.folder}` : node.folder,
             folder: node.folder,
-            home: node.folder === homeKey,
+            ...(node.project ? { project: node.project } : {}),
+            home: node.folder === homeKey && !node.project,
             level,
             ...(level === "none" && from !== undefined ? { from } : {}),
             rows,
@@ -402,10 +560,33 @@ export function treeOf(computer, person, giving) {
         };
     };
 
-    const roots = foldersOf(home, given, listed, worktrees).map((each) => nodeOf(each));
+    const arranged = arrange({
+        home,
+        folders: given,
+        sessions: listed,
+        there: worktrees,
+        projects: projects ?? [],
+        group,
+    });
+
+    // A project's row has the level of the folder above it that has one, as a folder's does.
+    const above = (folder) => {
+        const holder = given
+            .filter((each) => each !== folder && inFolderOf(folder, each))
+            .sort((one, other) => other.length - one.length)[0];
+
+        return holder === undefined
+            ? undefined
+            : { folder: holder, level: levelOf(holder, given, sees, until) };
+    };
+
+    const roots = arranged.roots.map((each) =>
+        nodeOf(each, each.project ? above(each.folder) : undefined),
+    );
     const folders = roots.flatMap(function flat(node) {
         return [node, ...node.children.flatMap(flat)];
     });
+    const flat = (arranged.flat ?? []).map((each) => row(each, accessFolderOf(each, worktrees)));
 
     return {
         chosen,
@@ -419,8 +600,10 @@ export function treeOf(computer, person, giving) {
         given,
         held,
         roots,
+        other: arranged.other,
+        flat,
         folders,
-        rows: folders.flatMap((each) => each.rows),
+        rows: [...folders.flatMap((each) => each.rows), ...flat],
     };
 }
 
@@ -550,11 +733,15 @@ export function countOf(rows) {
  * the person has in it (`count`), at its end what is done with the folder (`actions`), and under it, open, its
  * sessions (`children`). `off`: a folder the person does not have, listed to be given. `words`: what is searched for,
  * marked in a folder's name. `depth`: how far in the tree it is, as the Files panel's rows. `home`: the computer's
- * home folder, with its own icon.
+ * home folder, with its own icon. `project`: a project's row, named for it, with its top folder's path (`path`) and a
+ * small tag (`tag`: "Not trusted") beside its name.
  */
 export function TreeGroup({
     folder = false,
     home = false,
+    project = false,
+    path,
+    tag,
     name,
     label,
     count,
@@ -571,7 +758,7 @@ export function TreeGroup({
         <div class=${`at-line ${folder ? "at-folder-line" : ""}`}>
             <button
                 type="button"
-                class=${`ft-row dir ${folder ? "at-folder" : "at-rest"}`}
+                class=${`ft-row dir ${folder || project ? "at-folder" : "at-rest"} ${project ? "at-project" : ""}`}
                 style=${`--depth:${depth}`}
                 aria-expanded=${open}
                 aria-label=${label}
@@ -579,13 +766,15 @@ export function TreeGroup({
                 onClick=${onToggle}
             >
                 <${Icon} name="chevron" size=${11} class=${`chev ${open ? "open" : ""}`} />
-                <${Icon} name=${home ? "home" : folder ? "folder" : "chat"} size=${13} />
+                <${Icon} name=${project ? "fork" : home ? "home" : folder ? "folder" : "chat"} size=${13} />
                 <span class="ft-name">
                     ${
-                        folder
-                            ? pathParts(name).map(
-                                  ([part, at]) =>
-                                      html`<${Marked}
+                        project
+                            ? html`<${Marked} text=${name} hits=${hitsOf(name, words)} />${tag && html`<span class="at-trust-tag">${tag}</span>`}${path && html`<span class="at-path">${path}</span>`}`
+                            : folder
+                              ? pathParts(name).map(
+                                    ([part, at]) =>
+                                        html`<${Marked}
                                               text=${part}
                                               hits=${hitsOf(name, words)
                                                   .filter(
@@ -594,8 +783,8 @@ export function TreeGroup({
                                                   )
                                                   .map((each) => each - at)}
                                           /><wbr />`,
-                              )
-                            : name
+                                )
+                              : name
                     }
                 </span>
                 <span class="at-count">${count}</span>
@@ -621,11 +810,172 @@ const pathParts = (path) => {
 };
 
 /**
+ * Where a menu or a note that opens from `button` goes: under it, or above it where the sheet has no room under it,
+ * kept inside the sheet (`.sheet`) on both sides. Fixed to the screen, so a list or a grid that scrolls does not cut
+ * it off. `width`, `height`: the menu's own size.
+ */
+export function placeIn(button, width, height) {
+    const at = button.getBoundingClientRect();
+    const sheet = button.closest(".sheet")?.getBoundingClientRect() ?? {
+        top: 0,
+        left: 0,
+        right: innerWidth,
+        bottom: innerHeight,
+    };
+    const below = sheet.bottom - at.bottom - 8;
+    const above = at.top - sheet.top - 8;
+    const up = height > below && above > below;
+    const left = Math.max(sheet.left + 8, Math.min(at.right - width, sheet.right - 8 - width));
+
+    return {
+        up,
+        left,
+        top: up ? Math.max(sheet.top + 8, at.top - 4 - height) : at.bottom + 4,
+        maxHeight: Math.max(120, up ? above : below),
+    };
+}
+
+/**
+ * A menu button (`PopMenu`): the Access menu of a folder (`LevelMenu`) and the trust menu of a project
+ * (`access-grid.js` `TrustMenu`) are this one control. The button shows `face`; open, one item for each of `items`
+ * (`{ key, name, says, checked }`), with the checked one marked and focused. `onPick(key)` for another than the
+ * checked one. Escape, a press outside, or a scroll around it closes it. It opens where there is room in the sheet
+ * (`placeIn`).
+ */
+export function PopMenu({ face, buttonClass, label, title, disabled, menuLabel, items, onPick }) {
+    const [open, setOpen] = useState(false);
+    const [place, setPlace] = useState(null);
+    const box = useRef(null);
+    const menu = useRef(null);
+    const button = useRef(null);
+
+    useLayoutEffect(() => {
+        if (!open || !menu.current || !button.current) {
+            setPlace(null);
+
+            return;
+        }
+
+        setPlace(placeIn(button.current, menu.current.offsetWidth, menu.current.scrollHeight));
+        (
+            menu.current.querySelector('[aria-checked="true"]') ??
+            menu.current.querySelector("button")
+        )?.focus({ preventScroll: true });
+    }, [open]);
+
+    // A press outside closes it, as a menu does; so does a scroll of what holds it, which would leave it behind.
+    useEffect(() => {
+        if (!open) {
+            return undefined;
+        }
+
+        const outside = (event) => {
+            if (!box.current?.contains(event.target)) {
+                setOpen(false);
+            }
+        };
+
+        // The scroll that brought the button into sight as it opened does not close it.
+        const opened = Date.now();
+
+        const scrolled = (event) => {
+            if (!menu.current?.contains(event.target) && Date.now() - opened > 250) {
+                setOpen(false);
+            }
+        };
+
+        addEventListener("pointerdown", outside, true);
+        addEventListener("scroll", scrolled, true);
+        addEventListener("resize", scrolled);
+
+        return () => {
+            removeEventListener("pointerdown", outside, true);
+            removeEventListener("scroll", scrolled, true);
+            removeEventListener("resize", scrolled);
+        };
+    }, [open]);
+
+    const onKey = (event) => {
+        const all = [...(menu.current?.querySelectorAll("button") ?? [])];
+        const index = all.indexOf(document.activeElement);
+
+        if (event.key === "Escape" && open) {
+            // Escape closes the menu, not the sheet around it.
+            event.preventDefault();
+            event.stopPropagation();
+            setOpen(false);
+            button.current?.focus();
+        } else if (open && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+            event.preventDefault();
+            all[(index + (event.key === "ArrowDown" ? 1 : -1) + all.length) % all.length]?.focus();
+        }
+    };
+
+    return html`<div class="at-level-box" ref=${box} onKeyDown=${onKey}>
+        <button
+            ref=${button}
+            type="button"
+            class=${`button small at-level ${buttonClass ?? ""}`}
+            aria-haspopup="menu"
+            aria-expanded=${open}
+            aria-label=${label}
+            title=${title}
+            disabled=${disabled}
+            onClick=${(event) => {
+                // A button half out of a scroller's sight comes into it first, so its menu opens beside it.
+                event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
+                setOpen(!open);
+            }}
+        >
+            ${face}
+            <${Icon} name="down" size=${11} />
+        </button>
+        ${
+            open &&
+            html`<div
+                class=${`at-level-menu ${place?.up ? "up" : ""}`}
+                role="menu"
+                aria-label=${menuLabel}
+                ref=${menu}
+                style=${
+                    place
+                        ? `left:${place.left}px;top:${place.top}px;max-height:${place.maxHeight}px`
+                        : "visibility:hidden;left:0;top:0"
+                }
+            >
+                ${items.map(
+                    (each) => html`<button
+                        key=${each.key}
+                        type="button"
+                        class="at-level-item"
+                        role="menuitemradio"
+                        aria-checked=${each.checked ? "true" : "false"}
+                        onClick=${() => {
+                            setOpen(false);
+
+                            if (!each.checked) {
+                                onPick(each.key);
+                            }
+                        }}
+                    >
+                        <span class="at-level-name">
+                            ${each.name}
+                            ${each.checked && html`<${Icon} name="check" size=${13} />`}
+                        </span>
+                        ${each.says.map((line) => html`<span class="at-level-says">${line}</span>`)}
+                    </button>`,
+                )}
+            </div>`
+        }
+    </div>`;
+}
+
+/**
  * The levels of the Access menu of a folder's row (`src/server/config.ts` `FolderLevel`), each including the ones
  * before it: its name in the menu, what the row says when it is chosen, and the one line under its name that says
  * what the person gets. A viewer's menu has no "start": they read, and start nothing.
  */
-const LEVELS = {
+export const LEVELS = {
     none: {
         name: "No access",
         short: "None",
@@ -656,123 +1006,149 @@ export const levelsFor = (person) =>
     person.role === "viewer" ? ["none", "past", "all"] : ["none", "start", "past", "all"];
 
 /**
- * The Access menu at the end of a folder's row: a button that says what the person has of the folder now (`level`),
- * and, open, one item for each level they can be given (`levels`), each with what they get (`LEVELS`). Choosing one
- * calls `onPick` with it. `reason`: why nothing can be changed here, shown beside the button, which is then off.
+ * The Access menu of a folder (`PopMenu`): a button that says what the person has of it now (`level`, in that level's
+ * colour), and open, one item for each level they can be given (`levels`), each with what they get (`LEVELS`).
+ * `reason`: why nothing can be changed here; the button is then off, with the reason beside it, or in its title
+ * where there is no room beside it (`compact`: a cell of the grid).
  */
-export function LevelMenu({ person, folder, where, level, from, levels, reason, busy, onPick }) {
-    const [open, setOpen] = useState(false);
-    const [up, setUp] = useState(false);
-    const box = useRef(null);
-    const menu = useRef(null);
+export function LevelMenu({
+    person,
+    folder,
+    where,
+    level,
+    from,
+    levels,
+    reason,
+    busy,
+    compact = false,
+    onPick,
+}) {
     const viewer = person.role === "viewer";
     // With no level of its own, a folder has the one of the folder above it that has one (`from`): said, quietly.
     const shown = from?.level ?? level;
-    const label = `Access of ${person.name} to ${folder} on ${where}: ${LEVELS[shown].name}${from ? ` (from ${from.folder})` : ""}`;
 
-    // Up from the button where there is no room under it; the menu has the focus on its chosen item.
+    return html`${reason && !compact && html`<span class="at-sees at-reason">${reason}</span>`}
+        <${PopMenu}
+            face=${html`<span>${LEVELS[shown].short}</span>`}
+            buttonClass=${`lv-${shown} ${level === "none" ? "ghost" : ""} ${from ? "inherited" : ""}`}
+            label=${`Access of ${person.name} to ${folder} on ${where}: ${LEVELS[shown].name}${from ? ` (from ${from.folder})` : ""}`}
+            title=${reason ?? (from ? `${LEVELS[shown].name}, from ${from.folder}` : `Access: ${LEVELS[level].name}`)}
+            disabled=${busy || Boolean(reason)}
+            menuLabel=${`Access of ${person.name} to ${folder}`}
+            items=${levels.map((each) => ({
+                key: each,
+                name: LEVELS[each].name,
+                says: [LEVELS[each][viewer ? "viewer" : "user"]],
+                checked: each === level,
+            }))}
+            onPick=${onPick}
+        />`;
+}
+
+/** The "i" of an explanation: one SVG drawn about its centre (a circle, a dot, a stem), 14 px at every width. */
+function InfoGlyph() {
+    return html`<svg class="info-glyph" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <circle cx="8" cy="8" r="6.75" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="8" cy="4.75" r="1" fill="currentColor" />
+        <path d="M8 7v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+    </svg>`;
+}
+
+/**
+ * An explanation behind a small "i" (`.info-tip`), the one of this sheet: shown while a mouse is over it and on
+ * keyboard focus, and by a tap or a click. Escape or a press outside closes it. It opens where there is
+ * room in the sheet (`placeIn`).
+ */
+export function InfoTip({ about, text }) {
+    const [open, setOpen] = useState(false);
+    // Opened by a mouse over it: it closes when the mouse leaves, unless it was clicked.
+    const hovered = useRef(false);
+    const [place, setPlace] = useState(null);
+    const button = useRef(null);
+    const note = useRef(null);
+
     useLayoutEffect(() => {
-        if (!open || !menu.current || !box.current) {
+        if (!open || !note.current || !button.current) {
+            setPlace(null);
+
             return;
         }
 
-        const rect = box.current.getBoundingClientRect();
-
-        setUp(
-            rect.bottom + menu.current.offsetHeight + 8 > innerHeight &&
-                rect.top > menu.current.offsetHeight + 8,
-        );
-        (
-            menu.current.querySelector('[aria-checked="true"]') ??
-            menu.current.querySelector("button")
-        )?.focus({
-            preventScroll: true,
-        });
+        setPlace(placeIn(button.current, note.current.offsetWidth, note.current.offsetHeight));
     }, [open]);
 
-    // A press outside closes it, as a menu does.
     useEffect(() => {
         if (!open) {
             return undefined;
         }
 
         const outside = (event) => {
-            if (!box.current?.contains(event.target)) {
+            if (!button.current?.contains(event.target) && !note.current?.contains(event.target)) {
                 setOpen(false);
             }
         };
 
-        addEventListener("pointerdown", outside, true);
+        const key = (event) => {
+            if (event.key === "Escape") {
+                // Escape closes the note, not the sheet around it.
+                event.preventDefault();
+                event.stopPropagation();
+                setOpen(false);
+            }
+        };
 
-        return () => removeEventListener("pointerdown", outside, true);
+        const scrolled = () => setOpen(false);
+
+        addEventListener("pointerdown", outside, true);
+        addEventListener("keydown", key, true);
+        addEventListener("scroll", scrolled, true);
+
+        return () => {
+            removeEventListener("pointerdown", outside, true);
+            removeEventListener("keydown", key, true);
+            removeEventListener("scroll", scrolled, true);
+        };
     }, [open]);
 
-    const onKey = (event) => {
-        const items = [...(menu.current?.querySelectorAll("button") ?? [])];
-        const index = items.indexOf(document.activeElement);
-
-        if (event.key === "Escape") {
-            // Escape closes the menu, not the sheet around it.
-            event.preventDefault();
-            event.stopPropagation();
-            setOpen(false);
-            box.current?.querySelector(".at-level")?.focus();
-        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            items[
-                (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length
-            ]?.focus();
-        }
-    };
-
-    return html`<div class="at-level-box" ref=${box} onKeyDown=${onKey}>
-        ${reason && html`<span class="at-sees at-reason">${reason}</span>`}
-        <button
+    return html`<button
+            ref=${button}
             type="button"
-            class=${`button small at-level ${level === "none" ? "ghost" : ""} ${from ? "inherited" : ""}`}
-            aria-haspopup="menu"
+            class="info-tip"
+            aria-label=${`About ${about}`}
             aria-expanded=${open}
-            aria-label=${label}
-            title=${reason ?? (from ? `${LEVELS[shown].name}, from ${from.folder}` : `Access: ${LEVELS[level].name}`)}
-            disabled=${busy || Boolean(reason)}
-            onClick=${() => setOpen(!open)}
+            onClick=${() => {
+                // A click on what a mouse opened already keeps it open, until the mouse leaves or Escape.
+                setOpen(hovered.current || !open);
+                hovered.current = false;
+            }}
+            onPointerEnter=${(event) => {
+                if (event.pointerType === "mouse") {
+                    hovered.current = true;
+                    setOpen(true);
+                }
+            }}
+            onPointerLeave=${(event) => {
+                if (event.pointerType === "mouse" && hovered.current) {
+                    hovered.current = false;
+                    setOpen(false);
+                }
+            }}
+            onFocus=${(event) => event.currentTarget.matches(":focus-visible") && setOpen(true)}
+            onBlur=${() => setOpen(false)}
         >
-            <span>${LEVELS[shown].short}</span>
-            <${Icon} name="down" size=${11} />
+            <${InfoGlyph} />
         </button>
         ${
             open &&
             html`<div
-                class=${`at-level-menu ${up ? "up" : ""}`}
-                role="menu"
-                aria-label=${`Access of ${person.name} to ${folder}`}
-                ref=${menu}
+                class="info-note"
+                role="tooltip"
+                ref=${note}
+                style=${place ? `left:${place.left}px;top:${place.top}px` : "visibility:hidden;left:0;top:0"}
             >
-                ${levels.map(
-                    (each) => html`<button
-                        key=${each}
-                        type="button"
-                        class="at-level-item"
-                        role="menuitemradio"
-                        aria-checked=${each === level ? "true" : "false"}
-                        onClick=${() => {
-                            setOpen(false);
-
-                            if (each !== level) {
-                                onPick(each);
-                            }
-                        }}
-                    >
-                        <span class="at-level-name">
-                            ${LEVELS[each].name}
-                            ${each === level && html`<${Icon} name="check" size=${13} />`}
-                        </span>
-                        <span class="at-level-says">${LEVELS[each][viewer ? "viewer" : "user"]}</span>
-                    </button>`,
-                )}
+                ${text}
             </div>`
-        }
-    </div>`;
+        }`;
 }
 
 /**
@@ -821,11 +1197,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
         setBusy(true);
 
         try {
-            return await attempt(async () => {
-                keep(await api(route(computer, "level"), { person: person.id, folder, level }));
-
-                return true;
-            });
+            return await setLevelOf(computer, person, folder, level);
         } finally {
             setBusy(false);
         }
@@ -842,27 +1214,9 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
         }
     };
 
-    // The sessions they started in a folder go with it, to who is in charge: said before it is taken back.
+    // The sessions they started in a folder go with it, to who is in charge: said before it is taken back
+    // (`setLevelOf`). Each stays listed under a filter it no longer passes, so the level can be changed back where it is.
     const pick = (node, level) => {
-        if (level === "none") {
-            const gone = leaving(
-                node.folder,
-                folders,
-                tree.held.filter((each) => each.createdBy === person.id),
-                worktrees,
-            ).length;
-
-            if (
-                gone > 0 &&
-                !confirm(
-                    `Take ${node.folder} from ${person.name}? ${gone === 1 ? "The session they started in it moves" : `The ${gone} sessions they started in it move`} to ${heir(computer)}, with the tasks they set up there. Sessions shared with them stay.`,
-                )
-            ) {
-                return;
-            }
-        }
-
-        // Each stays listed under a filter it no longer passes, so the level can be changed back where it is.
         find.keep(node.all.map((each) => each.id));
         void setLevel(node.folder, level);
     };
@@ -945,34 +1299,17 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
     const allow = (row) =>
         attempt(() => api(`session-approvals/${encodeURIComponent(row.id)}`, {}));
 
-    /** The sessions of one open folder, a level in from it. */
-    const inside = (node, depth) => html`
-        ${node.rows.length === 0 && node.children.length === 0 && html`<div class="ft-row muted at-note" style=${`--depth:${depth}`}>No sessions in it.</div>`}
-        ${
-            node.listed.length > 0 &&
-            html`<div class="at-group" role="group">
-                ${groups.inOrder(node.key, node.listed).map(
-                    (row) =>
-                        html`<${SessionLine}
-                            key=${row.id}
-                            name=${row.title}
-                            how=${how(row, node.folder)}
-                            where=${where(row, node.folder)}
-                            used=${row.usedAt}
-                            words=${find.words}
-                            off=${!row.has}
-                            depth=${depth}
-                        >
-                            ${
-                                locked(row.session) &&
-                                html`<button
+    /** The buttons at the end of a session's row: Allow, Go to session, and Revoke or Invite. */
+    const sessionButtons = (row) => html`${
+        locked(row.session) &&
+        html`<button
                                     class="button small"
                                     aria-label=${`Allow ${row.title} again`}
                                     onClick=${() => allow(row)}
                                 >
                                     Allow
                                 </button>`
-                            }
+    }
                             <button
                                 class="button small"
                                 aria-label=${`Go to ${row.title}`}
@@ -1008,32 +1345,58 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
                                             Invite
                                         </button>`
                                       : html`<span class="at-end" aria-hidden="true"></span>`
-                            }
+                            }`;
+
+    /** The sessions of one open folder, a level in from it. */
+    const inside = (node, depth) => html`
+        ${node.rows.length === 0 && node.children.length === 0 && html`<div class="ft-row muted at-note" style=${`--depth:${depth}`}>No sessions in it.</div>`}
+        ${
+            node.listed.length > 0 &&
+            html`<div class="at-group" role="group">
+                ${groups.inOrder(node.key, node.listed).map(
+                    (row) =>
+                        html`<${SessionLine}
+                            key=${row.id}
+                            name=${row.title}
+                            how=${how(row, node.folder)}
+                            where=${where(row, node.folder)}
+                            used=${row.usedAt}
+                            words=${find.words}
+                            off=${!row.has}
+                            depth=${depth}
+                        >
+                            ${sessionButtons(row)}
                         <//>`,
                 )}
             </div>`
         }
     `;
 
-    /** One folder's row, and open, the folders under it, then its sessions. */
+    /** One folder's row, and open, the folders under it, then its sessions. A project's row is named for it. */
     const folderRow = (node, depth, parent) => {
-        const name = node.home
-            ? "Home"
-            : parent === undefined
-              ? shortPath(node.folder, homeOf(computer))
-              : below(node.folder, parent.folder);
+        const name = node.project
+            ? node.project.name
+            : node.home
+              ? "Home"
+              : parent === undefined
+                ? shortPath(node.folder, homeOf(computer))
+                : below(node.folder, parent.folder);
+        const tag = node.project ? trustTag(node.project) : undefined;
         // Where sessions are given (People), how many they have of all there; elsewhere (Runners) all are theirs.
         const has = node.all.filter((each) => each.has).length;
         const count = offers ? `${has} of ${node.all.length}` : String(has);
 
         return html`<${TreeGroup}
             key=${node.key}
-            folder=${true}
+            folder=${!node.project}
+            project=${Boolean(node.project)}
             home=${node.home}
             name=${name}
+            path=${node.project ? shortPath(node.folder, homeOf(computer)) : undefined}
+            tag=${tag}
             title=${node.folder}
             depth=${depth}
-            label=${`Folder ${node.home ? `Home (${node.folder})` : node.folder} of ${on}: ${count}`}
+            label=${`${node.project ? `Project ${node.project.name} (${node.folder})` : `Folder ${node.home ? `Home (${node.folder})` : node.folder}`} of ${on}: ${count}`}
             count=${count}
             open=${groups.isOpen(node.key)}
             onToggle=${() => groups.toggle(node.key)}
@@ -1057,14 +1420,45 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
     };
 
     const shown = shownOf(tree.roots, find);
+    // Grouped by Sessions: one list, newest first, with each session's folder beside its name.
+    const flat = tree.flat.filter((row) => keeps(find, row));
+    // The rows that are no project's, under their own heading after the projects.
+    const projectsShown = shown.filter((each) => each.project).length;
 
-    if (find.active && shown.length === 0) {
+    if (find.active && shown.length === 0 && flat.length === 0) {
         return null;
     }
 
     return html`<div class="at-tree" role="group" aria-label=${`Folders and sessions of ${on}`}>
         ${!find.active && starts && folders.length === 0 && html`<div class="ft-row muted at-note">No folders yet: ${person.name} cannot start sessions here.</div>`}
-        ${shown.map((each) => folderRow(each, 0, undefined))}
+        ${shown.map(
+            (each, index) =>
+                html`${
+                    projectsShown > 0 &&
+                    index === projectsShown &&
+                    html`<div class="at-heading" key="other-heading">Other folders</div>`
+                }${folderRow(each, 0, undefined)}`,
+        )}
+        ${
+            flat.length > 0 &&
+            html`<div class="at-group" role="group">
+                ${groups.inOrder("\0flat", flat).map(
+                    (row) =>
+                        html`<${SessionLine}
+                            key=${row.id}
+                            name=${row.title}
+                            how=${how(row, row.places[1])}
+                            where=${shortPath(row.session.cwd, homeOf(computer))}
+                            used=${row.usedAt}
+                            words=${find.words}
+                            off=${!row.has}
+                            depth=${0}
+                        >
+                            ${sessionButtons(row)}
+                        <//>`,
+                )}
+            </div>`
+        }
         ${
             gives &&
             !find.active &&
@@ -1128,9 +1522,17 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
  * `find`: People's search and filters over the tree. With it the tree also lists the sessions that can be given to
  * the person; Runners, without it, lists what they have.
  */
-export function AccessRow({ computer, person, lead, title, rights: withRights = true, find }) {
+export function AccessRow({
+    computer,
+    person,
+    lead,
+    title,
+    rights: withRights = true,
+    find,
+    grouping,
+}) {
     const [busy, setBusy] = useState(false);
-    const tree = treeOf(computer, person, find !== undefined);
+    const tree = treeOf(computer, person, find !== undefined, grouping);
     const { chosen, manager } = standing(computer, person);
     const folders = computer.given?.[person.id] ?? [];
     const rights = withRights ? rightsFor(computer, person) : [];
@@ -1141,21 +1543,10 @@ export function AccessRow({ computer, person, lead, title, rights: withRights = 
     }
 
     const toggle = async () => {
-        if (
-            chosen &&
-            !confirm(
-                manager
-                    ? `Take ${computer.name} from ${person.name}? They manage runners, so they stay in charge of it and nothing moves now. They keep nothing here once that ends.`
-                    : `Take ${computer.name} from ${person.name}? They leave its sessions at once, and the sessions they started there move to ${heir(computer)}.`,
-            )
-        ) {
-            return;
-        }
-
         setBusy(true);
 
         try {
-            await choosePerson(computer, person, !chosen);
+            await toggleUse(computer, person);
         } finally {
             setBusy(false);
         }

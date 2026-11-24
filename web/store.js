@@ -277,6 +277,11 @@ export const store = {
          * runners; `this-server` events); else null.
          */
         thisServer: null,
+        /**
+         * The projects on each computer I am in charge of, by its id, as `GET /api/runners/:id/projects` last said
+         * (`sheets/access.js` `projectsOf`): kept, so the Access sheet shows them at once when it opens again.
+         */
+        accessProjects: {},
         /** New folders waiting for an approval (`folder-requests.js`): mine, and for the owner every one. */
         folderRequests: [],
         /** Projects that wait for me to trust them, on a computer I am in charge of (`trust-requests.ts`). */
@@ -874,7 +879,8 @@ function applyDirect(data) {
     }
 
     const name = state.users.find((user) => user.id === data.person)?.name ?? "Someone";
-    const open = () => openSheet({ type: "people", person: data.person, part: "chat" });
+    const open = () =>
+        openSheet({ type: "access", view: "person", person: data.person, part: "chat" });
     let message;
 
     if (fresh.length > 1) {

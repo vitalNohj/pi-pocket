@@ -2902,7 +2902,7 @@ function Rail({ foldable = false, folded = false }) {
                     data-part="rail-button"
                     title=${canInviteNew() ? "People and invites" : "People"}
                     aria-label="People"
-                    onClick=${() => openSheet({ type: "people" })}
+                    onClick=${() => openSheet({ type: "access", view: "person" })}
                 >
                     <${Icon} name="users" size=${19} />
                     ${
@@ -2947,7 +2947,7 @@ function Rail({ foldable = false, folded = false }) {
             data-part="rail-button"
             title=${`${me?.name ?? ""} · ${role}`}
             aria-label="Your account"
-            onClick=${() => openSheet({ type: "people" })}
+            onClick=${() => openSheet({ type: "access", view: "person" })}
         >
             ${me && html`<${Avatar} person=${store.state.users.find((each) => each.id === me.id) ?? me} size=${30} />`}
         </button>

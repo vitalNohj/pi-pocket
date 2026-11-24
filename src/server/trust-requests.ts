@@ -12,7 +12,7 @@
  * Requests live in memory: a restart ends them, and the next person who opens such a session asks again.
  */
 import { randomUUID } from "node:crypto";
-import type { Person } from "./access.ts";
+import { inFolder, type Person } from "./access.ts";
 import { HttpError } from "./errors.ts";
 
 /** The project that waits, and the session it was asked from. */
@@ -142,6 +142,30 @@ export class TrustRequests {
 
         if (asked) {
             this.#options.changed();
+        }
+    }
+
+    /**
+     * Decisions were saved for `folders` on `computer` (the Access sheet): each project in one of them, or in a folder
+     * inside one, was decided, as `decided` says. A folder asked about has no decision that covers it, so the nearest one
+     * saved now is what holds for it.
+     */
+    decidedUnder(computer: string, folders: readonly string[]): void {
+        for (const request of [...this.#open.values()]) {
+            if (
+                request.computer === computer &&
+                folders.some((folder) => inFolder(request.folder, folder))
+            ) {
+                this.decided(computer, request.folder);
+            }
+        }
+
+        for (const key of [...this.#asked]) {
+            const [there, folder = ""] = key.split("\n");
+
+            if (there === computer && folders.some((each) => inFolder(folder, each))) {
+                this.decided(computer, folder);
+            }
         }
     }
 

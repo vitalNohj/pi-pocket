@@ -18,6 +18,7 @@ import {
     lastText,
     newSession,
     openApp,
+    owner,
     root,
     say,
     scriptedModel,
@@ -26,6 +27,7 @@ import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import { THIS_SERVER } from "../src/server/access.ts";
 import { APP_ROOT } from "../src/server/config.ts";
 import { createHandler } from "../src/server/http.ts";
 import { watchTree } from "../src/server/reload.ts";
@@ -98,6 +100,93 @@ if (process.env.PI_POCKET_TEST_PEOPLE) {
     app.config.addRunner("Guest's desktop", guest.user.id, newIdentity().publicKey);
     console.log(`  viewer, not chosen: ${base}/login?token=${encodeURIComponent(viewer.token)}`);
     console.log(`  invited to one session: ${base}/login?token=${encodeURIComponent(one.token)}`);
+}
+
+// PI_POCKET_TEST_ACCESS=1: the Access sheet with a full grid: 8 people, 3 git projects (1 with 2 worktrees) with
+// sessions in them, folders given at different levels, and a runner that is not connected.
+if (process.env.PI_POCKET_TEST_ACCESS) {
+    const { execFileSync } = await import("node:child_process");
+    const { mkdirSync } = await import("node:fs");
+    const git = (cwd: string, ...args: string[]) =>
+        execFileSync("git", args, { cwd, stdio: "ignore" });
+    const projects = join(root, "projects");
+
+    const repo = (name: string) => {
+        const folder = join(projects, name);
+
+        mkdirSync(folder, { recursive: true });
+        git(folder, "init", "-q", "-b", "main");
+        git(
+            folder,
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=A",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "start",
+        );
+
+        return folder;
+    };
+
+    const shop = repo("shop");
+    const docs = repo("docs-site");
+    const tools = repo("tools");
+    const trees = join(root, "worktrees");
+
+    for (const branch of ["checkout-fix", "new-cart"]) {
+        git(shop, "worktree", "add", "-q", "-b", branch, join(trees, `shop-${branch}`));
+    }
+
+    const places = [
+        [shop, "Shop: product page"],
+        [shop, "Shop: search bug"],
+        [join(trees, "shop-checkout-fix"), "Checkout fix"],
+        [join(trees, "shop-new-cart"), "New cart"],
+        [docs, "Docs: getting started"],
+        [docs, "Docs: API reference"],
+        [tools, "Tools: release script"],
+    ];
+
+    await Promise.all(
+        places.map(async ([cwd, title]) => {
+            const id = await newSession(app, cwd);
+
+            await app.commands.updateSession(id, owner(app), { title: title! });
+        }),
+    );
+
+    const people = [
+        ["Gina", "guest"],
+        ["Priya", "guest"],
+        ["Marco", "viewer"],
+        ["Lena", "guest"],
+        ["Tomas", "viewer"],
+        ["Aiko", "guest"],
+        ["Ravi", "viewer"],
+    ] as const;
+    const added = await Promise.all(people.map(([name, role]) => addPerson(app, name, role)));
+
+    added.forEach(({ user }, index) => {
+        const level = (["all", "start", "past", "none"] as const)[index % 4]!;
+
+        app.config.setGivenFolders(THIS_SERVER, user.id, []);
+
+        if (level !== "none") {
+            app.config.setFolderLevel(
+                THIS_SERVER,
+                user.id,
+                shop,
+                user.role === "viewer" && level === "start" ? "past" : level,
+                Date.now(),
+            );
+        }
+    });
+
+    console.log(`  viewer Marco: ${base}/login?token=${encodeURIComponent(added[2]!.token)}`);
 }
 
 console.log(`A copy of Pi Pocket, with its own data in ${root}`);

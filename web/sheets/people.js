@@ -12,15 +12,12 @@ import {
     actions,
     api,
     attempt,
-    canInviteNew,
     closeSheet,
     collab,
     declaredRights,
     managesPeople,
-    managesServer,
     navigate,
     notify,
-    openSheet,
     serverClockOffset,
     signOut,
     store,
@@ -48,7 +45,7 @@ import {
     LevelMenu,
     levelsFor,
     inCharge,
-    loadComputers,
+    projectsOf,
     SessionLine,
     TreeGroup,
     treeOf,
@@ -56,7 +53,8 @@ import {
 } from "./access.js";
 import { ApprovalTime, TasksExpire } from "./approvals.js";
 import { MyAuthenticator } from "./authenticator.js";
-import { PageItem, Pages, PageTabs } from "./pages.js";
+import { PageTabs } from "./pages.js";
+import { AccessKey, GroupBy, Pick, SearchField, TIMES, ACCESS, useFind } from "./access-grid.js";
 import { canShare } from "./session-share.js";
 import { DirectChat } from "./direct.js";
 
@@ -549,7 +547,7 @@ function DeviceLink({ person }) {
  * When a person was last here, in words. Nothing of someone the server does not say it of (`online` absent: a viewer
  * is told only the name of the people they meet or chat with, `app.ts` `people`).
  */
-function lastSeen(person) {
+export function lastSeen(person) {
     if (person.online === undefined) {
         return undefined;
     }
@@ -734,7 +732,7 @@ function Asked({ person }) {
 }
 
 /** Everyone with access, as the list on the left orders them: who is here first, then who was here last. */
-function ordered(users) {
+export function ordered(users) {
     return [...users].sort(
         (a, b) =>
             Number(Boolean(b.online)) - Number(Boolean(a.online)) ||
@@ -743,7 +741,7 @@ function ordered(users) {
 }
 
 /** What a person may do, in a word or two. */
-function roleText(person) {
+export function roleText(person) {
     if (person.role === "viewer") {
         return person.paused ? "paused" : "viewer";
     }
@@ -755,7 +753,7 @@ function roleText(person) {
  * A person's picture with the mark that says whether they are here now. No mark for someone the server does not say
  * it of (`lastSeen`).
  */
-function Face({ person, size = 28 }) {
+export function Face({ person, size = 28 }) {
     return html`<span class="people-here">
         <${Avatar} person=${person} size=${size} />
         ${
@@ -1340,44 +1338,6 @@ function OtherComputer({ card, person, sharing, find }) {
     </div>`;
 }
 
-/** What the lists of a person's folders and sessions are filtered by: each with the choices it offers, and what its
- * button says while one is set. */
-const TIMES = [
-    ["", "Any time"],
-    ["24", "Last 24 hours", "Used by you: last 24 hours"],
-    ["168", "Last 7 days", "Used by you: last 7 days"],
-    ["336", "Last 14 days", "Used by you: last 14 days"],
-    ["720", "Last 30 days", "Used by you: last 30 days"],
-    ["old", "Older than 30 days", "Used by you: older than 30 days"],
-    ["never", "Never", "Never used by you"],
-];
-
-const ACCESS = [
-    ["", "Any access"],
-    ["has", "Has access"],
-    ["none", "No access"],
-];
-
-/**
- * One filter: a button that says its name, or what it keeps while it is set, over the device's own list of choices
- * (`choices`: value, what the list says, what the button says when it is chosen).
- */
-function Pick({ name, value, choices, onChange }) {
-    const set = choices.find(([key]) => key === value && key !== "");
-
-    return html`<label class=${`access-pick ${set ? "on" : ""}`}>
-        <span>${set ? (set[2] ?? set[1]) : name}</span>
-        <${Icon} name="down" size=${11} />
-        <select
-            aria-label=${name}
-            value=${value}
-            onChange=${(event) => onChange(event.currentTarget.value)}
-        >
-            ${choices.map(([key, label]) => html`<option key=${key} value=${key}>${label}</option>`)}
-        </select>
-    </label>`;
-}
-
 /**
  * A person's folders and sessions, for whoever can give them some: one card for each computer, under one search and
  * three filters over them all.
@@ -1396,9 +1356,8 @@ function Pick({ name, value, choices, onChange }) {
  */
 function Access({ person, direct, rights, sharing, reach }) {
     const { me } = store.state;
-    const [query, setQuery] = useState("");
-    const [filters, setFilters] = useState({ access: "", time: "", by: "" });
-    const [kept, setKept] = useState(() => new Set());
+    const state = useFind();
+    const { query, filters, kept } = state;
     const own = placesFor(person);
     // A linker who manages nobody: their runners open from the button, and are open where the person is there already.
     const [opened, setOpened] = useState(() =>
@@ -1408,7 +1367,22 @@ function Access({ person, direct, rights, sharing, reach }) {
     useMinute();
 
     const mine = direct || opened ? own : [];
-    const trees = mine.map((computer) => ({ computer, tree: treeOf(computer, person, true) }));
+    // Grouped by projects where the projects of a computer are known (I am in charge of it), else by folders.
+    const known = mine.some((each) => projectsOf(each) !== undefined);
+    const group = state.group ?? (known ? "projects" : "folders");
+
+    const grouping = (computer) => {
+        const projects = projectsOf(computer)?.projects;
+
+        return group === "projects" && projects === undefined
+            ? { group: "folders" }
+            : { group, projects };
+    };
+
+    const trees = mine.map((computer) => ({
+        computer,
+        tree: treeOf(computer, person, true, grouping(computer)),
+    }));
     const rows = [
         ...trees.flatMap((each) => each.tree?.rows ?? []),
         ...reach.cards.flatMap((each) => each.rows),
@@ -1438,9 +1412,11 @@ function Access({ person, direct, rights, sharing, reach }) {
         by,
         active,
         kept,
+        group,
         now: Date.now(),
-        stamp: JSON.stringify([words, filters.access, filters.time, by]),
-        keep: (ids) => setKept((now) => new Set([...now, ...ids])),
+        stamp: JSON.stringify([words, filters.access, filters.time, by, group]),
+        keep: state.keep,
+        clear: state.clear,
     };
     const found = rows.filter((each) => keeps(find, each)).length;
     // Whether anything is drawn under what is searched for: a folder found by its path counts, with no session in it.
@@ -1449,22 +1425,7 @@ function Access({ person, direct, rights, sharing, reach }) {
         trees.every((each) => each.tree === null || groupsOf(each.tree, find).length === 0) &&
         reach.cards.every((each) => groupsOf(each, find).length === 0);
 
-    // What was kept in the lists starts over with each change of what is searched for.
-    const search = (text) => {
-        setKept(new Set());
-        setQuery(text);
-    };
-
-    const filter = (key, value) => {
-        setKept(new Set());
-        setFilters((now) => ({ ...now, [key]: value }));
-    };
-
-    const clear = () => {
-        setKept(new Set());
-        setQuery("");
-        setFilters({ access: "", time: "", by: "" });
-    };
+    const { filter, clear } = state;
 
     return html`<div class="group access">
         <div class="group-title">${direct ? "Where they may work" : "What they have from you"}</div>
@@ -1487,37 +1448,15 @@ function Access({ person, direct, rights, sharing, reach }) {
         ${
             searched &&
             html`<div class="access-find" role="search" aria-label=${`Find among the folders and sessions of ${person.name}`}>
-                <label class="search access-search">
-                    <${Icon} name="search" size=${14} />
-                    <input
+                <div class="ak-tools">
+                    <${SearchField}
+                        state=${state}
+                        active=${active}
+                        found=${found}
+                        total=${rows.length}
                         placeholder="Search sessions and folders"
-                        aria-label="Search sessions and folders"
-                        value=${query}
-                        onInput=${(event) => search(event.currentTarget.value)}
-                        onKeyDown=${(event) => {
-                            // Escape clears what is typed, not the sheet around it.
-                            if (event.key === "Escape" && query !== "") {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                search("");
-                            }
-                        }}
                     />
-                    ${
-                        active &&
-                        html`<span class="access-found" aria-live="polite">
-                                ${found} of ${rows.length}
-                            </span>
-                            <button
-                                type="button"
-                                class="access-clear"
-                                aria-label="Clear the search and the filters"
-                                onClick=${clear}
-                            >
-                                Clear
-                            </button>`
-                    }
-                </label>
+                    <div class="ak-tools-row">
                 <div class="access-picks">
                     <${Pick}
                         name="Access"
@@ -1548,6 +1487,14 @@ function Access({ person, direct, rights, sharing, reach }) {
                         />`
                     }
                 </div>
+                        <${GroupBy}
+                            value=${group}
+                            projects=${known}
+                            onChange=${state.setGroup}
+                        />
+                    </div>
+                </div>
+                <${AccessKey} />
             </div>`
         }
         ${
@@ -1566,6 +1513,7 @@ function Access({ person, direct, rights, sharing, reach }) {
                     rights=${rights}
                     title=${computer.name}
                     find=${find}
+                    grouping=${grouping(computer)}
                     lead=${html`<span
                         class=${`runner-dot ${computer.id === "this-server" || computer.online ? "on" : computer.away ? "away" : ""}`}
                         aria-hidden="true"
@@ -1647,7 +1595,7 @@ function Authenticator({ person }) {
  * (`Access`). With nothing to give, the page has no such part. Anyone else reads who they are. One's own page is one's
  * account: photo, name, another device of one's own, the authenticator, and Sign out.
  */
-function PersonPage({ person, part, onPart }) {
+export function PersonPage({ person, part, onPart }) {
     const { me } = store.state;
     const owner = me?.role === "owner";
     const myself = person.id === me?.id;
@@ -1862,130 +1810,10 @@ function PersonPage({ person, part, onPart }) {
 }
 
 /** What holds for everyone on this server: the owner sets it, and a user who manages the server. */
-function SettingsPage() {
+export function SettingsPage() {
     return html`<div class="sheet-page">
         <h3 class="sheet-page-title">Settings</h3>
         <p class="muted small">For everyone on this server.</p>
         <${TasksExpire} />
     </div>`;
-}
-
-/**
- * People: everyone with access on the left, and the chosen person's page beside it, laid out as the Runners sheet is
- * (`pages.js`). The owner manages each person there. What holds for everyone (Settings) is set by who manages the
- * server (`store.js` `managesServer`).
- */
-export function PeopleSheet() {
-    const { me, users, sheet } = store.state;
-    const settings = managesServer();
-    // A notice or a link can ask for a person's page, and a part of it: their chat (`store.js` `applyDirect`).
-    const [view, setView] = useState(sheet?.person ? `person:${sheet.person}` : null);
-    // The part of a person's page shown: it stays from one person to the next, to do one thing for several people.
-    const [part, setPart] = useState(sheet?.part ?? "access");
-    // A viewer has no list of the people here: their own page, and the people they may chat with (`access.ts`
-    // `mayMessage`). The others they meet in the sessions shown to them stay in `users`, for the names on messages there.
-    const people = ordered(
-        me?.role === "viewer"
-            ? users.filter((each) => each.id === me.id || each.mayMessage)
-            : users,
-    );
-
-    // The lists as they are now: also someone who joined with an invite a moment ago.
-    useEffect(() => {
-        attempt(async () => {
-            const [list] = await Promise.all([api("users"), loadComputers()]);
-
-            store.set({ users: list });
-        });
-    }, []);
-
-    // Asked again while open: a notice of a new message goes to that chat.
-    useEffect(() => {
-        if (sheet?.person) {
-            setView(`person:${sheet.person}`);
-        }
-
-        if (sheet?.part) {
-            setPart(sheet.part);
-        }
-    }, [sheet]);
-
-    // One's own page first, for everyone: what is theirs to change is there. A removed person's page falls back the same
-    // way.
-    const fallback = (people.find((each) => each.id === me?.id) ?? people[0])?.id;
-    const shown =
-        view === "settings" && settings
-            ? view
-            : people.some((each) => `person:${each.id}` === view)
-              ? view
-              : fallback === undefined
-                ? null
-                : `person:${fallback}`;
-    const current = people.find((each) => `person:${each.id}` === shown);
-
-    const list = html`<div class="group-title">People</div>
-        ${people.map(
-            (person) => html`<${PageItem}
-                key=${person.id}
-                selected=${shown === `person:${person.id}`}
-                onSelect=${() => setView(`person:${person.id}`)}
-                lead=${html`<${Face} person=${person} />`}
-                title=${person.id === me?.id ? `${person.name} (you)` : person.name}
-                detail=${[roleText(person), lastSeen(person)].filter(Boolean).join(" · ")}
-                badge=${
-                    managesPeople() && person.request
-                        ? "Request"
-                        : person.id === me?.id && person.paused
-                          ? // Their own row: their authenticator was removed (their page says so in red).
-                            "Relink"
-                          : (store.state.directUnread[person.id] ?? 0) > 0
-                            ? store.state.directUnread[person.id]
-                            : null
-                }
-                alert=${
-                    (managesPeople() && Boolean(person.request)) ||
-                    (person.id === me?.id && Boolean(person.paused))
-                }
-            />`,
-        )}
-        ${
-            canInviteNew() &&
-            html`<${PageItem}
-                onSelect=${() => openSheet({ type: "invite" })}
-                lead=${html`<${Icon} name="plus" size=${16} />`}
-                title="Invite someone"
-            />`
-        }
-        <div class="group-title">More</div>
-        ${
-            settings &&
-            html`<${PageItem}
-                selected=${shown === "settings"}
-                onSelect=${() => setView("settings")}
-                lead=${html`<${Icon} name="shield" size=${16} />`}
-                title="Settings"
-                detail="For everyone"
-            />`
-        }
-        <${PageItem}
-            onSelect=${() => openSheet({ type: "notifications" })}
-            lead=${html`<${Icon} name="phone" size=${16} />`}
-            title="Notifications"
-            detail="On this device"
-        />`;
-
-    return html`<${Sheet} title="People" onClose=${closeSheet} className="pages-sheet">
-        <${Pages} label="People" list=${list}>
-            ${
-                current &&
-                html`<${PersonPage}
-                    key=${current.id}
-                    person=${current}
-                    part=${part}
-                    onPart=${setPart}
-                />`
-            }
-            ${shown === "settings" && html`<${SettingsPage} />`}
-        <//>
-    <//>`;
 }

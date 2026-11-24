@@ -8143,6 +8143,907 @@ div.group-head {
     color: var(--accent);
 }
 
+/* ─── The Access sheet (`sheets/access-sheet.js`): By person, By computer, Settings ─── */
+
+.sheet.access-sheet {
+    max-width: min(1400px, calc(100vw - 32px));
+}
+
+/* Its head's switch of views, after the title. */
+.access-sheet .sheet-head > h2 {
+    flex: none;
+}
+
+.access-sheet .ac-views {
+    align-self: center;
+    flex-wrap: nowrap;
+    margin-left: 12px;
+    margin-right: auto;
+}
+
+.access-sheet .ac-views button {
+    white-space: nowrap;
+}
+
+/* The tool row: the search grows, then the filters and Group by; one row where there is room. */
+.ak-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+    min-width: 0;
+}
+
+.ak-tools > .access-search {
+    flex: 1 1 16rem;
+    min-width: 0;
+}
+
+.ak-tools > .access-search input {
+    width: 0;
+}
+
+.ak-tools-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.ak-tools-row > .access-picks {
+    flex-wrap: nowrap;
+}
+
+.ak-people {
+    gap: 5px;
+    cursor: pointer;
+}
+
+.ak-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+}
+
+.ak-group-label {
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.ak-group .segmented {
+    flex-wrap: nowrap;
+}
+
+.ak-group .segmented button {
+    white-space: nowrap;
+}
+
+/* The People filter's list: a check box, a face, the name, the role. */
+.ak-people-menu {
+    position: fixed;
+    width: min(18rem, calc(100vw - 32px));
+    overflow-y: auto;
+}
+
+.ak-menu-head {
+    padding: 6px 10px 4px;
+    color: var(--faint);
+    font-size: 11.5px;
+}
+
+.at-level-item.ak-check {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+}
+
+.ak-box {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border: 1px solid var(--hair-2);
+    border-radius: 4px;
+}
+
+.ak-box.on {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--bg);
+}
+
+.at-level-item.ak-all {
+    margin-top: 4px;
+    border-top: 1px solid var(--hair);
+    border-radius: 0 0 var(--r-row) var(--r-row);
+    color: var(--accent);
+}
+
+/* The key: one row, small and muted, each level's name in its button's colour; it scrolls sideways where it is too
+ * long. Its "i" explains the people columns. */
+.ak-key {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    color: var(--faint);
+    font-size: 11.5px;
+    line-height: 18px;
+    white-space: nowrap;
+}
+
+.ak-key::-webkit-scrollbar {
+    display: none;
+}
+
+.ak-key > * {
+    flex: none;
+}
+
+.ak-key > .info-tip {
+    margin: 0 6px 0 0;
+}
+
+.ak-key b {
+    font-weight: 600;
+}
+
+.ak-dot {
+    margin: 0 8px;
+    color: var(--hair-2);
+}
+
+/* The colours of the levels: the key's names and the Access buttons say each level the same way. */
+.lv-none {
+    color: var(--muted);
+}
+
+.lv-start,
+.lv-past,
+.lv-all {
+    color: var(--accent);
+}
+
+/* The "i" of an explanation (`access.js` `InfoTip`): one SVG, 14 px, on the centre line of the label before it. Its
+ * tap target on a touch screen is 44 px, from a pseudo-element that takes no room. */
+.info-tip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin-left: 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: none;
+    color: var(--faint);
+    vertical-align: middle;
+    cursor: help;
+}
+
+.info-tip > .info-glyph {
+    display: block;
+    flex: none;
+    width: 14px;
+    height: 14px;
+}
+
+.info-tip:focus-visible,
+.info-tip[aria-expanded="true"] {
+    color: var(--text);
+}
+
+.info-tip:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+
+@media (hover: hover) {
+    .info-tip:hover {
+        color: var(--text);
+    }
+}
+
+@media (pointer: coarse) {
+    .info-tip::before {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 44px;
+        height: 44px;
+        transform: translate(-50%, -50%);
+    }
+}
+
+.info-note {
+    position: fixed;
+    z-index: 60;
+    width: max-content;
+    max-width: min(20rem, calc(100vw - 32px));
+    padding: 9px 11px;
+    border-radius: var(--r-control);
+    background: var(--panel);
+    box-shadow: var(--pop);
+    color: var(--body);
+    font-size: 12.5px;
+    font-weight: 400;
+    line-height: 1.5;
+    white-space: normal;
+    text-align: left;
+    pointer-events: none;
+}
+
+/* A menu that opens from a row: fixed to the screen and kept in the sheet (`access.js` `placeIn`), so a list or a
+ * grid that scrolls does not cut it off. */
+.at-level-box > .at-level-menu {
+    position: fixed;
+    right: auto;
+    bottom: auto;
+    overflow-y: auto;
+}
+
+/* A project's row in a person's tree: its name, then its folder, quieter, on one line cut short at its end. */
+.at-folder.at-project > .ft-name {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.at-project .at-path {
+    overflow: hidden;
+    min-width: 0;
+    color: var(--faint);
+    font-size: 11.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 719px) {
+    .at-folder.at-project > .ft-name {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0;
+    }
+
+    .at-project .at-path {
+        max-width: 100%;
+    }
+}
+
+/* Between the projects and the other folders of a computer. */
+.at-heading {
+    margin: 8px 0 2px;
+    padding: 0 8px;
+    color: var(--faint);
+    font-size: 12px;
+    font-weight: 500;
+}
+
+/* The tag of a project nobody changes the trust of here: By person. */
+.at-trust-tag {
+    margin-left: 6px;
+    padding: 0 6px;
+    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+    border-radius: var(--r-tag);
+    color: var(--warn);
+    font: 10.5px var(--sans);
+    white-space: nowrap;
+}
+
+/* By computer: the page is as tall as the sheet allows, and only its grid scrolls up and down. */
+@media (min-width: 720px) {
+    .sheet.access-sheet.view-computer {
+        height: min(86dvh, 900px);
+    }
+
+    .access-sheet.view-computer .sheet-body {
+        overflow: hidden;
+    }
+
+    .access-sheet.view-computer .pages-split {
+        flex: 1;
+        min-height: 0;
+        grid-template-rows: minmax(0, 1fr);
+    }
+
+    .access-sheet.view-computer .pages-list {
+        overflow-y: auto;
+    }
+
+    .access-sheet.view-computer .pages-detail {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .access-sheet.view-computer .ac-computer {
+        flex: 1;
+        min-height: 0;
+    }
+
+    .access-sheet.view-computer .ac-computer > * {
+        flex: none;
+    }
+
+    .access-sheet.view-computer .ac-computer > .ag-wrap {
+        flex: 1 1 auto;
+        min-height: 160px;
+    }
+
+    .access-sheet.view-computer .ag-scroll {
+        flex: 1;
+        min-height: 0;
+    }
+}
+
+.ac-head {
+    align-items: center;
+    gap: 10px;
+}
+
+.ac-icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--r-card);
+    background: var(--card-2);
+    color: var(--muted);
+}
+
+/* The grid of a computer (`access-grid.js` `ComputerGrid`): one scroller, so its head row and its rows always move
+ * together. Its first column (and Project trust) and its head row stay in sight. */
+.ag-wrap {
+    position: relative;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.ag-scroll {
+    --fw: 260px;
+    --tw: 172px;
+    --cw: 116px;
+    --cols: var(--fw) var(--cells);
+    position: relative;
+    min-width: 0;
+    overflow: auto;
+    overscroll-behavior-x: contain;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--bg);
+}
+
+.ag-scroll.with-trust {
+    --cols: var(--fw) var(--tw) var(--cells);
+}
+
+.ag-table {
+    display: grid;
+    grid-template-columns: var(--cols) minmax(8px, 1fr);
+    min-width: 100%;
+    width: max-content;
+}
+
+/* A row: its cells are the grid's columns. */
+.ag-row {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: stretch;
+    min-height: 44px;
+    border-top: 1px solid var(--hair);
+}
+
+.ag-head {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    min-height: 40px;
+    border-top: 0;
+    background: var(--card);
+    color: var(--faint);
+    font-size: 12px;
+}
+
+.ag-first {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 6px 10px 6px calc(10px + var(--depth, 0) * 18px);
+    background: var(--bg);
+}
+
+.ag-scroll:not(.with-trust) .ag-first {
+    border-right: 1px solid var(--hair);
+}
+
+.ag-trust-cell {
+    position: sticky;
+    left: var(--fw);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    padding: 6px 8px;
+    border-right: 1px solid var(--hair);
+    background: var(--bg);
+}
+
+.ag-head > .ag-first,
+.ag-head > .ag-trust-cell {
+    z-index: 6;
+    background: var(--card);
+}
+
+.ag-first-head,
+.ag-trust-head {
+    gap: 0;
+    white-space: nowrap;
+}
+
+.ag-cell {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    padding: 6px 0 6px 8px;
+}
+
+.ag-cell > .at-level-box,
+.ag-cell > .ag-act {
+    flex: 1;
+    min-width: 0;
+}
+
+.ag-cell .button.at-level {
+    justify-content: space-between;
+    width: 100%;
+}
+
+.ag-cell .at-level.inherited {
+    color: var(--muted);
+    font-style: italic;
+}
+
+.ag-cell-who,
+.ag-trust-label {
+    display: none;
+}
+
+/* A person's column head: the face, the name, and the role under it. */
+.ag-who {
+    gap: 6px;
+    padding-left: 10px;
+    color: var(--text);
+}
+
+.ag-who-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.2;
+}
+
+.ag-who-name {
+    overflow: hidden;
+    font-size: 12.5px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ag-who-role {
+    color: var(--faint);
+    font-size: 11px;
+}
+
+/* A folder or a project: its toggle takes the whole first cell. */
+.ag-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--text);
+    text-align: left;
+}
+
+.ag-toggle .chev {
+    flex: none;
+    color: var(--faint);
+    transition: transform var(--t-hover) var(--ease-out);
+}
+
+.ag-toggle .chev.open {
+    transform: rotate(90deg);
+}
+
+.ag-first .icon {
+    flex: none;
+    color: var(--muted);
+}
+
+.ag-chev-space {
+    flex: none;
+    width: 11px;
+}
+
+.ag-name-box {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.ag-name,
+.ag-title {
+    overflow: hidden;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ag-title {
+    font-family: inherit;
+    font-size: 13px;
+}
+
+.ag-title.off {
+    color: var(--muted);
+}
+
+.ag-sub {
+    overflow: hidden;
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ag-state {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.ag-act {
+    justify-content: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+@media (hover: hover) {
+    .ag-session:hover > .ag-first,
+    .ag-session:hover > .ag-trust-cell,
+    .ag-session:hover > .ag-cell {
+        background: color-mix(in srgb, var(--body) 4%, var(--bg));
+    }
+}
+
+/* A heading between the projects and the other folders, and a row with a note: one line across. */
+.ag-heading,
+.ag-empty {
+    min-height: 0;
+}
+
+.ag-heading > .ag-first,
+.ag-empty > .ag-first {
+    grid-column: 1 / span 1;
+    border-right: 0;
+    background: transparent;
+}
+
+.ag-heading > .ag-first {
+    padding-top: 12px;
+    color: var(--faint);
+    font-size: 12px;
+    font-weight: 500;
+}
+
+/* The note under a project that is not trusted, at the left, under its name. */
+.ag-note {
+    position: sticky;
+    left: 0;
+    grid-column: 1 / span 2;
+    padding: 0 10px 8px calc(46px + var(--depth, 0) * 18px);
+    color: var(--warn);
+    font-size: 12px;
+}
+
+.ag-group.untrusted > .ag-first,
+.ag-group.untrusted > .ag-trust-cell {
+    padding-bottom: 2px;
+}
+
+/* The trust menu: what holds, and under it why. */
+.ag-trust {
+    width: 100%;
+    min-width: 0;
+}
+
+.ag-trust .at-level-box {
+    width: 100%;
+}
+
+.ag-trust .ag-trust-button {
+    justify-content: space-between;
+    width: 100%;
+    min-height: 34px;
+    text-align: left;
+}
+
+.ag-trust-face {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.2;
+}
+
+.ag-trust-under {
+    overflow: hidden;
+    color: var(--faint);
+    font-size: 10.5px;
+    font-weight: 400;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ag-trust-button.tr-trusted {
+    color: var(--ok);
+}
+
+.ag-trust-button.tr-untrusted {
+    color: var(--warn);
+}
+
+.ag-trust-button.tr-undecided,
+.ag-trust-button.tr-mixed {
+    color: var(--muted);
+}
+
+/* The people who may use the computer, under the grid, in the same scroller: they stay at its left. */
+.ag-after {
+    position: sticky;
+    left: 0;
+    width: var(--after-w, 100%);
+    max-width: var(--view-w, 100%);
+    padding: 6px 12px 12px;
+    border-top: 1px solid var(--hair);
+}
+
+.ag-after .setting {
+    margin-top: 6px;
+}
+
+/* The fade at the right edge of the grid while more people are past it. */
+.ag-fade {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    bottom: 1px;
+    z-index: 7;
+    width: 36px;
+    border-radius: 0 var(--r-card) var(--r-card) 0;
+    background: linear-gradient(to right, transparent, var(--bg));
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-hover) var(--ease-out);
+}
+
+.ag-wrap.more > .ag-fade {
+    opacity: 1;
+}
+
+/* On a phone: the tools take their own lines, and their filters scroll sideways in one row. The grid is still one
+ * scroller: each row's name takes a line of its own, kept at the left while the cells scroll under it. */
+@media (max-width: 719px) {
+    /* The switch of views takes a line of its own under the title, as wide as the sheet. */
+    .access-sheet .sheet-head {
+        flex-wrap: wrap;
+        padding-bottom: 8px;
+    }
+
+    .access-sheet .sheet-head > h2 {
+        flex: 1;
+    }
+
+    .access-sheet .ac-views {
+        order: 3;
+        display: grid;
+        grid-auto-columns: 1fr;
+        grid-auto-flow: column;
+        width: 100%;
+        margin: 0;
+    }
+
+    .access-sheet .ac-views button {
+        min-height: 40px;
+    }
+
+    .ak-tools {
+        flex-direction: column;
+        flex-wrap: nowrap;
+        align-items: stretch;
+    }
+
+    .ak-tools > .access-search {
+        flex: none;
+    }
+
+    .ak-tools-row {
+        overflow-x: auto;
+        scrollbar-width: none;
+        flex: none;
+        margin: 0 -4px;
+        padding: 0 4px;
+    }
+
+    .ak-tools-row::-webkit-scrollbar {
+        display: none;
+    }
+
+    .ak-tools-row > * {
+        flex: none;
+    }
+
+    .ak-key {
+        font-size: 12px;
+    }
+
+    /* No height of its own: the sheet scrolls up and down, the grid only sideways. Each cell says whose it is. */
+    .ag-scroll {
+        --cw: 132px;
+    }
+
+    .ag-table {
+        grid-template-columns: var(--cells) minmax(0, 1fr);
+    }
+
+    .ag-scroll.with-trust .ag-table {
+        grid-template-columns: var(--cells) minmax(0, 1fr);
+    }
+
+    .ag-row {
+        grid-template-rows: auto auto;
+        padding-bottom: 6px;
+    }
+
+    .ag-row > .ag-first {
+        grid-column: 1 / -1;
+        width: var(--view-w, 100%);
+        max-width: var(--view-w, 100%);
+        border-right: 0;
+        padding-right: 10px;
+    }
+
+    .ag-row > .ag-trust-cell {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        width: var(--view-w, 100%);
+        max-width: var(--view-w, 100%);
+        left: 0;
+        gap: 10px;
+        justify-content: space-between;
+        padding: 0 10px 6px calc(10px + var(--depth, 0) * 18px);
+        border-right: 0;
+    }
+
+    .ag-row > .ag-trust-cell.empty {
+        display: none;
+    }
+
+    .ag-trust-label {
+        display: inline;
+        color: var(--faint);
+        font-size: 12px;
+        white-space: nowrap;
+    }
+
+    .ag-trust-cell > .ag-trust {
+        width: 11rem;
+    }
+
+    .ag-row > .ag-cell {
+        grid-row: 3;
+        padding: 0 0 0 8px;
+    }
+
+    .ag-row > .ag-cell:nth-child(n) {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .ag-cell-who {
+        display: block;
+        overflow: hidden;
+        color: var(--faint);
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .ag-cell .at-level,
+    .ag-cell .ag-act {
+        min-height: 40px;
+    }
+
+    .ag-cell .ag-state {
+        justify-content: flex-start;
+        align-items: center;
+        min-height: 40px;
+    }
+
+    .ag-head {
+        grid-template-rows: auto auto auto;
+        padding-bottom: 8px;
+    }
+
+    .ag-head > .ag-first {
+        min-height: 36px;
+    }
+
+    .ag-head > .ag-trust-head {
+        justify-content: flex-start;
+        gap: 0;
+        min-height: 30px;
+        padding-bottom: 2px;
+    }
+
+    .ag-head > .ag-cell {
+        grid-row: 3;
+    }
+
+    .ag-who {
+        padding-left: 8px;
+    }
+
+    .ag-heading > .ag-first,
+    .ag-empty > .ag-first,
+    .ag-note {
+        grid-column: 1 / -1;
+        width: var(--view-w, 100%);
+    }
+
+    .ag-note {
+        grid-row: 3;
+        padding: 0 10px 2px calc(10px + var(--depth, 0) * 18px);
+    }
+
+    .ag-group.untrusted > .ag-cell {
+        grid-row: 4;
+    }
+
+    .ag-after {
+        width: var(--view-w, 100%);
+    }
+}
+
 /* On a phone a session's line has no room for its name, how they have it, and its place side by side: the name takes
  * the line, the other two go under it, and its buttons under those. */
 @media (max-width: 719px) {

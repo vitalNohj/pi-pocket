@@ -104,7 +104,7 @@ async function people(page: BrowserPage): Promise<void> {
         `
         const { openSheet } = await import("/store.js");
 
-        openSheet({ type: "people" });
+        openSheet({ type: "access", view: "person" });
 
         return JSON.stringify(true);
     `,

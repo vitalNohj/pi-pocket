@@ -135,6 +135,20 @@ const KINDS = [
 ];
 
 export function NotificationsSheet() {
+    return html`<${Sheet}
+        title="Notifications"
+        onClose=${closeSheet}
+        className="notifications-sheet"
+    >
+        <${NotificationsPage} />
+    <//>`;
+}
+
+/**
+ * Notifications on this device: on or off, and what about. The Notifications sheet holds it, and the Settings view of
+ * the Access sheet (`access-sheet.js`).
+ */
+export function NotificationsPage() {
     const [info, setInfo] = useState(null);
     const [subscription, setSubscription] = useState(undefined);
     const [busy, setBusy] = useState(false);
@@ -215,12 +229,7 @@ export function NotificationsSheet() {
     const owner = store.state.me?.role === "owner";
     const kinds = info?.kinds ?? { security: owner, folders: owner ? "requests" : false };
 
-    return html`<${Sheet}
-        title="Notifications"
-        onClose=${closeSheet}
-        className="notifications-sheet"
-    >
-        <p class="muted small">
+    return html`<p class="muted small">
             Get a notification on this device when you are not looking at the session: Pi finished, Pi needs approval, or someone wrote to you.
         </p>
         ${problem && html`<div class="error-box small">${problem}</div>`}
@@ -279,6 +288,5 @@ export function NotificationsSheet() {
                         Send a test notification
                     </button>`
                 }`
-        }
-    <//>`;
+        }`;
 }

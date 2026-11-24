@@ -18,7 +18,6 @@ import {
     GallerySourceSheet,
     GalleryUpdateSheet,
 } from "./sheets/gallery.js";
-import { ComputersSheet } from "./sheets/computers.js";
 import { ForkSessionSheet } from "./sheets/copy.js";
 import { CwdSheet } from "./sheets/folder.js";
 import { KeepWarmSheet } from "./sheets/keep-warm.js";
@@ -27,7 +26,8 @@ import { MenuSheet, PlacesSheet } from "./sheets/menu.js";
 import { MessageSheet } from "./sheets/message.js";
 import { ModelPicker } from "./sheets/model.js";
 import { OwnerSetupSheet } from "./sheets/owner-setup.js";
-import { InviteSheet, PeopleSheet } from "./sheets/people.js";
+import { InviteSheet } from "./sheets/people.js";
+import { AccessSheet } from "./sheets/access-sheet.js";
 import { SessionShareSheet } from "./sheets/session-share.js";
 import { AuthDialog, ProvidersSheet } from "./sheets/providers.js";
 import { HooksSheet } from "./sheets/hooks.js";
@@ -277,17 +277,15 @@ function sheetBody(sheet) {
         case "invite":
             body = html`<${InviteSheet} session=${sheet.session ?? null} />`;
             break;
-        case "computers":
-            body = html`<${ComputersSheet} />`;
-            break;
         case "session-share":
             body = html`<${SessionShareSheet} id=${sheet.id} />`;
             break;
         case "owner-setup":
             body = html`<${OwnerSetupSheet} />`;
             break;
-        case "people":
-            body = html`<${PeopleSheet} />`;
+        // People and computers, and who has what where (`access-sheet.js`): `view` "person", "computer", "settings".
+        case "access":
+            body = html`<${AccessSheet} />`;
             break;
         case "notifications":
             body = html`<${NotificationsSheet} />`;

@@ -11,7 +11,7 @@ export function OwnerSetupSheet() {
     // back from People does not show it again.
     const open = () => {
         closeSheet();
-        openSheet({ type: "people" });
+        openSheet({ type: "access", view: "person" });
     };
 
     const later = () =>
@@ -37,7 +37,7 @@ export function OwnerSetupSheet() {
         </p>
         <div class="sheet-actions">
             <button class="button" disabled=${busy} onClick=${later}>Not now</button>
-            <button class="button primary" onClick=${open}>Open People</button>
+            <button class="button primary" onClick=${open}>Open Access</button>
         </div>
     <//>`;
 }

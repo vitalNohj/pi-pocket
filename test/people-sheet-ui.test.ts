@@ -52,12 +52,33 @@ let viewer: User;
 let scoped: User;
 let runnerId: string;
 
+/**
+ * In the page: whether `element` is inside a box that scrolls sideways (the tool row's filters, the key, the grid), so
+ * that what is past the screen's edge is reached by scrolling it, as it is meant to be. The box itself still has to fit.
+ */
+const INSIDE_SCROLLER = `((element) => {
+    for (let box = element.parentElement; box && !box.classList.contains("sheet"); box = box.parentElement) {
+        if (["auto", "scroll"].includes(getComputedStyle(box).overflowX) && box.scrollWidth > box.clientWidth) {
+            return true;
+        }
+    }
+
+    return false;
+})`;
+
 async function inPage<T>(script: string): Promise<T> {
     return JSON.parse(await page.evaluate(script)) as T;
 }
 
-/** Open sheet `type` on a fresh page, signed in as the owner: over home, or over the session at `path`. */
-async function open(type: "people" | "computers", viewport = DESKTOP, path = "/"): Promise<void> {
+/**
+ * Open the Access sheet on a fresh page, signed in as the owner, at By person ("people"), By computer ("computers"), or
+ * Settings: over home, or over the session at `path`.
+ */
+async function open(
+    type: "people" | "computers" | "settings",
+    viewport = DESKTOP,
+    path = "/",
+): Promise<void> {
     await page.setViewport(viewport);
     await page.navigate(`${base}${path}`);
     await until(
@@ -71,7 +92,7 @@ async function open(type: "people" | "computers", viewport = DESKTOP, path = "/"
     await inPage(`
         const { openSheet } = await import("/store.js");
 
-        openSheet({ type: ${JSON.stringify(type)} });
+        openSheet({ type: "access", view: ${JSON.stringify(type === "people" ? "person" : type === "computers" ? "computer" : "settings")} });
 
         return JSON.stringify(true);
     `);
@@ -215,15 +236,22 @@ after(async () => {
 });
 
 test(
-    "People is laid out as Runners is: everyone on the left, the chosen person's page beside it",
+    "Access is one sheet: By person, By computer, Settings in its head; By person lists the people beside the chosen one's page",
     real,
     async () => {
         await open("computers");
 
-        const runners = await inPage<{ sheet: string; columns: number }>(`
+        const computers = await inPage<{
+            sheet: string;
+            columns: number;
+            views: string[];
+            on: string;
+        }>(`
         return JSON.stringify({
-            sheet: document.querySelector(".sheet").className,
+            sheet: document.querySelector(".sheet").getAttribute("data-sheet"),
             columns: getComputedStyle(document.querySelector(".pages-split")).gridTemplateColumns.split(" ").length,
+            views: [...document.querySelectorAll(".ac-views button")].map((each) => each.textContent.trim()),
+            on: document.querySelector(".ac-views button.on").textContent.trim(),
         });
     `);
 
@@ -234,25 +262,37 @@ test(
             columns: number;
             items: string[];
             title: string;
+            on: string;
         }>(`
         return JSON.stringify({
-            sheet: document.querySelector(".sheet").className,
+            sheet: document.querySelector(".sheet").getAttribute("data-sheet"),
             columns: getComputedStyle(document.querySelector(".pages-split")).gridTemplateColumns.split(" ").length,
             items: [...document.querySelectorAll(".pages-item-title")].map((each) => each.textContent.trim()),
             title: document.querySelector(".sheet-page-title").textContent.trim(),
+            on: document.querySelector(".ac-views button.on").textContent.trim(),
         });
     `);
 
-        assert.equal(people.sheet, runners.sheet, "the same sheet");
+        assert.deepEqual([people.sheet, computers.sheet], ["access", "access"], "the same sheet");
         assert.deepEqual(
-            [people.columns, runners.columns],
+            computers.views,
+            ["By person", "By computer", "Settings"],
+            "its three views",
+        );
+        assert.deepEqual(
+            [people.on, computers.on],
+            ["By person", "By computer"],
+            "each opener's view",
+        );
+        assert.deepEqual(
+            [people.columns, computers.columns],
             [2, 2],
             "a list and a page, side by side",
         );
         assert.deepEqual(
             [...people.items].sort(),
-            ["Gina", "Invite someone", "Notifications", "Owner (you)", "Sam", "Settings", "Vera"],
-            "everyone, then what else the sheet holds",
+            ["Gina", "Invite someone", "Owner (you)", "Sam", "Vera"],
+            "the people and Invite someone, nothing else",
         );
         assert.ok(people.title.startsWith("Owner"), "it opens on one's own page");
     },
@@ -558,38 +598,81 @@ test("what a person may use is set in People, and shows in Runners", real, async
         { row: true, mono: true },
     );
 
-    // The same record, by computer: a row for each person, with the tree of that computer alone.
+    // The same record, by computer: a column for each person chosen there, with their Access on each folder, and
+    // under the grid each person with their switch. Who is invited to one session only, and has nothing there, is not
+    // listed. Their rights there are on their own page, under Permissions.
     await open("computers");
     await show("Laptop");
-    await inPage(`
-        [...document.querySelectorAll(".sheet-tabs [role=tab]")]
-            .find((each) => each.textContent.trim().startsWith("People"))
-            .click();
-
-        return JSON.stringify(true);
-    `);
     await until(
         async () => (await switches()).includes("Gina may use Laptop: on"),
         "Gina among the Laptop's people",
     );
-    // Under her switch, the rights of someone who prompts there, off until given (`access.js` `RightSwitch`).
-    assert.deepEqual(await switches(), [
-        "Gina may use Laptop: on",
-        "Gina overrides take turns on Laptop: off",
-        "Gina allows their own calls on Laptop: off",
-        "Gina shares what they were given on Laptop: off",
-        "Vera may use Laptop: off",
-    ]);
-    assert.deepEqual(await folds(), [], "this server's folder is not the Laptop's");
-    assert.equal(await has("Give Gina a folder on Laptop"), true);
-    assert.doesNotMatch(
-        await inPage<string>(
-            `return JSON.stringify(document.querySelector(".pages-detail").textContent)`,
-        ),
-        /Choose people|Sam/,
-        "no list to tick, and no one who has nothing here",
+    assert.deepEqual(await switches(), ["Gina may use Laptop: on", "Vera may use Laptop: off"]);
+    assert.deepEqual(await columns(), ["Gina"], "a column for who is chosen alone");
+    await show("This server");
+    await until(
+        async () =>
+            (await levels()).includes(`Access of Gina to ${given} on This server: Start sessions`),
+        "her folder's Access in her column",
     );
+    assert.deepEqual(await columns(), ["Gina", "Sam"], "and who was invited to a session here");
 });
+
+/** The folders of the grid shown in By computer, each by its full path (its toggle's title). */
+const gridFolders = () =>
+    inPage<string[]>(`
+        return JSON.stringify(
+            [...document.querySelectorAll(".pages-detail .ag-group .ag-toggle")].map((each) => each.title),
+        );
+    `);
+
+/** Open the folder of the grid at \`path\`, and each one above it. */
+const openGrid = async (path: string) => {
+    for (let round = 0; round < 12; round++) {
+        const opened = await inPage<boolean>(`
+            const path = ${JSON.stringify(path)};
+            const row = [...document.querySelectorAll(".pages-detail .ag-group .ag-toggle")].find(
+                (each) => each.getAttribute("aria-expanded") !== "true" && (each.title === path || path.startsWith(each.title + "/")),
+            );
+
+            row?.click();
+
+            return JSON.stringify(row !== undefined);
+        `);
+
+        if (!opened) {
+            return;
+        }
+    }
+};
+
+/** Each session row of the grid shown, by title, with what the cell of \`name\`'s column says. */
+const gridCells = (name: string) =>
+    inPage<[string, string][]>(`
+        const at = [...document.querySelectorAll(".pages-detail .ag-head .ag-who-name")].findIndex(
+            (each) => each.textContent.trim() === ${JSON.stringify(name)},
+        );
+
+        return JSON.stringify(
+            [...document.querySelectorAll(".pages-detail .ag-session")].map((row) => [
+                row.querySelector(".ag-title").textContent.trim(),
+                [...([...row.querySelectorAll(".ag-cell")][at]?.children ?? [])]
+                    .filter((each) => !each.classList.contains("ag-cell-who"))
+                    .map((each) => each.textContent)
+                    .join(" ")
+                    .replace(/\\s+/g, " ")
+                    .trim(),
+            ]),
+        );
+    `);
+
+/** The people columns of the grid shown in By computer: each one's name. */
+const columns = () =>
+    inPage<string[]>(`
+        return JSON.stringify(
+            [...document.querySelectorAll(".pages-detail .ag-who-name")].map((each) => each.textContent.trim()),
+        );
+    `);
 
 test(
     "a person's sessions sit under the folders given to them; each row is taken back alone, and a session opens from its row",
@@ -631,56 +714,33 @@ test(
             (await app.commands.createSession(owner(app), { cwd: work, title: "Not hers" })).id,
         );
 
-        await open("computers");
-        await show("This server");
-        await inPage(`
-            [...document.querySelectorAll(".sheet-tabs [role=tab]")]
-                .find((each) => each.textContent.trim().startsWith("People"))
-                .click();
-
-            return JSON.stringify(true);
-        `);
-        // In Runners the tree lists what she has: three of her folder's sessions (in its folder \`work\`), and the one
-        // outside her folders, in its own folder.
         const others = `Folder ${home} of Gina on This server`;
         const inWork = `Folder ${work} of Gina on This server`;
 
-        await until(async () => (await folds()).includes(`${folder}: 3`), "her folder's count");
-        await fold(folder);
+        // By computer, the grid has a row for each folder there, and in Gina's column what she has of each session:
+        // Take back for one shared with her, "Started by them" for her own, Invite for one that is not hers.
+        await open("computers");
+        await show("This server");
+        await until(async () => (await gridFolders()).includes(given), "her folder's row");
+        await openGrid(given);
+        await openGrid(realpathSync(work));
+        await until(async () => (await gridCells("Gina")).length >= 5, "the sessions' rows");
         assert.deepEqual(
-            (await folds()).filter((each) => each.includes("Gina") && !each.includes("Home")),
-            [`${folder}: 3 (open)`, `${inWork}: 3`, `${others}: 1`].sort((one, other) =>
-                one.localeCompare(other),
+            Object.fromEntries(
+                (await gridCells("Gina")).filter(([title]) =>
+                    ["Her first", "Her second", "The owner's", "Not hers"].includes(title),
+                ),
             ),
+            {
+                "Her first": "Started by them",
+                "Her second": "Started by them",
+                "The owner's": "Take back",
+                "Not hers": "Invite",
+            },
         );
-        assert.deepEqual(await sessionRows(), [], "closed: no session shows");
 
-        // Opened, the folder holds her sessions in it, each with how she has it. Each ends in Revoke. A session that
-        // is not hers is not listed here, and none is given from here: that is done on her page in People.
-        await fold(inWork);
-        await until(async () => (await sessionRows()).length === 3, "her sessions in the folder");
-        assert.deepEqual((await sessionRows()).sort(), [
-            "Her first | started it",
-            "Her second | started it",
-            "The owner's | shared with them",
-        ]);
-        assert.deepEqual(
-            [
-                await has("Revoke Her first from Gina"),
-                await has("Invite Gina to Her first"),
-                await has("Go to Not hers"),
-                await has("Invite Gina to Not hers"),
-            ],
-            [true, false, false, false],
-        );
-        await fold(others);
-        await until(async () => (await sessionRows()).length === 4, "the one outside her folders");
-        assert.deepEqual(await under(others), ["Elsewhere"]);
-        assert.deepEqual((await under(folder)).sort(), ["Her first", "Her second", "The owner's"]);
-
-        // The folder's Access menu: at All sessions she sees every session in it, whoever started it. One that becomes
-        // hers is listed with how she has it, and has no Revoke: nothing of it is hers but through the folder. Back at
-        // Start sessions, those leave her again, and only those.
+        // The folder's Access menu in her column: at All sessions she sees every session in it, whoever started it,
+        // and the cell of one that becomes hers says so. Back at Start sessions, those leave her again, and only those.
         assert.ok(!listed().includes(unshared));
         assert.ok(
             (await levels()).includes(`Access of Gina to ${given} on This server: Start sessions`),
@@ -688,26 +748,11 @@ test(
         await choose("Gina", given, "All sessions");
         await until(() => listed().includes(unshared), "the server to let her see the folder");
         await until(
-            async () => (await folds()).includes(`${inWork}: 5 (open)`),
-            "its rows to come",
-        );
-        assert.ok(
-            (await levels()).includes(`Access of Gina to ${given} on This server: All sessions`),
-        );
-        assert.ok(
-            (await sessionRows()).includes(
-                "Not hers | sees the sessions in " + given.split("/").at(-1),
-            ),
-        );
-        assert.deepEqual(
-            [
-                await has("Go to Not hers"),
-                await has("Revoke Not hers from Gina"),
-                await has("Invite Gina to Not hers"),
-                await has("Revoke Her second from Gina"),
-            ],
-            [true, false, false, true],
-            "the folder's session opens from its row; only one of her own is taken back",
+            async () =>
+                (await gridCells("Gina")).some(
+                    ([title, cell]) => title === "Not hers" && cell === "Through folder",
+                ),
+            "its cell to follow",
         );
         await choose("Gina", given, "Start sessions");
         await until(
@@ -715,29 +760,46 @@ test(
             "the server to take the folder's sessions back",
         );
         assert.deepEqual(listed().sort(), [first, second, shared, outside].sort());
-        await until(
-            async () => (await folds()).includes(`${inWork}: 3 (open)`),
-            "the count to follow",
-        );
-        assert.equal(await has("Go to Not hers"), false, "its row went with the level");
 
-        // One session is taken from her alone: the others, and her folder, stay. Its row goes: it is the owner's now.
-        await press("Revoke Her first from Gina");
-        await until(() => !listed().includes(first), "the server to take it from her");
-        assert.ok(listed().includes(second) && listed().includes(shared));
+        // One session is taken from her alone: the others, and her folder, stay.
+        await press("Take The owner's back from Gina");
+        await until(() => !listed().includes(shared), "the server to stop sharing it");
+        assert.ok(listed().includes(second) && listed().includes(first));
         assert.equal(app.policy.mayStart(guest, THIS_SERVER), true);
         await until(
-            async () => (await folds()).includes(`${folder}: 2 (open)`),
-            "the count to follow",
+            async () =>
+                (await gridCells("Gina")).some(
+                    ([title, cell]) => title === "The owner's" && cell === "Invite",
+                ),
+            "its cell to turn to Invite",
         );
-        assert.equal(await has("Go to Her first"), false);
 
-        await press("Revoke The owner's from Gina");
-        await until(() => !listed().includes(shared), "the server to stop sharing it");
+        // Revoke, on her page, takes one she started from her: it goes to who is in charge.
+        await open("people");
+        await show("Gina");
+        await until(
+            async () => (await folds()).some((each) => each.startsWith(`${folder}: `)),
+            "her tree",
+        );
+        await reveal(realpathSync(work));
+
+        if (
+            !(await folds()).some(
+                (each) => each.startsWith(`${inWork}: `) && each.endsWith("(open)"),
+            )
+        ) {
+            await fold(inWork);
+        }
+
+        await until(async () => await has("Revoke Her first from Gina"), "her session's row");
+        await press("Revoke Her first from Gina");
+        await until(() => !listed().includes(first), "the server to take it from her");
         assert.deepEqual(listed().sort(), [second, outside].sort());
         await until(
-            async () => (await folds()).includes(`${folder}: 1 (open)`),
-            "the count to follow again",
+            async () =>
+                (await folds()).includes(`${folder}: 1 of 5`) ||
+                (await folds()).includes(`${folder}: 1 of 5 (open)`),
+            "the count to follow",
         );
 
         // Her page in People has the same tree, and lists the folder's other sessions too, each to be given from its
@@ -1035,9 +1097,20 @@ test(
             `);
 
             assert.match(shown.row, /Gina$/, "the list says whose it is");
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify(document.querySelector(".pages-detail .ag-scroll, .pages-detail .ak-tools") !== null)`,
+                ),
+                false,
+                "no grid and no tools: who has what there is not the owner's to know",
+            );
             assert.deepEqual(shown.tabs, [], "one part to read: no People or Settings");
             assert.match(shown.note, /Linked by Gina, who is in charge of it/);
-            assert.match(shown.note, /you can unlink it/);
+            assert.match(
+                shown.note,
+                /You manage runners, so you can unlink it\./,
+                "said from the right, not the role",
+            );
             assert.deepEqual(shown.actions, ["Unlink"]);
             assert.equal(shown.switches, 0, "nothing to switch or type");
             assert.doesNotMatch(shown.text, /Vera/, "its people are not the owner's to know");
@@ -1091,7 +1164,7 @@ test(
 
                 return JSON.stringify({
                     row: words(row),
-                    status: words(document.querySelector(".pages-detail .sheet-page-head + .muted")),
+                    status: words(document.querySelector(".pages-detail .ac-head .muted")),
                     note: words(note),
                     role: note?.getAttribute("role") ?? "",
                     readOnly: words(document.querySelector('.pages-detail [data-part="read-only"]')),
@@ -1114,7 +1187,7 @@ test(
             assert.match(blocked.status, /^Blocked/);
             assert.equal(
                 blocked.note,
-                "Gina's desktop is blocked: Gina, who linked it, is a viewer now. Nothing starts or runs there until they are made a user. As the owner, you can make them a user in People, or unlink it.",
+                "Gina's desktop is blocked: Gina, who linked it, is a viewer now. Nothing starts or runs there until they are made a user. You can make them a user in By person, or unlink it.",
             );
             assert.equal(blocked.role, "alert");
             assert.equal(
@@ -1150,7 +1223,7 @@ test(
     "the owner's Settings page keeps what holds for everyone, and no page lists approvals",
     real,
     async () => {
-        await open("people");
+        await open("settings");
         await show("Settings");
         assert.deepEqual(await switches(), ["Tasks expire with the session: off"]);
         await flip("Tasks expire with the session");
@@ -1179,7 +1252,8 @@ test(
         `);
 
         for (const [sheet, item] of [
-            ["people", "Settings"],
+            ["settings", "Settings"],
+            ["settings", "This server"],
             ["people", "Owner"],
             ["computers", "This server"],
         ] as const) {
@@ -1194,12 +1268,15 @@ test(
             );
         }
 
+        // A computer's page in Settings: how long each person's approvals last, and the computer's own settings.
+        await open("settings");
+        await show("This server");
         assert.deepEqual(
             await inPage<string[]>(
-                `return JSON.stringify([...document.querySelectorAll(".pages-detail .sheet-tabs [role=tab]")].map((each) => each.textContent.trim()))`,
+                `return JSON.stringify([...document.querySelectorAll(".pages-detail .group-title")].map((each) => each.textContent.trim()))`,
             ),
-            ["Overview", "People", "Settings"],
-            "a computer's parts",
+            ["Approvals last", "Sharing"],
+            "a computer's settings",
         );
     },
 );
@@ -1353,7 +1430,7 @@ test(
         return JSON.stringify({
             columns: getComputedStyle(document.querySelector(".pages-split")).gridTemplateColumns.split(" ").length,
             wider: [...document.querySelectorAll(".sheet-body *")]
-                .filter((each) => each.getBoundingClientRect().right > innerWidth + 1)
+                .filter((each) => each.getBoundingClientRect().right > innerWidth + 1 && !${INSIDE_SCROLLER}(each))
                 .map((each) => each.className),
             ends: [...document.querySelectorAll(".pages-detail .at-folder-line")].map((line) =>
                 Math.round(line.getBoundingClientRect().right - line.querySelector(".at-level").getBoundingClientRect().right),
@@ -1373,7 +1450,7 @@ test(
 );
 
 test(
-    "a group's title on a page starts where the page's rows start, in People and in Runners",
+    "a group's title on a page starts where the page's rows start, By person and By computer",
     real,
     async () => {
         /** Each group title on the page shown: how far its words start from the page's left edge, in pixels. */
@@ -1388,8 +1465,9 @@ test(
                     return range.getBoundingClientRect().left;
                 };
 
+                // A title inside the grid's box (its People, under the rows) starts where that box's rows start.
                 return JSON.stringify(
-                    [...detail.querySelectorAll(".group-title")].map((each) => [
+                    [...detail.querySelectorAll(".group-title")].filter((each) => !each.closest(".ag-scroll")).map((each) => [
                         each.textContent.trim(),
                         Math.round(start(each) - detail.getBoundingClientRect().left),
                     ]),
@@ -1435,13 +1513,13 @@ test(
                 assert.equal(from, 0, `"${title}" on Gina's page`);
             }
 
-            // A computer's page in Runners is laid out the same way.
-            await open("computers", viewport);
+            // A computer's page in Settings is laid out the same way.
+            await open("settings", viewport);
             await show("This server");
             await until(async () => (await titles()).length > 0, "the computer's groups");
 
             for (const [title, from] of await titles()) {
-                assert.equal(from, 0, `"${title}" in Runners`);
+                assert.equal(from, 0, `"${title}" in Settings`);
             }
         }
     },
@@ -2387,7 +2465,7 @@ test(
                 await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
                 await ready();
                 await inPage(
-                    `const { openSheet } = await import("/store.js"); openSheet({ type: "people" }); return JSON.stringify(true);`,
+                    `const { openSheet } = await import("/store.js"); openSheet({ type: "access", view: "person" }); return JSON.stringify(true);`,
                 );
                 await until(
                     async () =>
@@ -3323,7 +3401,7 @@ test(
                     `return JSON.stringify([...document.querySelectorAll(".pages-item-title")].map((each) => each.textContent.trim()))`,
                 );
 
-            await open("people");
+            await open("settings");
             assert.equal((await listed()).includes("Settings"), false);
             app.setRight(owner(app), { person: guest.id, right: "managesServer", on: true });
             await until(async () => (await listed()).includes("Settings"), "Settings to be hers");
@@ -3537,6 +3615,7 @@ test(
                 await inPage<string[]>(`
                     return JSON.stringify(
                         [...document.querySelectorAll('.pages-sheet [data-part="person-access"], .pages-sheet [data-part="person-access"] *')]
+                            .filter((each) => !${INSIDE_SCROLLER}(each))
                             .filter((each) => each.getBoundingClientRect().right > innerWidth + 0.5 || each.getBoundingClientRect().left < -0.5)
                             .map((each) => each.className || each.tagName),
                     );
@@ -4158,21 +4237,22 @@ test(
             assert.deepEqual(await sessionRows(), []);
             assert.ok((await folds()).includes(`${inQuartz}: 1 of 2`));
 
-            // Runners lists what he has, and searches nothing.
+            // By computer searches the same way: a session row shows while it matches, under its folder.
             await open("computers");
             await show("This server");
-            await inPage(`
-                [...document.querySelectorAll(".sheet-tabs [role=tab]")]
-                    .find((each) => each.textContent.trim().startsWith("People"))
-                    .click();
-
-                return JSON.stringify(true);
-            `);
-            await until(
-                async () => (await folds()).includes(`${inQuartz}: 1`),
-                "his tree in Runners",
+            await until(async () => await has("Search folders and sessions"), "the grid's search");
+            await page.type(
+                { selector: '.pages-detail [aria-label="Search folders and sessions"]' },
+                "zeta",
             );
-            assert.equal(await has("Search sessions and folders"), false);
+            await until(
+                async () =>
+                    (await gridCells("Ben"))
+                        .map(([title]) => title)
+                        .sort()
+                        .join() === "find: zeta one,find: zeta two",
+                "the grid to keep the ones that match",
+            );
 
             // Ann is in charge of nothing: her sessions on this server are a card of it. She starts a second one, since
             // one session alone is nothing to search. The same search and filters are over the card; with one starter

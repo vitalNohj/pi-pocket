@@ -199,8 +199,9 @@ import {
     loadSessionSkills,
     projectDistrusted,
     type ProjectTrust,
+    folderTrust,
     readProjectTrust,
-    saveProjectTrust,
+    saveFoldersTrust,
     type SkillSources,
     type TrustChoice,
 } from "./skills.ts";
@@ -221,10 +222,14 @@ import {
     type FolderScan,
     knownScan,
     latestScan,
+    defaultTrust,
+    folderTrustThere,
+    pathsFor,
     projectThere,
     readRemoteText,
     saveTrust,
 } from "./remote-context.ts";
+import { projectsOf, type ProjectsView } from "./projects.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -7534,30 +7539,128 @@ export class PocketApp {
     setProjectTrust(id: ConversationId, user: User, choice: TrustChoice): ProjectTrust {
         // Before anything is saved: only who is in charge may read it, or answer.
         const now = this.projectTrust(id, user);
+        const runner = this.runnerOf(id);
+        // On a runner, the folder as its scan names it; here, as the trust store does.
+        const folder = runner === undefined ? now.folder : this.#knownFolder(id).folder;
 
-        if (now.unreadable) {
+        this.setFolderTrust(user, runner ?? THIS_SERVER, [folder], choice);
+
+        return this.projectTrust(id, user);
+    }
+
+    /**
+     * The answer to "trust this project?" of who is in charge of `computer`, for `folders` there in one save
+     * (`skills.ts` `trustDecisions`): the one way a decision is saved, from a session's question and from the Access
+     * sheet. On this server it is saved where Pi's CLI keeps its own, as its `/trust` does; for a runner, here, by
+     * computer and path there. Each project in those folders was decided: its request ends, and everyone waiting on it
+     * hears. 404 for anyone else, as the computer's projects are.
+     */
+    setFolderTrust(
+        user: User,
+        computer: string,
+        folders: readonly string[],
+        choice: TrustChoice,
+    ): void {
+        if (!this.policy.inCharge(user, computer)) {
+            throw new HttpError(404, "Not found");
+        }
+
+        if (folders.length === 0) {
+            throw new HttpError(400, "Name a folder.");
+        }
+
+        const paths = this.#pathsOf(computer);
+
+        if (folders.some((folder) => !paths.isAbsolute(folder))) {
+            throw new HttpError(400, "Each folder must be a full path.");
+        }
+
+        let decisions: { path: string; decision: boolean | null }[];
+        const sources = this.#skillSources();
+
+        // A store that cannot be read is never written over: what it held would be lost.
+        if (
+            computer === THIS_SERVER &&
+            folderTrust(folders[0]!, sources.agentDir, sources.defaultProjectTrust) === undefined
+        ) {
             throw new HttpError(
                 409,
                 "Pi's trust store (~/.pi/agent/trust.json) cannot be read, so no answer can be saved. Mend or delete it first.",
             );
         }
 
-        if (choice === "trust-parent" && now.parent === undefined) {
-            throw new HttpError(400, "This folder has no folder above it.");
+        try {
+            decisions =
+                computer === THIS_SERVER
+                    ? saveFoldersTrust(folders, getAgentDir(), choice)
+                    : saveTrust(this.dataDir, computer, folders, paths, choice);
+        } catch (error) {
+            if (choice === "trust-parent" && /folder above it|one folder/.test(String(error))) {
+                throw new HttpError(400, (error as Error).message);
+            }
+
+            throw new HttpError(
+                409,
+                computer === THIS_SERVER
+                    ? "Pi's trust store (~/.pi/agent/trust.json) cannot be read, so no answer can be saved. Mend or delete it first."
+                    : `The trust decisions for ${this.#computerName(computer)} cannot be read, so no answer can be saved.`,
+            );
         }
 
-        const runner = this.runnerOf(id);
+        // What was saved covers the folders in it: the requests there end, wherever their question was asked.
+        this.trustRequests.decidedUnder(
+            computer,
+            decisions.map((each) => each.path),
+        );
+    }
 
-        if (runner === undefined) {
-            saveProjectTrust(this.cwdOf(id), getAgentDir(), choice);
-        } else {
-            // Kept here, by computer and path there: Pi's own store names this server's folders.
-            const { folder, paths } = this.#knownFolder(id);
+    /** The path rules of computer `id`: this server's, or a runner's by its operating system. */
+    #pathsOf(id: string): typeof posix {
+        return id === THIS_SERVER
+            ? process.platform === "win32"
+                ? win32
+                : posix
+            : pathsFor(this.runners.stored(id)?.platform?.os);
+    }
 
-            saveTrust(this.dataDir, runner, folder, paths, choice);
+    /**
+     * The projects of the sessions on `computer` that are not archived, and how Pi trusts their folders (`projects.ts`),
+     * for who is in charge of it alone; 404 for anyone else.
+     */
+    async projectsOn(user: User, computer: string): Promise<ProjectsView> {
+        if (
+            !this.policy.inCharge(user, computer) ||
+            (computer !== THIS_SERVER && this.runners.stored(computer) === undefined)
+        ) {
+            throw new HttpError(404, "Not found");
         }
 
-        return this.projectTrust(id, user);
+        const sessions = Object.entries(this.#sessions).flatMap(([id, meta]) =>
+            meta.archived === true ||
+            meta.pip !== undefined ||
+            (meta.runner ?? THIS_SERVER) !== computer ||
+            this.workspaceScheme(meta.cwd) !== undefined
+                ? []
+                : [{ id: Number(id), cwd: meta.cwd }],
+        );
+        const sources = this.#skillSources();
+        const paths = this.#pathsOf(computer);
+
+        return {
+            defaultProjectTrust:
+                computer === THIS_SERVER
+                    ? sources.defaultProjectTrust
+                    : defaultTrust(sources.agentDir),
+            projects: await projectsOf(
+                sessions,
+                (session) =>
+                    this.memory.project(session.id as unknown as ConversationId, session.cwd),
+                (folder) =>
+                    computer === THIS_SERVER
+                        ? folderTrust(folder, sources.agentDir, sources.defaultProjectTrust)
+                        : folderTrustThere(this.#remoteDirs(), computer, folder, paths),
+            ),
+        };
     }
 
     /**
