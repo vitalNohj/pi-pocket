@@ -35,6 +35,7 @@ import {
     type SkillSources,
     type TrustChoice,
     trustDecisions,
+    TrustError,
 } from "./skills.ts";
 
 /** An environment on another computer: a `RunnerEnv` (or the harness's wrapper of one). */
@@ -785,7 +786,7 @@ export function saveTrust(
     const data = readTrust(dataDir);
 
     if (data === undefined) {
-        throw new Error(`${join(dataDir, TRUST_FILE)} cannot be read.`);
+        throw new TrustError("unreadable", `${join(dataDir, TRUST_FILE)} cannot be read.`);
     }
 
     const mine = { ...data[runner] };

@@ -204,6 +204,7 @@ import {
     saveFoldersTrust,
     type SkillSources,
     type TrustChoice,
+    TrustError,
 } from "./skills.ts";
 import { KeepWarm } from "./keep-warm.ts";
 import { Spend } from "./spend.ts";
@@ -7578,7 +7579,8 @@ export class PocketApp {
         let decisions: { path: string; decision: boolean | null }[];
         const sources = this.#skillSources();
 
-        // A store that cannot be read is never written over: what it held would be lost.
+        // A store that cannot be read is never written over: what it held would be lost. Here it is one store for every
+        // folder, so the first folder tells.
         if (
             computer === THIS_SERVER &&
             folderTrust(folders[0]!, sources.agentDir, sources.defaultProjectTrust) === undefined
@@ -7595,15 +7597,23 @@ export class PocketApp {
                     ? saveFoldersTrust(folders, getAgentDir(), choice)
                     : saveTrust(this.dataDir, computer, folders, paths, choice);
         } catch (error) {
-            if (choice === "trust-parent" && /folder above it|one folder/.test(String(error))) {
-                throw new HttpError(400, (error as Error).message);
+            if (error instanceof TrustError && error.code === "no-parent") {
+                throw new HttpError(400, error.message);
             }
 
+            if (error instanceof TrustError && error.code === "unreadable") {
+                throw new HttpError(
+                    409,
+                    computer === THIS_SERVER
+                        ? "Pi's trust store (~/.pi/agent/trust.json) cannot be read, so no answer can be saved. Mend or delete it first."
+                        : `The trust decisions for ${this.#computerName(computer)} cannot be read, so no answer can be saved.`,
+                );
+            }
+
+            // Any other fault of the write (a full disk, no permission): its own cause, not a store that cannot be read.
             throw new HttpError(
-                409,
-                computer === THIS_SERVER
-                    ? "Pi's trust store (~/.pi/agent/trust.json) cannot be read, so no answer can be saved. Mend or delete it first."
-                    : `The trust decisions for ${this.#computerName(computer)} cannot be read, so no answer can be saved.`,
+                500,
+                `The trust decision could not be saved: ${error instanceof Error ? error.message : String(error)}`,
             );
         }
 

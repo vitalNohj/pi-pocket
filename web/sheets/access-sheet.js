@@ -211,7 +211,30 @@ function ComputerItem({ computer, selected, onSelect, detail }) {
     />`;
 }
 
-/** What a computer's row says in By computer: its state, and how many people may use it. */
+/**
+ * The people of a computer in my charge, as By computer lists them under its grid: anyone but the owner who may be
+ * chosen for it, and someone invited to sessions only while they have one there.
+ */
+function peopleHere(computer) {
+    return store.state.users.filter(
+        (person) =>
+            person.role !== "owner" &&
+            choosable(computer, person) &&
+            (!person.sessions || sessionsOf(computer, person).length > 0),
+    );
+}
+
+/**
+ * The people who have a column in a computer's grid: of `peopleHere`, those chosen for it, and those invited to a
+ * session there. The list on the left and the People filter both count these.
+ */
+function columnPeople(computer) {
+    return inCharge(computer)
+        ? peopleHere(computer).filter((person) => chosenFor(computer, person) || person.sessions)
+        : [];
+}
+
+/** What a computer's row says in By computer: its state, and how many people have a column in its grid. */
 function computerLine(computer) {
     const state =
         computer.id === THIS_SERVER
@@ -225,7 +248,7 @@ function computerLine(computer) {
                   : computer.away
                     ? "Offline"
                     : "Not connected";
-    const people = inCharge(computer) ? (computer.users ?? []).length : undefined;
+    const people = inCharge(computer) ? columnPeople(computer).length : undefined;
     const owner = !inCharge(computer)
         ? store.state.users.find((each) => each.id === computer.createdBy)?.name
         : undefined;
@@ -451,15 +474,8 @@ function ComputerView({ computer }) {
 
     useMinute();
 
-    const everyone = mine
-        ? store.state.users.filter(
-              (person) =>
-                  person.role !== "owner" &&
-                  choosable(computer, person) &&
-                  (!person.sessions || sessionsOf(computer, person).length > 0),
-          )
-        : [];
-    const chosen = everyone.filter((person) => chosenFor(computer, person) || person.sessions);
+    const everyone = mine ? peopleHere(computer) : [];
+    const chosen = columnPeople(computer);
     const people = chosen.filter((person) => !hidden.has(person.id));
     const projects = mine ? projectsOf(computer) : undefined;
     const group =
@@ -638,6 +654,7 @@ function SettingsView({ sheet }) {
                 onSelect=${() => setView("limits")}
                 lead=${html`<${Icon} name="shield" size=${16} />`}
                 title="Linking limits"
+                detail="For runners"
                 badge=${lockCount > 0 ? String(lockCount) : null}
             />`
         }
@@ -648,7 +665,7 @@ function SettingsView({ sheet }) {
                 computer=${computer}
                 selected=${shown === `computer:${computer.id}`}
                 onSelect=${() => setView(`computer:${computer.id}`)}
-                detail=${computer.id === THIS_SERVER ? "This server" : status(computer)}
+                detail=${computer.id === THIS_SERVER ? "Pi Pocket itself" : status(computer)}
             />`,
         )}`;
 
@@ -721,6 +738,12 @@ function ComputerSettings({ computer }) {
         }
         <div class="group-title">Approvals last</div>
         ${
+            people.some((person) => person.role !== "viewer") &&
+            html`<p class="muted small approvals-note">
+                A session of theirs locks this long after they last used it. The same on every computer.
+            </p>`
+        }
+        ${
             people.length === 0
                 ? html`<p class="muted small">No one else may use ${computer.name}.</p>`
                 : html`<div class="sheet-rows">
@@ -735,13 +758,12 @@ function ComputerSettings({ computer }) {
                               <${Face} person=${person} />
                               <div class="grow">
                                   <div class="small"><strong>${person.name}</strong> <span class="muted">${roleWord(person)}</span></div>
-                                  <div class="muted small">
-                                      ${
-                                          viewer
-                                              ? "A viewer reads only: nothing to approve."
-                                              : "A session of theirs locks this long after they last used it. The same on every computer."
-                                      }
-                                  </div>
+                                  ${
+                                      viewer &&
+                                      html`<div class="muted small">
+                                          A viewer reads only: nothing to approve.
+                                      </div>`
+                                  }
                               </div>
                               ${
                                   !viewer &&

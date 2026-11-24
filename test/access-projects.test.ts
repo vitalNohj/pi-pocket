@@ -332,6 +332,47 @@ test("on a runner: 1 call for 2 folders is 1 write, and 'trust-parent' removes t
     }
 });
 
+test("trust that cannot be saved: 409 for decisions that cannot be read, 500 with its cause for a failed write", async () => {
+    const path = `runners/${laptop}/trust`;
+    const file = join(app.dataDir, TRUST_FILE);
+    const write = trustFile.write;
+
+    try {
+        // Decisions that cannot be read: 409, and nothing is written over them.
+        writeFileSync(file, "{ not json");
+        const unreadable = await call<{ error: string }>(host, path, {
+            folders: ["/srv/app"],
+            choice: "trust",
+        });
+
+        assert.equal(unreadable.status, 409);
+        assert.match(unreadable.body.error, /cannot be read/);
+        assert.equal(readFileSync(file, "utf8"), "{ not json");
+
+        // A store that reads, and a write that fails: 500, with the write's own cause, not "cannot be read".
+        rmSync(file, { force: true });
+
+        trustFile.write = () => {
+            throw new Error("ENOSPC: no space left on device");
+        };
+
+        const failed = await call<{ error: string }>(host, path, {
+            folders: ["/srv/app"],
+            choice: "trust",
+        });
+
+        assert.equal(failed.status, 500);
+        assert.equal(
+            failed.body.error,
+            "The trust decision could not be saved: ENOSPC: no space left on device",
+        );
+        assert.doesNotMatch(failed.body.error, /cannot be read/);
+    } finally {
+        trustFile.write = write;
+        rmSync(file, { force: true });
+    }
+});
+
 test("trust set from the grid ends the request of a session that waits in a folder it covers", async () => {
     const id = betaSession;
 

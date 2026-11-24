@@ -326,6 +326,21 @@ for (const [name, viewport] of [
             assert.ok(moved.scrolled > 0, "it scrolls sideways");
             assert.equal(start.head.length, 8);
 
+            // The list on the left and the People filter count the same people: those with a column.
+            assert.deepEqual(
+                await inPage<[string, string]>(`
+                const item = [...document.querySelectorAll(".pages-list .pages-item")].find(
+                    (each) => each.querySelector(".pages-item-title")?.textContent.trim() === "This server",
+                );
+
+                return JSON.stringify([
+                    item.querySelector(".pages-item-text .muted").textContent.trim(),
+                    document.querySelector(".ak-people").textContent.trim(),
+                ]);
+            `),
+                ["Online · 8 people", "8 people"],
+            );
+
             for (const row of [...start.rows, ...moved.rows]) {
                 assert.equal(row.length, 8);
             }
@@ -572,9 +587,22 @@ test(
             "This server's settings",
         );
 
-        const page_ = await inPage<{ list: string[]; titles: string[]; people: string[] }>(`
+        const page_ = await inPage<{
+            list: string[];
+            details: Record<string, string>;
+            titles: string[];
+            people: string[];
+            notes: string[];
+            rows: string[];
+        }>(`
         return JSON.stringify({
             list: [...document.querySelectorAll(".pages-list .pages-item-title")].map((each) => each.textContent.trim()),
+            details: Object.fromEntries([...document.querySelectorAll(".pages-list .pages-item")].map((each) => [
+                each.querySelector(".pages-item-title")?.textContent.trim(),
+                each.querySelector(".pages-item-text .muted")?.textContent.trim() ?? "",
+            ])),
+            notes: [...document.querySelectorAll(".pages-detail .approvals-note")].map((each) => each.textContent.trim()),
+            rows: [...document.querySelectorAll(".pages-detail .setting")].filter((each) => each.querySelector("strong")).flatMap((each) => [...each.querySelectorAll(".muted.small")].map((line) => line.textContent.trim())),
             titles: [...document.querySelectorAll(".pages-detail .group-title")].map((each) => each.textContent.trim()),
             people: [...document.querySelectorAll(".pages-detail .setting strong")].map((each) => each.textContent.trim()),
         });
@@ -586,6 +614,17 @@ test(
             "a page per computer",
         );
         assert.deepEqual(page_.titles, ["Approvals last", "Sharing"]);
+        // This server's row says what it is, not its name again; Linking limits says what it is for.
+        assert.equal(page_.details["This server"], "Pi Pocket itself");
+        assert.equal(page_.details["Linking limits"], "For runners");
+        // What a time means, once under the heading; a person's row has only a viewer's line.
+        assert.deepEqual(page_.notes, [
+            "A session of theirs locks this long after they last used it. The same on every computer.",
+        ]);
+        assert.ok(
+            page_.rows.every((each) => each === "A viewer reads only: nothing to approve."),
+            JSON.stringify(page_.rows),
+        );
         assert.deepEqual(
             page_.people,
             people.map((each) => each.name),

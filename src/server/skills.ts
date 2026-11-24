@@ -148,6 +148,19 @@ function enabledBy(files: string[], entries: string[], base: string, home: strin
 /** The answers Pi's `/trust` offers: trust the folder, trust the folder above it (and so this one too), or not. */
 export type TrustChoice = "trust" | "trust-parent" | "distrust";
 
+/**
+ * Why an answer to "trust this project?" cannot be saved, as a code to branch on: "unreadable", the decisions cannot be
+ * read, so a write would lose them; "no-parent", "Trust the folder above it" names no single folder with one above it.
+ */
+export class TrustError extends Error {
+    readonly code: "unreadable" | "no-parent";
+
+    constructor(code: "unreadable" | "no-parent", message: string) {
+        super(message);
+        this.code = code;
+    }
+}
+
 /** A decision in Pi's trust store: the folder it was saved for, and whether Pi trusts it and the folders in it. */
 export type Saved = { path: string; trusted: boolean };
 
@@ -391,13 +404,13 @@ export function trustDecisions(
     const [folder] = folders;
 
     if (folders.length !== 1 || folder === undefined) {
-        throw new Error("Trust the folder above it takes one folder.");
+        throw new TrustError("no-parent", "Trust the folder above it takes one folder.");
     }
 
     const parent = dirnameOf(folder);
 
     if (parent === folder) {
-        throw new Error(`${folder} has no folder above it.`);
+        throw new TrustError("no-parent", `${folder} has no folder above it.`);
     }
 
     return [
