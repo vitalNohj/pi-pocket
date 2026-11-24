@@ -8,8 +8,8 @@
  * - Pi's skills there: the project's `.pi/skills/`, its `.agents/skills/` folders up to the repository's root (only while
  *   the project is trusted), then `~/.pi/agent/skills/` and `~/.agents/skills/` of that computer.
  *
- * One scan finds all of it (`scanFolder`): on Linux and macOS one `sh` command that prints the files, as a slow link
- * (a laptop on Wi-Fi) pays for each round trip; elsewhere, or when that fails, folder listings side by side. A scan is
+ * One scan finds all of it (`scanFolder`): one command prints the files, so a slow link pays for one round trip.
+ * When that fails, folder listings run side by side. A scan is
  * kept for 30 seconds per computer and folder, as the prompt keeps what it reads here. Trust decisions for folders there
  * are this server's (`remote-trust.json` in its data folder), by computer and path: they never mix with Pi's trust store,
  * whose paths are this server's.
@@ -26,6 +26,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ExecutionEnv, FileError, FileInfo } from "@earendil-works/pi-durable/env";
 import { isConnectionLost, type RemoteInfo } from "@earendil-works/pi-env";
+import { limitParallel } from "./folder-access.ts";
 import {
     decides,
     type ProjectTrust,
@@ -35,7 +36,11 @@ import {
 } from "./skills.ts";
 
 /** An environment on another computer: a `RunnerEnv` (or the harness's wrapper of one). */
-export type RemoteEnv = ExecutionEnv & { readonly connection: { info(): Promise<RemoteInfo> } };
+export type RemoteEnv = ExecutionEnv & {
+    readonly connection: { info(): Promise<RemoteInfo> };
+    /** The runner checks requests against this folder, which can differ from cwd for a worktree. */
+    readonly scope?: { folder: string } | undefined;
+};
 
 export type PathKit = typeof posix;
 
@@ -186,12 +191,21 @@ export async function readFolder(env: RemoteEnv, cwd: string): Promise<FolderSca
     const info = await env.connection.info();
     const paths = pathsFor(info.os);
     const folder = paths.resolve(cwd);
-    const home = paths.resolve(info.home);
+    const home = info.home ? paths.resolve(info.home) : "";
     const at = Date.now();
-    const found =
-        (scanSettings.shell && info.os !== "windows"
-            ? await shellScan(env, folder, home)
-            : undefined) ?? (await listingScan(env, paths, folder, home));
+    let found: Found | undefined;
+
+    if (scanSettings.shell) {
+        if (info.os !== "windows") {
+            found = await shellScan(env, folder, home);
+        } else if (env.scope?.folder === folder) {
+            // A worktree or a subagent can run elsewhere. Its ancestors need not be in the approved scope.
+            found = await powershellScan(env, folder, home);
+        }
+    }
+
+    // Try listings only if the command could not scan the folder.
+    found ??= await listingScan(env, paths, folder, home);
 
     return { at, paths, home, ...found };
 }
@@ -234,48 +248,223 @@ d=$cwd
 while :; do
     p=\${d%/}
     f=$p/.agents/skills
-    if [ "$f" != "\${home%/}/.agents/skills" ] && [ -d "$f" ]; then mark agents "" "$f"; walk "$f" "$f" 1 0; fi
+    if { [ -z "$home" ] || [ "$f" != "\${home%/}/.agents/skills" ]; } && [ -d "$f" ]; then mark agents "" "$f"; walk "$f" "$f" 1 0; fi
     if [ "$d" = "$git" ] || [ -z "$p" ]; then break; fi
     d=\${p%/*}; [ -n "$d" ] || d=/
 done
-for f in "\${home%/}/.pi/agent/skills" "\${home%/}/.agents/skills"; do
-    if [ -d "$f" ]; then mark user "" "$f"; walk "$f" "$f" 1 0; fi
-done
+if [ -n "$home" ]; then
+    for f in "\${home%/}/.pi/agent/skills" "\${home%/}/.agents/skills"; do
+        if [ -d "$f" ]; then mark user "" "$f"; walk "$f" "$f" 1 0; fi
+    done
+fi
 mark end "" ""
 `.replace(/\\\$/g, "$");
 
-async function shellScan(env: RemoteEnv, cwd: string, home: string): Promise<Found | undefined> {
+function shellScan(env: RemoteEnv, cwd: string, home: string): Promise<Found | undefined> {
     const marker = randomUUID();
+
+    return commandScan(env, cwd, marker, [
+        "sh",
+        "-c",
+        SCRIPT,
+        "sh",
+        marker,
+        cwd,
+        home,
+        String(MAX_FILE),
+    ]);
+}
+
+/** Windows PowerShell takes source after `-Command`, not literal argv values. Encode the scan data. */
+export function powershellScanCommand(marker: string, cwd: string, home: string): string[] {
+    const data = Buffer.from(JSON.stringify({ marker, cwd, home }), "utf8").toString("base64");
+    const script = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$data = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${data}')))
+$cwd = $data.cwd
+$userHome = $data.home
+[string]$lf = [char]10
+[string]$tab = [char]9
+$directory = [IO.FileAttributes]::Directory
+$ordinal = [StringComparison]::Ordinal
+
+function Mark($kind, $place, $path) {
+    [Console]::Write($lf + $data.marker + $tab + $kind + $tab + $place + $tab + $path + $lf)
+}
+function Check-Attributes($attributes) {
+    if (($attributes -band ([IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Device)) -ne 0) {
+        throw 'Use the normal path checks for a link or device.'
+    }
+}
+function Get-ScanDirectory($path) {
+    try { $attributes = [IO.File]::GetAttributes($path) }
+    catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return }
+    Check-Attributes $attributes
+    if (($attributes -band $directory) -ne 0) { [IO.DirectoryInfo]::new($path) }
+}
+function Check-Chain($path) {
+    if ([IO.Path]::DirectorySeparatorChar -eq [char]92 -and $path -cnotmatch '^[A-Z]:\\') {
+        throw 'Use the normal path checks for a non-standard drive path.'
+    }
+    for ($dir = [IO.DirectoryInfo]::new($path); $null -ne $dir; $dir = $dir.Parent) {
+        Check-Attributes ([IO.File]::GetAttributes($dir.FullName))
+        if ($null -ne $dir.Parent) {
+            $names = $dir.Parent.GetFileSystemInfos($dir.Name)
+            if ($names.Length -ne 1 -or !$names[0].Name.Equals($dir.Name, $ordinal)) {
+                throw 'Use the normal path checks for an alternate spelling.'
+            }
+        }
+    }
+}
+function Show-File($kind, $place, $file) {
+    Check-Attributes $file.Attributes
+    $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+    try {
+        $reader = [IO.BinaryReader]::new($stream)
+        $text = [Text.Encoding]::UTF8.GetString($reader.ReadBytes(${MAX_FILE}))
+    } finally { $stream.Dispose() }
+    Mark $kind $place $file.FullName
+    [Console]::Write($text)
+}
+function Walk-Skills($place, $dir, $depth) {
+    $children = $dir.GetFileSystemInfos()
+    foreach ($entry in $children) {
+        if ($entry.Name.Equals('SKILL.md', $ordinal)) {
+            Check-Attributes $entry.Attributes
+            if (($entry.Attributes -band $directory) -eq 0) {
+                Show-File 'skill' $place $entry
+                return
+            }
+        }
+    }
+    if ($depth -ge ${MAX_DEPTH}) { return }
+    foreach ($entry in $children) {
+        $name = $entry.Name
+        if ($name.StartsWith('.', $ordinal) -or $name.Equals('node_modules', $ordinal)) { continue }
+        Check-Attributes $entry.Attributes
+        if (($entry.Attributes -band $directory) -ne 0) { Walk-Skills $place $entry ($depth + 1) }
+        elseif ($depth -eq 0 -and $name.EndsWith('.md', $ordinal)) { Show-File 'skill' $place $entry }
+    }
+}
+function Show-Skills($kind, $base, $parts) {
+    $dir = $base
+    foreach ($name in $parts) {
+        $dir = Get-ScanDirectory ([IO.Path]::Combine($dir.FullName, $name))
+        if ($null -eq $dir) { return }
+    }
+    Mark $kind '' $dir.FullName
+    Walk-Skills $dir.FullName $dir 0
+}
+
+Check-Chain $cwd
+$homeAgents = ''
+if ($userHome -ne '') {
+    $homeAgents = [IO.Path]::Combine($userHome, '.agents', 'skills')
+    if ([IO.Directory]::Exists($userHome)) {
+        # The runner permits user skills under its real home, not under a different daemon's home.
+        $profileHome = if ([IO.Path]::DirectorySeparatorChar -eq [char]92) { $env:USERPROFILE } else { $env:HOME }
+        if (!$userHome.Equals($profileHome, $ordinal)) { throw 'Use the normal path checks for this home.' }
+        Check-Chain $userHome
+    }
+}
+Mark 'folder' '' $cwd
+$projectAgents = [Collections.Generic.List[IO.DirectoryInfo]]::new()
+$inRepo = $true
+$own = $null
+for ($dir = [IO.DirectoryInfo]::new($cwd); $null -ne $dir; $dir = $dir.Parent) {
+    $entries = [Collections.Generic.Dictionary[string,IO.FileSystemInfo]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $dir.GetFileSystemInfos()) { $entries.Add($entry.Name, $entry) }
+    foreach ($name in @('${CANDIDATES.join("', '")}')) {
+        if ($entries.ContainsKey($name)) {
+            $file = $entries[$name]
+            Check-Attributes $file.Attributes
+            if (($file.Attributes -band $directory) -eq 0) {
+                Show-File 'context' '' $file
+                break
+            }
+        }
+    }
+    if ($dir.FullName.Equals($cwd, $ordinal) -and $entries.ContainsKey('.pi')) { $own = $dir }
+    if ($inRepo -and $entries.ContainsKey('.agents') -and
+        !([IO.Path]::Combine($dir.FullName, '.agents', 'skills').Equals($homeAgents, $ordinal))) {
+        $projectAgents.Add($dir)
+    }
+    if ($entries.ContainsKey('.git')) { $inRepo = $false }
+}
+if ($null -ne $own) { Show-Skills 'own' $own @('.pi', 'skills') }
+foreach ($dir in $projectAgents) { Show-Skills 'agents' $dir @('.agents', 'skills') }
+if ($userHome -ne '' -and [IO.Directory]::Exists($userHome)) {
+    $dir = [IO.DirectoryInfo]::new($userHome)
+    Show-Skills 'user' $dir @('.pi', 'agent', 'skills')
+    Show-Skills 'user' $dir @('.agents', 'skills')
+}
+Mark 'end' '' ''
+`;
+
+    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+function powershellScan(env: RemoteEnv, cwd: string, home: string): Promise<Found | undefined> {
+    const marker = randomUUID();
+
+    return commandScan(env, cwd, marker, powershellScanCommand(marker, cwd, home));
+}
+
+async function commandScan(
+    env: RemoteEnv,
+    cwd: string,
+    marker: string,
+    argv: string[],
+): Promise<Found | undefined> {
     const run = withCancel(context);
     let out = "";
     let tooMuch = false;
-    const result = await env.exec(
-        ["sh", "-c", SCRIPT, "sh", marker, cwd, home, String(MAX_FILE)],
-        {
-            // In the session's folder: its runner refuses a command elsewhere (`docs/runners.md`).
-            cwd,
-            timeout: SCAN_TIMEOUT_S,
-            onOutput: (text, _context, { stream }) => {
-                if (stream !== "stdout" || tooMuch) {
-                    return;
-                }
+    let incomplete = false;
+    let found: Found | undefined;
 
-                out += text;
+    try {
+        const result = await env.exec(
+            argv,
+            {
+                // In the session's folder, under its usual runner permission (`docs/runners.md`).
+                cwd,
+                timeout: SCAN_TIMEOUT_S,
+                onOutput: (text, _context, { stream, skipped }) => {
+                    if (stream !== "stdout" || tooMuch) {
+                        return;
+                    }
 
-                if (out.length > MAX_OUTPUT) {
-                    tooMuch = true;
-                    run.cancel();
-                }
+                    // pi-env decodes each chunk. Fall back if output was skipped or a UTF-8 character was cut.
+                    if (skipped || text.startsWith("�") || text.endsWith("�")) {
+                        incomplete = true;
+                    }
+
+                    if (out.length + text.length > MAX_OUTPUT) {
+                        tooMuch = true;
+                        run.cancel();
+                    } else {
+                        out += text;
+                    }
+                },
             },
-        },
-        run.context,
-    );
+            run.context,
+        );
 
+        if (!tooMuch && !incomplete && result.ok && result.value.exitCode === 0) {
+            found = parseScan(out, marker);
+        }
+    } catch {
+        // A command that could not run, or was refused, leaves listings as the fallback.
+    }
+
+    // This is a read limit, not a reason to try the same unbounded output by another route.
     if (tooMuch) {
         throw new Error(`The skill and context files in ${cwd} are too large to read.`);
     }
 
-    return result.ok ? parseScan(out, marker) : undefined;
+    return found;
 }
 
 /** The records of a shell scan; undefined when it did not finish. */
@@ -285,7 +474,18 @@ export function parseScan(out: string, marker: string): Found | undefined {
 
     for (const piece of out.split(`\n${marker}\t`).slice(1)) {
         const newline = piece.indexOf("\n");
-        const [kind, place, path] = piece.slice(0, newline).split("\t") as [string, string, string];
+
+        if (newline === -1) {
+            return undefined;
+        }
+
+        const fields = piece.slice(0, newline).split("\t");
+        const [kind, place, path] = fields;
+
+        if (ended || fields.length !== 3 || place === undefined || path === undefined) {
+            return undefined;
+        }
+
         const text = stripBom(piece.slice(newline + 1));
 
         if (kind === "folder") {
@@ -300,15 +500,17 @@ export function parseScan(out: string, marker: string): Found | undefined {
             found.user.push(path);
         } else if (kind === "skill") {
             found.files.push({ place, path, text });
-        } else if (kind === "end") {
+        } else if (kind === "end" && place === "" && path === "" && text === "") {
             ended = true;
+        } else {
+            return undefined;
         }
     }
 
     return ended && found.folder !== "" ? found : undefined;
 }
 
-/** The scan as listings of folders, side by side where they can be: for Windows, or a computer without `sh`. */
+/** The scan as listings of folders, side by side where they can be: for a computer without a working command scan. */
 async function listingScan(
     env: RemoteEnv,
     paths: PathKit,
@@ -324,72 +526,53 @@ async function listingScan(
         return undefined;
     };
 
-    const list = async (dir: string) => {
-        const listed = await env.listDir(dir, context);
+    // Limit the individual requests, not a walk that can wait for more reads of its own.
+    const run = limitParallel(8);
+    const list = (dir: string) =>
+        run(async () => {
+            const listed = await env.listDir(dir, context);
 
-        return listed.ok ? listed.value : failed(listed.error);
-    };
+            return listed.ok ? listed.value : failed(listed.error);
+        });
+    const read = (path: string) =>
+        run(async () => {
+            const text = await env.readTextFile(path, context);
 
-    const read = async (path: string) => {
-        const text = await env.readTextFile(path, context);
+            return text.ok ? stripBom(text.value.slice(0, MAX_FILE)) : failed(text.error);
+        });
 
-        return text.ok ? stripBom(text.value.slice(0, MAX_FILE)) : failed(text.error);
-    };
+    const readContext = async (folder: string, entries: FileInfo[] | undefined) => {
+        // Do not open the next name unless the higher-priority file is absent or cannot be read.
+        for (const name of CANDIDATES) {
+            const entry = entries?.find((entry) => entry.name === name);
 
-    const ancestors: string[] = [];
+            if (entry === undefined || entry.kind === "directory") {
+                continue;
+            }
 
-    for (let current = cwd; ; current = paths.dirname(current)) {
-        ancestors.push(current);
+            const path = paths.join(folder, name);
+            const content = await read(path);
 
-        if (paths.dirname(current) === current) {
-            break;
+            if (content !== undefined) {
+                return [{ path, content }];
+            }
         }
-    }
 
-    const [real, listings] = await Promise.all([
-        env.canonicalPath(cwd, context),
-        Promise.all(ancestors.map(list)),
-    ]);
-    const has = (index: number, name: string): FileInfo | undefined =>
-        listings[index]?.find((entry) => entry.name === name);
-    const readContext = () =>
-        Promise.all(
-            ancestors.map(async (folder, index) => {
-                for (const name of CANDIDATES) {
-                    const entry = has(index, name);
+        return [];
+    };
 
-                    if (entry === undefined || entry.kind === "directory") {
-                        continue;
-                    }
+    const readSkill = async (place: string, path: string) => {
+        const text = await read(path);
 
-                    const path = paths.join(folder, name);
-                    const content = await read(path);
+        return text === undefined ? [] : [{ place, path, text }];
+    };
 
-                    if (content !== undefined) {
-                        return [{ path, content }];
-                    }
-                }
-
-                return [];
-            }),
-        );
-    const git = ancestors.findIndex((_, index) => has(index, ".git") !== undefined);
-    const homeAgents = paths.join(home, ".agents", "skills");
-    const agentsAt = ancestors
-        .slice(0, git === -1 ? ancestors.length : git + 1)
-        .filter((_, index) => has(index, ".agents") !== undefined)
-        .map((folder) => paths.join(folder, ".agents", "skills"))
-        .filter((folder) => folder !== homeAgents);
-    const ownAt = has(0, ".pi") === undefined ? undefined : paths.join(cwd, ".pi", "skills");
-    const userAt = [paths.join(home, ".pi", "agent", "skills"), homeAgents];
-
-    // Pi's rules: a folder with SKILL.md is one skill; else `.md` files at the top and the folders in it, without hidden
-    // ones and node_modules.
+    // A folder with SKILL.md is one skill; else read top-level .md files and look in non-hidden folders.
     const walk = async (
-        dir: string,
-        top: boolean,
-        depth: number,
-    ): Promise<string[] | undefined> => {
+        place: string,
+        dir = place,
+        depth = 0,
+    ): Promise<Found["files"] | undefined> => {
         const entries = await list(dir);
 
         if (entries === undefined) {
@@ -397,7 +580,7 @@ async function listingScan(
         }
 
         if (entries.some((entry) => entry.name === "SKILL.md" && entry.kind !== "directory")) {
-            return [paths.join(dir, "SKILL.md")];
+            return readSkill(place, paths.join(dir, "SKILL.md"));
         }
 
         if (depth >= MAX_DEPTH) {
@@ -411,48 +594,83 @@ async function listingScan(
                     const path = paths.join(dir, entry.name);
 
                     if (entry.kind !== "file") {
-                        const below = await walk(path, false, depth + 1);
+                        // For a link, the listing says if it points to a folder or should be tried as a file.
+                        const below = await walk(place, path, depth + 1);
 
                         if (below !== undefined || entry.kind === "directory") {
                             return below ?? [];
                         }
                     }
 
-                    return top && entry.name.endsWith(".md") ? [path] : [];
+                    return depth === 0 && entry.name.endsWith(".md") ? readSkill(place, path) : [];
                 }),
         );
 
         return inner.flat();
     };
 
-    const readSkills = async () => {
-        const places = [...(ownAt === undefined ? [] : [ownAt]), ...agentsAt, ...userAt];
-        const walked = await Promise.all(places.map((place) => walk(place, true, 0)));
-        const exists = (place: string) => walked[places.indexOf(place)] !== undefined;
-        const listed = places.flatMap((place, index) =>
-            (walked[index] ?? []).map((path) => ({ place, path })),
-        );
-        const texts = await Promise.all(listed.map(({ path }) => read(path)));
+    const skillsAt = async (place: string) => {
+        const files = await walk(place);
 
-        return {
-            ...(ownAt !== undefined && exists(ownAt) ? { own: ownAt } : {}),
-            agents: agentsAt.filter(exists),
-            user: userAt.filter(exists),
-            files: listed.flatMap((file, index) => {
-                const text = texts[index];
-
-                return text === undefined ? [] : [{ ...file, text }];
-            }),
-        };
+        return files === undefined ? [] : [{ place, files }];
     };
 
-    // Neither stage needs the other's result. On a slow link, reading a context file can take several trips.
-    const [contextFiles, skills] = await Promise.all([readContext(), readSkills()]);
+    const ancestors: string[] = [];
+
+    for (let current = cwd; ; current = paths.dirname(current)) {
+        ancestors.push(current);
+
+        if (paths.dirname(current) === current) {
+            break;
+        }
+    }
+
+    const real = run(() => env.canonicalPath(cwd, context));
+    const listings = ancestors.map(list);
+    const homeAgents = home === "" ? "" : paths.join(home, ".agents", "skills");
+    const userAt = home === "" ? [] : [paths.join(home, ".pi", "agent", "skills"), homeAgents];
+
+    const agentsFrom = async (index: number): Promise<Awaited<ReturnType<typeof skillsAt>>> => {
+        if (index === ancestors.length) {
+            return [];
+        }
+
+        const entries = await listings[index];
+        const place = paths.join(ancestors[index]!, ".agents", "skills");
+        const [here, above] = await Promise.all([
+            place !== homeAgents && entries?.some((entry) => entry.name === ".agents")
+                ? skillsAt(place)
+                : [],
+            // Only read an ancestor's skills after ruling out a repository boundary below it.
+            entries?.some((entry) => entry.name === ".git") ? [] : agentsFrom(index + 1),
+        ]);
+
+        return [...here, ...above];
+    };
+
+    const [folder, contextFiles, own, agents, user] = await Promise.all([
+        real,
+        Promise.all(
+            listings.map((pending, index) =>
+                pending.then((entries) => readContext(ancestors[index]!, entries)),
+            ),
+        ),
+        listings[0]!.then((entries) =>
+            entries?.some((entry) => entry.name === ".pi")
+                ? skillsAt(paths.join(cwd, ".pi", "skills"))
+                : [],
+        ),
+        agentsFrom(0),
+        Promise.all(userAt.map(skillsAt)).then((skills) => skills.flat()),
+    ]);
 
     return {
-        folder: real.ok ? real.value : (failed(real.error) ?? cwd),
+        folder: folder.ok ? folder.value : (failed(folder.error) ?? cwd),
         context: contextFiles.flat().reverse(),
-        ...skills,
+        ...(own[0] === undefined ? {} : { own: own[0].place }),
+        agents: agents.map(({ place }) => place),
+        user: user.map(({ place }) => place),
+        files: [...own, ...agents, ...user].flatMap(({ files }) => files),
     };
 }
 

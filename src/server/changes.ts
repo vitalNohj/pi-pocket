@@ -5,7 +5,7 @@
  */
 import { realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { type FolderAccess, localAccess, Unreachable } from "./folder-access.ts";
+import { type FolderAccess, limitParallel, localAccess, Unreachable } from "./folder-access.ts";
 import type { GitOptions } from "./git.ts";
 import type { ClientEntry } from "./projection.ts";
 
@@ -320,6 +320,7 @@ async function realpathOn(access: FolderAccess, path: string): Promise<string> {
     const missing: string[] = [];
     let ancestor = path;
 
+    // Only a missing path needs its parent checked. Stop at the first existing ancestor.
     while (true) {
         try {
             return paths.resolve(await access.realpath(ancestor), ...missing);
@@ -356,12 +357,15 @@ async function piEditsInRepo(
     }
 
     const written = piEdits(entries, cwd, asWritten, access.path);
+    const run = limitParallel(COUNTS_AT_ONCE);
     const placed = await Promise.all(
-        [...written].map(async ([path, entryId]) => [await realpathOn(access, path), entryId]),
+        [...written].map(([path, entryId]) =>
+            run(async () => [await realpathOn(access, path), entryId] as const),
+        ),
     );
     const edits = new Map<string, number>();
 
-    for (const [path, entryId] of placed as [string, number][]) {
+    for (const [path, entryId] of placed) {
         edits.set(path, Math.max(entryId, edits.get(path) ?? 0));
     }
 
@@ -389,6 +393,7 @@ export async function changesIn(
     const paths = access.path;
     let repo: { root: string; prefix: string };
 
+    // Git needs the root for its next commands. A folder outside a repo does not need those reads or resolved edits.
     try {
         repo = await repoOf(access, cwd);
     } catch (error) {
@@ -408,107 +413,100 @@ export async function changesIn(
 
     const { root } = repo;
     const prefix = onlyHere ? repo.prefix : "";
-    // Each is a round trip to another computer: they go together. Status and porcelain paths are the repository's,
-    // wherever in it git runs.
-    const [edits, branch, head, status, numstat] = await Promise.all([
+
+    const readFiles = async () => {
+        // Status selects the paths. As before, a failed HEAD diff for an existing commit stops before file reads.
+        const [head, status, numstat] = await Promise.all([
+            git(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).then(
+                (id) => id.trim() || undefined,
+                () => undefined,
+            ),
+            statusOf(access, root),
+            // Without a first commit this fails, and there is nothing to compare with: every file is new.
+            git(root, ["diff", "HEAD", "--numstat", "-z", ...DIFF_FLAGS]).then(
+                (output) => ({ output }),
+                (error: unknown) => ({ error }),
+            ),
+        ]);
+        const changed = status.filter(({ path }) => path.startsWith(prefix));
+        const listed = changed.slice(0, MAX_FILES);
+        let counts: Map<string, { added?: number; removed?: number }>;
+
+        if (head === undefined) {
+            counts = new Map();
+        } else if ("output" in numstat) {
+            counts = parseNumstat(numstat.output);
+        } else {
+            throw numstat.error;
+        }
+
+        // HEAD diffs omit untracked files. Count only the visible, permitted files. The same Git diff handles
+        // binary files, attributes, symlinks and final newlines. No index or files are changed.
+        const count = async (path: string) => {
+            try {
+                return parseNumstat(
+                    await git(
+                        root,
+                        [
+                            "diff",
+                            "--no-index",
+                            "--numstat",
+                            "-z",
+                            ...DIFF_FLAGS,
+                            "--",
+                            access.devNull,
+                            path,
+                        ],
+                        { allowExit: [1] },
+                    ),
+                ).get(path);
+            } catch {
+                // A file can disappear or become unreadable after status. Keep the list, with its count unknown.
+                return undefined;
+            }
+        };
+
+        const stat = limitParallel(COUNTS_AT_ONCE);
+        // Another computer is far: more counts at once there, where each waits mostly on the link.
+        const diff = limitParallel(
+            access.id === localAccess.id ? COUNTS_AT_ONCE : COUNTS_AT_ONCE * 4,
+        );
+        const listedFiles = await Promise.all(
+            listed.map(async ({ code, path }) => {
+                const version = await stat(() => versionOf(access, paths.join(root, path)));
+                // A count needs this file's size, not the sizes of the other files.
+                const fresh =
+                    (code === "??" || head === undefined) &&
+                    version !== undefined &&
+                    version.size <= MAX_COUNTED_BYTES
+                        ? await diff(() => count(path))
+                        : undefined;
+
+                return {
+                    path,
+                    kind: kindOf(code),
+                    ...(fresh ?? counts.get(path)),
+                    ...(version === undefined ? {} : { version: version.version }),
+                };
+            }),
+        );
+
+        return { head, listedFiles, more: changed.length - listed.length };
+    };
+
+    // Neither the branch name nor Pi's history affects which status paths and counts to read.
+    const [edits, branch, { head, listedFiles, more }] = await Promise.all([
         piEditsInRepo(access, entries, cwd),
         git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).then(
             (name) => name.trim(),
             () => undefined,
         ),
-        git(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).then(
-            (id) => id.trim() || undefined,
-            () => undefined,
-        ),
-        statusOf(access, root),
-        // Without a first commit this fails, and there is nothing to compare with: every file is new.
-        git(root, ["diff", "HEAD", "--numstat", "-z", ...DIFF_FLAGS]).then(
-            (output) => ({ output }),
-            (error: unknown) => ({ error }),
-        ),
+        readFiles(),
     ]);
-    const changed = status.filter(({ path }) => path.startsWith(prefix));
-    const listed = changed.slice(0, MAX_FILES);
-    let counts: Map<string, { added?: number; removed?: number }>;
-
-    if (head === undefined) {
-        counts = new Map();
-    } else if ("output" in numstat) {
-        counts = parseNumstat(numstat.output);
-    } else {
-        throw numstat.error;
-    }
-
-    // Each file's size and time, which also says which new files are small enough to count.
-    const versions = await Promise.all(
-        listed.map(({ path }) => versionOf(access, paths.join(root, path))),
-    );
-
-    // HEAD diffs omit untracked files. Count only the visible, permitted files; Git keeps binary, attributes,
-    // symlinks and final-newline handling the same as each file's diff. No index or files are changed.
-    const count = async (path: string, size: number | undefined) => {
-        if (size === undefined || size > MAX_COUNTED_BYTES) {
-            return;
-        }
-
-        try {
-            const added = parseNumstat(
-                await git(
-                    root,
-                    [
-                        "diff",
-                        "--no-index",
-                        "--numstat",
-                        "-z",
-                        ...DIFF_FLAGS,
-                        "--",
-                        access.devNull,
-                        path,
-                    ],
-                    {
-                        allowExit: [1],
-                    },
-                ),
-            ).get(path);
-
-            if (added !== undefined) {
-                counts.set(path, added);
-            }
-        } catch {
-            // A file can disappear or become unreadable after status. Keep the list, with its count unknown.
-        }
-    };
-
-    const uncounted = listed.flatMap(({ code, path }, index) =>
-        code === "??" || head === undefined ? [{ path, size: versions[index]?.size }] : [],
-    );
-    let next = 0;
-
-    // Another computer is far: more at once there, where each count waits mostly on the link.
-    await Promise.all(
-        Array.from(
-            { length: access.id === localAccess.id ? COUNTS_AT_ONCE : COUNTS_AT_ONCE * 4 },
-            async () => {
-                while (next < uncounted.length) {
-                    const { path, size } = uncounted[next++]!;
-
-                    await count(path, size);
-                }
-            },
-        ),
-    );
-
-    const files = listed.map(({ code, path }, index): ChangedFile => {
-        const version = versions[index]?.version;
-
-        return {
-            path,
-            kind: kindOf(code),
-            ...counts.get(path),
-            byPi: edits.has(paths.join(root, path)),
-            ...(version === undefined ? {} : { version }),
-        };
-    });
+    const files: ChangedFile[] = listedFiles.map((file) => ({
+        ...file,
+        byPi: edits.has(paths.join(root, file.path)),
+    }));
     const shown = new Set(files.map((file) => paths.join(root, file.path)));
     const piOnly = [...edits]
         .filter(([path]) => !shown.has(path))
@@ -521,7 +519,7 @@ export async function changesIn(
             ...(head === undefined ? {} : { head }),
         },
         files,
-        more: changed.length - listed.length,
+        more,
         piOnly,
     };
 }

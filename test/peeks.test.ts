@@ -19,12 +19,14 @@ import { writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { setImmediate } from "node:timers/promises";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import type { ConversationId, TaskId } from "@earendil-works/pi-durable";
+import type { Conversation, ConversationId, TaskId } from "@earendil-works/pi-durable";
 import { MAX_PEEKS } from "../src/server/app.ts";
+import { AuthorsDoc, NotesDoc } from "../src/server/docs.ts";
 import { createHandler } from "../src/server/http.ts";
-import type { PeekSummary } from "../src/server/room.ts";
+import { type PeekSummary, Room } from "../src/server/room.ts";
 
 const route: FauxResponseStep = (request) => {
     const { role, text } = lastText(request as never);
@@ -90,6 +92,106 @@ const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 /** The words of a tile's line, for the kinds that have them. */
 const words = (line: PeekSummary["lines"][number] | undefined) =>
     line !== undefined && "text" in line ? line.text : undefined;
+
+function openingRoom(fail = false) {
+    const transcript = Promise.withResolvers<void>();
+    const documents = Promise.withResolvers<void>();
+    const id = 1 as ConversationId;
+    const marks: string[] = [];
+    let active = 0;
+    let peak = 0;
+    const watch = {
+        value: { conversation: {}, docs: {}, entries: [] },
+        start() {
+            marks.push("start");
+        },
+        async stop() {
+            marks.push("stop");
+        },
+    };
+    const conversation = {
+        async watch() {
+            marks.push("watch");
+
+            return watch;
+        },
+        async context() {
+            assert.deepEqual(marks, ["watch"]);
+            marks.push("transcript");
+            await transcript.promise;
+
+            return { entries: [{ id: 1 }] };
+        },
+    } as unknown as Conversation;
+    const room = new Room(
+        {
+            harness: {
+                async snapshot(doc: unknown) {
+                    peak = Math.max(peak, ++active);
+
+                    try {
+                        if (doc === NotesDoc && fail) {
+                            throw new Error("notes read failed");
+                        }
+
+                        await documents.promise;
+
+                        if (doc === NotesDoc) {
+                            return { text: "note", rev: 7 };
+                        }
+
+                        if (doc === AuthorsDoc) {
+                            return { entries: { 1: "writer" } };
+                        }
+                    } finally {
+                        active--;
+                    }
+                },
+            },
+            workspace: { head: () => undefined },
+        } as unknown as App,
+        id,
+    );
+
+    return { room, conversation, transcript, documents, marks, peak: () => peak };
+}
+
+test("a room reads transcript and documents together, after it registers the watch", async (t) => {
+    const { room, conversation, transcript, documents, marks, peak } = openingRoom();
+
+    t.after(() => room.close());
+    const pending = room.open(conversation);
+
+    try {
+        await setImmediate();
+        assert.deepEqual(marks, ["watch", "transcript"]);
+        assert.equal(peak(), 7, "the transcript uses one of the eight slots");
+    } finally {
+        transcript.resolve();
+        documents.resolve();
+    }
+
+    await pending;
+    assert.deepEqual(room.notes, { text: "note", rev: 7 });
+    assert.deepEqual(room.authors, { 1: "writer" });
+    assert.deepEqual(room.value?.entries, [{ id: 1 }]);
+    assert.deepEqual(marks, ["watch", "transcript", "start"]);
+});
+
+test("a failed room document read stops its watch and never starts the room", async () => {
+    const { room, conversation, transcript, documents, marks } = openingRoom(true);
+    const rejected = assert.rejects(room.open(conversation), /notes read failed/);
+
+    try {
+        transcript.resolve();
+        documents.resolve();
+        await rejected;
+        assert.deepEqual(marks, ["watch", "transcript", "stop"]);
+        assert.equal(room.value, undefined);
+    } finally {
+        room.close();
+    }
+});
 
 test("a tab gets peek tiles for the sessions on its screen, and stays out of their people", async () => {
     const open = await newSession(app);
