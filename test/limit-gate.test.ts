@@ -17,6 +17,7 @@ const TUNING: Partial<LimitTuning> = {
     ...{ maxBackoffMs: 100 * 3_600_000, refuseMs: 300, maxTries: 6 },
 };
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 const model = (id = "m", provider = "p") =>
     ({ id, provider, api: "anthropic-messages" }) as unknown as Model<Api>;
 const gate = (extra: Partial<ConstructorParameters<typeof LimitGate>[0]> = {}) =>
@@ -272,58 +273,27 @@ test("one canary goes when the gate may clear, and the rest wait for it and leav
     assert.deepEqual(g.gates(), []);
 });
 
-test("a limit that covers the account holds every model of the provider, with one canary", async () => {
-    const g = gate({ tuning: { ...TUNING, backoffMs: [300] } });
-    const headers = {
-        "anthropic-ratelimit-unified-status": "rejected",
-        "anthropic-ratelimit-unified-reset": String(Math.floor((Date.now() + 300) / 1000) + 1),
-    };
-    const rt = fake([{ fail: "429 rate_limit_error", headers }], { ok: true });
-
-    g.install(rt.models);
-
-    const fetch = async () => new Response("x", { status: 429, headers });
-    const a = ask(rt, "opus", "p", { fetch });
-
-    await sleep(20);
-
-    const b = ask(rt, "haiku");
-
-    await sleep(20);
-    assert.equal(rt.calls.length, 1, "the other model of the provider is held too");
-    assert.deepEqual(await stops(a, b), ["stop", "stop"]);
-});
-
-test("an ambiguous Fable wait does not block Opus, but a separate Opus limit can hold the account", async () => {
-    const now = Date.parse("2026-11-21T11:38:35Z");
-    const g = gate({ now: () => now });
-    const headers = {
-        "anthropic-ratelimit-unified-status": "rejected",
-        "anthropic-ratelimit-unified-reset": String(now / 1000 + 3 * 3_600),
-    };
-    const fail = "429 This request would exceed your account's rate limit. Please try again later.";
-    const rt = fake([{ fail, headers }, { ok: true }, { fail, headers }]);
+test("a usage limit holds only requests for the affected provider and model", async () => {
+    const g = gate({ conversationOf: Number });
+    const rt = fake([{ fail: "429 usage limit. Try again in 1h" }], { ok: true });
     const stop = new AbortController();
+    const options = { signal: stop.signal };
 
     g.install(rt.models);
 
-    const options = {
-        signal: stop.signal,
-        fetch: async () => new Response("", { status: 429, headers }),
-    };
-    const requests = [ask(rt, "claude-fable-5-2", "anthropic", options)];
+    const requests = [ask(rt, "m", "p", { ...options, sessionId: "1" })];
 
     try {
-        await until(() => g.gates().length === 1);
-        assert.equal(g.gates()[0]!.key, "anthropic/claude-fable-5-2");
-        assert.equal((await ask(rt, "claude-opus-5-5", "anthropic", options)).stopReason, "stop");
-        assert.equal(rt.calls.length, 2);
-        assert.equal(g.gates()[0]!.key, "anthropic/claude-fable-5-2");
+        await until(() => g.waitFor(1) !== undefined);
 
-        requests.push(ask(rt, "claude-opus-5-5", "anthropic", options));
-        await until(() => g.gates().some((gate) => gate.key === "anthropic"));
-        requests.push(ask(rt, "claude-haiku-4-5", "anthropic", options));
-        assert.equal(rt.calls.length, 3, "the account gate holds the next model");
+        const otherModel = ask(rt, "other", "p", options);
+        const otherProvider = ask(rt, "m", "other", options);
+        const sameModel = ask(rt, "m", "p", { ...options, sessionId: "2" });
+
+        requests.push(otherModel, otherProvider, sameModel);
+        await until(() => g.waitFor(2) !== undefined);
+        assert.equal(rt.calls.length, 3, "only the same provider and model waits");
+        assert.deepEqual(await stops(otherModel, otherProvider), ["stop", "stop"]);
     } finally {
         stop.abort();
         await stops(...requests);
@@ -381,7 +351,7 @@ test("unknown-reset OpenAI subscription limits share the full budget, not overlo
 
         const other = ask(rt, "gpt-b", "openai");
 
-        assert.equal(g.gates()[0]!.key, "openai");
+        assert.equal(g.gates()[0]!.key, "openai/gpt-a");
         assert.deepEqual(await stops(first, other), ["stop", "stop"]);
         assert.equal(rt.calls.length, 6);
     } finally {
@@ -499,34 +469,64 @@ test("OpenAI HTTP errors expose reset headers even when the SDK skips onResponse
     }
 });
 
-test("a weekly window found late, behind a gate that waits hours, refuses at once", async () => {
-    const g = gate({ hours: () => 6 });
-    const rt = fake(Array(2).fill({ fail: "429 rate_limit_error", headers: {} }));
-    const window = (name: string, seconds: number) => ({
-        fetch: async () =>
-            new Response("x", {
-                status: 429,
-                headers: {
-                    [`anthropic-ratelimit-unified-${name}-status`]: "rejected",
-                    [`anthropic-ratelimit-unified-${name}-reset`]: String(
-                        Math.floor(Date.now() / 1000) + seconds,
-                    ),
-                },
-            }),
-    });
+const weeklyLimit = "429 Weekly usage limit reached. It resets in 3 days.";
+
+test("a weekly window found late moves the next check forward without ending waiting runs", async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+
+    const g = gate({ conversationOf: Number, tuning: { ...TUNING, maxTries: 1 } });
+    const rt = fake();
+    const since = Date.now();
+    const cooldown = TUNING.refuseMs!;
+    const stop = new AbortController();
+    const options = { signal: stop.signal };
 
     g.install(rt.models);
 
-    // The first closes the account's gate for 5 hours; the second, out before it, finds the 7-day window.
-    const both = Promise.all([
-        ask(rt, "m", "p", window("5h", 5 * 3600)),
-        ask(rt, "m", "p", window("7d", 3 * 86400)),
-    ]);
-    const results = await Promise.race([both, sleep(500).then(() => undefined)]);
+    const first = ask(rt, "m", "p", { ...options, sessionId: "1" });
+    const second = ask(rt, "m", "p", { ...options, sessionId: "2" });
 
-    assert.ok(results, "nobody waits hours for a window of days");
-    assert.match(results[1].errorMessage!, /a limit of days/);
-    g.close();
+    try {
+        rt.calls[0]!.end("429 usage limit. Try again in 5h");
+        await flush();
+        assert.equal(g.waitFor(1)?.until, since + 5 * 3_600_000);
+
+        rt.calls[1]!.end(weeklyLimit);
+        await flush();
+        assert.equal(g.waitFor(1)?.resetAt, since + 3 * 86_400_000);
+        assert.equal(g.waitFor(2)?.until, since + cooldown);
+
+        t.mock.timers.tick(cooldown - 1);
+        await flush();
+        assert.equal(rt.calls.length, 2);
+        t.mock.timers.tick(1);
+        await flush();
+        assert.equal(rt.calls.length, 3, "only one canary goes at the re-check time");
+
+        rt.calls[2]!.end(weeklyLimit);
+        await flush();
+        assert.equal(g.gates()[0]?.since, since);
+        assert.equal(g.gates()[0]?.until, since + 2 * cooldown);
+        assert.equal(
+            g.gates()[0]?.refusing,
+            undefined,
+            "the next check still fits the wait budget",
+        );
+
+        t.mock.timers.tick(cooldown);
+        await flush();
+        assert.equal(rt.calls.length, 4);
+        rt.calls[3]!.end();
+        await flush();
+        t.mock.timers.tick(30);
+        await flush();
+        assert.equal(rt.calls.length, 5);
+        rt.calls[4]!.end();
+        assert.deepEqual(await stops(first, second), ["stop", "stop"]);
+    } finally {
+        stop.abort();
+        g.close();
+    }
 });
 
 test("Retry now is one try each 30 seconds, and pressing it cannot make a shared gate give up", async () => {
@@ -543,8 +543,7 @@ test("Retry now is one try each 30 seconds, and pressing it cannot make a shared
     assert.equal(g.retryNow(7), false, "a second press within 30 seconds does nothing");
     await until(() => rt.calls.length === 2);
     await sleep(40);
-    // The manual try failed in another scope (an overload, the model's): it counts toward no cap (maxTries is 1), the
-    // gate it makes has a real time, and no third request goes at once.
+    // The manual try hit overload instead of a usage limit. It does not count toward the cap or cause another try now.
     assert.equal(g.gates()[0]?.refusing, undefined);
     assert.ok(g.waitFor(7));
     assert.ok(g.gates().every((each) => Number.isFinite(each.until)));
@@ -552,7 +551,7 @@ test("Retry now is one try each 30 seconds, and pressing it cannot make a shared
     g.close();
 });
 
-test("a canary whose failure moves the scope leaves no gate probing", async () => {
+test("a canary whose failure changes the limit kind leaves no gate probing", async () => {
     const g = gate();
     const rt = fake([overloaded, { fail: "429 usage limit. Try again in 0s" }], { ok: true });
 
@@ -583,8 +582,7 @@ test("a request that was out before the gate closed, failing late, does not star
     assert.deepEqual(await stops(a, b), ["stop", "stop"]);
 });
 
-test("a request's tries and deadline hold when the scope keeps changing", async () => {
-    // An overload (the model's), a usage limit (the account's), and so on.
+test("a request's tries and deadline hold when the limit kind keeps changing", async () => {
     const alternate = (length: number): Step[] =>
         Array.from({ length }, (_, i) => ({
             fail: i % 2 === 0 ? "529 overloaded_error" : "429 usage limit. Try again in 25ms",
@@ -629,6 +627,69 @@ test("a reset too far away refuses at once, and the refusal survives a restart",
     second.close();
 });
 
+test("a refusing long limit lets only one request re-check after its cooldown", async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+
+    const file = join(mkdtempSync(join(tmpdir(), "limit-gate-")), "provider-limits.json");
+    const options = { file, hours: () => 100 / 3_600_000, random: () => 0.5 };
+    const cooldown = TUNING.refuseMs!;
+    const first = gate(options);
+    const rt = fake([{ fail: weeklyLimit }]);
+
+    first.install(rt.models);
+
+    try {
+        assert.match((await ask(rt)).errorMessage!, /Not waiting: it resets in 3 d/);
+        assert.equal(first.gates()[0]?.refusing, true);
+    } finally {
+        first.close();
+    }
+
+    t.mock.timers.tick(cooldown - 1);
+
+    const g = gate(options);
+    const probe = fake();
+
+    g.install(probe.models);
+
+    try {
+        assert.match((await ask(probe)).errorMessage!, /Not waiting/);
+        assert.equal(probe.calls.length, 0);
+        t.mock.timers.tick(1);
+
+        const firstProbe = ask(probe);
+        const behind = ask(probe);
+
+        await Promise.resolve();
+        assert.equal(probe.calls.length, 1, "only the canary sends a request");
+        probe.calls[0]!.end(weeklyLimit);
+        assert.deepEqual(await stops(firstProbe, behind), ["error", "error"]);
+        assert.equal(g.gates()[0]?.refusing, true);
+        assert.equal(g.gates()[0]?.until, Date.now() + cooldown);
+
+        t.mock.timers.tick(cooldown);
+
+        const recovered = ask(probe);
+
+        await Promise.resolve();
+        assert.equal(probe.calls.length, 2);
+        probe.calls[1]!.end(overloaded.fail);
+        await flush();
+        assert.equal(g.gates()[0]?.refusing, undefined, "overload does not renew the long refusal");
+        assert.equal(g.gates()[0]?.until, Date.now() + 30);
+        assert.equal(g.gates()[0]?.since, Date.now(), "the new limit gets a fresh wait budget");
+
+        t.mock.timers.tick(30);
+        await flush();
+        assert.equal(probe.calls.length, 3);
+        probe.calls[2]!.end();
+        assert.equal((await recovered).stopReason, "stop");
+        assert.deepEqual(g.gates(), []);
+    } finally {
+        g.close();
+    }
+});
+
 test("a gate nobody waits at, past its deadline, lets one request go as canary; a second limit failure gives up", async () => {
     // A request waits 15 minutes at a gate (one hour allowed) and is stopped; a new request comes 70 minutes later.
     const clock = { now: Date.now() };
@@ -671,24 +732,25 @@ test("a missing or damaged file means no limit is known", () => {
     }
 });
 
-test("an Anthropic account gate that 0.30.0 kept is dropped once; other gates stay", () => {
+test("provider-wide gates from older versions are ignored; model gates still load", () => {
     const file = join(mkdtempSync(join(tmpdir(), "limit-gate-")), "provider-limits.json");
     const now = Date.now();
-    const kept = (provider: string) => ({
-        ...{ state: "waiting", key: provider, scope: "account", provider, kind: "reset" },
-        ...{ since: now, until: now + 3_600_000, subscription: true, reason: "429", tries: 1 },
-    });
-    const gates = [kept("anthropic"), kept("openai")];
+    const kept = { state: "waiting", kind: "reset", since: now, until: now + 3_600_000, tries: 1 };
+    const gates = [
+        { ...kept, key: "openai", scope: "account", provider: "openai" },
+        { ...kept, key: "anthropic", scope: "account", provider: "anthropic" },
+        { ...kept, key: "openai/gpt", scope: "model", provider: "openai", modelId: "gpt" },
+    ];
 
-    writeFileSync(file, JSON.stringify({ version: 1, gates }));
-    assert.deepEqual(
-        gate({ file })
-            .gates()
-            .map((each) => each.provider),
-        ["openai"],
-    );
-    writeFileSync(file, JSON.stringify({ version: 2, gates }));
-    assert.equal(gate({ file }).gates().length, 2);
+    for (const version of [1, 2]) {
+        writeFileSync(file, JSON.stringify({ version, gates }));
+        assert.deepEqual(
+            gate({ file })
+                .gates()
+                .map((each) => each.key),
+            ["openai/gpt"],
+        );
+    }
 });
 
 test("an adapter that refuses a custom fetch (Google) gets none", async () => {

@@ -3,22 +3,14 @@ import { test } from "node:test";
 import { classify, responseFacts } from "../src/server/limits.ts";
 
 const now = Date.parse("2026-10-23T12:00:00Z");
-const ask = (
-    message: string,
-    status?: number,
-    headers: Record<string, string> = {},
-    provider = "p",
-    modelId?: string,
-) =>
+const ask = (message: string, status?: number, headers: Record<string, string> = {}) =>
     classify({
-        provider,
-        ...(modelId === undefined ? {} : { modelId }),
         message,
         now,
         ...(status === undefined ? {} : { facts: { status, headers } }),
     });
 
-test("what clears with time waits, for the account or the model, until the time the provider gave", () => {
+test("what clears with time waits for that model until the time the provider gave", () => {
     assert.deepEqual(ask("429 rate_limit_error", 429), {
         type: "limit",
         scope: "model",
@@ -30,36 +22,30 @@ test("what clears with time waits, for the account or the model, until the time 
         now + 120_000,
     );
 
-    // A Claude window and a ChatGPT usage limit are the account's.
-    const claude = ask("429", 429, {
+    // The headers can identify a usage window when the message does not identify another cause.
+    const claude = ask("Request rejected", 429, {
         "anthropic-ratelimit-unified-status": "rejected",
         "anthropic-ratelimit-unified-reset": String(now / 1000 + 3600),
     });
-    const chatgpt = ask(
-        "You have hit your ChatGPT usage limit. Try again in ~95 min.",
-        undefined,
-        {},
-        "openai-codex",
-    );
+    const chatgpt = ask("You have hit your ChatGPT usage limit. Try again in ~95 min.");
 
     assert.deepEqual(
         [claude, chatgpt].map((each) => each.type === "limit" && each.scope),
-        ["account", "account"],
+        ["model", "model"],
     );
     assert.equal((chatgpt as { resetAt: number }).resetAt, now + 95 * 60_000);
 
-    // Named windows (tested against real limits in PR #128): a rejected 5-hour window waits for its reset; a rejected
-    // 7-day window, or a Codex window of over 300 minutes at 100 percent, is days away and does not wait.
+    // Distinguish a 5-hour window from windows of days. An explicit usage limit takes precedence over a 429.
     const reset = String(now / 1000 + 4 * 3600);
-    const five = ask("429", 429, {
+    const five = ask("Request rejected", 429, {
         "anthropic-ratelimit-unified-5h-status": "rejected",
         "anthropic-ratelimit-unified-5h-reset": reset,
     });
-    const seven = ask("429", 429, {
+    const seven = ask("Request rejected", 429, {
         "anthropic-ratelimit-unified-7d-status": "rejected",
         "anthropic-ratelimit-unified-7d-reset": String(now / 1000 + 3 * 86400),
     });
-    const weekly = ask("429", 429, {
+    const weekly = ask("429 usage_limit_reached", 429, {
         "x-codex-secondary-used-percent": "100",
         "x-codex-secondary-window-minutes": "10080",
         "x-codex-secondary-reset-after-seconds": "86400",
@@ -72,74 +58,45 @@ test("what clears with time waits, for the account or the model, until the time 
     );
 });
 
-test("Anthropic scopes explicit Fable claims to the model, not the whole account", () => {
-    const reset = String(now / 1000 + 3_600);
+test("an overload with a full 10080-minute usage window uses the normal backoff", () => {
+    const message = "server_is_overloaded: Our servers are currently overloaded";
+    const reset = Date.parse("2026-11-27T17:40:00Z");
+    const headers = {
+        "x-codex-secondary-used-percent": "100",
+        "x-codex-secondary-window-minutes": "10080",
+        "x-codex-secondary-reset-at": String(reset / 1000),
+    };
 
-    for (const [window, claim, long] of [
-        ["unified", "fable", false],
-        ["unified-5h", "five_hour_fable", false],
-        ["unified-7d", "seven_day_fable", true],
-    ] as const) {
+    for (const status of [200, 429, 503]) {
         assert.deepEqual(
-            ask(
-                "429 rate_limit_error",
-                429,
-                {
-                    [`anthropic-ratelimit-${window}-status`]: "rejected",
-                    [`anthropic-ratelimit-${window}-reset`]: reset,
-                    "anthropic-ratelimit-unified-representative-claim": claim,
-                },
-                "anthropic",
-            ),
-            {
-                type: "limit",
-                scope: "model",
-                resetAt: now + 3_600_000,
-                source: "header",
-                backoff: false,
-                ...(long ? { long: true } : {}),
-                reason: "429 rate_limit_error",
-            },
+            classify({
+                message,
+                facts: { status, headers },
+                now: Date.parse("2026-11-24T02:46:00Z"),
+            }),
+            { type: "limit", scope: "model", backoff: true, reason: message },
         );
     }
 });
 
-test("an ambiguous Anthropic Fable 429 keeps its reset but does not block other models", () => {
-    const message = "This request would exceed your account's rate limit. Please try again later.";
-    const reset = String(now / 1000 + 3_600);
-    const claimHeader = "anthropic-ratelimit-unified-representative-claim";
-    const headers = {
-        "anthropic-ratelimit-unified-status": "rejected",
-        "anthropic-ratelimit-unified-reset": reset,
-    };
+test("an explicit rate limit honors Retry-After, not the usage window", () => {
+    const message = "429 rate_limit_error";
 
-    for (const claim of [undefined, "unknown_window", "five_hour", "seven_day"]) {
-        const facts = claim === undefined ? headers : { ...headers, [claimHeader]: claim };
-
-        assert.deepEqual(ask(message, 429, facts, "anthropic", "claude-fable-5-2"), {
+    assert.deepEqual(
+        ask(message, 429, {
+            "anthropic-ratelimit-unified-7d-status": "rejected",
+            "anthropic-ratelimit-unified-7d-reset": String(now / 1000 + 3 * 86_400),
+            "retry-after": "30",
+        }),
+        {
             type: "limit",
-            scope: claim === "five_hour" || claim === "seven_day" ? "account" : "model",
-            resetAt: now + 3_600_000,
+            scope: "model",
+            resetAt: now + 30_000,
             source: "header",
             backoff: false,
             reason: message,
-        });
-    }
-
-    for (const [provider, model] of [
-        ["anthropic", "claude-opus-5-5"],
-        ["other", "claude-fable-5-2"],
-    ] as const) {
-        const verdict = ask(message, 429, headers, provider, model);
-
-        assert.equal(verdict.type === "limit" && verdict.scope, "account");
-    }
-
-    // A named window with no claim stays on Fable too: only a claim makes it shared.
-    const window = { "anthropic-ratelimit-unified-5h-status": "rejected" };
-    const verdict = ask(message, 429, window, "anthropic", "claude-fable-5-2");
-
-    assert.equal(verdict.type === "limit" && verdict.scope, "model");
+        },
+    );
 });
 
 test("a person's problem, a refused request, or a monthly plan limit never waits", () => {
@@ -180,15 +137,15 @@ test("words near billing that ask for no money do not stop a wait", () => {
     }
 });
 
-test("OpenAI Subscription Sharing waits without a reset, but explicit long limits never do", () => {
+test("OpenAI Subscription Sharing waits without a reset, but a window of days needs a reset time", () => {
     const message =
         "The ChatGPT user has reached their Subscription Sharing usage limit. " +
         "Ask the user to try again after their usage limit resets or use an API key instead.";
 
     for (const status of [undefined, 200, 403, 429]) {
-        assert.deepEqual(ask(message, status, {}, "openai"), {
+        assert.deepEqual(ask(message, status), {
             type: "limit",
-            scope: "account",
+            scope: "model",
             backoff: true,
             subscription: true,
             reason: message,
@@ -203,7 +160,7 @@ test("OpenAI Subscription Sharing waits without a reset, but explicit long limit
         assert.equal((ask(message) as { subscription?: true }).subscription, true);
     }
 
-    const known = ask(message, 429, { "retry-after": "3600" }, "openai");
+    const known = ask(message, 429, { "retry-after": "3600" });
 
     assert.equal((known as { resetAt: number }).resetAt, now + 3_600_000);
     assert.equal((known as { subscription?: true }).subscription, undefined);
@@ -217,7 +174,7 @@ test("OpenAI Subscription Sharing waits without a reset, but explicit long limit
         assert.equal((ask(message, 429, { "retry-after": "60" }) as { long?: true }).long, true);
     }
 
-    const streamedReset = ask(message, 200, { "retry-after": "3600" }, "openai");
+    const streamedReset = ask(message, 200, { "retry-after": "3600" });
 
     assert.equal((streamedReset as { resetAt: number }).resetAt, now + 3_600_000);
     assert.equal(ask(message, 401).type, "other");

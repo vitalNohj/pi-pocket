@@ -14,9 +14,8 @@ const cases: {
     subscription?: boolean;
     long?: boolean;
     other?: boolean;
-    scope?: "account" | "model";
 }[] = [
-    // Fixture sources and exact provider errors are reused from usage-limits.test.ts.
+    // Real provider errors come from usage-limits.test.ts; some cases isolate header behavior.
     {
         name: "OpenAI 429 rate limit",
         message:
@@ -60,38 +59,34 @@ const cases: {
     },
     {
         name: "Anthropic rejected 5h without reset",
-        message:
-            '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit."}}',
+        message: "Request rejected",
         status: 429,
         headers: { "anthropic-ratelimit-unified-5h-status": "rejected" },
         subscription: true,
     },
     {
         name: "Anthropic model five-hour cap without reset",
-        message: "429 rate_limit_error",
+        message: "429 usage limit reached",
         status: 429,
         headers: {
             "anthropic-ratelimit-unified-5h-status": "rejected",
             "anthropic-ratelimit-unified-representative-claim": "five_hour_opus",
         },
         subscription: true,
-        scope: "model",
     },
     {
         name: "Anthropic five-hour cap uses Retry-After when the named reset is missing",
-        message: "429 rate_limit_error",
+        message: "429 usage limit reached",
         status: 429,
         headers: {
             "anthropic-ratelimit-unified-5h-status": "rejected",
             "retry-after": "60",
         },
         reset: 60_000,
-        scope: "account",
     },
     {
         name: "Anthropic rejected weekly without reset",
-        message:
-            '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit."}}',
+        message: "Request rejected",
         status: 429,
         headers: { "anthropic-ratelimit-unified-7d-status": "rejected" },
         other: true,
@@ -253,7 +248,6 @@ const cases: {
 for (const fixture of cases) {
     test("built-in classifier: " + fixture.name, () => {
         const verdict: Classified = classify({
-            provider: "test",
             message: fixture.message,
             now,
             ...(fixture.status === undefined
@@ -272,9 +266,7 @@ for (const fixture of cases) {
             return;
         }
 
-        if (fixture.scope !== undefined) {
-            assert.equal(verdict.scope, fixture.scope, fixture.name);
-        }
+        assert.equal(verdict.scope, "model", fixture.name);
 
         if (fixture.reset !== undefined) {
             assert.equal(verdict.resetAt, now + fixture.reset, fixture.name);
