@@ -5,6 +5,8 @@ import { classify, type Classified } from "../src/server/limits.ts";
 const now = Date.parse("2026-10-22T12:00:00Z");
 const minute = 60_000;
 const hour = 3_600_000;
+const claudeRateLimit =
+    '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit."}}';
 const cases: {
     name: string;
     message: string;
@@ -14,9 +16,8 @@ const cases: {
     subscription?: boolean;
     long?: boolean;
     other?: boolean;
-    scope?: "account" | "model";
 }[] = [
-    // Fixture sources and exact provider errors are reused from usage-limits.test.ts.
+    // The provider error strings come from usage-limits.test.ts.
     {
         name: "OpenAI 429 rate limit",
         message:
@@ -54,14 +55,12 @@ const cases: {
     },
     {
         name: "Anthropic rate limit",
-        message:
-            '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit."}}',
+        message: claudeRateLimit,
         status: 429,
     },
     {
         name: "Anthropic rejected 5h without reset",
-        message:
-            '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit."}}',
+        message: claudeRateLimit,
         status: 429,
         headers: { "anthropic-ratelimit-unified-5h-status": "rejected" },
         subscription: true,
@@ -75,7 +74,6 @@ const cases: {
             "anthropic-ratelimit-unified-representative-claim": "five_hour_opus",
         },
         subscription: true,
-        scope: "model",
     },
     {
         name: "Anthropic five-hour cap uses Retry-After when the named reset is missing",
@@ -86,12 +84,10 @@ const cases: {
             "retry-after": "60",
         },
         reset: 60_000,
-        scope: "account",
     },
     {
         name: "Anthropic rejected weekly without reset",
-        message:
-            '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your rate limit."}}',
+        message: claudeRateLimit,
         status: 429,
         headers: { "anthropic-ratelimit-unified-7d-status": "rejected" },
         other: true,
@@ -253,7 +249,6 @@ const cases: {
 for (const fixture of cases) {
     test("built-in classifier: " + fixture.name, () => {
         const verdict: Classified = classify({
-            provider: "test",
             message: fixture.message,
             now,
             ...(fixture.status === undefined
@@ -272,9 +267,7 @@ for (const fixture of cases) {
             return;
         }
 
-        if (fixture.scope !== undefined) {
-            assert.equal(verdict.scope, fixture.scope, fixture.name);
-        }
+        assert.equal(verdict.scope, "model", fixture.name);
 
         if (fixture.reset !== undefined) {
             assert.equal(verdict.resetAt, now + fixture.reset, fixture.name);

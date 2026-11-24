@@ -34,37 +34,31 @@ export function responseFacts(
     return { status, headers: kept };
 }
 
-export type Scope =
-    /** The whole sign-in: one canary serves every model of the provider. */
-    | "account"
-    /** One model: another model of the provider may still answer. */
-    | "model";
-
 /** Where a reset time came from. */
 export type Source = "header" | "body" | "text";
 
 export type Classified =
     /** Not a limit, or one that waiting does not clear (a sign-in, billing, a bad request): the error goes on as it is. */
     | { type: "other"; why: string }
-    /** Only this request's conversation could not continue. The account and model must not wait. */
+    /** Only this request's conversation could not continue. Other requests must not wait. */
     | { type: "request" }
     /** A limit. `resetAt` (epoch ms) when its end is known; otherwise `backoff`: only trying again tells. */
     | {
           type: "limit";
-          scope: Scope;
+          scope: "model";
           resetAt?: number;
           source?: Source;
           backoff: boolean;
+          /** A known reset of a usage window, rather than a rate limit. */
+          usage?: true;
           /** An unknown-reset subscription limit uses the owner's full wait budget, not the overload budget. */
           subscription?: true;
-          /** A window of days (Claude's 7-day, a Codex window over 300 minutes): not waited for, failed with its reset. */
+          /** A window of days (Claude's 7-day, a Codex window over 300 minutes): re-check before the reset. */
           long?: true;
           reason: string;
       };
 
 export type LimitInput = {
-    provider: string;
-    modelId?: string;
     /** `AssistantMessage.errorMessage`. */
     message: string;
     facts?: ResponseFacts | undefined;
@@ -90,7 +84,7 @@ const BILLING =
 const REFUSED =
     /\b400\b|\b404\b|invalid[ _-](?:request|argument)|not[ _-]found|content[ _-]filter|does not exist|unsupported/i;
 
-/** Limits of an account's plan: the sign-in, not the model. An unknown reset uses bounded subscription retries. */
+/** Limits of a usage plan. An unknown reset uses bounded subscription retries. */
 const USAGE =
     /GoUsageLimitError|Monthly usage limit reached|usage_limit_reached|subscription_sharing_usage_limit_exceeded|usage[ _-]limit|session limit|available balance/i;
 const LONG_WINDOW =
@@ -113,7 +107,7 @@ const CONVERSATION_TEXT =
     /\b(?:(?:invalid|unknown|missing|expired|no such) (?:previous response|conversation)|(?:previous response|conversation)(?: id| owner(?: account)?)? (?:is )?(?:unavailable|invalid|missing|expired|not found|does not exist))\b/i;
 const RESTART = /\b(?:server|service) (?:is )?(?:draining|restarting)\b/i;
 const OVERLOAD =
-    /\boverloaded(?:_error)?\b|server[ _-]busy|servers are currently busy|high demand|at capacity/i;
+    /(?:\b|_)overloaded(?:_error)?\b|server[ _-]busy|servers are currently busy|high demand|at capacity/i;
 
 /** Some adapters put the HTTP status at the start of the error, but do not take a recording fetch. */
 export function messageStatus(message: string): number | undefined {
@@ -278,18 +272,14 @@ function retryAfter(headers: Record<string, string>, now: number): number | unde
     return Number.isNaN(date) ? undefined : date;
 }
 
-/** The reset a response's headers tell, if any, and the scope it speaks for. */
-function fromHeaders(
+/** A full usage window, or only an explicit rejection when the error is a generic 429. */
+function fromUsageHeaders(
     headers: Record<string, string>,
     now: number,
-    fable429: boolean,
-): { resetAt?: number; account: boolean; model: boolean; long?: true } {
-    // Fable has its own pool. An ambiguous subscription 429 from it should not stop a request to another model.
-    // Keep explicit shared claims account-wide, and leave API-key limits and other models unchanged.
+    rejectedOnly: boolean,
+): { resetAt: number | undefined; long?: true } | undefined {
     const unified = headers["anthropic-ratelimit-unified-status"];
-    const claim = headers["anthropic-ratelimit-unified-representative-claim"]?.trim() ?? "";
-    const sharedClaim = /^(five_hour|seven_day)$/i.test(claim);
-    const modelLimit = /opus|sonnet|haiku|fable/i.test(claim) || (fable429 && !sharedClaim);
+    const unifiedReset = headers["anthropic-ratelimit-unified-reset"];
 
     // The windows by name: a rejected 5-hour window waits for its reset; a rejected 7-day window is days away.
     const week = headers["anthropic-ratelimit-unified-7d-status"] === "rejected";
@@ -297,31 +287,20 @@ function fromHeaders(
 
     if (week || hours5) {
         const named = headers[`anthropic-ratelimit-unified-${week ? "7d" : "5h"}-reset`];
-        const reset =
-            moment(named) ??
-            moment(headers["anthropic-ratelimit-unified-reset"]) ??
-            retryAfter(headers, now);
+        const reset = moment(named) ?? moment(unifiedReset) ?? retryAfter(headers, now);
 
-        return {
-            ...(reset === undefined ? {} : { resetAt: reset }),
-            account: !modelLimit,
-            model: modelLimit,
-            ...(week ? { long: true as const } : {}),
-        };
+        return { resetAt: reset, ...(week ? { long: true } : {}) };
     }
 
-    if (unified !== undefined || headers["anthropic-ratelimit-unified-reset"] !== undefined) {
-        const rejected = unified === undefined || unified === "rejected";
-        const reset =
-            moment(headers["anthropic-ratelimit-unified-reset"]) ?? retryAfter(headers, now);
+    if (
+        unified === "rejected" ||
+        (!rejectedOnly && unified === undefined && unifiedReset !== undefined)
+    ) {
+        return { resetAt: moment(unifiedReset) ?? retryAfter(headers, now) };
+    }
 
-        if (rejected) {
-            return {
-                ...(reset === undefined ? {} : { resetAt: reset }),
-                account: !modelLimit,
-                model: modelLimit,
-            };
-        }
+    if (rejectedOnly) {
+        return undefined;
     }
 
     // ChatGPT sign-in (Codex): a window is full at 100 percent; the later of two full windows decides, and a full
@@ -350,14 +329,14 @@ function fromHeaders(
     if (full) {
         const reset = codex.length > 0 ? Math.max(...codex) : retryAfter(headers, now);
 
-        return {
-            ...(reset === undefined ? {} : { resetAt: reset }),
-            account: true,
-            model: false,
-            ...(long ? { long: true as const } : {}),
-        };
+        return { resetAt: reset, ...(long ? { long: true } : {}) };
     }
 
+    return undefined;
+}
+
+/** Retry hints for the response itself, independently of any usage windows. */
+function fromHeaders(headers: Record<string, string>, now: number): number | undefined {
     const wait = retryAfter(headers, now);
 
     // `x-ratelimit-reset-*` (OpenAI: durations) and `anthropic-ratelimit-*-reset` (dates): the exhausted ones decide, or
@@ -390,9 +369,8 @@ function fromHeaders(
             : resets.length > 0
               ? Math.min(...resets.map((each) => each.at))
               : undefined;
-    const chosen = wait ?? fromLimits;
 
-    return { ...(chosen === undefined ? {} : { resetAt: chosen }), account: false, model: false };
+    return wait ?? fromLimits;
 }
 
 /** The reset an error's text tells: `Try again in ~5 min`, `retryDelay: "34s"`, a body's `resets_at`. */
@@ -447,8 +425,8 @@ function cut(message: string): string {
 
 /**
  * Whether a failed request hit a limit that clears with time, and when. A limit with a known end gives `resetAt`;
- * one without, that only load explains (a 429, an overload), is `backoff`. A plan's usage limit with no known end is
- * not waited for (there is nothing to wait until). Everything that a person must fix, or that is no limit, is `other`:
+ * one without is `backoff`. A usage limit with no known end has its own backoff, except for windows of days.
+ * Everything that a person must fix, or that is no limit, is `other`:
  * the error goes on to Pi Durable as it is.
  */
 export function classify(input: LimitInput): Classified {
@@ -513,24 +491,30 @@ export function classify(input: LimitInput): Classified {
     }
 
     const headers = facts?.headers ?? {};
-    const fable429 =
-        status === 429 &&
-        input.provider === "anthropic" &&
-        /^claude-fable(?:-|$)/i.test(input.modelId ?? "");
-    const fromHeader = fromHeaders(headers, now, fable429);
+    const usageMessage = USAGE.test(message);
+    const transientMessage = LOAD.test(message) || TRANSIENT.test(message);
+    const overload = reported === 529 || facts?.hint === "overload" || OVERLOAD.test(message);
+    // A generic 429 can carry an explicit rejection of a usage window. A reset time or full counter alone does
+    // not prove that the window caused it. An overload can carry even a rejected window from another account.
+    const rejectedOnly = transientMessage && !usageMessage;
+    const window =
+        usageMessage || (!overload && (!transientMessage || reported === 429))
+            ? fromUsageHeaders(headers, now, rejectedOnly)
+            : undefined;
+    const headerReset = window === undefined ? fromHeaders(headers, now) : window.resetAt;
 
     // A conflict is a refusal of this request, not of load: it waits only when the response itself says when to try
     // again (a header). Pi Durable's own short retries still cover a conflict that clears at once.
-    if (status === 409 && fromHeader.resetAt === undefined) {
+    if (status === 409 && headerReset === undefined) {
         return { type: "other", why: "HTTP 409" };
     }
 
-    const usage = USAGE.test(message) || fromHeader.account || fromHeader.model;
+    const usage = usageMessage || window !== undefined;
     const transient =
         (status !== undefined && TRANSIENT_STATUS.has(status)) ||
         // A conflict that says when to try again (checked above) is a wait.
         status === 409 ||
-        TRANSIENT.test(message);
+        transientMessage;
 
     if (!usage && !transient) {
         return {
@@ -543,21 +527,27 @@ export function classify(input: LimitInput): Classified {
     }
 
     // A time the response gave wins over one in the text. One already past tells only that it is soon.
-    const source: Source | undefined = fromHeader.resetAt !== undefined ? "header" : undefined;
-    const text = source === undefined ? fromText(message, now) : undefined;
-    const found = fromHeader.resetAt ?? text;
-    const scope: Scope = usage && !fromHeader.model ? "account" : "model";
+    const found = headerReset ?? fromText(message, now);
+    const scope = "model";
     const reason = cut(message);
-    const long = fromHeader.long || LONG_WINDOW.test(message);
+    const long = window?.long || LONG_WINDOW.test(message);
 
     if (found !== undefined) {
+        const source =
+            headerReset !== undefined
+                ? "header"
+                : /"?resets_(?:at|in_seconds)"?/i.test(message)
+                  ? "body"
+                  : "text";
+
         return {
             type: "limit",
             scope,
             resetAt: Math.max(found, now),
-            source: source ?? (/"?resets_(?:at|in_seconds)"?/i.test(message) ? "body" : "text"),
+            source,
             backoff: false,
-            ...(long ? { long: true as const } : {}),
+            ...(usage ? { usage: true } : {}),
+            ...(long ? { long: true } : {}),
             reason,
         };
     }
