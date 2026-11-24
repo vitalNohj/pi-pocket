@@ -40,8 +40,12 @@ A drop-in extension stays when Pi Pocket updates, and the owner can turn it off 
 - [extensions/policies/](extensions/policies/index.md): the rules for extensions and changes to Pi Pocket: what belongs in core, the public API and how it changes, the security model for authors, and the gallery's review.
 - [self-editing.md](self-editing.md): how to change Pi Pocket's code while it runs, check the change, and undo a change that breaks it.
 - [embedders.md](embedders.md): the app bridge, for an embedder (an app that shows Pi Pocket inside itself, such as an Electron or Tauri wrapper): `/api/pocket/info`, `window.pocketHost`, and notifications without Web Push.
+- [running.md](running.md): launcher options, updates and backups, Android, remote access, and reverse proxy examples.
 - [docker.md](docker.md): running Pi Pocket in a container, with extensions, themes, Pi's folder, and the workspace mounted from the host.
 - [systemd.md](systemd.md): running Pi Pocket as a systemd service, with a template unit whose instance name is the access mode.
+- [desktop-app.md](desktop-app.md): the desktop apps of the Windows installer and the macOS package: the window, the tray or menu bar icon, `--desktop`, `launcher-running.json`, and the one-time sign-in link.
+- [windows.md](windows.md): the Windows installer: SmartScreen, where it installs, updates, uninstall, and how it is built and tested.
+- [macos.md](macos.md): the macOS package: Gatekeeper, where it installs, updates, uninstall, and how it is built and tested.
 - [map.md](map.md): where each part of the code is, and how to add the usual things.
 - [architecture.md](architecture.md): how the parts depend on each other, and the orders that they need.
 - [features.md](features.md): what each feature does, as people use it.
