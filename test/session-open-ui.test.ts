@@ -154,14 +154,16 @@ after(async () => {
 });
 
 async function ready(): Promise<void> {
+    const owner = app.config.users[0]!.id;
+
     await until(
         async () =>
             await inPage<boolean>(`
             const { store } = await import("/store.js");
 
-            return JSON.stringify(store.state.me != null && store.state.sessionsLoaded && store.state.connection === "open");
+            return JSON.stringify(store.state.me?.id === ${JSON.stringify(owner)} && store.state.sessionsLoaded && store.state.connection === "open");
         `),
-        "signed in and connected",
+        "the owner signed in and connected",
         20_000,
     );
 }
@@ -553,6 +555,9 @@ test(
             events.release();
             poll.release();
         }
+
+        // The real stream identifies the owner and reloads the page. Do not race the next navigation against it.
+        await ready();
     },
 );
 
@@ -595,6 +600,10 @@ for (const changed of [false, true]) {
                 retryMe = undefined;
                 events.release();
                 poll.release();
+            }
+
+            if (changed) {
+                await ready();
             }
 
             await leave();
