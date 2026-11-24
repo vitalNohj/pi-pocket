@@ -41,6 +41,8 @@ import {
     notify,
     openSheet,
     onItsWay,
+    queuedBusy,
+    queuedChange,
     store,
     takeInsert,
     typing,
@@ -242,8 +244,12 @@ const expandPastes = (text, pastes) => text.replace(PASTED, (whole, n) => pastes
 const onTheWay = new Map();
 /** The boxes shown, each told when a message from its conversation went. */
 const sentListeners = new Set();
-/** The queued messages whose Edit is under way: a second tap meanwhile does nothing. */
+/** The held messages whose Edit is under way. */
 const takingBack = new Set();
+/** A provisional edit for each box, even if the tab shows another session meanwhile. Never saved before success. */
+const queueEdits = new Map();
+
+const prependBack = (text, draft) => (draft.trim() === "" ? text : `${text}\n${draft}`);
 /** How many queued messages were taken back (`keepBack`): a box looks for one when it grows. */
 let takenBack = 0;
 /** The request ids of the sends that ended in this page (`endSend`). */
@@ -270,9 +276,9 @@ function keptBack(id) {
  * (`after`, its request id), it waits until that send ended: in this page, or elsewhere (another
  * tab, before a reload) once its request id is gone. Before, the words of the box may go again.
  */
-function keepBack(id, back) {
+function keepBack(id, back, edited) {
     const after = onTheWay.get(id)?.requestId ?? null;
-    const kept = { text: back.text, attachments: back.attachments, after };
+    const kept = { text: back.text, attachments: back.attachments, after, edited };
 
     personStorage.set(backKey(id), JSON.stringify([...keptBack(id), kept]));
     takenBack += 1;
@@ -531,14 +537,14 @@ function ModePick({ mode, onPick }) {
 const CONFIRM_INTERRUPT = true;
 
 /** What kind of message waits for Pi: a steer, one queued for after its answer, a note, or subagents' reports. */
-function queuedMode(item) {
+function queuedMode(item, mode) {
     const names = queuedReports(item);
 
     if (names) {
         return names.length === 1 ? "Report" : "Reports";
     }
 
-    return item.mode === "steer" ? "Steer" : item.mode === "followUp" ? "Queue" : "Note";
+    return mode === "steer" ? "Steer" : mode === "followUp" ? "Queue" : "Note";
 }
 
 /** Who sent a message, as the server writes it at the start when several people use Pi (`FROM_PREFIX`). */
@@ -856,6 +862,7 @@ export function Composer() {
     const historyScope = { person: store.state.me?.id, conversation: conversationId };
     const [text, setText] = useState(() => drafts.get(conversationId));
     const [files, setFiles] = useState(() => loadAttached(conversationId));
+    const [, setQueueEditVersion] = useState(0);
     // How a message goes while Pi works: "steer", "followUp" (Queue), or "interrupt" (stop the run, then send).
     const [sendMode, setSendMode] = useState("steer");
     // The queued message tapped open, wrapped: one line each until then. The queue holds only a message's start.
@@ -929,6 +936,10 @@ export function Composer() {
     // The message on its way from here (`onTheWay`): the box holds it, read only, until it went.
     const going = onTheWay.get(conversationId);
     const sending = going !== undefined;
+    const queuedEdit = queueEdits.get(conversationId);
+    const boxWaiting = sending || queuedEdit !== undefined;
+    const shownText = queuedEdit?.text ?? text;
+    const shownFiles = queuedEdit ? [...queuedEdit.chips, ...files] : files;
     // How Reply's quotes show (Appearance): in the box's text, drawn as Fade, Tint, or Ghost; or in strips over it.
     const quoteStyle = quoteStyleOf(prefs());
 
@@ -985,11 +996,12 @@ export function Composer() {
     // The request id kept for the box's words: a change ends the wait of what was taken back.
     const request = keptRequest(conversationId)?.requestId;
 
-    // The queued messages of this conversation taken back (`keepBack`) go before the box's words,
-    // once no send is on its way.
-    useEffect(() => {
-        // Read now, not at the render: a send can begin between the two.
-        const all = onTheWay.has(conversationId) ? [] : keptBack(conversationId);
+    // Confirmed edits go before the box's words. Apply one before paint so the provisional text does not flash away.
+    useLayoutEffect(() => {
+        const all =
+            onTheWay.has(conversationId) || queueEdits.has(conversationId)
+                ? []
+                : keptBack(conversationId);
         const now = keptRequest(conversationId)?.requestId;
         const ready = (back) => !back.after || back.after !== now || ended.has(back.after);
         const list = all.filter(ready);
@@ -1006,13 +1018,16 @@ export function Composer() {
         );
         let words = drafts.get(conversationId);
         let chips = [];
+        let at = words.length;
 
         for (const back of list) {
-            words = words.trim() === "" ? back.text : `${back.text}\n${words}`;
+            // Keep what was typed into the provisional edit, but do not overwrite another tab's newer draft.
+            const edited = back.edited?.before === words ? back.edited : undefined;
+
+            words = edited?.text ?? prependBack(back.text, words);
+            at = edited?.at ?? back.text.length;
             chips = [...back.attachments.map(chipOf), ...chips];
         }
-
-        const at = list.at(-1).text.length;
 
         setReading(null);
         update(words, at);
@@ -1021,7 +1036,7 @@ export function Composer() {
             box.current?.focus();
             box.current?.setSelectionRange(at, at);
         });
-    }, [conversationId, sending, takenBack, request]);
+    }, [conversationId, boxWaiting, takenBack, request]);
     useEffect(() => {
         const draft = drafts.get(conversationId);
 
@@ -1064,7 +1079,7 @@ export function Composer() {
         const underQuote = piecesIn(draft, piecesNow.current).some(
             (piece) => draft.slice(piece.end).trim() === "",
         );
-        const taken = insert && !sending ? takeInsert(draft, conversationId, underQuote) : null;
+        const taken = insert && !boxWaiting ? takeInsert(draft, conversationId, underQuote) : null;
 
         if (taken?.files.length > 0) {
             addFiles(taken.files);
@@ -1085,14 +1100,14 @@ export function Composer() {
             element.focus();
             element.setSelectionRange(element.value.length, element.value.length);
         });
-    }, [insert?.n, sending, conversationId]);
+    }, [insert?.n, boxWaiting, conversationId]);
     // A passage Reply quoted goes into the box after what is there, as a piece, with the caret on the line under it; or,
     // in Separate, into a strip over the box, after the others. It waits while a send is on its way, and under PiP's
     // board, where this box does not show.
     const replying = store.state.replyQuotes;
 
     useEffect(() => {
-        if (replying.length === 0 || sending) {
+        if (replying.length === 0 || boxWaiting) {
             return;
         }
 
@@ -1130,7 +1145,7 @@ export function Composer() {
                 element.scrollTop = element.scrollHeight;
             }
         });
-    }, [replying, sending, conversationId]);
+    }, [replying, boxWaiting, conversationId]);
     useEffect(() => {
         const fit = () => fitBox(box.current);
 
@@ -1145,7 +1160,7 @@ export function Composer() {
             document.removeEventListener("pocket:theme", fit);
             document.fonts?.removeEventListener("loadingdone", fit);
         };
-    }, [text]);
+    }, [shownText]);
 
     /** The quotes that are pieces, saved with the draft of `id` (this box's own by default), each still in `words`. */
     const keepPieces = (next, id = conversationId, words = drafts.get(id)) => {
@@ -1192,7 +1207,7 @@ export function Composer() {
      * they went or did not.
      */
     const edit = (value, at) => {
-        if (onTheWay.has(conversationId)) {
+        if (onTheWay.has(conversationId) || queueEdits.has(conversationId)) {
             return;
         }
 
@@ -1208,25 +1223,27 @@ export function Composer() {
     // Ctrl+R: what was sent before that has the words in the box.
     const recalled = searching ? searchHistory(text, historyScope) : [];
     const chosenRecall = recalled[Math.min(pick, recalled.length - 1)];
-    const suggestions = hideCommands || searching ? [] : suggestCommands(text);
+    const suggestions = queuedEdit || hideCommands || searching ? [] : suggestCommands(text);
     const chosen = suggestions[Math.min(pick, suggestions.length - 1)];
-    const parsed = parseCommand(text);
-    const template = parsed ? null : parseTemplate(text);
+    const parsed = queuedEdit ? null : parseCommand(text);
+    const template = queuedEdit || parsed ? null : parseTemplate(text);
     // `!command` runs in the session's folder and Pi sees it; `!!command`, only the people here.
-    const shell = text.startsWith("!")
-        ? { context: !text.startsWith("!!"), command: text.replace(/^!!?/, "").trim() }
-        : null;
+    const shell =
+        !queuedEdit && text.startsWith("!")
+            ? { context: !text.startsWith("!!"), command: text.replace(/^!!?/, "").trim() }
+            : null;
     // A file named in a quote is the passage's: only one in the person's own words goes along.
-    const mentionsFiles = !shell && !parsed && MENTIONS_FILE.test(outsideQuotes(text));
-    const pasted = PASTED.test(text);
+    const mentionsFiles =
+        !queuedEdit && !shell && !parsed && MENTIONS_FILE.test(outsideQuotes(text));
+    const pasted = !queuedEdit && PASTED.test(text);
 
     PASTED.lastIndex = 0;
     // The @path being typed at the caret, and the files that match it. Slash command names come first.
     // The quotes of the box that are pieces: drawn under its text, and each kept whole. An @ in one is the passage's.
-    const quoted = piecesIn(text, pieces);
+    const quoted = queuedEdit ? [] : piecesIn(text, pieces);
     const inQuote = quoted.some((block) => caret > block.start && caret <= block.end);
     const typed =
-        suggestions.length === 0 && !searching && !shell && !inQuote
+        !queuedEdit && suggestions.length === 0 && !searching && !shell && !inQuote
             ? mentionAt(text, caret)
             : null;
     const mention = typed && typed.start !== hiddenMention ? typed : null;
@@ -1329,11 +1346,11 @@ export function Composer() {
     };
 
     // Something in the box: on a phone while Pi works, Send takes the mic's place (style.css).
-    const filled = text.trim() !== "" || strips.length > 0 || files.length > 0;
+    const filled = shownText.trim() !== "" || strips.length > 0 || shownFiles.length > 0;
     const uploading = files.some((file) => file.state === "uploading");
     const canSend =
         store.state.me != null &&
-        !sending &&
+        !boxWaiting &&
         !uploading &&
         (text.trim() !== "" || strips.length > 0 || files.some((file) => file.state === "done"));
 
@@ -1387,7 +1404,7 @@ export function Composer() {
 
     // `other`: Ctrl/⌘+Enter, which sends the other way round (Steer and Queue swap; Interrupt stays).
     const send = async (other = false) => {
-        if (!canSend) {
+        if (!canSend || queueEdits.has(conversationId)) {
             return;
         }
 
@@ -1471,20 +1488,52 @@ export function Composer() {
         }
     };
 
-    // Edit on a queued message: it comes back for this conversation, also when another shows by
-    // then (another session, PiP's board), and waits there (`keepBack`).
+    // Show the message at once, but keep the saved draft intact until the server confirms the take-back.
     const editQueued = async (item) => {
-        if (takingBack.has(item.id)) {
+        if (queueEdits.has(conversationId) || onTheWay.has(conversationId) || queuedBusy(item)) {
             return;
         }
 
-        takingBack.add(item.id);
-        const back = await attempt(() => actions.editQueued(item.id, conversationId));
+        dictation.stop(true);
+        const before = drafts.get(conversationId);
+        const person = store.state.me?.id;
+        const draft = item.draft;
+        const preview = {
+            text: draft && prependBack(draft.text, before),
+            at: draft?.text.length,
+            typed: false,
+            chips: draft?.attachments.map(chipOf) ?? [],
+        };
 
-        takingBack.delete(item.id);
+        queueEdits.set(conversationId, preview);
+        setBrowsing(null);
+        setSearching(false);
+        setInterrupting(null);
+        const answer = attempt(() => actions.editQueued(item));
 
-        if (back) {
-            keepBack(conversationId, back);
+        if (draft) {
+            requestAnimationFrame(() => {
+                if (queueEdits.get(conversationId) === preview) {
+                    box.current?.focus();
+                    box.current?.setSelectionRange(preview.at, preview.at);
+                    fitBox(box.current);
+                }
+            });
+        }
+
+        const back = await answer;
+
+        queueEdits.delete(conversationId);
+
+        if (back && !attachmentsStopped && store.state.me?.id === person) {
+            const edited =
+                preview.typed && draft?.text === back.text
+                    ? { before, text: preview.text, at: preview.at }
+                    : undefined;
+
+            keepBack(conversationId, back, edited);
+        } else {
+            store.set({});
         }
     };
 
@@ -1570,6 +1619,20 @@ export function Composer() {
     };
 
     const onKey = (event) => {
+        if (queueEdits.has(conversationId)) {
+            // Text can change in the provisional edit; commands and sends must wait for the server.
+            if (
+                event.key === "Enter" &&
+                !event.isComposing &&
+                (!coarse || event.ctrlKey || event.metaKey) &&
+                !event.shiftKey
+            ) {
+                event.preventDefault();
+            }
+
+            return;
+        }
+
         // A quote marked by a first Backspace waits only for the second.
         if (event.key !== "Backspace" && !/^(Shift|Control|Alt|Meta)$/.test(event.key)) {
             setMarked(null);
@@ -1734,6 +1797,10 @@ export function Composer() {
     };
 
     const addFiles = (list) => {
+        if (queueEdits.has(conversationId)) {
+            return;
+        }
+
         for (const file of list) {
             const key = uid();
             const preview = file.type.startsWith("image/") ? URL.createObjectURL(file) : null;
@@ -1776,7 +1843,7 @@ export function Composer() {
         const value = event.clipboardData?.getData("text/plain") ?? "";
         const lines = value.replace(/\n$/, "").split("\n").length;
 
-        if (sending || (lines <= PASTE_LINES && value.length <= PASTE_CHARS)) {
+        if (boxWaiting || (lines <= PASTE_LINES && value.length <= PASTE_CHARS)) {
             return;
         }
 
@@ -1908,7 +1975,7 @@ export function Composer() {
 
     /** An edit about to change the box (`beforeinput`): what it does to a quote, as `quoteStep` says. */
     const onBeforeInput = (event) => {
-        if (rewriting.current) {
+        if (rewriting.current || queueEdits.has(conversationId)) {
             return;
         }
 
@@ -1962,7 +2029,7 @@ export function Composer() {
                 ? "Stop the run and send this now…"
                 : "Queue a message for after this run…"
           : "Ask Pi anything…";
-    const inbox = view.inbox ?? [];
+    const inbox = view.inbox.filter((item) => !queuedChange(item)?.hidden);
     const { me, users } = store.state;
     const queuedBy = (item) =>
         item.by === undefined
@@ -2021,59 +2088,70 @@ export function Composer() {
             ${
                 inbox.length > 0 &&
                 html`<div class="inbox">
-                    ${inbox.map(
-                        (item) => html`<div class="queued">
-                            <span class="queued-mode">
-                                ${queuedMode(item)}
+                    ${inbox.map((item) => {
+                        const change = queuedChange(item);
+                        const pending = queuedBusy(item);
+                        const mode = change?.mode ?? item.mode;
+                        const nextMode = mode === "steer" ? "followUp" : "steer";
+                        const waiting = pending || change?.sending;
+                        const label = change?.sending ? "Sending..." : change?.label;
+
+                        return html`<div class="queued" key=${item.id}>
+                            <span class="queued-mode" aria-live="polite">
+                                ${waiting && html`<${Spinner} hidden=${label !== undefined} />`}
+                                ${label ?? queuedMode(item, mode)}
                                 <span class="muted">${queuedBy(item)}</span>
                             </span>
                             <button
                                 class=${`queued-text ${reading === item.id ? "open" : ""}`}
                                 aria-expanded=${reading === item.id}
+                                disabled=${waiting}
                                 onClick=${() => setReading(reading === item.id ? null : item.id)}
                             >
                                 ${queuedText(item)}
                             </button>
                             ${
+                                !change?.sending &&
                                 canSteer() &&
                                 (!blocked || item.by === me?.id) &&
                                 html`<button
                                     class="icon-button small queued-remove"
                                     aria-label=${queuedReports(item) ? "Discard these reports" : "Withdraw"}
                                     title=${queuedReports(item) ? "Discard these reports: Pi will not get them" : "Withdraw"}
-                                    onClick=${() => attempt(() => actions.withdraw(item.id))}
+                                    disabled=${pending}
+                                    onClick=${() => attempt(() => actions.withdraw(item))}
                                 >
                                     <${Icon} name="close" size=${13} />
                                 </button>`
                             }
                             ${
                                 // Tapped open, one's own message: move it, or send it now. Only its sender can.
+                                !change?.sending &&
                                 reading === item.id &&
                                 item.by !== undefined &&
                                 item.by === me?.id &&
                                 canSteer() &&
                                 !blocked &&
-                                (item.mode === "steer" || item.mode === "followUp") &&
+                                (mode === "steer" || mode === "followUp") &&
                                 html`<div class="queued-actions">
                                     <button
                                         class="button small"
                                         title="Take it back into the message box to change it"
+                                        disabled=${pending || boxWaiting}
                                         onClick=${() => editQueued(item)}
                                     >
                                         Edit
                                     </button>
                                     <button
                                         class="button small"
-                                        title=${modeHint(item.mode === "steer" ? "followUp" : "steer")}
-                                        onClick=${() =>
-                                            attempt(() =>
-                                                actions.move(
-                                                    item.id,
-                                                    item.mode === "steer" ? "followUp" : "steer",
-                                                ),
-                                            )}
+                                        title=${modeHint(nextMode)}
+                                        disabled=${pending}
+                                        onClick=${() => {
+                                            setInterrupting(null);
+                                            void attempt(() => actions.move(item, nextMode));
+                                        }}
                                     >
-                                        ${item.mode === "steer" ? "Move to queue" : "Steer now"}
+                                        ${mode === "steer" ? "Move to queue" : "Steer now"}
                                     </button>
                                     <button
                                         class=${`button small ${interrupting === item.id ? "danger" : ""}`}
@@ -2082,24 +2160,28 @@ export function Composer() {
                                                 ? "Tap again to stop the run and send this now. The other queued messages stay queued"
                                                 : QUEUED_INTERRUPT_HINT
                                         }
+                                        disabled=${pending}
                                         onClick=${() => {
+                                            if (queuedBusy(item)) {
+                                                return;
+                                            }
+
                                             if (CONFIRM_INTERRUPT && interrupting !== item.id) {
                                                 setInterrupting(item.id);
 
                                                 return;
                                             }
 
-                                            // A third quick tap must not send it again.
                                             setInterrupting(null);
-                                            void attempt(() => actions.move(item.id, "interrupt"));
+                                            void attempt(() => actions.move(item, "interrupt"));
                                         }}
                                     >
                                         ${interrupting === item.id ? "Interrupt now?" : "Interrupt now"}
                                     </button>
                                 </div>`
                             }
-                        </div>`,
-                    )}
+                        </div>`;
+                    })}
                 </div>`
             }
             ${collab() && html`<${DriverBar} />`}
@@ -2295,12 +2377,13 @@ export function Composer() {
                     }}
                 >
                     ${
-                        files.length > 0 &&
+                        shownFiles.length > 0 &&
                         html`<div class="files">
-                            ${files.map(
-                                (
-                                    file,
-                                ) => html`<span class=${`chip ${file.preview ? "with-thumb" : ""}`}>
+                            ${shownFiles.map(
+                                (file) => html`<span
+                                    class=${`chip ${file.preview ? "with-thumb" : ""}`}
+                                    key=${file.key}
+                                >
                                     ${
                                         file.preview &&
                                         html`<img
@@ -2311,6 +2394,14 @@ export function Composer() {
                                                 // A browser that cannot decode the photo (HEIC in Chromium)
                                                 // shows the file's chip instead of a broken image.
                                                 URL.revokeObjectURL(file.preview);
+
+                                                if (queuedEdit?.chips.includes(file)) {
+                                                    file.preview = null;
+                                                    setQueueEditVersion((current) => current + 1);
+
+                                                    return;
+                                                }
+
                                                 setFiles((current) =>
                                                     current.map((each) =>
                                                         each.key === file.key
@@ -2327,7 +2418,10 @@ export function Composer() {
                                     <button
                                         class="icon-button small"
                                         aria-label=${`Remove ${file.name}`}
-                                        disabled=${onItsWay(going?.files, file.attachment?.path)}
+                                        disabled=${
+                                            !!queuedEdit ||
+                                            onItsWay(going?.files, file.attachment?.path)
+                                        }
                                         onClick=${() => {
                                             forget([file]);
                                             setFiles((current) =>
@@ -2353,7 +2447,7 @@ export function Composer() {
                                             type="button"
                                             class="icon-button small"
                                             aria-label="Remove the quote"
-                                            disabled=${sending}
+                                            disabled=${boxWaiting}
                                             onClick=${() => dropStrips(index)}
                                         >
                                             <${Icon} name="close" size=${12} />
@@ -2365,7 +2459,7 @@ export function Composer() {
                                 html`<button
                                     type="button"
                                     class="link quote-strips-clear"
-                                    disabled=${sending}
+                                    disabled=${boxWaiting}
                                     onClick=${() => dropStrips()}
                                 >
                                     Clear quotes
@@ -2407,12 +2501,26 @@ export function Composer() {
                     <textarea
                         ref=${setBox}
                         rows="1"
-                        value=${text}
-                        readonly=${sending}
+                        value=${shownText}
+                        readonly=${
+                            sending || (queuedEdit !== undefined && queuedEdit.text === undefined)
+                        }
                         placeholder=${placeholder}
                         onInput=${(event) => {
+                            const element = event.currentTarget;
+                            const preview = queueEdits.get(conversationId);
+
+                            if (preview) {
+                                preview.text = element.value;
+                                preview.at = element.selectionStart;
+                                preview.typed = true;
+                                setQueueEditVersion((current) => current + 1);
+
+                                return;
+                            }
+
                             setBrowsing(null);
-                            edit(event.currentTarget.value, event.currentTarget.selectionStart);
+                            edit(element.value, element.selectionStart);
 
                             if (event.inputType?.startsWith("history")) {
                                 afterHistory(event.currentTarget);
@@ -2430,10 +2538,17 @@ export function Composer() {
                         enterkeyhint=${coarse ? "enter" : "send"}
                     ></textarea>
                     <div class="composer-row" data-part="composer-tools">
-                        ${slotItems("composer", { picker, agent, level, view }).map(({ node }) => node)}
+                        ${slotItems("composer", {
+                            picker,
+                            agent,
+                            level,
+                            view,
+                            takingBack: !!queuedEdit,
+                        }).map(({ node }) => node)}
                         <input
                             ref=${picker}
                             type="file"
+                            disabled=${!!queuedEdit}
                             multiple
                             hidden
                             onChange=${(event) => {
@@ -2489,7 +2604,7 @@ export function Composer() {
                             dictation=${dictation}
                             class="composer-mic"
                             part="composer-button"
-                            disabled=${sending}
+                            disabled=${boxWaiting}
                         />
                         <button
                             class=${`send-button ${canSend ? "ready" : ""}`}
@@ -2501,8 +2616,10 @@ export function Composer() {
                             onClick=${send}
                         >
                             ${
-                                sending
-                                    ? html`<${Spinner} />`
+                                boxWaiting
+                                    ? html`<${Spinner}
+                                          label=${queuedEdit ? "Taking back queued message" : "Sending"}
+                                      />`
                                     : html`<${Icon} name="send" size=${16} stroke=${2.4} />`
                             }
                         </button>
@@ -2528,12 +2645,13 @@ defineItem("composer", {
     id: "core:attach",
     label: "Attach files",
     order: 200,
-    render: ({ picker }) =>
+    render: ({ picker, takingBack }) =>
         html`<button
             class="icon-button attach-button"
             data-part="composer-button"
             aria-label="Attach files"
             title="Attach files"
+            disabled=${takingBack}
             onClick=${() => picker.current?.click()}
         >
             <${Icon} name="clip" size=${17} />
