@@ -110,7 +110,7 @@ export type SessionMeta = {
 /** What access reads of a session's record. A field the policy starts to read is added here. */
 export type AccessMeta = Pick<
     SessionMeta,
-    "cwd" | "runner" | "createdBy" | "sharedWith" | "sharedBy" | "pip" | "worktree"
+    "cwd" | "createdAt" | "runner" | "createdBy" | "sharedWith" | "sharedBy" | "pip" | "worktree"
 >;
 
 /**

@@ -1416,6 +1416,63 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // The projects of the sessions on a computer and their trust (`projects.ts`), for who is in charge of it: the
+        // Access sheet's grid. 404 for anyone else.
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === "projects" &&
+            method === "GET"
+        ) {
+            return json(response, 200, await app.projectsOn(user, second));
+        }
+
+        // Who is in charge of a computer answers "trust this project?" for folders there, in one save (`app.ts`
+        // `setFolderTrust`), as a session's own question saves it. 404 for anyone else.
+        if (first === "runners" && second !== undefined && third === "trust" && method === "POST") {
+            const body = await readJson<{ folders?: unknown; choice?: unknown } | null>(request);
+            const folders = body?.folders;
+            const choice = body?.choice;
+
+            if (
+                !Array.isArray(folders) ||
+                !folders.every((folder): folder is string => typeof folder === "string")
+            ) {
+                throw new HttpError(400, "folders must be a list of paths");
+            }
+
+            if (choice !== "trust" && choice !== "trust-parent" && choice !== "distrust") {
+                throw new HttpError(400, "choice must be trust, trust-parent, or distrust");
+            }
+
+            app.setFolderTrust(user, second, folders, choice);
+
+            return json(response, 200, await app.projectsOn(user, second));
+        }
+
+        // What one person has of one folder on a computer, as one level (`app.ts` `setFolderLevel`): none, start, past,
+        // or all. Who is in charge there sets any; someone who passes on what they were given, what was theirs to give.
+        if (first === "runners" && second !== undefined && third === "level" && method === "POST") {
+            const body = await readJson<{
+                person?: unknown;
+                folder?: unknown;
+                level?: unknown;
+            } | null>(request);
+
+            await app.setFolderLevel(user, second, body?.person, body?.folder, body?.level);
+
+            // Who set it on a folder they gave, and is not in charge there, has no view of the computer.
+            return json(
+                response,
+                200,
+                (second === THIS_SERVER
+                    ? app.thisServer(user)
+                    : app.runners.list(user).find((runner) => runner.id === second)) ?? {
+                    ok: true,
+                },
+            );
+        }
+
         // One chosen person sees every session in one of their folders on a computer, or no longer (`app.ts` `seeFolder`).
         if (first === "runners" && second !== undefined && third === "sees" && method === "POST") {
             const body = await readJson<{

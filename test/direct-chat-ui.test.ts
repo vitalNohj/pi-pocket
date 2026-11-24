@@ -63,7 +63,7 @@ async function openPeople(viewport = DESKTOP): Promise<void> {
     await inPage(`
         const { openSheet } = await import("/store.js");
 
-        openSheet({ type: "people" });
+        openSheet({ type: "access", view: "person" });
 
         return JSON.stringify(true);
     `);
@@ -355,7 +355,7 @@ test(
         await inPage(`
         const { openSheet } = await import("/store.js");
 
-        openSheet({ type: "people" });
+        openSheet({ type: "access", view: "person" });
 
         return JSON.stringify(true);
     `);

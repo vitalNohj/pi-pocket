@@ -796,7 +796,19 @@ test("someone who shares what they were given gives a folder that was given to t
         {
             id: THIS_SERVER,
             name: "This server",
-            folders: [{ path: work, has: false, sees: false, give: true, take: false, see: false }],
+            // Not given yet: she can give it to start sessions in, and no more, as she does not see all of it.
+            folders: [
+                {
+                    path: work,
+                    has: false,
+                    sees: false,
+                    give: true,
+                    take: false,
+                    see: false,
+                    level: "none",
+                    levels: ["none", "start"],
+                },
+            ],
         },
     ]);
     assert.deepEqual(told(pat, ana), []);
@@ -851,6 +863,8 @@ test("someone who shares what they were given gives a folder that was given to t
         take: true,
         see: false,
         by: { id: lea.id, name: "Give Lea" },
+        level: "start",
+        levels: ["none", "start"],
     });
 
     // The whole list saved again by who is in charge (Runners) keeps who gave a folder that stays in it.

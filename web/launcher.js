@@ -484,13 +484,6 @@ function actionItems() {
             icon: "key",
             run: () => openSheet({ type: "providers" }),
         },
-        runnersOffered() && {
-            label: "Runners",
-            detail: "link a computer, start sessions on it",
-            keywords: "computers runner remote machine link laptop server",
-            icon: "monitor",
-            run: () => openSheet({ type: "computers" }),
-        },
         managesServer() &&
             keepWarmAvailable() && {
                 label: "Keep warm",
@@ -516,17 +509,20 @@ function actionItems() {
             run: () => openSheet({ type: "gallery" }),
         },
         { label: "Spend", icon: "pulse", run: () => openSheet({ type: "spend" }) },
-        collab()
-            ? {
-                  label: "People and invites",
-                  icon: "users",
-                  run: () => openSheet({ type: "people" }),
-              }
-            : {
-                  label: "Sign in another device",
-                  icon: "users",
-                  run: () => openSheet({ type: "invite" }),
-              },
+        (collab() || runnersOffered()) && {
+            label: "Access",
+            detail: collab()
+                ? "people, computers, and what each has"
+                : "computers, and what each has",
+            keywords: "people invites runners computers link laptop folders trust",
+            icon: "users",
+            run: () => openSheet({ type: "access", view: collab() ? "person" : "computer" }),
+        },
+        !collab() && {
+            label: "Sign in another device",
+            icon: "users",
+            run: () => openSheet({ type: "invite" }),
+        },
         {
             label: "Keyboard shortcuts",
             icon: "keyboard",
@@ -538,8 +534,8 @@ function actionItems() {
             detail: me?.name,
             keywords: "name photo sign out authenticator",
             icon: "users",
-            // Your own page in People, which opens on it.
-            run: () => openSheet({ type: "people" }),
+            // Your own page in Access, which opens on it.
+            run: () => openSheet({ type: "access", view: "person" }),
         },
         managesServer() &&
             server?.supervised && {

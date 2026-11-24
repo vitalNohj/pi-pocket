@@ -42,7 +42,11 @@ export const MAX_PENDING_SESSIONS = 2 * MAX_PENDING;
 /** How long a folder's project is kept before git is asked again (a folder can become a repository). */
 const PROJECT_FOR_MS = 60_000;
 
-export type Project = { key: string; name: string; repo?: string; runner?: string };
+/**
+ * A project: `key` names it for lessons (its repository's shared git folder, or the folder itself). `root`: the top
+ * folder of its main checkout, where a git worktree's project is its repository's; absent for a folder in no repository.
+ */
+export type Project = { key: string; name: string; repo?: string; runner?: string; root?: string };
 export type LessonScope = "project" | "everywhere" | "session";
 
 /**
@@ -152,10 +156,10 @@ async function projectOf(cwd: string): Promise<Project> {
 
     const key = await realpath(resolve(folder, common)).catch(() => resolve(folder, common));
     // `repo/.git` is named for `repo`; a bare repository (`repo.git`) for itself.
-    const name =
-        basename(key) === ".git" ? basename(dirname(key)) : basename(key).replace(/\.git$/, "");
+    const checkout = basename(key) === ".git";
+    const name = checkout ? basename(dirname(key)) : basename(key).replace(/\.git$/, "");
 
-    return { key, name: named(name, key) };
+    return { key, name: named(name, key), root: checkout ? dirname(key) : key };
 }
 
 export class Memory {
@@ -241,12 +245,14 @@ export class Memory {
                     ? (parts.at(-2) ?? "")
                     : last.replace(/\.git$/, "")
                 : last;
+            const top = path.replace(/[\\/]+$/, "");
 
             project = {
                 key: `runner:${runner}:${path}`,
                 name: named(name, path),
                 runner,
                 ...(repo === undefined ? {} : { repo }),
+                ...(common ? { root: last === ".git" ? paths.dirname(top) : top } : {}),
             };
         }
 

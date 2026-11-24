@@ -869,7 +869,7 @@ export function CwdSheet({
                     html`<button
                         type="button"
                         class="link small fp-link"
-                        onClick=${() => openSheet({ type: "computers" })}
+                        onClick=${() => openSheet({ type: "access", view: "computer" })}
                     >
                         Manage runners…
                     </button>`

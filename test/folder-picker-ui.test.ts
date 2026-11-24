@@ -141,7 +141,7 @@ async function openPage(width: number, height: number, mobile = false) {
         openPicker,
         sheet: () =>
             evaluate<Json>(
-                `import("/store.js").then(({ store }) => store.state.sheet && { type: store.state.sheet.type, mode: store.state.sheet.mode })`,
+                `import("/store.js").then(({ store }) => store.state.sheet && { type: store.state.sheet.type, mode: store.state.sheet.mode, view: store.state.sheet.view })`,
             ),
         close: () => connection.send("Target.disposeBrowserContext", context),
     };
@@ -243,14 +243,15 @@ test("Runs on is pinned under the places, and the links are in the bottom row", 
             "602 px high on a 700 px screen (86dvh)",
         );
 
-        // 6. Manage runners… opens Runners.
+        // 6. Manage runners… opens Access, By computer.
         await page.evaluate(
             `[...document.querySelectorAll(".fp-options .fp-link")].find((each) => each.textContent.trim() === "Manage runners…").click()`,
         );
-        await until(
-            async () => ((await page.sheet()) as { type?: string } | null)?.type === "computers",
-            "the Runners sheet",
-        );
+        await until(async () => {
+            const sheet = (await page.sheet()) as { type?: string; view?: string } | null;
+
+            return sheet?.type === "access" && sheet.view === "computer";
+        }, "the Access sheet, By computer");
     } finally {
         await page.close();
     }

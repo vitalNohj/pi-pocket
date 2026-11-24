@@ -88,6 +88,8 @@ async function call<T = Record<string, unknown>>(
 }
 
 const listed = (user: User) => app.sessions(user).map((each) => String(each.id));
+/** The record of `user` as it is kept now. */
+const now = (user: User) => app.config.userById(user.id)!;
 
 /**
  * Run `during` with the guest no longer chosen for this server, as the settings alone say it: what a restart leaves
@@ -1636,5 +1638,210 @@ describe("seeing every session in a folder", () => {
         await sees(owner(app), { person: fellow.id, folder, on: false });
         assert.deepEqual(listed(fellow), [String(below)]);
         await app.commands.shareSession(below, owner(app), []);
+    });
+});
+
+describe("a folder's level, for a viewer and a user", () => {
+    const levelled = join(root, "levelled");
+    const nextTo = join(root, "levelled-too");
+    /** A viewer and a user chosen for this server, with nothing given. */
+    let vera: User;
+    let ulla: User;
+    let folder: string;
+    /** The owner's: in the folder, and beside it, made before any level was set. */
+    let before1: ConversationId;
+    let besideIt: ConversationId;
+
+    const level = (by: User, body: unknown) => call(by, "runners/this-server/level", body);
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+    before(async () => {
+        for (const each of [levelled, nextTo]) {
+            mkdirSync(each, { recursive: true });
+        }
+
+        folder = realpathSync(levelled);
+        vera = person("Level Vera", "viewer");
+        ulla = person("Level Ulla", "guest");
+        app.config.setUsers(THIS_SERVER, [guest.id, viewer.id, vera.id, ulla.id]);
+        app.config.updateUser(ulla.id, { approvalDays: 0 });
+        app.accessChanged();
+        before1 = await newSession(app, levelled);
+        besideIt = await newSession(app, nextTo);
+        await pause();
+    });
+
+    after(async () => {
+        await app.removeUser(owner(app), vera.id);
+        await app.removeUser(owner(app), ulla.id);
+        app.config.setUsers(THIS_SERVER, [guest.id, viewer.id]);
+        app.accessChanged();
+    });
+
+    it("shows a viewer at All sessions every session in it, read only, in the list and its live updates; never the one beside it", async () => {
+        const watching = fakeTab(undefined, vera);
+
+        await app.attach(watching.client);
+
+        try {
+            assert.deepEqual(listed(vera), [], "nothing before");
+            const answer = await level(owner(app), { person: vera.id, folder, level: "all" });
+
+            assert.equal(answer.status, 200, JSON.stringify(answer.body));
+            assert.deepEqual(app.config.givenFolders(THIS_SERVER, vera.id), [folder]);
+            assert.deepEqual(app.config.seenFolders(THIS_SERVER, vera.id), [folder]);
+            assert.deepEqual(app.config.seenUntil(THIS_SERVER, vera.id), {});
+            assert.deepEqual(listed(vera), [String(before1)]);
+            await until(() => everListed(watching).has(String(before1)), "the list, sent again");
+
+            // By its id: to read, not to prompt.
+            assert.equal((await call(vera, `c/${before1}/history`)).status, 200);
+            assert.notEqual(
+                (await call(vera, `c/${before1}/submit`, { text: "hi", requestId: "v1" })).status,
+                200,
+            );
+            assert.equal(app.policy.maySteer(vera, String(before1)), false);
+            assert.equal((await call(vera, `c/${besideIt}/history`)).status, 404);
+            // They start nothing, in it or anywhere.
+            assert.equal(app.policy.mayStart(vera, THIS_SERVER), false);
+            await assert.rejects(app.commands.createSession(vera, { cwd: levelled }));
+
+            // One someone else starts there later arrives; one beside it never does.
+            const later = await newSession(app, levelled);
+            const apart = await newSession(app, nextTo);
+
+            await until(() => everListed(watching).has(String(later)), "the later session");
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            assert.equal(everSent(watching, apart), false);
+            assert.equal(everSent(watching, besideIt), false);
+        } finally {
+            app.detach(watching.client);
+        }
+    });
+
+    it("takes it from them at once with No access", async () => {
+        await level(owner(app), { person: vera.id, folder, level: "all" });
+
+        const tab = fakeTab(before1, vera);
+
+        await app.attach(tab.client);
+
+        try {
+            assert.ok(
+                tab.events.some((each) => each.event === "view"),
+                "they are in",
+            );
+            assert.equal(
+                (await level(owner(app), { person: vera.id, folder, level: "none" })).status,
+                200,
+            );
+            assert.equal(tab.last("missing")?.conversationId, Number(before1));
+            assert.ok(!listed(vera).includes(String(before1)));
+            assert.equal((await call(vera, `c/${before1}/history`)).status, 404);
+            assert.deepEqual(app.config.givenFolders(THIS_SERVER, vera.id), []);
+            assert.deepEqual(app.config.seenFolders(THIS_SERVER, vera.id), []);
+            assert.deepEqual(app.config.seenUntil(THIS_SERVER, vera.id), {});
+        } finally {
+            app.detach(tab.client);
+        }
+    });
+
+    it("at Sessions so far shows what was made before the change, not what another person makes after it", async () => {
+        const watching = fakeTab(undefined, vera);
+
+        await app.attach(watching.client);
+
+        try {
+            assert.equal(
+                (await level(owner(app), { person: vera.id, folder, level: "past" })).status,
+                200,
+            );
+            assert.ok(listed(vera).includes(String(before1)));
+            assert.equal(typeof app.config.seenUntil(THIS_SERVER, vera.id)[folder], "number");
+            await pause();
+
+            const after1 = await newSession(app, levelled);
+
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            assert.ok(!listed(vera).includes(String(after1)));
+            assert.equal(everSent(watching, after1), false);
+            assert.equal((await call(vera, `c/${after1}/history`)).status, 404);
+
+            // All sessions: the later one too.
+            await level(owner(app), { person: vera.id, folder, level: "all" });
+            assert.ok(listed(vera).includes(String(after1)));
+            await until(() => everListed(watching).has(String(after1)), "the later one, now");
+
+            // Back to Sessions so far: nothing that exists is hidden; what starts after it is.
+            await pause();
+            await level(owner(app), { person: vera.id, folder, level: "past" });
+            assert.ok(listed(vera).includes(String(before1)));
+            assert.ok(listed(vera).includes(String(after1)));
+            await pause();
+
+            const after2 = await newSession(app, levelled);
+
+            assert.ok(!listed(vera).includes(String(after2)));
+        } finally {
+            app.detach(watching.client);
+            await level(owner(app), { person: vera.id, folder, level: "none" });
+        }
+    });
+
+    it("lets a user at Sessions so far start sessions there and keep their own later ones; a viewer is refused Start sessions", async () => {
+        assert.equal(
+            (await level(owner(app), { person: ulla.id, folder, level: "past" })).status,
+            200,
+        );
+        assert.equal(app.policy.mayUseFolder(ulla, THIS_SERVER, folder), true);
+        assert.ok(listed(ulla).includes(String(before1)));
+        await pause();
+
+        const own = await app.commands.createSession(now(ulla), { cwd: levelled });
+        const theirs = await newSession(app, levelled);
+
+        assert.ok(listed(ulla).includes(String(own.id)), "their own, made later");
+        assert.ok(!listed(ulla).includes(String(theirs)), "another's, made later");
+
+        const refused = await level(owner(app), { person: vera.id, folder, level: "start" });
+
+        assert.equal(refused.status, 400);
+        assert.match(String((refused.body as { error?: string }).error), /viewer/);
+        await level(owner(app), { person: ulla.id, folder, level: "none" });
+    });
+
+    it("refuses a person not in charge a folder that was not given to them, and keeps a viewer's folder when they are made a user", async () => {
+        // The guest has the whole test folder, and does not pass on what they were given.
+        const refused = await level(guest, { person: vera.id, folder, level: "all" });
+
+        assert.equal(refused.status, 403);
+        assert.deepEqual(app.config.givenFolders(THIS_SERVER, vera.id), []);
+        // A viewer gives nothing: they see no list of people, so nobody is a person to them.
+        assert.equal((await level(vera, { person: ulla.id, folder, level: "start" })).status, 404);
+        assert.deepEqual(app.config.givenFolders(THIS_SERVER, ulla.id), []);
+        assert.equal(
+            (await level(owner(app), { person: vera.id, folder, level: "most" })).status,
+            400,
+        );
+        assert.equal(
+            (
+                await level(owner(app), {
+                    person: vera.id,
+                    folder: nextTo + "-missing",
+                    level: "all",
+                })
+            ).status,
+            400,
+        );
+
+        // Made a user later, the viewer keeps the folder and its level, and starts there.
+        await level(owner(app), { person: vera.id, folder, level: "all" });
+        app.config.updateUser(vera.id, { role: "guest" });
+        app.accessChanged();
+        assert.equal(app.config.folderLevel(THIS_SERVER, vera.id, folder), "all");
+        assert.equal(app.policy.mayUseFolder(now(vera), THIS_SERVER, folder), true);
+        assert.ok(listed(now(vera)).includes(String(before1)));
+        app.config.updateUser(vera.id, { role: "viewer" });
+        app.accessChanged();
     });
 });

@@ -28,10 +28,14 @@ import type { ExecutionEnv, FileError, FileInfo } from "@earendil-works/pi-durab
 import { isConnectionLost, type RemoteInfo } from "@earendil-works/pi-env";
 import {
     decides,
+    type FolderTrust,
+    folderTrustOf,
     type ProjectTrust,
     type Saved,
     type SkillSources,
     type TrustChoice,
+    trustDecisions,
+    TrustError,
 } from "./skills.ts";
 
 /** An environment on another computer: a `RunnerEnv` (or the harness's wrapper of one). */
@@ -741,39 +745,62 @@ export function savedTrust(
     }
 }
 
-/** Save an answer to "trust this project?" for `folder` on computer `runner`, as `saveProjectTrust` does here. */
-export function saveTrust(
-    dataDir: string,
+/** How Pi trusts `folder` on computer `runner` (`skills.ts` `FolderTrust`): undefined when the decisions cannot be read. */
+export function folderTrustThere(
+    dirs: { dataDir: string; agentDir: string },
     runner: string,
     folder: string,
     paths: PathKit,
+): FolderTrust | undefined {
+    return folderTrustOf(
+        folder,
+        paths.dirname(folder),
+        savedTrust(dirs.dataDir, runner, folder, paths),
+        defaultTrust(dirs.agentDir),
+    );
+}
+
+/** How the decisions file is written: one write a save, replaced whole. Tests count the writes. */
+export const trustFile = {
+    write(dataDir: string, text: string): void {
+        const file = join(dataDir, TRUST_FILE);
+        const temporary = `${file}.${process.pid}.tmp`;
+
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(temporary, text, { mode: 0o600 });
+        renameSync(temporary, file);
+    },
+};
+
+/**
+ * Save one answer to "trust this project?" for `folders` on computer `runner` (`skills.ts` `trustDecisions`), in one
+ * write, as `saveFoldersTrust` does here.
+ */
+export function saveTrust(
+    dataDir: string,
+    runner: string,
+    folders: readonly string[],
+    paths: PathKit,
     choice: TrustChoice,
-): void {
+): { path: string; decision: boolean | null }[] {
     const data = readTrust(dataDir);
 
     if (data === undefined) {
-        throw new Error(`${join(dataDir, TRUST_FILE)} cannot be read.`);
+        throw new TrustError("unreadable", `${join(dataDir, TRUST_FILE)} cannot be read.`);
     }
 
     const mine = { ...data[runner] };
-    const parent = paths.dirname(folder);
+    const decisions = trustDecisions(folders, choice, (each) => paths.dirname(each));
 
-    if (choice !== "trust-parent") {
-        mine[folder] = choice === "trust";
-    } else if (parent === folder) {
-        throw new Error(`${folder} has no folder above it.`);
-    } else {
-        // The folder's own decision goes, so the one for the folder above applies to it.
-        mine[parent] = true;
-        delete mine[folder];
+    for (const { path, decision } of decisions) {
+        if (decision === null) {
+            delete mine[path];
+        } else {
+            mine[path] = decision;
+        }
     }
 
-    const file = join(dataDir, TRUST_FILE);
-    const temporary = `${file}.${process.pid}.tmp`;
+    trustFile.write(dataDir, `${JSON.stringify({ ...data, [runner]: mine }, null, 2)}\n`);
 
-    mkdirSync(dataDir, { recursive: true });
-    writeFileSync(temporary, `${JSON.stringify({ ...data, [runner]: mine }, null, 2)}\n`, {
-        mode: 0o600,
-    });
-    renameSync(temporary, file);
+    return decisions;
 }

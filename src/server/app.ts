@@ -72,6 +72,8 @@ import {
     APPROVAL_DAYS,
     approvalDays,
     ConfigStore,
+    FOLDER_LEVELS,
+    type FolderLevel,
     helloUser,
     modulesWith,
     type User,
@@ -197,10 +199,12 @@ import {
     loadSessionSkills,
     projectDistrusted,
     type ProjectTrust,
+    folderTrust,
     readProjectTrust,
-    saveProjectTrust,
+    saveFoldersTrust,
     type SkillSources,
     type TrustChoice,
+    TrustError,
 } from "./skills.ts";
 import { KeepWarm } from "./keep-warm.ts";
 import { Spend } from "./spend.ts";
@@ -220,10 +224,14 @@ import {
     type FolderScan,
     knownScan,
     latestScan,
+    defaultTrust,
+    folderTrustThere,
+    pathsFor,
     projectThere,
     readRemoteText,
     saveTrust,
 } from "./remote-context.ts";
+import { projectsOf, type ProjectsView } from "./projects.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -361,6 +369,8 @@ export type ServerView = {
     given: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id. */
     sees: Record<string, string[]>;
+    /** Of those, the ones they see only the sessions made up to a time in: that time, by person id, then by folder. */
+    seesUntil: Record<string, Record<string, number>>;
     /**
      * The chosen people who hold each right given one person at a time here (`rights.ts`): `wheel`, to take the wheel
      * from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to (`allowsOwn`).
@@ -458,8 +468,8 @@ function failedSubagents(
 
 /** Copy only what access reads, including when `meta` is a transaction draft. */
 function accessOf(meta: AccessMeta): AccessMeta {
-    const { cwd, runner, createdBy, sharedWith, sharedBy, pip, worktree } = meta;
-    const copy: AccessMeta = { cwd };
+    const { cwd, createdAt, runner, createdBy, sharedWith, sharedBy, pip, worktree } = meta;
+    const copy: AccessMeta = { cwd, createdAt };
 
     if (runner !== undefined) {
         copy.runner = runner;
@@ -3324,6 +3334,7 @@ export class PocketApp {
                     leaving: record.leaving ?? [],
                     given: (person) => config.givenFolders(id, person),
                     sees: (person) => config.seenFolders(id, person),
+                    seesUntil: (person) => config.seenUntil(id, person),
                     givenBy: (person) => config.givenBy(id, person),
                     holders: (right) => config.rightHolders(id, right),
                     shareNew: record.shareNew === true,
@@ -3348,6 +3359,7 @@ export class PocketApp {
                     : {
                           id: root,
                           computer: meta.runner ?? THIS_SERVER,
+                          createdAt: meta.createdAt,
                           ...(meta.createdBy === undefined ? {} : { createdBy: meta.createdBy }),
                           ...(meta.sharedWith === undefined ? {} : { sharedWith: meta.sharedWith }),
                           ...(meta.sharedBy === undefined ? {} : { sharedBy: meta.sharedBy }),
@@ -3392,6 +3404,12 @@ export class PocketApp {
                 (server.users ?? []).map((id) => [
                     id,
                     [...this.config.seenFolders(THIS_SERVER, id)],
+                ]),
+            ),
+            seesUntil: Object.fromEntries(
+                (server.users ?? []).map((id) => [
+                    id,
+                    { ...this.config.seenUntil(THIS_SERVER, id) },
                 ]),
             ),
             rights: this.config.rightsOn(THIS_SERVER),
@@ -3604,7 +3622,12 @@ export class PocketApp {
         return (
             meta !== undefined &&
             meta.pip === undefined &&
-            this.policy.seesFolder(person, meta.runner ?? THIS_SERVER, this.#accessFolder(meta))
+            this.policy.seesFolder(
+                person,
+                meta.runner ?? THIS_SERVER,
+                this.#accessFolder(meta),
+                meta.createdAt,
+            )
         );
     }
 
@@ -3905,6 +3928,124 @@ export class PocketApp {
             }
         });
         this.accessChanged();
+    }
+
+    /**
+     * `by` sets what `person` has of `folder` on computer `id` (the Access menu of a folder's row in People:
+     * `config.ts` `FolderLevel`), in one save: "none" takes it back, "start" gives it to start sessions in (a user),
+     * "past" also shows them every session made in it up to now, and "all" every one, also later ones. A viewer gets
+     * "past" and "all" alone: they read, and start nothing. Who may change what is `access.ts` `maySetLevel`, asked
+     * again where it is saved. A folder new to them is resolved to its real path there, as `giveFolders` does. What they
+     * lose by it (sessions they started in it, the tasks they set up on sessions they no longer see) moves to who is
+     * in charge, in the hand-over of that save.
+     */
+    async setFolderLevel(
+        by: User,
+        id: string,
+        person: unknown,
+        folder: unknown,
+        level: unknown,
+    ): Promise<void> {
+        if (
+            typeof person !== "string" ||
+            typeof folder !== "string" ||
+            folder.trim() === "" ||
+            !(FOLDER_LEVELS as readonly unknown[]).includes(level)
+        ) {
+            throw new HttpError(
+                400,
+                `Send person, folder, and level: ${FOLDER_LEVELS.join(", ")}.`,
+            );
+        }
+
+        const to = level as FolderLevel;
+
+        if (id !== THIS_SERVER) {
+            this.runners.require(id);
+        }
+
+        const target = this.policy.inCharge(by, id)
+            ? this.config.userById(person)
+            : this.#other(by, person);
+
+        if (target === undefined) {
+            throw new HttpError(404, "No such person.");
+        }
+
+        const place = this.#computerName(id);
+
+        if (
+            target.sessions !== undefined ||
+            this.policy.inCharge(target, id) ||
+            !this.policy.mayUse(target, id)
+        ) {
+            throw new HttpError(
+                400,
+                this.policy.inCharge(target, id)
+                    ? `${target.name} is in charge of ${place}: every folder there is theirs.`
+                    : `${target.name} cannot use ${place}. Whoever is in charge of it chooses who uses it.`,
+            );
+        }
+
+        if (target.role === "viewer" && to === "start") {
+            throw new HttpError(
+                400,
+                `${target.name} is a viewer: they start nothing. Choose Sessions so far or All sessions.`,
+            );
+        }
+
+        // The folder as their list has it, or, new to them, its real path there.
+        const listed = this.config.givenFolders(id, person).includes(folder);
+        const path =
+            listed || to === "none"
+                ? folder
+                : id === THIS_SERVER
+                  ? await this.#realFolderHere(folder)
+                  : await this.runners.checkFolder(id, folder);
+
+        const allowed = (): void => {
+            const from = this.config.folderLevel(id, person, path);
+
+            if (!this.policy.maySetLevel(by, id, target, path, from, to)) {
+                throw new HttpError(
+                    403,
+                    to === "none"
+                        ? `Only whoever gave ${target.name} that folder, or whoever is in charge of ${place}, can take it back.`
+                        : from === "none" && !this.policy.mayGiveFolder(by, id, path)
+                          ? this.policy.reshares(by, id)
+                              ? "You can give only a folder that was given to you."
+                              : `You cannot give folders on ${place}: Share what they were given is off for you there.`
+                          : `You can let ${target.name} see the sessions in it only in a folder you gave them, while you access all sessions in it yourself.`,
+                );
+            }
+        };
+
+        allowed();
+        await this.#inTurn(async () => {
+            // Asked again where it is saved: the folder was looked up meanwhile.
+            allowed();
+
+            if (this.config.folderLevel(id, person, path) === to) {
+                return;
+            }
+
+            this.config.setFolderLevel(id, person, path, to, this.now(), by.id);
+            await this.#finishHandOvers(id, person);
+        });
+        this.accessChanged();
+        this.runners.changed();
+    }
+
+    /** `folder` on this server, `~` its home, as its real path; refused when it is not a folder here. */
+    async #realFolderHere(folder: string): Promise<string> {
+        const path = resolvePath(this.#home, folder.trim().replace(/^~(?=\/|$)/, this.#home));
+        const found = await realpath(path).catch(() => undefined);
+
+        if (found === undefined || !(await stat(found)).isDirectory()) {
+            throw new HttpError(400, `${folder.trim()} is not a folder here.`);
+        }
+
+        return found;
     }
 
     /**
@@ -4425,10 +4566,12 @@ export class PocketApp {
                     continue;
                 }
 
+                // By the record, whatever their role: a viewer who started it as a user keeps it while its folder is
+                // still given to them (`access.ts` `holdsFolder`).
                 const stays =
                     only === undefined &&
                     !gone &&
-                    this.policy.mayUseFolder({ id: person }, where, this.#accessFolder(meta));
+                    this.policy.holdsFolder({ id: person }, where, this.#accessFolder(meta));
 
                 if (stays) {
                     continue;
@@ -4495,6 +4638,7 @@ export class PocketApp {
                     {
                         id,
                         computer,
+                        createdAt: meta.createdAt,
                         ...(meta.createdBy === undefined ? {} : { createdBy: meta.createdBy }),
                         ...(meta.sharedWith === undefined
                             ? {}
@@ -7399,30 +7543,137 @@ export class PocketApp {
     setProjectTrust(id: ConversationId, user: User, choice: TrustChoice): ProjectTrust {
         // Before anything is saved: only who is in charge may read it, or answer.
         const now = this.projectTrust(id, user);
+        const runner = this.runnerOf(id);
+        // On a runner, the folder as its scan names it; here, as the trust store does.
+        const folder = runner === undefined ? now.folder : this.#knownFolder(id).folder;
 
-        if (now.unreadable) {
+        this.setFolderTrust(user, runner ?? THIS_SERVER, [folder], choice);
+
+        return this.projectTrust(id, user);
+    }
+
+    /**
+     * The answer to "trust this project?" of who is in charge of `computer`, for `folders` there in one save
+     * (`skills.ts` `trustDecisions`): the one way a decision is saved, from a session's question and from the Access
+     * sheet. On this server it is saved where Pi's CLI keeps its own, as its `/trust` does; for a runner, here, by
+     * computer and path there. Each project in those folders was decided: its request ends, and everyone waiting on it
+     * hears. 404 for anyone else, as the computer's projects are.
+     */
+    setFolderTrust(
+        user: User,
+        computer: string,
+        folders: readonly string[],
+        choice: TrustChoice,
+    ): void {
+        if (!this.policy.inCharge(user, computer)) {
+            throw new HttpError(404, "Not found");
+        }
+
+        if (folders.length === 0) {
+            throw new HttpError(400, "Name a folder.");
+        }
+
+        const paths = this.#pathsOf(computer);
+
+        if (folders.some((folder) => !paths.isAbsolute(folder))) {
+            throw new HttpError(400, "Each folder must be a full path.");
+        }
+
+        let decisions: { path: string; decision: boolean | null }[];
+        const sources = this.#skillSources();
+
+        // A store that cannot be read is never written over: what it held would be lost. Here it is one store for every
+        // folder, so the first folder tells.
+        if (
+            computer === THIS_SERVER &&
+            folderTrust(folders[0]!, sources.agentDir, sources.defaultProjectTrust) === undefined
+        ) {
             throw new HttpError(
                 409,
                 "Pi's trust store (~/.pi/agent/trust.json) cannot be read, so no answer can be saved. Mend or delete it first.",
             );
         }
 
-        if (choice === "trust-parent" && now.parent === undefined) {
-            throw new HttpError(400, "This folder has no folder above it.");
+        try {
+            decisions =
+                computer === THIS_SERVER
+                    ? saveFoldersTrust(folders, getAgentDir(), choice)
+                    : saveTrust(this.dataDir, computer, folders, paths, choice);
+        } catch (error) {
+            if (error instanceof TrustError && error.code === "no-parent") {
+                throw new HttpError(400, error.message);
+            }
+
+            if (error instanceof TrustError && error.code === "unreadable") {
+                throw new HttpError(
+                    409,
+                    computer === THIS_SERVER
+                        ? "Pi's trust store (~/.pi/agent/trust.json) cannot be read, so no answer can be saved. Mend or delete it first."
+                        : `The trust decisions for ${this.#computerName(computer)} cannot be read, so no answer can be saved.`,
+                );
+            }
+
+            // Any other fault of the write (a full disk, no permission): its own cause, not a store that cannot be read.
+            throw new HttpError(
+                500,
+                `The trust decision could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+            );
         }
 
-        const runner = this.runnerOf(id);
+        // What was saved covers the folders in it: the requests there end, wherever their question was asked.
+        this.trustRequests.decidedUnder(
+            computer,
+            decisions.map((each) => each.path),
+        );
+    }
 
-        if (runner === undefined) {
-            saveProjectTrust(this.cwdOf(id), getAgentDir(), choice);
-        } else {
-            // Kept here, by computer and path there: Pi's own store names this server's folders.
-            const { folder, paths } = this.#knownFolder(id);
+    /** The path rules of computer `id`: this server's, or a runner's by its operating system. */
+    #pathsOf(id: string): typeof posix {
+        return id === THIS_SERVER
+            ? process.platform === "win32"
+                ? win32
+                : posix
+            : pathsFor(this.runners.stored(id)?.platform?.os);
+    }
 
-            saveTrust(this.dataDir, runner, folder, paths, choice);
+    /**
+     * The projects of the sessions on `computer` that are not archived, and how Pi trusts their folders (`projects.ts`),
+     * for who is in charge of it alone; 404 for anyone else.
+     */
+    async projectsOn(user: User, computer: string): Promise<ProjectsView> {
+        if (
+            !this.policy.inCharge(user, computer) ||
+            (computer !== THIS_SERVER && this.runners.stored(computer) === undefined)
+        ) {
+            throw new HttpError(404, "Not found");
         }
 
-        return this.projectTrust(id, user);
+        const sessions = Object.entries(this.#sessions).flatMap(([id, meta]) =>
+            meta.archived === true ||
+            meta.pip !== undefined ||
+            (meta.runner ?? THIS_SERVER) !== computer ||
+            this.workspaceScheme(meta.cwd) !== undefined
+                ? []
+                : [{ id: Number(id), cwd: meta.cwd }],
+        );
+        const sources = this.#skillSources();
+        const paths = this.#pathsOf(computer);
+
+        return {
+            defaultProjectTrust:
+                computer === THIS_SERVER
+                    ? sources.defaultProjectTrust
+                    : defaultTrust(sources.agentDir),
+            projects: await projectsOf(
+                sessions,
+                (session) =>
+                    this.memory.project(session.id as unknown as ConversationId, session.cwd),
+                (folder) =>
+                    computer === THIS_SERVER
+                        ? folderTrust(folder, sources.agentDir, sources.defaultProjectTrust)
+                        : folderTrustThere(this.#remoteDirs(), computer, folder, paths),
+            ),
+        };
     }
 
     /**

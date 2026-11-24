@@ -92,16 +92,207 @@ export function leaving(folder, folders, started, there) {
 
 /**
  * The folder of `sees` (the folders a person sees every session in) that gives them `session`, or undefined: the
- * server's rule (`src/server/access.ts` `seesFolder`), by the folder the session counts as working in.
+ * server's rule (`src/server/access.ts` `seesFolder`), by the folder the session counts as working in. `until`: the
+ * folders they see only the sessions made up to a time in ("Sessions so far"), with that time; a session made later
+ * is not theirs by such a folder.
  */
-export function seenBy(sees, session, there) {
+export function seenBy(sees, session, there, until = {}) {
     if (sees.length === 0) {
         return undefined;
     }
 
     const at = accessFolder(session, there);
 
-    return sees.find((each) => inFolder(at, each));
+    return sees.find(
+        (each) =>
+            inFolder(at, each) &&
+            (until[each] === undefined || (session.createdAt ?? 0) <= until[each]),
+    );
+}
+
+/**
+ * What a person has of one folder, as one level of the Access menu of its row (`src/server/config.ts` `FolderLevel`):
+ * "none"; "start", given to start sessions in; "past", and every session made in it up to a time; "all", and every
+ * session in it, also later ones. From a computer's record: `given`, `sees`, and `until` (`seesUntil`) of that person.
+ */
+export function levelOf(folder, given, sees, until) {
+    if (!given.includes(folder)) {
+        return "none";
+    }
+
+    if (!sees.includes(folder)) {
+        return "start";
+    }
+
+    return until[folder] === undefined ? "all" : "past";
+}
+
+/**
+ * The folders of one computer as nested rows, for a person's tree in People and Runners: the home folder (`home`),
+ * always a top row; every folder in `folders` (the ones given); and the folder each of `sessions` counts as working in
+ * (`accessFolder`, `there`: the computer's sessions). A row sits under the deepest other row that holds it, but Home,
+ * which is never under another: a folder above it (`/`) is a top row of its own. A session sits in its own folder's row.
+ *
+ * Returns the top rows, Home first, then the others by path; each row `{ folder, parent, children, sessions }`, its
+ * children by path.
+ */
+export function foldersOf(home, folders, sessions, there) {
+    const paths = new Map();
+
+    const add = (folder) => {
+        if (folder && !paths.has(baseOf(folder) || folder)) {
+            paths.set(baseOf(folder) || folder, {
+                folder: baseOf(folder) || folder,
+                parent: undefined,
+                children: [],
+                sessions: [],
+            });
+        }
+    };
+
+    const homePath = home ? baseOf(home) || home : undefined;
+
+    add(homePath);
+    folders.forEach(add);
+
+    const at = sessions.map((session) => [session, baseOf(accessFolder(session, there))]);
+
+    at.forEach(([, folder]) => add(folder));
+
+    const nodes = [...paths.values()];
+
+    for (const node of nodes) {
+        if (node.folder === homePath) {
+            continue;
+        }
+
+        for (const other of nodes) {
+            if (
+                other !== node &&
+                inFolder(node.folder, other.folder) &&
+                (node.parent === undefined || depthOf(other.folder) > depthOf(node.parent.folder))
+            ) {
+                node.parent = other;
+            }
+        }
+    }
+
+    for (const [session, folder] of at) {
+        paths.get(folder || accessFolder(session, there))?.sessions.push(session);
+    }
+
+    const byPath = (one, other) => one.folder.localeCompare(other.folder);
+
+    for (const node of nodes) {
+        node.parent?.children.push(node);
+    }
+
+    for (const node of nodes) {
+        node.children.sort(byPath);
+    }
+
+    return nodes
+        .filter((each) => each.parent === undefined)
+        .sort((one, other) =>
+            one.folder === homePath ? -1 : other.folder === homePath ? 1 : byPath(one, other),
+        );
+}
+
+/**
+ * The project of `projects` (`src/server/projects.ts`: each `{ root, folders }`) a session counts as in, by the folder it
+ * counts as working in (`accessFolder`): in its root, or in one of its folders outside the root (a worktree Pi Pocket
+ * keeps in its data folder). The deepest root wins: a repository inside another is its own project.
+ */
+export function projectOfFolder(folder, projects) {
+    let best;
+
+    for (const project of projects) {
+        if (
+            (inFolder(folder, project.root) ||
+                project.folders.some((each) => inFolder(folder, each))) &&
+            (best === undefined || depthOf(project.root) > depthOf(best.root))
+        ) {
+            best = project;
+        }
+    }
+
+    return best;
+}
+
+/**
+ * The rows of one computer as the Access sheet groups them, the same for a person's tree (By person) and the grid of
+ * everyone (By computer). `group`:
+ * - "folders": the folder rows of `foldersOf`, nested by path, Home first.
+ * - "projects": one row for each of `projects` that holds a listed session, by name, with every session in it; then
+ *   the rest as "folders" does, without the folders inside a project's root. Each project row is
+ *   `{ project, folder: root, children: [], sessions }`. `other`: where the other folders start, for their heading.
+ * - "sessions": no folder row, the sessions alone (`flat`).
+ */
+export function arrange({ home, folders, sessions, there, projects = [], group = "folders" }) {
+    if (group === "sessions") {
+        return { roots: [], flat: sessions, other: 0 };
+    }
+
+    if (group !== "projects" || projects.length === 0) {
+        return { roots: foldersOf(home, folders, sessions, there), other: 0 };
+    }
+
+    const found = new Map();
+    const rest = [];
+
+    for (const session of sessions) {
+        const project = projectOfFolder(accessFolder(session, there), projects);
+
+        if (project === undefined) {
+            rest.push(session);
+        } else {
+            if (!found.has(project.root)) {
+                found.set(project.root, {
+                    project,
+                    folder: project.root,
+                    parent: undefined,
+                    children: [],
+                    sessions: [],
+                });
+            }
+
+            found.get(project.root).sessions.push(session);
+        }
+    }
+
+    // A project with a folder given in it, and no session listed, still shows: its row says what they have of it.
+    for (const folder of folders) {
+        const project = projectOfFolder(folder, projects);
+
+        if (project !== undefined && !found.has(project.root)) {
+            found.set(project.root, {
+                project,
+                folder: project.root,
+                parent: undefined,
+                children: [],
+                sessions: [],
+            });
+        }
+    }
+
+    const rows = [...found.values()].sort(
+        (one, other) =>
+            one.project.name.localeCompare(other.project.name) ||
+            one.folder.localeCompare(other.folder),
+    );
+    const others = foldersOf(
+        home,
+        folders.filter((folder) => projectOfFolder(folder, projects) === undefined),
+        rest,
+        there,
+    );
+
+    return { roots: [...rows, ...others], other: rows.length };
+}
+
+/** A folder's row and every row under it, depth first. */
+export function rowsUnder(node) {
+    return [node, ...node.children.flatMap(rowsUnder)];
 }
 
 /** The words of what was typed in a search field, in lower case. */
