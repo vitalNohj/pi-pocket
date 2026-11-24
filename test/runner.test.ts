@@ -2,8 +2,18 @@
 // real WebSocket, the runner, and the real pi-env daemon, all on this machine. Pi Durable's own conformance suite checks
 // that it acts as `NodeExecutionEnv` does; the rest checks linking, keys, and what survives a drop.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import {
+    mkdirSync,
+    mkdtempSync,
+    renameSync,
+    rmSync,
+    symlinkSync,
+    utimesSync,
+    writeFileSync,
+} from "node:fs";
 import { linkInProcess, newIdentity, publicOf } from "../src/server/runner-link/secure-link.ts";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { type AddressInfo, createServer as createNetServer } from "node:net";
@@ -11,6 +21,7 @@ import { Duplex } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
@@ -373,6 +384,68 @@ describe("runner link", () => {
         }
     });
 
+    it("reloads a replaced link on the next connect without changing its pinned keys", async () => {
+        const setup = await serve();
+        const { code } = setup.runners.makeCode("Laptop with a link file", "owner");
+        const linked = linkInProcess((request) => setup.runners.redeem(request), code);
+        const link = setup.runners.link(linked.id);
+        const saved = { server: setup.address, ...linked };
+        const dir = mkdtempSync(join(root, "link-"));
+        const file = join(dir, "runner.json");
+        const next = join(dir, "next.json");
+        const stamp = 1_700_000_000;
+        const first = JSON.stringify({ ...saved, allowHttp: true }) + "\n";
+        const changed = JSON.stringify({ ...saved, allowHttp: false });
+
+        function replace(contents: string): void {
+            assert.equal(Buffer.byteLength(contents), Buffer.byteLength(first));
+            writeFileSync(next, contents, { mode: 0o600 });
+            utimesSync(next, stamp, stamp);
+            renameSync(next, file);
+        }
+
+        replace(first);
+        let socket: Duplex | undefined;
+
+        setup.server.on("upgrade", (_request, accepted) => {
+            socket = accepted;
+        });
+
+        const launcher = fileURLToPath(
+            new URL("../packages/runner/bin/pi-pocket-runner.js", import.meta.url),
+        );
+        const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root };
+
+        delete env.PI_POCKET_RUNNER_DAEMON;
+        const child = spawn(process.execPath, [launcher, "start", "--config", file], {
+            cwd: root,
+            env,
+            stdio: ["ignore", "ignore", "inherit"],
+        });
+        const exited = once(child, "close");
+
+        void exited.catch(() => {});
+
+        try {
+            await until(() => link.online && link.allowHttp, "the original plain HTTP setting");
+            // The test process replaces the running CLI's link, keeping the same size and mtime.
+            replace(changed);
+            socket!.destroy();
+            await until(() => link.online && !link.allowHttp, "the changed plain HTTP setting");
+
+            const connected = socket;
+            const other = { ...saved, serverKey: newIdentity().publicKey };
+
+            replace(JSON.stringify({ ...other, allowHttp: true }) + "\n");
+            connected!.destroy();
+            await until(() => socket !== connected && link.online, "the pinned link to reconnect");
+            assert.equal(link.allowHttp, false, "a different link does not authorize plain HTTP");
+        } finally {
+            child.kill();
+            await Promise.all([exited, close(setup)]);
+        }
+    });
+
     it("stops instead of respawning an executable that could not start", async () => {
         const setup = await serve();
         const lines: string[] = [];
@@ -633,15 +706,40 @@ describe("runner link", () => {
             await until(() => runner.connected, "the runner to connect");
             assert.deepEqual(runner.settings, { network: true });
 
-            setup.config.setComputerSettings(id, { downloads: join(root, "My Downloads") });
+            const downloads = mkdtempSync(join(root, "downloads-"));
+            const cwd = mkdtempSync(join(root, "project-"));
+            const session = randomUUID();
+            const folder = join(downloads, session);
+            const file = join(folder, "report.txt");
+            const env = await sessionEnv(setup, id, cwd, session);
+
+            mkdirSync(folder);
+            writeFileSync(file, "report");
+            const outside = await env.readTextFile(file, context);
+
+            assert.ok(!outside.ok);
+            assert.match(outside.error.message, /outside the session's folder/);
+
+            setup.config.setComputerSettings(id, { downloads });
             setup.runners.link(id).sendSettings();
             await until(
-                () => runner.settings.downloads === join(root, "My Downloads"),
+                () => runner.settings.downloads === downloads,
                 "the folder to reach the runner",
             );
-            assert.equal(setup.runners.link(id).downloads, join(root, "My Downloads"));
+            assert.equal(setup.runners.link(id).downloads, downloads);
 
-            setup.config.setComputerSettings(id, { network: false });
+            const inside = await env.readTextFile(file, context);
+
+            assert.ok(inside.ok);
+            assert.equal(inside.value, "report");
+            setup.config.setComputerSettings(id, { downloads: null, network: false });
+            setup.runners.link(id).sendSettings();
+            await until(() => !runner.settings.network, "the settings to reach the runner");
+
+            const removed = await env.readTextFile(file, context);
+
+            assert.ok(!removed.ok);
+            assert.match(removed.error.message, /outside the session's folder/);
             runner.drop();
             await until(
                 () => runner.connected && !runner.settings.network,
