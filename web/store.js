@@ -2028,10 +2028,10 @@ const handlers = {
  * leaves it out. 3: it takes the message being written as what changed (`mergeLive`). 4: a full view brings only the
  * entries of the newest rows, and it loads earlier ones as it shows them (`loadEarlier`). 5: those entries come light
  * (`partial`) at first, whole in the update after. 6: it names what it kept of the session it opens (`have`), and takes a
- * view that leaves that out (`orderFrom`). The server sends a tab below 3 the whole message with each update, and one
- * whose code names none (as a tab asleep through an update keeps) the queue too.
+ * view that leaves that out (`orderFrom`). 7: its own queue cards include the full draft for Edit. The server sends a
+ * tab below 3 the whole message with each update, and one whose code names none the queue too.
  */
-const PROTOCOL = 6;
+const PROTOCOL = 7;
 const TRANSPORT_KEY = "pocket.transport";
 const local = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
 /** After an event stream stalls on this address, poll for a day, then try the stream again: one slow start is not forever. */
@@ -2873,6 +2873,62 @@ export async function start() {
 
 const current = () => store.state.conversationId;
 
+/** Whether a reply can still change this card: a newer copy of the queue wins. */
+function isCurrentQueued(id, item) {
+    const { view } = store.state;
+
+    return (
+        item !== undefined &&
+        !changingAccount &&
+        !signingOut &&
+        current() === id &&
+        view.conversation?.id === id &&
+        view.inbox.includes(item)
+    );
+}
+
+// The view owns the queue. A change belongs to the exact row it acted on, so a fresh inbox wins even before
+// a reply. The request owns the submission id until it settles, even when a fresh row for that id arrives.
+const queueChanges = new WeakMap();
+const queueRequests = new Set();
+
+export const queuedChange = (item) => queueChanges.get(item);
+export const queuedBusy = (item) => queueRequests.has(item.id);
+
+async function actOnQueued(item, change, request) {
+    const id = current();
+    const before = queuedChange(item);
+
+    if (!isCurrentQueued(id, item) || queuedBusy(item) || before?.hidden || before?.sending) {
+        return;
+    }
+
+    queueRequests.add(item.id);
+    queueChanges.set(item, change);
+    store.set({});
+
+    try {
+        const result = await request(id, item.id);
+
+        if (change.hideOnSuccess && isCurrentQueued(id, item)) {
+            queueChanges.set(item, { hidden: true });
+        }
+
+        return result;
+    } catch (error) {
+        if (before) {
+            queueChanges.set(item, before);
+        } else {
+            queueChanges.delete(item);
+        }
+
+        throw error;
+    } finally {
+        queueRequests.delete(item.id);
+        store.set({});
+    }
+}
+
 /**
  * A send's answer, which names what the send made (`key`). One that does not was not the server's, or was cut short:
  * an error with no status, as for no answer, since what came of the send is not known.
@@ -2926,10 +2982,51 @@ export const actions = {
     saveNotes: (text, rev) => api(`c/${current()}/notes`, { text, rev }),
     turns: (action, to) => api(`c/${current()}/turns`, { action, ...(to ? { to } : {}) }),
     setAccess: (userId, patch) => api(`users/${encodeURIComponent(userId)}`, patch),
-    withdraw: (submissionId) => api(`c/${current()}/withdraw`, { submissionId }),
+    withdraw: (item) =>
+        actOnQueued(
+            item,
+            { label: "Withdrawing...", hideOnSuccess: true },
+            async (id, submissionId) => {
+                const answer = await api(`c/${id}/withdraw`, { submissionId });
+
+                if (answer?.result !== "aborted") {
+                    throw new ApiError(409, "That message has already gone to Pi.");
+                }
+            },
+        ),
     /** Move one's own queued message to "steer" or "followUp", or send it now with "interrupt". */
-    move: (submissionId, mode) => api(`c/${current()}/move`, { submissionId, mode }),
-    editQueued: (submissionId, id = current()) => api(`c/${id}/edit-queued`, { submissionId }),
+    move: (item, mode) =>
+        actOnQueued(
+            item,
+            mode === "interrupt" ? { sending: true } : { mode },
+            async (id, submissionId) => {
+                const result = await api(`c/${id}/move`, { submissionId, mode });
+
+                if (result?.ok !== true) {
+                    throw new ApiError(
+                        undefined,
+                        "The server did not confirm the move. Check the queue.",
+                    );
+                }
+            },
+        ),
+    editQueued: (item) =>
+        actOnQueued(
+            item,
+            { hidden: item.draft !== undefined, label: "Taking back...", hideOnSuccess: true },
+            async (id, submissionId) => {
+                const back = await api(`c/${id}/edit-queued`, { submissionId });
+
+                if (typeof back?.text !== "string" || !Array.isArray(back.attachments)) {
+                    throw new ApiError(
+                        undefined,
+                        "The server did not return the message. Check the queue.",
+                    );
+                }
+
+                return back;
+            },
+        ),
     /** What a Stop held: send them all, or drop one or take it back into the box, by its key. */
     sendHeld: () => api(`c/${current()}/held`, { action: "send" }),
     dropHeld: (key) => api(`c/${current()}/held`, { action: "drop", key }),
