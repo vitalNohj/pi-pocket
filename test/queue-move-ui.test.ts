@@ -421,6 +421,66 @@ for (const action of actions) {
     });
 }
 
+for (const sent of [true, false]) {
+    test(
+        `Edit takes back a card while another send ${sent ? "succeeds" : "fails"}`,
+        real,
+        async (t) => {
+            const { id, releaseBash } = await startQueued(t);
+            const releaseViews = delayViews(t, id);
+            const editReply = holdReply(t, id, "edit-queued");
+            const outgoing = "A separate message on its way";
+            const refusal = "The other message could not go.";
+            const sendReply = holdReply(t, id, "submit", sent ? undefined : { error: refusal });
+
+            await send(outgoing);
+            await until(sendReply.ready, "the held send reply");
+            await act(actions[2]);
+            assert.equal(await textOf(card), "", "the card leaves before the reply or view");
+            assert.equal(await boxText(), outgoing, "the box still holds what is on its way");
+            assert.equal(
+                await page.evaluate(
+                    `!!document.querySelector('.send-button .spinner[aria-label="Taking back queued message"]')`,
+                ),
+                "true",
+            );
+            await page.evaluate('window.queueButton.click(); "repeated"');
+            await until(editReply.ready, "the held Edit reply");
+            assert.equal(editReply.received(), 1);
+
+            if (sent) {
+                editReply.release();
+                await posted(id, "edit-queued", 200);
+                await until(
+                    async () =>
+                        (await page.evaluate(
+                            `!!document.querySelector('.send-button .spinner[aria-label="Sending"]')`,
+                        )) === "true",
+                    "Edit to confirm while the send still waits",
+                );
+                assert.equal(await boxText(), outgoing);
+                sendReply.release();
+                await posted(id, "submit", 200);
+            } else {
+                sendReply.release();
+                await posted(id, "submit", 409);
+                await until(async () => (await textOf(errorNotice)) === refusal, "the send error");
+                assert.equal(await boxText(), outgoing);
+                editReply.release();
+                await posted(id, "edit-queued", 200);
+            }
+
+            const draft = sent ? queuedText : `${queuedText}\n${outgoing}`;
+
+            await until(async () => (await boxText()) === draft, "the confirmed draft in the box");
+            releaseViews();
+            releaseBash();
+            await until(() => !app.isBusy(id), "Pi to finish");
+            assert.equal(editReply.received(), 1);
+        },
+    );
+}
+
 test("a newer view can reverse a move while the original reply is held", real, async (t) => {
     const { id, releaseBash } = await startQueued(t);
     const releaseViews = delayViews(t, id);
