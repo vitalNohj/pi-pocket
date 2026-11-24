@@ -345,12 +345,13 @@ const DEFAULT_TRUST = {
 };
 
 /**
- * The trust menu of a project's row in By computer (or of one of its worktree folders outside it, `entry` alone): the
+ * The trust menu of a project's row in By computer (or of one of its other folders, `entry` alone: a worktree folder
+ * outside it, or a folder in it with a decision of its own): the
  * same menu button as the Access menu (`PopMenu`), with the three choices of the Project trust sheet (`trust.js`
  * `TrustSheet`) and its words. Its button says what holds now: Trusted, Not trusted, Not decided (with Pi's setting
  * for that under it), or Mixed where the project's folders differ; "through" a folder above when that one's decision
- * is what holds. On a project's row, "Trust this folder" and "Don't trust" are saved for its root and each of its
- * folders outside it at once; "Trust the folder above it" for its root alone.
+ * is what holds. On a project's row, "Trust this folder" and "Don't trust" are saved for its root and each of those
+ * other folders at once; "Trust the folder above it" for its root alone.
  */
 export function TrustMenu({ computer, project, entry, fallback }) {
     const trust = entry ? { entries: [entry], root: entry, mixed: false } : trustOfProject(project);
@@ -764,8 +765,13 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
         ].filter(Boolean);
         const untrusted =
             trust !== undefined && !trust.mixed && trust.root.saved !== null && !trust.root.trusted;
-        // A worktree folder outside the project's root, with a decision of its own: its own row, with its own menu.
+        // A worktree folder outside the project's root, or a folder in it, with a decision of its own: its own row, with
+        // its own menu.
         const parts = trust?.mixed ? trust.entries.slice(1) : [];
+        const partName = (entry) =>
+            below(entry.folder, trust.root.folder) === entry.folder
+                ? "Worktree folder"
+                : "Folder in it";
 
         return html`<div class=${`ag-row ag-group ${untrusted ? "untrusted" : ""}`} key=${node.key} role="row">
                 <div class="ag-first" role="rowheader" style=${`--depth:${depth}`}>
@@ -809,7 +815,7 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
                         <span class="ag-chev-space"></span>
                         <${Icon} name="fork" size=${13} />
                         <span class="ag-name-box">
-                            <span class="ag-name">Worktree folder</span>
+                            <span class="ag-name">${partName(entry)}</span>
                             <span class="ag-sub">${shortPath(entry.folder, home)}</span>
                         </span>
                     </div>

@@ -199,6 +199,21 @@ export function keepProjects(id, answer) {
 }
 
 /**
+ * The order of the projects answers of each computer, by its id: the readings asked and the newest one kept, the
+ * saves asked and the newest one kept, and how many saves have answered. Answers come back in any order, and an older
+ * one must not replace a newer one.
+ */
+const answers = new Map();
+
+function answersOf(id) {
+    if (!answers.has(id)) {
+        answers.set(id, { reads: 0, read: 0, saves: 0, saved: 0, answered: 0 });
+    }
+
+    return answers.get(id);
+}
+
+/**
  * Ask again for the projects of every computer I am in charge of, all at once. One that cannot be asked keeps what was
  * known of it.
  */
@@ -206,12 +221,22 @@ export function loadProjects() {
     return Promise.all(
         computers()
             .filter(inCharge)
-            .map((computer) =>
-                api(route(computer, "projects")).then(
-                    (answer) => keepProjects(computer.id, answer),
+            .map((computer) => {
+                const order = answersOf(computer.id);
+                const number = ++order.reads;
+                const { answered } = order;
+
+                return api(route(computer, "projects")).then(
+                    (answer) => {
+                        // Read before a save that has answered since, or before a newer reading: out of date.
+                        if (order.answered === answered && number > order.read) {
+                            order.read = number;
+                            keepProjects(computer.id, answer);
+                        }
+                    },
                     () => undefined,
-                ),
-            ),
+                );
+            }),
     );
 }
 
@@ -220,14 +245,24 @@ export function loadProjects() {
  * "distrust"), and keep the projects the server answers: a decision for a folder above changes other projects too.
  */
 export function setTrust(computer, folders, choice) {
-    return attempt(async () =>
-        keepProjects(computer.id, await api(route(computer, "trust"), { folders, choice })),
-    );
+    const order = answersOf(computer.id);
+    const number = ++order.saves;
+
+    return attempt(async () => {
+        const answer = await api(route(computer, "trust"), { folders, choice });
+
+        order.answered++;
+
+        if (number > order.saved) {
+            order.saved = number;
+            keepProjects(computer.id, answer);
+        }
+    });
 }
 
 /**
  * How Pi trusts a project's folders (`src/server/projects.ts` `ProjectView.trust`: its root first, then each folder
- * outside it): `mixed` when they do not all have one answer. Undefined when the server could not read it.
+ * outside it, then each folder in it with a decision of its own): `mixed` when they do not all have one answer. Undefined when the server could not read it.
  */
 export function trustOfProject(project) {
     const entries = project.trust;

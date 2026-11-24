@@ -3994,8 +3994,21 @@ export class PocketApp {
             );
         }
 
+        /** Why `by`, who is not in charge there, cannot give a folder. */
+        const cannotGive = (): string =>
+            this.policy.reshares(by, id)
+                ? "You can give only a folder that was given to you."
+                : `You cannot give folders on ${place}: Share what they were given is off for you there.`;
+
         // The folder as their list has it, or, new to them, its real path there.
         const listed = this.config.givenFolders(id, person).includes(folder);
+
+        // Someone not in charge gives only a folder of their own list, by its path there. Any other is refused before
+        // it is looked up, with the answer a real folder gets: they do not learn which folders exist on that computer.
+        if (!listed && to !== "none" && !this.policy.mayGiveFolder(by, id, folder)) {
+            throw new HttpError(403, cannotGive());
+        }
+
         const path =
             listed || to === "none"
                 ? folder
@@ -4012,9 +4025,7 @@ export class PocketApp {
                     to === "none"
                         ? `Only whoever gave ${target.name} that folder, or whoever is in charge of ${place}, can take it back.`
                         : from === "none" && !this.policy.mayGiveFolder(by, id, path)
-                          ? this.policy.reshares(by, id)
-                              ? "You can give only a folder that was given to you."
-                              : `You cannot give folders on ${place}: Share what they were given is off for you there.`
+                          ? cannotGive()
                           : `You can let ${target.name} see the sessions in it only in a folder you gave them, while you access all sessions in it yourself.`,
                 );
             }
@@ -6560,6 +6571,16 @@ export class PocketApp {
      * again, made for its person (`#scheduleSessions`). The policy reads the live records, so nothing else is kept.
      */
     accessChanged(): void {
+        // First, before anything new is sent: a list still waiting for a long-poll tab was made before this change, and
+        // can name a session its person may no longer see. It goes, and each list is sent again below as it is now
+        // (`http/events.ts` `PERSON_LISTS`), the session list and the board whether or not they differ from the last.
+        for (const client of this.#clients) {
+            if (client.forgetLists?.() === true) {
+                client.sessionsSent = undefined;
+                client.boardSent = undefined;
+            }
+        }
+
         // A request of someone who may no longer work there ends: no longer chosen, made a viewer, or no longer given the
         // folder. A session's approval stays with the session (`handOver` gives it to who is in charge).
         this.folderRequests.prune((request) =>
@@ -7641,12 +7662,16 @@ export class PocketApp {
      * for who is in charge of it alone; 404 for anyone else.
      */
     async projectsOn(user: User, computer: string): Promise<ProjectsView> {
-        if (
-            !this.policy.inCharge(user, computer) ||
-            (computer !== THIS_SERVER && this.runners.stored(computer) === undefined)
-        ) {
-            throw new HttpError(404, "Not found");
-        }
+        const allowed = (): void => {
+            if (
+                !this.policy.inCharge(user, computer) ||
+                (computer !== THIS_SERVER && this.runners.stored(computer) === undefined)
+            ) {
+                throw new HttpError(404, "Not found");
+            }
+        };
+
+        allowed();
 
         const sessions = Object.entries(this.#sessions).flatMap(([id, meta]) =>
             meta.archived === true ||
@@ -7659,20 +7684,24 @@ export class PocketApp {
         const sources = this.#skillSources();
         const paths = this.#pathsOf(computer);
 
+        const projects = await projectsOf(
+            sessions,
+            (session) => this.memory.project(session.id as unknown as ConversationId, session.cwd),
+            (folder) =>
+                computer === THIS_SERVER
+                    ? folderTrust(folder, sources.agentDir, sources.defaultProjectTrust)
+                    : folderTrustThere(this.#remoteDirs(), computer, folder, paths),
+        );
+
+        // Asked again: the projects were looked up meanwhile (git, here or on the runner), and the right can have gone.
+        allowed();
+
         return {
             defaultProjectTrust:
                 computer === THIS_SERVER
                     ? sources.defaultProjectTrust
                     : defaultTrust(sources.agentDir),
-            projects: await projectsOf(
-                sessions,
-                (session) =>
-                    this.memory.project(session.id as unknown as ConversationId, session.cwd),
-                (folder) =>
-                    computer === THIS_SERVER
-                        ? folderTrust(folder, sources.agentDir, sources.defaultProjectTrust)
-                        : folderTrustThere(this.#remoteDirs(), computer, folder, paths),
-            ),
+            projects,
         };
     }
 

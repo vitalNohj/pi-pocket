@@ -29,6 +29,18 @@ const STALLED_MS = 30_000;
 const MAX_BEHIND_BYTES = 128 * 1024 * 1024;
 
 /**
+ * The events that are a whole list made for one person by what they may see or use, and that `PocketApp.accessChanged`
+ * sends again after every change of access: one still waiting for a tab is out of date then (`Client.forgetLists`).
+ */
+const PERSON_LISTS = new Set([
+    "sessions",
+    "subagents",
+    "folder-approvals",
+    "runners",
+    "this-server",
+]);
+
+/**
  * How often a stream sends a ping, which keeps proxies from closing it, and checks that its tab keeps up; and how long
  * a polling session lives after its last poll or answer, when no poll comes.
  */
@@ -369,6 +381,16 @@ export function createEventStreams(app: PocketApp) {
             created.client.forget = (conversation) => {
                 created.queue = created.queue.filter((item) => item.conversation !== conversation);
                 created.bytes = created.queue.reduce((sum, item) => sum + item.size, 0);
+            };
+
+            created.client.forgetLists = () => {
+                const kept = created.queue.filter((item) => !PERSON_LISTS.has(item.event));
+                const dropped = kept.length !== created.queue.length;
+
+                created.queue = kept;
+                created.bytes = kept.reduce((sum, item) => sum + item.size, 0);
+
+                return dropped;
             };
 
             created.client.close = () => closePoller(created);

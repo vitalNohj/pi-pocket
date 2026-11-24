@@ -212,13 +212,13 @@ function ComputerItem({ computer, selected, onSelect, detail }) {
 }
 
 /**
- * The people of a computer in my charge, as By computer lists them under its grid: anyone but the owner who may be
- * chosen for it, and someone invited to sessions only while they have one there.
+ * The people of a computer in my charge, as By computer lists them under its grid: anyone who may be chosen for it
+ * (`choosable`: not who has it anyway, so the owner too on a runner someone else linked), and someone invited to
+ * sessions only while they have one there.
  */
 function peopleHere(computer) {
     return store.state.users.filter(
         (person) =>
-            person.role !== "owner" &&
             choosable(computer, person) &&
             (!person.sessions || sessionsOf(computer, person).length > 0),
     );

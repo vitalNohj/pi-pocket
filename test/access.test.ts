@@ -535,6 +535,25 @@ describe("may this person see every session in a folder", () => {
         assert.equal(policy.mayRenewFree(guest, "50"), false);
     });
 
+    it("gives nobody a session in a remote workspace by a folder, also with the root folder given", () => {
+        const root = (person: string) => (person === viewer.id ? ["/"] : []);
+        const { policy } = world(
+            [computer(THIS_SERVER, { given: root, sees: root })],
+            [
+                { id: "60", computer: THIS_SERVER, createdBy: owner.id, folder: "/srv/app" },
+                {
+                    id: "61",
+                    computer: THIS_SERVER,
+                    createdBy: owner.id,
+                    folder: "ssh://box/home/me",
+                },
+            ],
+        );
+
+        assert.equal(policy.maySee(viewer, "60"), true, "a session in a folder under /");
+        assert.equal(policy.maySee(viewer, "61"), false, "the owner's remote workspace");
+    });
+
     it("tells a session they have by its folder alone from one that is theirs in another way", () => {
         const { policy } = seeing();
 

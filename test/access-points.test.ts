@@ -366,7 +366,7 @@ describe("live updates", () => {
             app.detach(tab.client);
         }
     });
-    it("drops a lost session's queued long-poll events but keeps app-wide events", async () => {
+    it("drops a lost session's queued long-poll events and the old session list, but keeps app-wide events", async () => {
         const fresh = await newSession(app);
 
         await app.commands.shareSession(fresh, owner(app), [guest.id]);
@@ -410,10 +410,12 @@ describe("live updates", () => {
                 (missing.data as { conversationId: number }).conversationId,
                 Number(fresh),
             );
-            assert.deepEqual(
+            // The list made while the session was shared goes too: it names the session. The hello stays.
+            assert.equal(
                 next.body.events.find((item) => item.seq === sessions.seq),
-                sessions,
+                undefined,
             );
+            assert.ok(next.body.events.some((item) => item.event === "hello"));
             const scoped = new Set(["view", "chat", "notes", "browser", "peek", "presence"]);
 
             assert.deepEqual(
@@ -423,6 +425,55 @@ describe("live updates", () => {
             );
         } finally {
             await call(guest, `poll?session=${session}&close=1`);
+        }
+    });
+
+    it("sends a long-poll tab that has not polled since a folder's level went down no list with that folder's session", async () => {
+        const fresh = await newSession(app);
+        const top = realpathSync(root);
+
+        type Item = { seq: number; event: string; data: unknown };
+        type Poll = { session: string; events: Item[] };
+        const listsIt = (events: Item[]) =>
+            events.some(
+                (item) =>
+                    item.event === "sessions" &&
+                    (item.data as { id: number }[]).some((each) => each.id === Number(fresh)),
+            );
+        const raised = await call(owner(app), "runners/this-server/level", {
+            person: viewer.id,
+            folder: top,
+            level: "all",
+        });
+
+        assert.equal(raised.status, 200, JSON.stringify(raised.body));
+        const first = await call<Poll>(viewer, "poll");
+        const { session } = first.body;
+
+        try {
+            assert.ok(listsIt(first.body.events), "at All sessions, the tab was sent it");
+            const lowered = await call(owner(app), "runners/this-server/level", {
+                person: viewer.id,
+                folder: top,
+                level: "none",
+            });
+
+            assert.equal(lowered.status, 200, JSON.stringify(lowered.body));
+            assert.ok(!listed(viewer).includes(String(fresh)), "the level is down");
+
+            // The tab has not polled since: the next answer must not carry the session in any list.
+            const next = await call<Poll>(viewer, `poll?session=${session}&ack=0`);
+
+            assert.equal(next.status, 200);
+            assert.equal(
+                listsIt(next.body.events),
+                false,
+                "a sessions event sent after the level went down still lists the session",
+            );
+        } finally {
+            await call(viewer, `poll?session=${session}&close=1`);
+            app.config.setGivenFolders(THIS_SERVER, viewer.id, [top]);
+            app.accessChanged();
         }
     });
 
@@ -1808,6 +1859,69 @@ describe("a folder's level, for a viewer and a user", () => {
         assert.equal(refused.status, 400);
         assert.match(String((refused.body as { error?: string }).error), /viewer/);
         await level(owner(app), { person: ulla.id, folder, level: "none" });
+    });
+
+    it("tells a person not in charge nothing of whether a folder exists: the same answer for a real and a missing one", async () => {
+        // The guest is not in charge here and does not share what they were given.
+        const real = await level(guest, { person: vera.id, folder, level: "all" });
+        const missing = await level(guest, {
+            person: vera.id,
+            folder: join(root, "no-such-folder"),
+            level: "all",
+        });
+
+        assert.deepEqual(
+            { status: missing.status, says: JSON.stringify(missing.body).includes("not a folder") },
+            { status: real.status, says: false },
+            `real: ${real.status} ${JSON.stringify(real.body)}; missing: ${missing.status} ${JSON.stringify(missing.body)}`,
+        );
+    });
+
+    it("at Sessions so far hides a session whose making ended after the change, though it began before", async () => {
+        const harness = app.harness;
+        const make = harness.createConversation;
+
+        let began = (): void => {};
+
+        const beginning = new Promise<void>((resolve) => {
+            began = resolve;
+        });
+
+        let release = (): void => {};
+
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+
+        // A slow start (a worktree being made): the session's record is written only once this returns.
+        harness.createConversation = async function (...args: Parameters<typeof make>) {
+            began();
+            await gate;
+
+            return make.apply(harness, args);
+        } as typeof make;
+
+        try {
+            const making = newSession(app, levelled);
+
+            await beginning;
+            await pause();
+            const changed = await level(owner(app), { person: vera.id, folder, level: "past" });
+
+            assert.equal(changed.status, 200, JSON.stringify(changed.body));
+            Reflect.deleteProperty(harness, "createConversation");
+            release();
+            const late = await making;
+
+            assert.ok(
+                !listed(vera).includes(String(late)),
+                "a session that did not exist when Sessions so far was set is shown",
+            );
+        } finally {
+            Reflect.deleteProperty(harness, "createConversation");
+            release();
+            await level(owner(app), { person: vera.id, folder, level: "none" });
+        }
     });
 
     it("refuses a person not in charge a folder that was not given to them, and keeps a viewer's folder when they are made a user", async () => {

@@ -14,14 +14,22 @@ const baseOf = (folder) => folder.replace(windowsPath(folder) ? /[\\/]+$/ : /\/+
 
 /**
  * Whether `folder` is `given` or in it, by the kind of path `given` is: `/a/b` holds `/a/b/c`, and not the folder
- * beside it named `b\c`; `C:\a\b` holds `C:\a\b\c`.
+ * beside it named `b\c`; `C:\a\b` holds `C:\a\b\c`. The top folder (`/`) holds every path there and nothing else:
+ * a remote workspace (`ssh://box/home/me`) is in no folder. As the server has it (`src/server/access.ts` `inFolder`).
  */
 export function inFolder(folder, given) {
     const base = baseOf(given);
 
+    if (base === "") {
+        return (
+            folder === given ||
+            folder.startsWith("/") ||
+            (windowsPath(given) && folder.startsWith("\\"))
+        );
+    }
+
     return (
         folder === given ||
-        base === "" ||
         folder === base ||
         folder.startsWith(`${base}/`) ||
         (windowsPath(given) && folder.startsWith(`${base}\\`))

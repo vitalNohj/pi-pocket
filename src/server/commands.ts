@@ -662,7 +662,6 @@ export class Commands {
         const runnerPermission = randomUUID();
 
         const initial = this.#defaultModel();
-        const now = Date.now();
         const label = title ?? `${basename(cwd) || cwd} on ${app.runners.name(runner)}`;
 
         return this.#inPlace(
@@ -683,6 +682,9 @@ export class Commands {
                         init: async (tx, id) => {
                             // This initializer only adds the new session's record.
                             const sessions = await tx.doc(SessionsDoc);
+                            // When its record is written, not when the request came: a worktree is made between the
+                            // two, and "Sessions so far" (`access.ts` `seesFolder`) goes by this time.
+                            const now = Date.now();
 
                             (await tx.doc(AgentDoc, id)).extensions = app.remoteExtensions();
                             sessions.items[String(id)] = {
@@ -761,8 +763,6 @@ export class Commands {
         // the owner's alone, who needs none.
         const approved = remote ? undefined : await app.approveStart(user, folder, signal);
 
-        const now = Date.now();
-
         return this.#inPlace(
             folder,
             request.worktree === true,
@@ -792,6 +792,9 @@ export class Commands {
                         init: async (tx, id) => {
                             // This initializer only adds the new session's record.
                             const sessions = await tx.doc(SessionsDoc);
+                            // When its record is written, not when the request came: a worktree is made between the
+                            // two, and "Sessions so far" (`access.ts` `seesFolder`) goes by this time.
+                            const now = Date.now();
 
                             sessions.items[String(id)] = {
                                 cwd,
@@ -945,7 +948,6 @@ export class Commands {
 
         const start = this.#defaultModel(session);
         const title = session.title.slice(0, MAX_TITLE);
-        const now = Date.now();
         let copies = new Map<EntryId, string>();
         const conversation = await app.harness.createConversation(
             {
@@ -962,7 +964,9 @@ export class Commands {
                         (await tx.doc(AgentDoc, id)).extensions = app.remoteExtensions();
                     }
 
-                    // This initializer only adds the new session's record.
+                    // This initializer only adds the new session's record, with the time it is written.
+                    const now = Date.now();
+
                     (await tx.doc(SessionsDoc)).items[String(id)] = {
                         cwd,
                         title,

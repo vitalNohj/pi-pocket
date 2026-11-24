@@ -71,6 +71,12 @@ test("a given folder holds itself and what is in it, as the server judges it", (
         ["/home/a/application", "/home/a/app"],
         ["/home/a", "/home/a/app"],
         ["/anything", "/"],
+        // The top folder holds paths alone: a remote workspace is in no folder.
+        ["ssh://box/home/me", "/"],
+        ["ssh://box/home/me", "//"],
+        ["ssh://box/home/me", "\\"],
+        ["\\\\host\\share", "\\"],
+        ["/", "/"],
         ["C:\\Users\\a\\app\\src", "C:\\Users\\a\\app"],
         ["C:\\Users\\a\\apple", "C:\\Users\\a\\app"],
         ["C:\\Users\\a\\app/src", "C:\\Users\\a\\app"],

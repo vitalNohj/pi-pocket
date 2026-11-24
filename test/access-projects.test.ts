@@ -413,3 +413,87 @@ test("trust set from the grid ends the request of a session that waits in a fold
         trustStore().setMany([{ path: projects, decision: null }]);
     }
 });
+
+test("someone who loses Manage runners while the projects are read gets 404, and no project names", async () => {
+    const memory = app.memory;
+    const project = memory.project;
+
+    let began = (): void => {};
+
+    const reading = new Promise<void>((resolve) => {
+        began = resolve;
+    });
+
+    let release = (): void => {};
+
+    const gate = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+
+    memory.project = async function (...args: Parameters<typeof project>) {
+        began();
+        await gate;
+
+        return project.apply(memory, args);
+    } as typeof project;
+
+    try {
+        const answer = call<ProjectsView>(manager, `runners/${THIS_SERVER}/projects`);
+
+        await reading;
+        app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: false });
+        release();
+        const { status, body } = await answer;
+
+        assert.equal(status, 404, `answered: ${JSON.stringify(body).slice(0, 200)}`);
+    } finally {
+        Reflect.deleteProperty(memory, "project");
+        release();
+        app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: true });
+    }
+});
+
+test("Don't trust on a project row also ends the trust of a folder inside it that a session trusted", async () => {
+    try {
+        // A session in alpha/src was trusted from its own trust sheet: the same store.
+        app.setFolderTrust(owner(app), THIS_SERVER, [alphaSub], "trust");
+        assert.equal(trustStore().get(alphaSub), true);
+
+        // The project's row lists that folder after its root and the worktree outside it: with nothing decided for the
+        // root, the grid says Mixed, and not "Not decided".
+        const before = await call<ProjectsView>(owner(app), `runners/${THIS_SERVER}/projects`);
+        const listed = before.body.projects.find((each) => each.root === alpha)!.trust!;
+
+        assert.deepEqual(
+            listed.map((each) => [each.folder, each.trusted]),
+            [
+                [alpha, false],
+                [outside, false],
+                [alphaSub, true],
+            ],
+        );
+
+        // The grid's project row sends every folder its row lists (`access-grid.js` `TrustMenu`).
+        const answer = await call<ProjectsView>(owner(app), `runners/${THIS_SERVER}/trust`, {
+            folders: listed.map((each) => each.folder),
+            choice: "distrust",
+        });
+
+        assert.equal(answer.status, 200);
+        const row = answer.body.projects.find((each) => each.root === alpha)!;
+
+        assert.ok(
+            row.trust!.every((each) => each.trusted === false),
+            "the grid says Not trusted",
+        );
+        assert.equal(
+            trustStore().get(alphaSub),
+            false,
+            "the session in alpha/src still loads the project's skills",
+        );
+    } finally {
+        trustStore().setMany(
+            [alpha, alphaSub, outside].map((each) => ({ path: each, decision: null })),
+        );
+    }
+});

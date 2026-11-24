@@ -144,14 +144,20 @@ export type FolderDecision =
  * there, so `given` tells which rules: one that starts with `/` is on Linux or macOS, where `\` is a character of a
  * name like any other and only `/` parts folders; any other (`C:\work`, `\\host\share`) is on Windows, where both
  * do. So `/a/proj` does not hold the folder beside it that is named `proj\x`.
+ *
+ * The top folder (`/`) holds every path there, and nothing else: a remote workspace (`ssh://box/home/me`) is no
+ * path on that computer, and is in no folder of it.
  */
 export function inFolder(folder: string, given: string): boolean {
     const windows = !given.startsWith("/");
     const base = given.replace(windows ? /[\\/]+$/ : /\/+$/, "");
 
+    if (base === "") {
+        return folder === given || folder.startsWith("/") || (windows && folder.startsWith("\\"));
+    }
+
     return (
         folder === given ||
-        base === "" ||
         folder === base ||
         folder.startsWith(`${base}/`) ||
         (windows && folder.startsWith(`${base}\\`))

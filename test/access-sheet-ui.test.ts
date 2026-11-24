@@ -704,3 +704,111 @@ test(
         );
     },
 );
+
+test(
+    "a projects answer that left before a trust change does not undo it when it comes in late",
+    real,
+    async () => {
+        await load(DESKTOP);
+        await openAt("computer", THIS_SERVER);
+        await grid();
+
+        const result = await inPage<{ before: unknown; after: unknown }>(`
+        const access = await import("/sheets/access.js");
+        const computer = access.computers().find((each) => each.id === ${JSON.stringify(THIS_SERVER)});
+        const shop = () => access.projectsOf(computer).projects.find((each) => each.name === "shop");
+        const root = shop().root;
+        const fetching = window.fetch;
+        let release = () => {};
+        const gate = new Promise((resolve) => (release = resolve));
+        let read = () => {};
+        const answered = new Promise((resolve) => (read = resolve));
+
+        // The projects answer is read on the server before the trust change, and reaches the page after it.
+        window.fetch = async (url, init) => {
+            if (String(url).endsWith("/projects") && (init?.method ?? "GET") === "GET") {
+                const response = await fetching(url, init);
+                const body = await response.text();
+
+                read();
+                await gate;
+
+                return new Response(body, { status: response.status, headers: response.headers });
+            }
+
+            return fetching(url, init);
+        };
+
+        try {
+            const loading = access.loadProjects();
+
+            await answered;
+            await access.setTrust(computer, [root], "distrust");
+            const before = shop().trust[0].saved;
+
+            release();
+            await loading;
+
+            return JSON.stringify({ before, after: shop().trust[0].saved });
+        } finally {
+            window.fetch = fetching;
+            release();
+        }
+    `);
+
+        assert.equal(
+            (result.before as { trusted?: boolean } | null)?.trusted,
+            false,
+            "the save shows",
+        );
+        assert.deepEqual(result.after, result.before, "the late, older answer replaced the save");
+    },
+);
+
+test(
+    "By computer has a column for the owner on a runner a user linked, once the owner is chosen there",
+    real,
+    async () => {
+        const { user: linker, token } = app.config.addUser("Linker", "guest");
+        const desk = app.config.addRunner("Desk", linker.id, newIdentity().publicKey).id;
+
+        app.config.setUsers(desk, [owner(app).id, people[0]!.id]);
+        app.accessChanged();
+
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "access-sheet-linker-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+
+        try {
+            page = await theirs.open(1);
+            await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+            await load();
+            await openAt("computer", desk);
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(document.querySelectorAll(".ag-head .ag-who").length > 0)`,
+                    ),
+                "Desk's grid",
+            );
+
+            const heads = await inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".ag-head .ag-who-name")].map((each) => each.textContent.trim()))`,
+            );
+
+            assert.deepEqual(
+                [...heads].sort(),
+                [owner(app).name, people[0]!.name].sort(),
+                "a column for each person chosen for Desk",
+            );
+        } finally {
+            page = owners;
+            await theirs.closeAll({ final: true });
+            app.config.removeRunner(desk);
+            app.accessChanged();
+        }
+    },
+);

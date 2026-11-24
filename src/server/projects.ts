@@ -23,7 +23,8 @@ export type ProjectView = {
     folders: string[];
     /**
      * How Pi trusts its folders: `root` first, then each folder outside `root` (a worktree Pi Pocket keeps in its data
-     * folder). Absent when the decisions cannot be read.
+     * folder), then each folder inside `root` that has a decision of its own which one of `folders` goes by (someone
+     * answered for a session in it): the root's decision does not reach those. Absent when the decisions cannot be read.
      */
     trust?: FolderTrust[];
 };
@@ -76,7 +77,21 @@ export async function projectsOf(
         .map(([root, { name, folders }]) => {
             const sorted = [...folders].sort((a, b) => a.localeCompare(b));
             const outside = sorted.filter((folder) => !inFolder(folder, root));
-            const trust = [root, ...outside].map(trustOf);
+            // A decision saved for a folder inside the root is what holds for the sessions under it, whatever the root's
+            // says: the project's row must show it, and its choice must reach it.
+            const inside = new Set<string>();
+
+            for (const folder of sorted) {
+                const saved = outside.includes(folder) ? null : trustOf(folder)?.saved;
+
+                if (saved != null && saved.path !== root && inFolder(saved.path, root)) {
+                    inside.add(saved.path);
+                }
+            }
+
+            const trust = [root, ...outside, ...[...inside].sort((a, b) => a.localeCompare(b))].map(
+                trustOf,
+            );
 
             return {
                 root,

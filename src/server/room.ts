@@ -151,6 +151,13 @@ export interface Client {
     send(event: string, data: unknown, conversation?: ConversationId): void;
     /** Drop events waiting for this tab about a conversation it may no longer see. */
     forget?(conversation: ConversationId): void;
+    /**
+     * Drop the lists waiting for this tab that were made for what its person could see or use before (the session
+     * list, the subagents board, their approvals and computers): a long-poll tab keeps an answer until it says it has
+     * it, and would get them again. True when one was dropped: each list as it is now must be sent then, whether or not
+     * it differs from the last.
+     */
+    forgetLists?(): boolean;
     /** End this tab's connection, for someone who was removed. */
     close?(): void;
     /** False while the tab is hidden: the person is away, and push notifications may reach them. */
