@@ -1495,16 +1495,16 @@ export function Composer() {
         }
     };
 
-    // Show the message at once, but keep the saved draft intact until the server confirms the take-back.
+    // Take the card back at once. A send on its way still owns the box; keepBack puts the confirmed edit there later.
     const editQueued = async (item) => {
-        if (queueEdits.has(conversationId) || onTheWay.has(conversationId) || queuedBusy(item)) {
+        if (queueEdits.has(conversationId) || queuedBusy(item)) {
             return;
         }
 
         dictation.stop(true);
         const before = drafts.get(conversationId);
         const person = store.state.me?.id;
-        const draft = item.draft;
+        const draft = onTheWay.has(conversationId) ? undefined : item.draft;
         const preview = {
             text: draft && prependBack(draft.text, before),
             at: draft?.text.length,
@@ -2165,7 +2165,7 @@ export function Composer() {
                                     <button
                                         class="button small"
                                         title="Take it back into the message box to change it"
-                                        disabled=${pending || boxWaiting}
+                                        disabled=${pending || !!queuedEdit}
                                         onClick=${() => editQueued(item)}
                                     >
                                         Edit
