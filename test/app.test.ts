@@ -948,13 +948,17 @@ test("take turns: only the driver steers, others ask, the driver hands over", as
     }
 });
 
-test("a tab gets the queue when it changes, not with each update of a turn, and only the start of each message", async () => {
+test("the queue is sent only when it changes, with full drafts only for the sender's Edit", async () => {
     const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
     const id = await newSession();
-    const tab = fakeTab(id, owner());
-    const late = fakeTab(id, owner());
+    const person = (await addPerson(app, "Reader", "guest")).user;
+    const tab = fakeTab(id, owner(), 7);
+    const late = fakeTab(id, owner(), 7);
+    const reader = fakeTab(id, person, 7);
+    const older = fakeTab(id, owner(), 6);
+    const pasted = `paste: ${"x".repeat(200_000)}`;
 
-    type Row = { text?: string };
+    type Row = { text?: string; draft?: { text: string; attachments: unknown[] } };
     const queue = (of = tab) => (of.field("inbox") ?? []) as Row[];
     const views = () => tab.events.flatMap((each) => (each.event === "view" ? [each.data] : []));
     const streaming = () =>
@@ -972,7 +976,7 @@ test("a tab gets the queue when it changes, not with each update of a turn, and 
         await until(streaming, "the answer to stream");
         // While it streams: a long paste and a picture.
         await app.commands.submit(id, owner(), {
-            text: `paste: ${"x".repeat(200_000)}`,
+            text: pasted,
             requestId: crypto.randomUUID(),
         });
         await conversation.submit(
@@ -1005,19 +1009,34 @@ test("a tab gets the queue when it changes, not with each update of a turn, and 
         const [paste, picture] = queue();
 
         assert.equal(paste!.text!.length, 501);
+        assert.deepEqual(paste!.draft, { text: pasted, attachments: [] });
         assert.equal(picture!.text, "look at this", "its text, not the picture");
-        assert.ok(JSON.stringify(queue()).length < 2000);
+        assert.equal(picture!.draft, undefined, "no sender can Edit the picture");
 
-        // A tab that comes now gets the queue with its first view.
+        // A tab that comes now gets the queue with its first view. Other people and old tabs still get just previews.
         await app.attach(late.client);
+        await app.attach(reader.client);
+        await app.attach(older.client);
         assert.deepEqual(queue(late), queue());
+
+        const previews = queue().map(({ draft: _draft, ...row }) => row);
+
+        assert.deepEqual(queue(reader), previews);
+        assert.deepEqual(queue(older), previews);
+        assert.ok(JSON.stringify(previews).length < 2000);
 
         // A change is sent: stopping withdraws them.
         await app.commands.abort(id, owner());
-        await until(() => queue().length === 0 && queue(late).length === 0, "the queue to empty");
+        await until(
+            () => [tab, late, reader, older].every((client) => queue(client).length === 0),
+            "the queue to empty",
+        );
     } finally {
         app.detach(tab.client);
         app.detach(late.client);
+        app.detach(reader.client);
+        app.detach(older.client);
+        app.config.removeUser(person.id);
     }
 });
 
