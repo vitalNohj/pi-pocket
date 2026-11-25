@@ -64,6 +64,7 @@ import type { BrowserState } from "./browser/page.ts";
 import { Collab, REACTIONS } from "./collab.ts";
 import { Commands } from "./commands.ts";
 import { Direct } from "./direct.ts";
+import { ProjectChat } from "./project-chat.ts";
 import { ExtensionSessions } from "./extension-sessions.ts";
 import { LinkedSessions } from "./linked-sessions.ts";
 import { removeAvatar, saveAvatar } from "./avatars.ts";
@@ -637,6 +638,7 @@ export class PocketApp {
     readonly collab = new Collab(this);
     /** Chat between two people, on a person's page in People. */
     readonly direct = new Direct(this);
+    readonly projectChat = new ProjectChat(this);
     readonly alerts = new Alerts(this);
     readonly providers = new Providers(this);
     /** OpenAI-compatible endpoints the owner adds in the Providers sheet, kept in Pi's `models.json`. */
@@ -5012,6 +5014,7 @@ export class PocketApp {
 
         // Their chats with one person too.
         await this.direct.forgetGone();
+        await this.projectChat.forgetGone();
     }
 
     /** Each person's tabs hear the approvals they may list. */
@@ -5606,6 +5609,7 @@ export class PocketApp {
                               ),
                 // Tells the web app this server has people chat and typing indicators.
                 chat: true,
+                projectChat: this.projectChat.on(),
                 // Manual refresh reloads shared model configuration and catalogs.
                 refreshModels: managesServer,
                 // Tells the web app this server sends peek tiles (`POST /api/peeks`, `peek` events).
@@ -6640,6 +6644,8 @@ export class PocketApp {
             }
         }
 
+        this.projectChat.accessChanged();
+
         // A computer whose linker was just made a viewer: what runs there for the server stops now.
         this.runners.enforce();
         this.runners.changed();
@@ -6995,6 +7001,7 @@ export class PocketApp {
     async unlinkRunner(id: string): Promise<void> {
         this.runners.remove(id);
         this.accessChanged();
+        await this.projectChat.forgetGone();
     }
 
     /**

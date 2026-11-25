@@ -1226,7 +1226,7 @@ test(
     async () => {
         await open("settings");
         await show("Settings");
-        assert.deepEqual(await switches(), ["Tasks expire with the session: off"]);
+        assert.deepEqual(await switches(), ["Tasks expire with the session: off", "Project chat"]);
         await flip("Tasks expire with the session");
         await until(() => app.config.server.tasksExpire === true, "the server to keep the choice");
         await until(
@@ -3595,7 +3595,10 @@ test(
             app.setRight(owner(app), { person: guest.id, right: "managesServer", on: true });
             await until(async () => (await listed()).includes("Settings"), "Settings to be hers");
             await show("Settings");
-            assert.deepEqual(await switches(), ["Tasks expire with the session: off"]);
+            assert.deepEqual(await switches(), [
+                "Tasks expire with the session: off",
+                "Project chat",
+            ]);
             await flip("Tasks expire with the session");
             await until(() => app.config.server.tasksExpire === true, "the server to keep it");
             // The server has it before the page does: a second tap on a switch that still reads off turns it on again.

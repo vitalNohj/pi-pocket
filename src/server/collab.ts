@@ -26,7 +26,7 @@ import type { TypingPlace } from "./room.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-const MAX_CHAT_TEXT = 4000;
+export const MAX_CHAT_TEXT = 4000;
 const MAX_NOTES = 20_000;
 const MAX_PINS = 100;
 /** The same activity line from the same person within this time is one line, not many. */
@@ -34,6 +34,29 @@ const ACTIVITY_MERGE_MS = 10 * 60_000;
 
 /** Reactions people can leave on a message. */
 export const REACTIONS = ["👍", "❤️", "🎉", "👀", "❓", "👎"];
+
+/** People named as `@Name` in a chat message, by id: the name must end at a word boundary. */
+export function chatMentions(text: string, author: string, people: readonly User[]): string[] {
+    const lower = text.toLowerCase();
+    const found: string[] = [];
+
+    for (const person of people) {
+        if (person.id === author) {
+            continue;
+        }
+
+        const name = `@${person.name.toLowerCase()}`;
+
+        for (let at = lower.indexOf(name); at !== -1; at = lower.indexOf(name, at + 1)) {
+            if (!/[\p{L}\p{N}_]/u.test(lower[at + name.length] ?? "")) {
+                found.push(person.id);
+                break;
+            }
+        }
+    }
+
+    return found;
+}
 
 /**
  * Add an activity line to a chat, within a commit: `who` did `text`. The same line from the same person again soon is
@@ -114,7 +137,7 @@ export class Collab {
             quote = { entryId, text: snippet(entryText(entry)) };
         }
 
-        const mentions = this.#mentions(text, user.id);
+        const mentions = chatMentions(text, user.id, app.config.users);
         const messageId = `${user.id.slice(0, 8)}-${clientKey(request.requestId)}`;
         let created = false;
         const message = await app.harness.commit(async (tx) => {
@@ -153,29 +176,6 @@ export class Collab {
         }
 
         return message;
-    }
-
-    /** People named as `@Name` in a chat message, by id: the name must end at a word boundary. */
-    #mentions(text: string, author: string): string[] {
-        const lower = text.toLowerCase();
-        const found: string[] = [];
-
-        for (const person of this.#app.config.users) {
-            if (person.id === author) {
-                continue;
-            }
-
-            const name = `@${person.name.toLowerCase()}`;
-
-            for (let at = lower.indexOf(name); at !== -1; at = lower.indexOf(name, at + 1)) {
-                if (!/[\p{L}\p{N}_]/u.test(lower[at + name.length] ?? "")) {
-                    found.push(person.id);
-                    break;
-                }
-            }
-        }
-
-        return found;
     }
 
     /** After a chat message: tell mentioned people wherever they are, and push to those away. */

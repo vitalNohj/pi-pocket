@@ -591,6 +591,17 @@ describe("steering and viewing", () => {
         assert.equal(answer.status, 200);
     });
 
+    it("requires both the session and the folder for project chat GET and POST", async () => {
+        for (const body of [undefined, { text: "hello from the folder", requestId: "project" }]) {
+            assert.equal((await call(guest, `sessions/${shared}/project-chat`, body)).status, 200);
+            assert.equal((await call(guest, `sessions/${hidden}/project-chat`, body)).status, 404);
+            assert.equal(
+                (await call(invited, `sessions/${shared}/project-chat`, body)).status,
+                404,
+            );
+        }
+    });
+
     it("lets a viewer read and use the people chat, but not the agent chat", async () => {
         assert.equal((await call(viewer, `c/${shared}/history`)).status, 200);
         assert.equal(

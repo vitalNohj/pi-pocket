@@ -569,6 +569,18 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, app.people(user));
         }
 
+        if (first === "project-chat" && second === undefined && method === "POST") {
+            const body = await readJson<{ on?: unknown } | null>(request);
+
+            if (typeof body?.on !== "boolean") {
+                throw new HttpError(400, "on must be true or false.");
+            }
+
+            await app.projectChat.setOn(user, body.on);
+
+            return json(response, 200, { ok: true });
+        }
+
         // "Tasks expire with the session": a server setting.
         if (first === "tasks-expire" && second === undefined && method === "POST") {
             const body = await readJson<{ on?: unknown } | null>(request);
@@ -1712,6 +1724,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
             const { repeating } = await app.commands.updateSession(id, user, body);
 
             return json(response, 200, { ok: true, repeating });
+        }
+
+        if (
+            first === "sessions" &&
+            second !== undefined &&
+            third === "project-chat" &&
+            fourth === undefined
+        ) {
+            return conversationRoutes(route, conversationId(second), parts);
         }
 
         if (first === "c" && second !== undefined) {

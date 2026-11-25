@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
-import { AuthorsDoc, ChatDoc, type DirectMessage } from "./docs.ts";
+import { AuthorsDoc, ChatDoc, type DirectMessage, type ProjectChatMessage } from "./docs.ts";
 import { describe } from "./errors.ts";
 import { entryText, projectEntry, snippet } from "./projection.ts";
 import { span, type WaitView } from "./limit-gate.ts";
@@ -174,13 +174,33 @@ export class Alerts {
             tag: `direct-${from.id}`,
         } satisfies PushMessage;
 
-        app.notifyEmbedders(to.id, { ...push, urgency: "normal" });
+        this.#peoplePush(to.id, push);
+    }
+
+    /** A project mention for a person who is not looking at the folder, as checked by ProjectChat. */
+    project(to: User, key: string, message: ProjectChatMessage): void {
+        if (!(this.#app.pushStore?.prefs(to.id) ?? DEFAULT_PREFS).mention) {
+            return;
+        }
+
+        this.#peoplePush(to.id, {
+            title: `${message.name} · Project chat`,
+            body: snippet(message.text, 400),
+            url: "/",
+            tag: `project-chat-${key}`,
+        });
+    }
+
+    #peoplePush(userId: string, push: Omit<PushMessage, "approval">): void {
+        const app = this.#app;
+
+        app.notifyEmbedders(userId, { ...push, urgency: "normal" });
 
         // Push services want a real contact; Apple rejects placeholders. A tunnel's https address will do.
         const subject = app.access?.url?.startsWith("https://") ? app.access.url : undefined;
 
-        void store
-            ?.notify(to.id, push, {
+        void app.pushStore
+            ?.notify(userId, push, {
                 urgency: "normal",
                 ...(subject === undefined ? {} : { subject }),
             })

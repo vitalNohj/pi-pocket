@@ -34,7 +34,7 @@ Some state lives in this process alone, and a restart forgets it. For example:
 
 - `commands`, `extensionCommands`, `collab`, `alerts`, `providers`, `schedules`, `background`, `goals`, `shell`, `spend`
 - `workspace`, `transcripts`, `attribution`, `piSessions`, `pip`, `watches`, `hooks`, `memory`, `gallery`, `updates`
-- `browsers`, `linkedSessions`
+- `browsers`, `linkedSessions`, `projectChat`
 
 **What stays on `PocketApp`** (the parts call these rather than keeping copies):
 
@@ -62,6 +62,14 @@ Extensions never see `PocketApp`. They get `PocketHost` (`host.ts`), whose funct
 ## Favorite folders
 
 `FolderFavoritesDoc` (`pocket.folder-favorites`) stores each person's ordered favorite working folders in SQLite: `users` holds this server's (as before linked computers had favorites, so older lists stay this server's), and `runners` holds each linked computer's, by person and then computer id, only for the person who linked it. They go to the browser as `folder-favorites` and `runner-favorites` events, and `hello.runnerFavorites`. A folder picker's Recent comes from the same computer's sessions only (`app.recentFolders`). `folder-favorites.ts` reads and changes only the signed-in person's list; explicit star/unstar operations run inside one harness transaction, so concurrent devices do not overwrite unrelated changes. The commit coordinator sends each connected client only its person's list as a `folder-favorites` event. `hello.folderFavorites` supplies the initial list and refreshes it on reconnect. The folder picker shows only what the server committed, so a failed save leaves its list as it was.
+
+## Project chat
+
+`ProjectChatDoc` (`pocket.project-chat`) is a family of app-wide documents. Each holds the newest 500 messages for one computer and folder, keyed by the first 32 hex characters of the SHA-256 of the computer id, a newline, and the folder path. `ProjectChatIndexDoc` (`pocket.project-chat-index`) lists the chats with their computer, folder, and last post time. `app.folderOf` gives the folder, so a worktree uses its source folder's chat.
+
+`GET` and `POST /api/sessions/:id/project-chat` require both session visibility and `access.ts`'s `mayChatIn`: a current person not limited to sessions who may use the computer and is in charge or has a folder covering the session's folder. A post checks again in the commit. Only tabs open to that folder on that computer and still allowed receive `project-chat` events. Mentions can notify people who have the folder and are not looking. A person who manages the server can turn it off with `POST /api/project-chat`: this saves the setting, retires the chats, and empties the index. Startup finishes that cleanup if interrupted. Unlinking a computer retires its chats too.
+
+Pi is not sent project chat. It does not go into the model context, tool results, session views, or transcripts. Like session chat, it is not encrypted: messages are kept as plain text in `pocket.sqlite`. Anyone who can read the server's files can read them, as can a trusted extension installed on the server.
 
 ## Chat with one person
 
