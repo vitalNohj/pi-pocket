@@ -581,6 +581,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // Delete the chat of every folder, with the setting on or off.
+        if (first === "project-chat" && second === undefined && method === "DELETE") {
+            return json(response, 200, { deleted: await app.projectChat.clear(user) });
+        }
+
         // "Tasks expire with the session": a server setting.
         if (first === "tasks-expire" && second === undefined && method === "POST") {
             const body = await readJson<{ on?: unknown } | null>(request);

@@ -307,7 +307,7 @@ test("startup does not scrub with no project index or with a clean sealed index"
 
     assert.deepEqual(sql, []);
     assert.equal(await index(app), undefined, "startup does not create an index");
-    await app.projectChat.setOn(owner(app), false);
+    await app.projectChat.clear(owner(app));
     assert.deepEqual(await index(app), { chats: {}, sealed: true });
     await app.close();
     const before = sql.length;
@@ -610,7 +610,7 @@ test("retiring a new project chat leaves no plain bytes and needs no scrub", asy
         await post(app, from, id, `${marker} `.repeat(56).trim());
     }
 
-    await app.projectChat.setOn(from, false);
+    await app.projectChat.clear(from);
     assert.equal(await stored(app, legacyPlace(app, id).key), undefined);
     assert.deepEqual(sql, []);
     absentFromSqlite(data, marker);
