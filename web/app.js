@@ -582,6 +582,8 @@ function App() {
                     }
                     <${Transcript} key=${state.conversationId} />
                     ${
+                        // The transcript can show before sign-in is checked; the composer needs the person's drafts.
+                        state.me != null &&
                         state.view.conversation &&
                         !state.missing &&
                         // PiP's conversation as a board has PiP's own box, the one its panel has.

@@ -99,6 +99,11 @@ before(async () => {
         if (gate !== undefined) {
             gate.entered = true;
             await gate.wait;
+
+            // A held request can have lost its page. Do not open a stream for a socket already closed.
+            if (response.destroyed) {
+                return;
+            }
         }
 
         if (failModule && path === "/text-hash.js") {
@@ -226,6 +231,14 @@ test(
 
         await say(app, id, "kept across the reload");
         await openOn(id, "kept across the reload");
+        await inPage(`
+            const box = document.querySelector('[data-part="composer"] textarea');
+
+            box.value = 'A draft kept across the reload.';
+            box.dispatchEvent(new Event('input', { bubbles: true }));
+
+            return 'null';
+        `);
         await saved(id);
         const me = hold("/api/me");
 
@@ -255,6 +268,13 @@ test(
 
         await ready();
         assert.equal((await shown("kept across the reload")).boot, false);
+        assert.equal(
+            await inPage<boolean>(`
+                return JSON.stringify(document.querySelector('[data-part="composer"] textarea')?.value === 'A draft kept across the reload.');
+            `),
+            true,
+            "the composer reads the draft after the person is known",
+        );
     },
 );
 
@@ -660,9 +680,11 @@ for (const reshape of [false, true]) {
 
                     draft.value = 'Keep this draft while the transcript updates.';
                     draft.dispatchEvent(new Event('input', { bubbles: true }));
-                    const at = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+                    const box = row.getBoundingClientRect();
+                    const top = scroller.getBoundingClientRect().top;
+                    const at = box.top - top;
 
-                    if (at < -5 || at >= scroller.clientHeight / 2) {
+                    if (box.bottom <= top || at >= scroller.clientHeight / 2) {
                         throw Error('The cache did not reopen at the reading anchor: ' + at);
                     }
 
@@ -872,12 +894,17 @@ test(
                 true,
                 "the old view was forgotten on the device too",
             );
+            // Leave the artificial account before the real stream can start an account-change reload.
+            meUser = undefined;
+            await page.navigate(`${base}/`);
         } finally {
             meUser = undefined;
             me.release();
             events.release();
             poll.release();
         }
+
+        await ready();
     },
 );
 

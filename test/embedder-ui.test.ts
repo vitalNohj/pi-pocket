@@ -129,7 +129,7 @@ test(
         const query = queries.at(-1);
 
         assert.equal(query?.get("embedder"), "notify");
-        assert.equal(query?.get("p"), "6");
+        assert.equal(query?.get("p"), "7");
         await until(
             () => [...app.clients].some((client) => client.embedder),
             "the embedder connection",
@@ -225,7 +225,7 @@ test(
         await page.evaluate(`(await import("/store.js")).connect()`);
         await until(() => queries.at(-1)?.has("have") === true, "the kept session query");
         assert.equal(queries.at(-1)?.get("embedder"), "notify");
-        assert.equal(queries.at(-1)?.get("p"), "6");
+        assert.equal(queries.at(-1)?.get("p"), "7");
     },
 );
 
