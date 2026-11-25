@@ -403,9 +403,18 @@ for (const [name, viewport] of [
                 "Project trust scrolls with the people on a desktop, and stays on a phone",
             );
 
-            // The key is one row, and nothing but what scrolls sideways is wider than the screen.
-            const layout = await inPage<{ keyLines: number; wider: string[] }>(`
+            // The key is four cells, in one row on a desktop and two rows of two on a phone: no level is cut, the key
+            // does not scroll sideways, and nothing but what scrolls sideways is wider than the screen.
+            const layout = await inPage<{
+                key: string[];
+                keyRows: number[];
+                keyCut: string[];
+                wider: string[];
+            }>(`
             const key = document.querySelector(".ak-key");
+            const cells = [...key.querySelectorAll(".ak-item")];
+            const box = key.getBoundingClientRect();
+            const tops = [...new Set(cells.map((each) => Math.round(each.getBoundingClientRect().top)))];
             const scrolls = (element) => {
                 for (let box = element.parentElement; box && !box.classList.contains("sheet"); box = box.parentElement) {
                     if (["auto", "scroll"].includes(getComputedStyle(box).overflowX) && box.scrollWidth > box.clientWidth) {
@@ -417,7 +426,15 @@ for (const [name, viewport] of [
             };
 
             return JSON.stringify({
-                keyLines: Math.round(key.getBoundingClientRect().height / parseFloat(getComputedStyle(key).lineHeight)),
+                key: cells.map((each) => each.querySelector("dt").textContent + ": " + each.querySelector("dd").textContent),
+                keyRows: tops.map((top) => cells.filter((each) => Math.round(each.getBoundingClientRect().top) === top).length),
+                keyCut: [key, ...cells, ...key.querySelectorAll("dt, dd")]
+                    .filter((each) => {
+                        const at = each.getBoundingClientRect();
+
+                        return each.scrollWidth > each.clientWidth || at.right > box.right + 0.5 || at.bottom > box.bottom + 0.5;
+                    })
+                    .map((each) => each.className || each.tagName),
                 wider: [...document.querySelectorAll(".sheet *")]
                     .filter((each) => each.offsetParent !== null && !scrolls(each))
                     .filter((each) => each.getBoundingClientRect().right > innerWidth + 0.5)
@@ -425,7 +442,14 @@ for (const [name, viewport] of [
             });
         `);
 
-            assert.equal(layout.keyLines, 1, "the key is one row");
+            assert.deepEqual(layout.key, [
+                "None: only sessions shared one by one",
+                "Start: starts sessions, sees their own",
+                "So far: also every session here now",
+                "All: also every session that starts later",
+            ]);
+            assert.deepEqual(layout.keyRows, viewport === DESKTOP ? [4] : [2, 2], "the key's rows");
+            assert.deepEqual(layout.keyCut, [], "no level of the key is cut");
             assert.deepEqual(layout.wider, []);
 
             // At 1280 px, the grid is the one thing that scrolls up and down: no second scrollbar beside the sheet's.
