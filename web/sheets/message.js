@@ -1,10 +1,11 @@
-// What a message's menu does: copy, fork from here, and send again (with this model or another).
+// What a message's menu does: copy, fork from here, send again (with this model or another), and undo the last one.
 import { useEffect, useRef, useState } from "preact/hooks";
 import {
     actions,
     attempt,
     canSteer,
     closeSheet,
+    insertIntoComposer,
     navigate,
     notify,
     openSheet,
@@ -81,6 +82,121 @@ function lessonFrom(text) {
 
     return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
 }
+
+/** The newest prompt, even if Pi's replies or a note came after it. */
+function newestPrompt(view, history) {
+    // Only pi.user entries project to user rows in this view.
+    return (
+        view.order.findLast((id) => view.entries.get(id)?.kind === "user") ??
+        history?.findLast((entry) => entry.kind === "user")?.id
+    );
+}
+
+/**
+ * Whether Pi's answer to the newest prompt failed: its last reply after `entryId` ended in an error (the request did
+ * not go through), or the run failed. Undo then reads as Retry: the same action, named for what the person wants.
+ */
+function answerFailed(view, entryId) {
+    const at = view.order.indexOf(entryId);
+
+    if (at === -1) {
+        return false;
+    }
+
+    const reply = view.order
+        .slice(at + 1)
+        .map((id) => view.entries.get(id))
+        .findLast((each) => each?.kind === "assistant");
+
+    // A run can also fail with no answer that says so (its compaction failed, say): the session's row says it, and
+    // the conversation shows its "Run failed" line.
+    return (
+        reply?.stopReason === "error" ||
+        store.state.sessions.some(
+            (each) => each.id === view.conversation.id && each.failed === true,
+        )
+    );
+}
+
+/**
+ * Undo on the newest message to Pi (Retry when Pi's answer failed), for a person who may start sessions: `null` where
+ * it is not offered, else whether it reads Retry, and `blocked`: why it cannot be pressed now. A blocked one shows
+ * greyed out with that reason under it, rather than not at all, so nobody is left looking for it.
+ */
+function undoOffer(view, entry) {
+    const { conversation } = view;
+
+    if (
+        !resendable(entry) ||
+        !canSteer() ||
+        scoped() ||
+        (conversation.kind !== "session" && conversation.kind !== "subagent") ||
+        newestPrompt(view, store.state.history) !== entry.id
+    ) {
+        return null;
+    }
+
+    return {
+        retry: answerFailed(view, entry.id),
+        // The server refuses the same: only sessions are copied, and PiP's never.
+        blocked:
+            conversation.kind === "subagent"
+                ? "Not in a subagent"
+                : conversation.pip
+                  ? "Not in PiP"
+                  : view.live.busy || view.live.compactions?.length
+                    ? "Pi is working"
+                    : // Stopped with messages held in the queue: an undo would drop them.
+                      view.inbox.length > 0
+                      ? "A message is queued"
+                      : undefined,
+    };
+}
+
+/** An undo on its way: a second tap waits for it. */
+let undoing = false;
+
+/**
+ * Open a copy of the session without its last message `entryId`, archive the session, and put the message back in the
+ * box. A second tap while the first is on its way does nothing.
+ */
+const undo = (entryId, retry = false) => {
+    if (undoing) {
+        return;
+    }
+
+    undoing = true;
+    attempt(async () => {
+        const { id, text, attachments, attachmentsOmitted } = await actions.undo(entryId);
+
+        navigate(id);
+        insertIntoComposer(text, [], { attachments });
+        notify(
+            "info",
+            retry
+                ? "Your message is back in the box to send again. The original is archived."
+                : "Undid your last message. The original is archived.",
+        );
+
+        if (attachmentsOmitted) {
+            notify("warning", "Some attachments could not be restored.");
+        }
+    }).finally(() => {
+        undoing = false;
+    });
+};
+
+/** A small action beside another under the list, each taking an equal share of the row, with a hint below it. */
+const Minor = ({ label, hint, run, disabled = false }) => html`<button
+    type="button"
+    class="message-minor"
+    aria-label=${label}
+    disabled=${disabled}
+    onClick=${run}
+>
+    <span>${label}</span>
+    <span class="message-minor-hint">${hint}</span>
+</button>`;
 
 /** A fork or a send again on its way: a second tap waits for it. */
 let branching = false;
@@ -215,6 +331,8 @@ export function MessageSheet({ entryId }) {
     // A message of files alone has no words: its preview says so, and there is nothing to copy or remember.
     const filesAlone = toPi && text.trim() === "";
     const prompt = toPi ? entry : promptBefore(entryId, view);
+    // Undo (or Retry) on the last message to Pi: greyed out with the reason when it cannot be pressed now.
+    const offer = toPi && !waiting ? undoOffer(view, entry) : null;
 
     const copy = () => {
         closeSheet();
@@ -279,7 +397,19 @@ export function MessageSheet({ entryId }) {
                     "keep it as a lesson for Pi",
                 )
             }
-            ${!filesAlone && !waiting && item("Copy text", copy)}
+            ${!offer && !filesAlone && !waiting && item("Copy text", copy)}
         </div>
+        ${
+            offer &&
+            html`<div class="message-minors">
+                <${Minor}
+                    label=${offer.retry ? "Retry" : "Undo"}
+                    hint=${offer.blocked ?? (offer.retry ? "Unsend and try again" : "Unsend and edit")}
+                    disabled=${offer.blocked !== undefined}
+                    run=${() => undo(entry.id, offer.retry)}
+                />
+                ${!filesAlone && html`<${Minor} label="Copy text" hint="As written" run=${copy} />`}
+            </div>`
+        }
     <//>`;
 }
