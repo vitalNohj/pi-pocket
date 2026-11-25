@@ -39,6 +39,7 @@ import {
     THIS_SERVER,
     trustOfProject,
     untilOf,
+    useAllFolders,
     useGroups,
 } from "./access.js";
 import { canShare } from "./session-share.js";
@@ -621,6 +622,13 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
     const shown = shownRows(grid.roots, find);
     const flat = grid.flat.filter((row) => keeps(find, row));
     const projectsShown = shown.filter((each) => each.project).length;
+    // Every folder of the computer, its last row, for who is in charge of it while people are shown and nothing is
+    // searched for.
+    const all = useAllFolders(
+        computer,
+        groups,
+        inCharge(computer) && people.length > 0 && !find.active,
+    );
 
     const revoke = async (person, row) => {
         if (!confirm(`Stop sharing “${row.title}” with ${person.name}?`)) {
@@ -844,6 +852,53 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
             }`;
     };
 
+    /**
+     * The rows of All folders at `depth`: a folder of the computer with a cell for each person, as a folder row above
+     * has (`levelCell`), and open, the folders in it; a note; or the row that shows the rest of a long list.
+     */
+    const browsed = (rows, depth) =>
+        rows.map((row) => {
+            if (row.note !== undefined) {
+                return html`<div class="ag-row ag-empty" role="row">
+                    <div class="ag-first" style=${`--depth:${depth}`}>
+                        <span class="muted small">${row.note}</span>
+                    </div>
+                </div>`;
+            }
+
+            if (row.more !== undefined) {
+                return html`<div class="ag-row ag-empty" role="row">
+                    <div class="ag-first" style=${`--depth:${depth}`}>
+                        <button type="button" class="ag-more" onClick=${row.show}>
+                            Show ${row.more} more
+                        </button>
+                    </div>
+                </div>`;
+            }
+
+            return html`<div class="ag-row ag-browse" key=${row.key} role="row">
+                    <div class="ag-first" role="rowheader" style=${`--depth:${depth}`}>
+                        <button
+                            type="button"
+                            class="ag-toggle"
+                            aria-expanded=${row.open}
+                            aria-label=${`${row.open ? "Close" : "Open"} ${row.path} in All folders`}
+                            title=${row.path}
+                            onClick=${row.toggle}
+                        >
+                            <${Icon} name="chevron" size=${11} class=${`chev ${row.open ? "open" : ""}`} />
+                            <${Icon} name=${row.home ? "home" : "folder"} size=${13} />
+                            <span class="ag-name-box">
+                                <span class="ag-name">${row.name}</span>
+                            </span>
+                        </button>
+                    </div>
+                    ${trustColumn && html`<div class="ag-trust-cell empty"></div>`}
+                    ${cells((person) => levelCell(person, { folder: row.path, all: [] }))}
+                </div>
+                ${row.open && browsed(row.rows, depth + 1)}`;
+        });
+
     const nothing = find.active && shown.length === 0 && flat.length === 0;
 
     return html`<div class=${`ag-wrap ${more ? "more" : ""}`}>
@@ -893,6 +948,28 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
                                       </div>`
                                   }${folderRow(each, 0, undefined)}`,
                           )
+                }
+                ${
+                    all.shown &&
+                    html`<div class="ag-row ag-all" key="all-folders" role="row">
+                            <div class="ag-first" role="rowheader">
+                                <button
+                                    type="button"
+                                    class="ag-toggle"
+                                    aria-expanded=${all.open}
+                                    aria-label=${`${all.open ? "Close" : "Open"} All folders of ${computer.name}`}
+                                    title=${`Every folder on ${computer.name}`}
+                                    onClick=${all.toggle}
+                                >
+                                    <${Icon} name="chevron" size=${11} class=${`chev ${all.open ? "open" : ""}`} />
+                                    <${Icon} name="monitor" size=${13} />
+                                    <span class="ag-name-box">
+                                        <span class="ag-name">All folders</span>
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
+                        ${all.open && browsed(all.rows, 1)}`
                 }
                 ${
                     nothing &&

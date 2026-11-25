@@ -472,3 +472,51 @@ export function below(path, folder) {
         ? path.slice(base.length + 1)
         : path;
 }
+
+/** How many folders of one listing All folders shows at first; a row after them shows the rest. */
+export const FOLDERS_SHOWN = 50;
+
+/**
+ * The top folders of a computer in All folders, as `{ name, path, home }`: its home folder first (`home`, named as the
+ * tree names it), then each top folder of its listing (`roots`: `/`, or each Windows drive) that is not its home.
+ */
+export function topFolders(home, listing) {
+    return [
+        ...(home === undefined ? [] : [{ name: "Home", path: home, home: true }]),
+        ...(listing.roots ?? [])
+            .filter((each) => each !== home)
+            .map((each) => ({ name: each, path: each, home: false })),
+    ];
+}
+
+/**
+ * The rows under one open folder of All folders, each `{ folder }`, `{ note }`, or `{ more }` (how many more there
+ * are): where its computer is offline (`offline`: its name), a note that says so; the server's sentence where it
+ * cannot be read (`failed`); "Reading…" until its folders (`folders`) are known; a note where it holds none; else its
+ * folders in the order given, the first `FOLDERS_SHOWN` of them unless all are asked for (`all`), then a row for the
+ * rest.
+ */
+export function browseRows({ folders, failed, offline, all = false }) {
+    if (offline !== undefined) {
+        return [{ note: `Folders show when ${offline} is online.` }];
+    }
+
+    if (failed !== undefined) {
+        return [{ note: failed }];
+    }
+
+    if (folders === undefined) {
+        return [{ note: "Reading…" }];
+    }
+
+    if (folders.length === 0) {
+        return [{ note: "No folders in it." }];
+    }
+
+    const shown = all ? folders : folders.slice(0, FOLDERS_SHOWN);
+
+    return [
+        ...shown.map((folder) => ({ folder })),
+        ...(shown.length < folders.length ? [{ more: folders.length - shown.length }] : []),
+    ];
+}
