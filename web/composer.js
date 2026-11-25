@@ -2161,7 +2161,11 @@ export function Composer() {
                                 canSteer() &&
                                 !blocked &&
                                 (mode === "steer" || mode === "followUp") &&
-                                html`<div class="queued-actions">
+                                html`<div
+                                    class="queued-actions"
+                                    role="group"
+                                    aria-label="Waiting message actions"
+                                >
                                     <button
                                         class="button small"
                                         title="Take it back into the message box to change it"

@@ -4015,8 +4015,8 @@ pre.diff .del {
     color: var(--muted);
 }
 
-/* Tapped open, one's own message: a quiet row under it, past a line from edge to edge, to move it to Steer or Queue, or
-   send it now. Words at the end, as under Pi's answers. */
+/* Tapped open, one's own message: a quiet row under it to move it to Steer or Queue, or send it now. The buttons
+   stay at the bottom of the scrolling queue while the words pass above them. */
 .queued:has(> .queued-actions) {
     flex-wrap: wrap;
 }
@@ -4030,6 +4030,14 @@ pre.diff .del {
     margin: 0 -4px 0 -12px;
     padding: 3px 4px 3px 12px;
     border-top: 1px solid var(--hair);
+}
+
+.dock[data-count="on"] > .inbox .queued-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    background: var(--card);
+    border-radius: 0 0 var(--r-control) var(--r-control);
 }
 
 .queued-actions .button.small {
