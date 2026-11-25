@@ -682,8 +682,16 @@ async function tab(c, context, screen, fixture, kind, automatic, cookie) {
 
     await p.send("Emulation.setCPUThrottlingRate", { rate: screen.rate });
     await p.send("Network.setCookie", cookie);
+    const preference = screen.nearRows
+        ? `if (location.protocol === 'http:') {
+            const key = 'pocket.appearance';
+            const prefs = JSON.parse(localStorage.getItem(key) ?? '{}');
+            localStorage.setItem(key, JSON.stringify({ ...prefs, nearRows: true }));
+        }`
+        : "";
+
     await p.send("Page.addScriptToEvaluateOnNewDocument", {
-        source: `(${inPage.toString()})(${JSON.stringify(fixture)},${JSON.stringify(kind)},${automatic});`,
+        source: `${preference}\n(${inPage.toString()})(${JSON.stringify(fixture)},${JSON.stringify(kind)},${automatic});`,
     });
 
     return p;
@@ -970,6 +978,29 @@ async function prime(c, context, screen, f, kind, cookie, base) {
 
     // Keep normal bottom behavior on half the returns. Move only 150 CSS pixels on the other half.
     if (f.restore) {
+        // Sync confirms the view, not its first layout. Start from the placed bottom, then take the reading position.
+        const placement = () =>
+            p.eval(`(async()=>{
+            const box = document.querySelector('main.scroller');
+            const { store } = await import('/store.js');
+            return { top: box?.scrollTop, height: box?.scrollHeight, client: box?.clientHeight,
+                rows: box?.querySelector('.transcript')?.children.length, keep: store.state.transcriptPlace?.keep };
+        })()`);
+        let at;
+
+        await until(
+            async () => {
+                at = await placement();
+
+                return at.top > 150 && at.height - at.client - at.top < 2;
+            },
+            "the priming tab at the bottom",
+            5000,
+        ).catch((error) => {
+            throw new Error(
+                `${error.message} for ${screen.name}/${kind}/${f.size}: ${JSON.stringify(at)}`,
+            );
+        });
         await p.eval(
             `(async()=>{const box=document.querySelector('main.scroller'); box.scrollTop-=150; box.dispatchEvent(new WheelEvent('wheel',{deltaY:-150}));})()`,
         );
@@ -1175,9 +1206,9 @@ function cores() {
 }
 
 const usage =
-    "node scripts/perf/draw-measure.mjs [--rev=HEAD] [--runs=10] [--only=desktop|phone] [--trace=first|all] [--control]";
+    "node scripts/perf/draw-measure.mjs [--rev=HEAD] [--runs=10] [--only=desktop|phone] [--trace=first|all] [--near-rows] [--control]";
 const help =
-    "Use a 200% systemd scope with this checkout's dependencies and sandboxed Chromium. --control alternates tracing on and off on a 2,000-entry desktop switch. Results stay in the printed temporary folder.";
+    "Use a 200% systemd scope with this checkout's dependencies and sandboxed Chromium. --near-rows enables experimental drawing in the test tabs. --control alternates tracing on and off on a 2,000-entry desktop switch. Results stay in the printed temporary folder.";
 const usageHint = () =>
     console.log(`usage: ${JSON.stringify(usage)}\nhelp: ${JSON.stringify(help)}`);
 
@@ -1192,7 +1223,7 @@ async function main() {
 
     const bad = opts.find(
         (x) =>
-            !/^--(rev=(?:HEAD|[0-9a-f]{7,40})|runs=[1-9][0-9]?|only=desktop|only=phone|trace=all|trace=first|control)$/.test(
+            !/^--(rev=(?:HEAD|[0-9a-f]{7,40})|runs=[1-9][0-9]?|only=desktop|only=phone|trace=all|trace=first|near-rows|control)$/.test(
                 x,
             ),
     );
@@ -1201,7 +1232,7 @@ async function main() {
     if (
         bad ||
         duplicate ||
-        (opts.includes("--control") && opts.some((x) => /^--(only|trace)=/.test(x)))
+        (opts.includes("--control") && opts.some((x) => /^--(only=|trace=|near-rows$)/.test(x)))
     ) {
         console.log(
             `error: ${JSON.stringify(bad ? `Invalid argument ${bad}` : duplicate ? "Duplicate argument" : "--control takes only --runs")}`,
@@ -1217,6 +1248,7 @@ async function main() {
         only = opt("only"),
         keep = opt("trace") ?? "first";
     const control = opts.includes("--control");
+    const nearRows = opts.includes("--near-rows");
     const rev = execFileSync("git", ["rev-parse", "--verify", `${opt("rev") ?? "HEAD"}^{commit}`], {
         cwd: repo,
         encoding: "utf8",
@@ -1279,6 +1311,7 @@ async function main() {
             rev,
             browser: chrome.version,
             cpu: cores(),
+            nearRows,
             fixtures,
         });
         console.error(`Chromium ${chrome.version}; ${runs} runs per case`);
@@ -1324,9 +1357,9 @@ async function main() {
             });
         }
 
-        for (const screen of (control ? [] : [desktop, mobile]).filter(
-            (s) => !only || s.name === only,
-        )) {
+        const screens = control ? [] : [desktop, mobile].filter((s) => !only || s.name === only);
+
+        for (const screen of screens.map((s) => ({ ...s, nearRows }))) {
             record({
                 type: "set-start",
                 viewport: screen.name,

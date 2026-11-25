@@ -121,40 +121,46 @@ systemd-run --user --scope -q --expand-environment=no -p CPUQuota=200% -- \
 
 Use CPUs available to the process and the local Chromium path. Stdout gives the output JSONL path. By default the private temporary folder contains one gzip-compressed DevTools trace per cell; `--trace=all` retains all traces. `--runs=1` is a smoke run. `--control` runs the paired tracing check, also with `--runs=10` by default. The script stops its server and browser; after saving any wanted data, remove the printed temporary folder. The branch contains only this report and the driver.
 
-### Draw fixes rerun (Stage A)
+### Draw fixes rerun (Stages A and B)
 
-The table below compares fresh matrices on `opti2`, rather than comparing against the earlier study above. Both use Node v24.15.0, Chromium 157.0.8103.50, CPUs 0–1, the 200% systemd scope, and the same viewports, fixtures, half-restored return cases, and trace endpoint. Each cell is **10 runs, median / p95 milliseconds**. Every measured endpoint was a `Paint`.
+These are fresh matrices on `opti2`, not comparisons against the earlier study above. They use Node v24.15.0, Chromium 157.0.8103.50, CPUs 0–1, the 200% systemd scope, and the same viewports, fixtures, half-restored return cases, and trace endpoint. Each cell is **10 runs, median / p95 milliseconds**. Every measured endpoint was a `Paint`. Stage B used `--near-rows`; the extra wait for the priming tab to reach the bottom is outside the measured window.
 
-| Viewport | Entries | Open   |        baseline |         Stage A |
-| -------- | ------: | ------ | --------------: | --------------: |
-| Desktop  |     200 | First  |   298.7 / 380.6 |   304.8 / 357.4 |
-| Desktop  |     200 | Device |   361.8 / 416.6 |   321.2 / 375.9 |
-| Desktop  |     200 | Switch |   211.8 / 286.9 |   211.3 / 266.4 |
-| Desktop  |   2,000 | First  |   309.2 / 366.5 |   305.8 / 342.7 |
-| Desktop  |   2,000 | Device |   388.3 / 472.6 |   306.1 / 334.3 |
-| Desktop  |   2,000 | Switch |   219.5 / 245.0 |   219.2 / 285.0 |
-| Desktop  |  10,000 | First  |   263.5 / 330.0 |   293.8 / 398.3 |
-| Desktop  |  10,000 | Device |   361.2 / 445.4 |   305.3 / 332.7 |
-| Desktop  |  10,000 | Switch |   214.6 / 236.6 |   240.9 / 273.0 |
-| Phone    |     200 | First  | 1006.5 / 1129.1 | 1050.5 / 1060.5 |
-| Phone    |     200 | Device | 1365.6 / 1466.6 | 1183.5 / 1259.3 |
-| Phone    |     200 | Switch |   742.1 / 845.4 |   766.0 / 960.8 |
-| Phone    |   2,000 | First  | 1010.6 / 1076.7 |  965.1 / 1100.8 |
-| Phone    |   2,000 | Device | 1331.9 / 1414.2 | 1197.2 / 1254.0 |
-| Phone    |   2,000 | Switch |   775.6 / 869.2 |   763.5 / 853.0 |
-| Phone    |  10,000 | First  |  905.5 / 1039.1 |  993.7 / 1097.2 |
-| Phone    |  10,000 | Device | 1328.2 / 1380.3 | 1185.4 / 1325.0 |
-| Phone    |  10,000 | Switch |   771.2 / 894.9 |   754.4 / 792.7 |
+| Viewport | Entries | Open   |        Baseline |         Stage A |   Stage B, on |
+| -------- | ------: | ------ | --------------: | --------------: | ------------: |
+| Desktop  |     200 | First  |   298.7 / 380.6 |   304.8 / 357.4 | 154.3 / 193.9 |
+| Desktop  |     200 | Device |   361.8 / 416.6 |   321.2 / 375.9 | 157.6 / 173.2 |
+| Desktop  |     200 | Switch |   211.8 / 286.9 |   211.3 / 266.4 |  82.1 / 133.8 |
+| Desktop  |   2,000 | First  |   309.2 / 366.5 |   305.8 / 342.7 | 165.8 / 181.9 |
+| Desktop  |   2,000 | Device |   388.3 / 472.6 |   306.1 / 334.3 | 156.4 / 220.0 |
+| Desktop  |   2,000 | Switch |   219.5 / 245.0 |   219.2 / 285.0 |   76.2 / 97.3 |
+| Desktop  |  10,000 | First  |   263.5 / 330.0 |   293.8 / 398.3 | 141.1 / 191.6 |
+| Desktop  |  10,000 | Device |   361.2 / 445.4 |   305.3 / 332.7 | 165.8 / 185.7 |
+| Desktop  |  10,000 | Switch |   214.6 / 236.6 |   240.9 / 273.0 |  90.3 / 141.2 |
+| Phone    |     200 | First  | 1006.5 / 1129.1 | 1050.5 / 1060.5 | 445.0 / 483.1 |
+| Phone    |     200 | Device | 1365.6 / 1466.6 | 1183.5 / 1259.3 | 523.0 / 585.0 |
+| Phone    |     200 | Switch |   742.1 / 845.4 |   766.0 / 960.8 | 217.6 / 239.6 |
+| Phone    |   2,000 | First  | 1010.6 / 1076.7 |  965.1 / 1100.8 | 429.4 / 474.2 |
+| Phone    |   2,000 | Device | 1331.9 / 1414.2 | 1197.2 / 1254.0 | 524.4 / 590.5 |
+| Phone    |   2,000 | Switch |   775.6 / 869.2 |   763.5 / 853.0 | 211.8 / 242.8 |
+| Phone    |  10,000 | First  |  905.5 / 1039.1 |  993.7 / 1097.2 | 456.6 / 489.8 |
+| Phone    |  10,000 | Device | 1328.2 / 1380.3 | 1185.4 / 1325.0 | 531.9 / 632.3 |
+| Phone    |  10,000 | Switch |   771.2 / 894.9 |   754.4 / 792.7 | 216.6 / 243.3 |
 
 | Set      | Viewport | UTC               | Start load         | End load           | Sample 1-min range |
 | -------- | -------- | ----------------- | ------------------ | ------------------ | -----------------: |
-| baseline | Desktop  | 12:35:17–12:39:25 | 2.10 / 1.92 / 1.90 | 5.79 / 3.89 / 2.71 |          2.10–5.60 |
-| baseline | Phone    | 12:39:25–12:47:50 | 5.79 / 3.89 / 2.71 | 5.06 / 4.59 / 3.48 |          2.77–6.29 |
+| Baseline | Desktop  | 12:35:17–12:39:25 | 2.10 / 1.92 / 1.90 | 5.79 / 3.89 / 2.71 |          2.10–5.60 |
+| Baseline | Phone    | 12:39:25–12:47:50 | 5.79 / 3.89 / 2.71 | 5.06 / 4.59 / 3.48 |          2.77–6.29 |
 | Stage A  | Desktop  | 12:51:41–12:55:45 | 5.03 / 5.20 / 4.01 | 4.81 / 5.31 / 4.36 |          4.59–6.76 |
 | Stage A  | Phone    | 12:55:45–13:03:57 | 4.81 / 5.31 / 4.36 | 4.43 / 4.49 / 4.30 |          3.27–5.55 |
+| Stage B  | Desktop  | 14:41:32–14:44:48 | 2.95 / 2.39 / 2.08 | 5.61 / 4.67 / 3.10 |          2.87–8.89 |
+| Stage B  | Phone    | 14:44:48–14:50:18 | 5.61 / 4.67 / 3.10 | 4.51 / 4.69 / 3.58 |          4.12–6.01 |
 
 - Device reopen built 20 Markdown answers, down from 40, on both viewports. Hello lists extension names but does not register renderers. When a renderer does register, only parts that depend on its fence or math rules are rebuilt. An access change uses a separate cache key.
 
 - In warm switches, median layout inside scroll placement fell from 75.0 ms desktop and 272.0 ms phone to less than 0.1 ms on both. The browser still lays the rows out before paint. At 10,000 entries, warm-switch style/layout was 155.3 → 170.4 ms desktop and 581.6 → 586.3 ms phone. Do not count the moved layout as an equivalent saving in wall time. Desktop ran under higher load in the Stage A matrix, and desktop first-open and switch latency at 10,000 entries did not improve.
 
 - Closed tool output was not in the DOM or either Find before. The tool command remains searchable; opening builds the same body in that draw. The full-entry follow-up still reaches the view, so opening does not wait for a new request except where clipped content already required one.
+
+- With Stage B on, the first frame had 10 rendered rows, the earlier-history divider, and the placeholder, down from 60 rows and the divider. First open and device reopen built four Markdown answers instead of 20. At 10,000 entries, median warm-switch style/layout fell from Stage A's 170.4 to 48.4 ms on desktop and from 586.3 to 142.2 ms on the throttled phone. This measures the first draw, not the cost of expanding the rest later.
+
+- Stage B leaves the rows below the reading position mounted. It replaces only the older prefix, then mounts that prefix as needed and keeps it mounted. This avoids losing an open card, a selection, or the saved distance from the bottom by removing a mounted row. The placeholder height is an estimate, so the scrollbar can change length when the prefix is drawn. App Find still searches the whole session. Browser Find and screen readers see only mounted rows in this mode; keep the switch off for either.

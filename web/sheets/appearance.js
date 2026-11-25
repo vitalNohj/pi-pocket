@@ -895,6 +895,16 @@ export function AppearanceSheet() {
                     onChange=${() => setPrefs({ waitForUpdates: !p.waitForUpdates })}
                 />
             <//>
+            <${SettingRow}
+                title="Draw only rows near the screen (experimental)"
+                detail="On the next session open, draw fewer rows first. Use session Find to search all messages. Turn this off for browser Find or a screen reader."
+            >
+                <${Switch}
+                    on=${p.nearRows === true}
+                    label="Draw only rows near the screen (experimental)"
+                    onChange=${() => setPrefs({ nearRows: p.nearRows !== true })}
+                />
+            <//>
         </div>
         <div class="label">Status line</div>
         <div class="sheet-list">

@@ -97,6 +97,8 @@ const DEFAULTS = {
      * come, then show it whole. Off, the tab's copy of it shows at once and the updates slide in (`holdsFor` in store.js).
      */
     waitForUpdates: false,
+    /** On open, start with the rows around the reader; fill the older rows when the reader needs them. */
+    nearRows: false,
     /** This browser's own layout of each slot (`slots.js`): `{ [slot]: { order: [ids], hidden: { [id]: boolean } } }`. */
     layout: {},
 };

@@ -139,6 +139,7 @@ The full tour. For setup, see the [README](../README.md).
 
 ## Limitations
 
+- **Draw only rows near the screen (experimental)** in Menu → Appearance is off by default and saved in this browser. On the next session open, Pocket can stand in for older rows with one estimated space. It draws them when you scroll near them or jump to a message, and keeps them drawn for that visit. The scrollbar can change length then. Use session **Find** to search the whole session. Browser Find and screen readers can only see rows that are drawn; leave the switch off if you rely on them. The usual **Show earlier messages** limit still applies. Other themes, browsers without scroll anchoring, and views with custom message presentations use the standard draw path.
 - Pi Durable is experimental, and its API can change between releases. Versions are pinned in `package.json`.
 - Only one server process can use the database at a time.
 - Forks are separate sessions; there is no branch tree to switch between inside one session.
