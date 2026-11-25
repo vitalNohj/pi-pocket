@@ -91,12 +91,14 @@ export function clearAuthCookie(response: ServerResponse): void {
 
 /**
  * What an invite grants someone new: a role, and optionally a single session instead of the ones shared with them, or
- * only its maker's sessions in one folder of one computer instead of all of theirs.
+ * only its maker's sessions in one folder of one computer instead of all of theirs, or only the sessions its maker
+ * chose (`chosen`: top session ids).
  */
 export type InviteGrant = {
     role: Exclude<Role, "owner">;
     session?: string;
     folder?: { computer: string; path: string };
+    chosen?: string[];
     /** The account it makes is temporary (`config.ts` `User.temporary`). */
     temporary?: true;
     accountMinutes?: AccountMinutes;
@@ -292,6 +294,10 @@ export class Auth {
             return { role: invite.role, session: invite.session, ...temporary };
         }
 
+        if (invite.chosen !== undefined) {
+            return { role: invite.role, chosen: invite.chosen, ...temporary };
+        }
+
         return invite.folder === undefined
             ? { role: invite.role, ...temporary }
             : { role: invite.role, folder: invite.folder, ...temporary };
@@ -321,6 +327,7 @@ export class Auth {
               token: string;
               invitedBy?: string;
               folder?: { computer: string; path: string };
+              chosen?: string[];
               device?: true;
           }
         | undefined {
@@ -384,12 +391,13 @@ export class Auth {
             return added;
         }
 
-        // An invite to every session, or to a folder's: the app shares the inviter's sessions with them (`app.ts`
-        // `welcome`).
+        // An invite to every session, to a folder's, or to the sessions its maker chose: the app shares the inviter's
+        // sessions with them (`app.ts` `welcome`).
         return {
             ...added,
             invitedBy: creator.id,
             ...(invite.folder === undefined ? {} : { folder: invite.folder }),
+            ...(invite.chosen === undefined ? {} : { chosen: invite.chosen }),
         };
     }
 

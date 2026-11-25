@@ -34,7 +34,7 @@ import {
     timeAgo,
     useMinute,
 } from "../ui.js";
-import { accessFolder, below, inFolder, keeps, wordsOf } from "./access-tree.js";
+import { accessFolder, below, inFolder, keeps, matches, newest, wordsOf } from "./access-tree.js";
 import {
     AccessRow,
     choosable,
@@ -103,6 +103,178 @@ const cancelInvite = (invite) => {
     }
 };
 
+/** A computer's name, for the heads of the custom invite's chooser: This server, or a linked one's. */
+const computerName = (runner) =>
+    runner === null
+        ? "This server"
+        : (store.state.runners.find((each) => each.id === runner)?.name ??
+          store.state.sessions.find((each) => each.runner === runner && each.runnerName)
+              ?.runnerName ??
+          "Another computer");
+
+/**
+ * The sessions a custom invite may give, as its chooser lists them: the ones not archived that this person may share
+ * (`session-share.js` `canShare`), by computer (this server first), then by folder (`access-tree.js` `accessFolder`),
+ * newest first in a folder. Each computer `{ runner, name, folders }`, each folder `{ key, folder, home, sessions }`.
+ */
+function choosableOf(sessions) {
+    const listed = sessions.filter((each) => !each.archived && canShare(each));
+    const runners = [...new Set(listed.map((each) => each.runner ?? null))].sort((one, other) =>
+        one === null
+            ? -1
+            : other === null
+              ? 1
+              : computerName(one).localeCompare(computerName(other)),
+    );
+
+    return runners.map((runner) => {
+        const there = sessions.filter((each) => (each.runner ?? null) === runner);
+        const folders = new Map();
+
+        for (const each of listed.filter((one) => (one.runner ?? null) === runner)) {
+            const folder = accessFolder(each, there);
+
+            folders.set(folder, [...(folders.get(folder) ?? []), each]);
+        }
+
+        return {
+            runner,
+            name: computerName(runner),
+            folders: [...folders.entries()]
+                .sort(([one], [other]) => one.localeCompare(other))
+                .map(([folder, list]) => ({
+                    key: `${runner ?? ""}\0${folder}`,
+                    folder,
+                    home:
+                        runner === null
+                            ? store.state.server?.home
+                            : store.state.runners.find((each) => each.id === runner)?.home,
+                    sessions: newest(list),
+                })),
+        };
+    });
+}
+
+/** A checkbox for many sessions at once: checked when all of them are picked, mixed when some are. */
+function CheckMany({ label, ids, picked, onChange, children }) {
+    const count = ids.filter((id) => picked.includes(id)).length;
+
+    return html`<label class="check invite-many">
+        <input
+            type="checkbox"
+            aria-label=${label}
+            checked=${ids.length > 0 && count === ids.length}
+            indeterminate=${count > 0 && count < ids.length}
+            disabled=${ids.length === 0}
+            onChange=${(event) =>
+                onChange(
+                    event.currentTarget.checked
+                        ? [...new Set([...picked, ...ids])]
+                        : picked.filter((id) => !ids.includes(id)),
+                )}
+        />
+        ${children}
+    </label>`;
+}
+
+/**
+ * The chooser of a custom invite: the sessions this person may share, to check one by one, a folder's at once, or all
+ * that show; a search keeps the ones whose name or folder has each word typed. `picked`: the ids checked.
+ */
+function InviteChooser({ groups, picked, onChange }) {
+    const [query, setQuery] = useState("");
+    const words = wordsOf(query);
+    const total = groups.flatMap((each) => each.folders.flatMap((folder) => folder.sessions));
+    const shown = groups
+        .map((computer) => ({
+            ...computer,
+            folders: computer.folders
+                .map((folder) => ({
+                    ...folder,
+                    sessions: folder.sessions.filter((each) =>
+                        matches(words, each.title || "New session", folder.folder, each.cwd),
+                    ),
+                }))
+                .filter((folder) => folder.sessions.length > 0),
+        }))
+        .filter((computer) => computer.folders.length > 0);
+    const ids = (list) => list.map((each) => each.id);
+    const count = total.filter((each) => picked.includes(each.id)).length;
+
+    if (total.length === 0) {
+        return html`<p class="muted small" data-part="invite-chooser">
+            No session of yours to share yet.
+        </p>`;
+    }
+
+    return html`<div class="invite-chooser" data-part="invite-chooser">
+        <label class="search">
+            <${Icon} name="search" size=${14} />
+            <input
+                placeholder="Find a session or folder"
+                aria-label="Find a session or folder"
+                value=${query}
+                onInput=${(event) => setQuery(event.currentTarget.value)}
+                onKeyDown=${(event) => {
+                    // Escape clears what is typed, not the sheet around it.
+                    if (event.key === "Escape" && query !== "") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setQuery("");
+                    }
+                }}
+            />
+        </label>
+        <${CheckMany}
+            label="Select all"
+            ids=${ids(shown.flatMap((each) => each.folders.flatMap((folder) => folder.sessions)))}
+            picked=${picked}
+            onChange=${onChange}
+        >
+            <span>Select all</span>
+            <span class="invite-count">${`${count} of ${total.length}`}</span>
+        <//>
+        <div class="invite-list">
+            ${shown.map(
+                (computer) => html`<div class="invite-computer" key=${computer.runner ?? ""}>
+                    <div class="invite-computer-name">${computer.name}</div>
+                    ${computer.folders.map(
+                        (folder) => html`<div class="invite-folder" key=${folder.key}>
+                            <${CheckMany}
+                                label=${`Give every session in ${folder.folder}`}
+                                ids=${ids(folder.sessions)}
+                                picked=${picked}
+                                onChange=${onChange}
+                            >
+                                <span class="mono invite-folder-name" title=${folder.folder}>
+                                    ${shortPath(folder.folder, folder.home)}
+                                </span>
+                            <//>
+                            ${folder.sessions.map(
+                                (each) => html`<label class="check invite-session" key=${each.id}>
+                                    <input
+                                        type="checkbox"
+                                        aria-label=${`Give ${each.title || "New session"}`}
+                                        checked=${picked.includes(each.id)}
+                                        onChange=${(event) =>
+                                            onChange(
+                                                event.currentTarget.checked
+                                                    ? [...picked, each.id]
+                                                    : picked.filter((id) => id !== each.id),
+                                            )}
+                                    />
+                                    <span>${each.title || "New session"}</span>
+                                </label>`,
+                            )}
+                        </div>`,
+                    )}
+                </div>`,
+            )}
+            ${shown.length === 0 && html`<p class="muted small">No session matches the search.</p>`}
+        </div>
+    </div>`;
+}
+
 export function InviteSheet({ session = null }) {
     const { view, sessions } = store.state;
     const here =
@@ -113,10 +285,23 @@ export function InviteSheet({ session = null }) {
               : null;
     // The session as the list has it: its folder, its computer, and whether this person may share it.
     const row = here ? (sessions.find((each) => each.id === here.id) ?? here) : null;
-    // "Only this session" is for who may share it (`access.ts` `mayShare`); the other two, for who may invite.
+    // "Only this session" is for who may share it (`access.ts` `mayShare`); the other three, for who may invite.
     const single = row !== null && canShare(row);
-    // What the invite shares: the open session when there is one, else its folder, else all of this person's.
+    // What the invite shares: the open session when there is one, else its folder, else all of this person's; or, with
+    // Custom, the sessions checked in its chooser.
     const [what, setWhat] = useState(single ? "session" : here ? "folder" : "mine");
+    const custom = collab() && what === "custom";
+    // The sessions Custom may give, and the ids of the ones checked; one no longer listed (archived, say) is not sent.
+    const groups = custom ? choosableOf(sessions) : [];
+    const offered = groups.flatMap((each) =>
+        each.folders.flatMap((folder) => folder.sessions.map((one) => one.id)),
+    );
+    const [picked, setPicked] = useState([]);
+    const giving = picked.filter((id) => offered.includes(id));
+    // What the sheet said when the newest invite was asked for: Custom shows that it is being made. The ref is the same
+    // for the effect below, which can run after Make invite was pressed for what the sheet says now.
+    const [requested, setRequested] = useState(null);
+    const requesting = useRef(null);
     const [minutes, setMinutes] = useState(15);
     const [account, setAccount] = useState(7 * 24 * 60);
     // Off until asked: whoever joins has a temporary account, which links no authenticator and so stays a viewer.
@@ -127,7 +312,13 @@ export function InviteSheet({ session = null }) {
     // The newest invite could not be made: the sheet offers to try again rather than wait for ever.
     const [failed, setFailed] = useState(false);
     // What the sheet says now: an invite shows only while it was made for exactly this.
-    const asked = JSON.stringify([what, minutes, temporary, ...(temporary ? [account] : [])]);
+    const asked = JSON.stringify([
+        what,
+        minutes,
+        temporary,
+        ...(temporary ? [account] : []),
+        ...(custom ? [[...giving].sort((one, other) => one - other)] : []),
+    ]);
     // Only the newest invite shows: one asked for before a change, answering late, must not stand for what the sheet says.
     const latest = useRef(0);
     // The invite the sheet last showed: a change to what it grants, or how long it lasts, ends it.
@@ -150,6 +341,8 @@ export function InviteSheet({ session = null }) {
 
             setMade(null);
             setFailed(false);
+            setRequested(asked);
+            requesting.current = asked;
             let answer;
 
             try {
@@ -157,9 +350,11 @@ export function InviteSheet({ session = null }) {
                     minutes,
                     ...(collab() ? { temporary } : {}),
                     ...(temporary && account !== null ? { accountMinutes: account } : {}),
-                    ...(collab() && here && what !== "mine"
-                        ? { session: here.id, ...(what === "folder" ? { folder: true } : {}) }
-                        : {}),
+                    ...(custom
+                        ? { sessions: giving }
+                        : collab() && here && what !== "mine"
+                          ? { session: here.id, ...(what === "folder" ? { folder: true } : {}) }
+                          : {}),
                 });
 
                 // A server from before folder invites made one to the session alone: never shown as the folder's.
@@ -167,6 +362,13 @@ export function InviteSheet({ session = null }) {
                     cancelInvite(answer);
 
                     throw new Error("Restart Pi Pocket to invite someone to a folder.");
+                }
+
+                // A server from before custom invites made one to all of its maker's sessions: never shown as custom.
+                if (custom && answer.grant?.chosen === undefined) {
+                    cancelInvite(answer);
+
+                    throw new Error("Restart Pi Pocket to make a custom invite.");
                 }
 
                 // A server from before temporary accounts made a full one: never shown as temporary.
@@ -200,6 +402,24 @@ export function InviteSheet({ session = null }) {
         });
 
     useEffect(() => {
+        // Custom makes no invite until Make invite is pressed, and a change to it ends the one shown: each check would
+        // else make a live code and cancel the one before. One asked for already for exactly this stays.
+        if (custom) {
+            if (requesting.current === asked) {
+                return;
+            }
+
+            requesting.current = null;
+            latest.current++;
+            cancelInvite(shown.current);
+            shown.current = null;
+            setMade(null);
+            setFailed(false);
+            setRequested(null);
+
+            return;
+        }
+
         create({ replacing: true });
     }, [asked]);
     useEffect(
@@ -220,15 +440,20 @@ export function InviteSheet({ session = null }) {
                   sessions.filter((each) => (each.runner ?? null) === (row.runner ?? null)),
               )
             : null);
-    const where =
-        what === "session" && here
-            ? `only “${here.title}”`
-            : what === "folder" && here
-              ? `the sessions you started in ${folder} so far, and later ones only when they are shared with them`
-              : "the sessions you started so far, and later ones only when they are shared with them";
+    // How many sessions Custom gives: as the server kept them once it answered, else as checked.
+    const chosen = invite?.grant?.chosen?.length ?? giving.length;
+    const where = custom
+        ? chosen === 1
+            ? "the session you chose"
+            : `the ${chosen} sessions you chose`
+        : what === "session" && here
+          ? `only “${here.title}”`
+          : what === "folder" && here
+            ? `the sessions you started in ${folder} so far, and later ones only when they are shared with them`
+            : "the sessions you started so far, and later ones only when they are shared with them";
     // An invite to all of its maker's sessions is the widest there is: the sheet says so, and what follows for an
     // account that is not temporary.
-    const all = what === "mine" || !here;
+    const all = what === "mine" || (!here && !custom);
     // As long as the invite shown lasts (a server that does not say: 15 minutes), or, while one is made, as chosen.
     const lasting = LASTS.find(
         ([each]) => each === (invite ? (invite.minutes ?? 15) : minutes),
@@ -247,9 +472,7 @@ export function InviteSheet({ session = null }) {
                         : "They join as a viewer. To prompt, they link an authenticator and are made a user in People."
                 }
             </p>
-            ${
-                here &&
-                html`<div class="field">
+            <div class="field">
                     <div class="label">Share</div>
                     <div class="invite-share">
                         <div class="segmented">
@@ -263,13 +486,16 @@ export function InviteSheet({ session = null }) {
                                     Only this session
                                 </button>`
                             }
-                            <button
-                                class=${what === "folder" ? "on" : ""}
-                                aria-pressed=${what === "folder"}
-                                onClick=${() => setWhat("folder")}
-                            >
-                                This folder
-                            </button>
+                            ${
+                                here &&
+                                html`<button
+                                    class=${what === "folder" ? "on" : ""}
+                                    aria-pressed=${what === "folder"}
+                                    onClick=${() => setWhat("folder")}
+                                >
+                                    This folder
+                                </button>`
+                            }
                             <button
                                 class=${what === "mine" ? "on" : ""}
                                 aria-pressed=${what === "mine"}
@@ -277,9 +503,17 @@ export function InviteSheet({ session = null }) {
                             >
                                 My sessions
                             </button>
+                            <button
+                                class=${custom ? "on" : ""}
+                                aria-pressed=${custom}
+                                onClick=${() => setWhat("custom")}
+                            >
+                                Custom
+                            </button>
                         </div>
                         ${
-                            what !== "mine" &&
+                            (what === "session" || what === "folder") &&
+                            row &&
                             html`<span
                                 class=${`invite-what${what === "folder" ? " mono" : ""}`}
                                 title=${what === "folder" ? folder : row.title || "New session"}
@@ -295,8 +529,22 @@ export function InviteSheet({ session = null }) {
                             </span>`
                         }
                     </div>
+                    ${
+                        custom &&
+                        html`<${InviteChooser}
+                                groups=${groups}
+                                picked=${giving}
+                                onChange=${setPicked}
+                            />
+                            <button
+                                class="button primary wide"
+                                disabled=${giving.length === 0}
+                                onClick=${create}
+                            >
+                                Make invite
+                            </button>`
+                    }
                 </div>`
-            }`
         }
         <div class="field">
             <div class="label">Invite expires in</div>
@@ -355,9 +603,13 @@ export function InviteSheet({ session = null }) {
                 }
             </div>`
         }
-        <p class="muted small">
-            ${`Scan this on the other device, or send it the link. It works once and expires ${lasting}. Whoever joins sees ${where}.`}
-        </p>
+        ${
+            // Custom says what an invite gives once one is shown or being made: before that there is nothing to scan.
+            (!custom || invite || failed || requested === asked) &&
+            html`<p class="muted small">
+                ${`Scan this on the other device, or send it the link. It works once and expires ${lasting}. Whoever joins sees ${where}.`}
+            </p>`
+        }
         ${
             invite?.access?.url &&
             html`<p class="muted small">Other devices connect through ${invite.access.label}.</p>`
@@ -366,10 +618,14 @@ export function InviteSheet({ session = null }) {
             invite
                 ? html`<${InviteShown} invite=${invite} />`
                 : failed
-                  ? html`<p class="muted small">No invite yet. Tap New invite to try again.</p>`
-                  : html`<${Loader} label="Making an invite" />`
+                  ? html`<p class="muted small">
+                        ${`No invite yet. Tap ${custom ? "Make invite" : "New invite"} to try again.`}
+                    </p>`
+                  : !custom || requested === asked
+                    ? html`<${Loader} label="Making an invite" />`
+                    : null
         }
-        <button class="button wide" onClick=${create}>New invite</button>
+        ${!custom && html`<button class="button wide" onClick=${create}>New invite</button>`}
         ${
             collab() &&
             html`<p class="muted small">
