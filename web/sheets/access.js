@@ -20,6 +20,7 @@ import {
     ago,
     arrange,
     below,
+    browseRows,
     foldersOf,
     inFolder as inFolderOf,
     hitsOf,
@@ -30,7 +31,9 @@ import {
     orderOf,
     ranked,
     seenBy,
+    topFolders,
 } from "./access-tree.js";
+import { folderListings, showsHidden } from "../folder-listings.js";
 import { shortPath } from "../folder-paths.js";
 import { canShare } from "./session-share.js";
 import { folderCheck, NO_SELECT, sessionCheck, useListed } from "./session-select.js";
@@ -735,6 +738,134 @@ export function useGroups(find = NO_FIND) {
     };
 }
 
+/** What the last row of a computer's tree, All folders, is opened by in the tree's own record of what is open. */
+const ALL_FOLDERS = "\0all";
+
+/**
+ * All folders, the last row of a computer's tree for who is in charge of it: every folder there, as the folder picker
+ * lists them (`folder-listings.js`, whose listings it shares), to give one that holds no session yet. `groups`: the
+ * tree's record of what is open (`useGroups`), which keeps these rows too. `shown`: whether the row is drawn at all.
+ *
+ * It reads a folder only while its row is open, each read on its own: opened, All folders reads the home folder (`~`),
+ * whose listing names the computer's top folders. Nothing is read while a linked computer is offline; what is open is
+ * read when it is back. Returns the row as a tree: `{ shown, open, rows, toggle }`, each of `rows` a note (`{ note }`), the
+ * row that shows the rest of a long list (`{ more, show }`), or a folder (`{ key, name, path, home, open, rows, toggle }`).
+ */
+export function useAllFolders(computer, groups, shown) {
+    const runner = computer.id === THIS_SERVER ? null : computer.id;
+    const offline = runner !== null && !computer.online;
+    const hidden = showsHidden();
+    // Path → what its read gave: `{ listing }`, or `{ failed }`, the server's sentence.
+    const [read, setRead] = useState(() => new Map());
+    // The folders whose whole list shows, by their row's key.
+    const [whole, setWhole] = useState(() => new Set());
+    // Path → the number of its read on its way: only the newest answer shows.
+    const asked = useRef(new Map());
+    const count = useRef(0);
+    // The setting the reads were asked with: a change asks each open folder again.
+    const asking = useRef({ runner, hidden });
+    const wanted = new Set();
+    const open = shown && groups.isOpen(ALL_FOLDERS);
+
+    const rowsOf = (entry, key, top) =>
+        browseRows({
+            folders: entry?.listing?.dirs,
+            failed: entry?.failed,
+            all: whole.has(key),
+        }).map((row) =>
+            row.folder === undefined
+                ? row.more === undefined
+                    ? row
+                    : { more: row.more, show: () => setWhole((now) => new Set(now).add(key)) }
+                : folderOf({ name: row.folder.name, path: row.folder.path, home: false }, top),
+        );
+
+    // A path can show twice (home, and again under `/`): a row's key names the top folder it is under too.
+    const folderOf = (folder, top) => {
+        const key = `${ALL_FOLDERS}:${top}\n${folder.path}`;
+        const opened = groups.isOpen(key);
+
+        if (opened) {
+            wanted.add(folder.path);
+        }
+
+        return {
+            ...folder,
+            key,
+            open: opened,
+            rows: opened ? rowsOf(read.get(folder.path), key, top) : [],
+            toggle: () => groups.toggle(key),
+        };
+    };
+
+    let rows = [];
+
+    if (open && offline) {
+        rows = browseRows({ offline: computer.name });
+    } else if (open) {
+        wanted.add("~");
+
+        const top = read.get("~");
+
+        rows =
+            top?.listing === undefined
+                ? browseRows({ failed: top?.failed })
+                : topFolders(homeOf(computer) ?? top.listing.home, top.listing).map((each) =>
+                      folderOf(each, each.path),
+                  );
+    }
+
+    const reading = offline ? "" : [...wanted].join("\n");
+
+    // Each folder newly open is read now, all at once: what was read before shows meanwhile. A row closed lets go of
+    // its read, so it is read again when it opens.
+    useEffect(() => {
+        const now = new Set(reading === "" ? [] : reading.split("\n"));
+
+        if (asking.current.runner !== runner || asking.current.hidden !== hidden) {
+            asking.current = { runner, hidden };
+            asked.current.clear();
+        }
+
+        for (const path of [...asked.current.keys()]) {
+            if (!now.has(path)) {
+                asked.current.delete(path);
+            }
+        }
+
+        const keep = (path, entry) =>
+            setRead((was) => {
+                const next = new Map(was);
+
+                if (entry === undefined) {
+                    next.delete(path);
+                } else {
+                    next.set(path, entry);
+                }
+
+                return next;
+            });
+
+        for (const path of now) {
+            if (asked.current.has(path)) {
+                continue;
+            }
+
+            const ask = ++count.current;
+            const kept = folderListings.cached(runner, path, hidden);
+
+            asked.current.set(path, ask);
+            keep(path, kept === undefined ? undefined : { listing: kept });
+            folderListings.read(runner, path, hidden).then(
+                (listing) => asked.current.get(path) === ask && keep(path, { listing }),
+                (error) => asked.current.get(path) === ask && keep(path, { failed: error.message }),
+            );
+        }
+    }, [reading, runner, hidden]);
+
+    return { shown, open, rows, toggle: () => groups.toggle(ALL_FOLDERS) };
+}
+
 /**
  * The rows of a tree that open: for a computer someone else is in charge of as `people.js` shapes it, its folders,
  * then the sessions outside them, each with the sessions it lists under what is searched for and filtered by
@@ -773,12 +904,15 @@ export function countOf(rows) {
  * marked in a folder's name. `depth`: how far in the tree it is, as the Files panel's rows. `home`: the computer's
  * home folder, with its own icon. `project`: a project's row, named for it, with its top folder's path (`path`) and a
  * small tag (`tag`: "Not trusted") beside its name. `check`: its checkbox at its start, while sessions are selected
- * (`session-select.js` `folderCheck`).
+ * (`session-select.js` `folderCheck`). `kind`, `icon`: a row of All folders (`useAllFolders`), with its own class and
+ * icon in place of a folder's.
  */
 export function TreeGroup({
     folder = false,
     home = false,
     project = false,
+    kind,
+    icon,
     path,
     tag,
     name,
@@ -795,11 +929,11 @@ export function TreeGroup({
     children,
 }) {
     return html`<div class=${`at-node ${off ? "off" : ""}`}>
-        <div class=${`at-line ${folder ? "at-folder-line" : ""}`}>
+        <div class=${`at-line ${folder || kind === "at-browse" ? "at-folder-line" : ""}`}>
             ${check}
             <button
                 type="button"
-                class=${`ft-row dir ${folder || project ? "at-folder" : "at-rest"} ${project ? "at-project" : ""}`}
+                class=${`ft-row dir ${kind ?? (folder || project ? "at-folder" : "at-rest")} ${project ? "at-project" : ""}`}
                 style=${`--depth:${depth}`}
                 aria-expanded=${open}
                 aria-label=${label}
@@ -807,7 +941,7 @@ export function TreeGroup({
                 onClick=${onToggle}
             >
                 <${Icon} name="chevron" size=${11} class=${`chev ${open ? "open" : ""}`} />
-                <${Icon} name=${project ? "fork" : home ? "home" : folder ? "folder" : "chat"} size=${13} />
+                <${Icon} name=${icon ?? (project ? "fork" : home ? "home" : folder ? "folder" : "chat")} size=${13} />
                 <span class="ft-name">
                     ${
                         project
@@ -1217,13 +1351,12 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
     const { offers, sees, until, worktrees, given: folders } = tree;
     const { chosen, manager, starts } = standing(computer, person);
     const groups = useGroups(find);
-    const [adding, setAdding] = useState(false);
-    const [draft, setDraft] = useState("");
     const [busy, setBusy] = useState(false);
-    const field = useRef(null);
     const on = `${person.name} on ${computer.name}`;
-    // Folders are given to whoever uses the computer and is not in charge of it: a viewer too, to read.
+    // Folders are given to whoever uses the computer and is not in charge of it: a viewer too, to read. Who is in charge
+    // of it gives them any folder there from All folders, the tree's last row, while nothing is searched for.
     const gives = chosen && !person.sessions && !manager;
+    const all = useAllFolders(computer, groups, gives && inCharge(computer) && !find.active);
     const reason = person.sessions
         ? "Invited to one session only"
         : manager
@@ -1232,12 +1365,6 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
             ? `Not on ${computer.name}`
             : undefined;
 
-    useEffect(() => {
-        if (adding) {
-            field.current?.focus();
-        }
-    }, [adding]);
-
     const setLevel = async (folder, level) => {
         setBusy(true);
 
@@ -1245,17 +1372,6 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
             return await setLevelOf(computer, person, folder, level);
         } finally {
             setBusy(false);
-        }
-    };
-
-    const add = async () => {
-        const folder = draft.trim();
-
-        // What was typed stays when it is refused (not a folder there), to correct it. A user starts sessions in it;
-        // a viewer reads every session in it.
-        if (folder !== "" && (await setLevel(folder, person.role === "viewer" ? "all" : "start"))) {
-            setDraft("");
-            setAdding(false);
         }
     };
 
@@ -1476,6 +1592,57 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
         <//>`;
     };
 
+    /**
+     * The rows of All folders at `depth`: a folder of the computer with its Access menu, as a folder row above has
+     * (`levelFor`), and open, the folders in it; a note; or the row that shows the rest of a long list.
+     */
+    const browsed = (rows, depth) =>
+        rows.map((row) => {
+            if (row.note !== undefined) {
+                return html`<div class="ft-row muted at-note" style=${`--depth:${depth}`}>${row.note}</div>`;
+            }
+
+            if (row.more !== undefined) {
+                return html`<button
+                    type="button"
+                    class="ft-row at-more"
+                    style=${`--depth:${depth}`}
+                    onClick=${row.show}
+                >
+                    <span class="ft-spacer"></span>
+                    <span class="ft-name">Show ${row.more} more</span>
+                </button>`;
+            }
+
+            const { level, from } = levelFor(computer, person, row.path);
+
+            return html`<${TreeGroup}
+                key=${row.key}
+                kind="at-browse"
+                icon=${row.home ? "home" : "folder"}
+                name=${row.name}
+                title=${row.path}
+                depth=${depth}
+                label=${`Folder ${row.path} in All folders of ${on}`}
+                open=${row.open}
+                onToggle=${row.toggle}
+                off=${level === "none" && from === undefined}
+                actions=${html`<${LevelMenu}
+                    person=${person}
+                    folder=${row.path}
+                    where=${computer.name}
+                    level=${level}
+                    from=${from}
+                    levels=${levelsFor(person)}
+                    reason=${reason}
+                    busy=${busy}
+                    onPick=${(next) => void setLevel(row.path, next)}
+                />`}
+            >
+                ${browsed(row.rows, depth + 1)}
+            <//>`;
+        });
+
     const shown = shownOf(tree.roots, find);
     // Grouped by Sessions: one list, newest first, with each session's folder beside its name.
     const flat = tree.flat.filter((row) => keeps(find, row));
@@ -1534,55 +1701,19 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
             </div>`
         }
         ${
-            gives &&
-            !find.active &&
-            (adding
-                ? html`<div class="at-line at-adding">
-                      <input
-                          ref=${field}
-                          type="text"
-                          placeholder="A folder, as ~/projects/app"
-                          aria-label=${`Add a folder for ${on}`}
-                          value=${draft}
-                          onInput=${(event) => setDraft(event.currentTarget.value)}
-                          onKeyDown=${(event) => {
-                              if (event.key === "Enter" && !busy) {
-                                  void add();
-                              } else if (event.key === "Escape") {
-                                  // Escape closes the field, not the sheet around it.
-                                  event.stopPropagation();
-                                  setDraft("");
-                                  setAdding(false);
-                              }
-                          }}
-                      />
-                      <button
-                          class="button small"
-                          disabled=${busy || draft.trim() === ""}
-                          onClick=${add}
-                      >
-                          Add
-                      </button>
-                      <button
-                          class="button small ghost"
-                          onClick=${() => {
-                              setDraft("");
-                              setAdding(false);
-                          }}
-                      >
-                          Cancel
-                      </button>
-                  </div>`
-                : html`<button
-                      type="button"
-                      class="ft-row at-add"
-                      aria-label=${`Give ${person.name} a folder on ${computer.name}`}
-                      onClick=${() => setAdding(true)}
-                  >
-                      <span class="ft-spacer"></span>
-                      <${Icon} name="plus" size=${13} />
-                      <span class="ft-name">Add a folder</span>
-                  </button>`)
+            all.shown &&
+            html`<${TreeGroup}
+                key="all-folders"
+                kind="at-all"
+                icon="monitor"
+                name="All folders"
+                label=${`All folders of ${on}`}
+                title=${`Every folder on ${computer.name}`}
+                open=${all.open}
+                onToggle=${all.toggle}
+            >
+                ${browsed(all.rows, 1)}
+            <//>`
         }
     </div>`;
 }

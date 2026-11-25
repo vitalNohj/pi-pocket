@@ -7,6 +7,7 @@ import {
     addPerson,
     type App,
     cleanUp,
+    home,
     newSession,
     openApp,
     owner,
@@ -16,8 +17,9 @@ import {
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { THIS_SERVER } from "../src/server/access.ts";
@@ -43,6 +45,8 @@ let base = "";
 let viewerToken = "";
 let people: User[] = [];
 const projects = join(root, "projects");
+/** This machine's home folder, as the server says it while no test sets another. */
+const realHome = homedir();
 const shop = join(projects, "shop");
 
 const inPage = async <T>(script: string): Promise<T> =>
@@ -856,6 +860,179 @@ test(
             page = owners;
             await theirs.closeAll({ final: true });
             app.config.removeRunner(desk);
+            app.accessChanged();
+        }
+    },
+);
+
+/** Each row of All folders in the grid shown: its folder (its toggle's title), and what each person's cell says. */
+const browsedGrid = () =>
+    inPage<string[]>(`
+        return JSON.stringify(
+            [...document.querySelectorAll(".ag-browse")].map((row) =>
+                [row.querySelector(".ag-toggle").title, ...[...row.querySelectorAll(":scope > .ag-cell .at-level")].map((each) => each.textContent.trim())].join(" | "),
+            ),
+        );
+    `);
+
+/** Press the button of the grid called `label`. */
+const pressGrid = (label: string) =>
+    inPage(`
+        document.querySelector(${JSON.stringify(`.pages-detail button[aria-label=${JSON.stringify(label)}]`)}).click();
+
+        return JSON.stringify(true);
+    `);
+
+test(
+    "By computer has All folders last, with a cell for each person column: a choice in a cell is saved for that person alone",
+    real,
+    async () => {
+        // Outside the folder every person here is given (`addPerson`): a folder nobody has.
+        const place = realpathSync(mkdtempSync(join(home, "grid-all-")));
+        const fresh = join(place, "fresh");
+
+        mkdirSync(fresh);
+        // This server's home is a folder of the test's own while the page loads and reads it.
+        process.env.HOME = place;
+
+        try {
+            await load(DESKTOP);
+            await openAt("computer", THIS_SERVER);
+            await grid();
+
+            // The last row of the grid, closed, with no cells: only its folders have them.
+            const last = await inPage<{ label: string; cells: number }>(`
+                const rows = [...document.querySelectorAll(".ag-table > .ag-row:not(.ag-head)")];
+
+                return JSON.stringify({
+                    label: rows.at(-1).querySelector(".ag-toggle").getAttribute("aria-label"),
+                    cells: rows.at(-1).querySelectorAll(".ag-cell").length,
+                });
+            `);
+
+            assert.deepEqual(last, { label: "Open All folders of This server", cells: 0 });
+            await pressGrid("Open All folders of This server");
+            await until(async () => (await browsedGrid()).length === 2, "its top folders");
+            await pressGrid(`Open ${place} in All folders`);
+            await until(
+                async () => (await browsedGrid()).some((each) => each.startsWith(`${fresh} |`)),
+                "the folders in home",
+            );
+        } finally {
+            process.env.HOME = realHome;
+        }
+
+        const row = (await browsedGrid()).find((each) => each.startsWith(`${fresh} |`))!;
+
+        assert.equal(row.split(" | ").length, 1 + 8, "a cell for each of the 8 people");
+        assert.ok(
+            row
+                .split(" | ")
+                .slice(1)
+                .every((each) => each === "None"),
+        );
+
+        // Person 1's cell: Start sessions, for them alone.
+        const [first, second] = [people[0]!, people[1]!];
+
+        await inPage(`
+            document.querySelector(${JSON.stringify(`.ag-browse .at-level[aria-label^=${JSON.stringify(`Access of ${first.name} to ${fresh} on `)}]`)}).click();
+
+            return JSON.stringify(true);
+        `);
+        await until(
+            async () =>
+                await inPage<boolean>(
+                    `return JSON.stringify(document.querySelector(".at-level-menu") !== null)`,
+                ),
+            "the menu",
+        );
+        await inPage(`
+            [...document.querySelectorAll(".at-level-menu .at-level-item")]
+                .find((each) => each.querySelector(".at-level-name").textContent.trim() === "Start sessions")
+                .click();
+
+            return JSON.stringify(true);
+        `);
+
+        try {
+            await until(
+                () => app.config.givenFolders(THIS_SERVER, first.id).includes(fresh),
+                "the folder given to them",
+            );
+            assert.equal(app.config.givenFolders(THIS_SERVER, second.id).includes(fresh), false);
+            assert.deepEqual(
+                people
+                    .slice(1)
+                    .filter((each) => app.config.givenFolders(THIS_SERVER, each.id).includes(fresh))
+                    .map((each) => each.name),
+                [],
+                "nobody else",
+            );
+            await until(
+                async () =>
+                    (await browsedGrid())
+                        .find((each) => each.startsWith(`${fresh} |`))
+                        ?.split(" | ")[1] === "Start",
+                "its cell to say so",
+            );
+        } finally {
+            await app.setFolderLevel(owner(app), THIS_SERVER, first.id, fresh, "none");
+        }
+    },
+);
+
+test(
+    "on an offline runner All folders says it shows the folders once it is online, and reads nothing",
+    real,
+    async () => {
+        const laptop = app.config.runners.find((each) => each.name === "Laptop")!.id;
+
+        app.config.setUsers(laptop, [people[0]!.id]);
+        app.accessChanged();
+
+        try {
+            await load(DESKTOP);
+            await inPage(`
+                window.fsReads = [];
+                const fetched = window.fetch;
+
+                window.fetch = (input, init) => {
+                    if (String(input).includes("/fs?")) {
+                        window.fsReads.push(String(input));
+                    }
+
+                    return fetched(input, init);
+                };
+
+                return JSON.stringify(true);
+            `);
+            await openAt("computer", laptop);
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(document.querySelector('.pages-detail button[aria-label="Open All folders of Laptop"]') !== null)`,
+                    ),
+                "its All folders",
+            );
+            await pressGrid("Open All folders of Laptop");
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify([...document.querySelectorAll(".ag-empty")].some((each) => each.textContent.trim() === "Folders show when Laptop is online."))`,
+                    ),
+                "the line",
+            );
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            assert.deepEqual(
+                (await inPage<string[]>(`return JSON.stringify(window.fsReads)`)).filter((each) =>
+                    each.includes(`runners/${laptop}/`),
+                ),
+                [],
+                "nothing read from it",
+            );
+        } finally {
+            app.config.setUsers(laptop, []);
             app.accessChanged();
         }
     },

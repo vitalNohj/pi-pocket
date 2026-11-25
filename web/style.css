@@ -8005,21 +8005,30 @@ div.group-head {
     white-space: normal;
 }
 
-.at-tree .at-add {
-    width: auto;
-    align-self: flex-start;
-    color: var(--muted);
+/* All folders (`access.js` `useAllFolders`): the row that shows the rest of a long list. */
+.at-tree .at-more,
+.ag-more {
+    color: var(--accent);
+    font-size: 12px;
 }
 
-/* The field that adds a folder, in the place of the row that asked for it. */
-.at-adding {
-    padding: 2px 0 2px 26px;
+.ag-more {
+    min-height: 32px;
+    padding: 0;
+    border: 0;
+    background: none;
+    font-weight: 500;
 }
 
-.at-adding > input {
-    flex: 1;
-    min-width: 0;
-    font: 12.5px var(--mono);
+/* A thumb's height for each control of All folders: its rows are that high already (`.ft-row`, `.ag-row`). */
+@media (pointer: coarse) {
+    .at-tree .at-browse + .at-actions .at-level,
+    .ag-all .ag-toggle,
+    .ag-browse .ag-toggle,
+    .ag-browse .ag-cell .at-level,
+    .ag-more {
+        min-height: 44px;
+    }
 }
 
 /* When I last used a session, at the end of its row: one narrow column down a list. */

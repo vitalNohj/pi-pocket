@@ -427,3 +427,80 @@ test("a folder they see every session in gives them the sessions in it, in what 
     assert.equal(seenBy([], inside, there), undefined, "no such folder, no session");
     assert.equal(seenBy(["/other", "/home/a"], above, there), "/home/a");
 });
+
+type Browsed = { folder?: { name: string; path: string }; note?: string; more?: number };
+
+const browseRows = tree.browseRows as (input: {
+    folders?: { name: string; path: string }[];
+    failed?: string;
+    offline?: string;
+    all?: boolean;
+}) => Browsed[];
+const topFolders = tree.topFolders as (
+    home: string | undefined,
+    listing: { roots?: string[] },
+) => { name: string; path: string; home: boolean }[];
+const FOLDERS_SHOWN = tree.FOLDERS_SHOWN as number;
+
+test("All folders starts at the home folder, then each top folder of the computer that is not home", () => {
+    assert.deepEqual(topFolders("/home/a", { roots: ["/"] }), [
+        { name: "Home", path: "/home/a", home: true },
+        { name: "/", path: "/", home: false },
+    ]);
+    assert.deepEqual(
+        topFolders("C:\\Users\\a", { roots: ["C:\\", "D:\\"] }).map((each) => each.path),
+        ["C:\\Users\\a", "C:\\", "D:\\"],
+    );
+    // A computer whose home is its top folder lists it once, as Home.
+    assert.deepEqual(
+        topFolders("/", { roots: ["/"] }).map((each) => each.name),
+        ["Home"],
+    );
+    // A linked computer's listing names no top folders: home alone.
+    assert.deepEqual(
+        topFolders("/home/b", {}).map((each) => each.path),
+        ["/home/b"],
+    );
+    assert.deepEqual(
+        topFolders(undefined, { roots: ["/"] }).map((each) => each.path),
+        ["/"],
+    );
+});
+
+test("an open folder of All folders lists its folders as given, 50 at first, then a row for the rest", () => {
+    const folders = (count: number) =>
+        Array.from({ length: count }, (_, index) => ({
+            name: `f${index}`,
+            path: `/x/f${index}`,
+        }));
+
+    assert.equal(FOLDERS_SHOWN, 50);
+    assert.deepEqual(browseRows({}), [{ note: "Reading…" }], "not read yet");
+    assert.deepEqual(browseRows({ folders: [] }), [{ note: "No folders in it." }]);
+    assert.deepEqual(
+        browseRows({ folders: folders(2) }).map((each) => each.folder?.name),
+        ["f0", "f1"],
+        "in the order of the listing",
+    );
+
+    const fifty = browseRows({ folders: folders(50) });
+
+    assert.equal(fifty.length, 50, "50: all of them, and no row for more");
+    assert.ok(fifty.every((each) => each.folder !== undefined));
+
+    const long = browseRows({ folders: folders(53) });
+
+    assert.equal(long.length, 51);
+    assert.equal(long[49]!.folder?.name, "f49");
+    assert.deepEqual(long[50], { more: 3 });
+    assert.equal(browseRows({ folders: folders(53), all: true }).length, 53, "all, once asked for");
+});
+
+test("All folders says why a folder does not list: the server's sentence, or its computer offline", () => {
+    assert.deepEqual(browseRows({ failed: "Pi Pocket cannot read /root." }), [
+        { note: "Pi Pocket cannot read /root." },
+    ]);
+    assert.deepEqual(browseRows({ offline: "Laptop", folders: [{ name: "a", path: "/a" }] }), [
+        { note: "Folders show when Laptop is online." },
+    ]);
+});
