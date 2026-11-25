@@ -22,8 +22,16 @@ export function DirectChat({ person }) {
     // Whether a load brought the thread since this chat showed, and how the load that ended last went.
     const [ready, setReady] = useState(false);
     const [ended, setEnded] = useState(null);
+    // The newest connection that opened. One that is closed or still opening has no id (`store.js` `connect`): it is
+    // no new connection, so it asks for nothing.
+    const stream = useRef(store.state.streamId ?? "");
+
+    if (store.state.streamId != null) {
+        stream.current = store.state.streamId;
+    }
+
     // One load for each connection, and one more for each Try again.
-    const asked = `${store.state.streamId ?? ""}:${turn}`;
+    const asked = `${stream.current}:${turn}`;
 
     useEffect(() => {
         let live = true;
