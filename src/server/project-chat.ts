@@ -1,9 +1,10 @@
 /** The people chat shared by sessions in the same folder on one computer. Pi never sees it. */
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import { type ConversationId, defineDocFamily, type Storage } from "@earendil-works/pi-durable";
 import { THIS_SERVER } from "./access.ts";
 import type { PocketApp } from "./app.ts";
+import { chatKey, chatKeyForReading, chatKeys, open, seal, UNREADABLE } from "./chat-seal.ts";
 import { chatMentions, MAX_CHAT_TEXT } from "./collab.ts";
 import type { User } from "./config.ts";
 import {
@@ -11,6 +12,8 @@ import {
     ProjectChatDoc,
     ProjectChatIndexDoc,
     type ProjectChatMessage,
+    type SealedProjectChatMessage,
+    type StoredProjectChatMessage,
 } from "./docs.ts";
 import { HttpError } from "./errors.ts";
 import { clientKey } from "./requests.ts";
@@ -24,8 +27,31 @@ function projectChatKey(computer: string, folder: string): string {
     return createHash("sha256").update(`${computer}\n${folder}`).digest("hex").slice(0, 32);
 }
 
+// A new base drops old revisions, including plain messages no longer in the chat.
+const SealingProjectChatDoc = defineDocFamily({
+    ...ProjectChatDoc.definition,
+    checkpointWhen: () => true,
+});
+
+function aad(key: string, id: string): Buffer {
+    return Buffer.from(JSON.stringify(["project-chat", key, id]));
+}
+
+function sealMessage(
+    key: string,
+    { text, mentions, ...metadata }: ProjectChatMessage,
+    bytes: Buffer,
+): SealedProjectChatMessage {
+    return {
+        ...metadata,
+        ...(mentions === undefined ? {} : { mentions: [...mentions] }),
+        sealed: seal(bytes, aad(key, metadata.id), text),
+    };
+}
+
 export class ProjectChat {
     readonly #app: PocketApp;
+    readonly #warned = new Set<string>();
     #setting = Promise.resolve();
 
     constructor(app: PocketApp) {
@@ -34,6 +60,68 @@ export class ProjectChat {
 
     on(): boolean {
         return this.#app.config.server.projectChat !== false;
+    }
+
+    /** Seal old chats and mark the index while old plain bytes may still be in SQLite. */
+    async sealLegacy(storage: Storage): Promise<void> {
+        const { harness } = this.#app;
+        const index = await harness.snapshot(ProjectChatIndexDoc, context);
+        let markIndex = index !== undefined && index.sealed !== true;
+
+        for await (const key of chatKeys(storage, ProjectChatDoc.definition.kind)) {
+            const doc = await harness.snapshot(ProjectChatDoc, key, context);
+
+            if (!doc?.messages.some((message) => !("sealed" in message))) {
+                continue;
+            }
+
+            const bytes = chatKey(this.#app);
+
+            await harness.commit(async (tx) => {
+                const chat = await tx.doc(SealingProjectChatDoc, key, null);
+                const index = await tx.doc(ProjectChatIndexDoc);
+
+                for (const [i, message] of chat.messages.entries()) {
+                    if (!("sealed" in message)) {
+                        chat.messages[i] = sealMessage(key, message, bytes);
+                    }
+                }
+
+                index.sealed = true;
+                index.scrub = true;
+            }, context);
+            markIndex = false;
+        }
+
+        // Chats retired before sealing may have left plain bytes in free pages, even with no chat left to read.
+        if (markIndex) {
+            await harness.commit(async (tx) => {
+                const index = await tx.doc(ProjectChatIndexDoc);
+
+                index.sealed = true;
+                index.scrub = true;
+            }, context);
+        }
+    }
+
+    #message(
+        key: string,
+        message: Readonly<StoredProjectChatMessage>,
+        bytes: Buffer | undefined,
+    ): ProjectChatMessage {
+        if (!("sealed" in message)) {
+            return message;
+        }
+
+        const { sealed, ...metadata } = message;
+        const text = bytes === undefined ? undefined : open(bytes, aad(key, message.id), sealed);
+
+        if (text === undefined && !this.#warned.has(key)) {
+            this.#warned.add(key);
+            this.#app.log(`Project chat ${key}: could not decrypt a message`);
+        }
+
+        return { ...metadata, text: text ?? UNREADABLE };
     }
 
     #place(user: User, sessionId: ConversationId): Place {
@@ -77,7 +165,14 @@ export class ProjectChat {
             throw noChat();
         }
 
-        return { ...place, messages: doc?.messages ?? [] };
+        const bytes = chatKeyForReading(this.#app);
+
+        return {
+            ...place,
+            messages: (doc?.messages ?? []).map((message) =>
+                this.#message(place.key, message, bytes),
+            ),
+        };
     }
 
     /** A retry returns the first message, and sends no event or push. */
@@ -114,13 +209,14 @@ export class ProjectChat {
                 throw noChat();
             }
 
+            index.sealed = true;
             const existing = doc.messages.find((each) => each.id === id);
 
             if (existing !== undefined) {
                 return {
-                    message: JSON.parse(JSON.stringify(existing)) as ProjectChatMessage,
+                    message: JSON.parse(JSON.stringify(existing)) as StoredProjectChatMessage,
                     created: false,
-                };
+                } as const;
             }
 
             const mentions = chatMentions(
@@ -138,7 +234,7 @@ export class ProjectChat {
                 ...(mentions.length === 0 ? {} : { mentions }),
             };
 
-            doc.messages.push(message);
+            doc.messages.push(sealMessage(key, message, chatKey(app)));
 
             if (doc.messages.length > CHAT_LIMIT) {
                 doc.messages.splice(0, doc.messages.length - CHAT_LIMIT);
@@ -146,7 +242,7 @@ export class ProjectChat {
 
             index.chats[key] = { computer, folder, at };
 
-            return { message, created: true };
+            return { message, created: true } as const;
         }, context);
 
         if (created && this.on()) {
@@ -157,7 +253,7 @@ export class ProjectChat {
             throw noChat();
         }
 
-        return message;
+        return created ? message : this.#message(key, message, chatKeyForReading(app));
     }
 
     #posted({ key, computer, folder }: Place, message: ProjectChatMessage): void {
@@ -251,6 +347,8 @@ export class ProjectChat {
     async #retire(which: (computer: string) => boolean): Promise<void> {
         await this.#app.harness.commit(async (tx) => {
             const index = await tx.doc(ProjectChatIndexDoc);
+
+            index.sealed = true;
 
             for (const [key, { computer }] of Object.entries(index.chats)) {
                 if (which(computer)) {

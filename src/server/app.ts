@@ -61,6 +61,7 @@ import { sweepAssets } from "./artifacts.ts";
 import { Attribution, type Missing } from "./attribution.ts";
 import { Browsers } from "./browser.ts";
 import type { BrowserState } from "./browser/page.ts";
+import { sealChats, watchChatKey } from "./chat-seal.ts";
 import { Collab, REACTIONS } from "./collab.ts";
 import { Commands } from "./commands.ts";
 import { Direct } from "./direct.ts";
@@ -111,6 +112,7 @@ import {
     MemoryDoc,
     type PinnedSessions as PinnedSessionsValue,
     PinnedSessionsDoc,
+    ProjectChatIndexDoc,
     RepoWatchesDoc,
     RunFailureDoc,
     type RemovedSession,
@@ -1060,7 +1062,7 @@ export class PocketApp {
             settingsOf: (module) => this.webs.settingsOf(module),
             log: (line) => this.#log(line),
         });
-        this.direct.watchKey();
+        watchChatKey(this);
         this.guard.protect = (tool, args, cwd) => this.secrets.blocked(tool, args, cwd);
     }
 
@@ -1485,7 +1487,7 @@ export class PocketApp {
         );
 
         this.#openingStorage = undefined;
-        await this.direct.sealLegacy(storage, database);
+        await sealChats(this, storage, database);
         const conversations = await this.#recover(storage);
 
         await this.spend.load(conversations);
@@ -5014,7 +5016,11 @@ export class PocketApp {
 
         // Their chats with one person too.
         await this.direct.forgetGone();
-        await this.projectChat.forgetGone();
+
+        // Do not create an index at startup just to finish deletions.
+        if ((await this.harness.snapshot(ProjectChatIndexDoc, context)) !== undefined) {
+            await this.projectChat.forgetGone();
+        }
     }
 
     /** Each person's tabs hear the approvals they may list. */

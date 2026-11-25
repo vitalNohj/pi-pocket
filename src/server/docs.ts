@@ -572,13 +572,16 @@ export const ChatDoc = defineDoc<{ messages: ChatMessage[] }>({
 /** Messages a chat keeps; older ones drop off. */
 export const CHAT_LIMIT = 500;
 
-export type ProjectChatMessage = Pick<
-    ChatMessage,
-    "id" | "userId" | "name" | "text" | "at" | "mentions"
->;
+type ProjectChatMessageMetadata = Pick<ChatMessage, "id" | "userId" | "name" | "at" | "mentions">;
+
+export type ProjectChatMessage = ProjectChatMessageMetadata & { text: string };
+export type SealedProjectChatMessage = ProjectChatMessageMetadata & { sealed: string };
+
+/** Only the metadata stays plain. The old plain message shape is accepted on read and sealed at startup. */
+export type StoredProjectChatMessage = ProjectChatMessage | SealedProjectChatMessage;
 
 /** A folder chat, oldest first, keyed by the computer and folder (`project-chat.ts`). */
-export const ProjectChatDoc = defineDocFamily<{ messages: ProjectChatMessage[] }, null>({
+export const ProjectChatDoc = defineDocFamily<{ messages: StoredProjectChatMessage[] }, null>({
     kind: "pocket.project-chat",
     version: 1,
     ...rebased,
@@ -590,6 +593,10 @@ export const ProjectChatDoc = defineDocFamily<{ messages: ProjectChatMessage[] }
 /** Every stored folder chat, by key, so turning chat off or removing a computer can retire its messages. */
 export const ProjectChatIndexDoc = defineDoc<{
     chats: Record<string, { computer: string; folder: string; at: number }>;
+    /** The index has been written by the code that seals project messages. */
+    sealed?: true;
+    /** Old plaintext bytes may still be in SQLite or its write-ahead log. */
+    scrub?: true;
 }>({
     kind: "pocket.project-chat-index",
     version: 1,
