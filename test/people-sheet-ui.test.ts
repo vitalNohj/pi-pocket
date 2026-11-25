@@ -718,7 +718,7 @@ test(
         const inWork = `Folder ${work} of Gina on This server`;
 
         // By computer, the grid has a row for each folder there, and in Gina's column what she has of each session:
-        // Take back for one shared with her, "Started by them" for her own, Invite for one that is not hers.
+        // Revoke for one shared with her, "Started by them" for her own, Invite for one that is not hers.
         await open("computers");
         await show("This server");
         await until(async () => (await gridFolders()).includes(given), "her folder's row");
@@ -734,7 +734,7 @@ test(
             {
                 "Her first": "Started by them",
                 "Her second": "Started by them",
-                "The owner's": "Take back",
+                "The owner's": "Revoke",
                 "Not hers": "Invite",
             },
         );
@@ -762,7 +762,7 @@ test(
         assert.deepEqual(listed().sort(), [first, second, shared, outside].sort());
 
         // One session is taken from her alone: the others, and her folder, stay.
-        await press("Take The owner's back from Gina");
+        await press("Revoke The owner's from Gina");
         await until(() => !listed().includes(shared), "the server to stop sharing it");
         assert.ok(listed().includes(second) && listed().includes(first));
         assert.equal(app.policy.mayStart(guest, THIS_SERVER), true);

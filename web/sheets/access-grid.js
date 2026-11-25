@@ -609,7 +609,7 @@ function useMore(box) {
 /**
  * The grid of one computer (By computer): a row for each project, folder, or session (`gridOf`), the project's or
  * folder's name and its trust first, then one cell for each person shown (`people`): their Access menu on a folder or a
- * project (`LevelMenu`, on its top folder), and on a session what they have of it, with Invite or Take back. After the
+ * project (`LevelMenu`, on its top folder), and on a session what they have of it, with Invite or Revoke. After the
  * rows, in the same scroller, the people who may use the computer, each with the switch that lets them (`after`).
  */
 export function ComputerGrid({ computer, people, grid, find, trustColumn, fallback, after }) {
@@ -668,11 +668,11 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
                 type="button"
                 class="button small ghost ag-act"
                 disabled=${busy || state === "invited"}
-                aria-label=${`Take ${row.title} back from ${person.name}`}
-                title=${state === "invited" ? "Invited to it alone: take it back on their page" : undefined}
+                aria-label=${`Revoke ${row.title} from ${person.name}`}
+                title=${state === "invited" ? "Invited to it alone: revoke it on their page" : undefined}
                 onClick=${() => revoke(person, row)}
             >
-                Take back
+                Revoke
             </button>`;
         }
 
