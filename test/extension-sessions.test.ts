@@ -17,10 +17,11 @@ import {
     work,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "../src/server/access.ts";
 import type { User } from "../src/server/config.ts";
 
 let app: App;
@@ -214,6 +215,53 @@ test("a source past its spend limit, an invited person, and a PiP source are ref
         /Pi works for someone/,
     );
     assert.equal(app.sessions().length, count);
+});
+
+test("a start has the rights of the person Pi works for: theirs when chosen, refused in a folder not given and once not chosen", async () => {
+    const id = await source();
+    const kit = (await addPerson(app, "Kit", "guest")).user;
+    const given = join(root, "kit-given");
+    const kept = join(root, "kit-not-given");
+
+    mkdirSync(given);
+    mkdirSync(kept);
+    await writes(id, kit, "Pi works for Kit now");
+    app.config.setGivenFolders(THIS_SERVER, kit.id, [realpathSync(given)]);
+    app.accessChanged();
+
+    // Chosen, in a folder given to them: the session is theirs.
+    const { session } = await app.extensionSessions.start(id, { cwd: given }, "kit-allowed");
+
+    assert.equal(app.sessionMeta(session)?.createdBy, kit.id);
+    assert.ok(app.sessions(kit).some((each) => each.id === Number(session)));
+
+    const count = app.sessions().length;
+
+    // A folder not given to them: Pi working for them starts nothing there.
+    await assert.rejects(app.extensionSessions.start(id, { cwd: kept }, "kit-folder"), {
+        status: 403,
+    });
+    assert.equal(app.sessions().length, count);
+
+    // No longer chosen for this server, as the settings alone say it: nothing starts, and they learn nothing.
+    const chosen = [...(app.config.server.users ?? [])];
+
+    app.config.setUsers(
+        THIS_SERVER,
+        chosen.filter((each) => each !== kit.id),
+    );
+    app.accessChanged();
+
+    try {
+        await assert.rejects(app.extensionSessions.start(id, { cwd: given }, "kit-unchosen"), {
+            status: 404,
+        });
+        assert.equal(app.sessions().length, count);
+    } finally {
+        app.config.setUsers(THIS_SERVER, chosen);
+        app.config.clearLeaving(THIS_SERVER, [kit.id]);
+        app.accessChanged();
+    }
 });
 
 test("a key also given to linkedSessions.start starts its own ordinary session", async () => {

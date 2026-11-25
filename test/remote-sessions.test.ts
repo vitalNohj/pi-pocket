@@ -42,6 +42,7 @@ import {
 } from "./helpers.ts";
 import type { User } from "../src/server/config.ts";
 import type { FolderRequestView } from "../src/server/folder-requests.ts";
+import { STEP_MS, totp } from "../src/server/totp.ts";
 
 /** The remote computer's folder: the server's own sessions work in `work`, never here. */
 const there = join(root, "there");
@@ -441,6 +442,84 @@ describe("a session on another computer", () => {
             await app.commands.createSession(guest, { cwd: there, runner: runnerId });
             assert.equal(asked.length, 2, "a new session asks again");
         });
+    });
+
+    it("starts a session with its person's own authenticator code, and refuses a wrong one and a person with none", async () => {
+        asked.length = 0;
+        // Whoever is in charge leaves every request waiting: only the person's own code can answer it.
+        answer = () => undefined;
+
+        const waitingFor = async (person: User) => {
+            let found: FolderRequestView | undefined;
+
+            await until(() => {
+                found = app.folderRequests.list(person).find((each) => each.person === person.id);
+
+                return found !== undefined;
+            }, `${person.name}'s request`);
+
+            return found!;
+        };
+
+        try {
+            await asking(async (guest) => {
+                // No authenticator yet: the request offers no code, and one sent anyway approves nothing.
+                const bare = app.commands.createSession(guest, { cwd: there, runner: runnerId });
+                const refused = assert.rejects(bare, { status: 409 });
+                const first = await waitingFor(guest);
+
+                assert.equal(first.computer, runnerId);
+                assert.equal(first.code, false);
+                await assert.rejects(
+                    app.folderRequests.approve(guest, first.id, { method: "totp", code: "000000" }),
+                    { status: 403 },
+                );
+                app.folderRequests.deny(guest, first.id);
+                await refused;
+
+                const secret = linkAuthenticator(app, guest);
+                const before = app.sessions(owner(app)).length;
+                const started = app.commands.createSession(guest, { cwd: there, runner: runnerId });
+                const request = await waitingFor(guest);
+
+                assert.equal(request.kind, "new");
+                assert.equal(request.code, true);
+                await assert.rejects(
+                    app.folderRequests.approve(guest, request.id, {
+                        method: "totp",
+                        code: "000000",
+                    }),
+                    { status: 400 },
+                );
+                assert.equal(
+                    app.sessions(owner(app)).length,
+                    before,
+                    "a wrong code starts nothing",
+                );
+
+                // The code that linked the authenticator is used: the next step's is new, and still in the window.
+                await app.folderRequests.approve(guest, request.id, {
+                    method: "totp",
+                    code: totp(secret, Math.floor(app.now() / STEP_MS) + 1),
+                });
+
+                const { id } = await started;
+                const approval = app.folderApprovals.get(String(id));
+
+                assert.equal(app.runnerOf(id), runnerId);
+                assert.equal(app.sessionMeta(id)?.createdBy, guest.id);
+                assert.equal(approval?.method, "totp");
+                assert.equal(approval?.lastUser, guest.id);
+                assert.equal(app.folderRequests.list(owner(app)).length, 0);
+            });
+            assert.equal(
+                asked.length,
+                2,
+                "who is in charge saw both requests, and answered neither",
+            );
+        } finally {
+            answer = () => true;
+        }
     });
 
     it("starts sessions on a computer its linker is in charge of without asking", async () => {
