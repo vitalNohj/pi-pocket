@@ -56,6 +56,14 @@ import { MyAuthenticator } from "./authenticator.js";
 import { PageTabs } from "./pages.js";
 import { AccessKey, GroupBy, Pick, SearchField, TIMES, ACCESS, useFind } from "./access-grid.js";
 import { canShare } from "./session-share.js";
+import {
+    folderCheck,
+    SelectBar,
+    SelectButton,
+    sessionCheck,
+    useListed,
+    useSelect,
+} from "./session-select.js";
 import { DirectChat } from "./direct.js";
 
 /** How long an invite may last: minutes, its button, and how the help text says it. */
@@ -1130,13 +1138,25 @@ function reachOf(told, person) {
  * it while I see them all myself (`access.ts` `mayGiveFolder`, `mayTakeFolder`, `maySetSees`). A session ends in
  * Invite, or in Revoke where the share is mine to end (`mayUnshare`): one someone else shared says who, and has
  * neither. Whether they use the computer at all is its one in charge's choice, so there is no switch for it here.
+ * While sessions are selected (`select`: `session-select.js`), each session and folder drawn has its checkbox in place
+ * of Invite and Revoke.
  */
-function OtherComputer({ card, person, sharing, find }) {
+function OtherComputer({ card, person, sharing, find, select }) {
     const [busy, setBusy] = useState(false);
     const groups = useGroups(find);
     const { me } = store.state;
     const on = `${person.name} on ${card.name}`;
     const shown = groupsOf(card, find);
+
+    // The sessions drawn, for the selection: in the rows that are open, each with what the server says can be done.
+    useListed(
+        select,
+        `card:${card.id}`,
+        shown
+            .filter((each) => groups.isOpen(each.key))
+            .flatMap((each) => each.listed)
+            .map((row) => ({ id: row.id, share: row.give, revoke: row.take })),
+    );
 
     if (find.active && shown.length === 0) {
         return null;
@@ -1222,6 +1242,7 @@ function OtherComputer({ card, person, sharing, find }) {
                     used=${row.usedAt}
                     words=${find.words}
                     off=${!row.has}
+                    check=${sessionCheck(select, row)}
                 >
                     <button
                         class="button small"
@@ -1232,9 +1253,12 @@ function OtherComputer({ card, person, sharing, find }) {
                     </button>
                     ${
                         // A share that is mine to end: Revoke. One I can give them: Invite in its place. Neither (a
-                        // share someone else made): the place stays, so the buttons before it are one column.
-                        row.take
-                            ? html`<button
+                        // share someone else made), or while sessions are selected: the place stays, so the buttons
+                        // before it are one column.
+                        select.on
+                            ? html`<span class="at-end" aria-hidden="true"></span>`
+                            : row.take
+                              ? html`<button
                                   class="button small ghost at-end"
                                   disabled=${busy}
                                   aria-label=${`Revoke ${row.title} from ${person.name}`}
@@ -1242,8 +1266,8 @@ function OtherComputer({ card, person, sharing, find }) {
                               >
                                   Revoke
                               </button>`
-                            : row.give
-                              ? html`<button
+                              : row.give
+                                ? html`<button
                                     class="button small at-end"
                                     disabled=${busy}
                                     aria-label=${`Invite ${person.name} to ${row.title}`}
@@ -1256,7 +1280,7 @@ function OtherComputer({ card, person, sharing, find }) {
                                 >
                                     Invite
                                 </button>`
-                              : html`<span class="at-end" aria-hidden="true"></span>`
+                                : html`<span class="at-end" aria-hidden="true"></span>`
                     }
                 <//>`,
         )}
@@ -1286,6 +1310,11 @@ function OtherComputer({ card, person, sharing, find }) {
                             title=${card.folders.length > 0 ? "In none of these folders." : undefined}
                             open=${groups.isOpen(each.key)}
                             onToggle=${() => groups.toggle(each.key)}
+                            check=${folderCheck(
+                                select,
+                                `${rest} on ${card.name}`,
+                                groups.isOpen(each.key) ? each.listed.map((row) => row.id) : [],
+                            )}
                         >
                             <div class="at-group" role="group">
                                 ${inside(each.key, each.listed, undefined)}
@@ -1305,6 +1334,11 @@ function OtherComputer({ card, person, sharing, find }) {
                         onToggle=${() => groups.toggle(each.key)}
                         words=${find.words}
                         off=${!info.has}
+                        check=${folderCheck(
+                            select,
+                            `${each.folder} on ${card.name}`,
+                            groups.isOpen(each.key) ? each.listed.map((row) => row.id) : [],
+                        )}
                         actions=${html`${
                             info.has &&
                             info.by &&
@@ -1353,6 +1387,9 @@ function OtherComputer({ card, person, sharing, find }) {
  * a computer with nothing to list is left out and the others are open. In an open row the session I used last is
  * first. A row changed since the search last changed stays listed, to be changed back where it stands. An archived
  * session is not listed.
+ *
+ * Select, beside the search, checks several sessions listed, on any of the computers, to share or take back all at
+ * once (`session-select.js`). It ends when the computers shown change, and with the page, which is one person's.
  */
 function Access({ person, direct, rights, sharing, reach }) {
     const { me } = store.state;
@@ -1393,6 +1430,15 @@ function Access({ person, direct, rights, sharing, reach }) {
         trees.reduce((sum, each) => sum + (each.tree?.folders.length ?? 0), 0) +
         reach.cards.reduce((sum, each) => sum + each.folders.length, 0);
     const searched = rows.length > 1 || folders > 1;
+    // Select stands beside the search: with the tool row gone, the selection ends too.
+    const select = useSelect(
+        JSON.stringify([
+            person.id,
+            searched,
+            ...mine.map((each) => each.id),
+            ...reach.cards.map((each) => each.id),
+        ]),
+    );
     const name = (id) =>
         id === me?.id
             ? "You"
@@ -1456,6 +1502,7 @@ function Access({ person, direct, rights, sharing, reach }) {
                         total=${rows.length}
                         placeholder="Search sessions and folders"
                     />
+                    <${SelectButton} select=${select} />
                     <div class="ak-tools-row">
                 <div class="access-picks">
                     <${Pick}
@@ -1495,6 +1542,12 @@ function Access({ person, direct, rights, sharing, reach }) {
                     </div>
                 </div>
                 <${AccessKey} />
+                <${SelectBar}
+                    select=${select}
+                    person=${person}
+                    find=${find}
+                    onAnswer=${(answer) => sharing.told !== null && sharing.setTold(answer)}
+                />
             </div>`
         }
         ${
@@ -1514,6 +1567,7 @@ function Access({ person, direct, rights, sharing, reach }) {
                     title=${computer.name}
                     find=${find}
                     grouping=${grouping(computer)}
+                    select=${select}
                     lead=${html`<span
                         class=${`runner-dot ${computer.id === "this-server" || computer.online ? "on" : computer.away ? "away" : ""}`}
                         aria-hidden="true"
@@ -1528,6 +1582,7 @@ function Access({ person, direct, rights, sharing, reach }) {
                     person=${person}
                     sharing=${sharing}
                     find=${find}
+                    select=${select}
                 />`,
         )}
         ${

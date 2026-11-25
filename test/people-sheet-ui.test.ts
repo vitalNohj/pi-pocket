@@ -4635,3 +4635,468 @@ test(
         }
     },
 );
+
+/** The checkboxes of the selection on the page shown, by their names: "on", "off", or "mixed"; a disabled one says so. */
+const checks = () =>
+    inPage<Record<string, string>>(`
+        return JSON.stringify(Object.fromEntries(
+            [...document.querySelectorAll(".pages-detail .sel-check > input[aria-label]")].map((each) => [
+                each.getAttribute("aria-label"),
+                (each.indeterminate ? "mixed" : each.checked ? "on" : "off") + (each.disabled ? " (disabled)" : ""),
+            ]),
+        ));
+    `);
+
+/** Click the checkbox called `label` (or Select all, for "Select all"), once it takes a click. */
+async function check(label: string): Promise<void> {
+    const found =
+        label === "Select all"
+            ? `document.querySelector('.pages-detail [data-part="select-bar"] .sel-all input')`
+            : `document.querySelector(${JSON.stringify(`.pages-detail input[type=checkbox][aria-label=${JSON.stringify(label)}]`)})`;
+
+    await until(
+        () => inPage<boolean>(`return JSON.stringify(${found}?.disabled === false)`),
+        `${label} taking a click`,
+    );
+    await inPage(`${found}.click(); return JSON.stringify(true);`);
+}
+
+/** What the bar of the selection says, and each of its buttons, a disabled one marked; "" while it is not there. */
+const bar = () =>
+    inPage<string>(`
+        const bar = document.querySelector('.pages-detail [data-part="select-bar"]');
+
+        return JSON.stringify(bar === null ? "" : [
+            bar.querySelector(".sel-count").textContent.trim(),
+            ...[...bar.querySelectorAll("button")].map((each) => each.textContent.replace(/\\s+/g, " ").trim() + (each.disabled ? " (disabled)" : "")),
+        ].join(" | "));
+    `);
+
+/** Press the button of the selection's bar that says `text`, once it takes a click; a question it asks is kept, and answered yes. */
+async function inBar(text: string): Promise<void> {
+    const found = `[...document.querySelectorAll('.pages-detail [data-part="select-bar"] button')].find((each) => each.textContent.replace(/\\s+/g, " ").trim() === ${JSON.stringify(text)} && !each.disabled)`;
+
+    await until(
+        () => inPage<boolean>(`return JSON.stringify(${found} !== undefined)`),
+        `${text} taking a click`,
+    );
+    await inPage(`
+        window.asked = [];
+        window.confirm = (text) => {
+            window.asked.push(text);
+
+            return true;
+        };
+        ${found}.click();
+
+        return JSON.stringify(true);
+    `);
+}
+
+/** Whether the page shown has a button that says `text`. */
+const says = (text: string) =>
+    inPage<boolean>(
+        `return JSON.stringify([...document.querySelectorAll(".pages-detail button")].some((each) => each.textContent.trim() === ${JSON.stringify(text)}))`,
+    );
+
+/** What the notices on the page say. */
+const notices = () =>
+    inPage<string[]>(`
+        const { store } = await import("/store.js");
+
+        return JSON.stringify(store.state.notices.map((each) => each.message));
+    `);
+
+/** Type `text` in the search of the page shown, in place of what it holds. */
+const search = (text: string) =>
+    inPage(`
+        const input = document.querySelector('.pages-detail input[aria-label="Search sessions and folders"]');
+
+        input.value = ${JSON.stringify(text)};
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+
+        return JSON.stringify(true);
+    `);
+
+test(
+    "who is in charge selects several of a person's sessions in a computer's tree, by their checkboxes, a folder's, or Select all under a search, and shares or takes them back with one press: Revoke asks once, and a session the server refuses is named in one notice",
+    real,
+    async () => {
+        const pia = app.config.addUser("Pia", "guest").user;
+        let desk: string | undefined;
+        const chosen = [...(app.config.computer(runnerId)?.users ?? [])];
+
+        mkdirSync(join(root, "bulk-a", "inner"), { recursive: true });
+
+        const bulk = realpathSync(join(root, "bulk-a"));
+        const inner = join(bulk, "inner");
+        const here = `Folder ${bulk} of Pia on This server`;
+        const below = `Folder ${inner} of Pia on This server`;
+        const shared = (id: Awaited<ReturnType<typeof startedBy>>) =>
+            app.sessionMeta(id)?.sharedWith ?? [];
+        const sees = (id: Awaited<ReturnType<typeof startedBy>>) =>
+            app.canSee(app.config.userById(pia.id)!, id);
+
+        try {
+            await app.choosePerson(THIS_SERVER, pia.id, true);
+            await app.choosePeople(runnerId, [...chosen, pia.id]);
+
+            const one = await startedBy("bulk one", owner(app).id, bulk);
+            const two = await startedBy("bulk two zircon", owner(app).id, bulk);
+            const three = await startedBy("bulk three zircon", owner(app).id, bulk);
+            const four = await startedBy("bulk four", owner(app).id, inner);
+            const hers = await startedBy("bulk hers", pia.id, bulk);
+            const away = await startedBy("bulk away", owner(app).id, bulk);
+
+            // One of them is on the runner, a computer of its own with a tree of its own.
+            await app.harness.commit(async (tx) => {
+                (await tx.doc(SessionsDoc)).items[String(away)]!.runner = runnerId;
+            }, context);
+
+            await open("people");
+            await show("Pia");
+            await until(
+                async () => (await folds()).some((each) => each.startsWith(`${here}: `)),
+                "her tree",
+            );
+            await reveal(inner);
+
+            for (const name of [here, below, `Folder ${bulk} of Pia on Laptop`]) {
+                await until(
+                    async () => (await folds()).some((each) => each.startsWith(`${name}: `)),
+                    `the row of ${name}`,
+                );
+
+                if (
+                    !(await folds()).some(
+                        (each) => each.startsWith(`${name}: `) && each.endsWith("(open)"),
+                    )
+                ) {
+                    await fold(name);
+                }
+            }
+
+            await until(async () => (await sessionRows()).length === 6, "the six sessions");
+
+            // Select turns the selection on: a checkbox on each session and folder row, and the bar over the list. A
+            // row's own Invite and Revoke go meanwhile; Go to session stays.
+            assert.equal(await has("Invite Pia to bulk one"), true);
+            assert.equal(await bar(), "");
+            await tap("Select");
+            await until(async () => (await bar()) !== "", "the bar");
+            assert.equal(await bar(), "0 selected | Share (0) (disabled) | Revoke (0) (disabled)");
+            assert.deepEqual(
+                [
+                    await has("Invite Pia to bulk one"),
+                    await has("Revoke bulk hers from Pia"),
+                    await has("Go to bulk one"),
+                    await has("Select bulk one"),
+                    await has("Select bulk away"),
+                ],
+                [false, false, true, true, true],
+            );
+            assert.ok(await says("Done"), "Select reads Done");
+
+            // A folder's checkbox checks every session listed under it, in the folder in it too; with some of them
+            // checked, it is mixed. Pressed then, it checks them all, and again, none.
+            const folderBox = `Select the sessions in ${bulk} on This server`;
+            const innerBox = `Select the sessions in ${inner} on This server`;
+
+            await check(folderBox);
+            await until(async () => (await bar()).startsWith("5 selected"), "the five checked");
+            assert.equal((await checks())[innerBox], "on");
+            await check("Select bulk one");
+            await until(async () => (await bar()).startsWith("4 selected"), "one unchecked");
+            assert.deepEqual(
+                [
+                    (await checks())[folderBox],
+                    (await checks())[innerBox],
+                    (await checks())["Select bulk one"],
+                ],
+                ["mixed", "on", "off"],
+            );
+            await check(folderBox);
+            await until(async () => (await bar()).startsWith("5 selected"), "all of them again");
+            await check(folderBox);
+            await until(async () => (await bar()).startsWith("0 selected"), "none");
+            assert.equal((await checks())[folderBox], "off");
+
+            // Three checked are shared with her by one press, which asks nothing; a fourth is not. The selection is
+            // cleared, and stays on.
+            await check("Select bulk one");
+            await check("Select bulk two zircon");
+            await check("Select bulk four");
+            await until(
+                async () => (await bar()) === "3 selected | Share (3) | Revoke (0) (disabled)",
+                "the three to share",
+            );
+            await inBar("Share (3)");
+            await until(
+                () => [one, two, four].every((id) => shared(id).includes(pia.id)),
+                "the three shared",
+            );
+            assert.deepEqual(shared(three), [], "not the fourth");
+            assert.deepEqual(await asked(), [], "Share asks nothing");
+            await until(
+                async () => (await bar()).startsWith("0 selected"),
+                "the selection cleared",
+            );
+            assert.ok(await says("Done"), "and still on");
+
+            // Select all checks what the search lists, and only that. A session the search no longer lists leaves the
+            // selection.
+            await search("zircon");
+            await until(
+                async () =>
+                    (await sessionRows())
+                        .map((each) => each.split(" | ")[0])
+                        .sort()
+                        .join() === "bulk three zircon,bulk two zircon",
+                "the two found",
+            );
+            await check("Select all");
+            await until(
+                async () => (await bar()) === "2 selected | Share (1) | Revoke (1)",
+                "the two found selected, one to share and one to take back",
+            );
+            assert.deepEqual(
+                [
+                    (await checks())["Select bulk two zircon"],
+                    (await checks())["Select bulk three zircon"],
+                ],
+                ["on", "on"],
+            );
+            await search("three");
+            await until(async () => (await bar()).startsWith("1 selected"), "the one still listed");
+            // The runner's tree, which listed nothing under the search, is drawn anew: its row is closed again.
+            await search("");
+            await until(
+                async () => (await folds()).includes(`Folder ${bulk} of Pia on Laptop: 0 of 1`),
+                "the runner's row, closed",
+            );
+            await fold(`Folder ${bulk} of Pia on Laptop`);
+            await until(async () => (await sessionRows()).length === 6, "all six again");
+            assert.equal((await bar()).split(" | ")[0], "1 selected");
+            await check("Select bulk three zircon");
+
+            // On a phone each checkbox takes a finger's press.
+            await page.setViewport({ width: 390, height: 844, scale: 2, mobile: true });
+            await until(
+                async () => await inPage<boolean>(`return JSON.stringify(innerWidth <= 390)`),
+                "the page at a phone's size",
+            );
+
+            const boxes = await inPage<number[][]>(`
+                return JSON.stringify(
+                    [...document.querySelectorAll(".pages-detail .sel-check")].map((each) => {
+                        const box = each.getBoundingClientRect();
+
+                        return [Math.round(box.width), Math.round(box.height)];
+                    }),
+                );
+            `);
+
+            assert.ok(boxes.length >= 9, String(boxes.length));
+            assert.ok(
+                boxes.every(([width, height]) => width! >= 44 && height! >= 44),
+                JSON.stringify(boxes),
+            );
+            await page.setViewport(DESKTOP);
+
+            // Two shared with her and one she started, taken back with one question, which says where hers goes.
+            await check("Select bulk one");
+            await check("Select bulk two zircon");
+            await check("Select bulk hers");
+            await until(
+                async () => (await bar()) === "3 selected | Share (0) (disabled) | Revoke (3)",
+                "the three to take back",
+            );
+            await inBar("Revoke (3)");
+            assert.deepEqual(await asked(), [
+                "Revoke 3 sessions from Pia? 1 they started move to you, with the tasks they set up in them.",
+            ]);
+            await until(() => [one, two, hers].every((id) => !sees(id)), "none of the three hers");
+            assert.equal(sees(four), true, "the one not selected stays hers");
+
+            // The server refuses one: she is no longer chosen for the runner, and this tab has not heard of it yet.
+            // The other is shared, and one notice says how many were not, and why.
+            await until(
+                async () => (await bar()).startsWith("0 selected"),
+                "the selection cleared",
+            );
+            await check("Select bulk three zircon");
+            await check("Select bulk away");
+            await until(async () => (await bar()).includes("Share (2)"), "the two to share");
+            app.config.setUsers(runnerId, chosen);
+            await inBar("Share (2)");
+            await until(() => shared(three).includes(pia.id), "the one that can be shared");
+            await until(
+                async () =>
+                    (await notices()).includes(
+                        "1 of 2 were not changed: Pia cannot use Laptop: choose them for it first.",
+                    ),
+                "the notice",
+            );
+            assert.deepEqual(shared(away), []);
+
+            // One a folder still gives her after that: the question says so, and she keeps it.
+            await app.setFolderLevel(owner(app), THIS_SERVER, pia.id, bulk, "start");
+            await app.setFolderLevel(owner(app), THIS_SERVER, pia.id, bulk, "all");
+            await until(
+                async () => (await bar()).startsWith("0 selected"),
+                "the selection cleared",
+            );
+            await until(
+                async () => (await checks())["Select bulk three zircon"] === "off",
+                "its checkbox, with the folder hers",
+            );
+            await check("Select bulk three zircon");
+            await until(async () => (await bar()).includes("Revoke (1)"), "the one to take back");
+            await inBar("Revoke (1)");
+            assert.deepEqual(await asked(), [
+                "Revoke 1 session from Pia? They still have 1 of them through a folder.",
+            ]);
+            await until(() => !shared(three).includes(pia.id), "the share taken back");
+            assert.equal(sees(three), true, "hers still, by the folder");
+
+            // More sessions than one request takes go in several, each in its order.
+            assert.deepEqual(
+                await inPage<number[][]>(`
+                    const { chunks } = await import("/sheets/session-select.js");
+                    const lists = chunks(Array.from({ length: 1201 }, (_, at) => at));
+
+                    return JSON.stringify(lists.map((each) => [each.length, each[0], each.at(-1)]));
+                `),
+                [
+                    [500, 0, 499],
+                    [500, 500, 999],
+                    [201, 1000, 1200],
+                ],
+            );
+
+            // Done ends it, and so does another person.
+            await tap("Done");
+            await until(async () => (await bar()) === "", "the bar gone");
+            await until(() => has("Invite Pia to bulk two zircon"), "a row's own button back");
+            await tap("Select");
+            await until(async () => (await bar()) !== "", "the bar again");
+            await show("Gina");
+            await show("Pia");
+            await until(async () => (await has("Select bulk four")) === false, "no checkbox");
+            assert.equal(await bar(), "");
+
+            // And another computer shown: a runner linked meanwhile.
+            await tap("Select");
+            await until(async () => (await bar()) !== "", "the bar once more");
+            desk = app.config.addRunner("Desk", owner(app).id, newIdentity().publicKey).id;
+            app.accessChanged();
+            await until(
+                () =>
+                    inPage<boolean>(
+                        `return JSON.stringify(document.querySelector('.pages-detail .access-row[data-computer=${JSON.stringify(desk)}]') !== null)`,
+                    ),
+                "the new runner on her page",
+            );
+            await until(async () => (await bar()) === "", "the selection ended");
+        } finally {
+            await page.setViewport(DESKTOP);
+
+            if (desk !== undefined) {
+                app.config.removeRunner(desk);
+            }
+
+            await app.choosePeople(runnerId, chosen);
+            app.config.removeUser(pia.id);
+            app.accessChanged();
+        }
+    },
+);
+
+test(
+    "someone not in charge selects several of their sessions in the list on a person's page, and shares them, then takes them back, each with one press",
+    real,
+    async () => {
+        const dee = app.config.addUser("Dee", "guest");
+        const eli = app.config.addUser("Eli", "guest");
+        const owners = page;
+        const made: Browsers[] = [];
+        const mine = "Your sessions on This server";
+        const shared = (id: Awaited<ReturnType<typeof startedBy>>) =>
+            app.sessionMeta(id)?.sharedWith ?? [];
+
+        try {
+            await app.choosePerson(THIS_SERVER, dee.user.id, true);
+            await app.choosePerson(THIS_SERVER, eli.user.id, true);
+
+            const first = await startedBy("deal: first", dee.user.id);
+            const second = await startedBy("deal: second", dee.user.id);
+            const third = await startedBy("deal: third", dee.user.id);
+
+            page = await ownBrowser(made, dee.token);
+            await open("people");
+            await show("Eli");
+            await until(
+                async () => (await folds()).some((each) => each.startsWith(`${mine}: 0 of 3`)),
+                "her list",
+            );
+            await fold(mine);
+            await until(async () => (await sessionRows()).length === 3, "her three sessions");
+            await tap("Select");
+            await until(async () => (await bar()) !== "", "the bar");
+            assert.equal(await has("Invite Eli to deal: first"), false);
+            await check("Select deal: first");
+            await check("Select deal: second");
+            await until(
+                async () => (await bar()) === "2 selected | Share (2) | Revoke (0) (disabled)",
+                "the two to share",
+            );
+            await inBar("Share (2)");
+            await until(
+                () => [first, second].every((id) => shared(id).includes(eli.user.id)),
+                "the two shared",
+            );
+            assert.deepEqual(shared(third), []);
+            assert.deepEqual(await asked(), []);
+            await until(
+                async () => (await folds()).includes(`${mine}: 2 of 3 (open)`),
+                "the count to follow",
+            );
+            await until(
+                async () => (await bar()).startsWith("0 selected"),
+                "the selection cleared",
+            );
+
+            // Its folder's checkbox checks all three: two of them hers to take back.
+            await check(`Select the sessions in ${mine}`);
+            await until(
+                async () => (await bar()) === "3 selected | Share (1) | Revoke (2)",
+                "one to share, two to take back",
+            );
+            await inBar("Revoke (2)");
+            assert.deepEqual(await asked(), ["Revoke 2 sessions from Eli?"]);
+            await until(
+                () => [first, second].every((id) => !shared(id).includes(eli.user.id)),
+                "the two taken back",
+            );
+            assert.deepEqual(shared(third), []);
+            await until(
+                async () => (await folds()).includes(`${mine}: 0 of 3 (open)`),
+                "the count, none again",
+            );
+        } finally {
+            page = owners;
+
+            for (const each of made) {
+                await each.closeAll({ final: true });
+            }
+
+            for (const each of [dee, eli]) {
+                if (app.config.userById(each.user.id) !== undefined) {
+                    app.config.removeUser(each.user.id);
+                }
+            }
+
+            app.accessChanged();
+        }
+    },
+);
