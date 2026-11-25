@@ -26,6 +26,7 @@ import { createServer, type Server } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import { THIS_SERVER } from "../src/server/access.ts";
 import { Browsers } from "../src/server/browser.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
@@ -1275,7 +1276,7 @@ test(
             await inPage<string[]>(
                 `return JSON.stringify([...document.querySelectorAll(".pages-detail .group-title")].map((each) => each.textContent.trim()))`,
             ),
-            ["Approvals last", "Sharing"],
+            ["Approvals last"],
             "a computer's settings",
         );
     },
@@ -1486,8 +1487,8 @@ test(
             // Someone else's, as the owner sees it: every group of theirs, in each part of their page.
             await show("Gina");
             await until(
-                async () => (await titles()).some(([title]) => title === "Where they may work"),
-                "Gina's groups",
+                async () => (await titles()).some(([title]) => title === "New sessions"),
+                "Gina's New sessions group",
             );
 
             const places = await titles();
@@ -1502,7 +1503,7 @@ test(
 
             assert.deepEqual(
                 places.map(([title]) => title),
-                ["Where they may work"],
+                ["New sessions", "Where they may work"],
             );
             assert.deepEqual(
                 rules.map(([title]) => title).filter((title) => !title.startsWith("On ")),
@@ -3138,7 +3139,7 @@ test(
             });
             await showPart("Folders and sessions");
             assert.deepEqual(
-                await switches(),
+                (await switches()).filter((each) => !each.startsWith("Share my new sessions")),
                 ["Gina may use This server: on", "Gina may use Laptop: off"],
                 "no right is repeated under a computer",
             );
@@ -3269,14 +3270,17 @@ test(
                 "never ends",
             ]);
 
-            // Her own browser: someone else's page says who they are, and no more.
+            // Her own browser: she may share her new sessions, but may not change the other person's permissions.
             const ginas = await theirs.open(1);
 
             page = ginas;
             await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
             await open("people");
             await show("Vera");
-            assert.deepEqual(await switches(), []);
+            await showPart("Folders and sessions");
+            assert.deepEqual(await switches(), [
+                "Share my new sessions on This server with Vera: off",
+            ]);
             assert.equal(await removable(), false);
 
             // The owner turns it on, after a question.
@@ -3389,10 +3393,15 @@ test(
             assert.ok((await switches()).includes("Gina manages users: on"));
             assert.deepEqual(await wider(), []);
 
-            // Taken back: her view of Vera is anyone's again, at once.
+            // Taken back: she shares her own new sessions, but can no longer change Vera's permissions.
             page = ginas;
             app.setRight(owner(app), { person: guest.id, right: "managesUsers", on: false });
-            await until(async () => (await switches()).length === 0, "Vera's switches to go");
+            await until(
+                async () =>
+                    (await switches()).join() ===
+                    "Share my new sessions on This server with Vera: off",
+                "only the new sessions switch remains",
+            );
             assert.equal(await removable(), false);
 
             // Settings, what holds for everyone, is for who manages the server: not hers until the owner lets her.
@@ -4632,6 +4641,107 @@ test(
             }
 
             app.accessChanged();
+        }
+    },
+);
+
+test(
+    "a person's New sessions switch shares the next session, also for a giver not in charge",
+    real,
+    async () => {
+        const boss = owner(app);
+        const giver = app.config.addUser("Future giver", "guest");
+        const receiver = app.config.addUser("Future receiver", "viewer").user;
+        const previous = page;
+        const made: Browsers[] = [];
+        const row = `[data-part="share-new"][data-computer="${THIS_SERVER}"]`;
+        const readRow = () =>
+            inPage<{ label: string; on: string; text: string; group: string } | null>(`
+            const row = document.querySelector(${JSON.stringify(row)});
+            const button = row?.querySelector('[role="switch"]');
+
+            return JSON.stringify(button ? {
+                label: button.getAttribute("aria-label"),
+                on: button.getAttribute("aria-checked"),
+                text: row.textContent,
+                group: row.parentElement.querySelector(".group-title").textContent,
+            } : null);
+        `);
+        const label = "Share my new sessions on This server with Future receiver";
+
+        try {
+            await app.choosePerson(THIS_SERVER, giver.user.id, true);
+            await app.choosePerson(THIS_SERVER, receiver.id, true);
+            await app.giveFolders(boss, THIS_SERVER, giver.user.id, [work]);
+            await open("people");
+            await show(receiver.name);
+            await showPart("Folders and sessions");
+            await until(async () => (await readRow())?.label === `${label}: off`, "owner's switch");
+
+            page = await ownBrowser(made, giver.token);
+            await open("people");
+            await show(receiver.name);
+            await showPart("Folders and sessions");
+            await until(
+                async () => (await readRow())?.label === `${label}: off`,
+                "chosen user's switch",
+            );
+            const off = (await readRow())!;
+
+            assert.equal(off.group, "New sessions");
+            assert.equal(off.on, "false");
+            assert.match(off.text, /Share my new sessions on This server/);
+            assert.match(off.text, /Your new sessions there start private\./);
+            await inPage(`
+                const fetch = window.fetch.bind(window);
+                window.sharingCalls = [];
+                window.fetch = (url, options) => {
+                    if (typeof url === "string" && url.startsWith(${JSON.stringify(`/api/users/${receiver.id}/`)})) {
+                        window.sharingCalls.push(options.method + " " + url.split("/").pop());
+                    }
+
+                    return fetch(url, options);
+                };
+
+                return JSON.stringify(true);
+            `);
+            await tap(`${label}: off`);
+            await until(async () => (await readRow())?.label === `${label}: on`, "switch turns on");
+            assert.deepEqual(await inPage<string[]>("return JSON.stringify(window.sharingCalls)"), [
+                "POST share-new",
+            ]);
+            const on = (await readRow())!;
+
+            assert.equal(on.on, "true");
+            assert.match(
+                on.text,
+                /Each session you start there from now on is shared with Future receiver\./,
+            );
+            const stop = answerRequests(app, () => true);
+
+            try {
+                const id = await inPage<ConversationId>(`
+                const { actions } = await import("/store.js");
+                return JSON.stringify((await actions.createSession(${JSON.stringify(work)})).id);
+            `);
+                const meta = app.sessionMeta(id);
+
+                assert.equal(meta?.createdBy, giver.user.id);
+                assert.deepEqual(meta?.sharedWith, [receiver.id]);
+            } finally {
+                stop();
+            }
+        } finally {
+            page = previous;
+
+            for (const browser of made) {
+                await browser.closeAll({ final: true });
+            }
+
+            await app.choosePerson(THIS_SERVER, giver.user.id, false);
+            await app.choosePerson(THIS_SERVER, receiver.id, false);
+            await app.removeUser(boss, giver.user.id);
+            await app.removeUser(boss, receiver.id);
         }
     },
 );

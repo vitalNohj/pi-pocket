@@ -727,6 +727,25 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
         }
 
+        // The sessions I start on one computer from now on, shared with this person or not.
+        if (
+            first === "users" &&
+            second !== undefined &&
+            third === "share-new" &&
+            fourth === undefined &&
+            method === "POST"
+        ) {
+            const body = await readJson<{ computer?: unknown; on?: unknown } | null>(request);
+
+            if (typeof body?.computer !== "string") {
+                throw new HttpError(400, "Send a computer id.");
+            }
+
+            app.setShareNew(user, body.computer, second, body.on);
+
+            return json(response, 200, app.commands.sharingWith(user, second));
+        }
+
         // Chat with one person (`direct.ts`): only the two read it, and each asks as themselves, never for another.
         if (first === "users" && second !== undefined && third === "chat") {
             if (fourth === undefined && method === "GET") {
@@ -1308,9 +1327,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         /**
-         * A computer's settings kept here: "Default sharing" (`shareNew`) for any computer; for a runner, whether its
-         * sessions' browsers use its network, and where their downloads go there. Its linker's and the owner's. A runner
-         * gets its settings at once (`runner-settings`).
+         * A runner's browser settings: whether it uses the runner's network, and where downloads go there. Set by
+         * who is in charge. The runner gets its settings at once (`runner-settings`).
          */
         if (
             first === "runners" &&
@@ -1325,19 +1343,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
             app.policy.requireManage(user, second);
 
             const body = await readJson<{
-                shareNew?: unknown;
                 network?: unknown;
                 downloads?: unknown;
             } | null>(request);
             const change: ComputerSettings = {};
-
-            if (body?.shareNew !== undefined) {
-                if (typeof body.shareNew !== "boolean") {
-                    throw new HttpError(400, "shareNew must be true or false.");
-                }
-
-                change.shareNew = body.shareNew;
-            }
 
             if (second !== THIS_SERVER && body?.network !== undefined) {
                 if (typeof body.network !== "boolean") {

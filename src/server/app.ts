@@ -376,7 +376,6 @@ export type ServerView = {
      * from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to (`allowsOwn`).
      */
     rights: Record<ComputerRight, string[]>;
-    shareNew: boolean;
     /** Whoever is told this is in charge of it (`access.ts` `inCharge`): the owner, and who manages runners. */
     inCharge: true;
     /** The users in charge of it because they manage runners (`access.ts` `managesRunners`), by id. */
@@ -3337,7 +3336,7 @@ export class PocketApp {
                     seesUntil: (person) => config.seenUntil(id, person),
                     givenBy: (person) => config.givenBy(id, person),
                     holders: (right) => config.rightHolders(id, right),
-                    shareNew: record.shareNew === true,
+                    sharesNew: (giver) => config.sharesNew(id, giver),
                 };
             },
             approved: (id) => this.folderApprovals.live(id),
@@ -3413,7 +3412,6 @@ export class PocketApp {
                 ]),
             ),
             rights: this.config.rightsOn(THIS_SERVER),
-            shareNew: server.shareNew === true,
             inCharge: true,
             managers: this.#managersOf(THIS_SERVER),
         };
@@ -6563,6 +6561,22 @@ export class PocketApp {
         void this.#refreshUser(userId);
         this.accessChanged();
         this.#peopleChanged();
+    }
+
+    /** Share the sessions `by` starts on `computer` from now on, with one person. */
+    setShareNew(by: User, computer: string, personId: unknown, on: unknown): void {
+        if (typeof on !== "boolean" || typeof personId !== "string") {
+            throw new HttpError(400, "Send a person id, with on true or false.");
+        }
+
+        const ending = !on && this.config.sharesNew(computer, by.id).includes(personId);
+
+        if (!ending && !this.policy.mayShareNew(by, computer, { id: personId })) {
+            throw new HttpError(404, "No such person there.");
+        }
+
+        this.config.setSharesNew(computer, by.id, personId, on);
+        this.accessChanged();
     }
 
     /**

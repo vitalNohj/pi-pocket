@@ -21,6 +21,7 @@ import { after, before, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { THIS_SERVER } from "../src/server/access.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { ConfigStore, type User } from "../src/server/config.ts";
 import { SessionsDoc } from "../src/server/docs.ts";
 
@@ -242,7 +243,7 @@ test("the owner keeps every session, and steers them as before", async () => {
 });
 
 test("what comes after the upgrade follows the rules: a new session is its starter's alone", async () => {
-    assert.equal(app.config.server.shareNew, undefined);
+    assert.equal(app.config.server.sharesNew, undefined);
     assert.equal(app.config.server.sees, undefined);
 
     const mine = await newSession(app);
@@ -507,5 +508,73 @@ test("with nobody to choose, a person held to a session is still not locked out 
         assert.equal(next.policy.steer(now, String(session)), "allow");
     } finally {
         await next.close();
+    }
+});
+
+test("the old computer switches become separate lists for the linker and the chosen people", () => {
+    const dir = join(root, "migrate-new-shares");
+    const config = new ConfigStore(dir);
+    const boss = config.linkerOf(THIS_SERVER)!;
+    const gail = config.addUser("Gail", "guest").user.id;
+    const vic = config.addUser("Vic", "viewer").user.id;
+    const add = (name: string) => config.addRunner(name, gail, newIdentity().publicKey);
+    const laptop = add("Laptop");
+    const off = add("Off");
+    const empty = add("Nobody chosen");
+    const old = saved(config.file);
+
+    old.server = { shareNew: true, users: [gail, vic] };
+    old.runners = [
+        { ...laptop, shareNew: true, users: [vic] },
+        { ...off, shareNew: false, users: [vic] },
+        { ...empty, shareNew: true, users: [] },
+    ];
+    writeFileSync(config.file, JSON.stringify(old));
+    const next = new ConfigStore(dir);
+    const upgraded = saved(config.file);
+
+    assert.deepEqual(upgraded.server, {
+        users: [gail, vic],
+        sharesNew: { [boss]: [gail, vic], [gail]: [vic], [vic]: [gail] },
+    });
+    assert.deepEqual(upgraded.runners, [
+        { ...laptop, users: [vic], sharesNew: { [gail]: [vic] } },
+        { ...off, users: [vic] },
+        { ...empty, users: [] },
+    ]);
+    assert.deepEqual(next.sharesNew(laptop.id, vic), []);
+    assert.deepEqual(new ConfigStore(dir).server, next.server, "it happens once");
+});
+
+test("migration ignores a removed person still named in the computer's users, or as its linker", async () => {
+    const dir = join(root, "migrate-stale-new-shares");
+    const config = new ConfigStore(dir);
+    const boss = config.linkerOf(THIS_SERVER)!;
+    const here = config.addUser("Here", "viewer").user;
+    const removed = config.addUser("Removed", "guest").user;
+    const orphan = config.addRunner("Orphan", removed.id, newIdentity().publicKey);
+
+    config.setUsers(THIS_SERVER, [here.id, removed.id]);
+    config.removeUser(removed.id);
+    const old = saved(config.file);
+
+    old.server = { ...config.server, shareNew: true };
+    old.runners = [{ ...orphan, shareNew: true, users: [here.id, removed.id] }];
+    writeFileSync(config.file, JSON.stringify(old));
+    const migrated = await openApp(model, dir);
+
+    try {
+        assert.equal(migrated.config.userById(removed.id), undefined);
+        assert.deepEqual(migrated.config.server.users, [here.id, removed.id]);
+        assert.deepEqual(saved(config.file).server, {
+            users: [here.id, removed.id],
+            sharesNew: { [boss]: [here.id] },
+        });
+        assert.deepEqual(saved(config.file).runners, [{ ...orphan, users: [here.id, removed.id] }]);
+        assert.deepEqual(migrated.policy.initialShares(THIS_SERVER, boss), [here.id]);
+        assert.deepEqual(migrated.policy.initialShares(THIS_SERVER, removed.id), []);
+        assert.deepEqual(migrated.policy.initialShares(orphan.id, removed.id), []);
+    } finally {
+        await migrated.close();
     }
 });

@@ -6,12 +6,14 @@
 // to them there (`POST /api/runners/:id/give`).
 import {
     type App,
+    answerRequests,
     approveSession,
     cleanUp,
     context,
     newSession,
     openApp,
     owner,
+    say,
     scriptedModel,
     work,
 } from "./helpers.ts";
@@ -38,6 +40,7 @@ type Answer = {
     sessions?: SharingRow[];
     charge?: { id: string; name: string }[];
     computers?: SharingComputer[];
+    shareNew?: { id: string; name: string; on: boolean }[];
     refused?: { id: number; reason: string }[];
     ok?: boolean;
 };
@@ -79,6 +82,9 @@ async function call(
 }
 
 const sharing = (target: User) => `users/${encodeURIComponent(target.id)}/sharing`;
+const shareNew = (target: User) => `users/${encodeURIComponent(target.id)}/share-new`;
+const setShareNew = (by: User, target: User, on: boolean, computer = THIS_SERVER) =>
+    call(by, shareNew(target), { computer, on });
 
 /** A session here that `starter` started, named `title`. */
 async function session(title: string, starter: User = owner(app)): Promise<ConversationId> {
@@ -1085,4 +1091,151 @@ test("what was given is shared on by computer: on for one is not on for another,
     await app.choosePerson(laptop, lea.id, true);
     assert.deepEqual(holds(lea), [false, false]);
     assert.deepEqual(app.config.rightHolders(laptop, "reshares"), [boss.id]);
+});
+
+test("new-session sharing is per starter and per computer, not for existing sessions", async () => {
+    const boss = owner(app);
+    const giver = await person("New-session giver", "guest");
+    const receiver = await person("New-session receiver", "viewer");
+    const third = await person("New-session third", "guest");
+    const laptop = app.config.addRunner("New-session laptop", boss.id, newIdentity().publicKey).id;
+
+    for (const each of [giver, receiver]) {
+        await app.choosePerson(laptop, each.id, true);
+    }
+
+    const earlier = await session("Before the switch", giver);
+    const off = [
+        { id: THIS_SERVER, name: "This server", on: false },
+        { id: laptop, name: "New-session laptop", on: false },
+    ];
+
+    assert.deepEqual((await call(giver, sharing(receiver))).body.shareNew, off);
+    const answer = await setShareNew(giver, receiver, true);
+
+    assert.equal(answer.status, 200);
+    const on = [{ ...off[0], on: true }, off[1]];
+
+    assert.deepEqual(answer.body.shareNew, on);
+    assert.deepEqual((await call(giver, sharing(receiver))).body, answer.body);
+    const taking = await call(giver, sharing(receiver), { revoke: [Number(earlier)] });
+
+    assert.equal(taking.status, 200);
+    assert.deepEqual(taking.body.shareNew, on);
+    assert.deepEqual(sharedWith(earlier), []);
+    const stop = answerRequests(app, () => true);
+
+    try {
+        for (const each of [giver, third]) {
+            await app.giveFolders(boss, THIS_SERVER, each.id, [work]);
+            const { id } = await app.commands.createSession(now(each), { cwd: work });
+
+            assert.equal(app.sessionMeta(id)?.createdBy, each.id);
+            assert.deepEqual(sharedWith(id), each === giver ? [receiver.id] : []);
+            assert.equal(app.canSee(now(receiver), id), each === giver);
+        }
+    } finally {
+        stop();
+    }
+
+    assert.deepEqual((await setShareNew(giver, receiver, false)).body.shareNew, off);
+    assert.deepEqual(app.config.sharesNew(THIS_SERVER, giver.id), []);
+});
+
+test("new-session sharing refuses someone not chosen, an unknown computer, and a bad on value", async () => {
+    const boss = owner(app);
+    const stranger = await person("Not chosen for new sessions", "guest", { chosen: false });
+    const chosen = await person("Chosen for new sessions", "viewer");
+
+    for (const answer of [
+        await setShareNew(boss, stranger, true),
+        await setShareNew(boss, chosen, true, "nowhere"),
+    ]) {
+        assert.equal(answer.status, 404);
+        assert.equal(answer.body.error, "No such person there.");
+    }
+
+    assert.equal(
+        (await call(boss, shareNew(chosen), { computer: THIS_SERVER, on: "yes" })).status,
+        400,
+    );
+    assert.equal((await call(boss, shareNew(chosen), { computer: 1, on: true })).status, 400);
+    assert.deepEqual(app.config.sharesNew(THIS_SERVER, boss.id), []);
+});
+
+test("an existing new-session share can be turned off after the receiver loses eligibility", async () => {
+    const boss = owner(app);
+    const receiver = await person("Held to a session later", "viewer");
+    const id = await newSession(app);
+
+    assert.equal((await setShareNew(boss, receiver, true)).status, 200);
+    app.config.updateUser(receiver.id, { sessions: [String(id)] });
+    assert.deepEqual(app.policy.initialShares(THIS_SERVER, boss.id), []);
+    const off = await setShareNew(boss, receiver, false);
+
+    assert.equal(off.status, 200);
+    assert.deepEqual(off.body.shareNew, []);
+    assert.deepEqual(app.config.sharesNew(THIS_SERVER, boss.id), []);
+});
+
+test("a linked session gets its starter's new-session shares", async () => {
+    const boss = owner(app);
+    const receiver = await person("Linked receiver", "viewer");
+    const source = await newSession(app);
+
+    await say(app, source, "Start here");
+    assert.equal((await setShareNew(boss, receiver, true)).status, 200);
+    const { session: linked } = await app.linkedSessions.start(
+        source,
+        { message: "Do this in a linked session" },
+        "new-session-sharing",
+    );
+
+    assert.deepEqual(sharedWith(source), []);
+    assert.equal(app.sessionMeta(linked)?.createdBy, boss.id);
+    assert.deepEqual(sharedWith(linked), [receiver.id]);
+    assert.equal(app.canSee(now(receiver), linked), true);
+    await setShareNew(boss, receiver, false);
+});
+
+test("unchoosing a person clears their new-session shares in both directions and choosing again does not restore them", async () => {
+    const boss = owner(app);
+    const leaver = await person("New-session leaver", "guest");
+    const other = await person("New-session other", "viewer");
+
+    assert.equal((await setShareNew(boss, leaver, true)).status, 200);
+    assert.equal((await setShareNew(leaver, other, true)).status, 200);
+    await app.choosePerson(THIS_SERVER, leaver.id, false);
+    assert.deepEqual(app.config.sharesNew(THIS_SERVER, boss.id), []);
+    assert.deepEqual(app.config.sharesNew(THIS_SERVER, leaver.id), []);
+    await app.choosePerson(THIS_SERVER, leaver.id, true);
+    assert.deepEqual((await call(boss, sharing(leaver))).body.shareNew, [
+        { id: THIS_SERVER, name: "This server", on: false },
+    ]);
+    assert.deepEqual(app.policy.initialShares(THIS_SERVER, leaver.id), []);
+});
+
+test("removing a person clears all of their new-session shares as giver and receiver", async () => {
+    const boss = owner(app);
+    const gone = await person("New-session removed", "guest");
+    const other = await person("New-session stays", "viewer");
+    const laptop = app.config.addRunner("Removal laptop", boss.id, newIdentity().publicKey).id;
+
+    for (const each of [gone, other]) {
+        await app.choosePerson(laptop, each.id, true);
+    }
+
+    for (const computer of [THIS_SERVER, laptop]) {
+        assert.equal((await setShareNew(boss, gone, true, computer)).status, 200);
+        assert.equal((await setShareNew(boss, other, true, computer)).status, 200);
+        assert.equal((await setShareNew(gone, other, true, computer)).status, 200);
+    }
+
+    await app.removeUser(boss, gone.id);
+
+    for (const computer of [THIS_SERVER, laptop]) {
+        assert.deepEqual(app.config.sharesNew(computer, boss.id), [other.id]);
+        assert.deepEqual(app.config.sharesNew(computer, gone.id), []);
+        assert.equal(Object.hasOwn(app.config.computer(computer)?.sharesNew ?? {}, gone.id), false);
+    }
 });

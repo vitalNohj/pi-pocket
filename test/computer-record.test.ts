@@ -197,6 +197,7 @@ describe("a computer that does not exist", () => {
         assert.deepEqual(config.givenFolders(id, ana), []);
         assert.deepEqual(config.givenBy(id, ana), {});
         assert.deepEqual(config.seenFolders(id, ana), []);
+        assert.deepEqual(config.sharesNew(id, inCharge), []);
 
         config.setUsers(id, [ana]);
         config.clearLeaving(id, [ana]);
@@ -204,7 +205,8 @@ describe("a computer that does not exist", () => {
         assert.equal(config.setComputerRight(id, ana, "wheel", true), false);
         config.setGivenFolders(id, ana, ["/a"], inCharge);
         assert.equal(config.setSeenFolder(id, ana, "/a", true), false);
-        config.setComputerSettings(id, { shareNew: true, network: false, downloads: "/d" });
+        config.setSharesNew(id, inCharge, ana, true);
+        config.setComputerSettings(id, { network: false, downloads: "/d" });
 
         assert.equal(config.computer(id), undefined);
         assert.deepEqual(readFileSync(config.file), before, "the file is as it was");
@@ -249,7 +251,10 @@ describe("a second store on the same folder", () => {
             config.setGivenFolders(id, ana, ["/a", "/b"], inCharge);
             config.setSeenFolder(id, ana, "/b", true);
             config.setComputerRight(id, bo, "reshares", true);
-            config.setComputerSettings(id, { shareNew: true });
+            config.setSharesNew(id, inCharge, ana, true);
+            config.setSharesNew(id, inCharge, ana, true);
+            config.setSharesNew(id, inCharge, bo, true);
+            config.setSharesNew(id, bo, ana, true);
 
             const next = new ConfigStore(directory);
 
@@ -258,8 +263,15 @@ describe("a second store on the same folder", () => {
             assert.deepEqual(next.givenBy(id, ana), { "/a": inCharge, "/b": inCharge });
             assert.deepEqual(next.seenFolders(id, ana), ["/b"]);
             assert.deepEqual(next.rightHolders(id, "reshares"), [bo]);
-            assert.equal(next.computer(id)?.shareNew, true);
+            assert.deepEqual(next.sharesNew(id, inCharge), [ana, bo]);
+            assert.deepEqual(next.sharesNew(id, bo), [ana]);
             assert.equal(next.linkerOf(id), inCharge);
+
+            next.setSharesNew(id, inCharge, ana, false);
+            next.setSharesNew(id, inCharge, bo, false);
+            assert.deepEqual(savedRecord(next, id)?.sharesNew, { [bo]: [ana] });
+            next.setSharesNew(id, bo, ana, false);
+            assert.equal(savedRecord(next, id)?.sharesNew, undefined);
         });
     }
 });
