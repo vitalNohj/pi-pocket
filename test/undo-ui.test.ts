@@ -5,6 +5,7 @@ import {
     context,
     lastText,
     newSession,
+    offerSubagents,
     openApp,
     owner,
     root,
@@ -20,6 +21,7 @@ import { after, before, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { Browsers } from "../src/server/browser.ts";
+import { SubagentsDoc } from "../src/server/docs.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
 import type { BrowserPage } from "../src/server/browser/page.ts";
 import { createHandler } from "../src/server/http.ts";
@@ -42,6 +44,11 @@ const inPage = async <T>(expression: string): Promise<T> =>
     JSON.parse(await page.evaluate(`return JSON.stringify(${expression});`)) as T;
 const selector = (css: string) => `document.querySelector(${JSON.stringify(css)})`;
 const shown = (css: string) => inPage<boolean>(`Boolean(${selector(css)})`);
+/** A shown button's hint when it is greyed out, null when it can be pressed: undefined when it is not there. */
+const greyed = (css: string) =>
+    inPage<string | null | undefined>(
+        `((button) => button === null ? undefined : button.disabled ? button.lastElementChild.textContent.trim() : null)(${selector(css)})`,
+    );
 const click = (css: string) => inPage<null>(`(${selector(css)}.click(), null)`);
 const notice = (text: string) =>
     inPage<boolean>(
@@ -93,6 +100,13 @@ before(async () => {
         scriptedModel((request) => {
             const { text } = lastText(request as never);
 
+            if (text === "start a helper") {
+                return fauxAssistantMessage(
+                    [fauxToolCall("subagent", { action: "spawn", name: "helper", message: "hi" })],
+                    { stopReason: "toolUse" },
+                );
+            }
+
             if (text === "fail this one") {
                 return fauxAssistantMessage([], {
                     stopReason: "error",
@@ -107,6 +121,7 @@ before(async () => {
                 : fauxAssistantMessage([fauxText(`echo: ${text}`)]);
         }),
     );
+    offerSubagents(app);
     server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
     );
@@ -164,10 +179,14 @@ test(
 
         await until(() => shown('.composer button[aria-label="Stop"]'), "Pi to be working");
         await openPrompt("wait for me");
-        assert.equal(await shown(undoButton), false);
+        // While Pi works it stays in its place, greyed out, and says why.
+        assert.equal(await greyed(undoButton), "Pi is working");
         await app.commands.abort(id, user);
         await (await app.harness.submission(submissionId, context))!.wait(context);
-        await until(() => shown(undoButton), "Undo to return once Pi stops");
+        await until(
+            async () => (await greyed(undoButton)) === null,
+            "Undo to come back once Pi stops",
+        );
         await click(undoButton);
         const fork = await draftInNewSession(id, "wait for me");
 
@@ -219,6 +238,44 @@ test("Undo reads Retry when Pi's answer failed, and puts the message back", real
     await openPrompt("this one works");
     assert.equal(await shown(undoButton), true);
     assert.equal(await shown(retryButton), false);
+});
+
+test("In a subagent, the last message's Retry shows greyed out and says why", real, async () => {
+    const id = await newSession(app);
+
+    await say(app, id, "start a helper");
+    const helperOf = async () =>
+        (await app.harness.snapshot(SubagentsDoc, id, context))?.agents.helper?.conversationId;
+
+    await until(async () => (await helperOf()) !== undefined, "the subagent");
+    const helper = (await helperOf())!;
+
+    await until(async () => !app.isBusy(helper) && !app.isBusy(id), "the subagent to finish");
+    await say(app, helper, "fail this one");
+    await open(helper);
+    await until(
+        () => inPage<boolean>(`document.body.textContent.includes("Scripted request failed.")`),
+        "the failed answer",
+    );
+    await openPrompt("fail this one");
+    assert.equal(await greyed(retryButton), "Not in a subagent");
+    assert.equal(await shown(undoButton), false);
+    // Pressing it does nothing: the subagent's conversation stays open, with no new session.
+    await click(retryButton);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(await inPage<string>("location.pathname"), `/s/${helper}`);
+});
+
+test("On a linked computer, Undo shows greyed out and says why", real, async () => {
+    const id = await newSession(app);
+
+    await say(app, id, "far away");
+    await open(id);
+    await page.evaluate(
+        `import("/store.js").then(({ store }) => store.set({ view: { ...store.state.view, conversation: { ...store.state.view.conversation, runner: "test-runner" } } }))`,
+    );
+    await openPrompt("far away");
+    assert.equal(await greyed(undoButton), "Not on a linked computer");
 });
 
 test("Ctrl or Command plus Enter sends again, not Undo", real, async () => {

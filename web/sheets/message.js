@@ -121,6 +121,42 @@ function answerFailed(view, entryId) {
     );
 }
 
+/**
+ * Undo on the newest message to Pi (Retry when Pi's answer failed), for a person who may start sessions here: `null`
+ * where it is not offered, else whether it reads Retry, and `blocked`: why it cannot be pressed now. A blocked one
+ * shows greyed out with that reason under it, rather than not at all, so nobody is left looking for it.
+ */
+function undoOffer(view, entry) {
+    const { conversation } = view;
+
+    if (
+        !resendable(entry) ||
+        !canStart() ||
+        (conversation.kind !== "session" && conversation.kind !== "subagent") ||
+        newestPrompt(view, store.state.history) !== entry.id
+    ) {
+        return null;
+    }
+
+    return {
+        retry: answerFailed(view, entry.id),
+        // The server refuses the same: only sessions are copied, PiP's never, and only on this server.
+        blocked:
+            conversation.kind === "subagent"
+                ? "Not in a subagent"
+                : conversation.pip
+                  ? "Not in PiP"
+                  : conversation.runner !== undefined
+                    ? "Not on a linked computer"
+                    : view.live.busy || view.live.compactions?.length
+                      ? "Pi is working"
+                      : // Stopped with messages held in the queue: an undo would drop them.
+                        view.inbox.length > 0
+                        ? "A message is queued"
+                        : undefined,
+    };
+}
+
 /** An undo on its way: a second tap waits for it. */
 let undoing = false;
 
@@ -155,11 +191,12 @@ const undo = (entryId, retry = false) => {
 };
 
 /** A small action under the main button: a link-like button with an optional hint. */
-const Minor = ({ label, hint, run }) => html`<button
+const Minor = ({ label, hint, run, disabled = false }) => html`<button
     type="button"
     class="copy-minor"
     aria-label=${label}
     title=${hint}
+    disabled=${disabled}
     onClick=${run}
 >
     <span>${label}</span>
@@ -291,16 +328,7 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
     const { view } = store.state;
     const sessionId = view.conversation.id;
     const again = canBranch && resendable(entry) && !waiting;
-    // The last message to Pi, once Pi is idle and the queue is empty, in a session on this server.
-    const canUndo =
-        again &&
-        canStart() &&
-        view.conversation.runner === undefined &&
-        !view.live.busy &&
-        !view.live.compactions?.length &&
-        view.inbox.length === 0 &&
-        newestPrompt(view, store.state.history) === entry.id;
-    const retry = canUndo && answerFailed(view, entry.id);
+    const offer = undoOffer(view, entry);
     // A message of files alone has no words: there is nothing to copy.
     const filesAlone = text.trim() === "";
     const { draft, choices } = usePlace(sessionId, `message:${sessionId}:${entry.id}`, {
@@ -369,11 +397,12 @@ function OwnMessageSheet({ entry, canBranch, text, waiting }) {
         }
         <div class="copy-minors">
             ${
-                canUndo &&
+                offer &&
                 html`<${Minor}
-                    label=${retry ? "Retry" : "Undo"}
-                    hint=${retry ? "Unsend and try again" : "Unsend and edit"}
-                    run=${() => undo(entry.id, retry)}
+                    label=${offer.retry ? "Retry" : "Undo"}
+                    hint=${offer.blocked ?? (offer.retry ? "Unsend and try again" : "Unsend and edit")}
+                    disabled=${offer.blocked !== undefined}
+                    run=${() => undo(entry.id, offer.retry)}
                 />`
             }
             ${!filesAlone && !waiting && html`<${Minor} label="Copy text" hint="As written" run=${() => copyAndClose(text)} />`}

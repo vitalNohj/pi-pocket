@@ -11981,8 +11981,14 @@ button.choice-row:active {
     font-weight: 400;
 }
 
+/* Not now (Undo in a subagent, or while Pi works): greyed out, its hint saying why. */
+.copy-minor:disabled {
+    color: var(--faint);
+    cursor: default;
+}
+
 @media (hover: hover) {
-    .copy-minor:hover {
+    .copy-minor:not(:disabled):hover {
         background: var(--hover);
     }
 }
