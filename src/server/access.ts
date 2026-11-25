@@ -744,6 +744,17 @@ export class AccessPolicy {
         );
     }
 
+    /** Someone who has the folder may use its chat, even if they can only view sessions there. */
+    mayChatIn(person: Pick<Person, "id">, computer: string, folder: string): boolean {
+        const current = this.#current(person);
+
+        return (
+            current !== undefined &&
+            current.sessions === undefined &&
+            this.holdsFolder(current, computer, folder)
+        );
+    }
+
     /** May `person` work in `folder` on computer `id` (a real path there): who is in charge anywhere, others where given. */
     mayUseFolder(person: Pick<Person, "id">, id: string, folder: string): boolean {
         const given = this.givenFolders(person, id);

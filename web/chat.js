@@ -4,6 +4,7 @@
 import { Component } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Avatar, initials, personColor } from "./avatar.js";
+import { shortPath } from "./folder-paths.js";
 import { notesDrafts } from "./notes-drafts.js";
 import {
     actions,
@@ -19,6 +20,7 @@ import {
     isLoaded,
     loadEarlier,
     markChatRead,
+    markProjectChatRead,
     notify,
     openSheet,
     peopleDocked,
@@ -32,12 +34,23 @@ const coarse = matchMedia("(pointer: coarse)").matches;
 
 /** Chat messages from others that this browser has not seen yet. Activity lines do not count. */
 export function chatUnread(state = store.state) {
-    return state.chat.filter(
-        (message) =>
-            message.kind !== "event" &&
-            message.userId !== state.me?.id &&
-            message.at > state.chatRead,
+    return sessionChatUnread(state) + projectChatUnread(state);
+}
+
+function unread(messages, read, me) {
+    return messages.filter(
+        (message) => message.kind !== "event" && message.userId !== me?.id && message.at > read,
     ).length;
+}
+
+function sessionChatUnread(state) {
+    return unread(state.chat, state.chatRead, state.me);
+}
+
+function projectChatUnread(state) {
+    return state.projectChat
+        ? unread(state.projectChat.messages, state.projectChatRead, state.me)
+        : 0;
 }
 
 /** The current name of whoever sent a message, or the name they had when they sent it. */
@@ -251,7 +264,7 @@ class ChatLine extends Component {
     shouldComponentUpdate(next) {
         const now = this.props;
 
-        return !["message", "grouped", "open", "pinned", "users", "me", "steer"].every(
+        return !["message", "grouped", "open", "pinned", "users", "me", "steer", "onSelect"].every(
             (key) => now[key] === next[key],
         );
     }
@@ -284,7 +297,7 @@ class ChatLine extends Component {
                     ${message.quote.text}
                 </button>`
             }
-            <div class="chat-text" onClick=${() => collab() && onSelect(open ? null : message.id)}>
+            <div class="chat-text" onClick=${onSelect && (() => collab() && onSelect(open ? null : message.id))}>
                 <${MessageText}
                     text=${message.text}
                     mentions=${message.mentions}
@@ -416,9 +429,66 @@ export function useFollowLog(newest, highlight) {
 }
 
 /** The chat. `focus` puts the caret in its box on desktops: not when a reload brings back the People panel. */
-function ChatTab({ highlight, focus }) {
-    const { chat, me, users, conversationId, chatQuote, view } = store.state;
-    const draftKey = `chat-${conversationId}`;
+function ChatTab({ highlight, focus, onHighlight }) {
+    const state = store.state;
+    const { view, users, projectChat } = state;
+    const [project, setProject] = useState(false);
+    const thread = project ? projectChat : null;
+    const featured = !thread && view.pins?.at(-1);
+
+    useEffect(() => {
+        if (!projectChat) {
+            setProject(false);
+        }
+    }, [projectChat?.key]);
+
+    return html`
+        ${
+            projectChat &&
+            html`<div class="segmented tabs" role="group" aria-label="Which chat">
+            ${[
+                [false, "Session", sessionChatUnread(state)],
+                [true, "Project", projectChatUnread(state)],
+            ].map(
+                ([which, label, count]) => html`
+                <button
+                    class=${project === which ? "on" : ""}
+                    aria-pressed=${project === which ? "true" : "false"}
+                    onClick=${() => setProject(which)}
+                >${label}${count > 0 ? ` ${count}` : ""}</button>`,
+            )}
+        </div>`
+        }
+        ${
+            featured &&
+            html`<button
+            class="people-pin"
+            onClick=${() => (featured.entryId !== undefined ? jumpToEntry(featured.entryId) : onHighlight(featured.chatId))}
+        >
+            <${Icon} name="pin" size=${13} />
+            <span><b>Pinned by ${users.find((user) => user.id === featured.by)?.name ?? "someone"}</b> · ${featured.text}</span>
+        </button>`
+        }
+        <${ChatView} key=${thread?.key ?? "session"} project=${thread} highlight=${thread ? null : highlight} focus=${focus} />`;
+}
+
+function ProjectLabel({ chat }) {
+    const { runners, server, view } = store.state;
+    const local = chat.computer === "this-server";
+    const runner = runners.find((each) => each.id === chat.computer);
+    const name = local
+        ? "This server"
+        : (runner?.name ?? view.conversation?.runnerName ?? chat.computer);
+    const folder = shortPath(chat.folder, local ? server?.home : runner?.home);
+
+    return html`For everyone who has ${folder} on ${name}. Pi does not get it.`;
+}
+
+function ChatView({ project, highlight, focus }) {
+    const { me, users, conversationId, view } = store.state;
+    const chat = project?.messages ?? store.state.chat;
+    const chatQuote = project ? null : store.state.chatQuote;
+    const draftKey = project ? `project-chat-${project.key}` : `chat-${conversationId}`;
     const [text, setText] = useState(() => drafts.get(draftKey));
     const [sending, setSending] = useState(false);
     const [selected, setSelected] = useState(highlight ?? null);
@@ -429,8 +499,8 @@ function ChatTab({ highlight, focus }) {
     // The newest message, not the count: the chat keeps its last 500, so the count stops changing.
     const newest = chat.at(-1)?.id;
 
-    useEffect(() => markChatRead(), [newest]);
-    useEffect(() => chatLogShown(), []);
+    useEffect(() => (project ? markProjectChatRead() : markChatRead()), [newest]);
+    useEffect(() => (project ? undefined : chatLogShown()), []);
     const log = useFollowLog(newest, highlight);
 
     useEffect(() => {
@@ -438,7 +508,7 @@ function ChatTab({ highlight, focus }) {
             box.current?.focus();
         }
 
-        return () => typing(null);
+        return project ? undefined : () => typing(null);
     }, []);
     useEffect(() => {
         const element = box.current;
@@ -454,8 +524,12 @@ function ChatTab({ highlight, focus }) {
     const update = (value, caret = value.length) => {
         setText(value);
         drafts.set(draftKey, value);
-        typing(value.trim() === "" ? null : "chat");
-        setMention(collab() ? mentionQuery(value, caret) : null);
+
+        if (!project) {
+            typing(value.trim() === "" ? null : "chat");
+        }
+
+        setMention(project || collab() ? mentionQuery(value, caret) : null);
     };
 
     const candidates = mention
@@ -489,13 +563,18 @@ function ChatTab({ highlight, focus }) {
         }
 
         setSending(true);
-        const ok = await attempt(() => actions.chat(text, chatQuote));
+        const ok = await attempt(() =>
+            project ? actions.projectChat(conversationId, text) : actions.chat(text, chatQuote),
+        );
 
         setSending(false);
 
         if (ok) {
             update("");
-            store.set({ chatQuote: null });
+
+            if (!project) {
+                store.set({ chatQuote: null });
+            }
 
             if (!coarse) {
                 box.current?.focus();
@@ -504,7 +583,7 @@ function ChatTab({ highlight, focus }) {
     };
 
     return html`<div class="chat-label">
-        <${Icon} name="eye" size=${12} />Side chat · Pi does not see this chat.
+        <${Icon} name="eye" size=${12} />${project ? html`<${ProjectLabel} chat=${project} />` : "Side chat · Pi does not see this chat."}
     </div>
     <div class="chat-log" ref=${log}>
         ${chat.length === 0 && html`<div class="muted">No messages yet.</div>`}
@@ -521,16 +600,16 @@ function ChatTab({ highlight, focus }) {
                 key=${message.id}
                 message=${message}
                 grouped=${grouped}
-                open=${selected === message.id}
-                pinned=${pinned.has(message.id)}
+                open=${!project && selected === message.id}
+                pinned=${!project && pinned.has(message.id)}
                 users=${users}
                 me=${me}
                 steer=${canSteer()}
-                onSelect=${setSelected}
+                onSelect=${project ? undefined : setSelected}
             />`;
         })}
     </div>
-    <${TypingLine} where="chat" />
+    ${!project && html`<${TypingLine} where="chat" />`}
     ${
         chatQuote &&
         html`<div class="quote-draft">
@@ -568,7 +647,7 @@ function ChatTab({ highlight, focus }) {
             rows="1"
             maxlength="4000"
             value=${text}
-            placeholder=${collab() ? "Message… @ to mention" : "Message the people here…"}
+            placeholder=${project || collab() ? "Message… @ to mention" : "Message the people here…"}
             onInput=${(event) => update(event.currentTarget.value, event.currentTarget.selectionStart)}
             onKeyDown=${(event) => {
                 if (
@@ -814,9 +893,7 @@ function PeopleRoster() {
 
 /** Chat, pinned, and notes: the People sheet's on phones, the People panel's on wide screens. `ask` picks what shows first. */
 function PeopleTabs({ ask, focus }) {
-    const { view, users } = store.state;
-    const featured = view.pins?.at(-1);
-    const pinnedBy = users.find((user) => user.id === featured?.by)?.name ?? "someone";
+    const { view } = store.state;
     const [tab, setTab] = useState(ask.tab ?? "chat");
     const [highlight, setHighlight] = useState(ask.highlight ?? null);
     const pins = view.pins?.length ?? 0;
@@ -841,18 +918,7 @@ function PeopleTabs({ ask, focus }) {
         ${tabs}
         ${
             tab === "chat" &&
-            featured &&
-            html`<button
-                class="people-pin"
-                onClick=${() => (featured.entryId !== undefined ? jumpToEntry(featured.entryId) : setHighlight(featured.chatId))}
-            >
-                <${Icon} name="pin" size=${13} />
-                <span><b>Pinned by ${pinnedBy}</b> · ${featured.text}</span>
-            </button>`
-        }
-        ${
-            tab === "chat" &&
-            html`<${ChatTab} key=${highlight ?? "chat"} highlight=${highlight} focus=${focus} />`
+            html`<${ChatTab} key=${highlight ?? "chat"} highlight=${highlight} focus=${focus} onHighlight=${setHighlight} />`
         }
         ${
             tab === "pins" &&

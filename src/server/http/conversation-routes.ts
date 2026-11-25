@@ -135,6 +135,18 @@ export async function conversationRoutes(
         return json(response, 200, { ok: true });
     }
 
+    if (parts[0] === "sessions" && third === "project-chat" && fourth === undefined) {
+        if (method === "GET") {
+            return json(response, 200, await app.projectChat.thread(user, id));
+        }
+
+        if (method === "POST") {
+            const body = await readJson<{ text?: unknown; requestId?: unknown } | null>(request);
+
+            return json(response, 200, await app.projectChat.post(user, id, body ?? {}));
+        }
+    }
+
     if (third === "chat" && method === "POST") {
         const body = await readJson<{
             text?: unknown;

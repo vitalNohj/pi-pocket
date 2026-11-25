@@ -292,6 +292,8 @@ export interface StoredServer extends ComputerAccess {
      * ends, with reminders, until someone renews it. Off (absent): they run for good once set up.
      */
     tasksExpire?: true;
+    /** Project chat is on unless the server has turned it off. */
+    projectChat?: false;
     /**
      * When `tasksExpire` was turned on. A session with no approval at all (from before approvals) counts as ended then,
      * so its tasks get their week too.
@@ -1892,6 +1894,19 @@ export class ConfigStore {
             } else if (server.tasksExpire !== true) {
                 server.tasksExpire = true;
                 server.tasksExpireSince = now;
+            }
+
+            return true;
+        });
+    }
+
+    /** Turn the project chats on or off for everyone. */
+    setProjectChat(on: boolean): void {
+        this.#changeServer((server) => {
+            if (on) {
+                delete server.projectChat;
+            } else {
+                server.projectChat = false;
             }
 
             return true;

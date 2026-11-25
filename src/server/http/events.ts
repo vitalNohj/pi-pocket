@@ -350,6 +350,14 @@ export function createEventStreams(app: PocketApp) {
             };
 
             created.client = newClient(request, url, user, (event, data, conversation) => {
+                // This tab must load its chat again. Do not deliver project messages still waiting from before the change.
+                if (event === "project-chat-access") {
+                    created.queue = created.queue.filter(
+                        (item) => item.event !== "project-chat" && item.event !== event,
+                    );
+                    created.bytes = created.queue.reduce((sum, item) => sum + item.size, 0);
+                }
+
                 let size = 0;
 
                 try {

@@ -54,6 +54,7 @@ function unreadOf() {
 
 /** How far this browser has read a session's chat: the time of the newest message seen, in `pocket.chatRead.<id>`. */
 const CHAT_READ_PREFIX = "pocket.chatRead.";
+const PROJECT_CHAT_READ_PREFIX = "pocket.projectChatRead.";
 
 /**
  * Every session's read time, by id, from local storage. Read once at load and kept in the store (`chatReads`): the list
@@ -506,6 +507,8 @@ const CHAT_LIMIT = 500;
 function peopleFor(id, reads = store.state.chatReads) {
     return {
         chat: [],
+        projectChat: null,
+        projectChatRead: 0,
         presence: [],
         notes: null,
         chatQuote: null,
@@ -518,6 +521,15 @@ function peopleFor(id, reads = store.state.chatReads) {
 addEventListener("storage", (event) => {
     if (event.key === null || event.key.startsWith(CHAT_READ_PREFIX)) {
         setChanged({ chatReads: kept(store.state.chatReads, readChatReads()) });
+    }
+
+    const { projectChat } = store.state;
+
+    if (
+        projectChat &&
+        (event.key === null || event.key === PROJECT_CHAT_READ_PREFIX + projectChat.key)
+    ) {
+        setChanged({ projectChatRead: projectReadAt(projectChat.key) });
     }
 });
 
@@ -813,6 +825,96 @@ export function markChatRead() {
     }
 
     setChatReadAt(conversationId, last);
+}
+
+function projectReadAt(key) {
+    return Number(localStorage.getItem(PROJECT_CHAT_READ_PREFIX + key)) || 0;
+}
+
+export function markProjectChatRead() {
+    const { projectChat, projectChatRead } = store.state;
+    const at = projectChat?.messages.at(-1)?.at ?? 0;
+
+    if (at > projectChatRead) {
+        localStorage.setItem(PROJECT_CHAT_READ_PREFIX + projectChat.key, String(at));
+        store.set({ projectChatRead: at });
+    }
+}
+
+let projectLoad;
+
+/** Project chat is not kept with the session's view. Only the latest load of the open session counts. */
+async function loadProjectChat() {
+    projectLoad?.controller.abort();
+    const { server, conversationId } = store.state;
+
+    if (!server?.projectChat || conversationId === null) {
+        setChanged({ projectChat: null, projectChatRead: 0 });
+
+        return;
+    }
+
+    const controller = new AbortController();
+    const load = { controller, events: [] };
+    const current = () =>
+        !controller.signal.aborted &&
+        !changingAccount &&
+        store.state.conversationId === conversationId;
+
+    projectLoad = load;
+
+    try {
+        const chat = await api(`sessions/${conversationId}/project-chat`, undefined, {
+            signal: controller.signal,
+        });
+
+        if (current()) {
+            const added = load.events
+                .filter((event) => event.key === chat.key)
+                .flatMap((event) => event.messages);
+
+            store.set({
+                projectChat: { ...chat, messages: mergeProjectMessages(chat.messages, added) },
+                projectChatRead: projectReadAt(chat.key),
+            });
+        }
+    } catch {
+        if (current()) {
+            setChanged({ projectChat: null, projectChatRead: 0 });
+        }
+    } finally {
+        if (projectLoad === load) {
+            projectLoad = undefined;
+        }
+    }
+}
+
+function mergeProjectMessages(messages, added) {
+    const byId = new Map([...messages, ...added].map((message) => [message.id, message]));
+
+    return [...byId.values()].slice(-CHAT_LIMIT);
+}
+
+function applyProjectChat(event) {
+    if (!store.state.server?.projectChat) {
+        return;
+    }
+
+    if (projectLoad && !projectLoad.controller.signal.aborted) {
+        projectLoad.events.push(event);
+
+        if (projectLoad.events.length > CHAT_LIMIT) {
+            projectLoad.events.shift();
+        }
+    }
+
+    const chat = store.state.projectChat;
+
+    if (chat?.key === event.key) {
+        store.set({
+            projectChat: { ...chat, messages: mergeProjectMessages(chat.messages, event.messages) },
+        });
+    }
 }
 
 /** The notices that announce messages of a chat with one person, by id: the other person's. Reading it takes them down. */
@@ -2300,6 +2402,7 @@ const handlers = {
             // This connection's id, which peek lists name (`peeks.js`). `GET /api/me` answers without one.
             ...(data.connection === undefined ? {} : { streamId: data.connection }),
         });
+        void loadProjectChat();
         // The sessions used last, from the device into memory, once the page settles: after a reload they open at once.
         setTimeout(() => void warmFromDevice(), 1500);
     },
@@ -2340,6 +2443,7 @@ const handlers = {
     switched: (data) => {
         if (data.seq === switchSeq) {
             switching = null;
+            void loadProjectChat();
         }
     },
     // This person's PiP: its conversation, whether it works, and when it last answered (`pip.js`); null for none.
@@ -2348,6 +2452,16 @@ const handlers = {
     // PiP's conversation, while this tab's PiP panel is open.
     pipview: applyPipView,
     chat: applyChat,
+    "project-chat": applyProjectChat,
+    "project-chat-access": ({ on }) => {
+        const { server } = store.state;
+
+        if (server && server.projectChat !== on) {
+            store.set({ server: { ...server, projectChat: on } });
+        }
+
+        void loadProjectChat();
+    },
     // Chat with one person (`sheets/direct.js`): a new message of mine or to me, and what I have not read.
     direct: applyDirect,
     "direct-unread": (data) => store.set({ directUnread: data }),
@@ -2379,10 +2493,15 @@ const handlers = {
     missing: (data) => {
         keptViews.delete(data.conversationId);
         dropFromDevice(data.conversationId);
+
+        if (store.state.conversationId === data.conversationId) {
+            projectLoad?.controller.abort();
+        }
+
         store.set((state) => ({
             // Said of a session this tab has since left (`show`), it is not what the tab shows.
             ...(state.conversationId === data.conversationId
-                ? { missing: data.message, holding: null }
+                ? { missing: data.message, holding: null, projectChat: null, projectChatRead: 0 }
                 : {}),
             ...(state.view.conversation?.id === data.conversationId ? { view: emptyView() } : {}),
         }));
@@ -2766,7 +2885,15 @@ function streamEvents(query) {
 // ─── Switching sessions on the connection the tab has ─────────────────────────────────────────────────────────────
 
 /** Events about the session a tab shows: while a switch is on its way, those that come are the old session's. */
-const SESSION_EVENTS = new Set(["view", "chat", "notes", "presence", "browser", "missing"]);
+const SESSION_EVENTS = new Set([
+    "view",
+    "chat",
+    "project-chat",
+    "notes",
+    "presence",
+    "browser",
+    "missing",
+]);
 /** The number of the last switch asked, so the server drops one that arrives after a newer one. */
 let switchSeq = 0;
 /** The switch on its way: its number, until the server's `switched` says it went through. */
@@ -3120,6 +3247,7 @@ let going = 0;
  * it, which a moment's read brings, and the server then sends only what came since.
  */
 function showKept(id) {
+    projectLoad?.controller.abort();
     const turn = ++going;
 
     if (id === null || store.state.view.conversation != null || !onDevice()) {
@@ -3394,6 +3522,7 @@ export const actions = {
             requestId: uid(),
             ...(quote ? { quote: { entryId: quote.entryId } } : {}),
         }),
+    projectChat: (id, text) => api(`sessions/${id}/project-chat`, { text, requestId: uid() }),
     /** Write to `person` in the chat between the two of us. */
     direct: (person, text) =>
         api(`users/${encodeURIComponent(person)}/chat`, { text, requestId: uid() }),

@@ -1809,11 +1809,41 @@ export function PersonPage({ person, part, onPart }) {
     </div>`;
 }
 
+function ProjectChatSetting() {
+    const on = store.state.server?.projectChat === true;
+    const [saving, setSaving] = useState(false);
+
+    const toggle = async () => {
+        if (on && !confirm("Turn project chat off? Its messages are deleted for everyone.")) {
+            return;
+        }
+
+        setSaving(true);
+        await attempt(() => api("project-chat", { on: !on }));
+        setSaving(false);
+    };
+
+    return html`<div class="setting wrap" data-part="project-chat-setting">
+        <div class="grow">
+            <div class="small">Project chat</div>
+            <div class="muted small">
+                ${
+                    on
+                        ? "Each folder has a chat for the people who have it, beside each session's chat."
+                        : "No project chat. Nothing is kept."
+                }
+            </div>
+        </div>
+        <${Switch} on=${on} disabled=${saving} label="Project chat" onChange=${toggle} />
+    </div>`;
+}
+
 /** What holds for everyone on this server: the owner sets it, and a user who manages the server. */
 export function SettingsPage() {
     return html`<div class="sheet-page">
         <h3 class="sheet-page-title">Settings</h3>
         <p class="muted small">For everyone on this server.</p>
         <${TasksExpire} />
+        <${ProjectChatSetting} />
     </div>`;
 }

@@ -572,6 +572,32 @@ export const ChatDoc = defineDoc<{ messages: ChatMessage[] }>({
 /** Messages a chat keeps; older ones drop off. */
 export const CHAT_LIMIT = 500;
 
+export type ProjectChatMessage = Pick<
+    ChatMessage,
+    "id" | "userId" | "name" | "text" | "at" | "mentions"
+>;
+
+/** A folder chat, oldest first, keyed by the computer and folder (`project-chat.ts`). */
+export const ProjectChatDoc = defineDocFamily<{ messages: ProjectChatMessage[] }, null>({
+    kind: "pocket.project-chat",
+    version: 1,
+    ...rebased,
+    family: true,
+    scope: "session",
+    initial: () => ({ messages: [] }),
+});
+
+/** Every stored folder chat, by key, so turning chat off or removing a computer can retire its messages. */
+export const ProjectChatIndexDoc = defineDoc<{
+    chats: Record<string, { computer: string; folder: string; at: number }>;
+}>({
+    kind: "pocket.project-chat-index",
+    version: 1,
+    ...rebased,
+    scope: "session",
+    initial: () => ({ chats: {} }),
+});
+
 type DirectMessageMetadata = {
     /** Made from the client's request id, so a retried send does not post twice. */
     id: string;
