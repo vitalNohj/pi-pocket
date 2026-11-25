@@ -312,7 +312,8 @@ export function serveApp(
     }
 
     send(response, 200, body, "text/html; charset=utf-8", {
-        "cache-control": "no-cache",
+        // With the facts, the page names who is signed in: no shared cache (a proxy, a tunnel) may keep it.
+        "cache-control": facts === undefined ? "no-cache" : "private, no-cache",
         "content-security-policy": policy,
     });
 }
