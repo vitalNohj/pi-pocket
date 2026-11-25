@@ -3,14 +3,19 @@
  * thread or a count to anyone else, and Pi never sees one. Who may chat is `access.ts` `mayMessage`. The unread counts
  * live on the server, in the index, so every device of a person shows the same without opening any messages.
  */
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
-import { type Cursor, defineDocFamily, type Storage } from "@earendil-works/pi-durable";
+import { defineDocFamily, type Storage } from "@earendil-works/pi-durable";
 import { NO_CHAT } from "./access.ts";
 import type { PocketApp } from "./app.ts";
+import {
+    chatKey,
+    chatKeyAtStart,
+    chatKeyForReading,
+    chatKeys,
+    open,
+    seal,
+    UNREADABLE,
+} from "./chat-seal.ts";
 import type { User } from "./config.ts";
 import {
     DIRECT_LIMIT,
@@ -29,9 +34,6 @@ import type { Client } from "./room.ts";
 const context = BACKGROUND_CONTEXT;
 
 const MAX_DIRECT_TEXT = 4000;
-const KEY_FILE = "direct.key";
-const KEY_STAGE = "direct.key.tmp";
-const UNREADABLE = "This message cannot be read on this server anymore.";
 
 // A new base drops the whole old revision chain, not just the plaintext in the latest value.
 const SealingDirectDoc = defineDocFamily({ ...DirectDoc.definition, checkpointWhen: () => true });
@@ -40,20 +42,12 @@ function aad(thread: string, id: string): Buffer {
     return Buffer.from(JSON.stringify([thread, id]));
 }
 
-function seal(
+function sealMessage(
     thread: string,
     { id, userId, at, text }: DirectMessage,
     key: Buffer,
 ): SealedDirectMessage {
-    const nonce = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
-
-    cipher.setAAD(aad(thread, id));
-    // Text is the only written payload. JSON also preserves any lone surrogates in it.
-    const data = Buffer.concat([cipher.update(JSON.stringify({ text })), cipher.final()]);
-    const sealed = [nonce, cipher.getAuthTag(), data].map((part) => part.toString("base64url"));
-
-    return { id, userId, at, sealed: `v1:${sealed.join(":")}` };
+    return { id, userId, at, sealed: seal(key, aad(thread, id), text) };
 }
 
 /** The key of the thread between two people: their ids, sorted, so both name the same one. */
@@ -81,66 +75,11 @@ export class Direct {
     /** The counts each tab last got, as JSON, so a change elsewhere does not send them again. */
     readonly #told = new WeakMap<Client, string>();
     readonly #warned = new Set<string>();
+    /** Old plain messages are still stored, since this start could not seal them: retiring one leaves bytes to scrub. */
+    #plain = false;
 
     constructor(app: PocketApp) {
         this.#app = app;
-    }
-
-    /** Register even before either file exists. Protect the staging file too if a write is cut short. */
-    watchKey(): void {
-        for (const name of [KEY_FILE, KEY_STAGE]) {
-            this.#app.secrets.watchFile({
-                path: join(this.#app.dataDir, name),
-                read: (text) => [{ value: text.trim(), label: "direct chat key" }],
-            });
-        }
-    }
-
-    #key(): Buffer {
-        const app = this.#app;
-        const path = join(app.dataDir, KEY_FILE);
-        let encoded: string;
-
-        try {
-            // Read again for each operation, so a missing or replaced key does not use a stale copy.
-            encoded = readFileSync(path, "utf8").trim();
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-                throw error;
-            }
-
-            const key = randomBytes(32);
-            const stage = join(app.dataDir, KEY_STAGE);
-
-            // The app holds the data folder's lock. Publish a complete key before any commit can use it.
-            rmSync(stage, { force: true });
-            writeFileSync(stage, `${key.toString("base64")}\n`, {
-                flag: "wx",
-                mode: 0o600,
-                flush: true,
-            });
-            renameSync(stage, path);
-            app.secrets.sync();
-
-            return key;
-        }
-
-        const key = Buffer.from(encoded, "base64");
-
-        if (key.length !== 32 || key.toString("base64") !== encoded) {
-            throw new Error("Invalid direct chat key file");
-        }
-
-        return key;
-    }
-
-    #keyForReading(): Buffer | undefined {
-        try {
-            return this.#key();
-        } catch {
-            // A bad key file must not stop someone from opening their chat.
-            return undefined;
-        }
     }
 
     #message(
@@ -154,105 +93,44 @@ export class Direct {
             return { id, userId, at, text: message.text };
         }
 
-        const parts = /^v1:([\w-]{16}):([\w-]{22}):([\w-]+)$/.exec(message.sealed);
+        const text = key === undefined ? undefined : open(key, aad(thread, id), message.sealed);
 
-        if (key !== undefined && parts !== null) {
-            try {
-                const nonce = Buffer.from(parts[1]!, "base64url");
-                const cipher = createDecipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
-
-                cipher.setAAD(aad(thread, id));
-                cipher.setAuthTag(Buffer.from(parts[2]!, "base64url"));
-                const data = Buffer.concat([
-                    cipher.update(Buffer.from(parts[3]!, "base64url")),
-                    cipher.final(),
-                ]);
-                const payload = JSON.parse(data.toString("utf8")) as { text?: unknown };
-
-                if (typeof payload.text === "string") {
-                    return { id, userId, at, text: payload.text };
-                }
-            } catch {
-                // Do not report untrusted input or error details to the log.
-            }
-        }
-
-        if (!this.#warned.has(thread)) {
+        if (text === undefined && !this.#warned.has(thread)) {
             this.#warned.add(thread);
             this.#app.log(`Direct chat ${thread}: could not decrypt a message`);
         }
 
-        return { id, userId, at, text: UNREADABLE };
+        return { id, userId, at, text: text ?? UNREADABLE };
     }
 
-    /** At startup: seal legacy threads and mark their old bytes for scrubbing. Retry unfinished scrubs on startup. */
-    async sealLegacy(storage: Storage, database: SqliteDatabase): Promise<void> {
-        const harness = this.#app.harness;
-        const query = {
-            scope: { kind: "session" },
-            kind: DirectDoc.definition.kind,
-            at: "current",
-        } as const;
-        let cursor: Cursor | undefined;
+    /** At startup: seal legacy threads and mark their old bytes for scrubbing. */
+    async sealLegacy(storage: Storage): Promise<void> {
+        const { harness } = this.#app;
 
-        do {
-            const page = await storage.scanDocuments(query, 256, cursor, context);
+        for await (const key of chatKeys(storage, DirectDoc.definition.kind)) {
+            const doc = await harness.snapshot(DirectDoc, key, context);
 
-            for (const { key } of page.items) {
-                if (key === undefined) {
-                    continue;
-                }
-
-                const doc = await harness.snapshot(DirectDoc, key, context);
-
-                if (!doc?.messages.some((message) => !("sealed" in message))) {
-                    continue;
-                }
-
-                const bytes = this.#key();
-
-                await harness.commit(async (tx) => {
-                    const thread = await tx.doc(SealingDirectDoc, key, null);
-
-                    thread.messages = thread.messages.map((message) =>
-                        "sealed" in message ? { ...message } : seal(key, message, bytes),
-                    );
-                    (await tx.doc(DirectIndexDoc)).scrub = true;
-                }, context);
+            if (!doc?.messages.some((message) => !("sealed" in message))) {
+                continue;
             }
 
-            cursor = page.next;
-        } while (cursor !== undefined);
+            const bytes = chatKeyAtStart(this.#app, "Direct chat");
 
-        if ((await harness.snapshot(DirectIndexDoc, context))?.scrub !== true) {
-            return;
+            if (bytes === undefined) {
+                this.#plain = true;
+
+                return;
+            }
+
+            await harness.commit(async (tx) => {
+                const thread = await tx.doc(SealingDirectDoc, key, null);
+
+                thread.messages = thread.messages.map((message) =>
+                    "sealed" in message ? { ...message } : sealMessage(key, message, bytes),
+                );
+                (await tx.doc(DirectIndexDoc)).scrub = true;
+            }, context);
         }
-
-        let scrubbed = false;
-
-        try {
-            // A base removes old rows, but their bytes can still be in free pages or frames in the WAL.
-            await database.exec("VACUUM");
-            const checkpoint = await database.get<{ busy: number }>(
-                "PRAGMA wal_checkpoint(TRUNCATE)",
-            );
-
-            scrubbed = checkpoint?.busy === 0;
-        } catch {
-            // A cleanup failure, such as no space to rebuild the database, does not stop startup.
-        }
-
-        if (!scrubbed) {
-            this.#app.log(
-                "Direct chat: old plaintext bytes may still be in SQLite. The next start will try again.",
-            );
-
-            return;
-        }
-
-        await harness.commit(async (tx) => {
-            delete (await tx.doc(DirectIndexDoc)).scrub;
-        }, context);
     }
 
     /** At start, before any tab: the threads and counts from the stored index. */
@@ -309,7 +187,7 @@ export class Direct {
         this.#app.policy.requireMessage(user, { id: otherId });
         const thread = directKey(user.id, otherId);
         const doc = await this.#app.harness.snapshot(DirectDoc, thread, context);
-        const key = this.#keyForReading();
+        const key = chatKeyForReading(this.#app);
 
         return {
             messages: (doc?.messages ?? []).map((message) => this.#message(thread, message, key)),
@@ -351,7 +229,11 @@ export class Direct {
             }
 
             const at = Date.now();
-            const sealed = seal(key, { id: messageId, userId: user.id, at, text }, this.#key());
+            const sealed = sealMessage(
+                key,
+                { id: messageId, userId: user.id, at, text },
+                chatKey(app),
+            );
 
             addDirect(doc, sealed);
 
@@ -374,7 +256,7 @@ export class Direct {
         }, context);
 
         if (!created) {
-            return this.#message(key, kept, this.#keyForReading());
+            return this.#message(key, kept, chatKeyForReading(app));
         }
 
         const message: DirectMessage = { id: kept.id, userId: kept.userId, at: kept.at, text };
@@ -431,6 +313,10 @@ export class Direct {
                 if (which(thread)) {
                     await tx.retireDoc(DirectDoc, key);
                     delete index.threads[key];
+
+                    if (this.#plain) {
+                        index.scrub = true;
+                    }
                 }
             }
         }, context);
