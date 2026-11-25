@@ -2131,7 +2131,7 @@ export function Composer() {
                         return html`<div class="queued" key=${item.id}>
                             <span class="queued-mode" aria-live="polite">
                                 ${waiting && html`<${Spinner} hidden=${label !== undefined} />`}
-                                ${label ?? queuedMode(item, mode)}
+                                <span class="queued-kind">${label ?? queuedMode(item, mode)}</span>
                                 <span class="muted">${queuedBy(item)}</span>
                             </span>
                             <button
