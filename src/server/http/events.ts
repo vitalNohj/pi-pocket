@@ -71,6 +71,7 @@ function newClient(url: URL, user: User, send: Client["send"]): Client {
         sentEntries: new Set(),
         orderKey: "",
         ...(have === undefined ? {} : { have }),
+        cacheViews: url.searchParams.get("cache") === "1",
         send,
     };
 }
