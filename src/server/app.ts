@@ -2635,8 +2635,8 @@ export class PocketApp {
      * carried): it leaves the room of the one it showed, and gets what the new one has as a new connection would, with
      * what it kept of it (`have`). No new connection means no hello, session list, or PiP state again, and nobody sees
      * this person leave and come back. `switched` goes first: every event of a session after it is the new one's. A switch
-     * numbered `seq` below one already taken arrived late, and is dropped. False when no such connection is open (it
-     * closed, or the server started again): the tab connects again instead.
+     * numbered `seq` below one already taken arrived late: it may get a first view to keep, but does not move the tab.
+     * False when no such connection is open (it closed, or the server started again): the tab connects again instead.
      */
     switchTo(
         user: User,
@@ -2653,8 +2653,14 @@ export class PocketApp {
             }
 
             found = true;
+            const last = client.switchSeq ?? -Infinity;
 
-            if (seq <= (client.switchSeq ?? -Infinity)) {
+            if (seq <= last) {
+                // A late switch cannot move the tab, but it can still finish its requested view.
+                if (id !== undefined && seq < last) {
+                    void this.#finishLeft(client, id, seq, have);
+                }
+
                 continue;
             }
 
@@ -2686,11 +2692,12 @@ export class PocketApp {
 
     /**
      * Put a tab in the room of the session it shows (`client.conversationId`), and send it what that session has: its
-     * view, chat, notes, and browser. A later switch while the room opens wins: this one then leaves nothing behind.
+     * view, chat, notes, and browser. A later switch wins presence and the live view, but the earlier request can
+     * still finish its first view for the device cache.
      */
     async #enter(client: Client): Promise<void> {
         const visit = (client.visit = (client.visit ?? 0) + 1);
-        const id = client.conversationId;
+        const { conversationId: id, have, switchSeq: seq = 0 } = client;
 
         if (id === undefined) {
             return;
@@ -2710,8 +2717,11 @@ export class PocketApp {
         try {
             const room = await this.room(id);
 
+            const cache = () => void this.#finishLeft(client, id, seq, have, room);
+
             if (!this.#clients.has(client) || client.visit !== visit) {
                 this.releaseRoom(room);
+                cache();
 
                 return;
             }
@@ -2731,7 +2741,7 @@ export class PocketApp {
 
             room.keepOpen();
             room.clients.add(client);
-            room.push(client, true);
+            room.push(client, true, cache);
             client.send(
                 "chat",
                 { conversationId: room.id, full: true, messages: room.chat },
@@ -2756,8 +2766,61 @@ export class PocketApp {
         } catch (error) {
             if (client.visit === visit) {
                 client.send("missing", { conversationId: id, message: describe(error) });
+            } else {
+                this.#cacheMiss(client, id, seq);
             }
         }
+    }
+
+    #cacheMiss(client: Client, id: ConversationId, seq: number): void {
+        if (client.cacheViews && this.#clients.has(client)) {
+            client.send("cached-view", { seq, conversationId: id });
+        }
+    }
+
+    /** A superseded visit never joins a room. Check current rights again before sending its first view. */
+    async #finishLeft(
+        client: Client,
+        id: ConversationId,
+        seq: number,
+        have: Client["have"],
+        room?: Room,
+    ): Promise<void> {
+        const canSend = () => this.#clients.has(client) && client.conversationId !== id;
+
+        if (client.cacheViews && process.env.PI_POCKET_SESSION_CACHE !== "off" && canSend()) {
+            const user = this.config.userById(client.user.id);
+
+            if (user !== undefined && this.canSee(user, id)) {
+                try {
+                    if (room === undefined) {
+                        const answer = await this.firstView(user, id, have);
+
+                        if (canSend()) {
+                            client.send("cached-view", { seq, ...answer }, id);
+
+                            return;
+                        }
+                    } else {
+                        const view = room.firstView(user, have);
+
+                        if (view !== undefined) {
+                            client.send(
+                                "cached-view",
+                                { seq, user: helloUser(user), build: this.build, view },
+                                id,
+                            );
+
+                            return;
+                        }
+                    }
+                } catch {
+                    // A first view that could not be read must not hold up a later visit.
+                }
+            }
+        }
+
+        this.#cacheMiss(client, id, seq);
     }
 
     detach(client: Client): void {
@@ -5499,6 +5562,35 @@ export class PocketApp {
         return pending;
     }
 
+    /** A read-only first view. Reuse a warm room; a cold read adds no room, presence, or ongoing watch. */
+    async firstView(user: User, id: ConversationId, have: Client["have"]) {
+        this.requireSee(user, id);
+        const pending = this.openRoom(id);
+        let room;
+
+        if (pending !== undefined) {
+            room = await pending;
+        } else {
+            room = new Room(this, id);
+            await room.read(await this.conversation(id));
+        }
+
+        const current = this.config.userById(user.id);
+
+        if (current === undefined) {
+            throw new HttpError(401, "Sign in first");
+        }
+
+        this.requireSee(current, id);
+        const view = room.firstView(current, have);
+
+        if (view === undefined) {
+            throw new HttpError(404, "The session is not available.");
+        }
+
+        return { user: helloUser(current), build: this.build, view };
+    }
+
     /** A conversation's shared view if it is open now; undefined otherwise, without opening it. */
     openRoom(id: ConversationId): Promise<Room> | undefined {
         return this.#rooms.get(id);
@@ -5616,6 +5708,8 @@ export class PocketApp {
                 peeks: true,
                 // Tells the web app it may show another session on the connection it has (`POST /api/switch`).
                 switches: true,
+                // A tab can read a first view without taking a place in its room.
+                sessionPreview: process.env.PI_POCKET_SESSION_CACHE !== "off",
                 // Sessions tabs keep are good for servers of this build (`have`).
                 build: this.build,
                 // Whether a browser may keep sessions on the device (IndexedDB), for every tab and across reloads:

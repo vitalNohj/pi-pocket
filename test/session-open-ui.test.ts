@@ -1,15 +1,27 @@
 // Session opens share the checked device cache, before `/api/me` on reload and before a switch's server view.
-import { cleanUp, newSession, openApp, root, say, scriptedModel, until } from "./helpers.ts";
+import {
+    cleanUp,
+    context,
+    newSession,
+    openApp,
+    root,
+    say,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import { type ConversationId, UserEntry } from "@earendil-works/pi-durable";
 import type { App } from "./helpers.ts";
 import { Browsers } from "../src/server/browser.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
 import type { BrowserPage } from "../src/server/browser/page.ts";
+import { VIEWPORTS } from "../src/server/browser/viewport.ts";
+import type { ClientEntry } from "../src/server/projection.ts";
+import type { Client } from "../src/server/room.ts";
 import { createHandler } from "../src/server/http.ts";
 import { json } from "../src/server/http/io.ts";
 
@@ -88,6 +100,11 @@ before(async () => {
         if (gate !== undefined) {
             gate.entered = true;
             await gate.wait;
+
+            // A held request can have lost its page. Do not open a stream for a socket already closed.
+            if (response.destroyed) {
+                return;
+            }
         }
 
         if (failModule && path === "/text-hash.js") {
@@ -217,6 +234,14 @@ test(
 
         await say(app, id, "kept across the reload");
         await openOn(id, "kept across the reload");
+        await inPage(`
+            const box = document.querySelector('[data-part="composer"] textarea');
+
+            box.value = 'A draft kept across the reload.';
+            box.dispatchEvent(new Event('input', { bubbles: true }));
+
+            return 'null';
+        `);
         await saved(id);
         const me = hold("/api/me");
 
@@ -246,6 +271,13 @@ test(
 
         await ready();
         assert.equal((await shown("kept across the reload")).boot, false);
+        assert.equal(
+            await inPage<boolean>(`
+                return JSON.stringify(document.querySelector('[data-part="composer"] textarea')?.value === 'A draft kept across the reload.');
+            `),
+            true,
+            "the composer reads the draft after the person is known",
+        );
     },
 );
 
@@ -434,7 +466,7 @@ test(
     },
 );
 
-test("another person's device copy is refused before /api/me", real, async () => {
+test("another person's device copy is refused before /api/me and dropped", real, async () => {
     const id = await newSession(app);
 
     await say(app, id, "someone else's words");
@@ -446,6 +478,7 @@ test("another person's device copy is refused before /api/me", real, async () =>
         const found = await cache.read(${Number(id)});
 
         await cache.save(${Number(id)}, found.record, { ...found.info, owner: 'someone-else' }, 100_000_000);
+        await cache.save(999_999, found.record, { ...found.info, id: 999_999, owner: 'someone-else' }, 100_000_000);
 
         return 'null';
     `);
@@ -469,7 +502,321 @@ test("another person's device copy is refused before /api/me", real, async () =>
         async () => (await shown("someone else's words")).rows,
         "the authorized server view",
     );
+    await until(
+        () =>
+            inPage<boolean>(`
+            return JSON.stringify(!(await (await import('/session-cache.js')).list()).some((each) => each.owner === 'someone-else'));
+        `),
+        "unopened copies for another owner dropped too",
+    );
 });
+
+/** Change only the test copy's build stamp, as a code update would. */
+function changeBuild() {
+    const was = app.build;
+    const build = was === "a000000000000000" ? "b000000000000000" : "a000000000000000";
+
+    Object.defineProperty(app, "build", { configurable: true, value: build });
+
+    return { build, restore: () => Reflect.deleteProperty(app, "build") };
+}
+
+for (const reshape of [false, true]) {
+    test(
+        reshape
+            ? "a new build keeps the reading anchor when the projection reorders entries"
+            : "a new build corrects a long cached transcript in place",
+        real,
+        async () => {
+            const id = await newSession(app);
+            const ids: number[] = [];
+
+            await app.harness.commit(async (tx) => {
+                for (let n = 0; n < 110; n++) {
+                    const entry = await tx.appendEntry(UserEntry, id, {
+                        model: [
+                            {
+                                role: "user",
+                                content: `Review note ${n}: Check the session transcript after a server restart.`,
+                                timestamp: Date.now(),
+                            },
+                        ],
+                    });
+
+                    ids.push(Number(entry.id));
+                }
+            }, context);
+
+            const first = ids[reshape ? 56 : 5]!;
+            const anchor = ids[reshape ? 46 : 31]!;
+            const changed = ids[reshape ? 65 : 32]!;
+            const removed = 987_654_321;
+            const oldText = "This note was displayed by the previous build.";
+            const newText = `Review note ${reshape ? 65 : 32}:`;
+            const attach = app.attach;
+            const oldBuild = app.build;
+            let request: Client["have"];
+            let replay: { entries: ClientEntry[]; order: number[]; orderFrom?: number } | undefined;
+
+            // Only build A projects this row differently, and in the reshape case a row moves and an old id is used.
+            app.attach = async (client) => {
+                if (client.conversationId === id) {
+                    const send = client.send;
+                    const old = app.build === oldBuild;
+
+                    if (!old) {
+                        request = client.have;
+                    }
+
+                    client.send = (event, data) => {
+                        const view = data as NonNullable<typeof replay> & { full: boolean };
+
+                        if (event !== "view" || !view.full || view.orderFrom !== undefined) {
+                            send(event, data);
+
+                            return;
+                        }
+
+                        if (!old) {
+                            replay = view;
+                            send(event, view);
+
+                            return;
+                        }
+
+                        const entries = view.entries.map((entry) =>
+                            entry.id === changed ? { ...entry, text: oldText } : entry,
+                        );
+                        const order = [...view.order];
+
+                        if (reshape) {
+                            order.splice(order.indexOf(anchor), 1);
+                            order.splice(order.indexOf(changed), 0, anchor, removed);
+                            entries.push({
+                                id: removed,
+                                kind: "user",
+                                text: "An id no longer projected.",
+                                images: 0,
+                            });
+                        }
+
+                        send(event, { ...view, entries, order });
+                    };
+                }
+
+                await attach.call(app, client);
+            };
+
+            let update: ReturnType<typeof changeBuild> | undefined;
+            let me: ReturnType<typeof hold> | undefined;
+            let events: ReturnType<typeof hold> | undefined;
+            const shots = process.env.PI_POCKET_BUILD_SHOTS;
+
+            try {
+                if (shots && !reshape) {
+                    mkdirSync(shots, { recursive: true });
+                    await page.setViewport(VIEWPORTS.mobile);
+                }
+
+                await openOn(id, "Review note 109");
+                await inPage(`
+                    const { loadEarlier, store } = await import('/store.js');
+                    const { setPrefs } = await import('/theme.js');
+
+                    setPrefs({ motion: 'reduced' });
+                    await loadEarlier();
+                    store.set({ transcriptFrom: ${first} });
+                    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    const scroller = document.querySelector('.pane > .scroller');
+                    const row = document.getElementById('entry-${anchor}');
+
+                    scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+                    scroller.dispatchEvent(new Event('scroll'));
+
+                    return 'null';
+                `);
+                await until(
+                    () =>
+                        inPage<boolean>(`
+                        const copy = await (await import('/session-cache.js')).read(${Number(id)});
+                        return JSON.stringify(copy?.info.build === ${JSON.stringify(oldBuild)} && copy?.record.place?.from === ${first});
+                    `),
+                    "build A's copy and reading place on the device",
+                    15_000,
+                );
+                await leave();
+                await say(app, id, "A row added before build B reopened this session.");
+                update = changeBuild();
+                await leave();
+                assert.equal(
+                    await inPage<string>(`
+                        const copy = await (await import('/session-cache.js')).read(${Number(id)});
+                        return JSON.stringify(copy?.info.build ?? null);
+                    `),
+                    oldBuild,
+                    "build B's hello does not drop an unopened copy",
+                );
+                me = hold("/api/me");
+                events = hold("/api/events");
+                await page.navigate(`${base}/s/${id}`);
+                await until(async () => (await shown(oldText)).rows, "the old rows before /api/me");
+                assert.equal((await shown(oldText)).boot, false, "no boot screen flash");
+                assert.equal((await shown(oldText)).me, false);
+                me.release();
+                await until(() => events!.entered, "build B's held event stream");
+                await until(
+                    () =>
+                        inPage<boolean>(
+                            `return JSON.stringify(document.querySelector('[data-part="composer"] textarea') !== null);`,
+                        ),
+                    "the composer",
+                );
+                await inPage(`
+                    const { store, viewSynced } = await import('/store.js');
+                    const row = document.getElementById('entry-${anchor}');
+                    const scroller = row.closest('.scroller');
+                    const draft = document.querySelector('[data-part="composer"] textarea');
+
+                    if (viewSynced(${Number(id)}) || store.state.view.build !== ${JSON.stringify(oldBuild)}) {
+                        throw Error('The copy must remain stale until the view arrives');
+                    }
+
+                    draft.value = 'Keep this draft while the transcript updates.';
+                    draft.dispatchEvent(new Event('input', { bubbles: true }));
+                    const box = row.getBoundingClientRect();
+                    const top = scroller.getBoundingClientRect().top;
+                    const at = box.top - top;
+
+                    if (box.bottom <= top || at >= scroller.clientHeight / 2) {
+                        throw Error('The cache did not reopen at the reading anchor: ' + at);
+                    }
+
+                    globalThis.reading = {
+                        row, draft, scroller, at,
+                        entry: store.state.view.entries.get(${anchor}),
+                    };
+
+                    return 'null';
+                `);
+
+                if (shots && !reshape) {
+                    writeFileSync(
+                        join(shots, "before-refresh.jpg"),
+                        Buffer.from((await page.screenshot()).data, "base64"),
+                    );
+                }
+
+                events.release();
+                await until(async () => (await shown(newText)).rows, "the corrected row");
+                await ready();
+
+                assert.equal(request?.build, oldBuild, "have never claims to be from build B");
+                assert.equal(
+                    replay?.orderFrom,
+                    undefined,
+                    "the replay did not count any old entries as sent",
+                );
+                assert.ok(
+                    replay?.entries.some((entry) => entry.id === anchor),
+                    "the server sent even the earlier anchor again",
+                );
+                assert.ok(
+                    replay?.entries.every((entry) => !("partial" in entry) || !entry.partial),
+                    "the refresh came in one whole view",
+                );
+                const after = await inPage<{
+                    sameNode: boolean;
+                    sameEntry: boolean;
+                    sameDraft: boolean;
+                    offset: number;
+                    authoritative: boolean;
+                    removed: boolean;
+                    added: boolean;
+                }>(`
+                    const { store, viewSynced } = await import('/store.js');
+                    const row = document.getElementById('entry-${anchor}');
+                    const at = row?.getBoundingClientRect().top - reading.scroller.getBoundingClientRect().top;
+
+                    return JSON.stringify({
+                        sameNode: row === reading.row,
+                        sameEntry: store.state.view.entries.get(${anchor}) === reading.entry,
+                        sameDraft: document.querySelector('[data-part="composer"] textarea') === reading.draft && reading.draft.value === 'Keep this draft while the transcript updates.',
+                        offset: Math.abs(at - reading.at),
+                        authoritative: viewSynced(${Number(id)}) && store.state.view.build === ${JSON.stringify(update.build)},
+                        removed: !store.state.view.entries.has(${removed}) && !document.getElementById('entry-${removed}'),
+                        added: [...store.state.view.entries.values()].some((item) => item.text === 'A row added before build B reopened this session.'),
+                    });
+                `);
+
+                if (!reshape) {
+                    assert.equal(after.sameNode, true, "the unchanged anchor is the same DOM node");
+                }
+
+                assert.equal(
+                    after.sameEntry,
+                    true,
+                    "unchanged content preserves the entry object used by row memos",
+                );
+                assert.equal(after.sameDraft, true, "the same composer keeps its draft");
+                assert.ok(after.offset <= 2, `the anchor moved ${after.offset}px`);
+                assert.equal(after.authoritative, true);
+                assert.equal(after.removed, true);
+                assert.equal(after.added, true);
+                assert.equal((await shown(oldText)).rows, false);
+
+                if (shots && !reshape) {
+                    writeFileSync(
+                        join(shots, "after-refresh.jpg"),
+                        Buffer.from((await page.screenshot()).data, "base64"),
+                    );
+                }
+            } finally {
+                me?.release();
+                events?.release();
+                update?.restore();
+                app.attach = attach;
+            }
+        },
+    );
+}
+
+test(
+    "a new build cannot paint a device copy whose session is no longer allowed",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const text = "kept before this server stopped allowing the session";
+
+        await say(app, id, text);
+        await openOn(id, text);
+        await saved(id);
+        await leave();
+        const changed = changeBuild();
+        const canSee = app.canSee;
+        const me = hold("/api/me");
+
+        try {
+            // The person and their rights stamp are unchanged; the server's per-session decision now differs.
+            app.canSee = (user, target) => target !== id && canSee.call(app, user, target);
+            await page.navigate(`${base}/s/${id}`);
+            await until(async () => (await shown(text)).boot, "boot, not the denied copy");
+            assert.equal((await shown(text)).rows, false);
+            me.release();
+            await until(
+                () =>
+                    inPage<boolean>(`
+                const { store } = await import('/store.js');
+                return JSON.stringify(store.state.missing !== null && !openProbe.rows && !(await (await import('/session-cache.js')).read(${Number(id)})));
+            `),
+                "the denied copy was never shown and was dropped",
+            );
+        } finally {
+            me.release();
+            changed.restore();
+            app.canSee = canSee;
+        }
+    },
+);
 
 test(
     "the page's cache identity is authenticated, escaped, and absent when caching is off",
@@ -550,6 +897,9 @@ test(
                 true,
                 "the old view was forgotten on the device too",
             );
+            // Leave the artificial account before the real stream can start an account-change reload.
+            meUser = undefined;
+            await page.navigate(`${base}/`);
         } finally {
             meUser = undefined;
             me.release();

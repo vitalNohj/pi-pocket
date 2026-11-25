@@ -41,6 +41,7 @@ A drop-in extension stays when Pi Pocket updates, and the owner can turn it off 
 - [self-editing.md](self-editing.md): how to change Pi Pocket's code while it runs, check the change, and undo a change that breaks it.
 - [runners.md](runners.md): sessions on another computer: `pi-pocket-runner`, linking a computer, and what such a session can do.
 - [embedders.md](embedders.md): the app bridge, for an embedder (an app that shows Pi Pocket inside itself, such as an Electron or Tauri wrapper): `/api/pocket/info`, `window.pocketHost`, and notifications without Web Push.
+- [running.md](running.md): launcher options, updates and backups, Android, remote access, and reverse proxy examples.
 - [docker.md](docker.md): running Pi Pocket in a container, with extensions, themes, Pi's folder, and the workspace mounted from the host.
 - [systemd.md](systemd.md): running Pi Pocket as a systemd service, with a template unit whose instance name is the access mode.
 - [desktop-app.md](desktop-app.md): the desktop apps of the Windows installer and the macOS package: the window, the tray or menu bar icon, `--desktop`, `launcher-running.json`, and the one-time sign-in link.

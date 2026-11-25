@@ -92,6 +92,7 @@ function newClient(request: IncomingMessage, url: URL, user: User, send: Client[
         sentEntries: new Set(),
         orderKey: "",
         ...(have === undefined ? {} : { have }),
+        cacheViews: url.searchParams.get("cache") === "1",
         send,
     };
 }
@@ -223,11 +224,25 @@ export function createEventStreams(app: PocketApp) {
         poller.waiting = undefined;
 
         if (response !== undefined && !response.writableEnded) {
-            json(response, 200, {
-                session: poller.id,
-                hold: POLL_HOLD_MS,
-                events: poller.queue.map(({ seq, event, data }) => ({ seq, event, data })),
+            const events = poller.queue.map(({ seq, event, data, conversation }) => {
+                // A cached first view can wait in the queue for a session the tab already left. That session
+                // will not be evicted from the tab on revocation, so check access before delivering its view.
+                if (
+                    event === "cached-view" &&
+                    conversation !== undefined &&
+                    !app.canSee(poller.client.user, conversation)
+                ) {
+                    return {
+                        seq,
+                        event,
+                        data: { seq: (data as { seq: number }).seq, conversationId: conversation },
+                    };
+                }
+
+                return { seq, event, data };
             });
+
+            json(response, 200, { session: poller.id, hold: POLL_HOLD_MS, events });
 
             // Until it polls again it takes this: a large answer on a slow link takes long, and only it knows when it is in.
             if (poller.queue.length > 0) {

@@ -2923,7 +2923,8 @@ function rowDeps(entry) {
         entry,
         users,
         me,
-        server,
+        server?.home,
+        server?.defaultCwd,
         view.conversation?.id,
         view.conversation?.kind,
         markdownRevision(),
@@ -2985,7 +2986,7 @@ function callDeps(block, results, slots, approvals) {
 
     // Whether the browser is there to watch (`browserAvailable`), and open already.
     if (block.name === "browser") {
-        deps.push(store.state.browserOpen, store.state.server);
+        deps.push(store.state.browserOpen, browserAvailable());
     }
 
     return deps;
@@ -3007,7 +3008,8 @@ function replyDeps(item, actions) {
         item.anchor,
         users,
         me,
-        server,
+        server?.reactions?.join(),
+        collab(),
         view.conversation?.id,
         reactions === undefined ? "" : JSON.stringify(reactions),
         (view.pins ?? []).some((pin) => pin.entryId === entry.id),
@@ -3647,6 +3649,39 @@ function anchorOf(scroller, column, bottom) {
     return null;
 }
 
+/** The first visible entry still in the new projection, or the closest one above if none below survives. */
+function refreshAnchor(scroller, column, ids) {
+    if (!scroller || !column) {
+        return null;
+    }
+
+    const { top } = scroller.getBoundingClientRect();
+    let above = null;
+
+    for (const entry of column.querySelectorAll('[id^="entry-"]')) {
+        if (!ids.has(Number(entry.id.slice(6)))) {
+            continue;
+        }
+
+        const row = entry.matches(".entry-anchor") ? entry.parentElement : entry;
+        const box = row.getBoundingClientRect();
+        const anchor = {
+            row: entry,
+            id: entry.id,
+            bottom: false,
+            at: placeOf(scroller, column, { row: entry }),
+        };
+
+        if (box.bottom > top + 1) {
+            return anchor;
+        }
+
+        above = anchor;
+    }
+
+    return above;
+}
+
 /**
  * How tall the rows at the end of the column are that were not there when `anchorOf` measured (`had`): what the draw
  * added below, when the row measured from is gone (a group drawn again, the rows above folded).
@@ -3669,12 +3704,14 @@ function addedBelow(column, anchor) {
 
 /** The same row's place now, as `anchorOf` measured it, or null when it is gone. */
 function placeOf(scroller, column, anchor) {
-    if (!anchor.row.isConnected) {
+    const entry = anchor.id === undefined ? anchor.row : document.getElementById(anchor.id);
+
+    if (entry === null || !column.contains(entry)) {
         return null;
     }
 
     const box = column.getBoundingClientRect();
-    const row = anchor.row.getBoundingClientRect();
+    const row = entry.getBoundingClientRect();
 
     return (
         column.offsetTop + ((anchor.bottom ? row.bottom : row.top) - box.top) - scroller.scrollTop
@@ -3784,7 +3821,21 @@ export function Transcript() {
     // Built again only when the entries change: the app draws for every change to the store, and a streamed answer's
     // updates bring no new entries (`mergeView`).
     const rows = useMemo(() => entries.filter(isRow), [entries]);
-    const start = useMemo(() => windowStart(rows, transcriptFrom), [rows, transcriptFrom]);
+    // A build correction can reorder the context or remove the old first row. Include whichever entry the reader
+    // was on in the new window, even when it moves before that first row or outside the default window.
+    const drawnBuild = useRef(view.build);
+    const refreshed =
+        drawnBuild.current != null && view.build != null && view.build !== drawnBuild.current;
+    const reading =
+        refreshed && column.current !== null
+            ? refreshAnchor(scroller.current, column.current, new Set(rows.map((row) => row.id)))
+            : null;
+    const found =
+        reading === null ? -1 : rows.findIndex((row) => row.id === Number(reading.id.slice(6)));
+    const window = windowStart(rows, transcriptFrom);
+    const start = found === -1 ? window : Math.min(window, found);
+
+    drawnBuild.current = view.build;
     const talk = collab();
     const from = useMemo(() => rowsBefore(rows, start, talk), [rows, start, talk]);
     const partial = partialEntry(view.live.generation?.message?.blocks ?? []);
@@ -3845,9 +3896,11 @@ export function Transcript() {
 
     if (rows !== drawnRows.current) {
         drawnRows.current = rows;
-        anchor.current = catching()
-            ? anchorOf(scroller.current, column.current, stick.current)
-            : null;
+        anchor.current = refreshed
+            ? reading
+            : catching()
+              ? anchorOf(scroller.current, column.current, stick.current)
+              : null;
     }
 
     // After a draw that can change the rows, not after every change to the store (each draws the app): to the bottom, or
@@ -3865,6 +3918,7 @@ export function Transcript() {
         // A message of your own just sent: the reader goes down to it, from wherever they had scrolled to.
         if (
             grew &&
+            !refreshed &&
             counted.current > 0 &&
             newest?.kind === "user" &&
             view.authors?.[newest.id] === store.state.me?.id &&
@@ -3876,7 +3930,7 @@ export function Transcript() {
         }
 
         if (element.clientHeight > 0) {
-            if (!restorePlace(element) && stick.current) {
+            if (!restorePlace(element) && stick.current && anchor.current?.id === undefined) {
                 toEnd(element);
             }
 
@@ -3937,8 +3991,18 @@ export function Transcript() {
 
         if (!before.bottom) {
             // A browser that keeps the row in place by itself (scroll anchoring) has: then this moves nothing.
-            if (!stick.current && Math.abs(now - before.at) >= 1) {
+            if ((!stick.current || before.id !== undefined) && Math.abs(now - before.at) >= 1) {
                 element.scrollTop += now - before.at;
+            }
+
+            if (before.id !== undefined) {
+                const atBottom =
+                    endOf(element, column.current, glide.current, glideBase.current) -
+                        element.scrollTop <
+                    60;
+
+                stick.current = atBottom && !jumping.current;
+                setShowJump(!atBottom);
             }
 
             return;

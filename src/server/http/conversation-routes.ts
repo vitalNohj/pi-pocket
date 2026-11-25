@@ -18,6 +18,7 @@ import type { CommandRequest } from "../extension-commands.ts";
 import { requireLocalBrowser } from "../local-browser.ts";
 import { prepareModelImage } from "../model-images.ts";
 import { serveImage, TYPES } from "./assets.ts";
+import { keptPart } from "./events.ts";
 import { type ApiRequest, json, readJson, send } from "./io.ts";
 
 const ENTRY_IMAGE_TYPES = new Set([
@@ -96,6 +97,14 @@ export async function conversationRoutes(
     const { app, request, response, url, user } = api;
     const method = request.method ?? "GET";
     const [, , third, fourth] = parts;
+
+    if (third === "first-view" && fourth === undefined && method === "GET") {
+        return json(
+            response,
+            200,
+            await app.firstView(user, id, keptPart(url.searchParams.get("have"))),
+        );
+    }
 
     if (third === "submit" && method === "POST") {
         const body = await readJson<SubmitRequest>(request);

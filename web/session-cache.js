@@ -1,8 +1,8 @@
 /**
  * Sessions this browser keeps on the device (IndexedDB), for every tab of it: a session opened before shows at once after
- * a reload, a tab the system closed, or a restart of the server that runs the same code. `store.js` decides what goes in
- * and checks what comes out (whose it is, which code made it, whether the person may still see it); the server checks
- * the rest (`have`). Every call here may fail (a private window, storage that is full or refused): the cache is only
+ * a reload, a tab the system closed, or a restart of the server. `store.js` decides what goes in and checks whose copy
+ * comes out. The server's build tells whether to resume from the copy or check it against the new projection (`have`).
+ * Every call here may fail (a private window, storage that is full or refused): the cache is only
  * ever a head start, so a failure counts as nothing kept.
  *
  * Two stores, by conversation id: `views` holds each session's view, `info` what to keep or drop it by, small enough to

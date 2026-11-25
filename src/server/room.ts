@@ -194,6 +194,8 @@ export interface Client {
      * then leaves those out, with that part of the order. Used once, then cleared.
      */
     have?: { from: number; count: number; key: string; build: string };
+    /** This tab can keep a first view after it has moved on to another visit. */
+    readonly cacheViews?: boolean;
     /**
      * This connection, apart from others of the same tab id: a duplicated browser tab keeps the id, and a reconnect
      * briefly overlaps the old connection. Sent in `hello`; peek lists name it.
@@ -225,6 +227,19 @@ export interface Client {
     /** The JSON of the PiP state this tab last got (`pip` events), so an unchanged one is not sent again. */
     pipSent?: string;
 }
+
+/** The per-reader state that builds a view, independent of whether the reader joined the room. */
+type ViewReader = Pick<
+    Client,
+    | "user"
+    | "protocol"
+    | "have"
+    | "sentEntries"
+    | "orderKey"
+    | "orderCount"
+    | "sentFields"
+    | "liveBlocks"
+>;
 
 export type TypingPlace = "chat" | "pi";
 
@@ -390,6 +405,16 @@ function hasReplyText(message: { content?: unknown } | undefined): boolean {
     );
 }
 
+/** Whether the ids the tab kept are still the start of this projection's order. */
+function fitsOrder(have: NonNullable<Client["have"]>, order: readonly number[]): boolean {
+    return (
+        have.count > 0 &&
+        have.count <= order.length &&
+        have.from <= have.count &&
+        fingerprint(order.slice(0, have.count).join(",")) === have.key
+    );
+}
+
 /** The view of one conversation, shared by every client attached to it. */
 export class Room {
     readonly id: ConversationId;
@@ -469,8 +494,36 @@ export class Room {
         const watch = await conversation.watch(context);
 
         this.#watch = watch;
+
         // Register the watch before reading the transcript. The watch keeps later updates until start().
-        const initial = watch.value;
+        await this.#load(conversation, watch.value, watch);
+        // Every update reads the branch; this catches a switch made in a terminal while nothing else changes. Started
+        // last, so a room that failed to open leaves no timer behind.
+        this.#readHead();
+        this.#headTimer = setInterval(() => {
+            const before = this.#head;
+
+            if (JSON.stringify(this.#readHead()) !== before) {
+                this.schedule();
+            }
+        }, HEAD_MS);
+        this.#headTimer.unref();
+    }
+
+    /** Read a first view without starting a follower or any timers. This room is never registered with the app. */
+    async read(conversation: Conversation): Promise<void> {
+        const watch = await conversation.watch(context);
+        const first = watch.value;
+
+        await watch.stop();
+        await this.#load(conversation, first);
+    }
+
+    async #load(
+        conversation: Conversation,
+        initial: ConversationView,
+        watch?: ConversationWatch,
+    ): Promise<void> {
         const owner = initial.conversation.owner;
         // Take turns belongs to the session: a subagent's view shows (and follows) its session's.
         const root = owner === undefined ? this.id : this.#app.rootOf(owner.conversationId);
@@ -552,23 +605,11 @@ export class Room {
         }
 
         // Apply queued updates only after the initial view and its documents are ready.
-        watch.start(async (call) => {
+        watch?.start(async (call) => {
             if (call.kind === "value") {
                 await this.#follow(conversation, call.value);
             }
         });
-
-        // Every update reads the branch; this catches a switch made in a terminal while nothing else changes. Started
-        // last, so a room that failed to open leaves no timer behind.
-        this.#readHead();
-        this.#headTimer = setInterval(() => {
-            const before = this.#head;
-
-            if (JSON.stringify(this.#readHead()) !== before) {
-                this.schedule();
-            }
-        }, HEAD_MS);
-        this.#headTimer.unref();
     }
 
     setDoc(kind: string, value: Record<string, unknown> | null): void {
@@ -832,7 +873,40 @@ export class Room {
      * protocol 5 gets those entries light (`lightEntry`), so the rows show at once, and whole in an update right after:
      * what shows only when a step is opened was most of what it waited for.
      */
-    push(client: Client, full: boolean): void {
+    push(client: Client, full: boolean, left?: () => void): void {
+        const result = this.#viewFor(client, full, true);
+
+        if (result === undefined) {
+            return;
+        }
+
+        // Send whole entries after the rest of what a tab gets on opening. If it left in the meantime, the original
+        // request can still finish off screen, without touching the new visit's per-client state.
+        if (result.partial) {
+            const visit = client.visit;
+
+            setImmediate(() => {
+                if (this.clients.has(client) && client.visit === visit) {
+                    this.push(client, false);
+                } else {
+                    left?.();
+                }
+            });
+        }
+
+        client.send("view", result.data, this.id);
+    }
+
+    /** The same first view as a tab gets, with its entries whole: a single answer with no later update. */
+    firstView(user: User, have: Client["have"]) {
+        return this.#viewFor(
+            { user, have, protocol: 7, sentEntries: new Set(), orderKey: "" },
+            true,
+            false,
+        )?.data;
+    }
+
+    #viewFor(client: ViewReader, full: boolean, mayLighten: boolean) {
         const view = this.#view;
 
         if (view === undefined || !this.#may(client)) {
@@ -850,10 +924,15 @@ export class Room {
 
         const projected = this.#projectedEntries(view.entries);
         const order = projected.map((entry) => entry.id);
-        // What the tab kept from before, when it is what this server would send it: those entries count as sent.
+        const have = full ? client.have : undefined;
         const kept = full ? this.#kept(client, order) : 0;
-        const from = full && (client.protocol ?? 1) >= 4 ? firstEntries(projected) : 0;
-        const light = full && (client.protocol ?? 1) >= 5;
+        // Another build's copy is only a head start on screen. Send its range whole, never counting those entries
+        // as sent. If the order shifted, send the whole context: a row the reader was on can now be anywhere in it.
+        const refresh =
+            have !== undefined && (client.protocol ?? 1) >= 7 && have.build !== this.#app.build;
+        const first = full && (client.protocol ?? 1) >= 4 ? firstEntries(projected) : 0;
+        const from = refresh ? (fitsOrder(have, order) ? Math.min(first, have.from) : 0) : first;
+        const light = mayLighten && !refresh && full && (client.protocol ?? 1) >= 5;
         const entries: ClientEntry[] = [];
         let partial = false;
 
@@ -880,15 +959,6 @@ export class Room {
 
             entries.push(lighter ?? entry);
         });
-
-        // That update goes at once, after the rest of what a tab gets as it opens the session (`PocketApp.attach`).
-        if (partial) {
-            setImmediate(() => {
-                if (this.clients.has(client)) {
-                    this.push(client, false);
-                }
-            });
-        }
 
         const orderKey = order.join(",");
         const orderChanged = orderKey !== client.orderKey;
@@ -1047,9 +1117,9 @@ export class Room {
             fields.inbox = queue;
         }
 
-        client.send(
-            "view",
-            {
+        return {
+            partial,
+            data: {
                 full,
                 conversation: this.#app.conversationInfo(this, client.user),
                 entries,
@@ -1068,8 +1138,7 @@ export class Room {
                 approvals: this.#app.approvals.forConversation(this.id),
                 ...fields,
             },
-            this.id,
-        );
+        };
     }
 
     /**
@@ -1078,7 +1147,7 @@ export class Room {
      * projection is this code's: a restart with the same code sends them the same) and an order that still starts with
      * them (no compaction since) count. The rest goes as for any first view: the newest rows' entries the tab lacks, and what is new.
      */
-    #kept(client: Client, order: readonly number[]): number {
+    #kept(client: ViewReader, order: readonly number[]): number {
         const have = client.have;
 
         client.have = undefined;
@@ -1087,10 +1156,7 @@ export class Room {
             have === undefined ||
             (client.protocol ?? 1) < 6 ||
             have.build !== this.#app.build ||
-            have.count <= 0 ||
-            have.count > order.length ||
-            have.from > have.count ||
-            fingerprint(order.slice(0, have.count).join(",")) !== have.key
+            !fitsOrder(have, order)
         ) {
             return 0;
         }
@@ -1213,7 +1279,7 @@ export class Room {
      * The live run for this client. One whose code takes protocol 3 gets the message as what changed since its last
      * update; older code, the whole message each time.
      */
-    #liveFor(client: Client, state: LiveState | undefined): ClientLiveUpdate {
+    #liveFor(client: ViewReader, state: LiveState | undefined): ClientLiveUpdate {
         const live = this.#projectLive(state);
         const generation = live.generation;
         const sent = client.liveBlocks;
@@ -1341,7 +1407,7 @@ export class Room {
      * May this tab's person still see this session (`access.ts` `maySee`). Their access can end between two events,
      * before `accessChanged` takes the tab out: nothing of the session goes to them meanwhile.
      */
-    #may(client: Client): boolean {
+    #may(client: Pick<Client, "user">): boolean {
         return this.#app.canSee(client.user, this.id);
     }
 
