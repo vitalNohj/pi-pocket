@@ -528,6 +528,90 @@ for (const sent of [true, false]) {
     );
 }
 
+test(
+    "moving a waiting message keeps the same rows and does not rewrap the message",
+    real,
+    async (t) => {
+        const { id, releaseBash } = await startQueued(t, "Steer", async (id) => {
+            for (let row = 0; row < 5; row++) {
+                await app.commands.submit(id, owner(app), {
+                    text: `Waiting message ${row + 1}\n${"Check the headings and links are ready.\n".repeat(10)}`,
+                    mode: row === 0 ? "steer" : "followUp",
+                    requestId: `waiting-${row}`,
+                });
+            }
+        });
+
+        await page.setViewport({ width: 390, height: 844, scale: 1, mobile: true });
+        t.after(() => page.setViewport({ width: 808, height: 555, scale: 1, mobile: false }));
+
+        await until(
+            async () =>
+                (await page.evaluate('document.querySelector(".inbox").children.length')) === "5",
+            "all five waiting rows",
+        );
+        await page.evaluate(`
+        await document.fonts.ready;
+        const list = document.querySelector(".inbox");
+        const rows = [...list.children];
+        const body = rows[0].querySelector(".queued-text");
+        const rect = (element) => {
+            const { x, y, width, height } = element.getBoundingClientRect();
+            return [x, y, width, height];
+        };
+        window.queueDrawing = () => {
+            const now = document.querySelector(".inbox");
+            return {
+                sameRows: now === list && now.children.length === rows.length &&
+                    rows.every((row, index) => row === now.children[index]),
+                rows: rows.map(rect),
+                text: rect(body),
+                opacity: getComputedStyle(body).opacity,
+                scroll: list.scrollTop,
+            };
+        };
+        "watching the queue";
+    `);
+        const drawing = async () =>
+            JSON.parse(
+                await page.evaluate(`
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            window.queueDrawing();
+        `),
+            );
+
+        for (const action of [actions[0], actions[1]]) {
+            await t.test(action.label, async (t) => {
+                await until(moveEnabled, "the move button to enable");
+                assert.equal(await textOf(move), action.label);
+                const before = await drawing();
+                const releaseViews = delayViews(t, id);
+                const reply = holdReply(t, id, "move");
+
+                // The browser tool would scroll the sticky button into view before clicking it.
+                await page.evaluate(`document.querySelector('${move}').click();`);
+                await until(reply.ready, "the held move reply");
+                assert.ok((await textOf(mode)).startsWith(action.pending));
+                assert.equal(await moveEnabled(), false);
+                assert.deepEqual(
+                    await drawing(),
+                    before,
+                    "the pending action leaves the rows in place",
+                );
+
+                releaseViews();
+                reply.release();
+                await until(moveEnabled, "the server's view and reply to unlock the move");
+                assert.ok((await textOf(mode)).startsWith(action.pending));
+                assert.deepEqual(await drawing(), before, "the confirmed rows stay in place");
+            });
+        }
+
+        releaseBash();
+        await until(() => !app.isBusy(id), "Pi to finish");
+    },
+);
+
 test("a successful move waits for the queue view before another action", real, async (t) => {
     const { id, releaseBash } = await startQueued(t);
     const releaseViews = delayViews(t, id);
