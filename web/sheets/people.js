@@ -764,8 +764,8 @@ export function Face({ person, size = 28 }) {
 }
 
 /** One setting of a person: what it is, what it means now, and its control. */
-function Setting({ label, hint, children }) {
-    return html`<div class="setting wrap">
+function Setting({ label, hint, children, ...attrs }) {
+    return html`<div class="setting wrap" ...${attrs}>
         <div class="grow">
             <div class="small">${label}</div>
             ${hint && html`<div class="muted small">${hint}</div>`}
@@ -965,8 +965,8 @@ function placesFor(person) {
 
 /**
  * What the server says of one person and me (`GET /api/users/:id/sharing`): my sessions with how they have each, the
- * folders I can give them on the computers I am not in charge of, and the computers they are in charge of. Asked while
- * `on`, and again when what the answer stands on changes: my sessions and whom each is shared with, who they are, and
+ * folders I can give them, the computers they are in charge of, and where I can share my new sessions with them. Asked
+ * while `on`, and again when what the answer stands on changes: my sessions and whom each is shared with, who they are, and
  * where they are chosen. `reload` asks again after a change the server does not tell this tab of (a folder I gave on
  * someone else's computer). `ready`: the server has answered, or refused, or is not asked: until then nobody knows
  * what there is to give.
@@ -1026,6 +1026,54 @@ function useSharing(person, on) {
         path,
         reload: () => setTurn((now) => now + 1),
     };
+}
+
+/** Share the sessions I start from now on with this person, on each computer where I can. */
+function NewSessions({ person, sharing }) {
+    const [saving, setSaving] = useState(false);
+    const rows = sharing.told?.shareNew ?? [];
+
+    if (rows.length === 0) {
+        return null;
+    }
+
+    const change = async (computer, on) => {
+        setSaving(true);
+        await attempt(async () => {
+            const answer = await api(`users/${encodeURIComponent(person.id)}/share-new`, {
+                computer,
+                on,
+            });
+
+            sharing.setTold(answer);
+        });
+        setSaving(false);
+    };
+
+    return html`<div class="group">
+        <div class="group-title">New sessions</div>
+        ${rows.map(({ id, name, on }) => {
+            const label = `Share my new sessions on ${name}`;
+            const hint = on
+                ? `Each session you start there from now on is shared with ${person.name}.`
+                : "Your new sessions there start private.";
+
+            return html`<${Setting}
+                key=${id}
+                label=${label}
+                hint=${hint}
+                data-part="share-new"
+                data-computer=${id}
+            >
+                <${Switch}
+                    on=${on}
+                    disabled=${saving}
+                    label=${`${label} with ${person.name}: ${on ? "on" : "off"}`}
+                    onChange=${() => change(id, !on)}
+                />
+            <//>`;
+        })}
+    </div>`;
 }
 
 /** Whether a person has a session of mine now, whichever way (`commands.ts` `SharingRow` `state`). */
@@ -1613,20 +1661,19 @@ export function PersonPage({ person, part, onPart }) {
     const places = (owner || mine) && placesFor(person).length > 0;
     // One's own approval time counts only on a computer someone else is in charge of.
     const asked = owner && myself && computers().some((each) => !inCharge(each));
-    // What I give them: for whoever prompts and starts sessions, on someone else's page. The server says what I have
-    // for them on the computers I am not in charge of (`useSharing`).
+    // What I give them: for whoever prompts and starts sessions, on someone else's page (`useSharing`).
     const gives = !myself && collab() && (owner || me?.role === "guest") && !me?.sessions;
     const sharing = useSharing(person, gives);
     const reach = reachOf(sharing.told, person);
     // Whether what I have to give them is known: on a computer of my own at once, on someone else's once the server has
     // said. Until then the page draws none of its parts, so that none shows first and then gives way to another.
     const known = placesFor(person).length > 0 || sharing.ready;
-    // Their folders and sessions show to whoever has something to give them: a computer of one's own, or a session or
-    // a folder on someone else's.
+    // Their folders and sessions show to whoever has something to give them, including new sessions.
     const access =
         places ||
         (gives &&
             (placesFor(person).length > 0 ||
+                (sharing.told?.shareNew.length ?? 0) > 0 ||
                 reach.cards.length > 0 ||
                 (reach.charge.length > 0 && person.role !== "owner")));
     // A sign-in link: one's own (`access.ts` `mayAddDevice`: no viewer's, but a paused user's, who links an
@@ -1718,6 +1765,7 @@ export function PersonPage({ person, part, onPart }) {
             // the tag: a slash there ends it, and what follows is not passed.
             shown === "access" &&
             html`<div class="sheet-pane" data-part="person-access">
+                <${NewSessions} person=${person} sharing=${sharing} />
                 <${Access}
                     person=${person}
                     direct=${places}

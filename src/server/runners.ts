@@ -177,8 +177,6 @@ export type RunnerView = {
      * (`allowsOwn`); `reshares`, to share what they were given there (`reshares`). Managers' list.
      */
     rights?: Record<ComputerRight, string[]>;
-    /** New sessions there start shared with its people. */
-    shareNew?: true;
     /** False when this person may not start sessions there: the owner sees a runner someone else linked, to unlink it. */
     mayStart?: false;
     /** Its sessions' browsers use its network (on unless turned off); only in the managers' list. */
@@ -1622,7 +1620,6 @@ export class Runners {
                               ...(link?.allowHttp === true ? { allowHttp: true as const } : {}),
                           }
                         : {}),
-                    ...(runner.shareNew === true ? { shareNew: true as const } : {}),
                     ...(this.#blocked(runner.id) ? { blocked: true as const } : {}),
                     ...(user === undefined ? {} : { inCharge: manages }),
                     ...(user !== undefined && !this.#mayStart(runner.id, user)

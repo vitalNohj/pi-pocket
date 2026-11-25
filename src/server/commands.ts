@@ -1545,6 +1545,8 @@ export class Commands {
      * `computers`: where `user` is not in charge, the folders they can give that person (their own, while they share
      * what they were given: `mayGiveFolder`) and the ones they gave them. Where `user` is in charge, the Runners rules
      * tell them every folder (`app.ts` `thisServer`, `runners.ts` `list`), so none is told here.
+     *
+     * `shareNew`: where `user` can share the sessions they start from now on, and whether they do.
      */
     sharingWith(
         user: User,
@@ -1554,6 +1556,7 @@ export class Commands {
         sessions: SharingRow[];
         charge: { id: string; name: string }[];
         computers: SharingComputer[];
+        shareNew: { id: string; name: string; on: boolean }[];
     } {
         const app = this.#app;
         const person = this.#sharee(user, personId);
@@ -1639,79 +1642,85 @@ export class Commands {
             ];
         });
 
-        const computers = [THIS_SERVER, ...app.config.runners.map((each) => each.id)].flatMap(
-            (id): SharingComputer[] => {
-                if (
-                    app.policy.inCharge(user, id) ||
-                    app.policy.inCharge(person, id) ||
-                    !app.policy.mayUse(user, id)
-                ) {
-                    return [];
-                }
+        const places = [THIS_SERVER, ...app.config.runners.map((each) => each.id)];
+        const computers = places.flatMap((id): SharingComputer[] => {
+            if (
+                app.policy.inCharge(user, id) ||
+                app.policy.inCharge(person, id) ||
+                !app.policy.mayUse(user, id)
+            ) {
+                return [];
+            }
 
-                const theirs = app.config.givenFolders(id, person.id);
-                const sees = app.config.seenFolders(id, person.id);
-                const givers = app.config.givenBy(id, person.id);
-                const mine = app.policy.reshares(user, id)
-                    ? (app.policy.givenFolders(user, id) ?? [])
-                    : [];
-                const paths = [
-                    ...new Set([...mine, ...theirs.filter((each) => givers[each] === user.id)]),
-                ];
+            const theirs = app.config.givenFolders(id, person.id);
+            const sees = app.config.seenFolders(id, person.id);
+            const givers = app.config.givenBy(id, person.id);
+            const mine = app.policy.reshares(user, id)
+                ? (app.policy.givenFolders(user, id) ?? [])
+                : [];
+            const paths = [
+                ...new Set([...mine, ...theirs.filter((each) => givers[each] === user.id)]),
+            ];
 
-                if (paths.length === 0) {
-                    return [];
-                }
+            if (paths.length === 0) {
+                return [];
+            }
 
-                // Folders are for someone who uses the computer already, a viewer too, to read: who uses a computer is
-                // its one in charge's choice. A user gets one to start sessions in.
-                const uses = app.policy.mayUse(person, id) && person.sessions === undefined;
+            // Folders are for someone who uses the computer already, a viewer too, to read: who uses a computer is
+            // its one in charge's choice. A user gets one to start sessions in.
+            const uses = app.policy.mayUse(person, id) && person.sessions === undefined;
 
-                return [
-                    {
-                        id,
-                        name: placed(id),
-                        ...(uses
-                            ? {}
-                            : {
-                                  reason:
-                                      person.sessions !== undefined
-                                          ? `${person.name} is invited to one session only.`
-                                          : `${person.name} cannot use ${placed(id)}. Whoever is in charge of it chooses who uses it.`,
-                              }),
-                        folders: paths.map((path) => {
-                            const has = theirs.includes(path);
-                            const on = has && sees.includes(path);
-                            const by = has ? named(givers[path]) : undefined;
-                            const level = app.config.folderLevel(id, person.id, path);
+            return [
+                {
+                    id,
+                    name: placed(id),
+                    ...(uses
+                        ? {}
+                        : {
+                              reason:
+                                  person.sessions !== undefined
+                                      ? `${person.name} is invited to one session only.`
+                                      : `${person.name} cannot use ${placed(id)}. Whoever is in charge of it chooses who uses it.`,
+                          }),
+                    folders: paths.map((path) => {
+                        const has = theirs.includes(path);
+                        const on = has && sees.includes(path);
+                        const by = has ? named(givers[path]) : undefined;
+                        const level = app.config.folderLevel(id, person.id, path);
 
-                            return {
-                                path,
-                                has,
-                                sees: on,
-                                give: !has && uses && app.policy.mayGiveFolder(user, id, path),
-                                take: has && app.policy.mayTakeFolder(user, id, person.id, path),
-                                see: has && app.policy.maySetSees(user, id, person.id, path, !on),
-                                ...(by === undefined ? {} : { by }),
-                                level,
-                                // The Access menu offers the levels it can be set to, and the one it has.
-                                levels: FOLDER_LEVELS.filter(
-                                    (each) =>
-                                        each === level ||
-                                        app.policy.maySetLevel(user, id, person, path, level, each),
-                                ),
-                            };
-                        }),
-                    },
-                ];
-            },
-        );
+                        return {
+                            path,
+                            has,
+                            sees: on,
+                            give: !has && uses && app.policy.mayGiveFolder(user, id, path),
+                            take: has && app.policy.mayTakeFolder(user, id, person.id, path),
+                            see: has && app.policy.maySetSees(user, id, person.id, path, !on),
+                            ...(by === undefined ? {} : { by }),
+                            level,
+                            // The Access menu offers the levels it can be set to, and the one it has.
+                            levels: FOLDER_LEVELS.filter(
+                                (each) =>
+                                    each === level ||
+                                    app.policy.maySetLevel(user, id, person, path, level, each),
+                            ),
+                        };
+                    }),
+                },
+            ];
+        });
 
         return {
             person: { id: person.id, name: person.name },
             sessions,
             charge: [...charge].map(([id, name]) => ({ id, name })),
             computers,
+            shareNew: places
+                .filter((id) => app.policy.mayShareNew(user, id, person))
+                .map((id) => ({
+                    id,
+                    name: placed(id),
+                    on: app.config.sharesNew(id, user.id).includes(person.id),
+                })),
         };
     }
 
@@ -1732,6 +1741,7 @@ export class Commands {
         sessions: SharingRow[];
         charge: { id: string; name: string }[];
         computers: SharingComputer[];
+        shareNew: { id: string; name: string; on: boolean }[];
         refused: { id: number; reason: string }[];
     }> {
         const app = this.#app;
@@ -4956,7 +4966,7 @@ export class Commands {
                 title,
                 cwd: place.cwd,
                 worktree: place.worktree,
-                // A copy is a new session: it starts shared as its computer says, not as the one it came from.
+                // A copy is a new session: it takes its starter's shares, not the shares of the original.
                 ...app.initialShares(runner, user),
                 ...(runner === undefined ? {} : { runner, runnerPermission }),
                 fromRunner,

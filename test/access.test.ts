@@ -56,7 +56,7 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
         seesUntil: () => ({}),
         givenBy: () => ({}),
         holders: () => [],
-        shareNew: false,
+        sharesNew: () => [],
         ...patch,
     };
 }
@@ -1171,15 +1171,52 @@ describe("who may share a session", () => {
         assert.deepEqual(left.usedBy, { y: 2 });
     });
 
-    it("shares new sessions with no one unless the computer shares them with its people", () => {
-        assert.deepEqual(world().policy.initialShares(THIS_SERVER, guest.id), []);
-        assert.deepEqual(
-            world([computer(THIS_SERVER, { shareNew: true })]).policy.initialShares(
-                THIS_SERVER,
-                guest.id,
-            ),
-            [viewer.id],
-        );
+    it("lets someone who starts sessions share their new ones with another chosen person", () => {
+        const { policy } = world();
+
+        assert.equal(policy.mayShareNew(guest, THIS_SERVER, viewer), true);
+        assert.equal(policy.mayShareNew(owner, THIS_SERVER, guest), true);
+    });
+
+    it("refuses new-session sharing from a viewer or someone who cannot start there", () => {
+        const { policy } = world();
+
+        assert.equal(policy.mayShareNew(viewer, THIS_SERVER, guest), false, "viewer");
+        assert.equal(policy.mayShareNew(stranger, THIS_SERVER, viewer), false, "not chosen");
+        assert.equal(policy.mayShareNew({ id: "removed" }, THIS_SERVER, viewer), false, "removed");
+    });
+
+    it("refuses new-session sharing with a person who is not chosen or is in charge", () => {
+        const { policy } = world();
+
+        assert.equal(policy.mayShareNew(guest, THIS_SERVER, stranger), false, "not chosen");
+        assert.equal(policy.mayShareNew(guest, THIS_SERVER, owner), false, "in charge");
+        assert.equal(policy.mayShareNew(guest, THIS_SERVER, guest), false, "the giver");
+    });
+
+    it("refuses new-session sharing with someone held to a session, even if still chosen", () => {
+        const { policy } = world([computer(THIS_SERVER, { chosen: [guest.id, invited.id] })]);
+
+        assert.equal(policy.mayShareNew(guest, THIS_SERVER, invited), false);
+    });
+
+    it("uses only the starter's shares for new sessions and drops stale entries", () => {
+        const removed = "removed";
+        const lists = new Map([
+            [guest.id, [viewer.id, stranger.id, removed]],
+            [owner.id, [guest.id]],
+            [removed, [viewer.id]],
+        ]);
+        const { policy } = world([
+            computer(THIS_SERVER, {
+                chosen: [guest.id, viewer.id, removed],
+                sharesNew: (giver) => lists.get(giver) ?? [],
+            }),
+        ]);
+
+        assert.deepEqual(policy.initialShares(THIS_SERVER, guest.id), [viewer.id]);
+        assert.deepEqual(policy.initialShares(THIS_SERVER, owner.id), [guest.id]);
+        assert.deepEqual(policy.initialShares(THIS_SERVER, removed), []);
     });
 
     it("lets a task's maker and who is in charge of its session manage it, and refuses the owner on someone else's runner", () => {

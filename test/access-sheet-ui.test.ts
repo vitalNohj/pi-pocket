@@ -687,7 +687,7 @@ for (const [name, viewport] of [
 }
 
 test(
-    "Settings holds a computer's approvals: each person's time, and its sharing",
+    "Settings on This server holds each person's approval time, not their sharing",
     real,
     async () => {
         await load(DESKTOP);
@@ -726,7 +726,7 @@ test(
             page_.list.includes("This server") && page_.list.includes("Laptop"),
             "a page per computer",
         );
-        assert.deepEqual(page_.titles, ["Approvals last", "Sharing"]);
+        assert.deepEqual(page_.titles, ["Approvals last"]);
         // This server's row says what it is, not its name again; Linking limits says what it is for.
         assert.equal(page_.details["This server"], "Pi Pocket itself");
         assert.equal(page_.details["Linking limits"], "For runners");

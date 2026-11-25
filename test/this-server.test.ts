@@ -105,7 +105,6 @@ test("the owner sees this server as a computer they linked, with nobody chosen a
         sees: {},
         seesUntil: {},
         rights: { wheel: [], allows: [], reshares: [] },
-        shareNew: false,
         inCharge: true,
         managers: [],
     });
@@ -155,10 +154,7 @@ test("a chosen guest cannot choose people or change its rules", async () => {
         (await call(alex, `runners/${THIS_SERVER}/users`, { users: [alex.id] })).status,
         403,
     );
-    assert.equal(
-        (await call(alex, `runners/${THIS_SERVER}/settings`, { shareNew: true })).status,
-        403,
-    );
+    assert.equal((await call(alex, `runners/${THIS_SERVER}/settings`, {})).status, 403);
     assert.equal(
         (
             await call(alex, `runners/${THIS_SERVER}/given`, {
@@ -170,39 +166,24 @@ test("a chosen guest cannot choose people or change its rules", async () => {
     );
 });
 
-test("the owner turns default sharing on and off", async () => {
-    const on = await call<ServerView>(owner(app), `runners/${THIS_SERVER}/settings`, {
-        shareNew: true,
-    });
+test("computer settings no longer set or show the old sharing switch", async () => {
+    const settings = { network: false, downloads: "/tmp", shareNew: true };
+    const saved = await call(owner(app), `runners/${runnerId}/settings`, settings);
 
-    assert.equal(on.status, 200);
-    assert.equal(on.body.shareNew, true);
-    assert.deepEqual(app.policy.initialShares(THIS_SERVER, owner(app).id), [alex.id, vera.id]);
+    assert.equal(saved.status, 200);
+    assert.equal("shareNew" in saved.body, false);
+    assert.equal("shareNew" in app.config.runnerById(runnerId)!, false);
+    assert.equal(app.config.runnerById(runnerId)?.settings?.network, false);
+    assert.equal(app.config.runnerById(runnerId)?.settings?.downloads, "/tmp");
 
-    const off = await call<ServerView>(owner(app), `runners/${THIS_SERVER}/settings`, {
-        shareNew: false,
-    });
+    const here = await call(owner(app), `runners/${THIS_SERVER}/settings`, settings);
 
-    assert.equal(off.body.shareNew, false);
-    assert.deepEqual(app.policy.initialShares(THIS_SERVER, owner(app).id), []);
-    assert.equal(
-        (await call(owner(app), `runners/${THIS_SERVER}/settings`, { shareNew: "yes" })).status,
-        400,
-    );
-});
-
-test("a runner's default sharing is set here too", async () => {
-    const on = await call<{ shareNew?: true }>(owner(app), `runners/${runnerId}/settings`, {
-        shareNew: true,
-    });
-
-    assert.equal(on.status, 200);
-    assert.equal(on.body.shareNew, true);
-    assert.equal(app.config.runnerById(runnerId)?.shareNew, true);
-    assert.equal(
-        (await call(owner(app), "runners/nobody/settings", { shareNew: true })).status,
-        404,
-    );
+    assert.equal(here.status, 200);
+    assert.equal("shareNew" in here.body, false);
+    assert.equal("shareNew" in app.config.server, false);
+    assert.equal("network" in here.body, false);
+    assert.equal("downloads" in here.body, false);
+    assert.equal((await call(owner(app), "runners/nobody/settings", settings)).status, 404);
 });
 
 test("the owner gives a chosen person folders; only those and the folders in them may be used", async () => {

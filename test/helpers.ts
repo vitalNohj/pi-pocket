@@ -278,8 +278,18 @@ export async function addPerson(
         return added;
     }
 
-    app.config.setUsers(THIS_SERVER, [...(app.config.server.users ?? []), added.user.id]);
-    app.config.setComputerSettings(THIS_SERVER, { shareNew: true });
+    const chosen = [...(app.config.server.users ?? []), added.user.id];
+
+    app.config.setUsers(THIS_SERVER, chosen);
+
+    for (const giver of [owner(app).id, ...chosen]) {
+        for (const receiver of chosen) {
+            if (app.policy.mayShareNew({ id: giver }, THIS_SERVER, { id: receiver })) {
+                app.config.setSharesNew(THIS_SERVER, giver, receiver, true);
+            }
+        }
+    }
+
     app.config.setGivenFolders(THIS_SERVER, added.user.id, [realpathSync(root)]);
     app.config.updateUser(added.user.id, { approvalDays: 0 });
     allowNeverAsked(app);

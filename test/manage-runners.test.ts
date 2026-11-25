@@ -228,8 +228,6 @@ test("who manages runners is in charge of this server and the owner's runners, a
     await done(mona, "runners/this-server/users", { person: gil.id, on: true });
     assert.deepEqual(app.config.server.users, [gil.id]);
     await refused(gil, "runners/this-server/users", { person: lin.id, on: true }, 403, charge);
-    await done(mona, "runners/this-server/settings", { shareNew: false });
-    await refused(gil, "runners/this-server/settings", { shareNew: true }, 403, charge);
 
     // The runners: the owner's with its people, as its linker reads it; Lin's only as something to unlink.
     type Row = { id: string; inCharge?: boolean; users?: unknown[]; managers?: string[] };

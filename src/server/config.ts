@@ -245,8 +245,8 @@ export interface ComputerAccess {
      * charge always may.
      */
     rights?: Partial<Record<ComputerRight, string[]>>;
-    /** New sessions here start shared with its people (`access.ts` `initialShares`). Absent: with no one. */
-    shareNew?: true;
+    /** For each giver, who their new sessions here are shared with (`access.ts` `initialShares`). */
+    sharesNew?: Record<string, string[]>;
 }
 
 /**
@@ -390,10 +390,9 @@ interface PocketConfig {
 }
 
 /**
- * The parts of `StoredServer` and `StoredRunner` the owner can change. `network` and `downloads` are a runner's alone;
- * `downloads` null puts its downloads back in its temporary folder.
+ * A runner's browser settings. `downloads` null puts its downloads back in its temporary folder.
  */
-export type ComputerSettings = { shareNew?: boolean; network?: boolean; downloads?: string | null };
+export type ComputerSettings = { network?: boolean; downloads?: string | null };
 
 /** The hours a run waits for a model's limit to clear, until the owner says otherwise. */
 export const DEFAULT_LIMIT_WAIT_HOURS = 6;
@@ -544,7 +543,7 @@ function dropGiver(target: ComputerAccess, giver: string): void {
  */
 function setList(
     target: ComputerAccess,
-    key: "given" | "sees",
+    key: "given" | "sees" | "sharesNew",
     person: string,
     list: readonly string[],
 ): void {
@@ -612,8 +611,8 @@ function knowsAccess(config: PocketConfig): boolean {
  * a viewer read every session. So each of them is chosen for this server, and a guest is given every folder (`/`
  * holds them all, `access.ts` `inFolder`) and may invite. The sessions that are here are shared with them once the
  * app starts (`app.ts` `#finishUpgrade`), which takes the people returned here. It is what they had, not a rule for
- * what comes: a session started later is its starter's alone, as on any server, until the owner shares new ones
- * (`ComputerAccess.shareNew`). A person held to sessions has those as before, and nothing changes for them.
+ * what comes: a later session starts private unless its starter shares their new sessions (`ComputerAccess.sharesNew`).
+ * A person held to sessions has those as before, and nothing changes for them.
  */
 function keepAccess(config: PocketConfig): string[] {
     const people = config.users.filter(
@@ -713,12 +712,67 @@ function gatherRights(config: PocketConfig): boolean {
     return changed;
 }
 
+/** Keep only people who still have a record when turning the computer's switch into each giver's list. */
+function migrateSharesNew(
+    target: ComputerAccess | undefined,
+    linker: string | undefined,
+    people: ReadonlySet<string>,
+): boolean {
+    if (target === undefined || !("shareNew" in target)) {
+        return false;
+    }
+
+    if (target.shareNew === true) {
+        const users = [...new Set(target.users)].filter((each) => people.has(each));
+        const givers = new Set(users);
+
+        if (linker !== undefined && people.has(linker)) {
+            givers.add(linker);
+        }
+
+        delete target.sharesNew;
+
+        for (const giver of givers) {
+            setList(
+                target,
+                "sharesNew",
+                giver,
+                users.filter((each) => each !== giver),
+            );
+        }
+    }
+
+    delete target.shareNew;
+
+    return true;
+}
+
+/** Drop `people` as both givers and receivers of new sessions here. */
+function dropSharesNew(target: ComputerAccess, people: readonly string[]): void {
+    if (target.sharesNew === undefined) {
+        return;
+    }
+
+    const dropped = new Set(people);
+    const kept = Object.entries(target.sharesNew)
+        .filter(([giver]) => !dropped.has(giver))
+        .map(([giver, list]) => [giver, list.filter((each) => !dropped.has(each))] as const)
+        .filter(([, list]) => list.length > 0);
+
+    if (kept.length === 0) {
+        delete target.sharesNew;
+    } else {
+        target.sharesNew = Object.fromEntries(kept);
+    }
+}
+
 /** The people `chosen` no longer names are leaving `target`: marked before its list changes, for the same save. */
 function markLeaving(target: ComputerAccess, chosen: readonly string[]): void {
     const dropped = (target.users ?? []).filter((each) => !chosen.includes(each));
 
     if (dropped.length > 0) {
         target.leaving = [...new Set([...(target.leaving ?? []), ...dropped])];
+        dropSharesNew(target, dropped);
     }
 }
 
@@ -868,7 +922,17 @@ export class ConfigStore {
             changed = true;
         }
 
+        const people = new Set(old.users.map((each) => each.id));
+
+        if (migrateSharesNew(old.server, this.linkerOf(THIS_SERVER), people)) {
+            changed = true;
+        }
+
         for (const runner of old.runners ?? []) {
+            if (migrateSharesNew(runner, runner.createdBy, people)) {
+                changed = true;
+            }
+
             if ("keyHash" in runner) {
                 delete (runner as StoredRunner & { keyHash?: string }).keyHash;
                 changed = true;
@@ -1386,6 +1450,7 @@ export class ConfigStore {
                     setGivers(computer, id, {});
                     dropGiver(computer, id);
                     trimRights(computer, (each) => each !== id);
+                    dropSharesNew(computer, [id]);
                     dropLeaving(computer, [id]);
                     dropOwed(computer, [id]);
                 }
@@ -1898,20 +1963,38 @@ export class ConfigStore {
         });
     }
 
-    /** Change the rules of computer `id` (`THIS_SERVER` or a runner's id). */
-    setComputerSettings(id: string, change: ComputerSettings): void {
-        this.#change(id, (computer) => {
-            if (change.shareNew === true) {
-                computer.shareNew = true;
-            } else if (change.shareNew === false) {
-                delete computer.shareNew;
-            }
+    /** Who receives new sessions that `giver` starts on computer `id`. */
+    sharesNew(id: string, giver: string): readonly string[] {
+        const all = this.computer(id)?.sharesNew;
 
-            // A runner's own settings: on the same record. This server has none.
+        return all !== undefined && Object.hasOwn(all, giver) ? (all[giver] ?? []) : [];
+    }
+
+    /** Share new sessions `giver` starts on computer `id` with `person`, or stop sharing them. */
+    setSharesNew(id: string, giver: string, person: string, on: boolean): void {
+        const list = this.sharesNew(id, giver);
+
+        if (list.includes(person) !== on) {
+            this.#change(id, (computer) => {
+                setList(
+                    computer,
+                    "sharesNew",
+                    giver,
+                    on ? [...list, person] : list.filter((each) => each !== person),
+                );
+
+                return true;
+            });
+        }
+    }
+
+    /** Change a runner's own settings. This server has none. */
+    setComputerSettings(id: string, change: ComputerSettings): void {
+        this.#change(id, () => {
             const runner = this.runnerById(id);
 
             if (runner === undefined) {
-                return true;
+                return false;
             }
 
             const settings = { ...runner.settings };

@@ -91,8 +91,8 @@ export type Computer = {
      * (`overridesTurns`), or to allow a call their own message led to (`allowsOwn`).
      */
     holders(right: ComputerRight): readonly string[];
-    /** Share new sessions with its chosen people. Off unless the linker turns it on. */
-    shareNew: boolean;
+    /** Who receives new sessions that `giver` starts here. */
+    sharesNew(giver: string): readonly string[];
 };
 
 /** The facts of a top session (a subagent's are its top session's). */
@@ -1164,16 +1164,30 @@ export class AccessPolicy {
         );
     }
 
-    /**
-     * Whom a new session on computer `id` that `starter` starts is shared with: no one, unless the computer shares new
-     * sessions with its chosen people.
-     */
+    /** May `person` share the sessions they start on computer `id` with `target` from now on. */
+    mayShareNew(person: Pick<Person, "id">, id: string, target: Pick<Person, "id">): boolean {
+        const current = this.#current(person);
+        const other = this.#current(target);
+
+        return (
+            current !== undefined &&
+            current.role !== "viewer" &&
+            this.mayStart(current, id) &&
+            other !== undefined &&
+            other.id !== current.id &&
+            other.sessions === undefined &&
+            this.mayUse(other, id) &&
+            !this.inCharge(other, id)
+        );
+    }
+
+    /** Whom the starter shares new sessions here with, while both people still have access. */
     initialShares(id: string, starter: string): string[] {
         const computer = this.#facts.computer(id);
 
-        return computer?.shareNew === true
-            ? computer.chosen.filter((each) => each !== starter)
-            : [];
+        return (computer?.sharesNew(starter) ?? []).filter((each) =>
+            this.mayShareNew({ id: starter }, id, { id: each }),
+        );
     }
 
     // The same checks, as errors for the HTTP and command handlers.

@@ -1,6 +1,6 @@
 // Runners (`src/server/runners.ts`): this server and other computers that run sessions' tools. The parts of the
 // Access sheet (`access-sheet.js`) about a computer itself, not about who has what there: link one with a one-time
-// code, its state and tools, its rules (whether new sessions start shared, its network, its downloads), link it
+// code, its state and tools, its browser settings (network and downloads), link it
 // again, unlink it, and the limits on linking.
 // A runner trusts its server after the link: its settings are kept here and sent to it.
 import { useState } from "preact/hooks";
@@ -325,24 +325,6 @@ export function Rule({ runner, name, label, hint, on }) {
         </div>
         <${Switch} on=${on} disabled=${!mine} label=${`${label}: ${on ? "on" : "off"}`} onChange=${change} />
     </div>`;
-}
-
-const SHARE_HINT =
-    "On: new sessions start shared with the people chosen here. Off: they start private.";
-
-/** Sharing on a computer: whether new sessions there start shared with its people. */
-export function Sharing({ computer }) {
-    if (!inCharge(computer)) {
-        return null;
-    }
-
-    return html`<${Rule}
-        runner=${computer}
-        name="shareNew"
-        label="Share new sessions with these people"
-        hint=${SHARE_HINT}
-        on=${computer.shareNew === true}
-    />`;
 }
 
 /** Its version, and its architecture, as a short line under its name. */

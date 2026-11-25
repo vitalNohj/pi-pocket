@@ -336,7 +336,7 @@ describe("people granted a computer", () => {
     });
 
     it("does not let a granted guest change settings, folders, access, name, or remove a computer", async () => {
-        for (const body of [{ network: false }, { downloads: "/tmp" }, { shareNew: true }]) {
+        for (const body of [{ network: false }, { downloads: "/tmp" }]) {
             assert.equal((await request(guest, `runners/${runnerId}/settings`, body)).status, 403);
         }
 
@@ -710,7 +710,6 @@ describe("review drill fixes for people on a computer", () => {
                 ["users", { person: owner(app).id, on: true }],
                 ["users", { person: cho.id, on: false }],
                 ["given", { person: cho.id, folders: ["/home/lina"] }],
-                ["settings", { shareNew: true }],
                 ["settings", { network: false }],
             ] as const) {
                 const refused = await request<{ error: string }>(
@@ -729,7 +728,6 @@ describe("review drill fixes for people on a computer", () => {
                 "its people are as they were",
             );
             assert.deepEqual([...app.config.givenFolders(linas, cho.id)], []);
-            assert.equal(app.runners.stored(linas)?.shareNew, undefined);
             assert.equal(app.policy.mayUse(owner(app), linas), false);
 
             // The same list goes out when a tab opens.
