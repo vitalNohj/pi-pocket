@@ -241,7 +241,15 @@ export class Chromium {
         const connection = new Connection(child.stdio[3] as Writable, child.stdio[4] as Readable);
         const chromium = new Chromium(child, connection);
 
-        child.once("exit", () => connection.close("The browser stopped."));
+        child.once("exit", () => {
+            connection.close("The browser stopped.");
+
+            // A process the browser started can outlive it and hold its pipes open. They are of no use now: left
+            // open, each would cost the server a descriptor, and would keep a process that is done from ending.
+            for (const stream of child.stdio) {
+                stream?.destroy();
+            }
+        });
 
         try {
             const version = await Promise.race([
