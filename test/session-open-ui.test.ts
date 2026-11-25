@@ -4,6 +4,7 @@ import {
     context,
     newSession,
     openApp,
+    owner,
     root,
     say,
     scriptedModel,
@@ -314,6 +315,69 @@ test(
                 `return JSON.stringify(![...document.querySelectorAll('.boot:not(.inline)')].some((node) => node.getClientRects().length > 0))`,
             ),
             true,
+        );
+    },
+);
+
+test(
+    "Find searches rows missing from the first view and history before a reset",
+    real,
+    async () => {
+        const id = await newSession(app);
+
+        const add = async (messages: string[]) => {
+            await app.harness.commit(async (tx) => {
+                for (const value of messages) {
+                    await tx.appendEntry(UserEntry, id, {
+                        model: [
+                            {
+                                role: "user",
+                                content: [{ type: "text", text: value }],
+                                timestamp: 1000,
+                            },
+                        ],
+                    });
+                }
+            }, context);
+        };
+
+        await add(["needle in earlier history"]);
+        await app.commands.reset(id, owner(app), "A fresh context");
+        await add([
+            "needle in the omitted rows",
+            ...Array.from({ length: 96 }, (_, i) => "Find fixture " + i),
+        ]);
+        await openOn(id, "Find fixture 95");
+        assert.equal((await shown("needle in the omitted rows")).rows, false);
+        await inPage(`
+        const { openSheet } = await import("/store.js");
+
+        openSheet({ type: "find" });
+        return "null";
+    `);
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(!!document.querySelector(".find-search input"));`,
+                ),
+            "the Find sheet",
+        );
+        await inPage(`
+        const input = document.querySelector(".find-search input");
+
+        input.value = "needle";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        return "null";
+    `);
+        await until(
+            () =>
+                inPage<boolean>(`
+        const found = [...document.querySelectorAll(".find-result")].map((row) => row.textContent);
+
+        return JSON.stringify(found.some((row) => row.includes("needle in the omitted rows")) &&
+            found.some((row) => row.includes("needle in earlier history")));
+    `),
+            "Find results from both the active context and history",
         );
     },
 );
