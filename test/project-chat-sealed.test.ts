@@ -222,6 +222,84 @@ test("startup seals old project chats and drops old revision bytes without seali
     absentFromSqlite(data, ...texts);
 });
 
+test("a start with a key file that cannot be used leaves old chats readable, and the next start seals them", async (t) => {
+    const { data, keyFile, open } = fixture(t);
+    let app = await open();
+    const from = owner(app);
+    const to = app.config.addUser("Lee", "guest").user;
+    const id = await newSession(app);
+    const { key } = legacyPlace(app, id);
+    const old = legacyMessage(from);
+    const direct = { id: "legacy", userId: from.id, at: 100, text: privateText() };
+    const thread = directKey(from.id, to.id);
+
+    await keepOldPost(app, id, old);
+    await app.harness.commit(async (tx) => {
+        (await tx.doc(DirectDoc, thread, null)).messages.push(direct);
+        (await tx.doc(DirectIndexDoc)).threads[thread] = {
+            people: [from.id, to.id],
+            at: direct.at,
+            unread: {},
+        };
+    }, context);
+    await app.close();
+    writeFileSync(keyFile, "invalid key\n");
+
+    // The start goes on: both chats stay as they were, and their people read them.
+    app = await open();
+    assert.deepEqual((await stored(app, key))?.messages, [old]);
+    assert.deepEqual((await app.projectChat.thread(from, id)).messages, [old]);
+    assert.deepEqual((await app.direct.thread(from, to.id)).messages, [direct]);
+    assert.equal(readFileSync(keyFile, "utf8"), "invalid key\n", "the key file is not replaced");
+
+    // A plain chat retired now leaves its bytes for the next start's scrub.
+    const gone = await otherSession(app);
+    const lost = legacyMessage(from);
+
+    await keepOldPost(app, gone, lost);
+    await app.projectChat.forgetGone();
+    assert.equal((await index(app))?.scrub, undefined, "nothing retired, nothing to scrub");
+    await app.harness.commit(async (tx) => {
+        (await tx.doc(ProjectChatIndexDoc)).chats[legacyPlace(app, gone).key]!.computer = "gone";
+    }, context);
+    await app.projectChat.forgetGone();
+    assert.equal(await stored(app, legacyPlace(app, gone).key), undefined);
+    assert.equal((await index(app))?.scrub, true, "a retired plain chat is scrubbed later");
+
+    // The same for a plain thread with one person, retired when that person is removed.
+    const kim = app.config.addUser("Kim", "guest").user;
+    const last = { id: "legacy", userId: from.id, at: 100, text: privateText() };
+    const theirs = directKey(from.id, kim.id);
+    const directIndex = () => app.harness.snapshot(DirectIndexDoc, context);
+
+    await app.harness.commit(async (tx) => {
+        (await tx.doc(DirectDoc, theirs, null)).messages.push(last);
+        (await tx.doc(DirectIndexDoc)).threads[theirs] = {
+            people: [from.id, kim.id],
+            at: last.at,
+            unread: {},
+        };
+    }, context);
+    assert.equal((await directIndex())?.scrub, undefined);
+    await app.direct.forget(kim.id);
+    assert.equal((await directIndex())?.scrub, true, "a retired plain thread is scrubbed later");
+    await app.close();
+
+    unlinkSync(keyFile);
+    app = await open();
+    assert.equal((await index(app))?.scrub, undefined, "scrubbed");
+    assert.ok("sealed" in (await stored(app, key))!.messages[0]!);
+    assert.ok("sealed" in (await app.harness.snapshot(DirectDoc, thread, context))!.messages[0]!);
+    assert.deepEqual((await app.projectChat.thread(from, id)).messages, [old]);
+    assert.deepEqual((await app.direct.thread(from, to.id)).messages, [direct]);
+    assert.equal(
+        (await app.harness.snapshot(DirectIndexDoc, context))?.scrub,
+        undefined,
+        "scrubbed",
+    );
+    absentFromSqlite(data, old.text, direct.text, lost.text, last.text);
+});
+
 test("startup does not scrub with no project index or with a clean sealed index", async (t) => {
     const sql = watchScrubs(t);
     const { open } = fixture(t);

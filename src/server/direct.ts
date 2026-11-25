@@ -7,7 +7,15 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDocFamily, type Storage } from "@earendil-works/pi-durable";
 import { NO_CHAT } from "./access.ts";
 import type { PocketApp } from "./app.ts";
-import { chatKey, chatKeyForReading, chatKeys, open, seal, UNREADABLE } from "./chat-seal.ts";
+import {
+    chatKey,
+    chatKeyAtStart,
+    chatKeyForReading,
+    chatKeys,
+    open,
+    seal,
+    UNREADABLE,
+} from "./chat-seal.ts";
 import type { User } from "./config.ts";
 import {
     DIRECT_LIMIT,
@@ -67,6 +75,8 @@ export class Direct {
     /** The counts each tab last got, as JSON, so a change elsewhere does not send them again. */
     readonly #told = new WeakMap<Client, string>();
     readonly #warned = new Set<string>();
+    /** Old plain messages are still stored, since this start could not seal them: retiring one leaves bytes to scrub. */
+    #plain = false;
 
     constructor(app: PocketApp) {
         this.#app = app;
@@ -104,7 +114,13 @@ export class Direct {
                 continue;
             }
 
-            const bytes = chatKey(this.#app);
+            const bytes = chatKeyAtStart(this.#app, "Direct chat");
+
+            if (bytes === undefined) {
+                this.#plain = true;
+
+                return;
+            }
 
             await harness.commit(async (tx) => {
                 const thread = await tx.doc(SealingDirectDoc, key, null);
@@ -297,6 +313,10 @@ export class Direct {
                 if (which(thread)) {
                     await tx.retireDoc(DirectDoc, key);
                     delete index.threads[key];
+
+                    if (this.#plain) {
+                        index.scrub = true;
+                    }
                 }
             }
         }, context);

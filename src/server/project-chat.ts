@@ -4,7 +4,15 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type ConversationId, defineDocFamily, type Storage } from "@earendil-works/pi-durable";
 import { THIS_SERVER } from "./access.ts";
 import type { PocketApp } from "./app.ts";
-import { chatKey, chatKeyForReading, chatKeys, open, seal, UNREADABLE } from "./chat-seal.ts";
+import {
+    chatKey,
+    chatKeyAtStart,
+    chatKeyForReading,
+    chatKeys,
+    open,
+    seal,
+    UNREADABLE,
+} from "./chat-seal.ts";
 import { chatMentions, MAX_CHAT_TEXT } from "./collab.ts";
 import type { User } from "./config.ts";
 import {
@@ -52,6 +60,8 @@ function sealMessage(
 export class ProjectChat {
     readonly #app: PocketApp;
     readonly #warned = new Set<string>();
+    /** Old plain messages are still stored, since this start could not seal them: retiring one leaves bytes to scrub. */
+    #plain = false;
     #setting = Promise.resolve();
 
     constructor(app: PocketApp) {
@@ -75,7 +85,13 @@ export class ProjectChat {
                 continue;
             }
 
-            const bytes = chatKey(this.#app);
+            const bytes = chatKeyAtStart(this.#app, "Project chat");
+
+            if (bytes === undefined) {
+                this.#plain = true;
+
+                return;
+            }
 
             await harness.commit(async (tx) => {
                 const chat = await tx.doc(SealingProjectChatDoc, key, null);
@@ -354,6 +370,10 @@ export class ProjectChat {
                 if (which(computer)) {
                     await tx.retireDoc(ProjectChatDoc, key);
                     delete index.chats[key];
+
+                    if (this.#plain) {
+                        index.scrub = true;
+                    }
                 }
             }
         }, context);

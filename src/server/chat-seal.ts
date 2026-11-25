@@ -7,6 +7,7 @@ import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
 import type { Cursor, Storage } from "@earendil-works/pi-durable";
 import type { PocketApp } from "./app.ts";
 import { DirectIndexDoc, ProjectChatIndexDoc } from "./docs.ts";
+import { describe } from "./errors.ts";
 
 const context = BACKGROUND_CONTEXT;
 const KEY_FILE = "direct.key";
@@ -66,6 +67,22 @@ export function chatKeyForReading(app: PocketApp): Buffer | undefined {
         return chatKey(app);
     } catch {
         // A bad key file must not stop someone from opening their chat.
+        return undefined;
+    }
+}
+
+/**
+ * The key for sealing old messages at startup, or undefined when the key file cannot be used. Then the old messages stay
+ * as they are, people still read them, and the next start tries again: a bad key file must not stop the server.
+ */
+export function chatKeyAtStart(app: PocketApp, chat: string): Buffer | undefined {
+    try {
+        return chatKey(app);
+    } catch (error) {
+        app.log(
+            `${chat}: old messages were not sealed, since the chat key cannot be used (${describe(error)}). The next start will try again.`,
+        );
+
         return undefined;
     }
 }
