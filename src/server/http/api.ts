@@ -45,6 +45,9 @@ import {
 } from "./io.ts";
 import { pushRoutes } from "./push-routes.ts";
 
+/** The most sessions one invite to chosen sessions gives. */
+const MAX_CHOSEN = 200;
+
 /** This machine's non-internal IPv4 addresses, for invite links other devices on its networks can open. */
 function lanAddresses(): string[] {
     return Object.values(networkInterfaces())
@@ -217,6 +220,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
     /**
      * What an invite may grant (`access.ts` `mayInvite`): its maker's own sessions, or a folder's, for who may start
      * sessions on some computer; one session, for who may share it. An invite is always for someone new: one's own other device takes a device link (`me/device`).
+     * Sessions its maker chose (`sessions`), for who may start sessions on some computer, and only sessions they may
+     * share (`access.ts` `mayShare`), judged again when it is used (`app.ts` `welcome`).
      */
     const inviteGrant = (
         user: User,
@@ -224,6 +229,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             role?: unknown;
             session?: unknown;
             folder?: unknown;
+            sessions?: unknown;
             temporary?: unknown;
             accountMinutes?: unknown;
         },
@@ -257,6 +263,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
                 grant.accountMinutes = accountMinutes;
             }
+        }
+
+        if (body.sessions !== undefined && body.sessions !== null) {
+            return { ...grant, chosen: chosenSessions(user, body) };
         }
 
         if (body.session === undefined || body.session === null) {
@@ -303,6 +313,58 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         return { ...grant, session: String(app.rootOf(session)) };
+    };
+
+    /**
+     * The top sessions of an invite to the sessions its maker chose: each one they see, and may share, once. A session
+     * hidden from them and one not theirs to share get the same answer, so nothing is learned of either.
+     */
+    const chosenSessions = (
+        user: User,
+        body: { session?: unknown; folder?: unknown; sessions?: unknown },
+    ): string[] => {
+        const list = body.sessions;
+
+        if (
+            !Array.isArray(list) ||
+            list.length < 1 ||
+            list.length > MAX_CHOSEN ||
+            !list.every((each) => Number.isSafeInteger(each) && (each as number) >= 0)
+        ) {
+            throw new HttpError(400, `sessions must be a list of 1 to ${MAX_CHOSEN} session ids.`);
+        }
+
+        if (
+            (body.session !== undefined && body.session !== null) ||
+            (body.folder !== undefined && body.folder !== null)
+        ) {
+            throw new HttpError(400, "An invite to chosen sessions has no session or folder.");
+        }
+
+        if (!app.policy.mayInvite(user)) {
+            throw new HttpError(403, "Only people who may start sessions here can invite others.");
+        }
+
+        const chosen = new Set<string>();
+
+        for (const each of list as number[]) {
+            const root = app.rootOf(conversationId(String(each)));
+            const meta = app.sessionMeta(root);
+
+            if (
+                meta === undefined ||
+                meta.archived === true ||
+                meta.pip !== undefined ||
+                !app.canSee(user, root) ||
+                !app.policy.mayShare(user, String(root))
+            ) {
+                throw new HttpError(400, "No such session");
+            }
+
+            chosen.add(String(root));
+        }
+
+        return [...chosen];
     };
 
     /** How long an invite lasts, in minutes: one of `INVITE_MINUTES`, 15 when not said. */
@@ -2033,6 +2095,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 role?: unknown;
                 session?: unknown;
                 folder?: unknown;
+                sessions?: unknown;
                 minutes?: unknown;
                 temporary?: unknown;
                 accountMinutes?: unknown;

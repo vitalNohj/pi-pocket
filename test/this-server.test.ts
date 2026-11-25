@@ -432,7 +432,7 @@ test("an invite to a folder passes on only its maker's sessions in that folder, 
 
     const fay = person("Fay", "viewer");
 
-    await app.welcome(fay.id, owner(app).id, folder);
+    await app.welcome(fay.id, owner(app).id, { folder });
     assert.equal(app.canSee(fay, inside), true, "the inviter's session in the folder");
     assert.equal(app.canSee(fay, outside), false, "not the inviter's session in another folder");
     assert.equal(app.canSee(fay, alexs), false, "not someone else's session in the folder");
@@ -445,7 +445,9 @@ test("an invite to a folder passes on only its maker's sessions in that folder, 
     // The same path on another computer is another folder.
     const finn = person("Finn", "viewer");
 
-    await app.welcome(finn.id, owner(app).id, { computer: runnerId, path: folder.path });
+    await app.welcome(finn.id, owner(app).id, {
+        folder: { computer: runnerId, path: folder.path },
+    });
     assert.equal(app.canSee(finn, inside), false);
     // Nothing became theirs: chosen nowhere.
     assert.equal(app.config.runnerById(runnerId)?.users?.includes(finn.id) ?? false, false);

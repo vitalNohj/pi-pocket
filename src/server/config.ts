@@ -185,6 +185,11 @@ export type InviteFor =
           session?: string;
           /** The one folder it is for: its maker's sessions in it on that computer, not all of theirs. */
           folder?: { computer: string; path: string };
+          /**
+           * The sessions it is for, top session ids that its maker chose: of them, the ones its maker may still share
+           * when it is used. Never with `session` or `folder`.
+           */
+          chosen?: string[];
           /** The account it makes is temporary (`User.temporary`). */
           temporary?: true;
           /** How long the temporary account lasts once they join. Absent: it does not end. */
@@ -199,6 +204,7 @@ export type InviteFor =
           role?: never;
           session?: never;
           folder?: never;
+          chosen?: never;
           temporary?: never;
           accountMinutes?: never;
       };

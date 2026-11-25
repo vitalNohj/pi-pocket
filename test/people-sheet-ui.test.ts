@@ -1527,7 +1527,7 @@ test(
 );
 
 test(
-    "an invite shares the open session first, then its folder, then my sessions; with no session open, my sessions",
+    "an invite shares the open session first, then its folder, then my sessions, then the ones chosen; with no session open, my sessions",
     real,
     async () => {
         const id = await newSession(app);
@@ -1564,7 +1564,12 @@ test(
             `/s/${String(id)}`,
             `store.state.view.conversation?.kind === "session" && store.state.sessions.some((each) => String(each.id) === ${JSON.stringify(String(id))} && each.mayShare === true)`,
         );
-        assert.deepEqual(await options(), ["Only this session (on)", "This folder", "My sessions"]);
+        assert.deepEqual(await options(), [
+            "Only this session (on)",
+            "This folder",
+            "My sessions",
+            "Custom",
+        ]);
         // What the choice is of shows beside the choices: the session's name, then the folder.
         const beside = () =>
             inPage<string | null>(
@@ -1588,7 +1593,12 @@ test(
             `[...document.querySelectorAll(".sheet .invite-share .segmented button")].find((each) => each.textContent.trim() === "This folder").click(); return JSON.stringify(true);`,
         );
         await until(async () => ![null, first].includes(await code()), "the folder's invite");
-        assert.deepEqual(await options(), ["Only this session", "This folder (on)", "My sessions"]);
+        assert.deepEqual(await options(), [
+            "Only this session",
+            "This folder (on)",
+            "My sessions",
+            "Custom",
+        ]);
 
         const second = await code();
 
@@ -1600,12 +1610,182 @@ test(
         );
         assert.equal((await fetch(`${base}/join/${first}`)).status, 410, "the one before ended");
 
-        // No session open: nothing to choose, and the invite is to the owner's sessions.
+        // No session open: My sessions, or Custom, and the invite is to the owner's sessions.
         await invite("/", `store.state.view.conversation == null`);
-        assert.deepEqual(await options(), []);
+        assert.deepEqual(await options(), ["My sessions (on)", "Custom"]);
         assert.equal(await beside(), null);
         assert.ok(
             (await joinPage(await code())).includes("the sessions shared with you on this server"),
+        );
+        await inPage(
+            `const { closeSheet } = await import("/store.js"); closeSheet(); return JSON.stringify(true);`,
+        );
+    },
+);
+
+test(
+    "Custom gives the sessions checked: a folder's box checks its sessions, Make invite makes the invite, a change hides it, and whoever joins sees only those",
+    real,
+    async () => {
+        const folders = [join(root, "custom-a"), join(root, "custom-b")];
+        const made: Record<string, Awaited<ReturnType<typeof newSession>>> = {};
+
+        for (const [folder, names] of [
+            [folders[0]!, ["Custom A1", "Custom A2"]],
+            [folders[1]!, ["Custom B1", "Custom B2"]],
+        ] as const) {
+            mkdirSync(folder, { recursive: true });
+
+            for (const title of names) {
+                const id = await newSession(app, folder);
+
+                await app.harness.commit(async (tx) => {
+                    (await tx.doc(SessionsDoc)).items[String(id)]!.title = title;
+                }, context);
+                made[title] = id;
+            }
+        }
+
+        const options = () =>
+            inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".sheet .invite-share .segmented button")].map((each) => each.textContent.trim() + (each.classList.contains("on") ? " (on)" : "")))`,
+            );
+        const code = () =>
+            inPage<string | null>(
+                `return JSON.stringify(document.querySelector(".sheet .invite-code-value")?.textContent.replace(/\\s/g, "") ?? null)`,
+            );
+        const box = (label: string) =>
+            `document.querySelector('.sheet [data-part="invite-chooser"] input[aria-label=${JSON.stringify(label).replace(/'/g, "\\'")}]')`;
+        const state = (label: string) =>
+            inPage<string | null>(
+                `const box = ${box(label)}; return JSON.stringify(box === null ? null : box.indeterminate ? "mixed" : box.checked ? "on" : "off")`,
+            );
+        const check = (label: string) =>
+            inPage(`${box(label)}.click(); return JSON.stringify(true);`);
+        const makeButton = `[...document.querySelectorAll(".sheet button")].find((each) => each.textContent.trim() === "Make invite")`;
+        const live = () =>
+            (
+                JSON.parse(readFileSync(app.config.file, "utf8")) as {
+                    invites?: { device?: true }[];
+                }
+            ).invites?.filter((each) => each.device !== true).length ?? 0;
+
+        await page.setViewport(DESKTOP);
+        await page.navigate(`${base}/`);
+        await until(
+            async () =>
+                await inPage<boolean>(
+                    `const { store } = await import("/store.js"); return JSON.stringify(document.querySelector('[data-part="app"]') !== null && store.state.view.conversation == null && ${JSON.stringify(Object.values(made).map(String))}.every((id) => store.state.sessions.some((each) => String(each.id) === id && each.title.startsWith("Custom ") && each.mayShare === true)))`,
+                ),
+            "the app with the sessions to give",
+            20_000,
+        );
+        await inPage(
+            `const { openSheet } = await import("/store.js"); openSheet({ type: "invite" }); return JSON.stringify(true);`,
+        );
+        await until(async () => (await code()) !== null, "the invite to my sessions");
+
+        // No session open: My sessions and Custom alone.
+        assert.deepEqual(await options(), ["My sessions (on)", "Custom"]);
+
+        const mine = await code();
+
+        await inPage(
+            `[...document.querySelectorAll(".sheet .invite-share .segmented button")].find((each) => each.textContent.trim() === "Custom").click(); return JSON.stringify(true);`,
+        );
+        await until(async () => (await state("Give Custom A1")) === "off", "the chooser");
+        assert.equal(await code(), null, "Custom shows no invite before Make invite");
+        await until(
+            async () => (await fetch(`${base}/join/${mine}`)).status === 410,
+            "the invite to my sessions to end",
+        );
+        assert.equal(
+            await inPage<boolean>(`return JSON.stringify(${makeButton}.disabled)`),
+            true,
+            "nothing to make at 0 chosen",
+        );
+
+        // A folder's box checks every session in it; one session of the other folder leaves its box mixed.
+        const before = live();
+
+        await check(`Give every session in ${folders[0]!}`);
+        await check("Give Custom B1");
+        await until(async () => (await state("Give Custom B1")) === "on", "B1 to be checked");
+        assert.deepEqual(
+            await Promise.all(
+                [
+                    `Give every session in ${folders[0]!}`,
+                    "Give Custom A1",
+                    "Give Custom A2",
+                    `Give every session in ${folders[1]!}`,
+                    "Give Custom B2",
+                ].map(state),
+            ),
+            ["on", "on", "on", "mixed", "off"],
+        );
+        assert.match(
+            await inPage<string>(
+                `return JSON.stringify(document.querySelector('.sheet [data-part="invite-chooser"] .invite-count').textContent.trim())`,
+            ),
+            /^3 of \d+$/,
+        );
+        assert.equal(await code(), null, "no invite while the boxes change");
+        assert.equal(live(), before, "and none was made");
+
+        await inPage(`${makeButton}.click(); return JSON.stringify(true);`);
+        await until(async () => (await code()) !== null, "the custom invite");
+        assert.match(
+            await inPage<string>(
+                `return JSON.stringify(document.querySelector(".sheet").textContent)`,
+            ),
+            /Whoever joins sees the 3 sessions you chose\./,
+        );
+
+        const link = await inPage<string>(
+            `return JSON.stringify(document.querySelector(".sheet .invite input.mono").value)`,
+        );
+        const first = await code();
+
+        // Whoever joins with the link, in a browser of their own, sees the 3 sessions checked and no other.
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "people-sheet-custom-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+
+        try {
+            const joiner = await theirs.open(1);
+
+            await joiner.navigate(link);
+            await joiner.evaluate(
+                `document.querySelector("input[name=name]").value = "Custom Joe"; document.querySelector("form").submit(); return null;`,
+            );
+
+            const seen = async () =>
+                JSON.parse(
+                    await joiner.evaluate(
+                        `if (document.querySelector('[data-part="app"]') === null) { return JSON.stringify(null); } const { store } = await import("/store.js"); return JSON.stringify(store.state.sessions.map((each) => each.title).sort());`,
+                    ),
+                ) as string[] | null;
+
+            await until(async () => (await seen())?.length === 3, "Joe's 3 sessions", 20_000);
+            assert.deepEqual(await seen(), ["Custom A1", "Custom A2", "Custom B1"]);
+        } finally {
+            await theirs.closeAll({ final: true });
+        }
+
+        // A change of the boxes hides the invite until Make invite is pressed again.
+        await check("Give Custom B2");
+        await until(async () => (await code()) === null, "the invite to hide");
+        assert.equal(await state(`Give every session in ${folders[1]!}`), "on");
+        await inPage(`${makeButton}.click(); return JSON.stringify(true);`);
+        await until(
+            async () => ![null, first].includes(await code()),
+            "the invite for the 4 sessions",
+        );
+        assert.match(
+            await (await fetch(`${base}/join/${await code()}`)).text(),
+            /the 4 sessions chosen for you/,
         );
         await inPage(
             `const { closeSheet } = await import("/store.js"); closeSheet(); return JSON.stringify(true);`,

@@ -7003,7 +7003,9 @@ export class PocketApp {
      * started is not the inviter's to give, also when it is shared with them, or with everyone on its computer
      * (`access.ts` `mayShare`). And only sessions `inviter` may still see.
      *
-     * With `folder`, the invite was to one folder: only the sessions `inviter` started in it on that computer.
+     * With `scope.folder`, the invite was to one folder: only the sessions `inviter` started in it on that computer.
+     * With `scope.chosen`, it was to the sessions `inviter` chose (top session ids): only those of them `inviter` may
+     * still share now (`access.ts` `mayShare`), started by them or not.
      *
      * They are also chosen for each computer on which a session became theirs, where `inviter` is in charge of it: a
      * session is shared only with people chosen for its computer (`commands.ts` `shareSession`), so its switch says
@@ -7013,8 +7015,12 @@ export class PocketApp {
     async welcome(
         person: string,
         inviter: string,
-        folder?: { computer: string; path: string },
+        scope: {
+            folder?: { computer: string; path: string };
+            chosen?: readonly string[];
+        } = {},
     ): Promise<void> {
+        const { folder, chosen } = scope;
         const by = this.config.userById(inviter);
 
         if (by === undefined) {
@@ -7036,10 +7042,12 @@ export class PocketApp {
 
                 const computer = meta.runner ?? THIS_SERVER;
                 const given =
-                    (meta.createdBy ?? this.#ownerId()) === inviter &&
-                    (folder === undefined ||
-                        (computer === folder.computer &&
-                            inFolder(this.#accessFolder(meta), folder.path)));
+                    chosen !== undefined
+                        ? chosen.includes(key) && this.policy.mayShare(by, key)
+                        : (meta.createdBy ?? this.#ownerId()) === inviter &&
+                          (folder === undefined ||
+                              (computer === folder.computer &&
+                                  inFolder(this.#accessFolder(meta), folder.path)));
 
                 if (given) {
                     // One they had already keeps who shared it with them.

@@ -886,6 +886,49 @@ describe("sharing and invites", () => {
         assert.ok(!listed(friend).includes(String(hidden)));
     });
 
+    it("lets who may invite make an invite to sessions they chose and may share; refuses it to who may not, and for a session not theirs to share", async () => {
+        const { body } = await call<{ id: number }>(guest, "sessions", { cwd: work });
+        const made = await call<{ code: string; grant: unknown }>(guest, "invite", {
+            sessions: [body.id],
+        });
+
+        assert.equal(made.status, 200);
+        assert.deepEqual(made.body.grant, {
+            role: "viewer",
+            chosen: [String(body.id)],
+            temporary: true,
+        });
+
+        const joined = await fetch(`${address}/join/${made.body.code}`, {
+            method: "POST",
+            body: "name=Chosen%20friend",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            redirect: "manual",
+        });
+
+        assert.equal(joined.status, 303);
+
+        const friend = app.config.users.find((each) => each.name === "Chosen friend")!;
+
+        assert.deepEqual(listed(friend), [String(body.id)]);
+
+        // The owner's session is shared with the guest, and not theirs to share: it answers as one they cannot see.
+        assert.equal(
+            (await call(guest, "invite", { sessions: [body.id, Number(shared)] })).status,
+            400,
+        );
+        assert.equal((await call(guest, "invite", { sessions: [Number(hidden)] })).status, 400);
+
+        // A viewer, someone invited to one session, and someone nobody chose invite nobody to chosen sessions.
+        for (const user of [viewer, invited, stranger]) {
+            assert.equal(
+                (await call(user, "invite", { sessions: [Number(shared)] })).status,
+                403,
+                user.name,
+            );
+        }
+    });
+
     it("refuses a folder invite from who may not invite, and for a session they cannot see", async () => {
         const { body } = await call<{ id: number }>(guest, "sessions", { cwd: work });
 
