@@ -939,10 +939,14 @@ export function Composer() {
     // The message on its way from here (`onTheWay`): the box holds it, read only, until it went.
     const going = onTheWay.get(conversationId);
     const sending = going !== undefined;
+    const inbox = view.inbox.filter((item) => !queuedChange(item)?.hidden);
     const queuedEdit = queueEdits.get(conversationId);
     const boxWaiting = sending || queuedEdit !== undefined;
-    const shownText = queuedEdit?.text ?? text;
-    const shownFiles = queuedEdit ? [...queuedEdit.chips, ...files] : files;
+    // If the view shows the message as a card again, do not show it in the box too.
+    const shownEdit =
+        queuedEdit && !inbox.some((item) => item.id === queuedEdit.id) ? queuedEdit : undefined;
+    const shownText = shownEdit?.text ?? text;
+    const shownFiles = shownEdit ? [...shownEdit.chips, ...files] : files;
     // How Reply's quotes show (Appearance): in the box's text, drawn as Fade, Tint, or Ghost; or in strips over it.
     const quoteStyle = quoteStyleOf(prefs());
 
@@ -1510,6 +1514,7 @@ export function Composer() {
             at: draft?.text.length,
             typed: false,
             chips: draft?.attachments.map(chipOf) ?? [],
+            id: item.id,
         };
 
         queueEdits.set(conversationId, preview);
@@ -2036,7 +2041,6 @@ export function Composer() {
                 ? "Stop the run and send this now…"
                 : "Queue a message for after this run…"
           : "Ask Pi anything…";
-    const inbox = view.inbox.filter((item) => !queuedChange(item)?.hidden);
     const { me, users } = store.state;
     const queuedBy = (item) =>
         item.by === undefined
@@ -2535,7 +2539,7 @@ export function Composer() {
                         rows="1"
                         value=${shownText}
                         readonly=${
-                            sending || (queuedEdit !== undefined && queuedEdit.text === undefined)
+                            sending || (queuedEdit !== undefined && shownEdit?.text === undefined)
                         }
                         placeholder=${placeholder}
                         onInput=${(event) => {

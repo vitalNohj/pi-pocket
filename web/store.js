@@ -2081,6 +2081,11 @@ function applyView(data) {
         synced = data.conversation.id;
     }
 
+    // A delta without an inbox says nothing new about the queue.
+    if (data.inbox !== undefined || data.full) {
+        reconcileQueued(data.conversation.id, data.inbox ?? []);
+    }
+
     // A session held for its changes (`holdsFor`) shows with them.
     store.set((state) => ({
         ...viewWithTabPlace(state, data),
@@ -3418,7 +3423,7 @@ export async function start() {
 
 const current = () => store.state.conversationId;
 
-/** Whether a reply can still change this card: a newer copy of the queue wins. */
+/** A card's button can act only on a row still in the current view. */
 function isCurrentQueued(id, item) {
     const { view } = store.state;
 
@@ -3432,44 +3437,117 @@ function isCurrentQueued(id, item) {
     );
 }
 
-// The view owns the queue. A change belongs to the exact row it acted on, so a fresh inbox wins even before
-// a reply. The request owns the submission id until it settles, even when a fresh row for that id arrives.
-const queueChanges = new WeakMap();
-const queueRequests = new Set();
+// The view owns the queue. A tab can draw over a row, but it cannot add one or write the view.
+// Wait for both the reply and the server's change to that row, but do not wait forever for either.
+const QUEUE_ACTION_MS = 10_000;
+const queueActions = new Map();
 
-export const queuedChange = (item) => queueChanges.get(item);
-export const queuedBusy = (item) => queueRequests.has(item.id);
+function queuedAction(item) {
+    const action = queueActions.get(item.id);
+
+    return action?.conversation === current() ? action : undefined;
+}
+
+export function queuedChange(item) {
+    const action = queuedAction(item);
+
+    return action?.item === item ? action.change : undefined;
+}
+
+export const queuedBusy = (item) => queuedAction(item) !== undefined;
+
+function endQueueAction(action) {
+    if (queueActions.get(action.item.id) === action) {
+        clearTimeout(action.timer);
+        queueActions.delete(action.item.id);
+    }
+}
+
+/** A changed or missing row wins for good, even if a later inbox looks like the one we acted on. */
+function reconcileQueued(conversation, inbox) {
+    for (const action of queueActions.values()) {
+        if (action.conversation !== conversation || action.change === undefined) {
+            continue;
+        }
+
+        const row = inbox.find((item) => item.id === action.item.id);
+
+        if (sameJson(action.item, row)) {
+            // An unrelated change or a reorder did not change this row.
+            action.item = row;
+        } else {
+            action.change = undefined;
+
+            if (action.answered) {
+                endQueueAction(action);
+            }
+        }
+    }
+}
+
+/** If the view did not settle the question, ask for a full one of the session still on screen. */
+function refreshQueue(action) {
+    if (
+        action.change !== undefined &&
+        action.conversation === current() &&
+        !changingAccount &&
+        !signingOut
+    ) {
+        connect();
+    }
+}
 
 async function actOnQueued(item, change, request) {
     const id = current();
-    const before = queuedChange(item);
 
-    if (!isCurrentQueued(id, item) || queuedBusy(item) || before?.hidden || before?.sending) {
+    if (!isCurrentQueued(id, item) || queuedBusy(item)) {
         return;
     }
 
-    queueRequests.add(item.id);
-    queueChanges.set(item, change);
+    const controller = new AbortController();
+    const { signal } = controller;
+    const action = {
+        conversation: id,
+        item,
+        change,
+        answered: false,
+        timer: setTimeout(() => {
+            endQueueAction(action);
+            controller.abort(new Error("No reply to the queue action. Check the queue."));
+            refreshQueue(action);
+            store.set({});
+        }, QUEUE_ACTION_MS),
+    };
+
+    queueActions.set(item.id, action);
     store.set({});
 
     try {
-        const result = await request(id, item.id);
+        const result = await request(id, item.id, signal);
 
-        if (change.hideOnSuccess && isCurrentQueued(id, item)) {
-            queueChanges.set(item, { hidden: true });
+        signal.throwIfAborted();
+        action.answered = true;
+
+        if (action.change === undefined) {
+            endQueueAction(action);
+        } else if (change.hideOnSuccess) {
+            action.change = { hidden: true };
         }
 
         return result;
     } catch (error) {
-        if (before) {
-            queueChanges.set(item, before);
-        } else {
-            queueChanges.delete(item);
+        endQueueAction(action);
+
+        // A conflict can mean the row is out of date. An unclear reply does not say whether the server acted.
+        if (
+            !signal.aborted &&
+            (error.status === undefined || error.status === 409 || error.status >= 500)
+        ) {
+            refreshQueue(action);
         }
 
-        throw error;
+        throw signal.aborted ? signal.reason : error;
     } finally {
-        queueRequests.delete(item.id);
         store.set({});
     }
 }
@@ -3576,12 +3654,22 @@ export const actions = {
         actOnQueued(
             item,
             { label: "Withdrawing...", hideOnSuccess: true },
-            async (id, submissionId) => {
-                const answer = await api(`c/${id}/withdraw`, { submissionId });
+            async (id, submissionId, signal) => {
+                const answer = await api(`c/${id}/withdraw`, { submissionId }, { signal });
+                const result = answer?.result;
 
-                if (answer?.result !== "aborted") {
-                    throw new ApiError(409, "That message has already gone to Pi.");
+                if (result === "aborted") {
+                    return;
                 }
+
+                if (result === "already_placed" || result === "settled" || result === "not_found") {
+                    throw new ApiError(409, "That message is no longer waiting.");
+                }
+
+                throw new ApiError(
+                    undefined,
+                    "The server did not confirm the withdrawal. Check the queue.",
+                );
             },
         ),
     /** Move one's own queued message to "steer" or "followUp", or send it now with "interrupt". */
@@ -3589,8 +3677,8 @@ export const actions = {
         actOnQueued(
             item,
             mode === "interrupt" ? { sending: true } : { mode },
-            async (id, submissionId) => {
-                const result = await api(`c/${id}/move`, { submissionId, mode });
+            async (id, submissionId, signal) => {
+                const result = await api(`c/${id}/move`, { submissionId, mode }, { signal });
 
                 if (result?.ok !== true) {
                     throw new ApiError(
@@ -3604,8 +3692,8 @@ export const actions = {
         actOnQueued(
             item,
             { hidden: item.draft !== undefined, label: "Taking back...", hideOnSuccess: true },
-            async (id, submissionId) => {
-                const back = await api(`c/${id}/edit-queued`, { submissionId });
+            async (id, submissionId, signal) => {
+                const back = await api(`c/${id}/edit-queued`, { submissionId }, { signal });
 
                 if (typeof back?.text !== "string" || !Array.isArray(back.attachments)) {
                     throw new ApiError(

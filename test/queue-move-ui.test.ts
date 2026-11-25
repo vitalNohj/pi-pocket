@@ -189,6 +189,57 @@ async function posted(id: ConversationId, endpoint: string, status: number): Pro
     assert.equal(responses.get(path), status);
 }
 
+/** Mark when the browser has processed a particular reply, not just when the server sent it. */
+async function watchReply(id: ConversationId, endpoint: string): Promise<void> {
+    const path = JSON.stringify(`/api/c/${id}/${endpoint}`);
+
+    await page.evaluate(`
+        const originalFetch = window.fetch;
+        window.queueReplyRead = false;
+        window.fetch = async (url, ...args) => {
+            const response = await originalFetch(url, ...args);
+            if (url === ${path}) {
+                const text = response.text.bind(response);
+                response.text = async () => {
+                    const body = await text();
+                    setTimeout(() => { window.queueReplyRead = true; }, 0);
+                    return body;
+                };
+            }
+            return response;
+        };
+        'watching';
+    `);
+}
+
+/** Let the server act, but replace what the gateway gives back to the tab. */
+async function replaceQueueReply(
+    id: ConversationId,
+    endpoint: string,
+    status: number,
+    body: string,
+) {
+    await page.evaluate(`
+        const originalFetch = window.fetch;
+        window.fetch = async (url, ...args) => {
+            const response = await originalFetch(url, ...args);
+            if (url !== ${JSON.stringify(`/api/c/${id}/${endpoint}`)}) {
+                return response;
+            }
+            await response.text();
+            return new Response(${JSON.stringify(body)}, { status: ${status} });
+        };
+        'watching';
+    `);
+}
+
+const moveEnabled = async () =>
+    (await page.evaluate(`!!document.querySelector('${move}:enabled')`)) === "true";
+
+async function streamId(): Promise<string> {
+    return page.evaluate(`(await import('/store.js')).store.state.streamId ?? ''`);
+}
+
 /** Queue a message while a real Bash tool waits. The test decides when Bash finishes. */
 async function startQueued(
     t: TestContext,
@@ -365,12 +416,6 @@ for (const action of actions) {
             await posted(id, action.endpoint, 200);
 
             if (action.selector === move) {
-                await until(
-                    async () =>
-                        (await page.evaluate(`!!document.querySelector('${move}:enabled')`)) ===
-                        "true",
-                    "move to unlock",
-                );
                 assert.ok((await textOf(mode)).startsWith(action.pending));
             } else {
                 await until(async () => (await textOf(card)) === "", "the card to leave the queue");
@@ -378,6 +423,10 @@ for (const action of actions) {
 
             if (!viewFirst) {
                 releaseViews();
+            }
+
+            if (action.selector === move) {
+                await until(moveEnabled, "the queue view to unlock the card");
             }
 
             releaseBash();
@@ -388,16 +437,14 @@ for (const action of actions) {
         },
     );
 
-    test(`${action.label} rolls back and shows the 409 reason`, real, async (t) => {
+    test(`${action.label} refreshes its stale card on refusal`, real, async (t) => {
         const { id, releaseBash } = await startQueued(t, action.from);
-        const releaseViews = delayViews(t, id);
-        // The legacy Withdraw API reports a stale submission in a 200 body. Also exercise an HTTP error for it.
-        const reply = holdReply(
-            t,
-            id,
-            action.endpoint,
-            action.selector === withdraw ? { error: staleError } : undefined,
-        );
+        const previous = await streamId();
+        const withdrawing = action.selector === withdraw;
+        const reason = withdrawing ? "That message is no longer waiting." : staleError;
+
+        delayViews(t, id);
+        const reply = holdReply(t, id, action.endpoint);
 
         await page.type({ selector: box }, "Unsent draft");
         releaseBash();
@@ -411,16 +458,12 @@ for (const action of actions) {
         assert.equal(reply.received(), 1);
 
         reply.release();
-        await posted(id, action.endpoint, 409);
-        await until(async () => (await textOf(errorNotice)) === staleError, "the conflict reason");
-        assert.ok(
-            (await textOf(mode)).startsWith(action.from),
-            "the card is back in its original mode",
-        );
+        // Withdraw reports the conflict in a 200 body; the other actions use HTTP 409.
+        await posted(id, action.endpoint, withdrawing ? 200 : 409);
+        await until(async () => (await textOf(errorNotice)) === reason, "the conflict reason");
+        await until(async () => (await streamId()) !== previous, "a fresh view after the conflict");
+        await until(async () => (await textOf(card)) === "", "the stale card to leave the queue");
         assert.equal(await boxText(), "Unsent draft");
-        assert.equal(await textOf(edit), "Edit");
-        releaseViews();
-        await until(async () => (await textOf(card)) === "", "the newer view to remove the card");
         assert.equal(reply.received(), 1);
     });
 }
@@ -485,19 +528,238 @@ for (const sent of [true, false]) {
     );
 }
 
-test("a newer view can reverse a move while the original reply is held", real, async (t) => {
+test("a successful move waits for the queue view before another action", real, async (t) => {
     const { id, releaseBash } = await startQueued(t);
     const releaseViews = delayViews(t, id);
     const reply = holdReply(t, id, "move");
 
+    await watchReply(id, "move");
     await act(actions[0]);
     await checkPending(actions[0]);
     await until(reply.ready, "the held move reply");
+    reply.release();
+    await until(
+        async () => (await page.evaluate("window.queueReplyRead")) === "true",
+        "the reply in the tab",
+    );
+    assert.equal(await moveEnabled(), false, "another action cannot use an unconfirmed mode");
+
+    await page.evaluate(`document.querySelector('${withdraw}').click(); 'tried Withdraw'`);
+    assert.equal((await inbox(id)).length, 1);
+    releaseViews();
+    await until(moveEnabled, "the confirmed card to unlock");
+    assert.ok((await textOf(mode)).startsWith("Queue"));
+    await act(actions[4]);
+    await until(async () => (await textOf(card)) === "", "the next action to remove the card");
+    assert.equal(reply.received(), 1);
+    releaseBash();
+    await until(() => !app.isBusy(id), "Pi to finish");
+});
+
+test(
+    "no move reply leaves the reconnected card locked only until the deadline",
+    real,
+    async (t) => {
+        const { id, releaseBash } = await startQueued(t);
+        const reply = holdReply(t, id, "move");
+        const previous = await streamId();
+
+        await act(actions[0]);
+        await until(reply.ready, "the held move reply");
+        const client = [...app.clients].find((client) => client.conversationId === id);
+
+        assert.ok(client?.close);
+        client.close();
+        await until(async () => (await streamId()) !== previous, "the new event connection");
+        await until(async () => (await textOf(mode)).startsWith("Queue"), "the Queue view");
+        await until(moveEnabled, "the deadline to unlock the reconnected card", 13_000);
+        assert.match(await textOf(errorNotice), /no reply/i);
+        assert.ok((await textOf(mode)).startsWith("Queue"));
+        assert.equal(reply.received(), 1);
+        releaseBash();
+        await until(() => !app.isBusy(id), "Pi to finish");
+    },
+);
+
+test("a gateway error refreshes a move that already committed", real, async (t) => {
+    const { id, releaseBash } = await startQueued(t);
+    const previous = await streamId();
+
+    delayViews(t, id);
+    await replaceQueueReply(id, "move", 502, '{"error":"Gateway did not relay the reply."}');
+    await act(actions[0]);
+    await until(
+        async () => (await textOf(errorNotice)) === "Gateway did not relay the reply.",
+        "the gateway error",
+    );
+    await until(
+        async () => (await streamId()) !== previous,
+        "the full queue view instead of an HTTP guess",
+    );
+    await until(moveEnabled, "the card to unlock");
+    assert.ok((await textOf(mode)).startsWith("Queue"));
+    assert.equal((await inbox(id))[0]?.mode, "followUp");
+    releaseBash();
+    await until(() => !app.isBusy(id), "Pi to finish");
+});
+
+test("an unreadable Withdraw reply is not proof that Pi took the message", real, async (t) => {
+    const { id, releaseBash } = await startQueued(t);
+    const previous = await streamId();
+
+    delayViews(t, id);
+    await replaceQueueReply(id, "withdraw", 200, "<title>Gateway</title>");
+    await act(actions[4]);
+    await until(async () => (await textOf(errorNotice)) !== "", "the unreadable reply notice");
+    assert.match(await textOf(errorNotice), /did not confirm/i);
+    await until(
+        async () => (await streamId()) !== previous,
+        "a full view after the unreadable reply",
+    );
+    await until(async () => (await textOf(card)) === "", "the confirmed empty queue");
+    releaseBash();
+    await until(() => !app.isBusy(id), "Pi to finish");
+});
+
+test("a successful Withdraw refreshes the queue if no view arrives", real, async (t) => {
+    const { id, releaseBash } = await startQueued(t);
+    const previous = await streamId();
+
+    delayViews(t, id);
+    const reply = holdReply(t, id, "withdraw");
+
+    await act(actions[4]);
+    await until(reply.ready, "the held Withdraw reply");
+    reply.release();
+    await posted(id, "withdraw", 200);
+    await until(async () => (await textOf(card)) === "", "Withdraw to hide the card");
+    await until(
+        async () => (await streamId()) !== previous,
+        "a fresh queue view after the deadline",
+        13_000,
+    );
+    await until(
+        async () =>
+            (await page.evaluate(`(await import('/store.js')).store.state.view.inbox.length`)) ===
+            "0",
+        "the server snapshot to contain no card",
+    );
+    assert.equal(await textOf(card), "");
+    releaseBash();
+    await until(() => !app.isBusy(id), "Pi to finish");
+});
+
+test(
+    "a timed-out Edit unlocks the original draft without guessing what the server did",
+    real,
+    async (t) => {
+        const { id, releaseBash } = await startQueued(t);
+        const reply = holdReply(t, id, "edit-queued");
+
+        await page.type({ selector: box }, "Unsent draft");
+        await act(actions[2]);
+        await checkPending(actions[2], queuedText + "\nUnsent draft");
+        await until(reply.ready, "the held Edit reply");
+        await until(
+            async () => (await boxText()) === "Unsent draft",
+            "the deadline to unlock the draft",
+            13_000,
+        );
+        assert.match(await textOf(errorNotice), /no reply/i);
+        assert.equal(await textOf(card), "");
+        assert.equal((await inbox(id)).length, 0);
+        releaseBash();
+        await until(() => !app.isBusy(id), "Pi to finish");
+    },
+);
+
+test("reordered snapshots keep an Edit on its unchanged card", real, async (t) => {
+    const second = "Second waiting message";
+    const third = "Third waiting message";
+    const { id, releaseBash } = await startQueued(t, "Steer", async (id) => {
+        for (const [index, text] of [queuedText, second, third].entries()) {
+            await app.commands.submit(id, owner(app), {
+                text,
+                mode: "steer",
+                requestId: `order-${index}`,
+            });
+        }
+    });
+    const reply = holdReply(t, id, "edit-queued", { error: "Edit was refused." });
+    const cards = () =>
+        page.evaluate(
+            '[...document.querySelectorAll(".inbox .queued-text")].map((row) => row.textContent.trim()).join("|")',
+        );
+
+    await act(actions[2]);
+    await until(reply.ready, "the held Edit refusal");
+    assert.equal(await cards(), `${second}|${third}`);
+    await app.harness.commit(async (tx) => {
+        const { items } = await tx.doc(InboxDoc, id);
+        const [first, second, third] = items;
+
+        assert.ok(first && second && third);
+        items.splice(0, items.length, third, first, second);
+    }, context);
+    await until(async () => (await cards()).startsWith(third), "the reordered snapshot in the tab");
+    assert.equal(
+        await cards(),
+        `${third}|${second}`,
+        "a still pending Edit does not show its card again",
+    );
+    reply.release();
+    await posted(id, "edit-queued", 409);
+    await until(
+        async () => (await cards()) === `${third}|${queuedText}|${second}`,
+        "the original card at its new place",
+    );
+    assert.equal(await boxText(), "");
+    releaseBash();
+    await until(() => !app.isBusy(id), "Pi to finish");
+});
+
+test("a changed card replaces the pending Edit preview in the box", real, async (t) => {
+    const { id, releaseBash } = await startQueued(t);
+    const refusal = "Edit was refused.";
+    const draft = "Unsent draft";
+    const reply = holdReply(t, id, "edit-queued", { error: refusal });
     const [item] = await inbox(id);
 
     assert.ok(item);
+    await page.type({ selector: box }, draft);
+    await act(actions[2]);
+    await checkPending(actions[2], `${queuedText}\n${draft}`);
+    await until(reply.ready, "the held Edit refusal");
+    await app.commands.moveQueued(id, owner(app), Number(item.id), "followUp");
+    await until(async () => (await textOf(mode)).startsWith("Queue"), "the changed Queue card");
+    assert.equal(await boxText(), draft, "the message is not in both the queue and the box");
+    assert.equal(responses.has(`/api/c/${id}/edit-queued`), false);
+
+    reply.release();
+    await until(async () => (await textOf(errorNotice)) === refusal, "the Edit refusal");
+    await until(moveEnabled, "the changed card to unlock");
+    assert.equal(await boxText(), draft);
+    releaseBash();
+    await until(() => !app.isBusy(id), "Pi to finish");
+});
+
+test("a newer view can reverse a move while the original reply is held", real, async (t) => {
+    const { id, releaseBash } = await startQueued(t);
+    const reply = holdReply(t, id, "move");
+
+    await act(actions[0]);
+    await until(reply.ready, "the held move reply");
+    await until(
+        async () =>
+            (await page.evaluate(`(await import('/store.js')).store.state.view.inbox[0]?.mode`)) ===
+            "followUp",
+        "the actual Queue view",
+    );
+    const [item] = await inbox(id);
+
+    assert.ok(item);
+    // This is the same server command a second tab sends, without using this tab's local lock.
     await app.commands.moveQueued(id, owner(app), Number(item.id), "steer");
-    releaseViews();
     await until(async () => (await textOf(mode)).startsWith("Steer"), "the newer Steer view");
     assert.equal(await page.evaluate(`!!document.querySelector('${move}:enabled')`), "false");
     await page.evaluate(`document.querySelector('${move}').click(); "repeated"`);
@@ -510,6 +772,60 @@ test("a newer view can reverse a move while the original reply is held", real, a
     );
     assert.ok((await textOf(mode)).startsWith("Steer"));
     assert.equal(reply.received(), 1);
+    releaseBash();
+    await until(() => !app.isBusy(id), "Pi to finish");
+});
+
+test("an Edit reply after a session switch goes only to the original draft", real, async (t) => {
+    const { id, releaseBash } = await startQueued(t);
+    const other = await newSession(app);
+    const reply = holdReply(t, id, "edit-queued");
+
+    await page.type({ selector: box }, "Original draft");
+    await watchReply(id, "edit-queued");
+    await act(actions[2]);
+    await until(reply.ready, "the held Edit reply");
+    await page.evaluate(`(await import('/store.js')).navigate(${Number(other)}); 'switched'`);
+    await until(
+        async () =>
+            (await page.evaluate(
+                `(await import('/store.js')).store.state.view.conversation?.id`,
+            )) === String(other),
+        "the other session",
+    );
+    await page.type({ selector: box }, "Other draft");
+    reply.release();
+    await until(
+        async () => (await page.evaluate("window.queueReplyRead")) === "true",
+        "the reply in the other session",
+    );
+    assert.equal(await boxText(), "Other draft");
+    assert.equal(await textOf(card), "");
+
+    await page.navigate(`${base}/s/${id}`);
+    await until(
+        async () => (await boxText()) === `${queuedText}\nOriginal draft`,
+        "the original session's confirmed edit after reload",
+    );
+    assert.equal(await textOf(card), "");
+    releaseBash();
+    await until(() => !app.isBusy(id), "Pi to finish");
+});
+
+test("a reload shows the server queue with no pending card action", real, async (t) => {
+    const { id, releaseBash } = await startQueued(t);
+    const reply = holdReply(t, id, "move");
+
+    await act(actions[0]);
+    await until(reply.ready, "the held move reply");
+    await page.navigate(`${base}/s/${id}`);
+    await until(
+        async () => (await textOf(mode)).startsWith("Queue"),
+        "the server's Queue card after reload",
+    );
+    await click(`${card} .queued-text`);
+    await until(moveEnabled, "usable card actions after reload");
+    assert.equal(await page.evaluate('document.querySelectorAll(".inbox .queued").length'), "1");
     releaseBash();
     await until(() => !app.isBusy(id), "Pi to finish");
 });
