@@ -152,7 +152,7 @@ after(async () => {
 });
 
 test(
-    "the Project toggle follows the folder; a cross-session message adds a badge and off removes the toggle",
+    "the Project toggle follows the folder; a cross-session message adds a badge, off hides it and keeps it, and Delete history empties it",
     real,
     async () => {
         await until(
@@ -222,8 +222,9 @@ test(
 
         closePeople();
         openSheet({ type: "access", view: "settings" });
+        window.projectQuestions = [];
         window.confirm = (question) => {
-            window.projectQuestion = question;
+            window.projectQuestions.push(question);
 
             return true;
         };
@@ -232,6 +233,11 @@ test(
     `,
         );
         const setting = '[data-part="project-chat-setting"]';
+        const questions = () =>
+            inPage<string[]>(ownerPage, "return JSON.stringify(window.projectQuestions);");
+        const message = "Hello from another session";
+        const guestSees = async () =>
+            (await textIn(guestPage, ".chat-log"))?.includes(message) === true;
 
         await until(
             async () =>
@@ -239,21 +245,40 @@ test(
             "the project setting",
         );
         await click(ownerPage, `${setting} [role="switch"][aria-checked="true"]`);
-        assert.equal(
-            await inPage(ownerPage, "return JSON.stringify(window.projectQuestion);"),
-            "Turn project chat off? Its messages are deleted for everyone.",
-        );
         await until(
             async () =>
-                (await textIn(ownerPage, setting))?.includes(
-                    "No project chat. Nothing is kept.",
-                ) === true,
+                (await textIn(ownerPage, setting))?.includes("Off. Its history is kept.") === true,
             "the setting off",
         );
+        assert.deepEqual(await questions(), [], "no question when the switch goes off");
         await until(
             async () => (await buttons(guestPage)).length === 0,
             "the other browser loses the Project toggle",
         );
+        assert.notEqual(await textIn(guestPage, ".chat-compose"), null, "session chat remains");
+        assert.ok(!(await guestSees()));
+
+        // On again: the earlier message is still there.
+        await click(ownerPage, `${setting} [role="switch"][aria-checked="false"]`);
+        await until(
+            async () => (await buttons(guestPage)).includes("Project"),
+            "the Project toggle after turning it on again",
+        );
+        await click(guestPage, `${toggle}:last-child`);
+        await until(guestSees, "the kept message after turning it on again");
+
+        await click(ownerPage, `${setting} [data-part="project-chat-delete"]`);
+        await until(
+            async () =>
+                (await textIn(ownerPage, setting))?.includes("Deleted the chat of 1 folder.") ===
+                true,
+            "the count of deleted chats",
+        );
+        assert.deepEqual(await questions(), [
+            "Delete the project chat of every folder? This cannot be undone.",
+        ]);
+        await until(async () => !(await guestSees()), "an empty project chat in the other browser");
+        assert.ok((await buttons(guestPage)).includes("Project"), "project chat stays on");
         assert.notEqual(await textIn(guestPage, ".chat-compose"), null, "session chat remains");
     },
 );

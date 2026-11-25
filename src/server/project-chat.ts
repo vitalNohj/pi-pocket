@@ -310,37 +310,30 @@ export class ProjectChat {
 
     /** A tab can still see a session after losing its folder. Have it ask for its chat again. */
     accessChanged(): void {
-        if (!this.on()) {
-            return;
+        if (this.on()) {
+            this.#askAgain();
         }
+    }
+
+    #askAgain(): void {
+        const on = this.on();
 
         for (const client of this.#app.clients) {
             if (client.conversationId !== undefined) {
-                client.send("project-chat-access", { on: true });
+                client.send("project-chat-access", { on });
             }
         }
     }
 
+    /** Off closes both routes and keeps every chat: on again shows them as they were. */
     async setOn(user: User, on: boolean): Promise<void> {
         const app = this.#app;
 
         app.policy.requireManagesServer(user);
 
-        // A new "on" must not run ahead of the retirement a previous "off" started.
-        const setting = this.#setting.then(async () => {
+        const setting = this.#setting.then(() => {
             app.policy.requireManagesServer(user);
-
-            if (on && !this.on()) {
-                // An earlier retirement may not have finished. Keep the routes closed until it does.
-                await this.#retire(() => true);
-                app.policy.requireManagesServer(user);
-            }
-
             app.config.setProjectChat(on);
-
-            if (!on) {
-                await this.#retire(() => true);
-            }
 
             for (const client of app.clients) {
                 client.send("project-chat-access", { on });
@@ -351,18 +344,41 @@ export class ProjectChat {
         await setting;
     }
 
-    /** At start and on unlink: also finish a retirement that a restart cut short. */
+    /** Delete the chat of every folder, on or off. Returns how many chats it retired. */
+    async clear(user: User): Promise<number> {
+        const app = this.#app;
+
+        app.policy.requireManagesServer(user);
+
+        const cleared = this.#setting.then(async () => {
+            app.policy.requireManagesServer(user);
+            const deleted = await this.#retire(() => true);
+
+            this.#askAgain();
+
+            return deleted;
+        });
+
+        this.#setting = cleared.then(
+            () => {},
+            () => {},
+        );
+
+        return cleared;
+    }
+
+    /** At start and on unlink: retire the chats of a runner that no longer exists, also after a restart cut that short. */
     async forgetGone(): Promise<void> {
         await this.#retire(
             (computer) =>
-                !this.on() ||
-                (computer !== THIS_SERVER && this.#app.config.runnerById(computer) === undefined),
+                computer !== THIS_SERVER && this.#app.config.runnerById(computer) === undefined,
         );
     }
 
-    async #retire(which: (computer: string) => boolean): Promise<void> {
-        await this.#app.harness.commit(async (tx) => {
+    async #retire(which: (computer: string) => boolean): Promise<number> {
+        return this.#app.harness.commit(async (tx) => {
             const index = await tx.doc(ProjectChatIndexDoc);
+            let retired = 0;
 
             index.sealed = true;
 
@@ -370,12 +386,15 @@ export class ProjectChat {
                 if (which(computer)) {
                     await tx.retireDoc(ProjectChatDoc, key);
                     delete index.chats[key];
+                    retired++;
 
                     if (this.#plain) {
                         index.scrub = true;
                     }
                 }
             }
+
+            return retired;
         }, context);
     }
 }

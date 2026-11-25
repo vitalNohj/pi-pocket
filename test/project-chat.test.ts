@@ -85,9 +85,14 @@ async function stop(): Promise<void> {
     await app?.close();
 }
 
-async function call<T = { error?: string }>(user: User, path: string, body?: unknown) {
+async function call<T = { error?: string }>(
+    user: User,
+    path: string,
+    body?: unknown,
+    method = body === undefined ? "GET" : "POST",
+) {
     const response = await fetch(`${address}/api/${path}`, {
-        method: body === undefined ? "GET" : "POST",
+        method,
         signal: AbortSignal.timeout(20_000),
         headers: {
             authorization: `Bearer ${tokens.get(user.id) ?? app.config.ownerToken}`,
@@ -396,31 +401,32 @@ test("only an eligible mention pushes, when its person is not looking and allows
     assert.equal(away.pushes().length, 1);
 });
 
-test("off is for server managers, refuses both routes, and retires the chats", async (t) => {
+test("off is for server managers, refuses both routes, and keeps the chats", async (t) => {
     const keeper = owner(app);
     const viewer = person("Izzy", "viewer");
     const list = await tab(t, keeper);
     const id = await newSession(app, folder("switch"));
     const { key } = await thread(keeper, id);
+    const kept = await post(keeper, id, "Keep this while off");
 
-    await post(keeper, id, "Delete this");
     assert.equal((await call(viewer, "project-chat", { on: false })).status, 403);
     assert.equal((await thread(keeper, id)).messages.length, 1);
     await ok(keeper, "project-chat", { on: false });
     assert.equal(app.config.server.projectChat, false);
     assert.deepEqual(list.last("project-chat-access"), { on: false });
     await refused(keeper, id);
-    assert.equal(await app.harness.snapshot(ProjectChatDoc, key, context), undefined);
-    assert.deepEqual((await app.harness.snapshot(ProjectChatIndexDoc, context))?.chats, {});
+    assert.equal((await app.harness.snapshot(ProjectChatDoc, key, context))?.messages.length, 1);
+    assert.ok(key in (await app.harness.snapshot(ProjectChatIndexDoc, context))!.chats);
     await ok(keeper, "project-chat", { on: true });
     assert.equal(app.config.server.projectChat, undefined);
-    assert.deepEqual((await thread(keeper, id)).messages, []);
+    assert.deepEqual(list.last("project-chat-access"), { on: true });
+    assert.deepEqual((await thread(keeper, id)).messages, [kept]);
     const fresh = await post(keeper, id, "Fresh after enabling");
 
-    assert.deepEqual((await thread(keeper, id)).messages, [fresh]);
+    assert.deepEqual((await thread(keeper, id)).messages, [kept, fresh]);
 });
 
-test("a restart finishes retiring chats of a removed runner and a saved off setting", async () => {
+test("a restart retires the chat of a removed runner and keeps the chats while off", async () => {
     const keeper = owner(app);
     const local = await newSession(app, folder("restart"));
     const remote = await newSession(app, folder("restart-runner"));
@@ -434,7 +440,7 @@ test("a restart finishes retiring chats of a removed runner and a saved off sett
         (await tx.doc(SessionsDoc)).items[String(remote)]!.runner = computer;
     }, context);
     await until(() => app.folderOf(remote)?.computer === computer, "the runner session");
-    const localMessage = await post(keeper, local, "Keep this until off");
+    const localMessage = await post(keeper, local, "Keep this while off");
 
     await post(keeper, remote, "Retire this when the runner is gone");
     const { key: remoteKey } = await thread(keeper, remote);
@@ -453,8 +459,65 @@ test("a restart finishes retiring chats of a removed runner and a saved off sett
     app = await openApp(model, dataDir);
     await listen();
     await refused(owner(app), local);
-    assert.equal(await app.harness.snapshot(ProjectChatDoc, localKey, context), undefined);
+    assert.equal(
+        (await app.harness.snapshot(ProjectChatDoc, localKey, context))?.messages.length,
+        1,
+    );
+    assert.ok(localKey in (await app.harness.snapshot(ProjectChatIndexDoc, context))!.chats);
     await ok(owner(app), "project-chat", { on: true });
+    assert.deepEqual((await thread(owner(app), local)).messages, [localMessage]);
+});
+
+test("Delete history is for server managers, deletes every chat on or off, and empties open tabs", async (t) => {
+    const keeper = owner(app);
+    const viewer = person("Jun", "viewer");
+    const one = await newSession(app, folder("clear-one"));
+    const two = await newSession(app, folder("clear-two"));
+    const looking = await tab(t, keeper, one);
+    const asked = () =>
+        looking.events.filter((event) => event.event === "project-chat-access").length;
+
+    await post(keeper, one, "Delete this");
+    await post(keeper, two, "And this");
+    const keys = async () =>
+        Object.keys((await app.harness.snapshot(ProjectChatIndexDoc, context))?.chats ?? {});
+    const stored = await keys();
+    const { key } = await thread(keeper, one);
+
+    assert.ok(stored.length >= 2);
+    assert.equal((await call(viewer, "project-chat", undefined, "DELETE")).status, 403);
+    assert.deepEqual(await keys(), stored);
+    assert.equal((await thread(keeper, one)).messages.length, 1);
+
+    // With the setting off too: the history it kept goes.
+    await ok(keeper, "project-chat", { on: false });
+    const earlier = asked();
+    const answer = await call<{ deleted: number }>(keeper, "project-chat", undefined, "DELETE");
+
+    assert.deepEqual(answer, { status: 200, body: { deleted: stored.length } });
+    assert.equal(asked(), earlier + 1, "the open tab asks for its chat again");
+    assert.deepEqual(looking.last("project-chat-access"), { on: false });
+    assert.deepEqual(await keys(), []);
+    assert.equal(await app.harness.snapshot(ProjectChatDoc, key, context), undefined);
+    await ok(keeper, "project-chat", { on: true });
+    assert.deepEqual((await thread(keeper, one)).messages, []);
+    assert.deepEqual((await thread(keeper, two)).messages, []);
+
+    // With the setting on; then with nothing stored.
+    await post(keeper, one, "Delete this too");
+    const again = asked();
+
+    assert.deepEqual(await call(keeper, "project-chat", undefined, "DELETE"), {
+        status: 200,
+        body: { deleted: 1 },
+    });
+    assert.equal(asked(), again + 1);
+    assert.deepEqual(looking.last("project-chat-access"), { on: true });
+    assert.deepEqual((await thread(keeper, one)).messages, []);
+    assert.deepEqual(await call(keeper, "project-chat", undefined, "DELETE"), {
+        status: 200,
+        body: { deleted: 0 },
+    });
 });
 
 test("the same requestId adds nothing and sends no second event", async (t) => {

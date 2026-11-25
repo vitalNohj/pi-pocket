@@ -2168,18 +2168,39 @@ export function PersonPage({ person, part, onPart }) {
     </div>`;
 }
 
+function deletedText(deleted) {
+    if (deleted === 0) {
+        return "No project chat was stored.";
+    }
+
+    return `Deleted the chat of ${deleted} ${deleted === 1 ? "folder" : "folders"}.`;
+}
+
+/** Off closes project chat and keeps its history. Delete history removes the chat of every folder, on or off. */
 function ProjectChatSetting() {
     const on = store.state.server?.projectChat === true;
     const [saving, setSaving] = useState(false);
+    const [result, setResult] = useState(null);
 
     const toggle = async () => {
-        if (on && !confirm("Turn project chat off? Its messages are deleted for everyone.")) {
+        setSaving(true);
+        await attempt(() => api("project-chat", { on: !on }));
+        setSaving(false);
+    };
+
+    const remove = async () => {
+        if (!confirm("Delete the project chat of every folder? This cannot be undone.")) {
             return;
         }
 
         setSaving(true);
-        await attempt(() => api("project-chat", { on: !on }));
+        const answer = await attempt(() => api("project-chat", undefined, { method: "DELETE" }));
+
         setSaving(false);
+
+        if (answer !== undefined) {
+            setResult(deletedText(answer.deleted));
+        }
     };
 
     return html`<div class="setting wrap" data-part="project-chat-setting">
@@ -2189,11 +2210,21 @@ function ProjectChatSetting() {
                 ${
                     on
                         ? "Each folder has a chat for the people who have it, beside each session's chat."
-                        : "No project chat. Nothing is kept."
+                        : "Off. Its history is kept."
                 }
             </div>
+            ${result !== null && html`<div class="muted small" role="status">${result}</div>`}
         </div>
         <${Switch} on=${on} disabled=${saving} label="Project chat" onChange=${toggle} />
+        <button
+            class="button ghost"
+            type="button"
+            data-part="project-chat-delete"
+            disabled=${saving}
+            onClick=${remove}
+        >
+            Delete history
+        </button>
     </div>`;
 }
 
