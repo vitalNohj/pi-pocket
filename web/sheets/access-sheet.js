@@ -16,6 +16,7 @@ import {
     canInviteNew,
     canLink,
     closeSheet,
+    hasRight,
     managesPeople,
     managesRunners,
     managesServer,
@@ -55,6 +56,7 @@ import { ApprovalTime } from "./approvals.js";
 import {
     AboutRunners,
     details,
+    Downloads,
     LinkComputer,
     LinkLocks,
     LinkSteps,
@@ -371,8 +373,12 @@ function ComputerNotes({ computer }) {
             !mine &&
             !computer.blocked &&
             html`<div class="runner-note" data-part="read-only">
-                Linked by ${linker ?? "someone else"}, who is in charge of it: only they choose its people, give
-                folders there, and change its settings.${unlinks ? " You manage runners, so you can unlink it." : ""}
+                Linked by ${linker ?? "someone else"}, who is in charge of it: only they choose its people and change
+                its settings.${
+                    hasRight("reshares", computer.id) === true
+                        ? " They give folders there, and you give the folders given to you, in By person."
+                        : " They give folders there, and so does anyone they let share what they were given."
+                }${unlinks ? " You manage runners, so you can unlink it." : ""}
             </div>`
         }
         ${
@@ -686,11 +692,31 @@ function SettingsView({ sheet }) {
 
 /**
  * A computer's own settings, for who is in charge of it: how long each person's approvals last, its rules, its tools,
- * link it again, unlink it. This server's network and downloads are its own machine's, not kept here.
+ * link it again, unlink it. This server has its downloads folder and its tools, which it is asked for when the page
+ * shows; its network is its own machine's, and it is never linked, so it has no network rule, key, or link.
  */
 function ComputerSettings({ computer }) {
     const [again, setAgain] = useState(null);
     const server = computer.id === THIS_SERVER;
+    const [tools, setTools] = useState(null);
+
+    // A failed answer draws nothing: the tools are a hint, and the page is whole without them.
+    useEffect(() => {
+        if (!server) {
+            return undefined;
+        }
+
+        let shown = true;
+
+        api("runners/this-server/tools").then(
+            ({ os, ...ready }) => shown && setTools({ tools: ready, os }),
+            () => {},
+        );
+
+        return () => {
+            shown = false;
+        };
+    }, [server]);
     const { me } = store.state;
     // Who sets a person's approval time (`app.ts` `setApprovalDays`): who manages them.
     const people = store.state.users.filter(
@@ -771,9 +797,16 @@ function ComputerSettings({ computer }) {
                       })}
                   </div>`
         }
-        ${!server && html`<${RunnerSettings} runner=${computer} />`}
-        ${!server && computer.tools && html`<div class="group-title">Tools on this computer</div>`}
-        ${!server && html`<${Tools} runner=${computer} />`}
+        ${
+            server
+                ? html`<div class="sheet-pane">
+                      <${Downloads} computer=${computer} />
+                      <div class="muted small">Browsers of its sessions use this server's own network.</div>
+                  </div>`
+                : html`<${RunnerSettings} runner=${computer} />`
+        }
+        ${(server ? tools?.tools : computer.tools) && html`<div class="group-title">Tools on this computer</div>`}
+        <${Tools} runner=${server ? (tools ?? {}) : computer} />
         ${computer.fingerprint && html`<div class="muted small runner-key">Key: <code>${computer.fingerprint}</code></div>`}
     </div>`;
 }

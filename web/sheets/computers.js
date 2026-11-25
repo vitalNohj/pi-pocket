@@ -1,12 +1,12 @@
 // Runners (`src/server/runners.ts`): this server and other computers that run sessions' tools. The parts of the
 // Access sheet (`access-sheet.js`) about a computer itself, not about who has what there: link one with a one-time
-// code, its state and tools, its browser settings (network and downloads), link it
+// code, its state and tools, its browser settings (network and downloads; this server's downloads alone), link it
 // again, unlink it, and the limits on linking.
 // A runner trusts its server after the link: its settings are kept here and sent to it.
 import { useState } from "preact/hooks";
 import { api, attempt, notify, store } from "../store.js";
 import { copyText, html, Icon, Loader, Switch, timeAgo } from "../ui.js";
-import { inCharge } from "./access.js";
+import { inCharge, keep, THIS_SERVER } from "./access.js";
 
 /** What a computer is doing now, in a few words. */
 export function status(runner) {
@@ -264,26 +264,9 @@ export function Tools({ runner }) {
  * its network, and where their downloads go there. Plain HTTP was chosen on that computer when it was linked.
  */
 export function RunnerSettings({ runner }) {
-    const mine = inCharge(runner);
-
     if (runner.network === undefined) {
         return null;
     }
-
-    const changeDownloads = () => {
-        const typed = prompt(
-            "Downloads folder there, absolute; empty for its temporary folder",
-            runner.downloads ?? "",
-        );
-
-        if (typed !== null) {
-            void attempt(() =>
-                api(`runners/${encodeURIComponent(runner.id)}/settings`, {
-                    downloads: typed.trim() === "" ? null : typed.trim(),
-                }),
-            );
-        }
-    };
 
     return html`<div class="sheet-pane">
         <${Rule}
@@ -293,15 +276,7 @@ export function RunnerSettings({ runner }) {
             hint=${`On: sessions' browsers reach what ${runner.name} reaches, such as its local servers and home network.`}
             on=${runner.network}
         />
-        <div class=${`setting wrap ${mine ? "" : "disabled"}`}>
-            <div class="grow">
-                <div class="small">Downloads</div>
-                <div class="muted small">
-                    ${runner.downloads ?? "Temporary folder, which can be cleared when the computer restarts"}
-                </div>
-            </div>
-            <button class="button small ghost" disabled=${!mine} onClick=${changeDownloads}>Change</button>
-        </div>
+        <${Downloads} computer=${runner} />
         <div class="muted small">
             ${
                 runner.allowHttp
@@ -309,6 +284,43 @@ export function RunnerSettings({ runner }) {
                     : "Plain HTTP: only to this computer or a tailnet device. Link again to change."
             }
         </div>
+    </div>`;
+}
+
+/**
+ * Where the browser downloads of a computer's sessions go (`POST /api/runners/:id/settings`): a runner's folder there,
+ * or this server's on this machine; else its temporary folder. The view the server answers is shown at once.
+ */
+export function Downloads({ computer }) {
+    const mine = inCharge(computer);
+
+    const change = () => {
+        const typed = prompt(
+            computer.id === THIS_SERVER
+                ? "Downloads folder on this server, absolute; empty for its temporary folder"
+                : "Downloads folder there, absolute; empty for its temporary folder",
+            computer.downloads ?? "",
+        );
+
+        if (typed !== null) {
+            void attempt(async () =>
+                keep(
+                    await api(`runners/${encodeURIComponent(computer.id)}/settings`, {
+                        downloads: typed.trim() === "" ? null : typed.trim(),
+                    }),
+                ),
+            );
+        }
+    };
+
+    return html`<div class=${`setting wrap ${mine ? "" : "disabled"}`}>
+        <div class="grow">
+            <div class="small">Downloads</div>
+            <div class="muted small">
+                ${computer.downloads ?? "Temporary folder, which can be cleared when the computer restarts"}
+            </div>
+        </div>
+        <button class="button small ghost" disabled=${!mine} onClick=${change}>Change</button>
     </div>`;
 }
 

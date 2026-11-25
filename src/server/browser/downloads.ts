@@ -2,8 +2,9 @@
  * Downloads of the built-in browser. Chromium saves each one in a private folder of its page's browser context on this
  * server (`incoming`, named by its guid); when it completes, it goes where the conversation's session works:
  *
- * - A session on this server: into `pi-pocket-downloads-<uid>/<conversation>/` in this server's temporary folder, a
- *   folder only this user may open (`privateFolder`), under the name the page suggested.
+ * - A session on this server: into `<folder>/<conversation>/`, where the folder is the one this server's settings name,
+ *   or else `pi-pocket-downloads-<uid>` in this server's temporary folder, a folder only this user may open
+ *   (`privateFolder`), under the name the page suggested (`placeHere`).
  * - A session on another computer: copied in parts to `<folder>/<conversation>/`, where the folder is the one its
  *   runner's settings name, or else `pi-pocket-downloads` in that computer's temporary folder (`RunnerEnv`). The
  *   server's copy is deleted at once: its bytes pass through this server only for that moment.
@@ -200,6 +201,24 @@ export async function moveToFolder(file: string, folder: string, name: string): 
 
         return target;
     }
+}
+
+/**
+ * Put a finished download of a session on this server in `<folder>/<conversation>/`: `folder` is the one this server's
+ * settings name, or else its private temporary folder (`privateFolder`, in `base`); its path.
+ */
+export async function placeHere(
+    folder: string | undefined,
+    conversationId: number,
+    file: string,
+    name: string,
+    base?: string,
+): Promise<string> {
+    return moveToFolder(
+        file,
+        join(folder ?? (await privateFolder(base)), String(conversationId)),
+        name,
+    );
 }
 
 function failure(error: unknown): string {

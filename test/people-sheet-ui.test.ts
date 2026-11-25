@@ -206,7 +206,12 @@ before(async () => {
         return;
     }
 
-    app = await openApp(scriptedModel());
+    // This server's check of git and GitHub answers at once, and runs no program.
+    app = await openApp(scriptedModel(), undefined, undefined, undefined, async () => ({
+        git: true,
+        gh: true,
+        github: true,
+    }));
 
     const session = await newSession(app);
 
@@ -1142,11 +1147,11 @@ test(
                 "no grid and no tools: who has what there is not the owner's to know",
             );
             assert.deepEqual(shown.tabs, [], "one part to read: no People or Settings");
-            assert.match(shown.note, /Linked by Gina, who is in charge of it/);
-            assert.match(
+            // Who gives folders there: Gina, and whoever she lets share what they were given. The last sentence is
+            // said from the right, not the role.
+            assert.equal(
                 shown.note,
-                /You manage runners, so you can unlink it\./,
-                "said from the right, not the role",
+                "Linked by Gina, who is in charge of it: only they choose its people and change its settings. They give folders there, and so does anyone they let share what they were given. You manage runners, so you can unlink it.",
             );
             assert.deepEqual(shown.actions, ["Unlink"]);
             assert.equal(shown.switches, 0, "nothing to switch or type");
@@ -1171,6 +1176,26 @@ test(
                     `return JSON.stringify(document.querySelector(".pages-detail").textContent)`,
                 ),
                 /Gina's desktop/,
+            );
+
+            // Back in By computer: Gina chooses the owner there, and lets them share what they were given. The note
+            // says that they give the folders given to them, and where.
+            await open("computers");
+            await show("Gina's desktop");
+            app.config.setUsers(ginas, [viewer.id, owner(app).id]);
+            app.setRight(guest, {
+                computer: ginas,
+                person: owner(app).id,
+                right: "reshares",
+                on: true,
+            });
+            await until(
+                async () =>
+                    (await inPage<string>(
+                        `return JSON.stringify(document.querySelector('.pages-detail [data-part="read-only"]')?.textContent.replace(/\\s+/g, " ").trim() ?? "")`,
+                    )) ===
+                    "Linked by Gina, who is in charge of it: only they choose its people and change its settings. They give folders there, and you give the folders given to you, in By person. You manage runners, so you can unlink it.",
+                "the note for who shares what they were given",
             );
         } finally {
             await app.unlinkRunner(ginas);
@@ -1305,15 +1330,33 @@ test(
             );
         }
 
-        // A computer's page in Settings: how long each person's approvals last, and the computer's own settings.
+        // A computer's page in Settings: how long each person's approvals last, and the computer's own settings: here
+        // its downloads folder, and its tools once the server answers.
         await open("settings");
         await show("This server");
+
+        const titles = () =>
+            inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".pages-detail .group-title")].map((each) => each.textContent.trim()))`,
+            );
+
+        await until(async () => (await titles()).length === 2, "its tools");
+        assert.deepEqual(
+            await titles(),
+            ["Approvals last", "Tools on this computer"],
+            "a computer's settings",
+        );
         assert.deepEqual(
             await inPage<string[]>(
-                `return JSON.stringify([...document.querySelectorAll(".pages-detail .group-title")].map((each) => each.textContent.trim()))`,
+                `return JSON.stringify([...document.querySelectorAll(".pages-detail .sheet-pane .setting")].map((each) => [...each.querySelectorAll(".small, button")].map((part) => part.textContent.trim())))`,
             ),
-            ["Approvals last"],
-            "a computer's settings",
+            [
+                [
+                    "Downloads",
+                    "Temporary folder, which can be cleared when the computer restarts",
+                    "Change",
+                ],
+            ],
         );
     },
 );

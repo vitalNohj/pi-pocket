@@ -327,6 +327,12 @@ export interface StoredServer extends ComputerAccess {
      * so its tasks get their week too.
      */
     tasksExpireSince?: number;
+    /**
+     * What this server does for its sessions' browsers: `downloads`, an absolute folder on this machine for their
+     * downloads (`browser/downloads.ts` `placeHere`). Absent: its private temporary folder. Its network is always its
+     * own, so it is not kept.
+     */
+    settings?: { downloads?: string };
 }
 
 /** A one-time code that links a computer, not yet used: kept by its sha256, for a few minutes. */
@@ -420,7 +426,8 @@ interface PocketConfig {
 }
 
 /**
- * A runner's browser settings. `downloads` null puts its downloads back in its temporary folder.
+ * A computer's browser settings. `downloads` null puts its downloads back in its temporary folder. This server keeps
+ * only `downloads`.
  */
 export type ComputerSettings = { network?: boolean; downloads?: string | null };
 
@@ -2073,8 +2080,35 @@ export class ConfigStore {
         }
     }
 
-    /** Change a runner's own settings. This server has none. */
+    /** This server's folder for its sessions' browser downloads, when who is in charge named one. */
+    get serverDownloads(): string | undefined {
+        return this.#config.server?.settings?.downloads;
+    }
+
+    /** Change a computer's own settings. This server keeps only its downloads folder: its network is its own. */
     setComputerSettings(id: string, change: ComputerSettings): void {
+        if (id === THIS_SERVER) {
+            this.#changeServer((server) => {
+                const settings = { ...server.settings };
+
+                if (typeof change.downloads === "string") {
+                    settings.downloads = change.downloads;
+                } else if (change.downloads === null) {
+                    delete settings.downloads;
+                }
+
+                if (Object.keys(settings).length === 0) {
+                    delete server.settings;
+                } else {
+                    server.settings = settings;
+                }
+
+                return true;
+            });
+
+            return;
+        }
+
         this.#change(id, () => {
             const runner = this.runnerById(id);
 

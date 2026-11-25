@@ -5,7 +5,7 @@
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import QRCode from "qrcode";
 import { MAX_PEEKS } from "../app.ts";
 import {
@@ -1314,6 +1314,22 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, app.thisServer(user));
         }
 
+        // Whether git and GitHub are ready on this server (`server-tools.ts`), for who is in charge of it: checked when
+        // its page asks, not at start, and kept for a minute.
+        if (
+            first === "runners" &&
+            second === THIS_SERVER &&
+            third === "tools" &&
+            method === "GET"
+        ) {
+            app.policy.requireManage(user, THIS_SERVER);
+
+            return json(response, 200, {
+                ...(await app.serverTools.read()),
+                os: process.platform,
+            });
+        }
+
         // What guards linking (`link-limits.ts`): the owner's, and of who manages runners.
         if (first === "runners" && second === "locks" && third === undefined && method === "GET") {
             app.policy.requireManagesRunners(user);
@@ -1418,8 +1434,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         /**
-         * A runner's browser settings: whether it uses the runner's network, and where downloads go there. Set by
-         * who is in charge. The runner gets its settings at once (`runner-settings`).
+         * A computer's browser settings: whether it uses the runner's network, and where downloads go there. Set by
+         * who is in charge. The runner gets its settings at once (`runner-settings`). This server's network is its
+         * own: only its downloads folder is kept, a folder on this machine.
          */
         if (
             first === "runners" &&
@@ -1447,13 +1464,16 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 change.network = body.network;
             }
 
-            if (second !== THIS_SERVER && body?.downloads !== undefined) {
-                // An absolute folder on that computer (POSIX or Windows), or null for its temporary folder.
+            if (body?.downloads !== undefined) {
+                // An absolute folder on that computer (POSIX or Windows; on this server, by this machine's rule), or
+                // null for its temporary folder.
                 if (
                     body.downloads !== null &&
                     (typeof body.downloads !== "string" ||
                         body.downloads.length > 1024 ||
-                        !/^(\/|[A-Za-z]:[\\/])/.test(body.downloads))
+                        (second === THIS_SERVER
+                            ? !isAbsolute(body.downloads)
+                            : !/^(\/|[A-Za-z]:[\\/])/.test(body.downloads)))
                 ) {
                     throw new HttpError(400, "downloads must be an absolute folder, or null.");
                 }

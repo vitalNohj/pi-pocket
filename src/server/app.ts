@@ -188,6 +188,8 @@ import {
 import { whyUnanswered } from "./subagent-runs.ts";
 import { Schedules } from "./schedules.ts";
 import { CoreSecrets } from "./secrets.ts";
+import type { RunnerTools } from "./runner-link/protocol.ts";
+import { ServerTools } from "./server-tools.ts";
 import { BackgroundTasks } from "./background.ts";
 import { SessionCleanup } from "./session-cleanup.ts";
 import { Shares } from "./share.ts";
@@ -385,6 +387,8 @@ export type ServerView = {
     inCharge: true;
     /** The users in charge of it because they manage runners (`access.ts` `managesRunners`), by id. */
     managers: string[];
+    /** The folder on this machine for its sessions' browser downloads, when one was named; else its temporary one. */
+    downloads?: string;
 };
 
 export function subagentState(entry: SubagentEntry): SubagentState {
@@ -582,6 +586,8 @@ export interface OpenOptions {
     restart?: () => void;
     /** Where Pi Pocket's own code is, for its updates; tests give a checkout of their own. */
     appRoot?: string;
+    /** How this server checks git and GitHub (`server-tools.ts`); tests give their own answer. */
+    checkTools?: () => Promise<RunnerTools>;
 }
 
 /**
@@ -733,6 +739,8 @@ export class PocketApp {
     readonly themes: Themes;
     /** Each conversation's browser page, which Pi and the people in the conversation share. */
     readonly browsers: Browsers;
+    /** Whether git and GitHub are ready on this server, checked when This server's page asks. */
+    readonly serverTools: ServerTools;
     /** What extension modules add to the app: their routes, browser modules, and events (`extension-web.ts`). */
     readonly webs: ExtensionWebs;
     /** Core's own secrets: hidden in every session, and kept from Pi by Lancet Guard (`secrets.ts`). */
@@ -948,10 +956,12 @@ export class PocketApp {
             file: join(options.dataDir, "provider-limits.json"),
             ...(options.limits === undefined ? {} : { tuning: options.limits }),
         });
+        this.serverTools = new ServerTools(options.checkTools);
         this.browsers = new Browsers({
             dataDir: options.dataDir,
             ...(options.browser === undefined ? {} : { executable: options.browser }),
             log: (line) => this.#log(line),
+            downloads: () => this.config.serverDownloads,
             remote: {
                 runnerOf: (id) => this.runnerOf(id as unknown as ConversationId),
                 name: (runner) => this.runners.name(runner),
@@ -3494,6 +3504,9 @@ export class PocketApp {
             rights: this.config.rightsOn(THIS_SERVER),
             inCharge: true,
             managers: this.#managersOf(THIS_SERVER),
+            ...(server.settings?.downloads === undefined
+                ? {}
+                : { downloads: server.settings.downloads }),
         };
     }
 

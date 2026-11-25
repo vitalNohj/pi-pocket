@@ -14,7 +14,7 @@ import {
     until,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -71,8 +71,11 @@ async function call<T = Record<string, unknown>>(
     return { status: response.status, body: parsed as T };
 }
 
+/** What this server's check of git and GitHub answers here: no program is run. */
+const TOOLS = { git: true, gh: false, github: false };
+
 before(async () => {
-    app = await openApp(scriptedModel());
+    app = await openApp(scriptedModel(), undefined, undefined, undefined, async () => TOOLS);
     alex = person("Alex", "guest");
     vera = person("Vera", "viewer");
     sam = person("Sam", "guest", ["1"]);
@@ -182,8 +185,83 @@ test("computer settings no longer set or show the old sharing switch", async () 
     assert.equal("shareNew" in here.body, false);
     assert.equal("shareNew" in app.config.server, false);
     assert.equal("network" in here.body, false);
-    assert.equal("downloads" in here.body, false);
     assert.equal((await call(owner(app), "runners/nobody/settings", settings)).status, 404);
+    assert.equal(
+        (await call(owner(app), `runners/${THIS_SERVER}/settings`, { downloads: null })).status,
+        200,
+    );
+});
+
+test("who is in charge sets this server's downloads folder, an absolute one; its network is not kept", async () => {
+    const folder = join(root, "server-downloads");
+    const set = await call<ServerView>(owner(app), `runners/${THIS_SERVER}/settings`, {
+        downloads: folder,
+    });
+    const file = () =>
+        (JSON.parse(readFileSync(app.config.file, "utf8")) as { server?: { settings?: unknown } })
+            .server?.settings;
+
+    assert.equal(set.status, 200);
+    assert.equal(set.body.downloads, folder);
+    assert.equal(app.thisServer(owner(app))?.downloads, folder);
+    assert.equal(app.config.serverDownloads, folder);
+    assert.deepEqual(file(), { downloads: folder });
+
+    // A relative folder, or one too long, is refused, and the folder stays.
+    for (const downloads of ["downloads", "./here", 5, `/${"a".repeat(1024)}`]) {
+        const refused = await call<{ error: string }>(
+            owner(app),
+            `runners/${THIS_SERVER}/settings`,
+            { downloads },
+        );
+
+        assert.equal(refused.status, 400, String(downloads));
+        assert.equal(refused.body.error, "downloads must be an absolute folder, or null.");
+    }
+
+    assert.equal(app.config.serverDownloads, folder);
+
+    // Its network is its own machine's: a change of it is not kept, and changes nothing.
+    const network = await call<ServerView>(owner(app), `runners/${THIS_SERVER}/settings`, {
+        network: false,
+    });
+
+    assert.equal(network.status, 200);
+    assert.equal("network" in network.body, false);
+    assert.deepEqual(file(), { downloads: folder });
+
+    // Not in charge: refused. Who manages runners is in charge here, as the owner is.
+    assert.equal(
+        (await call(alex, `runners/${THIS_SERVER}/settings`, { downloads: null })).status,
+        403,
+    );
+    assert.equal(app.config.serverDownloads, folder);
+
+    const mia = person("Mia", "guest");
+
+    app.setRight(owner(app), { person: mia.id, right: "managesRunners", on: true });
+
+    try {
+        const cleared = await call<ServerView>(mia, `runners/${THIS_SERVER}/settings`, {
+            downloads: null,
+        });
+
+        assert.equal(cleared.status, 200);
+        assert.equal("downloads" in cleared.body, false);
+        assert.equal(app.config.serverDownloads, undefined);
+        assert.equal(file(), undefined, "no settings left in the file");
+    } finally {
+        app.config.removeUser(mia.id);
+    }
+});
+
+test("who is in charge reads whether git and GitHub are ready on this server; nobody else", async () => {
+    const tools = await call(owner(app), `runners/${THIS_SERVER}/tools`);
+
+    assert.equal(tools.status, 200);
+    assert.deepEqual(tools.body, { ...TOOLS, os: process.platform });
+    assert.equal((await call(alex, `runners/${THIS_SERVER}/tools`)).status, 403);
+    assert.equal((await call(vera, `runners/${THIS_SERVER}/tools`)).status, 403);
 });
 
 test("the owner gives a chosen person folders; only those and the folders in them may be used", async () => {

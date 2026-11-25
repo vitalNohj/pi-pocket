@@ -19,13 +19,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { BrowserError, Chromium, type Connection } from "./browser/cdp.ts";
 import { findBrowser, profileFolder } from "./browser/discovery.ts";
-import {
-    type Computer,
-    copyToComputer,
-    Downloads,
-    moveToFolder,
-    privateFolder,
-} from "./browser/downloads.ts";
+import { type Computer, copyToComputer, Downloads, placeHere } from "./browser/downloads.ts";
 import { BrowserPage, type BrowserState, type Saved, wait } from "./browser/page.ts";
 import { BrowserProxy, type Connect, PRIME_HOST } from "./browser/proxy.ts";
 import { type Viewport, VIEWPORTS, viewportFrom } from "./browser/viewport.ts";
@@ -86,6 +80,8 @@ export interface BrowsersOptions {
     idleMs?: number;
     /** Sessions on other computers; without it, every page is this server's. */
     remote?: RemoteBrowsing;
+    /** This server's folder for downloads, when who is in charge named one. */
+    downloads?: () => string | undefined;
 }
 
 /**
@@ -164,12 +160,15 @@ export class Browsers {
         return key === undefined ? undefined : this.#proxy?.problem(key, since)?.replace(/\.$/, "");
     }
 
-    /** A finished download, where its session works: this server's private folder, or the computer's folder. */
+    /**
+     * A finished download, where its session works: this server's folder (the one its settings name, or its private
+     * one), or the computer's folder.
+     */
     async #place(conversationId: number, file: string, name: string): Promise<string> {
         const runner = this.#options.remote?.runnerOf(conversationId);
 
         if (runner === undefined) {
-            return moveToFolder(file, join(await privateFolder(), String(conversationId)), name);
+            return placeHere(this.#options.downloads?.(), conversationId, file, name);
         }
 
         const computer = await this.#options.remote!.computer(runner, conversationId);

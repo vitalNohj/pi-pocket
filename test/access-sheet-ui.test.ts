@@ -17,7 +17,7 @@ import {
 } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -64,7 +64,12 @@ before(async () => {
         return;
     }
 
-    app = await openApp(scriptedModel());
+    // This server's check of git and GitHub answers at once, and runs no program.
+    app = await openApp(scriptedModel(), undefined, undefined, undefined, async () => ({
+        git: true,
+        gh: true,
+        github: false,
+    }));
 
     // Three projects, one with two worktrees, each with sessions; eight people chosen for this server.
     for (const name of ["shop", "docs", "tools"]) {
@@ -739,9 +744,9 @@ test(
         await until(
             async () =>
                 await inPage<boolean>(
-                    `return JSON.stringify([...document.querySelectorAll(".pages-detail .group-title")].some((each) => each.textContent.trim() === "Approvals last"))`,
+                    `return JSON.stringify([...document.querySelectorAll(".pages-detail .group-title")].some((each) => each.textContent.trim() === "Tools on this computer"))`,
                 ),
-            "This server's settings",
+            "This server's settings, with its tools",
         );
 
         const page_ = await inPage<{
@@ -770,7 +775,7 @@ test(
             page_.list.includes("This server") && page_.list.includes("Laptop"),
             "a page per computer",
         );
-        assert.deepEqual(page_.titles, ["Approvals last"]);
+        assert.deepEqual(page_.titles, ["Approvals last", "Tools on this computer"]);
         // This server's row says what it is, not its name again; Linking limits says what it is for.
         assert.equal(page_.details["This server"], "Pi Pocket itself");
         assert.equal(page_.details["Linking limits"], "For runners");
@@ -794,6 +799,88 @@ test(
             ),
             4,
         );
+    },
+);
+
+test(
+    "Settings on This server has its downloads folder, changed in place, and its tools; no network switch or key",
+    real,
+    async () => {
+        const folder = join(root, "server-downloads");
+
+        /** A picture of the page once the sheet stands still, with its Downloads row and tools in sight. */
+        const picture = async (file: string) => {
+            await inPage(`
+                await Promise.all(document.getAnimations().map((each) => each.finished.catch(() => undefined)));
+                document.querySelector(".pages-detail .sheet-pane").scrollIntoView({ block: "center" });
+
+                return JSON.stringify(true);
+            `);
+            writeFileSync(file, Buffer.from((await page.screenshot()).data, "base64"));
+        };
+
+        const row = () =>
+            inPage<{ downloads: string; tools: string; switches: string[]; text: string }>(`
+                const detail = document.querySelector(".pages-detail");
+                const row = [...detail.querySelectorAll(".setting")].find((each) => each.querySelector(".grow > .small")?.textContent.trim() === "Downloads");
+                const title = [...detail.querySelectorAll(".group-title")].find((each) => each.textContent.trim() === "Tools on this computer");
+
+                return JSON.stringify({
+                    downloads: row?.querySelector(".muted")?.textContent.trim() ?? "",
+                    tools: title?.nextElementSibling?.textContent.replace(/\\s+/g, " ").trim() ?? "",
+                    switches: [...detail.querySelectorAll("[role=switch]")].map((each) => each.getAttribute("aria-label")),
+                    text: detail.textContent,
+                });
+            `);
+
+        try {
+            await load(DESKTOP);
+            await openAt("settings", THIS_SERVER);
+            await until(
+                async () => (await row()).tools !== "",
+                "This server's downloads and tools",
+            );
+
+            const before = await row();
+
+            assert.equal(
+                before.downloads,
+                "Temporary folder, which can be cleared when the computer restarts",
+            );
+            assert.equal(before.tools, "git ✓ · GitHub: sign in with gh auth login");
+            assert.match(before.text, /Browsers of its sessions use this server's own network\./);
+            assert.deepEqual(before.switches, [], "no network switch");
+            assert.doesNotMatch(before.text, /Plain HTTP|Key:|Unlink|Link again/);
+            await picture("/tmp/server-settings-1280.png");
+
+            // Change it through the page: the prompt is answered, and the new folder shows with no reload.
+            await inPage(`
+                window.asked = [];
+                window.prompt = (text, value) => {
+                    window.asked.push([text, value]);
+
+                    return ${JSON.stringify(` ${folder} `)};
+                };
+                [...document.querySelectorAll(".pages-detail .setting")]
+                    .find((each) => each.querySelector(".grow > .small")?.textContent.trim() === "Downloads")
+                    .querySelector("button")
+                    .click();
+
+                return JSON.stringify(true);
+            `);
+            await until(async () => (await row()).downloads === folder, "the new folder, shown");
+            assert.deepEqual(await inPage<string[][]>(`return JSON.stringify(window.asked)`), [
+                ["Downloads folder on this server, absolute; empty for its temporary folder", ""],
+            ]);
+            assert.equal(app.config.serverDownloads, folder);
+
+            await load(PHONE);
+            await openAt("settings", THIS_SERVER);
+            await until(async () => (await row()).tools !== "", "This server's page on a phone");
+            await picture("/tmp/server-settings-390.png");
+        } finally {
+            app.config.setComputerSettings(THIS_SERVER, { downloads: null });
+        }
     },
 );
 

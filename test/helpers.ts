@@ -11,6 +11,7 @@ import type { Attachment } from "../src/server/commands.ts";
 import { THIS_SERVER } from "../src/server/access.ts";
 import type { User } from "../src/server/config.ts";
 import type { FolderRequestView } from "../src/server/folder-requests.ts";
+import type { OpenOptions } from "../src/server/app.ts";
 import type { LimitTuning } from "../src/server/limit-gate.ts";
 import { STEP_MS, totp } from "../src/server/totp.ts";
 import type { Client } from "../src/server/room.ts";
@@ -100,8 +101,10 @@ export async function openApp(
     dataDir = join(root, "data"),
     now?: () => number,
     limits?: Partial<LimitTuning>,
+    checkTools?: OpenOptions["checkTools"],
 ): Promise<App> {
     const app = await PocketApp.open({
+        ...(checkTools === undefined ? {} : { checkTools }),
         dataDir,
         defaultCwd: work,
         supervised: false,

@@ -8,7 +8,7 @@ const ROOT = new URL("../", import.meta.url);
 
 /** The pairs: the server's copy first, the runner's second, as paths from the repository's root. */
 const PAIRS: [string, string][] = [
-    ...["protocol", "secure-link", "tunnels", "transport", "read-snapshot", "folders"].map(
+    ...["protocol", "secure-link", "tunnels", "transport", "read-snapshot", "folders", "tools"].map(
         (name): [string, string] => [
             `src/server/runner-link/${name}.ts`,
             `packages/runner/src/${name}.ts`,

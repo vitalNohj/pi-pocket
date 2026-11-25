@@ -1,3 +1,4 @@
+// This file exists twice: src/server/runner-link/tools.ts and packages/runner/src/tools.ts. test/runner-copies.test.ts keeps them the same.
 /** Readiness of git and GitHub on this computer; informational only, never a condition for running sessions. */
 import { execFile } from "node:child_process";
 import type { RunnerTools } from "./protocol.ts";

@@ -96,7 +96,7 @@ export function heir(computer) {
 }
 
 /** A computer as the server answered it after a change: shown at once, before its event arrives. */
-function keep(view) {
+export function keep(view) {
     if (!view) {
         return;
     }
