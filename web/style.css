@@ -8423,42 +8423,54 @@ div.group-head {
     color: var(--accent);
 }
 
-/* The key: one row, small and muted, each level's name in its button's colour; it scrolls sideways where it is too
- * long. Its "i" explains the people columns. */
-/* The key of the levels: one row where it fits, else two of the same length. No level is cut in two. */
+/* The key of the levels: one strip of four cells, each a level's name in its button's colour over what it gives. Where
+ * the strip is narrow (a phone), two rows of two: no level is cut, and nothing scrolls sideways. Its "i", before them,
+ * explains the people columns. */
 .ak-key {
+    container-type: inline-size;
+    display: flex;
+    align-items: stretch;
     min-width: 0;
-    color: var(--faint);
-    font-size: 11.5px;
-    line-height: 18px;
-    text-wrap: balance;
-}
-
-.ak-item {
-    display: inline-block;
-    margin-right: 18px;
-    white-space: nowrap;
-}
-
-.ak-item:last-child {
-    margin-right: 0;
-}
-
-.ak-key::-webkit-scrollbar {
-    display: none;
-}
-
-.ak-key > * {
-    flex: none;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--card);
 }
 
 .ak-key > .info-tip {
-    margin: 0 6px 0 0;
-    vertical-align: middle;
+    align-self: center;
+    margin: 0 0 0 10px;
 }
 
-.ak-key b {
+.ak-levels {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+.ak-item {
+    min-width: 0;
+    padding: 7px 10px;
+}
+
+.ak-item dt {
+    font-size: 12px;
     font-weight: 600;
+    line-height: 16px;
+}
+
+.ak-item dd {
+    margin: 1px 0 0;
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 15px;
+}
+
+@container (max-width: 560px) {
+    .ak-levels {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
 /* The colours of the levels: the key's names and the Access buttons say each level the same way. */
@@ -9088,15 +9100,6 @@ div.group-head {
 
     .ak-tools-row > * {
         flex: none;
-    }
-
-    /* One row that scrolls sideways. */
-    .ak-key {
-        display: flex;
-        align-items: center;
-        overflow-x: auto;
-        scrollbar-width: none;
-        font-size: 12px;
     }
 
     /* Group by, on its line under the computer's name, is as wide as the sheet. */
