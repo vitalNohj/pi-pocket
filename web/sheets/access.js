@@ -1644,7 +1644,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
     const shown = shownOf(tree.roots, find);
     // Grouped by Sessions: one list, newest first, with each session's folder beside its name.
     const flat = tree.flat.filter((row) => keeps(find, row));
-    // The rows that are no project's, under their own heading after the projects.
+    // The projects come first, under "By project"; the rows that are no project's follow, under "By folders".
     const projectsShown = shown.filter((each) => each.project).length;
 
     // What can be done with each session drawn, for the selection: shared with them where Invite would be, taken back
@@ -1673,8 +1673,12 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
             (each, index) =>
                 html`${
                     projectsShown > 0 &&
+                    index === 0 &&
+                    html`<div class="at-heading" key="project-heading">By project</div>`
+                }${
+                    projectsShown > 0 &&
                     index === projectsShown &&
-                    html`<div class="at-heading" key="other-heading">Other folders</div>`
+                    html`<div class="at-heading" key="other-heading">By folders</div>`
                 }${folderRow(each, 0, undefined)}`,
         )}
         ${

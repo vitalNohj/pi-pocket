@@ -8584,13 +8584,18 @@ div.group-head {
     }
 }
 
-/* Between the projects and the other folders of a computer. */
+/* Above the projects of a computer ("By project"), and between them and its other folders ("By folders"). */
 .at-heading {
     margin: 8px 0 2px;
     padding: 0 8px;
     color: var(--faint);
     font-size: 12px;
     font-weight: 500;
+}
+
+/* The first heading stands at the tree's own top padding. */
+.at-tree > .at-heading:first-child {
+    margin-top: 0;
 }
 
 /* The tag of a project nobody changes the trust of here: By person. */
@@ -8914,7 +8919,7 @@ div.group-head {
     }
 }
 
-/* A heading between the projects and the other folders, and a row with a note: one line across. */
+/* The heading between the projects and the other folders ("By folders"), and a row with a note: one line across. */
 .ag-heading,
 .ag-empty {
     min-height: 0;

@@ -911,8 +911,8 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
             <div class="ag-table" role="table" aria-label=${`Access on ${computer.name}`}>
                 <div class="ag-row ag-head" role="row">
                     <div class="ag-first ag-first-head" role="columnheader">
-                        <span>${find.group === "sessions" ? "Session" : find.group === "folders" ? "Folder" : "Project or folder"}</span>
-                        <${InfoTip} about="Project or folder" text=${TIPS.first} />
+                        <span>${find.group === "sessions" ? "Session" : find.group === "folders" ? "Folder" : projectsShown > 0 ? "By project" : "By folders"}</span>
+                        <${InfoTip} about="projects" text=${TIPS.first} />
                     </div>
                     ${
                         trustColumn &&
@@ -945,7 +945,7 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
                                       projectsShown > 0 &&
                                       index === projectsShown &&
                                       html`<div class="ag-row ag-heading" role="row" key="other-heading">
-                                          <div class="ag-first">Other folders</div>
+                                          <div class="ag-first">By folders</div>
                                       </div>`
                                   }${folderRow(each, 0, undefined)}`,
                           )

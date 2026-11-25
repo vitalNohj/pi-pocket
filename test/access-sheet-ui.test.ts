@@ -516,7 +516,7 @@ for (const [name, viewport] of [
 
             assert.deepEqual(
                 tips.map((each) => each.about).sort(),
-                ["About Project or folder", "About Project trust", "About the people columns"],
+                ["About Project trust", "About projects", "About the people columns"],
                 "3 at any number of people",
             );
 
@@ -540,6 +540,35 @@ for (const [name, viewport] of [
                 return JSON.stringify([head.querySelector(".ag-who-name").textContent.trim(), head.querySelector(".ag-who-role").textContent.trim()]);
             `),
                 [people[0]!.name, "User"],
+            );
+
+            // Grouped by projects, the first column is headed "By project", and the folders in no project follow
+            // under "By folders".
+            assert.deepEqual(
+                await inPage<{
+                    head: string;
+                    headings: string[];
+                    before: string[];
+                    after: string[];
+                }>(`
+                const rows = [...document.querySelectorAll(".ag-table > .ag-row:not(.ag-head)")];
+                const at = rows.findIndex((each) => each.classList.contains("ag-heading"));
+                const names = (list) => list.filter((each) => each.classList.contains("ag-group")).map((each) => each.querySelector(".ag-name").textContent.trim());
+
+                return JSON.stringify({
+                    head: document.querySelector(".ag-first-head > span").textContent.trim(),
+                    headings: rows.filter((each) => each.classList.contains("ag-heading")).map((each) => each.textContent.trim()),
+                    before: names(rows.slice(0, at)),
+                    after: names(rows.slice(at)),
+                });
+            `),
+                {
+                    head: "By project",
+                    headings: ["By folders"],
+                    before: ["docs", "shop", "tools"],
+                    // Home, and the test folder every person here is given (`addPerson`).
+                    after: ["Home", root],
+                },
             );
 
             // By person has 1: in the key row.
@@ -571,6 +600,17 @@ for (const [name, viewport] of [
                 return JSON.stringify([...document.querySelectorAll(".pages-detail .info-tip")].map((each) => each.getAttribute("aria-label") + (each.closest(".ak-key") ? " (key)" : "")));
             `),
                 ["About the people columns (key)"],
+            );
+
+            // Their tree has the same two headings: the projects, then the folders in no project.
+            assert.deepEqual(
+                await inPage<string[]>(`
+                const tree = document.querySelector(".pages-detail .at-tree");
+
+                return JSON.stringify([...tree.children].map((each) => each.classList.contains("at-heading") ? each.textContent.trim() : each.classList.contains("at-node") ? "row" : "other"));
+            `),
+                // Three projects; Home and the folder given to them; All folders last.
+                ["By project", "row", "row", "row", "By folders", "row", "row", "row"],
             );
         },
     );
