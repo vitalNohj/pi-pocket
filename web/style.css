@@ -8160,6 +8160,85 @@ div.group-head {
     color: var(--accent);
 }
 
+/* Sessions selected on a person's page (`sheets/session-select.js`): Select in the tool row, a checkbox at the start of
+ * each session and folder listed, and the bar under the tool row that shares or takes back what is checked. */
+.sel-toggle {
+    flex: none;
+}
+
+/* A checkbox's whole box takes the press: a row high, and on a touch screen 44px each way. */
+.access {
+    --sel-size: 28px;
+}
+
+.sel-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: var(--sel-size);
+    height: var(--sel-size);
+    cursor: pointer;
+}
+
+.sel-check > input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--accent-fill);
+    cursor: pointer;
+}
+
+.sel-check > input:disabled {
+    cursor: default;
+}
+
+@media (pointer: coarse) {
+    .access {
+        --sel-size: 44px;
+    }
+
+    .sel-check > input {
+        width: 18px;
+        height: 18px;
+    }
+}
+
+/* A session's checkbox stays level with the first line of its name. */
+.at-session > .sel-check {
+    align-self: flex-start;
+}
+
+.sel-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 2px 8px 2px 0;
+    border: 1px solid var(--hair);
+    border-radius: var(--r-card);
+    background: var(--bg);
+}
+
+.sel-all {
+    display: inline-flex;
+    align-items: center;
+    font-size: 12.5px;
+    cursor: pointer;
+}
+
+.sel-count {
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.sel-buttons {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+}
+
 /* ─── The Access sheet (`sheets/access-sheet.js`): By person, By computer, Settings ─── */
 
 /*
@@ -9133,6 +9212,11 @@ div.group-head {
 
     .at-session-name {
         flex: 1 1 100%;
+    }
+
+    /* With its checkbox, the name takes the rest of that line. */
+    .at-session > .sel-check + .ft-row {
+        flex-basis: calc(100% - var(--sel-size) - 6px);
     }
 }
 

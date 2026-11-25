@@ -33,6 +33,7 @@ import {
 } from "./access-tree.js";
 import { shortPath } from "../folder-paths.js";
 import { canShare } from "./session-share.js";
+import { folderCheck, NO_SELECT, sessionCheck, useListed } from "./session-select.js";
 
 export const THIS_SERVER = "this-server";
 
@@ -395,7 +396,7 @@ export function ComputerRights({ computer, person }) {
  * takes more lines where one is too short (`style.css` `.at-about`): a place is never cut short, since its end is what
  * tells two folders apart. `off`: one the person does not have, listed to be given: its name is dimmed. `used`: when
  * whoever reads last used it themselves, after what it says. `words`: what is searched for, marked in its name and
- * its place.
+ * its place. `check`: its checkbox at its start, while sessions are selected (`session-select.js`).
  */
 export function SessionLine({
     name,
@@ -405,9 +406,11 @@ export function SessionLine({
     words = [],
     off = false,
     depth = 1,
+    check,
     children,
 }) {
     return html`<div class=${`at-line at-session ${off ? "off" : ""}`}>
+        ${check}
         <div class="ft-row" style=${`--depth:${depth}`} title=${name}>
             <span class="ft-spacer"></span>
             <${Icon} name="chat" size=${13} />
@@ -769,7 +772,8 @@ export function countOf(rows) {
  * sessions (`children`). `off`: a folder the person does not have, listed to be given. `words`: what is searched for,
  * marked in a folder's name. `depth`: how far in the tree it is, as the Files panel's rows. `home`: the computer's
  * home folder, with its own icon. `project`: a project's row, named for it, with its top folder's path (`path`) and a
- * small tag (`tag`: "Not trusted") beside its name.
+ * small tag (`tag`: "Not trusted") beside its name. `check`: its checkbox at its start, while sessions are selected
+ * (`session-select.js` `folderCheck`).
  */
 export function TreeGroup({
     folder = false,
@@ -787,10 +791,12 @@ export function TreeGroup({
     words = [],
     off = false,
     actions,
+    check,
     children,
 }) {
     return html`<div class=${`at-node ${off ? "off" : ""}`}>
         <div class=${`at-line ${folder ? "at-folder-line" : ""}`}>
+            ${check}
             <button
                 type="button"
                 class=${`ft-row dir ${folder || project ? "at-folder" : "at-rest"} ${project ? "at-project" : ""}`}
@@ -1202,8 +1208,12 @@ export function InfoTip({ about, text }) {
  *
  * `find`: what People searches for and filters by (`access-tree.js` `keeps`). Then a folder shows while it or a
  * session in it matches, the ones shown are open, and the tree offers no new folder.
+ *
+ * `select`: the selection of People (`session-select.js`). While it is on, each session and folder drawn has its
+ * checkbox, the tree tells it which sessions it draws and what each can be changed by, and a row has no Invite or
+ * Revoke of its own.
  */
-function AccessTree({ computer, person, tree, find = NO_FIND }) {
+function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT }) {
     const { offers, sees, until, worktrees, given: folders } = tree;
     const { chosen, manager, starts } = standing(computer, person);
     const groups = useGroups(find);
@@ -1334,6 +1344,10 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
     const allow = (row) =>
         attempt(() => api(`session-approvals/${encodeURIComponent(row.id)}`, {}));
 
+    /** The session rows drawn under a folder that shows, in the folders in it too: none under one that is closed. */
+    const drawn = (node) =>
+        groups.isOpen(node.key) ? [...node.children.flatMap(drawn), ...node.listed] : [];
+
     /** The buttons at the end of a session's row: Allow, Go to session, and Revoke or Invite. */
     const sessionButtons = (row) => html`${
         locked(row.session) &&
@@ -1354,10 +1368,12 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
                             </button>
                             ${
                                 // Theirs themselves: Revoke. Not theirs, or theirs by its folder alone: Invite in its
-                                // place, where sessions can be given to them. With neither, the place stays, so the
-                                // buttons before it are one column down the tree.
-                                row.own
-                                    ? html`<button
+                                // place, where sessions can be given to them. With neither, or while sessions are
+                                // selected, the place stays, so the buttons before it are one column down the tree.
+                                select.on
+                                    ? html`<span class="at-end" aria-hidden="true"></span>`
+                                    : row.own
+                                      ? html`<button
                                           class="button small ghost at-end"
                                           disabled=${busy}
                                           aria-label=${`Revoke ${row.title} from ${person.name}`}
@@ -1365,8 +1381,8 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
                                       >
                                           Revoke
                                       </button>`
-                                    : offers && canShare(row.session)
-                                      ? html`<button
+                                      : offers && canShare(row.session)
+                                        ? html`<button
                                             class="button small at-end"
                                             disabled=${busy}
                                             aria-label=${`Invite ${person.name} to ${row.title}`}
@@ -1379,7 +1395,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
                                         >
                                             Invite
                                         </button>`
-                                      : html`<span class="at-end" aria-hidden="true"></span>`
+                                        : html`<span class="at-end" aria-hidden="true"></span>`
                             }`;
 
     /** The sessions of one open folder, a level in from it. */
@@ -1399,6 +1415,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
                             words=${find.words}
                             off=${!row.has}
                             depth=${depth}
+                            check=${sessionCheck(select, row)}
                         >
                             ${sessionButtons(row)}
                         <//>`,
@@ -1437,6 +1454,11 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
             onToggle=${() => groups.toggle(node.key)}
             words=${find.words}
             off=${node.level === "none" && !node.all.some((each) => each.has)}
+            check=${folderCheck(
+                select,
+                `${node.folder} on ${computer.name}`,
+                drawn(node).map((each) => each.id),
+            )}
             actions=${html`<${LevelMenu}
                 person=${person}
                 folder=${node.folder}
@@ -1459,6 +1481,22 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
     const flat = tree.flat.filter((row) => keeps(find, row));
     // The rows that are no project's, under their own heading after the projects.
     const projectsShown = shown.filter((each) => each.project).length;
+
+    // What can be done with each session drawn, for the selection: shared with them where Invite would be, taken back
+    // where Revoke would be. Taken back, one they started goes to whoever is in charge here, and one a folder they see
+    // all of holds stays theirs by that folder.
+    useListed(
+        select,
+        `tree:${computer.id}`,
+        [...shown.flatMap(drawn), ...flat].map((row) => ({
+            id: row.id,
+            share: !row.own && offers && canShare(row.session),
+            revoke: row.own,
+            started: row.session.createdBy === person.id,
+            heir: heir(computer),
+            kept: seenBy(sees, row.session, worktrees, until) !== undefined,
+        })),
+    );
 
     if (find.active && shown.length === 0 && flat.length === 0) {
         return null;
@@ -1488,6 +1526,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
                             words=${find.words}
                             off=${!row.has}
                             depth=${0}
+                            check=${sessionCheck(select, row)}
                         >
                             ${sessionButtons(row)}
                         <//>`,
@@ -1555,7 +1594,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND }) {
  * person at a time there with what else the person is let do (`rights` false: `ComputerRights`).
  *
  * `find`: People's search and filters over the tree. With it the tree also lists the sessions that can be given to
- * the person; Runners, without it, lists what they have.
+ * the person; Runners, without it, lists what they have. `select`: People's selection of sessions (`session-select.js`).
  */
 export function AccessRow({
     computer,
@@ -1565,6 +1604,7 @@ export function AccessRow({
     rights: withRights = true,
     find,
     grouping,
+    select,
 }) {
     const [busy, setBusy] = useState(false);
     const tree = treeOf(computer, person, find !== undefined, grouping);
@@ -1632,7 +1672,13 @@ export function AccessRow({
         )}
         ${
             tree !== null &&
-            html`<${AccessTree} computer=${computer} person=${person} tree=${tree} find=${find} />`
+            html`<${AccessTree}
+                computer=${computer}
+                person=${person}
+                tree=${tree}
+                find=${find}
+                select=${select}
+            />`
         }
     </div>`;
 }
