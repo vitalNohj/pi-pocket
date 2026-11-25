@@ -8,6 +8,7 @@ import {
     newSession,
     openApp,
     owner,
+    say,
     scriptedModel,
 } from "./helpers.ts";
 import assert from "node:assert/strict";
@@ -288,4 +289,27 @@ test("sessions with a session or a folder, an empty list, 201 ids, ids that are 
         (await invite(boss, { sessions: Array.from({ length: 200 }, () => Number(kept)) })).status,
         200,
     );
+});
+
+test("Undo in a chosen session before the invite is used: whoever joins gets the session that took its place", async () => {
+    const boss = owner(app);
+    const kept = await session("undo: kept", boss);
+    const first = await session("undo: first", boss);
+    const made = await invite(boss, { sessions: [Number(kept), Number(first)] });
+
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    await say(app, first, "Undo this message");
+    const entries = await (await app.conversation(first)).entries({}, 64, undefined, context);
+    const message = entries.items.find((entry) => entry.kind === "pi.user");
+
+    assert.ok(message);
+    const undone = await app.commands.undo(first, boss, { entryId: Number(message.id) });
+
+    assert.notEqual(undone.id, first);
+
+    const una = await join(made.body.code!, "Custom Una");
+
+    assert.ok(app.canSee(una, undone.id), "the session that took its place");
+    assert.ok(app.canSee(una, kept), "the other chosen session");
+    assert.equal(app.canSee(una, first), false, "not the one that was replaced");
 });

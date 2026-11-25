@@ -1491,15 +1491,26 @@ export class ConfigStore {
     }
 
     /**
-     * Session `to` took session `from`'s place (`app.ts` `replaced`): an invite to `from` alone that nobody used yet is
-     * to `to`. Says whether there was one.
+     * Session `to` took session `from`'s place (`app.ts` `replaced`): an invite that nobody used yet, to `from` alone or
+     * to chosen sessions with `from` among them, is to `to` instead. Says whether there was one.
      */
     moveInvites(from: string, to: string): boolean {
         let moved = false;
 
         for (const invite of this.#config.invites ?? []) {
-            if (invite.device === undefined && invite.session === from) {
+            if (invite.device !== undefined) {
+                continue;
+            }
+
+            if (invite.session === from) {
                 invite.session = to;
+                moved = true;
+            }
+
+            if (invite.chosen?.includes(from) === true) {
+                invite.chosen = [
+                    ...new Set(invite.chosen.map((each) => (each === from ? to : each))),
+                ];
                 moved = true;
             }
         }
