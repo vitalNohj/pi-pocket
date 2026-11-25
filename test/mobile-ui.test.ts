@@ -1399,7 +1399,8 @@ test(
                 const end = performance.now() + 2200;
 
                 while (performance.now() < end) {
-                    await new Promise((resolve) => requestAnimationFrame(resolve));
+                    // Watch what could paint, not the interim geometry in rAF before layout and ResizeObserver.
+                    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
                     const scroller = document.querySelector(".pane > .scroller");
                     const column = scroller?.querySelector('[data-part="transcript"]');
                     const rows = column ? [...column.querySelectorAll(".user-row")] : [];

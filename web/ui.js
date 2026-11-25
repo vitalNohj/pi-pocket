@@ -8,8 +8,8 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState } from "preact
 import { useDragToClose } from "./gestures.js";
 import { highlight, langOf } from "./highlight.js";
 import { blockMath, inlineMath } from "./math.js";
-import { fenceFor, markdownRevision, mathOn, mountMath } from "./markdown-ext.js";
-import { actions, filesShown, notify, openSheet, store } from "./store.js";
+import { fenceFor, markdownRevision, mathFor, mathOn, mountMath } from "./markdown-ext.js";
+import { actions, filesShown, notify, openSheet, renderAccess, store } from "./store.js";
 
 // `this[0] = 3` stops htm from keeping the elements a template makes: a kept element keeps the app's tree it was first
 // drawn in, and through the rows of the session list, every tree after it. Templates stay parsed once.
@@ -299,14 +299,17 @@ function richKind(name, source) {
  * A code block as the app draws it: a bar with its language (or "text") and a copy button above it, its code colored,
  * and a long one folded. A block that shows something besides its code is marked with its kind for `markdownParts`.
  */
-function codeBlock(pre, fold) {
+function codeBlock(pre, fold, fences) {
     const source = pre.textContent ?? "";
     const name = FENCE_NAME.test(pre.dataset.lang ?? "") ? pre.dataset.lang : "";
     const lang = langOf(name);
     const code = pre.querySelector("code") ?? pre;
     const wrap = document.createElement("div");
     const copy = document.createElement("button");
-    const kind = fenceFor(name) ? "extension" : richKind(name, source);
+    const renderer = fenceFor(name);
+    const kind = renderer ? "extension" : richKind(name, source);
+
+    fences?.set(name, renderer);
 
     // The highlighter's output is the source, escaped, in spans of its own: nothing from the reply becomes markup.
     if (lang && source.length <= COLOR_LIMIT) {
@@ -355,7 +358,7 @@ function codeBlock(pre, fold) {
  * attribute into markup. An image from another site becomes a link, since its address could carry data out the moment
  * it loads, and code blocks are drawn by `codeBlock` (folded when long, if `fold`). Returns the element holding it.
  */
-function sanitize(html, fold) {
+function sanitize(html, fold, fences) {
     const fragment = purify.sanitize(html);
 
     // `src/app.ts` in a reply opens the file: inline code that is a path, not code blocks.
@@ -393,7 +396,7 @@ function sanitize(html, fold) {
     }
 
     for (const pre of fragment.querySelectorAll("pre")) {
-        codeBlock(pre, fold);
+        codeBlock(pre, fold, fences);
     }
 
     for (const image of fragment.querySelectorAll("img")) {
@@ -535,51 +538,60 @@ const MARKDOWN_CACHE = 500;
  * (`cache` false) is not kept, and its long code blocks are not folded while they grow. With `breaks`, a single line
  * break is a new line rather than a space.
  */
-function markdownParts(
-    text,
-    conversationId = currentConversation(),
-    cache = true,
-    base = null,
-    breaks = true,
-) {
-    const key = [
-        markdownRevision(),
-        conversationId ?? "",
-        base ?? "",
-        breaks ? "br" : "",
-        text,
-    ].join("\u0000");
-    let out = markdownCache.get(key);
+function markdownParts(text, conversationId, cache, base, breaks, access) {
+    const revision = markdownRevision();
 
-    if (out !== undefined) {
+    if (!cache) {
+        return {
+            revision,
+            parts: renderParts(fencePage(text), conversationId, base, breaks, false),
+        };
+    }
+
+    const key = [access, conversationId ?? "", base ?? "", breaks, text].join("\u0000");
+    const saved = markdownCache.get(key);
+
+    if (saved !== undefined) {
         markdownCache.delete(key);
-        markdownCache.set(key, out);
 
-        return out;
-    }
+        // Registration can change the treatment of a fence we saw, including one that did not yet have a renderer.
+        // Inline math can change tokenization even if it emitted no marker during the earlier parse.
+        if (
+            saved.checked === revision ||
+            ((!saved.mayHaveMath || saved.math === mathFor()) &&
+                [...saved.fences].every(([lang, renderer]) => fenceFor(lang) === renderer))
+        ) {
+            saved.checked = revision;
+            markdownCache.set(key, saved);
 
-    out = renderParts(fencePage(text), conversationId, base, breaks, cache);
-
-    if (cache) {
-        if (markdownCache.size >= MARKDOWN_CACHE) {
-            markdownCache.delete(markdownCache.keys().next().value);
+            return saved;
         }
-
-        markdownCache.set(key, out);
     }
+
+    const fences = new Map();
+    const mayHaveMath = text.includes("$");
+    const math = mayHaveMath ? mathFor() : undefined;
+    const parts = renderParts(fencePage(text), conversationId, base, breaks, true, fences);
+    const out = { parts, revision, checked: revision, fences, mayHaveMath, math };
+
+    if (markdownCache.size >= MARKDOWN_CACHE) {
+        markdownCache.delete(markdownCache.keys().next().value);
+    }
+
+    markdownCache.set(key, out);
 
     return out;
 }
 
 /** Markdown parsed, sanitized, and split into parts (`partsOf`), for the conversation and folder given. */
-function renderParts(text, conversationId, base, breaks, fold) {
+function renderParts(text, conversationId, base, breaks, fold, fences) {
     rendering = conversationId ?? null;
     linkBase = base;
 
     mathMarkers = new Map();
 
     try {
-        return partsOf(sanitize(marked.parse(text, { async: false, breaks }), fold));
+        return partsOf(sanitize(marked.parse(text, { async: false, breaks }), fold, fences));
     } finally {
         mathMarkers = null;
         rendering = null;
@@ -642,14 +654,14 @@ export function Markdown({
 }) {
     const live = useRef(null);
     const root = useRef(null);
+    const access = renderAccess();
 
     useEffect(() => mountMath(root.current));
 
     // Growing text, block by block (`liveBlocks`); a whole page is fenced as one block (`fencePage`), as before.
     if (!cache && fencePage(text) === text) {
-        const settings = [markdownRevision(), conversationId ?? "", base ?? "", breaks].join(
-            "\u0000",
-        );
+        const renderer = `${markdownRevision()}:${access}`;
+        const settings = [renderer, conversationId ?? "", base ?? "", breaks].join("\u0000");
 
         if (live.current?.settings !== settings) {
             live.current = { settings, kept: new Map() };
@@ -658,7 +670,7 @@ export function Markdown({
         const blocks = liveBlocks(text, conversationId, base, breaks, live.current.kept);
 
         return html`<div
-            key=${markdownRevision()}
+            key=${renderer}
             ref=${root}
             class=${`md ${className}`}
         >
@@ -671,11 +683,12 @@ export function Markdown({
     }
 
     live.current = null;
-    const parts = markdownParts(text, conversationId, cache, base, breaks);
+    const { parts, revision } = markdownParts(text, conversationId, cache, base, breaks, access);
+    const renderer = `${revision}:${access}`;
 
     if (parts.length === 1 && parts[0].kind === undefined) {
         return html`<div
-            key=${markdownRevision()}
+            key=${renderer}
             ref=${root}
             class=${`md ${className}`}
             dangerouslySetInnerHTML=${{ __html: parts[0].html }}
@@ -683,7 +696,7 @@ export function Markdown({
     }
 
     return html`<div
-        key=${markdownRevision()}
+        key=${renderer}
         ref=${root}
         class=${`md ${className}`}
     >

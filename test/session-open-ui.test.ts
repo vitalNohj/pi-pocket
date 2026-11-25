@@ -14,7 +14,13 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { type ConversationId, UserEntry } from "@earendil-works/pi-durable";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import {
+    AssistantEntry,
+    type ConversationId,
+    ToolResultEntry,
+    UserEntry,
+} from "@earendil-works/pi-durable";
 import type { App } from "./helpers.ts";
 import { Browsers } from "../src/server/browser.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
@@ -74,14 +80,38 @@ before(async () => {
         restart: () => {},
     });
     const source = readFileSync(join(import.meta.dirname, "../web/app.js"), "utf8");
+    const ui = readFileSync(join(import.meta.dirname, "../web/ui.js"), "utf8").replace(
+        /function renderParts\([^\n]+\) \{/,
+        "$& globalThis.openProbe?.builds.push(text);",
+    );
     // Installed before the app's first render on every document. Disable idle read-ahead so the device-only switch
     // really is device-only, not accidentally warmed into tab memory while the test waits.
     const probe = `
         const idle = requestIdleCallback;
 
         globalThis.requestIdleCallback = (callback, options) => options?.timeout === 1000 ? 0 : idle(callback, options);
-        globalThis.openProbe = { boot: false, rows: false };
+        globalThis.openProbe = { boot: false, rows: false, builds: [], first: null };
+        const watched = new WeakSet();
         new MutationObserver(() => {
+            const transcript = document.querySelector('[data-part="transcript"]');
+            const box = transcript?.parentElement;
+
+            if (box && !watched.has(box)) {
+                watched.add(box);
+                // Observe after the app attaches its own layout observer; both callbacks run before paint.
+                const observer = new ResizeObserver(([change]) => {
+                    if (change.contentRect.height > 0 && transcript.querySelector('[id^="entry-"]')) {
+                        observer.disconnect();
+                        const top = box.scrollTop;
+                        const height = box.scrollHeight;
+                        const client = box.clientHeight;
+                        openProbe.first = { top, height, client, gap: height - client - top };
+                    }
+                });
+                observer.observe(box);
+                observer.observe(transcript);
+            }
+
             if ([...document.querySelectorAll('[data-part="prompt-row"]')].some((node) => node.getClientRects().length > 0)) {
                 openProbe.rows = true;
             }
@@ -112,12 +142,12 @@ before(async () => {
             return;
         }
 
-        if (path === "/app.js") {
+        if (path === "/app.js" || path === "/ui.js") {
             response.writeHead(200, {
                 "content-type": "text/javascript",
                 "cache-control": "no-store",
             });
-            response.end(probe + source);
+            response.end(path === "/app.js" ? probe + source : ui);
 
             return;
         }
@@ -314,6 +344,289 @@ test(
                 `return JSON.stringify(![...document.querySelectorAll('.boot:not(.inline)')].some((node) => node.getClientRects().length > 0))`,
             ),
             true,
+        );
+    },
+);
+
+test(
+    "a device reopen builds unchanged Markdown once, before and after sign-in checks",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const prompt = "device draw count: **keep this formatting**";
+        const reply = `echo: ${prompt}`;
+        const builds = () =>
+            inPage<number>(`
+        return JSON.stringify(openProbe.builds.filter((text) => text === ${JSON.stringify(reply)}).length);
+    `);
+
+        await say(app, id, prompt);
+        await openOn(id, "device draw count");
+        await saved(id);
+        const me = hold("/api/me");
+
+        try {
+            await page.reload();
+            await until(
+                () =>
+                    inPage<boolean>(`
+            return JSON.stringify([...document.querySelectorAll('.md strong')].some(
+                (node) => node.textContent === 'keep this formatting' && !node.closest('[hidden]')));
+        `),
+                "formatted device reply",
+            );
+            assert.ok(me.entered);
+            assert.equal(await builds(), 1);
+        } finally {
+            me.release();
+        }
+
+        await ready();
+        await inPage(
+            `await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))); return 'null';`,
+        );
+        assert.equal(
+            await builds(),
+            1,
+            "listing browser extensions does not rebuild the same reply",
+        );
+    },
+);
+
+test(
+    "the first layout preserves bottom placement and the reading position on switch, reload and device return",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const other = await newSession(app);
+        const phrase = "Placement fixture row";
+
+        type Position = { top: number; gap: number; height: number; client: number };
+
+        const position = () =>
+            inPage<Position>(`
+            const box = document.querySelector('.pane > .scroller');
+            const top = box.scrollTop;
+            const height = box.scrollHeight;
+            const client = box.clientHeight;
+            return JSON.stringify({ top, height, client, gap: height - client - top });
+        `);
+
+        const first = async () => {
+            await until(
+                () => inPage<boolean>(`return JSON.stringify(openProbe.first !== null);`),
+                "first layout",
+            );
+
+            return inPage<Position>(`return JSON.stringify(openProbe.first);`);
+        };
+
+        const closeTo = (actual: number, expected: number, why: string) =>
+            assert.ok(Math.abs(actual - expected) <= 2, `${why}: ${actual}, expected ${expected}`);
+
+        const to = async (conversation: ConversationId) => {
+            await inPage(
+                `openProbe.first = null; (await import('/store.js')).navigate(${Number(conversation)}); return 'null';`,
+            );
+        };
+
+        await app.harness.commit(async (tx) => {
+            for (let n = 0; n < 48; n++) {
+                await tx.appendEntry(UserEntry, id, {
+                    model: [
+                        {
+                            role: "user",
+                            content: `${phrase} ${n} ${"line of text ".repeat((n % 5) * 13)}`,
+                            timestamp: Date.now(),
+                        },
+                    ],
+                });
+            }
+        }, context);
+        await say(app, other, "The other placement fixture");
+        await inPage(`(await import('/theme.js')).setPrefs({ motion: 'reduced' }); return 'null';`);
+        await openOn(id, `${phrase} 47`);
+        closeTo((await first()).gap, 0, "bottom in the first layout");
+        await to(other);
+        await until(
+            async () => (await shown("The other placement fixture")).rows,
+            "the other session",
+        );
+        await to(id);
+        await until(async () => (await shown(`${phrase} 47`)).rows, "warm return");
+        closeTo((await first()).gap, 0, "bottom on the warm return");
+
+        await inPage(`
+        const box = document.querySelector('.pane > .scroller');
+        box.scrollTop -= 680;
+        box.dispatchEvent(new Event('scroll'));
+        return 'null';
+    `);
+        const reading = await position();
+
+        assert.ok(reading.top > 0 && reading.gap >= 650, "clearly neither end");
+        await to(other);
+        await until(
+            async () => (await shown("The other placement fixture")).rows,
+            "the other session again",
+        );
+        await to(id);
+        await until(
+            async () => (await shown(`${phrase} 47`)).rows,
+            "warm return to the reading position",
+        );
+
+        const checkRestore = (box: Position, why: string) => {
+            // The previous placement clamps scrollHeight - keep; composer and loader height can vary by frame.
+            const keep = reading.height - reading.top;
+
+            closeTo(
+                box.top,
+                Math.max(0, Math.min(box.height - box.client, box.height - keep)),
+                why,
+            );
+        };
+
+        checkRestore(await first(), "warm return's first layout");
+        checkRestore(await position(), "warm return's settled layout");
+        await until(
+            () =>
+                inPage<boolean>(`
+                const { viewSynced, store } = await import('/store.js');
+                return JSON.stringify(viewSynced(${Number(id)}) && ![...store.state.view.entries.values()].some((entry) => entry.partial));
+            `),
+            "the whole view after the warm return",
+        );
+        await to(other);
+        await until(
+            () =>
+                inPage<boolean>(`
+        const saved = await (await import('/session-cache.js')).read(${Number(id)});
+        return JSON.stringify(saved?.record.place?.keep > 650);
+    `),
+            "the persisted reading position",
+        );
+
+        for (const reload of [false, true]) {
+            const me = hold("/api/me");
+
+            try {
+                if (reload) {
+                    await page.reload();
+                } else {
+                    await page.navigate(`${base}/s/${id}`);
+                }
+
+                await until(
+                    async () => (await shown(`${phrase} 47`)).rows,
+                    "device rows before sign-in checks",
+                );
+                assert.ok(me.entered);
+                checkRestore(await first(), "reading position in the first device layout");
+            } finally {
+                me.release();
+            }
+
+            await ready();
+            checkRestore(await position(), "settled device reading position");
+        }
+    },
+);
+
+test(
+    "a tool builds its body on open; closed output is absent from browser and session Find",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const command = "printf searchable-tool-command";
+        const output = "unique closed tool body output";
+
+        await app.harness.commit(async (tx) => {
+            await tx.appendEntry(UserEntry, id, {
+                model: [{ role: "user", content: "Tool details fixture", timestamp: Date.now() }],
+            });
+            await tx.appendEntry(AssistantEntry, id, {
+                model: [
+                    fauxAssistantMessage([fauxToolCall("bash", { command }, { id: "draw-tool" })], {
+                        stopReason: "toolUse",
+                    }),
+                ],
+            });
+            await tx.appendEntry(ToolResultEntry, id, {
+                model: [
+                    {
+                        role: "toolResult",
+                        toolName: "bash",
+                        toolCallId: "draw-tool",
+                        content: [fauxText(output)],
+                        isError: false,
+                        timestamp: Date.now(),
+                    },
+                ],
+                data: { diagnostics: [] },
+            });
+        }, context);
+        await openOn(id, "Tool details fixture");
+        await until(
+            () =>
+                inPage<boolean>(`
+        return JSON.stringify(document.querySelector('[data-part="tool-call"] button[aria-expanded="false"]') !== null);
+    `),
+            "closed tool card",
+        );
+        const state = await inPage<{ closed: boolean; notFound: boolean; inFrame: boolean }>(`
+        const tool = document.querySelector('[data-part="tool-call"]');
+        const output = ${JSON.stringify(output)};
+        const closed = !tool.querySelector('.step-body');
+        const notFound = !window.find(output);
+        tool.querySelector('button[aria-expanded="false"]').click();
+        // Microtasks, not a timer or idle turn; the next frame can draw the output.
+        await Promise.resolve();
+        const inFrame = tool.querySelector('.step-body')?.textContent.includes(output) ?? false;
+        return JSON.stringify({ closed, notFound, inFrame });
+    `);
+
+        assert.deepEqual(state, { closed: true, notFound: true, inFrame: true });
+        await until(
+            () =>
+                inPage<boolean>(`
+            return JSON.stringify(window.find(${JSON.stringify(output)}, false, false, true));
+        `),
+            "browser Find sees the expanded output",
+        );
+        await inPage(
+            `document.querySelector('[data-part="tool-call"] button[aria-expanded="true"]').click(); return 'null';`,
+        );
+
+        const find = (query: string) =>
+            inPage(`
+        const { openSheet } = await import('/store.js');
+        openSheet({ type: 'find', query: ${JSON.stringify(query)} });
+        return 'null';
+    `);
+        const sheetSays = (text: string) =>
+            inPage<boolean>(`
+        return JSON.stringify(document.querySelector('[role="dialog"]')?.textContent.includes(${JSON.stringify(text)}) ?? false);
+    `);
+
+        await find(output);
+        await until(() => sheetSays("Nothing here says"), "no session Find result for tool output");
+        await inPage(`(await import('/store.js')).closeSheet(); return 'null';`);
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(!document.querySelector('[data-sheet="find"]'));`,
+                ),
+            "closed Find sheet",
+        );
+        await find(command);
+        await until(
+            () =>
+                inPage<boolean>(`
+                return JSON.stringify([...document.querySelectorAll('.find-result')].some(
+                    (node) => node.textContent.includes('searchable-tool-command')));
+            `),
+            "session Find still searches the tool command",
         );
     },
 );

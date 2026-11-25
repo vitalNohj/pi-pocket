@@ -15,7 +15,9 @@ export function setMath(find) {
 
 export const fenceFor = (lang) => findFence(String(lang).toLowerCase());
 
-export const mathOn = () => findMath() !== undefined;
+export const mathFor = () => findMath();
+
+export const mathOn = () => mathFor() !== undefined;
 
 export const markdownRevision = () => revision;
 
