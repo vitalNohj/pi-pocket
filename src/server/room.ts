@@ -348,6 +348,16 @@ export type ActiveView = Omit<ConversationView, "entries" | "before"> & {
     readonly entries: readonly EntryRecord[];
 };
 
+/** Whether the ids the tab kept are still the start of this projection's order. */
+function fitsOrder(have: NonNullable<Client["have"]>, order: readonly number[]): boolean {
+    return (
+        have.count > 0 &&
+        have.count <= order.length &&
+        have.from <= have.count &&
+        fingerprint(order.slice(0, have.count).join(",")) === have.key
+    );
+}
+
 /** The view of one conversation, shared by every client attached to it. */
 export class Room {
     readonly id: ConversationId;
@@ -755,10 +765,15 @@ export class Room {
 
         const projected = this.#projectedEntries(view.entries);
         const order = projected.map((entry) => entry.id);
-        // What the tab kept from before, when it is what this server would send it: those entries count as sent.
+        const have = full ? client.have : undefined;
         const kept = full ? this.#kept(client, order) : 0;
-        const from = full && (client.protocol ?? 1) >= 4 ? firstEntries(projected) : 0;
-        const light = full && (client.protocol ?? 1) >= 5;
+        // Another build's copy is only a head start on screen. Send its range whole, never counting those entries
+        // as sent. If the order shifted, send the whole context: a row the reader was on can now be anywhere in it.
+        const refresh =
+            have !== undefined && (client.protocol ?? 1) >= 7 && have.build !== this.#app.build;
+        const first = full && (client.protocol ?? 1) >= 4 ? firstEntries(projected) : 0;
+        const from = refresh ? (fitsOrder(have, order) ? Math.min(first, have.from) : 0) : first;
+        const light = !refresh && full && (client.protocol ?? 1) >= 5;
         const entries: ClientEntry[] = [];
         let partial = false;
 
@@ -985,10 +1000,7 @@ export class Room {
             have === undefined ||
             (client.protocol ?? 1) < 6 ||
             have.build !== this.#app.build ||
-            have.count <= 0 ||
-            have.count > order.length ||
-            have.from > have.count ||
-            fingerprint(order.slice(0, have.count).join(",")) !== have.key
+            !fitsOrder(have, order)
         ) {
             return 0;
         }

@@ -1062,8 +1062,16 @@ function keptRecord(view) {
     };
 }
 
-/** Whether the session `id` shows with a view the server sent since: not one this tab kept, which may be old. */
-export const viewSynced = (id) => synced === id && store.state.view.conversation?.id === id;
+/** A view from another build is only a head start; its entries must be checked before mixing in fetched entries. */
+function viewStale(view = store.state.view) {
+    return (
+        view.build != null && view.build !== (store.state.server?.build ?? knownFromPage()?.build)
+    );
+}
+
+/** Whether the session `id` shows a view from the current server, not one this tab kept, which may be old. */
+export const viewSynced = (id) =>
+    synced === id && store.state.view.conversation?.id === id && !viewStale();
 
 /** Keep the view of the session this tab leaves, to show it again at once (`keptView`), here and on the device. */
 function keepView(view) {
@@ -1165,13 +1173,13 @@ function newestOf(view) {
 
 /**
  * Forget every view this tab kept, here and on the device, and keep the one it shows from being kept or named (`build`
- * null, as for a view mixed from two builds): this person's access changed (a role, the sessions shared with them),
- * another person signed in, the server runs other code, or a session left the list. Until the server answers again, a
- * kept view could show what they may no longer see.
+ * null). This person's access changed (a role, the sessions shared with them), another person signed in, or a session
+ * left the list. Until the server answers again, a kept view could show what they may no longer see.
  */
 function forgetKept() {
     keptViews.clear();
     unsaved.clear();
+    synced = null;
     lastSaved = null;
     // A read ahead from the device that is under way keeps nothing it read before this.
     warmedFor = null;
@@ -1187,9 +1195,8 @@ function forgetKept() {
 // ─── Sessions kept on the device ───────────────────────────────────────────────────────────────────────────────────
 
 /**
- * Who is signed in, and this server's build, as the page carries them (`serveApp`): `{ user, build }`, the same shape
- * `hello` sends, so a session the device kept can be checked (`usable`) before `/api/me` answers. Null when the page
- * names neither, as for a signed-out request.
+ * The signed-in person, this server's build, and the session of this URL if allowed, as the page carries them
+ * (`serveApp`). With these a tab can check a device copy before `/api/me` answers.
  */
 function knownFromPage() {
     const text = document.getElementById("pocket-known")?.textContent;
@@ -1308,13 +1315,27 @@ document.addEventListener("visibilitychange", () => {
     }
 });
 
-/**
- * A session the device kept, as `keptView` gives one from memory, if it is this person's, from a server of this build,
- * and the session still shown: undefined otherwise. Only what the person may see now: one no longer shared with them is
- * not in their list, and the server says it is missing.
- */
+/** Whether a regular session is absent from this person's session list (PiP and subagents are not listed). */
+function unlisted(conversation, sessions) {
+    return (
+        conversation?.kind === "session" &&
+        !conversation.pip &&
+        !sessions.some((session) => session.id === conversation.id)
+    );
+}
+
+/** A session the device kept, as `keptView` gives one from memory, if the person can still see it. */
 async function deviceView(id) {
-    return onDevice() && store.state.me ? adopt(id, await readDevice(id)) : undefined;
+    if (!onDevice() || !store.state.me) {
+        return undefined;
+    }
+
+    const found = await readDevice(id);
+
+    return store.state.sessionsLoaded &&
+        unlisted(found?.record.view?.conversation, store.state.sessions)
+        ? undefined
+        : adopt(id, found);
 }
 
 /** What the device kept of a session, unchecked (`adopt` checks it): undefined if nothing, or it cannot be read. */
@@ -1325,26 +1346,27 @@ function readDevice(id) {
 }
 
 /**
- * Whether what the device kept of session `id` may be used: this person's, with the same rights, of this build. Before
- * `/api/me` answers, the page's own word of who and which build (`knownFromPage`) stands in for the store's.
+ * Whether a device copy is this person's with the same rights. Its build marks provenance, not permission.
+ * Before `/api/me` the page's own word of who is signed in (`knownFromPage`) stands in for the store's.
  */
-function usable(found, id, { me, server } = store.state) {
+function usable(found, id, me = store.state.me) {
     return (
         found !== undefined &&
         onDevice() &&
         me != null &&
         found.info.owner === ownerOf(me) &&
-        found.info.build === server?.build &&
-        found.record.view?.build === server.build &&
+        typeof found.info.build === "string" &&
+        found.record.view?.build === found.info.build &&
         found.record.view.conversation?.id === id
     );
 }
 
 /** A session the device kept (`readDevice`), as `deviceView` gives it, once it is checked. */
-function adopt(id, found, identity = store.state) {
+function adopt(id, found, me = store.state.me) {
     if (
-        !usable(found, id, identity) ||
+        !usable(found, id, me) ||
         store.state.conversationId !== id ||
+        store.state.missing != null ||
         store.state.view.conversation != null
     ) {
         return undefined;
@@ -1464,7 +1486,7 @@ function dropFromDevice(id) {
     }
 }
 
-/** Drop what the device kept that this server cannot use: another person's, older rights, or another build's. */
+/** Drop what the device kept for another person or under older rights. */
 function tidyDevice(me, server) {
     if (typeof indexedDB === "undefined") {
         return;
@@ -1478,7 +1500,7 @@ function tidyDevice(me, server) {
 
     const owner = ownerOf(me);
 
-    void disk.drop((info) => info.owner !== owner || info.build !== server.build).catch(() => {});
+    void disk.drop((info) => info.owner !== owner).catch(() => {});
 }
 
 /**
@@ -1503,7 +1525,11 @@ function seenOf(id) {
  * is open, which brings that view soon. Otherwise the kept view shows at once, and what came since slides in.
  */
 function holdsFor(kept) {
-    if (kept?.seen == null || store.state.appearance?.waitForUpdates !== true) {
+    if (
+        kept?.seen == null ||
+        viewStale(kept.view) ||
+        store.state.appearance?.waitForUpdates !== true
+    ) {
         return false;
     }
 
@@ -1555,8 +1581,8 @@ function keptView(id) {
 
 /**
  * What this tab has of the session it shows, for the server (`have` in `/api/events`): the order's ids up to the last
- * one it has, as a fingerprint, and from where on it has their entries. The server checks it (`Room.push`), and then
- * leaves those out of the view it sends. Null with nothing to name.
+ * one it has, as a fingerprint, and from where on it has their entries. `Room.push` only counts them as sent for the
+ * same build. A different build sends that range again, whole, so the tab can compare its entries. Null with nothing to name.
  */
 function haveOf(view) {
     // A light entry (`partial`) is not had: the server sends it whole after it, and would not if it were named.
@@ -1633,13 +1659,14 @@ function applyPipView(data) {
 }
 
 /**
- * A view after an update from the server: the full view, or what changed since the last one. A full view of the same
- * conversation, as after a reconnect, keeps the entries loaded before (`loadEarlier`): it brings only the newest.
+ * A view after an update from the server. A full view of the same build keeps earlier loaded entries. After a build
+ * change the new projection is authoritative: reuse an entry only if the server sent it again with the same content.
  */
 function mergeView(current, data) {
     const same = current.conversation?.id === data.conversation.id;
     const base = data.full || !same ? emptyView() : current;
     const build = store.state.server?.build;
+    const refreshed = data.full && same && data.orderFrom === undefined && current.build !== build;
 
     // Nothing came after what this tab kept (`have`): the same order and Map, as for an update that brings none.
     const nothingNew =
@@ -1652,9 +1679,9 @@ function mergeView(current, data) {
     // is not built again for each of them.
     const unchanged =
         nothingNew || (!data.full && same && data.entries.length === 0 && !data.order);
-    const entries = unchanged
+    let entries = unchanged
         ? current.entries
-        : new Map(data.full && same ? current.entries : base.entries);
+        : new Map(data.full && same && !refreshed ? current.entries : base.entries);
 
     // A light one held from before (the tab left before the whole one came) goes: past the newest rows, the server
     // counts it as sent, so only `loadEarlier` brings it whole, and it asks for what is missing.
@@ -1675,11 +1702,14 @@ function mergeView(current, data) {
             continue;
         }
 
-        entries.set(entry.id, entry);
+        entries.set(
+            entry.id,
+            data.full && same ? kept(current.entries.get(entry.id), entry) : entry,
+        );
     }
 
     // Only the end of the order comes after what this tab kept (`have`): it goes on from `orderFrom`.
-    const order = nothingNew
+    let order = nothingNew
         ? current.order
         : data.order === undefined
           ? base.order
@@ -1697,19 +1727,23 @@ function mergeView(current, data) {
         }
     }
 
+    if (data.full && same) {
+        order = kept(current.order, order);
+
+        if (
+            entries.size === current.entries.size &&
+            [...entries].every(([id, entry]) => current.entries.get(id) === entry)
+        ) {
+            entries = current.entries;
+        }
+    }
+
     return {
         ...base,
         conversation: data.conversation,
         entries,
         order,
-        // The build of the server that made these entries (an entry is as its code projects it), for what this tab tells
-        // the next one it has (`have`). A full view from another build, after a restart with new code, over entries the
-        // tab kept, mixes the two: null, and such a view is neither kept nor named.
-        build: !data.full
-            ? base.build
-            : !same || current.build === build || data.orderFrom !== undefined
-              ? build
-              : null,
+        build: data.full ? build : base.build,
         live: mergeLive(base.live, data.live),
         agent: data.agent,
         stats: data.stats,
@@ -1895,13 +1929,10 @@ const handlers = {
 
         helloAsked = undefined;
 
-        // A server that runs other code sends entries otherwise; and this person's rights may have changed (a role, the
-        // sessions shared with them), or another person signed in: what this tab kept goes, and the view it shows is not
-        // kept when it leaves. A restart with the same code keeps it all.
-        if (
-            (state.server != null && data.server?.build !== state.server.build) ||
-            (state.me && !sameJson(state.me, data.user))
-        ) {
+        const buildChanged = state.server != null && data.server?.build !== state.server.build;
+
+        // Changed sign-in or rights make the copy unusable. A new build alone makes it stale, not unusable.
+        if (state.me && !sameJson(state.me, data.user)) {
             forgetKept();
         }
 
@@ -1919,6 +1950,13 @@ const handlers = {
             // This connection's id, which peek lists name (`peeks.js`). `GET /api/me` answers without one.
             ...(data.connection === undefined ? {} : { streamId: data.connection }),
         });
+
+        // An automatic reconnect may have asked with no snapshot or an older range. On a build change ask once
+        // with the view on screen, so its older rows come back in the same batch as the newest ones.
+        if (buildChanged && viewStale()) {
+            connect();
+        }
+
         // The sessions used last, from the device into memory, once the page settles: after a reload they open at once.
         setTimeout(() => void warmFromDevice(), 1500);
     },
@@ -1937,7 +1975,16 @@ const handlers = {
             }
         }
 
+        // A first list can also rule out the device copy shown after startup, even if the page allowed it earlier.
+        const conversation = state.view.conversation;
+        const lost = unlisted(conversation, sessions) && !viewSynced(conversation.id);
+
+        if (lost) {
+            dropFromDevice(conversation.id);
+        }
+
         setChanged({
+            ...(lost ? { view: emptyView(), holding: null } : {}),
             sessions,
             sessionsLoaded: true,
             moving: kept(state.moving, stillMoving(state.moving, sessions)),
@@ -2028,10 +2075,11 @@ const handlers = {
  * leaves it out. 3: it takes the message being written as what changed (`mergeLive`). 4: a full view brings only the
  * entries of the newest rows, and it loads earlier ones as it shows them (`loadEarlier`). 5: those entries come light
  * (`partial`) at first, whole in the update after. 6: it names what it kept of the session it opens (`have`), and takes a
- * view that leaves that out (`orderFrom`). The server sends a tab below 3 the whole message with each update, and one
+ * view that leaves that out (`orderFrom`). 7: on a build change it keeps the old rows on screen and asks to compare
+ * that range with the new projection. The server sends a tab below 3 the whole message with each update, and one
  * whose code names none (as a tab asleep through an update keeps) the queue too.
  */
-const PROTOCOL = 6;
+const PROTOCOL = 7;
 const TRANSPORT_KEY = "pocket.transport";
 const local = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
 /** After an event stream stalls on this address, poll for a day, then try the stream again: one slow start is not forever. */
@@ -2534,6 +2582,10 @@ function pollEvents() {
                 connected();
 
                 for (const item of data.events) {
+                    if (stopped) {
+                        return;
+                    }
+
                     if (item.seq <= ack) {
                         continue;
                     }
@@ -2546,7 +2598,7 @@ function pollEvents() {
                 }
 
                 // The tab switched while it was asked: the new session shows the old one, so switch it too.
-                if (fresh && named !== store.state.conversationId) {
+                if (!stopped && fresh && named !== store.state.conversationId) {
                     show();
                 }
             } catch {
@@ -2780,18 +2832,17 @@ export async function start() {
 
     try {
         const asked = moment();
-        // Read the device while asking who this is. The signed-in page supplies the same identity and build for
-        // `usable`, never a browser-stored guess. Apply a checked copy as soon as the read finishes.
+        // Read the device while asking who this is, but only if the signed-in page granted this session. Apply
+        // the checked copy as soon as the read finishes, even if it was made by another build.
         const id = store.state.conversationId;
-        const onDisk = id === null ? undefined : readDevice(id);
+        const known = knownFromPage();
+        const onDisk = known?.session === id ? readDevice(id) : undefined;
         const answer = api("me");
 
         // The request may fail before IndexedDB answers; it is handled by the await below.
         void answer.catch(() => {});
         const cached = await onDisk;
-        const known = knownFromPage();
-        const early =
-            known === null ? undefined : adopt(id, cached, { me: known.user, server: known });
+        const early = known === null ? undefined : adopt(id, cached, known.user);
 
         if (early !== undefined) {
             shownEarly = { id, cached };
@@ -2822,8 +2873,8 @@ export async function start() {
             return;
         }
 
-        // Recheck the original record, including its owner, against `/api/me`. A changed sign-in, rights, build, or
-        // device-cache policy must remove the early view, and must not keep it for a later switch, including on retry.
+        // Recheck the original record, including its owner, against `/api/me`. A changed sign-in, rights, or device-cache
+        // policy must remove the early view, and must not keep it for a later switch, including on retry.
         const shown = early !== undefined ? { id, cached } : retained;
 
         if (
@@ -3033,7 +3084,7 @@ export function loadEarlier({ rows, from } = {}) {
     const conversationId = view.conversation?.id;
     const start = loadedFrom(view);
 
-    if (conversationId === undefined || start === 0) {
+    if (conversationId === undefined || start === 0 || viewStale(view)) {
         return Promise.resolve();
     }
 
@@ -3054,6 +3105,8 @@ export function loadEarlier({ rows, from } = {}) {
             store.set((state) => {
                 if (
                     state.view.conversation?.id !== conversationId ||
+                    state.view.build !== view.build ||
+                    viewStale(state.view) ||
                     !state.view.order.includes(before)
                 ) {
                     return {};

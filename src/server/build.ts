@@ -1,7 +1,8 @@
 /**
  * This server's build: a short hash of its own code and its package (with the versions of what it depends on, as locked). Tabs keep
  * sessions as a server sends them, and a session's entries are as this code projects them (`projection.ts`): a tab's
- * cached session is good for any server with the same build, so it lasts across a restart, but not across new code.
+ * cached entries can count as sent on a server with the same build. After a code change the tab can still show them,
+ * but compares them with the new projection.
  */
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";

@@ -25,7 +25,7 @@ import {
     VENDOR,
     WEB,
 } from "./http/assets.ts";
-import { type HttpOptions, json } from "./http/io.ts";
+import { conversationId, type HttpOptions, json } from "./http/io.ts";
 import { join as joinPage, login, sharePage } from "./http/sign-in.ts";
 import { themeFile } from "./http/theme-routes.ts";
 
@@ -33,19 +33,31 @@ import { themeFile } from "./http/theme-routes.ts";
 const BRIDGE_VERSION = 1;
 
 /**
- * Who is signed in, and this server's build, for the app page (`serveApp`): the same `user` a hello sends, so the tab
- * can check a session the device kept (`usable`) before `/api/me` answers. Absent when signed out or caching is off.
+ * Who is signed in, this server's build, and the session of this URL if the person may see it. The tab can then
+ * check a device copy before `/api/me` answers. Absent when signed out or caching is off.
  */
 function pageFacts(
     request: IncomingMessage,
     auth: Auth,
     app: HttpOptions["app"],
-): { user: ReturnType<typeof helloUser>; build: string } | undefined {
+    session?: string,
+) {
     const user = auth.user(request);
 
-    return user === undefined || process.env.PI_POCKET_SESSION_CACHE === "off"
-        ? undefined
-        : { user: helloUser(user), build: app.build };
+    if (user === undefined || process.env.PI_POCKET_SESSION_CACHE === "off") {
+        return undefined;
+    }
+
+    const id =
+        session !== undefined && /^\d+$/.test(session) && Number.isSafeInteger(Number(session))
+            ? conversationId(session)
+            : undefined;
+
+    return {
+        user: helloUser(user),
+        build: app.build,
+        ...(id !== undefined && app.canSee(user, id) ? { session: id } : {}),
+    };
 }
 
 export function createHandler(options: HttpOptions) {
@@ -204,12 +216,12 @@ export function createHandler(options: HttpOptions) {
             }
 
             // The web app: index.html for app routes, files from web/ otherwise. Who is signed in, and this
-            // server's build, go in the page (`serveApp`): the tab checks a session the device kept before `/api/me`.
+            // server's build and permission for this session go in the page (`serveApp`), for the device cache.
             if (parts.length === 0 || parts[0] === "s") {
                 return serveApp(
                     response,
                     iconAddress(request, app.dataDir),
-                    pageFacts(request, auth, app),
+                    pageFacts(request, auth, app, parts[1]),
                 );
             }
 

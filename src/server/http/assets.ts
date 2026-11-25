@@ -253,14 +253,13 @@ function preloads(imports: Record<string, string>): string[] {
 
 /**
  * The app page, with its content security policy, and the modules it loads listed for the browser to fetch at once.
- * `facts`, when the request is signed in, is who and which build (`{ user, build }`, as `hello` says them): the page
- * carries them so a tab can check a session the device kept before `/api/me` answers. Absent when signed out or
- * device caching is off.
+ * `facts`, when signed in, names the person and build as `hello` does, and the session of this URL if allowed.
+ * The tab can then check a device copy before `/api/me` answers. Absent when signed out or device caching is off.
  */
 export function serveApp(
     response: ServerResponse,
     icon: string | null = null,
-    facts?: { user: unknown; build: string },
+    facts?: { user: unknown; build: string; session?: number },
 ): void {
     let body: string;
 
@@ -280,7 +279,7 @@ export function serveApp(
         );
     }
 
-    // Who is signed in and which build this is, for the device cache's check (`usable` in store.js) before `/api/me`.
+    // Who is signed in, which build this is, and whether the page can show a cached session before `/api/me`.
     // JSON in a script the policy allows by hash: a name or a title cannot close the tag.
     if (facts !== undefined) {
         const json = JSON.stringify(facts).replace(/</g, "\\u003c");
