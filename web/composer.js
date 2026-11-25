@@ -13,7 +13,7 @@ import {
     schedulesAvailable,
     suggestCommands,
 } from "./commands.js";
-import { QuoteLayer, quoteStyleOf } from "./quote-box.js";
+import { QuoteLayer, QuoteStripText, quoteStyleOf } from "./quote-box.js";
 import {
     changedRange,
     insertQuote,
@@ -125,21 +125,6 @@ function loadPastes(id) {
     }
 }
 
-/** A list of strings kept in the person's storage under `key`: none when it is missing or not one. */
-function loadList(key) {
-    try {
-        const list = JSON.parse(personStorage.get(key) ?? "[]");
-
-        return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
-    } catch {
-        return [];
-    }
-}
-
-function saveList(key, list) {
-    personStorage.set(key, list.length === 0 ? null : JSON.stringify(list));
-}
-
 /**
  * Each conversation's quotes that Reply put in its box, where each one is in the draft (`{ start, end, text }`): kept
  * with it, so that a reload still draws them and keeps each one a piece. A quote typed by hand is plain text.
@@ -166,12 +151,45 @@ const savePieces = (id, pieces) =>
         `quotes.${id ?? "home"}`,
         pieces.length === 0 ? null : JSON.stringify(pieces),
     );
+
 /**
- * Each conversation's passages that Reply put in strips over its box (Appearance → Quotes in the message box →
- * Separate), in order: kept with its draft, so that a reload keeps them. They go first in the next message.
+ * Each conversation's quote strips (Appearance → Separate), in order, kept with its draft. Old strips
+ * were strings: those still read as quotes without a source. The strips go first in the next message.
  */
-const loadStrips = (id) => loadList(`quoteStrips.${id ?? "home"}`);
-const saveStrips = (id, strips) => saveList(`quoteStrips.${id ?? "home"}`, strips);
+function loadStrips(id) {
+    try {
+        const list = JSON.parse(personStorage.get(`quoteStrips.${id ?? "home"}`) ?? "[]");
+
+        return Array.isArray(list)
+            ? list.flatMap((each) => {
+                  if (typeof each === "string") {
+                      return [{ text: each }];
+                  }
+
+                  if (typeof each?.text !== "string") {
+                      return [];
+                  }
+
+                  const { text, source } = each;
+                  const sourced =
+                      typeof source?.label === "string" && typeof source?.line === "string";
+
+                  return [sourced ? { text, source } : { text }];
+              })
+            : [];
+    } catch {
+        return [];
+    }
+}
+
+const saveStrips = (id, strips) =>
+    personStorage.set(
+        `quoteStrips.${id ?? "home"}`,
+        strips.length === 0 ? null : JSON.stringify(strips),
+    );
+
+const sameStrip = (a, b) =>
+    a?.text === b.text && a.source?.line === b.source?.line && a.source?.label === b.source?.label;
 
 const attachedKey = (id) => `attached.${id ?? "home"}`;
 let attachmentsStopped = false;
@@ -353,7 +371,7 @@ function endSend(id, record, went) {
         const strips = loadStrips(id);
         const sentStrips = record.strips ?? [];
 
-        if (sentStrips.every((strip, index) => strips[index] === strip)) {
+        if (sentStrips.every((strip, index) => sameStrip(strips[index], strip))) {
             saveStrips(id, strips.slice(sentStrips.length));
         }
 
@@ -1099,7 +1117,7 @@ export function Composer() {
         replying.forEach(dropQuote);
 
         if (quoteStyle === "separate") {
-            const next = [...loadStrips(conversationId), ...replying.map((each) => each.text)];
+            const next = [...loadStrips(conversationId), ...replying];
 
             setStrips(next);
             saveStrips(conversationId, next);
@@ -1112,7 +1130,7 @@ export function Composer() {
         const added = [];
 
         for (const each of replying) {
-            const quoted = insertQuote(words, each.text);
+            const quoted = insertQuote(words, each.text, each.source);
 
             words = quoted.text;
             at = quoted.at;
@@ -2348,7 +2366,7 @@ export function Composer() {
                                 (strip, index) =>
                                     html`<div class="quote-strip" data-part="quote-strip">
                                         <${Icon} name="reply" size=${13} />
-                                        <span class="quote-strip-text">${strip}</span>
+                                        <${QuoteStripText} quote=${strip} />
                                         <button
                                             type="button"
                                             class="icon-button small"

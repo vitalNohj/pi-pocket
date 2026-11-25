@@ -66,6 +66,7 @@ before(async () => {
 
     // A file to name with @.
     writeFileSync(join(work, "noted.txt"), "hi");
+    writeFileSync(join(work, "passage.md"), "# A passage\n\nA second line\n");
     app = await openApp(scriptedModel());
     session = await newSession(app);
     server = createServer(
@@ -108,6 +109,56 @@ after(async () => {
     await app?.close();
     cleanUp();
 });
+
+test(
+    "a file's preview and source have the quote pill, but its line numbers do not",
+    real,
+    async () => {
+        const select = (selector: string) =>
+            page.evaluate(`const range = document.createRange();
+            range.selectNodeContents(document.querySelector(${JSON.stringify(selector)}));
+            getSelection().removeAllRanges();
+            getSelection().addRange(range);`);
+        const pill = ".quote-reply-button";
+
+        await page.evaluate(`(await import('/ui.js')).openFile('passage.md')`);
+        await see("document.querySelector('.file-viewer .md h1')", "the file's preview");
+        await select(".file-viewer .md h1");
+        await see(`document.querySelector('${pill} .quote-reply-pip')`, "the preview's Ask PiP");
+        await page.evaluate(`(await import('/theme.js')).setPrefs({ quoteReply: false })`);
+        await see(`document.querySelectorAll('${pill} button').length === 1`, "only Ask PiP");
+        assert.ok(await inPage(`Boolean(document.querySelector('${pill} .quote-reply-pip'))`));
+        await page.evaluate(
+            `(await import('/theme.js')).setPrefs({ quoteReply: true, askPipQuote: false })`,
+        );
+        await see(
+            `document.querySelector('${pill} button')?.textContent.trim() === 'Reply'`,
+            "only Reply",
+        );
+        await page.click({ selector: `${pill} button` });
+        await see("!document.querySelector('.file-viewer')", "the sheet closed");
+        assert.equal(await boxText(), "From @passage.md:\n> A passage\n");
+
+        await page.evaluate(`(await import('/ui.js')).openFile('passage.md:1')`);
+        await see("document.querySelector('.file-view .ln')", "the file's source");
+        await select(".file-view .ln");
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        assert.equal(
+            await inPage(`document.querySelector('${pill}') === null`),
+            true,
+            "no pill in the gutter",
+        );
+        await select(".file-view");
+        await see(`document.querySelector('${pill} button')`, "the source's Reply");
+        await page.click({ selector: `${pill} button` });
+        await see("!document.querySelector('.file-viewer')", "the source closed");
+        assert.equal(
+            await boxText(),
+            "From @passage.md:\n> A passage\n\nFrom @passage.md:\n> # A passage\n>  \n> A second line\n",
+        );
+        await page.evaluate(`(await import('/theme.js')).setPrefs({ askPipQuote: true })`);
+    },
+);
 
 test(
     "Reply stacks quotes in the box, each one piece, and Pi gets the text as written",
@@ -180,12 +231,18 @@ test(
         assert.equal(await boxText(), "", "the box keeps only its words");
         await page.click({ selector: ".quote-strip button" });
         await see(`document.querySelectorAll('.quote-strip').length === 1`, "one removed");
-        await page.evaluate(`${STORE}.quoteReply('strip three')`);
+        await page.evaluate(
+            `${STORE}.quoteReply('strip three', { label: 'noted.txt', line: 'From @noted.txt:' })`,
+        );
+        await see(
+            `document.querySelector('.quote-strip-text strong')?.textContent === 'noted.txt'`,
+            "the source in its strip",
+        );
 
         await page.navigate(`${base}/s/${session}`);
         await see(
-            `[...document.querySelectorAll('.quote-strip-text')].map((each) => each.textContent).join() === 'strip two,strip three'`,
-            "the strips after a reload",
+            `document.querySelectorAll('.quote-strip').length === 2 && document.querySelector('.quote-strip-text strong')?.textContent === 'noted.txt'`,
+            "the strips and their source after a reload",
         );
         await caretAt(0);
         await page.type(undefined, "both", { append: true });
@@ -196,7 +253,9 @@ test(
                 (await app.transcripts.allEntries(session, true)).some(
                     (entry) =>
                         entry.kind === "user" &&
-                        entry.text.includes("> strip two\n\n> strip three\n\nboth"),
+                        entry.text.includes(
+                            "> strip two\n\nFrom @noted.txt:\n> strip three\n\nboth",
+                        ),
                 ),
             "Pi got the strips first",
         );

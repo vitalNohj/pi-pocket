@@ -21601,7 +21601,7 @@ pre.gallery-code {
     }
 }
 
-/* Over a selection in Pi's answer: a small popover, like the reaction picker. */
+/* Over a selected passage: a small popover, like the reaction picker. */
 .quote-reply-button {
     position: fixed;
     z-index: 70;

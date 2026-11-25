@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useArtifactBridge } from "../artifact-bridge.js";
 import { browserModuleState, openExtPanel } from "../extension-ui.js";
+import { reportFrameSelection } from "../quote-reply.js";
 import { api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
 import { modeOf, paletteOf, themeVars } from "../theme.js";
 import { copyText, formatBytes, formatWhen, html, Icon, Loader, Sheet, timeAgo } from "../ui.js";
@@ -107,17 +108,29 @@ export function ArtifactsSheet() {
 export function ArtifactViewer({ id, version }) {
     const { view, me } = store.state;
     const artifact = view.artifacts.find((each) => each.id === id);
+    const title = artifact?.title ?? id;
     const frame = useRef(null);
-
-    // What its page may ask: a follow-up in the message box, and its own saved state (`artifact-bridge.js`). Only an HTML
-    // page has the bridge: a Markdown or SVG page has no script of the app's to open the line.
-    useArtifactBridge(frame, {
-        artifact: id,
-        source: `the artifact “${artifact?.title ?? id}”`,
-        enabled: artifact?.type === "html",
-    });
     const [shown, setShown] = useState(version ?? artifact?.versions.at(-1)?.version);
     const [nonce, setNonce] = useState(0);
+
+    // HTML and Markdown report selections. Only HTML can ask for a follow-up or its saved state.
+    useArtifactBridge(frame, {
+        artifact: id,
+        source: `the artifact “${title}”`,
+        enabled: artifact?.type === "html" || artifact?.type === "markdown",
+        selectionOnly: artifact?.type === "markdown",
+        onMessage(message, from) {
+            if (message.type === "pocket-selection" && store.state.sheet?.type === "viewer") {
+                // Use the viewer's title and version, not the page's. Escape @ in a title: it names no file.
+                const name = JSON.stringify(title).replaceAll("@", "\\@");
+
+                reportFrameSelection(from, message, {
+                    label: title,
+                    line: `From the artifact ${name} (${id}, v${shown}):`,
+                });
+            }
+        },
+    });
     const latest = artifact?.versions.at(-1)?.version;
     const theme = artifact?.type === "markdown" ? themeQuery() : "";
     const src = `/a/${view.conversation.id}/${encodeURIComponent(id)}/${shown ?? "latest"}${theme}`;
@@ -144,7 +157,7 @@ export function ArtifactViewer({ id, version }) {
     return html`<div class="viewer">
         <header class="viewer-head">
             <div class="viewer-title">
-                <strong>${artifact?.title ?? id}</strong>
+                <strong>${title}</strong>
                 <span class="muted small">
                     ${artifact?.type ?? ""} · version ${shown}
                     ${latest && shown !== latest ? html` · <button class="link" onClick=${() => setShown(latest)}>latest is v${latest}</button>` : ""}
@@ -213,9 +226,11 @@ export function ArtifactViewer({ id, version }) {
                       ref=${frame}
                       key=${`${src}#${nonce}`}
                       src=${src}
+                      onLoad=${(event) =>
+                          reportFrameSelection(event.currentTarget, { text: "", rect: null })}
                       sandbox="allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock allow-downloads"
                       allow="fullscreen; clipboard-write; accelerometer; gyroscope"
-                      title=${artifact?.title ?? id}
+                      title=${title}
                   ></iframe>`
         }
     </div>`;

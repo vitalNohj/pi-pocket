@@ -54,6 +54,15 @@ const COPIED = [
 /** One line of the box as the drawing shows it; an empty one still takes a line's height, as in the box. */
 const Line = ({ line }) => html`<span class="quote-box-line">${line || "\u200b"}</span>`;
 
+/** The passage in a strip, with its file name or artifact title above it. */
+export function QuoteStripText({ quote }) {
+    const { source, text } = quote;
+
+    return html`<span class="quote-strip-text">
+        ${source && html`<strong title=${source.line}>${source.label}</strong><br />`}${text}
+    </span>`;
+}
+
 /**
  * `text` as the drawing shows it: the words as they are, and each quote of `blocks` as one block (its lines, empty
  * ones too, inside it), its marks drawn.
@@ -73,6 +82,11 @@ function Lines({ text, blocks, marked }) {
             class=${`quote-block ${block.start === marked ? "marked" : ""}`}
             data-part="quote-block"
             >${block.text.split("\n").map((line) => {
+                // The source, if any, stands above the quote's own lines.
+                if (!line.startsWith(">")) {
+                    return html`<${Line} line=${line} />`;
+                }
+
                 const space = line.startsWith("> ") ? " " : "";
 
                 return html`<span class="quote-box-line quote-line"

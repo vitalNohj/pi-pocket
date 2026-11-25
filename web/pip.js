@@ -10,6 +10,7 @@ import { boxKey, keyBox } from "./box-keys.js";
 import { useDragToClose } from "./gestures.js";
 import { createPipDraft } from "./pip-attachments.js";
 import { personStorage } from "./person-storage.js";
+import { QuoteStripText } from "./quote-box.js";
 import { splitQuote, withQuote } from "./quote-text.js";
 import { usePipResize } from "./pip-window.js";
 import {
@@ -401,12 +402,16 @@ export function openPip(text) {
 }
 
 /**
- * Ask PiP about a passage of Pi's reply in session `session` (or none): a quote strip over PiP's box holds it, and the
- * next message to PiP goes with it quoted first. The server tells PiP, unseen, which session it came from.
+ * Ask PiP about a passage in `session` (or none): a strip over PiP's box holds it with its source. The next message
+ * goes with it quoted first. The server tells PiP, unseen, which session it came from.
  */
-export async function quotePip(passage, session) {
+export async function quotePip(passage, session, source) {
     store.set({
-        pipQuote: { text: passage, ...(typeof session === "number" ? { session } : {}) },
+        pipQuote: {
+            text: passage,
+            ...(typeof session === "number" ? { session } : {}),
+            ...(source ? { source } : {}),
+        },
     });
     await openPip();
     focusComposer();
@@ -734,7 +739,8 @@ function Item({ item, last, busy, conversationId }) {
             return html`<div class="pip-you">
                 ${
                     quote
-                        ? html`<blockquote class="reply-quote" data-part="reply-quote">
+                        ? html`${quote.source && html`<div>${quote.source}</div>`}
+                              <blockquote class="reply-quote" data-part="reply-quote">
                                   ${quote.passage}
                               </blockquote>
                               ${quote.rest && html`<div>${quote.rest}</div>`}`
@@ -980,7 +986,7 @@ function Composer({ id, busy, board = false }) {
                 ? (await compactPip(id, compact[1]?.trim())) !== undefined
                 : await send(
                       id,
-                      quoted ? withQuote(quoted.text, message) : message,
+                      quoted ? withQuote(quoted.text, message, quoted.source) : message,
                       busy,
                       token.files.map((file) => file.attachment),
                       quoted?.session === undefined ? undefined : { session: quoted.session },
@@ -1069,7 +1075,7 @@ function Composer({ id, busy, board = false }) {
             quote &&
             html`<div class="quote-strip pip-quote-strip" data-part="quote-strip">
                 <${Icon} name="reply" size=${13} />
-                <span class="quote-strip-text">${quote.text}</span>
+                <${QuoteStripText} quote=${quote} />
                 <button
                     type="button"
                     class="icon-button small"

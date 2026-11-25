@@ -5,6 +5,7 @@
  */
 import type { ServerResponse } from "node:http";
 import { marked } from "marked";
+import { QUOTE_MAX } from "../../../web/quote-text.js";
 import type { PocketApp } from "../app.ts";
 import { origin } from "../auth.ts";
 import type { User } from "../config.ts";
@@ -64,8 +65,76 @@ function markdownTheme(query: URLSearchParams): string {
         .join(";")}}`;
 }
 
+// Only a sandboxed frame opens a line. The app takes just the first one from that frame.
+const BRIDGE_LINE = `
+    const realParent = window.parent;
+
+    if (realParent === window || self.origin !== "null") {
+        return undefined;
+    }
+
+    const realPost = realParent.postMessage.bind(realParent);
+    const channel = new MessageChannel();
+    const line = channel.port1;
+    const toApp = line.postMessage.bind(line);
+    const hello = () => realPost({ type: "pocket-bridge" }, "*", [channel.port2]);
+    const listen = window.addEventListener.bind(window);
+    const later = window.setTimeout.bind(window);
+`;
+
+/** The passage and its position in this frame, never a request to quote it. */
+const BRIDGE_SELECTION = `
+    const selection = window.getSelection.bind(window);
+    const cancel = window.clearTimeout.bind(window);
+    let selectionTimer = 0;
+    let reported = false;
+
+    const clearSelection = () => {
+        cancel(selectionTimer);
+
+        if (reported) {
+            reported = false;
+            toApp({ type: "pocket-selection", text: "", rect: null });
+        }
+    };
+
+    const reportSelection = () => {
+        const selected = selection();
+        const text = selected && !selected.isCollapsed && selected.rangeCount > 0
+            ? selected.toString().trim().slice(0, ${QUOTE_MAX}).trimEnd()
+            : "";
+
+        if (text !== "") {
+            const { x, y, width, height } = selected.getRangeAt(0).getBoundingClientRect();
+
+            if (width > 0 && height > 0) {
+                reported = true;
+                toApp({ type: "pocket-selection", text, rect: { x, y, width, height } });
+
+                return;
+            }
+        }
+
+        clearSelection();
+    };
+
+    const watchSelection = () => {
+        const settle = () => {
+            cancel(selectionTimer);
+            selectionTimer = later(reportSelection, 160);
+        };
+
+        // Scrolling within the frame moves the passage without changing the range.
+        for (const event of ["selectionchange", "pointerup", "keyup", "scroll", "resize"]) {
+            listen(event, settle, true);
+        }
+
+        listen("pagehide", clearSelection);
+    };
+`;
+
 /**
- * The first script of every HTML artifact, and of the page a reply's HTML runs in (`RUN_FRAME`): it is what makes the
+ * The first script of every framed HTML artifact, and of the page a reply's HTML runs in (`RUN_FRAME`): it makes the
  * bridge (`web/artifact-bridge.js`) safe. Run in a frame, it opens a channel to the app and hands the app one end:
  * that channel belongs to this document, so a page the frame goes on to has no line to the app, and an answer cannot
  * reach it. The page's `parent` becomes a stand-in whose `postMessage` takes follow-ups and saved state down the channel
@@ -82,23 +151,13 @@ function markdownTheme(query: URLSearchParams): string {
  * what a person picks or edits, the page's tweaks manifest, and a deck's slides. Only it can send them: the stand-in
  * `parent` passes the page's own messages for follow-ups and saved state, and nothing more down the line.
  */
-const ARTIFACT_BRIDGE = `
-    const realParent = window.parent;
-
-    if (realParent === window || self.origin !== "null") {
-        return undefined;
-    }
-
-    const realPost = realParent.postMessage.bind(realParent);
+const ARTIFACT_BRIDGE = (withSelection: boolean) => `
+    ${BRIDGE_LINE}
+    ${withSelection ? `${BRIDGE_SELECTION}watchSelection();` : ""}
     const clone = structuredClone;
-    const listen = window.addEventListener.bind(window);
     const fire = window.dispatchEvent.bind(window);
-    const later = window.setTimeout.bind(window);
     const now = performance.now.bind(performance);
     const Heard = MessageEvent;
-    const channel = new MessageChannel();
-    const line = channel.port1;
-    const toApp = line.postMessage.bind(line);
     const stand = new MessageChannel().port1;
     const address = location.origin;
     let tapped = -Infinity;
@@ -147,7 +206,7 @@ const ARTIFACT_BRIDGE = `
     });
     Object.defineProperty(window, "parent", { get: () => stand, configurable: false });
     rearm();
-    realPost({ type: "pocket-bridge" }, "*", [channel.port2]);
+    hello();
 
     return {
         realParent,
@@ -159,8 +218,11 @@ const ARTIFACT_BRIDGE = `
     };
 `;
 
+/** A framed Markdown artifact reports selections, but has no follow-ups, saved state, or Design mode. */
+const MARKDOWN_BRIDGE_TAG = `<script>(() => {${BRIDGE_LINE}${BRIDGE_SELECTION}watchSelection(); hello();})();</script>`;
+
 /** The bridge as a script tag, for the start of an HTML artifact. */
-const BRIDGE_TAG = `<script>(() => {${ARTIFACT_BRIDGE}})();</script>`;
+const BRIDGE_TAG = `<script>(() => {${ARTIFACT_BRIDGE(true)}})();</script>`;
 
 /**
  * The artifact's HTML with `BRIDGE_TAG` first, before anything of the page can run. Only a doctype at the very start
@@ -183,7 +245,7 @@ export function withBridge(html: string): string {
  */
 export const RUN_FRAME = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preview</title></head><body><script>
 (() => {
-    const bridge = (() => {${ARTIFACT_BRIDGE}})();
+    const bridge = (() => {${ARTIFACT_BRIDGE(false)}})();
 
     if (bridge === undefined) {
         return;
@@ -245,9 +307,12 @@ export async function artifactResponse(
         return send(response, 200, found.content, "image/svg+xml", headers);
     }
 
+    const dest = response.req?.headers["sec-fetch-dest"];
+
     if (found.meta.type === "markdown") {
         const rendered = await marked.parse(found.content);
-        const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(found.meta.title)}</title>${base === undefined ? "" : `<base href="${escapeHtml(base)}">`}<style>${MARKDOWN_STYLE}${markdownTheme(query)}</style></head><body>${rendered}</body></html>`;
+        const script = bridge && dest !== "document" && dest !== "empty" ? MARKDOWN_BRIDGE_TAG : "";
+        const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(found.meta.title)}</title>${base === undefined ? "" : `<base href="${escapeHtml(base)}">`}<style>${MARKDOWN_STYLE}${markdownTheme(query)}</style>${script}</head><body>${rendered}</body></html>`;
 
         return send(response, 200, html, "text/html; charset=utf-8", headers);
     }
@@ -256,7 +321,6 @@ export async function artifactResponse(
     // tab of its own or a script's fetch: those get the page as it was written. With no such header (an older browser,
     // a proxy that drops it), it goes in too, or a page could say hello itself and send follow-ups with no tap. Outside
     // a frame, it does nothing.
-    const dest = response.req?.headers["sec-fetch-dest"];
     // A deck as a page of its own still shows one slide at a time (`withDeck`). A script's fetch (the inline card) gets
     // the page as it was written: the card shows it as code, and runs it in the run frame, which has the bridge.
     const content =
