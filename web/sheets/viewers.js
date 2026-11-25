@@ -5,6 +5,7 @@ import { browserModuleState, openExtPanel } from "../extension-ui.js";
 import { api, attempt, closeSheet, notify, openSheet, store } from "../store.js";
 import { modeOf, paletteOf, themeVars } from "../theme.js";
 import { copyText, formatBytes, formatWhen, html, Icon, Loader, Sheet, timeAgo } from "../ui.js";
+import { prompts } from "../roles.js";
 
 /**
  * The app's theme for a Markdown artifact's page, in its address: in its sandbox, the page cannot see the app's look,
@@ -26,7 +27,7 @@ function themeQuery() {
 }
 
 /** Whether this person may delete an artifact: anyone who steers the session, as the server checks. */
-const mayDelete = (me) => me?.role !== undefined && me.role !== "viewer";
+const mayDelete = (me) => prompts(me);
 
 /** Resolves true when it is gone. */
 export function deleteArtifact(conversationId, artifact) {
@@ -122,7 +123,7 @@ export function ArtifactViewer({ id, version }) {
     const theme = artifact?.type === "markdown" ? themeQuery() : "";
     const src = `/a/${view.conversation.id}/${encodeURIComponent(id)}/${shown ?? "latest"}${theme}`;
     // A published page is out of the reach of an invite to one session, so only those who see every session publish.
-    const shareable = me?.role !== "viewer" && me?.sessions === undefined && me?.role !== undefined;
+    const shareable = prompts(me) && me.sessions === undefined;
     // The Design canvas (a built-in module) shows an HTML page with its versions, comments, and tweaks.
     const designable =
         artifact?.type === "html" && browserModuleState("design")?.status === "ready";
@@ -277,7 +278,7 @@ export function ArtifactShareSheet({ id, version }) {
     const [fresh, setFresh] = useState(null);
     const makingNow = useRef(false);
     // As the server checks: only people who steer and see every session publish or end a link.
-    const steer = me?.role !== undefined && me.role !== "viewer" && me.sessions === undefined;
+    const steer = prompts(me) && me.sessions === undefined;
 
     const load = () =>
         attempt(async () => {

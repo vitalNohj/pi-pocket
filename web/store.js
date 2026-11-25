@@ -19,6 +19,7 @@ import {
     remember,
     sameLayout,
 } from "./panel-layout.js";
+import { isOwner, isViewer } from "./roles.js";
 
 /** A random id. crypto.randomUUID only exists on https and localhost pages; plain-http network addresses lack it. */
 export function uid() {
@@ -664,7 +665,7 @@ addEventListener("storage", (event) => {
 /** Server features the web app may use. `collab` 2 adds roles, take turns, reactions, pins, notes, mentions, push. */
 export const collab = () => (store.state.server?.collab ?? 0) >= 2;
 /** Viewers read and chat; they never steer Pi. */
-export const canSteer = () => store.state.me?.role !== "viewer";
+export const canSteer = () => !isViewer(store.state.me);
 
 /**
  * Whether this person may turn take turns on or off here, as the server decides: anyone who steers while it is off; the
@@ -684,6 +685,12 @@ export function canToggleTurns() {
             !presence.some((person) => person.id === turns.driver))
     );
 }
+
+/**
+ * Does this person reach the server's machine itself, outside any session (`access.ts` `reachesMachine`): its file
+ * manager, the servers that run on it, a file path in the browser tool, and every session's work on the Work map.
+ */
+export const reachesMachine = () => store.state.me?.reachesMachine === true;
 
 /** People invited to one session cannot start sessions or invite others. */
 export const scoped = () => Array.isArray(store.state.me?.sessions);
@@ -732,13 +739,13 @@ export const canInviteNew = () => store.state.me?.mayInvite ?? (canStart() && ca
  * Does this person manage people (`access.ts` `managesPeople`): the owner, and a user the owner lets. People shows them
  * each person's settings.
  */
-export const managesPeople = () => hasRight("managesUsers") ?? store.state.me?.role === "owner";
+export const managesPeople = () => hasRight("managesUsers") ?? isOwner(store.state.me);
 
 /**
  * Does this person manage runners (`access.ts` `managesRunners`): the owner, and a user the owner lets. They are in
  * charge of this server and of the runners the owner linked, and unlink any runner.
  */
-export const managesRunners = () => hasRight("managesRunners") ?? store.state.me?.role === "owner";
+export const managesRunners = () => hasRight("managesRunners") ?? isOwner(store.state.me);
 
 /**
  * Whether the app offers this person the Runners sheet: who manages runners (the owner too), who may link computers
@@ -756,7 +763,7 @@ export const runnersOffered = () =>
  * Does this person manage this server (`access.ts` `managesServer`): the owner, and a user the owner lets. The app
  * offers them its settings: extensions, providers, models, themes, spend limits, memory lessons, and Restart.
  */
-export const managesServer = () => hasRight("managesServer") ?? store.state.me?.role === "owner";
+export const managesServer = () => hasRight("managesServer") ?? isOwner(store.state.me);
 
 /** The computer a session runs on, as the server names it (`access.ts` `THIS_SERVER`): a runner's id, or this server. */
 const computerOf = (session) => session?.runner ?? "this-server";
@@ -767,7 +774,7 @@ const computerOf = (session) => session?.runner ?? "this-server";
  * charge of and those where they were given it.
  */
 export const overridesTurns = (session) =>
-    hasRight("wheel", computerOf(session)) ?? store.state.me?.role === "owner";
+    hasRight("wheel", computerOf(session)) ?? isOwner(store.state.me);
 
 /**
  * May this person allow a call their own message led to in `session` while approvals need someone else (`access.ts`
@@ -4405,7 +4412,7 @@ export function filesShown(state = store.state) {
         state.filesOpen &&
         state.conversationId !== null &&
         !state.missing &&
-        state.me?.role !== "viewer" &&
+        !isViewer(state.me) &&
         !browsing
     );
 }

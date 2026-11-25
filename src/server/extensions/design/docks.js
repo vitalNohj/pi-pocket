@@ -5,6 +5,7 @@ import { openOf, pinNumber } from "./comments.js";
 import { nameOf } from "./edits.js";
 import { commentsMessage, editsMessage, tweaksMessage } from "./messages.js";
 import { changed, coerce, show } from "./tweaks.js";
+import { isOwner } from "/roles.js";
 
 export function createDocks(env) {
     const { pocket, store, data, parts } = env;
@@ -237,7 +238,7 @@ export function createDocks(env) {
 
         const row = (comment) => {
             const number = pinNumber(comments, comment, shown);
-            const mine = comment.by === me?.id || me?.role === "owner";
+            const mine = comment.by === me?.id || isOwner(me);
 
             return html`<li
                 class=${`dsn-comment ${comment.resolved ? "done" : ""}`}

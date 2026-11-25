@@ -25,7 +25,7 @@ import { inFolder, THIS_SERVER } from "../access.ts";
 import type { ComputerSettings, User } from "../config.ts";
 import { MAX_AVATAR, readAvatar } from "../avatars.ts";
 import { HttpError, optionalText } from "../errors.ts";
-import { isOwner } from "../roles.ts";
+import { isOwner, STARTS_AS } from "../roles.ts";
 import { isLocalRequest, withReveal } from "../local-browser.ts";
 import { machineRoots, parentFolder } from "../paths.ts";
 import { desktopTheme, wallpaperFile } from "../omarchy.ts";
@@ -249,7 +249,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         // Every invite starts as a viewer: steering comes later, once they link an authenticator, from who is in charge.
-        const grant: InviteGrant = { role: "viewer" };
+        const grant: InviteGrant = { role: STARTS_AS };
 
         // Unless the invite allows more, the account links no authenticator and stays a viewer.
         if (body.temporary !== false) {
@@ -1190,7 +1190,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // Which sessions worked in which worktrees: every session's history and every repository here, so the owner's.
         if (first === "work-map" && second === undefined && method === "GET") {
-            requireOwner(user);
+            if (!app.policy.reachesMachine(user)) {
+                throw new HttpError(403, "Only the owner can do that");
+            }
 
             return json(response, 200, await app.workMaps.map());
         }

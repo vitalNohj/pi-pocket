@@ -10,7 +10,7 @@
  */
 import { HttpError } from "./errors.ts";
 import type { FolderLevel } from "./config.ts";
-import type { Role } from "./roles.ts";
+import { roleSaid, type Role, type RoleSaid } from "./roles.ts";
 import {
     canHold,
     comesWith,
@@ -576,6 +576,15 @@ export class AccessPolicy {
 
     // What a person is, by their role. Every caller outside this file asks one of these, named for what it is for, on
     // the current record: so a stale copy answers nothing, and a new role is decided here (`roles.ts`).
+
+    /**
+     * What a page is told of `person`'s role, wherever the server names a person (`roles.ts` `roleSaid`): the role, and
+     * the answers the page needs so that it compares no role itself. Of the current record; of the one given, for
+     * someone no longer here.
+     */
+    said(person: Pick<Person, "id" | "role">): RoleSaid {
+        return roleSaid(this.#current(person) ?? person);
+    }
 
     /** Is `person` the owner. */
     isOwner(person: Pick<Person, "id">): boolean {

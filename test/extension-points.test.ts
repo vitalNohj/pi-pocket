@@ -515,7 +515,7 @@ test("host.roleOf gives a person's role by id, and nothing for an id that is not
     assert.equal(await ask(viewer.id), "viewer");
     assert.equal(await ask("nobody"), null);
 
-    app.config.updateUser(guest.id, { role: "viewer" });
+    app.config.giveRole(guest.id, "viewer");
     assert.equal(await ask(guest.id), "viewer");
     app.config.removeUser(guest.id);
     assert.equal(await ask(guest.id), null);

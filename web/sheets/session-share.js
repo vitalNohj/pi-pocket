@@ -5,6 +5,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, closeSheet, notify, store } from "../store.js";
 import { html, Loader, Sheet } from "../ui.js";
+import { isViewer } from "../roles.js";
 
 /**
  * May this tab share session `session` (a row of the list): the server says so on the row (`access.ts` `mayShare`): who
@@ -100,7 +101,7 @@ export function SessionShareSheet({ id }) {
                                               )}
                                       />
                                       ${person.name}${
-                                          person.role === "viewer"
+                                          isViewer(person)
                                               ? html` <span class="muted small">(view only)</span>`
                                               : ""
                                       }${

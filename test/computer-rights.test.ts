@@ -415,9 +415,9 @@ test("no longer chosen for a computer, a person keeps no right there, also when 
     assert.equal(app.policy.allowsOwn(alex, THIS_SERVER), false);
 
     // Made a viewer, Bea holds it in name only: a viewer prompts nowhere.
-    app.config.updateUser(bea.id, { role: "viewer" });
+    app.config.giveRole(bea.id, "viewer");
     assert.equal(app.policy.overridesTurns(bea, THIS_SERVER), false);
-    app.config.updateUser(bea.id, { role: "guest" });
+    app.config.giveRole(bea.id, "guest");
     assert.equal(app.policy.overridesTurns(bea, THIS_SERVER), true);
 
     await app.removeUser(owner(app), bea.id);

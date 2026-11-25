@@ -3,6 +3,7 @@ import { useEffect, useState } from "preact/hooks";
 import { callHost, hostCan } from "./host.js";
 import { api, attempt, closeSheet, notify, sessionUnread, store } from "./store.js";
 import { html, Loader, Sheet, Switch } from "./ui.js";
+import { isOwner } from "./roles.js";
 
 const supported =
     "serviceWorker" in navigator && "PushManager" in globalThis && "Notification" in globalThis;
@@ -226,7 +227,7 @@ export function NotificationsPage() {
 
     const on = Boolean(subscription);
     // Servers from before `kinds` show these two switches to the owner alone.
-    const owner = store.state.me?.role === "owner";
+    const owner = isOwner(store.state.me);
     const kinds = info?.kinds ?? { security: owner, folders: owner ? "requests" : false };
 
     return html`<p class="muted small">

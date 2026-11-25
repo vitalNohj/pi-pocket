@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { pipAvailable } from "../pip.js";
 import { api, attempt, closeSheet, navigate, notify, store } from "../store.js";
 import { copyText, formatWhen, html, Sheet } from "../ui.js";
+import { isViewer } from "../roles.js";
 
 /** A hook's full address: the server's public one when it has one, else the one this browser uses. */
 const addressOf = (base, hook) => `${(base ?? location.origin).replace(/\/$/, "")}${hook.path}`;
@@ -219,7 +220,7 @@ export function HooksSheet() {
     const [making, setMaking] = useState(false);
     const makingNow = useRef(false);
     const [fresh, setFresh] = useState(null);
-    const steer = me?.role !== "viewer";
+    const steer = !isViewer(me);
     const load = () => attempt(async () => setList(await api("hooks")));
     const targets = [here && ["here", "This session"], pipAvailable() && ["pip", "PiP"]].filter(
         Boolean,

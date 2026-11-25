@@ -23,11 +23,11 @@ import {
 } from "../store.js";
 import { BASE_LOOK, chooseLook, prefs, setPrefs } from "../theme.js";
 import { copyText, formatBytes, html, Icon, Loader, Sheet, SheetBack, timeAgo } from "../ui.js";
+import { isOwner } from "../roles.js";
 
 /** The owner's, while its module is on. */
 export const galleryAvailable = () =>
-    store.state.me?.role === "owner" &&
-    store.state.server?.extensions?.includes("pocket-gallery") === true;
+    isOwner(store.state.me) && store.state.server?.extensions?.includes("pocket-gallery") === true;
 
 /** The gallery's routes: GET without a body, POST with one; `options.signal` stops it. */
 export const galleryApi = (path, body, options) => api(`x/gallery/${path}`, body, options);

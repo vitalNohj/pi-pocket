@@ -178,16 +178,25 @@ test("a viewer is told of themselves, and of the people in the sessions shown to
         assert.equal(await picture(vera, ann), 404);
 
         // Of them, the name and the picture alone: not that Gil is here now, when he last was, or what he may do.
-        // Whether he is here is left out, not said as false, which the app would show as away.
-        assert.deepEqual(Object.keys(told(vera, gil) ?? {}).sort(), [
-            "avatar",
-            "id",
-            "name",
-            "role",
-        ]);
-        assert.deepEqual(Object.keys(told(vera, boss) ?? {}).sort(), ["id", "name", "role"]);
+        // Whether he is here is left out, not said as false, which the app would show as away. `owner` and `prompts`
+        // say the role again, for the page (`roles.ts` `roleSaid`): nothing the role did not say.
+        const bare = ["id", "name", "owner", "prompts", "role"];
+
+        assert.deepEqual(Object.keys(told(vera, gil) ?? {}).sort(), ["avatar", ...bare]);
+        assert.deepEqual(Object.keys(told(vera, boss) ?? {}).sort(), bare);
         // Not which session Sam is limited to, either.
-        assert.deepEqual(Object.keys(told(vera, sam) ?? {}).sort(), ["id", "name", "role"]);
+        assert.deepEqual(Object.keys(told(vera, sam) ?? {}).sort(), bare);
+        assert.deepEqual(
+            [told(vera, gil), told(vera, boss)].map((each) => [
+                each?.role,
+                each?.owner,
+                each?.prompts,
+            ]),
+            [
+                ["guest", false, true],
+                ["owner", true, true],
+            ],
+        );
         // Of herself she reads what anyone reads of themselves.
         assert.equal(told(vera, vera)?.online, true);
         assert.equal(typeof told(vera, vera)?.lastSeen, "number");
@@ -306,7 +315,7 @@ test("a viewer asks for access with a few words; who manages people reads it on 
 
     // Made a user, what they asked is done with.
     await done(vic, "me/access-request", { note: "Let me prompt" });
-    app.config.updateUser(vic.id, { role: "guest" });
+    app.config.giveRole(vic.id, "guest");
     assert.equal(kept(vic.id)?.accessRequest, undefined);
     assert.equal(told(boss, vic)?.request, undefined);
 });

@@ -9,16 +9,14 @@ import { html, Icon, Loader, Sheet, shortPath } from "./ui.js";
 
 /**
  * Whether I decide which projects Pi trusts on the open session's computer: who is in charge of it (`access.ts`
- * `inCharge`), the owner on this server (the answer goes into Pi's own settings) and a runner's linker there. With no
+ * `inCharge`), as the server says (`me.inCharge`, the computers I am in charge of): on this server the owner, on a
+ * runner its linker, and on both who manages runners. On this server the answer goes into Pi's own settings. With no
  * session open, this server's.
  */
 export function trustAvailable() {
-    const { me, runners, view } = store.state;
-    const runner = view.conversation?.runner;
+    const { me, view } = store.state;
 
-    return runner
-        ? runners.some((each) => each.id === runner && each.createdBy === me?.id)
-        : me?.role === "owner";
+    return me?.inCharge?.includes(view.conversation?.runner ?? "this-server") === true;
 }
 
 /** The folders whose question the owner put off in this tab ("Not now"): the sheet and `/trust` still answer it. */
@@ -155,9 +153,11 @@ export function TrustBar() {
 
     useEffect(() => {
         if (reads) {
-            loadTrust();
+            // The server says one thing to who is in charge and another to anyone else: an answer from before I was
+            // put in charge here, or was no longer, is asked for again.
+            loadTrust({ force: mine ? trustWait() !== null : currentTrust() !== null });
         }
-    }, [conversationId, cwd, reads]);
+    }, [conversationId, cwd, reads, mine]);
     // A project was asked about, decided, or put away: what this session's project waits for may be different now.
     useEffect(() => {
         if (first.current) {

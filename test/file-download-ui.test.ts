@@ -176,8 +176,16 @@ test(
             );
 
         try {
+            // A viewer, as the server says one (`roles.ts` `roleSaid`): the page reads these answers, not the role.
             await page.evaluate(
-                `import("/store.js").then(({ store }) => store.set({ me: { ...store.state.me, role: "viewer" } }))`,
+                `import("/store.js").then(({ store }) => store.set({ me: { ...store.state.me, role: "viewer", owner: false, prompts: false, reachesMachine: false } }))`,
+            );
+            assert.equal(
+                await page.evaluate<boolean>(
+                    `import("/store.js").then(({ canSteer }) => canSteer())`,
+                ),
+                false,
+                "the page takes them for a viewer",
             );
             assert.equal(await downloadShows(), true, "a reader can download");
 

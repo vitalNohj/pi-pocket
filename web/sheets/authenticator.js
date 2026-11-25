@@ -3,6 +3,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { api, attempt, store } from "../store.js";
 import { copyText, html } from "../ui.js";
+import { isOwner } from "../roles.js";
 
 /** A 6-digit code field: digits only, filled from the phone's suggestion where it offers one. */
 function CodeField({ code, setCode, label }) {
@@ -106,7 +107,7 @@ export function MyAuthenticator({ paused }) {
     }
 
     // The owner is never made a user: an authenticator is only for their approvals.
-    const owner = store.state.me?.role === "owner";
+    const owner = isOwner(store.state.me);
 
     const lockedUntil = status.lockedUntil;
 

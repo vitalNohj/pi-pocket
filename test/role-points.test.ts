@@ -319,7 +319,7 @@ describe("who prompts", () => {
             assert.equal(await typing(made), "pi");
             app.collab.setTyping(shared, stale, null);
 
-            app.config.updateUser(made.id, { role: "viewer" });
+            app.config.giveRole(made.id, "viewer");
             app.accessChanged();
             assert.equal(stale.role, "guest");
             app.collab.setTyping(shared, stale, "pi");
@@ -337,6 +337,157 @@ describe("who sees everyone in People", () => {
         assert.ok(names(guest).includes(stranger.name));
         assert.ok(names(viewer).includes(guest.name), "they share a session");
         assert.ok(!names(viewer).includes(stranger.name));
+    });
+});
+
+describe("what a page is told of a role, so that it compares none", () => {
+    const kept = (user: User) => app.config.userById(user.id)!;
+
+    const flags = async (user: User) => {
+        const { owner, prompts, syncsPins, seesEveryone, reachesMachine, inCharge } = (
+            await app.hello(kept(user))
+        ).user;
+
+        return { owner, prompts, syncsPins, seesEveryone, reachesMachine, inCharge };
+    };
+
+    it("tells the owner, a user, and a viewer what each may do, in their hello", async () => {
+        assert.deepEqual(await flags(owner(app)), {
+            owner: true,
+            prompts: true,
+            syncsPins: true,
+            seesEveryone: true,
+            reachesMachine: true,
+            inCharge: [THIS_SERVER],
+        });
+        assert.deepEqual(await flags(guest), {
+            owner: false,
+            prompts: true,
+            syncsPins: true,
+            seesEveryone: true,
+            reachesMachine: false,
+            inCharge: [],
+        });
+        assert.deepEqual(await flags(viewer), {
+            owner: false,
+            prompts: false,
+            syncsPins: false,
+            seesEveryone: false,
+            reachesMachine: false,
+            inCharge: [],
+        });
+    });
+
+    it("says owner and prompts beside the role wherever it names a person", async () => {
+        const said = (each: { id: string; role: string; owner: boolean; prompts: boolean }) => [
+            each.role,
+            each.owner,
+            each.prompts,
+        ];
+        const expected = new Map([
+            [owner(app).id, ["owner", true, true]],
+            [guest.id, ["guest", false, true]],
+            [viewer.id, ["viewer", false, false]],
+        ]);
+
+        const check = (
+            where: string,
+            people: { id: string; role: string; owner: boolean; prompts: boolean }[],
+            ids: string[],
+        ) => {
+            for (const id of ids) {
+                const found = people.find((each) => each.id === id);
+
+                assert.ok(found !== undefined, `${where} names ${id}`);
+                assert.deepEqual(said(found), expected.get(id), where);
+            }
+        };
+
+        check("the people list", app.people(owner(app)), [owner(app).id, guest.id, viewer.id]);
+        check("this server's people", app.thisServer(owner(app))!.users, [guest.id, viewer.id]);
+        check("a session's people", app.commands.sharing(shared, owner(app)).people, [
+            guest.id,
+            viewer.id,
+        ]);
+
+        const tabs = [owner(app), guest, viewer].map((each) => fakeTab(shared, each));
+
+        await Promise.all(tabs.map((each) => app.attach(each.client)));
+
+        try {
+            check("who is here", (await app.room(shared)).presence().people, [
+                owner(app).id,
+                guest.id,
+                viewer.id,
+            ]);
+        } finally {
+            for (const each of tabs) {
+                app.detach(each.client);
+            }
+        }
+    });
+
+    it("tells a tab again when its person is made a viewer, and from the current record for a stale copy", async () => {
+        const made = person("Told again", "guest");
+        const stale = { ...made };
+        const tab = fakeTab(undefined, made);
+
+        app.config.setUsers(THIS_SERVER, [...(app.config.server.users ?? []), made.id]);
+        app.accessChanged();
+        await app.attach(tab.client);
+
+        try {
+            // What their hello said, remembered, is what a change is measured against.
+            assert.equal((await flags(made)).prompts, true);
+
+            const before = tab.events.filter((each) => each.event === "hello").length;
+
+            assert.equal(
+                (await call(owner(app), `users/${made.id}`, { role: "viewer" })).status,
+                200,
+            );
+
+            const deadline = Date.now() + 10_000;
+
+            while (
+                tab.events.filter((each) => each.event === "hello").length === before &&
+                Date.now() < deadline
+            ) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+
+            const told = tab.last("hello")?.user as Awaited<ReturnType<typeof flags>> & {
+                role: string;
+            };
+
+            assert.deepEqual(
+                [told.role, told.owner, told.prompts, told.syncsPins, told.seesEveryone],
+                ["viewer", false, false, false, false],
+            );
+            // A copy from before the change, as a tab's connection carries: the answers are of the record as it is now.
+            assert.equal(stale.role, "guest");
+            assert.equal((await app.hello(stale)).user.prompts, false);
+            assert.equal(app.policy.said(stale).role, "viewer");
+        } finally {
+            app.detach(tab.client);
+        }
+    });
+
+    it("tells who manages runners that they are in charge of this server, and a user that they are not", async () => {
+        const mona = person("Mona", "guest");
+
+        assert.deepEqual((await flags(mona)).inCharge, []);
+        assert.equal(
+            (
+                await call(owner(app), `users/${mona.id}/rights`, {
+                    right: "managesRunners",
+                    on: true,
+                })
+            ).status,
+            200,
+        );
+        assert.deepEqual((await flags(mona)).inCharge, [THIS_SERVER]);
+        assert.deepEqual((await flags(guest)).inCharge, []);
     });
 });
 

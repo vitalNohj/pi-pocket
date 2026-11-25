@@ -29,6 +29,7 @@ import {
     typing,
 } from "./store.js";
 import { clockTime, copyText, html, Icon, Loader, Sheet, Spinner, timeAgo } from "./ui.js";
+import { isOwner, isViewer } from "./roles.js";
 
 const coarse = matchMedia("(pointer: coarse)").matches;
 
@@ -835,7 +836,7 @@ function PeopleRoster() {
 
     return html`<div class="people-roster">
         ${presence.map((person) => {
-            const role = users.find((user) => user.id === person.id)?.role;
+            const known = users.find((user) => user.id === person.id);
             const writing = person.typing && person.id !== me?.id;
             const state = writing
                 ? person.typing === "pi"
@@ -846,8 +847,11 @@ function PeopleRoster() {
                   : person.id === me?.id
                     ? "here · you"
                     : "here";
-            const roleLabel =
-                role === "owner" ? "owner" : role === "viewer" ? "view only" : "can steer";
+            const roleLabel = isOwner(known)
+                ? "owner"
+                : isViewer(known)
+                  ? "view only"
+                  : "can steer";
 
             return html`<div class="people-person" key=${person.id}>
                 <span class="people-here">

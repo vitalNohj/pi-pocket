@@ -10,7 +10,7 @@ import { useDragToClose } from "./gestures.js";
 import { highlight, langOf } from "./highlight.js";
 import { blockMath, inlineMath } from "./math.js";
 import { fenceFor, markdownRevision, mathOn, mountMath } from "./markdown-ext.js";
-import { actions, filesShown, notify, openSheet, store } from "./store.js";
+import { actions, filesShown, notify, openSheet, store, reachesMachine } from "./store.js";
 
 // `this[0] = 3` stops htm from keeping the elements a template makes: a kept element keeps the app's tree it was first
 // drawn in, and through the rows of the session list, every tree after it. Templates stay parsed once.
@@ -825,7 +825,7 @@ export function openFile(path) {
  * computer shows it there.
  */
 export const revealOffered = () =>
-    store.state.me?.role === "owner" &&
+    reachesMachine() &&
     (Boolean(store.state.view.conversation?.runner) || store.state.server?.canReveal === true);
 
 /**

@@ -2004,12 +2004,12 @@ describe("a folder's level, for a viewer and a user", () => {
 
         // Made a user later, the viewer keeps the folder and its level, and starts there.
         await level(owner(app), { person: vera.id, folder, level: "all" });
-        app.config.updateUser(vera.id, { role: "guest" });
+        app.config.giveRole(vera.id, "guest");
         app.accessChanged();
         assert.equal(app.config.folderLevel(THIS_SERVER, vera.id, folder), "all");
         assert.equal(app.policy.mayUseFolder(now(vera), THIS_SERVER, folder), true);
         assert.ok(listed(now(vera)).includes(String(before1)));
-        app.config.updateUser(vera.id, { role: "viewer" });
+        app.config.giveRole(vera.id, "viewer");
         app.accessChanged();
     });
 });

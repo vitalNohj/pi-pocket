@@ -9,6 +9,7 @@ import { checkKey } from "./system-data.js";
 import { changed } from "./tweaks.js";
 import { resolveDevice, useStore } from "./state.js";
 import { unsavedOf } from "./unsaved.js";
+import { prompts } from "/roles.js";
 
 /** The sheet's own width classes: below 560 px it stacks; from 900 px the side panel sits beside the canvas. */
 const NARROW = 560;
@@ -527,7 +528,7 @@ export function createWorkspace(env) {
         );
         const system = useLazy("system", s.view === "system");
         const me = appState.me;
-        const canEdit = me?.role !== undefined && me.role !== "viewer";
+        const canEdit = prompts(me);
         const canShare = canEdit && me?.sessions === undefined;
         const seen = useRef(null);
         const seenFor = useRef(null);

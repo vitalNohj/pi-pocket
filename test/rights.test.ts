@@ -497,10 +497,10 @@ test("a viewer's right: a full viewer holds it once given, a user by role, a tem
     await refused(tia, path(tom), { right, on: true }, 403, /Only someone who manages users/);
 
     // It does not lapse: made a user, and a viewer again, she has it as before.
-    app.config.updateUser(tia.id, { role: "guest" });
+    app.config.giveRole(tia.id, "guest");
     assert.equal(has(tia, right), true);
     assert.deepEqual(kept(tia).rights, [right]);
-    app.config.updateUser(tia.id, { role: "viewer" });
+    app.config.giveRole(tia.id, "viewer");
     assert.equal(has(tia, right), true);
 });
 
@@ -514,14 +514,14 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
     assert.deepEqual(kept(pia).rights, USERS_RIGHTS);
 
     // Made a viewer: they hold none; the rights to manage (users, runners, the server) lapse, the others wait for them.
-    app.config.updateUser(pia.id, { role: "viewer" });
+    app.config.giveRole(pia.id, "viewer");
     assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "keepsWarm"]);
 
     for (const right of PERSON_RIGHTS) {
         assert.equal(has(pia, right), false, right);
     }
 
-    app.config.updateUser(pia.id, { role: "guest" });
+    app.config.giveRole(pia.id, "guest");
 
     for (const right of PERSON_RIGHTS) {
         assert.equal(has(pia, right), declared(right).lapses !== true, right);

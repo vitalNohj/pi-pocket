@@ -181,3 +181,121 @@ describe("the questions asked of a role by itself", () => {
         assert.equal(ownerOf(people.slice(0, 1)), undefined);
     });
 });
+
+// ─── A role is written in one place, and the page compares none ──────────────
+
+const WEB = join(ROOT, "web");
+
+/** The `.js` files in `folder` and below. */
+function scripts(folder: string): string[] {
+    return readdirSync(folder, { withFileTypes: true }).flatMap((entry) => {
+        const path = join(folder, entry.name);
+
+        return entry.isDirectory() ? scripts(path) : entry.name.endsWith(".js") ? [path] : [];
+    });
+}
+
+/**
+ * The lines of `text` that write a role, or name one to write it: any "guest" or "viewer" in code (those words are
+ * roles and nothing else on the server), and an assignment to a `role`.
+ */
+function writes(text: string): string[] {
+    return text
+        .split("\n")
+        .map((line, at) => ({ line, at }))
+        .filter(({ line }) => /["'](?:guest|viewer)["']/.test(line) || /\.role\s*=(?!=)/.test(line))
+        .map(({ line, at }) => `${String(at + 1)}: ${line.trim()}`);
+}
+
+/** The files of the server that call method `name` of the record keeper. */
+function callers(name: string): string[] {
+    return sources(SERVER)
+        .filter((file) => new RegExp(`\\.${name}\\(`).test(code(file)))
+        .map((file) => relative(SERVER, file).split(sep).join("/"))
+        .sort();
+}
+
+describe("the one place a role is written", () => {
+    it("finds a role written each way", () => {
+        assert.equal(writes(`config.updateUser(id, { role: "viewer" });`).length, 1);
+        assert.equal(writes(`const grant = { role: 'guest' };`).length, 1);
+        assert.equal(writes(`user.role = next;`).length, 1);
+        assert.equal(writes(`change.role  = patch.role;`).length, 1);
+        assert.equal(writes(`if (user.role === next) {`).length, 0);
+        assert.equal(writes(`this.config.giveRole(id, role, change);`).length, 0);
+    });
+
+    it("names guest and viewer in four files only, and assigns a role in none other", () => {
+        const found = sources(SERVER)
+            .filter((file) => !COMPARE.includes(name(file)))
+            .flatMap((file) => writes(code(file)).map((line) => `${name(file)}:${line}`));
+
+        assert.deepEqual(
+            found,
+            [],
+            "A role is written by config.ts giveRole, pauseUser, and resumeUser; a new person starts as roles.ts STARTS_AS.",
+        );
+    });
+
+    it("gives, pauses, and resumes a role from the app alone, and adds a person from sign-in alone", () => {
+        assert.deepEqual(callers("giveRole"), ["app.ts"]);
+        assert.deepEqual(callers("pauseUser"), ["app.ts"]);
+        assert.deepEqual(callers("resumeUser"), ["app.ts"]);
+        assert.deepEqual(callers("addUser"), ["auth.ts"]);
+    });
+
+    it("takes no role through updateUser: its patch has none", () => {
+        const text = readFileSync(join(SERVER, "config.ts"), "utf8");
+        const patch = /export type UserPatch = Partial<\s*Pick<\s*User,([\s\S]*?)>\s*>/.exec(
+            text,
+        )?.[1];
+
+        assert.ok(patch !== undefined, "UserPatch is declared");
+        assert.doesNotMatch(patch, /"role"|"paused"/);
+        assert.match(text, /updateUser\(id: string, patch: UserPatch\): void/);
+    });
+});
+
+describe("the page compares no role", () => {
+    /**
+     * A module that reads the role through the public extension API alone (`types/pocket.d.ts` `Person.role`), as a
+     * module someone else wrote would: the API says the role and none of the page's answers.
+     */
+    const PUBLIC_API = ["extensions/session-tags/index.js"];
+    /**
+     * Lines the finder takes for a role that name something else. Each is the whole line, so a new compare beside it
+     * is still found. "viewer" here is the sheet that shows an artifact (`web/sheets/viewers.js`), not the role.
+     */
+    const NOT_A_ROLE = new Set(['web/sheets.js:case "viewer":']);
+
+    it("asks web/roles.js, which reads what the server said: no file of the page compares a role", () => {
+        const pages = [
+            ...scripts(WEB).map((file) => ({ file, as: `web/${relative(WEB, file)}` })),
+            ...scripts(join(SERVER, "extensions"))
+                .filter((file) => !PUBLIC_API.includes(name(file)))
+                .map((file) => ({ file, as: `src/server/${name(file)}` })),
+        ];
+        const found = pages.flatMap(({ file, as }) => {
+            const at = as.split(sep).join("/");
+
+            return compares(code(file))
+                .filter((line) => !NOT_A_ROLE.has(`${at}:${line.replace(/^\d+: /, "")}`))
+                .map((line) => `${at}:${line}`);
+        });
+
+        assert.ok(pages.length > 100, "the page's files are found");
+        assert.deepEqual(
+            found,
+            [],
+            "Ask web/roles.js (isOwner, isViewer, isUser, prompts) or a flag of the hello (web/store.js), not the role.",
+        );
+    });
+
+    it("reads in web/roles.js only what the server said, never the role", () => {
+        const text = code(join(WEB, "roles.js"));
+
+        assert.doesNotMatch(text, /\.role\b/);
+        assert.match(text, /\.owner === true/);
+        assert.match(text, /\.prompts === (?:true|false)/);
+    });
+});

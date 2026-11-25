@@ -785,12 +785,12 @@ test("human starts recheck the person's current access after model checks", asyn
     const answer = await whileChecking(
         t,
         () => {
-            app.config.updateUser(people.Gale!.id, { role: "viewer" });
+            app.config.giveRole(people.Gale!.id, "viewer");
         },
         "Gale",
     );
 
-    app.config.updateUser(people.Gale!.id, { role: "guest" });
+    app.config.giveRole(people.Gale!.id, "guest");
     assert.equal(answer.status, 403);
 });
 

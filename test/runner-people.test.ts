@@ -167,7 +167,9 @@ describe("people granted a computer", () => {
         });
 
         assert.equal(granted.status, 200);
-        assert.deepEqual(granted.body.users, [{ id: guest.id, name: guest.name, role: "guest" }]);
+        assert.deepEqual(granted.body.users, [
+            { id: guest.id, name: guest.name, role: "guest", owner: false, prompts: true },
+        ]);
         assert.deepEqual(app.config.runnerById(runnerId)?.users, [guest.id]);
         assert.deepEqual(new ConfigStore(app.dataDir).runnerById(runnerId)?.users, [guest.id]);
         assert.equal(app.policy.mayStart(guest, runnerId), true);
@@ -329,7 +331,7 @@ describe("people granted a computer", () => {
 
         assert.equal(all.body.length, 2);
         assert.deepEqual(all.body.find((runner) => runner.id === runnerId)?.users, [
-            { id: guest.id, name: guest.name, role: "guest" },
+            { id: guest.id, name: guest.name, role: "guest", owner: false, prompts: true },
         ]);
         await app.folderFavorites.set(guest, { runner: runnerId, path: there, starred: true });
         assert.deepEqual((await app.folderFavorites.runners(guest))[runnerId], [there]);

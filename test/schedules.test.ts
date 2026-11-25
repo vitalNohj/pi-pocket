@@ -355,7 +355,7 @@ test("a schedule Pi sets up is the work of whom it worked for, and is cancelled 
         ],
         "Pi's, for Hal and for Ida",
     );
-    app.config.updateUser(ida.id, { role: "viewer" });
+    app.config.giveRole(ida.id, "viewer");
 
     await restartLater(16);
     await until(
@@ -383,7 +383,7 @@ test("a schedule is cancelled once its person may not steer anymore or a limit i
 
     await app.commands.schedule(id, gus, { when: "in 10m from Gus", zone: "UTC" });
     await app.commands.schedule(id, owner(app), { when: "in 10m from the owner", zone: "UTC" });
-    app.config.updateUser(gus.id, { role: "viewer" });
+    app.config.giveRole(gus.id, "viewer");
     await app.spend.setSessionBudget(owner(app), id, 1);
     await recordCost(app, id, 2);
     await until(() => app.spend.sessionSpent(id) === 2, "the spend to be known");

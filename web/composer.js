@@ -75,6 +75,7 @@ import {
     Spinner,
     useSecond,
 } from "./ui.js";
+import { isViewer } from "./roles.js";
 
 /**
  * The explicit route to the parent on every layout, outside the dock and the scrolling conversation. Up, not forward:
@@ -590,9 +591,7 @@ function DriverBar() {
         attempt(() => actions.turns(action, to)).then(() => setHanding(false));
 
     if (driving) {
-        const others = presence.filter(
-            (person) => person.id !== me?.id && person.role !== "viewer",
-        );
+        const others = presence.filter((person) => person.id !== me?.id && !isViewer(person));
 
         return html`<div class="driver-bar mine">
             <span class="driver-label"><${Icon} name="wheel" size=${14} /> You're driving</span>

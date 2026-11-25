@@ -65,6 +65,7 @@ import {
 } from "./computers.js";
 import { PageItem, Pages } from "./pages.js";
 import { Face, lastSeen, ordered, PersonPage, roleText, SettingsPage } from "./people.js";
+import { isOwner, isViewer } from "../roles.js";
 
 /** Who sees By computer: who is offered runners, or is in charge of this server. */
 const byComputer = () =>
@@ -126,7 +127,7 @@ function ByPerson({ sheet }) {
     // A viewer has no list of the people here: their own page, and the people they may chat with (`access.ts`
     // `mayMessage`).
     const people = ordered(
-        me?.role === "viewer"
+        me?.seesEveryone === false
             ? users.filter((each) => each.id === me.id || each.mayMessage)
             : users,
     );
@@ -267,9 +268,7 @@ function computerLine(computer) {
 function inChargeName(computer) {
     const { me, users } = store.state;
     const id =
-        computer.id === THIS_SERVER
-            ? users.find((each) => each.role === "owner")?.id
-            : computer.createdBy;
+        computer.id === THIS_SERVER ? users.find((each) => isOwner(each))?.id : computer.createdBy;
 
     if (computer.id !== THIS_SERVER && computer.managers?.includes(me?.id) && id !== me?.id) {
         return "You are";
@@ -696,9 +695,7 @@ function ComputerSettings({ computer }) {
     // Who sets a person's approval time (`app.ts` `setApprovalDays`): who manages them.
     const people = store.state.users.filter(
         (person) =>
-            person.role !== "owner" &&
-            chosenFor(computer, person) &&
-            person.approvalDays !== undefined,
+            !isOwner(person) && chosenFor(computer, person) && person.approvalDays !== undefined,
     );
     const relink = () =>
         attempt(async () =>
@@ -739,7 +736,7 @@ function ComputerSettings({ computer }) {
         }
         <div class="group-title">Approvals last</div>
         ${
-            people.some((person) => person.role !== "viewer") &&
+            people.some((person) => !isViewer(person)) &&
             html`<p class="muted small approvals-note">
                 A session of theirs locks this long after they last used it. The same on every computer.
             </p>`
@@ -749,11 +746,10 @@ function ComputerSettings({ computer }) {
                 ? html`<p class="muted small">No one else may use ${computer.name}.</p>`
                 : html`<div class="sheet-rows">
                       ${people.map((person) => {
-                          const viewer = person.role === "viewer";
+                          const viewer = isViewer(person);
                           const mayChange =
                               managesPeople() &&
-                              (me?.role === "owner" ||
-                                  person.rights?.includes("managesUsers") !== true);
+                              (isOwner(me) || person.rights?.includes("managesUsers") !== true);
 
                           return html`<div class="setting wrap" key=${person.id}>
                               <${Face} person=${person} />

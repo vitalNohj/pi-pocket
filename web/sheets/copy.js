@@ -18,6 +18,7 @@ import {
     store,
 } from "../store.js";
 import { html, Icon, Sheet, Switch } from "../ui.js";
+import { isOwner } from "../roles.js";
 
 // ─── Rows ─────────────────────────────────────────────────────────────────────────
 
@@ -302,7 +303,7 @@ export function usePlace(sessionId, key, { enabled = true, extra = () => ({}) } 
  */
 export function PlaceRows({ sessionId, draft, choices, verb }) {
     const { runners, me } = store.state;
-    const owner = me?.role === "owner";
+    const owner = isOwner(me);
     const runner = draft.runner;
     const name = runner === undefined ? "…" : computerName(runner);
     const there = runner !== null && runner !== undefined;

@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ConfigStore, Role, StoredInvite, User } from "./config.ts";
 import { HttpError } from "./errors.ts";
 import { holds } from "./rights.ts";
-import { isOwner } from "./roles.ts";
+import { isOwner, STARTS_AS } from "./roles.ts";
 
 export const COOKIE = "pocket_auth";
 
@@ -191,7 +191,7 @@ export class Auth {
     /** A new invite for someone new, which lasts `minutes`. */
     createInvite(
         by: User,
-        grant: InviteGrant = { role: "guest" },
+        grant: InviteGrant = { role: STARTS_AS },
         minutes: InviteMinutes = 15,
     ): { code: string; expiresAt: number; minutes: InviteMinutes } {
         const code = newCode();
@@ -201,7 +201,7 @@ export class Auth {
         // Every invite starts its person as a viewer: steering comes once they link an authenticator.
         this.#config.addInvite(code, {
             ...scope,
-            role: "viewer",
+            role: STARTS_AS,
             expiresAt,
             createdBy: by.id,
             ...(grant.temporary === true && accountMinutes !== undefined ? { accountMinutes } : {}),
@@ -380,7 +380,7 @@ export class Auth {
         // takes their own authenticator and the owner's Let steer (`app.ts` `setAccess`).
         const added = this.#config.addUser(
             clean,
-            "viewer",
+            STARTS_AS,
             invite.session === undefined ? undefined : [invite.session],
             invite.temporary === true,
             invite.temporary === true && invite.accountMinutes !== undefined

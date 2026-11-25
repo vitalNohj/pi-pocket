@@ -65,6 +65,7 @@ import {
     useSelect,
 } from "./session-select.js";
 import { DirectChat } from "./direct.js";
+import { isOwner, isViewer, isUser } from "../roles.js";
 
 /** How long an invite may last: minutes, its button, and how the help text says it. */
 const LASTS = [
@@ -1006,11 +1007,11 @@ export function ordered(users) {
 
 /** What a person may do, in a word or two. */
 export function roleText(person) {
-    if (person.role === "viewer") {
+    if (isViewer(person)) {
         return person.paused ? "paused" : "viewer";
     }
 
-    return person.role === "owner" ? "owner" : "user";
+    return isOwner(person) ? "owner" : "user";
 }
 
 /**
@@ -1117,7 +1118,7 @@ function PersonRight({ person, each }) {
 function Rights({ person, change }) {
     const sessionTitle = (id) =>
         store.state.sessions.find((each) => each.id === id)?.title ?? `session ${id}`;
-    const steers = person.role === "guest";
+    const steers = isUser(person);
     const only =
         person.sessions &&
         (person.sessions.length > 0
@@ -1892,7 +1893,7 @@ function Access({ person, direct, rights, sharing, reach }) {
         ${
             !active &&
             reach.charge.length > 0 &&
-            person.role !== "owner" &&
+            !isOwner(person) &&
             html`<p class="muted small">
                 ${
                     rows.length === 0
@@ -1925,7 +1926,7 @@ function Authenticator({ person }) {
                     aria-label="Remove authenticator"
                     onClick=${() =>
                         confirm(
-                            `Remove ${person.name}'s authenticator?${person.role === "guest" ? " They can only view until they link a new one. Then they are a user again." : ""}`,
+                            `Remove ${person.name}'s authenticator?${isUser(person) ? " They can only view until they link a new one. Then they are a user again." : ""}`,
                         ) &&
                         attempt(async () =>
                             store.set({
@@ -1956,14 +1957,14 @@ function Authenticator({ person }) {
  */
 export function PersonPage({ person, part, onPart }) {
     const { me } = store.state;
-    const owner = me?.role === "owner";
+    const owner = isOwner(me);
     const myself = person.id === me?.id;
-    const viewer = person.role === "viewer";
+    const viewer = isViewer(person);
     // Is this person mine to change (`access.ts` `mayManagePerson`): the owner changes everyone else; a user who manages
     // users changes neither themselves nor another who manages users.
     const mine =
         managesPeople() &&
-        person.role !== "owner" &&
+        !isOwner(person) &&
         (owner || (!myself && person.rights?.includes("managesUsers") !== true));
     // What is decided for a person; the owner themselves can do everything.
     const rules = mine && collab();
@@ -1973,7 +1974,7 @@ export function PersonPage({ person, part, onPart }) {
     // One's own approval time counts only on a computer someone else is in charge of.
     const asked = owner && myself && computers().some((each) => !inCharge(each));
     // What I give them: for whoever prompts and starts sessions, on someone else's page (`useSharing`).
-    const gives = !myself && collab() && (owner || me?.role === "guest") && !me?.sessions;
+    const gives = !myself && collab() && (owner || isUser(me)) && !me?.sessions;
     const sharing = useSharing(person, gives);
     const reach = reachOf(sharing.told, person);
     // Whether what I have to give them is known: on a computer of my own at once, on someone else's once the server has
@@ -1986,7 +1987,7 @@ export function PersonPage({ person, part, onPart }) {
             (placesFor(person).length > 0 ||
                 (sharing.told?.shareNew.length ?? 0) > 0 ||
                 reach.cards.length > 0 ||
-                (reach.charge.length > 0 && person.role !== "owner")));
+                (reach.charge.length > 0 && !isOwner(person))));
     // A sign-in link: one's own (`access.ts` `mayAddDevice`: no viewer's, but a paused user's, who links an
     // authenticator again on that device), the owner's for anyone, and for a viewer whoever manages them
     // (`maySignInAs`).
@@ -2032,7 +2033,7 @@ export function PersonPage({ person, part, onPart }) {
         </div>
         <div class="muted small">
             ${[
-                person.role === "owner" ? "owner · in charge of this server" : roleText(person),
+                isOwner(person) ? "owner · in charge of this server" : roleText(person),
                 person.sessions && "one session only",
                 person.temporary && "temporary account",
                 lastSeen(person),
@@ -2145,12 +2146,12 @@ export function PersonPage({ person, part, onPart }) {
             known &&
             shown !== "chat" &&
             // The owner's own page says nothing of what they may do: they know.
-            !(myself && person.role === "owner") &&
+            !(myself && isOwner(person)) &&
             html`<p class="muted small">
                 ${
-                    person.role === "owner"
+                    isOwner(person)
                         ? "They see every session on this server and on the runners they linked."
-                        : person.role === "viewer"
+                        : isViewer(person)
                           ? `${myself ? "You read" : "They read"} the sessions shared with ${myself ? "you" : "them"}, and cannot prompt.`
                           : `${myself ? "You prompt" : "They prompt"} and start sessions in ${myself ? "your" : "their"} folders.`
                 }

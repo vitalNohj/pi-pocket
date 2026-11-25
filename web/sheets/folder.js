@@ -33,6 +33,7 @@ import { piSessionsAvailable } from "./pi-sessions.js";
 import { AHEAD_CHILDREN } from "../folder-cache.js";
 import { computerStarts, folderListings, HIDDEN_KEY } from "../folder-listings.js";
 import { FolderRows } from "../folder-rows.js";
+import { isOwner } from "../roles.js";
 /** Whether new sessions always open in the server's default workspace: kept per browser. */
 const ALWAYS_DEFAULT_KEY = "pocket.folderAlwaysDefault";
 /** Touch screens go into a folder on a tap; a mouse selects on a click and goes in on a double click. */
@@ -148,7 +149,7 @@ export function CwdSheet({
     // pick, whose computer the copy sheet chose.
     const [picked, setPicked] = useState(given);
     const runner = changing ? (view.conversation?.runner ?? null) : picked;
-    const owner = store.state.me?.role === "owner";
+    const owner = isOwner(store.state.me);
     const favorites = runner
         ? (store.state.runnerFavorites[runner] ?? [])
         : store.state.folderFavorites;

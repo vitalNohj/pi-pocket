@@ -333,7 +333,7 @@ function showPins(pinned) {
 
 /** Only for the person who turned it on here, and only while they are not a viewer. */
 export function pinsSynced(state = store.state) {
-    return state.me != null && state.me.role !== "viewer" && state.pinSyncFor === state.me.id;
+    return state.me?.syncsPins === true && state.pinSyncFor === state.me.id;
 }
 
 /**

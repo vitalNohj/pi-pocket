@@ -37,6 +37,7 @@ import { folderListings, showsHidden } from "../folder-listings.js";
 import { shortPath } from "../folder-paths.js";
 import { canShare } from "./session-share.js";
 import { folderCheck, NO_SELECT, sessionCheck, useListed } from "./session-select.js";
+import { isOwner, isViewer, isUser } from "../roles.js";
 
 export const THIS_SERVER = "this-server";
 
@@ -50,7 +51,7 @@ export function inCharge(computer) {
     return (
         computer.inCharge ??
         (computer.id === THIS_SERVER
-            ? store.state.me?.role === "owner"
+            ? isOwner(store.state.me)
             : computer.createdBy === store.state.me?.id && !computer.blocked)
     );
 }
@@ -75,7 +76,7 @@ export async function loadComputers() {
 
 /** Whether `person` can be chosen for `computer`: not who is in charge of it, who has it anyway. */
 export function choosable(computer, person) {
-    return computer.id === THIS_SERVER ? person.role !== "owner" : person.id !== computer.createdBy;
+    return computer.id === THIS_SERVER ? !isOwner(person) : person.id !== computer.createdBy;
 }
 
 /** Whether `person` is among the people chosen for `computer`. */
@@ -359,10 +360,7 @@ function RightSwitch({ computer, person, each }) {
  * not held to one session. A computer's view names who holds each only for who manages it.
  */
 export function rightsFor(computer, person) {
-    return chosenFor(computer, person) &&
-        person.role !== "viewer" &&
-        !person.sessions &&
-        computer.rights
+    return chosenFor(computer, person) && !isViewer(person) && !person.sessions && computer.rights
         ? declaredRights("computer").filter((each) => Array.isArray(computer.rights[each.key]))
         : [];
 }
@@ -448,7 +446,7 @@ export function SessionLine({
  * them there, while they use it and are not held to one session. A viewer's too, who reads them.
  */
 export function seenFolders(computer, person) {
-    if (!chosenFor(computer, person) || person.role === "owner" || person.sessions) {
+    if (!chosenFor(computer, person) || isOwner(person) || person.sessions) {
         return [];
     }
 
@@ -500,7 +498,7 @@ export function locked(session) {
 const OTHER = "\0other";
 
 /** The owner's id: a session from before sessions had a starter is theirs (`access.ts` `starter`). */
-const ownerId = () => store.state.users.find((each) => each.role === "owner")?.id;
+const ownerId = () => store.state.users.find((each) => isOwner(each))?.id;
 
 /**
  * How `person` stands on `computer`: chosen for it; in charge of it because they manage runners (`manager`); starting
@@ -514,7 +512,7 @@ export function standing(computer, person) {
     return {
         chosen,
         manager,
-        starts: chosen && person.role === "guest" && !person.sessions,
+        starts: chosen && isUser(person) && !person.sessions,
         offers: chosen && !person.sessions && !manager,
     };
 }
@@ -1178,7 +1176,7 @@ export const LEVELS = {
 
 /** The levels `person` can be given in the Access menu: a viewer's have no "start". */
 export const levelsFor = (person) =>
-    person.role === "viewer" ? ["none", "past", "all"] : ["none", "start", "past", "all"];
+    isViewer(person) ? ["none", "past", "all"] : ["none", "start", "past", "all"];
 
 /**
  * The Access menu of a folder (`PopMenu`): a button that says what the person has of it now (`level`, in that level's
@@ -1198,7 +1196,7 @@ export function LevelMenu({
     compact = false,
     onPick,
 }) {
-    const viewer = person.role === "viewer";
+    const viewer = isViewer(person);
     // With no level of its own, a folder has the one of the folder above it that has one (`from`): said, quietly.
     const shown = from?.level ?? level;
 
@@ -1774,10 +1772,10 @@ export function AccessRow({
                               : !chosen
                                 ? tree === null
                                     ? "Off: they see nothing of it."
-                                    : person.role === "viewer"
+                                    : isViewer(person)
                                       ? "Off: they see only the sessions shared with them here."
                                       : "Off: they have only the sessions shared with them here, and start none."
-                                : person.role === "viewer"
+                                : isViewer(person)
                                   ? "On: they read the sessions shared with them here, and the ones in the folders they see. View only."
                                   : folders.length === 0
                                     ? "On, with no folders yet: they cannot start sessions here."

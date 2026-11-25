@@ -43,6 +43,7 @@ import {
     useGroups,
 } from "./access.js";
 import { canShare } from "./session-share.js";
+import { isOwner, isViewer } from "../roles.js";
 
 /** The explanations of the grid's column heads, and of the people columns (in the key row). */
 export const TIPS = {
@@ -333,7 +334,7 @@ export function PeopleFilter({ people, hidden, onChange }) {
 
 /** A person's role, in the one word a column head has room for. */
 export const roleWord = (person) =>
-    person.role === "viewer" ? "Viewer" : person.role === "owner" ? "Owner" : "User";
+    isViewer(person) ? "Viewer" : isOwner(person) ? "Owner" : "User";
 
 /** Pi's setting for a folder nobody decided about, as the trust button says it under "Not decided". */
 const DEFAULT_TRUST = {
@@ -434,7 +435,7 @@ export function TrustMenu({ computer, project, entry, fallback }) {
 }
 
 /** The owner's id: a session from before sessions had a starter is theirs (`access.ts` `starter`). */
-const ownerId = () => store.state.users.find((each) => each.role === "owner")?.id;
+const ownerId = () => store.state.users.find((each) => isOwner(each))?.id;
 
 /**
  * The rows of the grid of one computer, for `people` (its columns): every session there that is not archived, under
@@ -989,6 +990,6 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
 /** The people who can be chosen for `computer`, each a column of its grid while chosen. */
 export function peopleOf(computer) {
     return store.state.users.filter(
-        (person) => person.role !== "owner" && choosable(computer, person) && inCharge(computer),
+        (person) => !isOwner(person) && choosable(computer, person) && inCharge(computer),
     );
 }

@@ -1254,6 +1254,9 @@ export class Commands {
             id: string;
             name: string;
             role: User["role"];
+            /** What the page asks of the role (`roles.ts` `roleSaid`). */
+            owner: boolean;
+            prompts: boolean;
             notChosen?: true;
             /** They see it anyway: it is in a folder they see every session of (`access.ts` `seesFolder`). */
             byFolder?: true;
@@ -1291,7 +1294,7 @@ export class Commands {
             .map((person) => ({
                 id: person.id,
                 name: person.name,
-                role: person.role,
+                ...app.policy.said(person),
                 ...(app.policy.mayUse(person, computer) ? {} : { notChosen: true as const }),
                 ...(app.seesByFolder(person, root) ? { byFolder: true as const } : {}),
                 ...(shared.includes(person.id) &&

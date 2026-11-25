@@ -14,7 +14,7 @@ import {
     setBrowserOpen,
     toggleBrowser,
 } from "./browser.js";
-import { api, attempt, canSteer, notify, panelsBeside, store } from "./store.js";
+import { api, attempt, canSteer, notify, panelsBeside, store, reachesMachine } from "./store.js";
 import { APPLE, dragWidth, html, Icon, Spinner } from "./ui.js";
 
 const WIDTH_KEY = "pocket.browserWidth";
@@ -625,7 +625,7 @@ function ConsolePane({ conversationId, logs, steer, onClose }) {
  */
 function StartScreen({ steer }) {
     const [servers, setServers] = useState(null);
-    const owner = store.state.me?.role === "owner";
+    const owner = reachesMachine();
     const computer = store.state.view.conversation?.runnerName;
 
     useEffect(() => {

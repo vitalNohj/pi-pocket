@@ -6,6 +6,7 @@ import { variationMessage } from "./messages.js";
 import { createParts } from "./parts.js";
 import { createSystemData } from "./system-data.js";
 import { createWorkspace } from "./workspace.js";
+import { prompts } from "/roles.js";
 
 /** The most the message box takes (`insertText`). */
 const BOX_LIMIT = 90_000;
@@ -15,7 +16,7 @@ export function createApp(pocket, store, shell) {
     const data = createData(pocket, store);
     const systemData = createSystemData(pocket, store, data);
     const parts = createParts(pocket);
-    const canEdit = () => app.state.me?.role !== undefined && app.state.me.role !== "viewer";
+    const canEdit = () => prompts(app.state.me);
     /** The mode goes off, so an editor's comments or edits dock goes too, or its tab stays lit. */
     const modeless = () =>
         canEdit() && ["comments", "edits"].includes(store.get().dock) ? { dock: null } : {};

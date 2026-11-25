@@ -6,6 +6,7 @@
 // are not listed anywhere.
 import { api, attempt, store } from "../store.js";
 import { html, Switch } from "../ui.js";
+import { isOwner } from "../roles.js";
 
 /** The choices of an approval time, in days; 0 is "never ends". */
 export const APPROVAL_DAYS = [1, 7, 14, 30, 0];
@@ -26,10 +27,9 @@ export function ApprovalTime({ person, plain = false }) {
     // 0 is "never ends": the longest there is.
     const length = (days) => (days === 0 ? Infinity : days);
     const own = length(users.find((each) => each.id === me?.id)?.approvalDays ?? 7);
-    const offered =
-        me?.role === "owner"
-            ? APPROVAL_DAYS
-            : APPROVAL_DAYS.filter((days) => days === now || length(days) <= own);
+    const offered = isOwner(me)
+        ? APPROVAL_DAYS
+        : APPROVAL_DAYS.filter((days) => days === now || length(days) <= own);
     const set = (days) =>
         attempt(() =>
             api(`users/${encodeURIComponent(person.id)}/approval-days`, { days: Number(days) }),

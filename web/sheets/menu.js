@@ -43,6 +43,7 @@ import { canShare, sharedHint } from "./session-share.js";
 import { memoryAvailable, memoryHint, useMemory } from "./memory.js";
 import { defaultLabel, defaultsKept } from "./model.js";
 import { copyText, html, item, PlaceTile, Sheet, shortPath } from "../ui.js";
+import { isViewer } from "../roles.js";
 
 // Key hints are for people with a keyboard: a touch screen has none.
 const touch = matchMedia("(pointer: coarse)").matches;
@@ -587,13 +588,13 @@ export function MenuSheet({ places = true }) {
                         "project, last picked, then Pi global",
                 )
             }
-            ${(collab() || runnersOffered()) && item("Access", () => openSheet({ type: "access", view: collab() ? "person" : "computer" }), `${directUnreadTotal() > 0 ? `${directUnreadTotal()} new · ` : ""}${!collab() ? runnersHint() : me?.role === "viewer" ? "your account · you can view" : "people and computers"}`)}
+            ${(collab() || runnersOffered()) && item("Access", () => openSheet({ type: "access", view: collab() ? "person" : "computer" }), `${directUnreadTotal() > 0 ? `${directUnreadTotal()} new · ` : ""}${!collab() ? runnersHint() : isViewer(me) ? "your account · you can view" : "people and computers"}`)}
             ${!collab() && item("Sign in another device", () => openSheet({ type: "invite" }))}
             ${collab() && item("Notifications", () => openSheet({ type: "notifications" }), "Pi finished, approvals, chat")}
             ${item("Running now", openRunning, "everything Pi is doing")}
             ${view.conversation && item("Background", () => openSheet({ type: "background" }), "what commands print as they run")}
             ${item("Spend", () => openSheet({ type: "spend" }), managesServer() ? "by person and session, limits" : "yours")}
-            ${triggersOn() && me?.role !== "viewer" && item("Webhooks and watches", () => openSheet({ type: "hooks" }), "GitHub, other services")}
+            ${triggersOn() && !isViewer(me) && item("Webhooks and watches", () => openSheet({ type: "hooks" }), "GitHub, other services")}
             ${managesServer() && item("Providers", () => openSheet({ type: "providers" }))}
             ${managesServer() && keepWarmAvailable() && item("Keep warm", () => openSheet({ type: "keep-warm" }), keepWarmHint())}
             ${modelRefreshAvailable() && item("Refresh models", refreshModels, store.state.modelRefresh.loading ? "refreshing…" : "models.json and providers")}

@@ -26,6 +26,7 @@ import {
 } from "./theme.js";
 import { trustAvailable } from "./trust.js";
 import { copyText, formatTokens, formatWhen, modelLabel, replyText, shortPath } from "./ui.js";
+import { isViewer } from "./roles.js";
 
 const agent = () => store.state.view.agent;
 const isSession = () => store.state.view.conversation?.kind === "session";
@@ -323,7 +324,7 @@ const COMMANDS = [
         name: "remember",
         args: "<lesson>",
         description: "Keep a lesson for Pi in every session of this project",
-        available: () => memoryAvailable() && store.state.me?.role !== "viewer",
+        available: () => memoryAvailable() && !isViewer(store.state.me),
         run: async (arg) => {
             if (arg === "") {
                 return openSheet({ type: "memory" });

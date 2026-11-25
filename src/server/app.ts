@@ -143,7 +143,7 @@ import {
 } from "./host.ts";
 import { type GuardStatus, LancetGuard } from "./lancet.ts";
 import { withReveal } from "./local-browser.ts";
-import { isGivenRole, rolePrompts } from "./roles.ts";
+import { isGivenRole, rolePrompts, type GivenRole, type RoleSaid } from "./roles.ts";
 import { takeLock } from "./lock.ts";
 import { pendingApprovalsFor } from "./pending-approvals.ts";
 import { Memory } from "./memory.ts";
@@ -368,7 +368,8 @@ export type ServerView = {
     name: string;
     /** Its linker: the owner. */
     createdBy: string;
-    users: { id: string; name: string; role: User["role"] }[];
+    /** Its chosen people, each with their role as a page is told it (`roles.ts` `roleSaid`). */
+    users: ({ id: string; name: string } & RoleSaid)[];
     /** The folders given to each chosen person here, by person id. */
     given: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id. */
@@ -590,6 +591,14 @@ export interface OpenOptions {
 type Rights = {
     mayStart: boolean;
     mayInvite: boolean;
+    /** Are their pinned sessions kept here for all their devices (`access.ts` `syncsPins`). */
+    syncsPins: boolean;
+    /** Do they see everyone in People (`access.ts` `seesEveryone`); a viewer sees who they meet. */
+    seesEveryone: boolean;
+    /** Do they reach this machine itself, outside any session (`access.ts` `reachesMachine`). */
+    reachesMachine: boolean;
+    /** The computers they are in charge of (`access.ts` `inCharge`): there they decide which projects Pi trusts. */
+    inCharge: string[];
     rights: Record<PersonRight, boolean> & Record<ComputerRight, string[]>;
 };
 
@@ -3267,7 +3276,8 @@ export class PocketApp {
             .map((each) => ({
                 id: each.id,
                 name: each.name,
-                role: each.role,
+                // The role, and what the page asks of it (`roles.ts` `roleSaid`).
+                ...this.policy.said(each),
                 ...(each.avatar === undefined ? {} : { avatar: each.avatar }),
                 ...(bare(each) ? {} : { online: this.#online(each.id) }),
                 ...(each.lastSeen === undefined || bare(each) ? {} : { lastSeen: each.lastSeen }),
@@ -3459,7 +3469,9 @@ export class PocketApp {
             users: (server.users ?? []).flatMap((id) => {
                 const person = this.config.userById(id);
 
-                return person === undefined ? [] : [{ id, name: person.name, role: person.role }];
+                return person === undefined
+                    ? []
+                    : [{ id, name: person.name, ...this.policy.said(person) }];
             }),
             given: Object.fromEntries(
                 (server.users ?? []).map((id) => [
@@ -5647,6 +5659,8 @@ export class PocketApp {
             folderApprovals: this.sessionApprovals(user),
             user: {
                 ...helloUser(user),
+                // Of their record as it is now, not of the copy a tab's connection carries (`access.ts` `said`).
+                ...this.policy.said(user),
                 ...(user.temporary === true
                     ? {
                           temporary: true as const,
@@ -6579,12 +6593,11 @@ export class PocketApp {
         }
 
         const change: {
-            role?: "guest" | "viewer";
             sessions?: string[] | undefined;
             temporary?: false;
-            paused?: undefined;
             expiresAt?: number;
         } = {};
+        let role: GivenRole | undefined;
 
         // A temporary account becomes a full one, never the other way: an invite alone makes one temporary.
         if (patch.temporary !== undefined) {
@@ -6634,8 +6647,7 @@ export class PocketApp {
                 );
             }
 
-            change.role = patch.role;
-            change.paused = undefined;
+            role = patch.role;
         }
 
         if (patch.sessions !== undefined) {
@@ -6658,7 +6670,13 @@ export class PocketApp {
             }
         }
 
-        this.config.updateUser(userId, change);
+        // One save. A role is written in one place (`config.ts` `giveRole`).
+        if (role === undefined) {
+            this.config.updateUser(userId, change);
+        } else {
+            this.config.giveRole(userId, role, change);
+        }
+
         void this.#refreshUser(userId);
         this.accessChanged();
         this.#peopleChanged();
@@ -6780,13 +6798,7 @@ export class PocketApp {
         const target = this.config.userById(person);
 
         if (target !== undefined && this.policy.isUser(target)) {
-            // A right that lapses once they are a viewer (`rights.ts` `lapses`) is kept for when they link one again.
-            const lapsing = (target.rights ?? []).filter((each) => declared(each).lapses === true);
-
-            this.config.updateUser(person, {
-                role: "viewer",
-                paused: lapsing.length === 0 ? {} : { rights: lapsing },
-            });
+            this.config.pauseUser(person);
             void this.#refreshUser(person);
             this.accessChanged();
         }
@@ -6810,11 +6822,7 @@ export class PocketApp {
             return;
         }
 
-        this.config.updateUser(user.id, {
-            role: "guest",
-            paused: undefined,
-            rights: [...(person.rights ?? []), ...(paused.rights ?? [])],
-        });
+        this.config.resumeUser(user.id);
         void this.#refreshUser(user.id);
         this.accessChanged();
         this.#peopleChanged();
@@ -7317,6 +7325,10 @@ export class PocketApp {
         return {
             mayStart: this.policy.mayStart(user, THIS_SERVER),
             mayInvite: this.policy.mayInvite(user),
+            syncsPins: this.policy.syncsPins(user),
+            seesEveryone: this.policy.seesEveryone(user),
+            reachesMachine: this.policy.reachesMachine(user),
+            inCharge: computers.filter((id) => this.policy.inCharge(user, id)),
             rights: {
                 ...Object.fromEntries(
                     PERSON_RIGHTS.map((right) => [right, this.policy.has(user, right)]),

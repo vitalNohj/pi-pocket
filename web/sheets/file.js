@@ -6,7 +6,14 @@ import { mentionText } from "../files.js";
 import { highlightLines, langOf } from "../highlight.js";
 import { HtmlPreview } from "../rich.js";
 import { RunFrame } from "../run-frame.js";
-import { actions, canSteer, closeSheet, insertIntoComposer, notify, store } from "../store.js";
+import {
+    actions,
+    canSteer,
+    closeSheet,
+    insertIntoComposer,
+    notify,
+    reachesMachine,
+} from "../store.js";
 import {
     APPLE,
     copyText,
@@ -192,7 +199,7 @@ export function FileView({ path, line, refresh, onOpen = openFile, onLoad }) {
             <p class="muted small file-note">
                 The files it links to (styles, scripts, images) do not load here.
                 ${
-                    store.state.me?.role === "owner" &&
+                    reachesMachine() &&
                     browserAvailable() &&
                     html` <button class="link small" onClick=${() => openInBrowser(file.path)}>
                         Open it in the browser

@@ -75,6 +75,7 @@ import {
     shortPath,
     timeAgo,
 } from "./ui.js";
+import { isViewer } from "./roles.js";
 
 /** How far a letter that does not begin a word may be from the one before it, in a match that is not contiguous. */
 const MAX_GAP = 3;
@@ -471,7 +472,7 @@ function actionItems() {
             run: () => openSheet({ type: "notifications" }),
         },
         triggersOn() &&
-            me?.role !== "viewer" && {
+            !isViewer(me) && {
                 label: "Webhooks and watches",
                 detail: "GitHub, other services",
                 keywords: "hooks triggers watch pull request",

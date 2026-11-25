@@ -64,7 +64,7 @@ import type { FileInfo } from "@earendil-works/pi-durable/env";
 import type { ConfigStore, StoredRunner, User } from "./config.ts";
 import type { ComputerRight } from "./rights.ts";
 import { HttpError } from "./errors.ts";
-import { isOwner, type Role } from "./roles.ts";
+import { isOwner, roleSaid, type RoleSaid } from "./roles.ts";
 import { limitParallel } from "./folder-access.ts";
 import { LinkLimits, type LinkLocks, WRONG_CODE } from "./link-limits.ts";
 import { runnerPin } from "./versions.ts";
@@ -165,7 +165,7 @@ export type RunnerView = {
     tools?: Hello["tools"];
     createdBy: string;
     /** Granted people, visible only in the owner's list. */
-    users?: { id: string; name: string; role: Role }[];
+    users?: ({ id: string; name: string } & RoleSaid)[];
     /** The folders given to each granted person there, by person id; only in the owner's list. */
     given?: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id; only in the owner's list. */
@@ -1591,7 +1591,7 @@ export class Runners {
 
                                   return person === undefined
                                       ? []
-                                      : [{ id, name: person.name, role: person.role }];
+                                      : [{ id, name: person.name, ...roleSaid(person) }];
                               }),
                               given: Object.fromEntries(
                                   (runner.users ?? []).map((id) => [

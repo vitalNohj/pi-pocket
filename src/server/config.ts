@@ -17,7 +17,7 @@ import {
     type PersonRight,
 } from "./rights.ts";
 import { codeHash, newIdentity, type Identity } from "./runner-link/secure-link.ts";
-import { ownerOf, type Role } from "./roles.ts";
+import { ownerOf, roleSaid, type GivenRole, type Role } from "./roles.ts";
 
 /** The repository root: `web/` and `src/` live here, and `node_modules/` too, except in an npx or local install. */
 export const APP_ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -115,12 +115,34 @@ export interface User {
     accessRequest?: { at: number; note?: string };
 }
 
+/** What `updateUser` changes of a person: everything kept of them but their role and its pause. */
+export type UserPatch = Partial<
+    Pick<
+        User,
+        | "name"
+        | "lastSeen"
+        | "sessions"
+        | "tunnel"
+        | "budget"
+        | "avatar"
+        | "approvalDays"
+        | "rights"
+        | "setupDismissed"
+        | "accessRequest"
+        | "expiresAt"
+    >
+> & {
+    /** Only ever turned off: a temporary account becomes a full one, never the other way. */
+    temporary?: false;
+};
+
 /** Who is signed in, as `hello` says it to a tab, and as the app page carries it (`serveApp`). */
 export function helloUser(user: User) {
     return {
         id: user.id,
         name: user.name,
-        role: user.role,
+        // The role, and what the page asks of it (`roles.ts` `roleSaid`).
+        ...roleSaid(user),
         ...(user.sessions === undefined ? {} : { sessions: user.sessions.map(Number) }),
     };
 }
@@ -1291,30 +1313,58 @@ export class ConfigStore {
         return { user, token };
     }
 
-    updateUser(
-        id: string,
-        patch: Partial<
-            Pick<
-                User,
-                | "name"
-                | "lastSeen"
-                | "role"
-                | "sessions"
-                | "tunnel"
-                | "budget"
-                | "avatar"
-                | "approvalDays"
-                | "rights"
-                | "setupDismissed"
-                | "accessRequest"
-                | "paused"
-                | "expiresAt"
-            >
-        > & {
-            /** Only ever turned off: a temporary account becomes a full one, never the other way. */
-            temporary?: false;
-        },
-    ): void {
+    /**
+     * Change what is kept of person `id`, except their role: a role is written by `giveRole`, `pauseUser`, and
+     * `resumeUser` alone, so this takes none (`test/role-boundary.test.ts`).
+     */
+    updateUser(id: string, patch: UserPatch): void {
+        this.#update(id, patch);
+    }
+
+    /**
+     * Make person `id` a user or a viewer, as who manages them decided (`app.ts` `setAccess`), with whatever else that
+     * decision changes, in one save. It ends a pause: what was kept for when they link an authenticator again is no
+     * longer owed. The owner stays the owner.
+     */
+    giveRole(id: string, role: GivenRole, also: UserPatch = {}): void {
+        this.#update(id, { ...also, role, paused: undefined });
+    }
+
+    /**
+     * Person `id` was a user and their authenticator is gone (`app.ts` `removeAuthenticator`): they view until they
+     * link one again. A right that lapses once they are a viewer (`rights.ts` `lapses`) is kept for then.
+     */
+    pauseUser(id: string): void {
+        const lapsing = (this.userById(id)?.rights ?? []).filter(
+            (each) => declared(each).lapses === true,
+        );
+
+        this.#update(id, {
+            role: "viewer",
+            paused: lapsing.length === 0 ? {} : { rights: lapsing },
+        });
+    }
+
+    /**
+     * Person `id` was paused and linked an authenticator again (`app.ts` `confirmAuthenticator`): a user again, with
+     * the rights kept when they were paused. Nothing for someone who is not paused.
+     */
+    resumeUser(id: string): void {
+        const user = this.userById(id);
+
+        if (user?.paused === undefined) {
+            return;
+        }
+
+        this.#update(id, {
+            role: "guest",
+            paused: undefined,
+            rights: [...(user.rights ?? []), ...(user.paused.rights ?? [])],
+        });
+    }
+
+    /** The one writer of a person's record. Only this file reaches it with a role. */
+    #update(id: string, patch: UserPatch & Partial<Pick<User, "role" | "paused">>): void {
         const user = this.userById(id);
 
         if (user === undefined) {

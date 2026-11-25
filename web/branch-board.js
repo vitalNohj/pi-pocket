@@ -6,7 +6,17 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useBack } from "./back.js";
 import { personStorage } from "./person-storage.js";
-import { actions, api, attempt, canSteer, navigate, notify, scoped, store } from "./store.js";
+import {
+    actions,
+    api,
+    attempt,
+    canSteer,
+    navigate,
+    notify,
+    scoped,
+    store,
+    reachesMachine,
+} from "./store.js";
 import { html, Icon, Loader, shortPath, Spinner, timeAgo } from "./ui.js";
 
 /** The board is for people who can steer, in a session whose folder is in a git repository. */
@@ -20,7 +30,7 @@ export const closeBranches = () =>
     store.set({ board: false, boardAgents: null, branchQuery: null });
 
 /** The board is for the owner, who sees every session's work, and for anyone who can switch this folder's branch. */
-export const workAvailable = () => branchAvailable() || store.state.me?.role === "owner";
+export const workAvailable = () => branchAvailable() || reachesMachine();
 
 /** A name typed for a new branch, as git takes one: spaces become dashes. */
 const asBranchName = (text) => text.trim().replace(/\s+/g, "-");
@@ -119,10 +129,7 @@ export function prefetchBranches() {
         fetchBranches(id, folder).catch(() => {});
     }
 
-    if (
-        store.state.me?.role === "owner" &&
-        Date.now() - Date.parse(keptWork()?.generatedAt ?? 0) > FRESH_MS
-    ) {
+    if (reachesMachine() && Date.now() - Date.parse(keptWork()?.generatedAt ?? 0) > FRESH_MS) {
         fetchWork().catch(() => {});
     }
 }
@@ -222,7 +229,7 @@ function fetchWork() {
 }
 
 /** Only the owner sees every session and repository on this computer. */
-const ownsServer = () => store.state.me?.role === "owner";
+const ownsServer = () => reachesMachine();
 
 function keptPicked() {
     try {

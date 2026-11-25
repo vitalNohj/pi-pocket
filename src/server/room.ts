@@ -247,6 +247,9 @@ export type Person = {
     id: string;
     name: string;
     role: string;
+    /** What the page asks of the role (`roles.ts` `roleSaid`). */
+    owner: boolean;
+    prompts: boolean;
     tabs: number;
     typing?: TypingPlace;
     away?: boolean;
@@ -1536,7 +1539,7 @@ export class Room {
                 people.set(client.user.id, {
                     id: client.user.id,
                     name: client.user.name,
-                    role: client.user.role,
+                    ...this.#app.policy.said(client.user),
                     tabs: 1,
                 });
             }

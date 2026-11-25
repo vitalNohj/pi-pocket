@@ -68,7 +68,7 @@ test("a viewer keeps their existing picture but cannot set or remove it", async 
     const { user, token } = app.config.addUser("Val", "guest");
 
     assert.equal((await call(token, "/api/me/avatar", "POST", PNG)).status, 200);
-    app.config.updateUser(user.id, { role: "viewer" });
+    app.config.giveRole(user.id, "viewer");
 
     const posted = await call(token, "/api/me/avatar", "POST", PNG);
     const removed = await call(token, "/api/me/avatar", "DELETE");

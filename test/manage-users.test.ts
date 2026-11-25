@@ -372,9 +372,9 @@ test("who manages users invites people, and signs a device in as a viewer and as
     // A link made for a viewer signs nobody in once they are a user.
     const early = await link(mona, vera.id);
 
-    app.config.updateUser(vera.id, { role: "guest" });
+    app.config.giveRole(vera.id, "guest");
     assert.equal((await join(early.body.code)).who, undefined);
-    app.config.updateUser(vera.id, { role: "viewer" });
+    app.config.giveRole(vera.id, "viewer");
 
     // Nor once its maker no longer manages users; the invite they made ends with it too.
     const late = await link(mona, vera.id);

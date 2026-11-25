@@ -1236,7 +1236,7 @@ test(
             assert.deepEqual(blocked.actions, ["Unlink"], "no New session");
 
             // A user again: it is hers as before, and nothing says blocked.
-            app.config.updateUser(guest.id, { role: "guest" });
+            app.config.giveRole(guest.id, "guest");
             app.accessChanged();
             assert.equal(app.policy.blocked(ginas), false);
             await open("computers");
@@ -1249,7 +1249,7 @@ test(
             assert.doesNotMatch(back.status, /Blocked/);
             assert.match(back.readOnly, /Linked by Gina, who is in charge of it/);
         } finally {
-            app.config.updateUser(guest.id, { role: "guest" });
+            app.config.giveRole(guest.id, "guest");
             app.accessChanged();
             await app.unlinkRunner(ginas);
         }

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { actions, api, attempt, canSteer, closeSheet, hasRight, store } from "../store.js";
 import { html, Icon, Loader, Sheet, Switch } from "../ui.js";
+import { isOwner } from "../roles.js";
 
 /** The times on offer: off, hours (0.5: 30 minutes), or Break-even. The server takes these only. */
 const TIMES = [
@@ -743,7 +744,7 @@ export function KeepWarmCard({ compact = false }) {
     // Only the owner, and the people the owner lets (the right `keepsWarm`, `store.js` `hasRight`), turn a session on
     // or pick another time; anyone who can steer may turn it off, or back to the default when the default is Off or is
     // the session's time already (the server checks it too).
-    const owner = hasRight("keepsWarm") ?? store.state.me?.role === "owner";
+    const owner = hasRight("keepsWarm") ?? isOwner(store.state.me);
     const allowed = (value) =>
         owner || value === 0 || (value === fallback && (fallback === 0 || chosen === fallback));
 

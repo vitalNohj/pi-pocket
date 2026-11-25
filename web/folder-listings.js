@@ -8,6 +8,7 @@
 // session then shows its folders at once, on this server and on each linked computer.
 import { createFolderCache } from "./folder-cache.js";
 import { api, store } from "./store.js";
+import { isOwner } from "./roles.js";
 
 /** Whether the picker shows hidden folders (`sheets/folder.js`), kept per browser. */
 export const HIDDEN_KEY = "pocket.folderHidden";
@@ -24,12 +25,12 @@ const rules = ({ online, away, lastSeen, version, ...rest }) => rest;
 /** An object kept while the person and what they may see stay the same: the cache's owner. */
 function personScope() {
     const { me, runners, thisServer } = store.state;
-    const parts = me?.role === "owner" ? [me] : [me, runners, thisServer];
+    const parts = isOwner(me) ? [me] : [me, runners, thisServer];
 
     if (parts.length !== scope.parts.length || parts.some((each, i) => each !== scope.parts[i])) {
         // A computer going on or offline is no change of what this person may see.
         const said = JSON.stringify(
-            me?.role === "owner" ? [me] : [me, (runners ?? []).map(rules), thisServer],
+            isOwner(me) ? [me] : [me, (runners ?? []).map(rules), thisServer],
         );
 
         scope = { parts, said, token: said === scope.said ? scope.token : {} };
