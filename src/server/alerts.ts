@@ -98,7 +98,7 @@ export class Alerts {
         const app = this.#app;
         const person = app.config.userById(lockout.person);
         const users = app.config.users;
-        const owner = users.find((each) => each.role === "owner");
+        const owner = app.config.owner;
         const store = app.pushStore;
         const time = span(lockout.until - app.now());
         const again =
@@ -111,7 +111,7 @@ export class Alerts {
         for (const recipient of users) {
             if (
                 recipient.id !== owner?.id &&
-                (recipient.role === "owner" ||
+                (app.policy.isOwner(recipient) ||
                     person === undefined ||
                     !app.policy.managesPeople(recipient) ||
                     !app.policy.mayManagePerson(recipient, person))
@@ -408,7 +408,7 @@ export class Alerts {
             for (const userId of await this.participants(root)) {
                 const user = app.config.userById(userId);
 
-                if (user !== undefined && user.role !== "viewer") {
+                if (user !== undefined && app.policy.prompts(user)) {
                     void this.push(userId, root, "limit", message);
                 }
             }
@@ -482,7 +482,7 @@ export class Alerts {
                 for (const userId of people) {
                     const user = app.config.userById(userId);
 
-                    if (user === undefined || user.role === "viewer") {
+                    if (user === undefined || !app.policy.prompts(user)) {
                         continue;
                     }
 

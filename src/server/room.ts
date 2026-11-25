@@ -1338,7 +1338,7 @@ export class Room {
             const draft =
                 draftsFor !== undefined &&
                 submitter.by === draftsFor.id &&
-                draftsFor.role !== "viewer"
+                this.#app.policy.prompts(draftsFor)
                     ? (queued.draft ??= this.#app.commands.queuedDraft(this.id, item.content))
                     : undefined;
             const presented = queuePresentation(

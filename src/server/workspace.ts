@@ -621,7 +621,7 @@ export class Workspace {
     readableFile(user: User, id: ConversationId, path: string): string {
         const file = this.conversationFile(user, id, path);
 
-        if (user.role === "owner") {
+        if (this.#app.policy.reachesMachine(user)) {
             return file;
         }
 
@@ -763,7 +763,11 @@ export class Workspace {
     ): Promise<string | undefined> {
         // Look in an ancestor's storage only if the current session has no copy that this person may read.
         for (const each of this.#lineage(id)) {
-            const file = await this.#images.latest(each, source, user.role !== "owner");
+            const file = await this.#images.latest(
+                each,
+                source,
+                !this.#app.policy.reachesMachine(user),
+            );
 
             if (file !== undefined) {
                 return file;

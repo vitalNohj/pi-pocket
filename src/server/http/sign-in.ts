@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PocketApp } from "../app.ts";
 import { type Auth, type Invite, quickTunnelHost, setAuthCookie } from "../auth.ts";
 import { HttpError } from "../errors.ts";
+import { isOwner, rolePrompts } from "../roles.ts";
 import { conversationId, escapeHtml, readBody, send } from "./io.ts";
 
 /** A form posted from another site, as browsers report it. Such a post must not sign this browser in or out. */
@@ -101,10 +102,9 @@ function devicePage(
         current !== undefined && current.id !== person.id
             ? `<p>This browser is signed in as ${escapeHtml(current.name)}. It will change to ${name}.</p>`
             : "";
-    const gets =
-        person.role === "owner"
-            ? "It gets full control of Pi Pocket and of this machine."
-            : "It sees and does all that they can here.";
+    const gets = isOwner(person)
+        ? "It gets full control of Pi Pocket and of this machine."
+        : "It sees and does all that they can here.";
     const error =
         refused === undefined
             ? ""
@@ -120,7 +120,7 @@ function devicePage(
         refused?.status ?? 200,
         page(
             `Sign in as ${name} · Pi Pocket`,
-            `<h1>Sign in as ${name}</h1><p>This device will sign in as ${name}${person.role === "owner" ? ", the owner" : ""}. ${gets} Go on only if you are ${name}.</p>${switching}${error}<form method="post">${code}<button type="submit">Sign in as ${name}</button></form>`,
+            `<h1>Sign in as ${name}</h1><p>This device will sign in as ${name}${isOwner(person) ? ", the owner" : ""}. ${gets} Go on only if you are ${name}.</p>${switching}${error}<form method="post">${code}<button type="submit">Sign in as ${name}</button></form>`,
         ),
         "text/html; charset=utf-8",
         { "referrer-policy": "no-referrer" },
@@ -183,7 +183,7 @@ export async function join(
 
         // Someone new is tied to the tunnel they joined through. Another device of someone here is tied to it alone
         // (`redeem`), never the person.
-        if (tunnel !== undefined && redeemed.device !== true && redeemed.user.role !== "owner") {
+        if (tunnel !== undefined && redeemed.device !== true && !isOwner(redeemed.user)) {
             app.config.updateUser(redeemed.user.id, { tunnel });
         }
 
@@ -222,10 +222,9 @@ export async function join(
               : grant.folder !== undefined
                 ? `the sessions shared with you in the folder ${escapeHtml(grant.folder.path)}`
                 : "the sessions shared with you on this server";
-    const can =
-        grant.role === "viewer"
-            ? `read ${where} and chat with the people there, but not steer Pi`
-            : `read and steer ${where}. Pi can run commands on this machine`;
+    const can = rolePrompts(grant.role)
+        ? `read and steer ${where}. Pi can run commands on this machine`
+        : `read ${where} and chat with the people there, but not steer Pi`;
 
     return send(
         response,

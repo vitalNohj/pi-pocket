@@ -143,6 +143,7 @@ import {
 } from "./host.ts";
 import { type GuardStatus, LancetGuard } from "./lancet.ts";
 import { withReveal } from "./local-browser.ts";
+import { isGivenRole, rolePrompts } from "./roles.ts";
 import { takeLock } from "./lock.ts";
 import { pendingApprovalsFor } from "./pending-approvals.ts";
 import { Memory } from "./memory.ts";
@@ -2511,7 +2512,7 @@ export class PocketApp {
         this.#log(`[${level}] ${message}`);
 
         for (const client of this.#clients) {
-            if (client.user.role === "owner") {
+            if (this.policy.isOwner(client.user)) {
                 client.send("notice", { level, message });
             }
         }
@@ -3215,7 +3216,7 @@ export class PocketApp {
         viewer: User,
         person: User,
     ): { rights?: PersonRight[]; offer?: Partial<Record<PersonRight, Offer>> } {
-        if (person.role === "owner") {
+        if (this.policy.isOwner(person)) {
             return {};
         }
 
@@ -3251,7 +3252,7 @@ export class PocketApp {
         const scope = viewer.sessions;
         // Who manages people reads of everyone what the owner reads.
         const manages = this.policy.managesPeople(viewer);
-        const met = viewer.role === "viewer" ? this.#metBy(viewer) : undefined;
+        const met = this.policy.seesEveryone(viewer) ? undefined : this.#metBy(viewer);
         // Someone a viewer meets in a session, or may chat with: nothing of when they are here, or of what they may do.
         const bare = (each: User) => met !== undefined && each.id !== viewer.id;
 
@@ -3454,7 +3455,7 @@ export class PocketApp {
         return {
             id: THIS_SERVER,
             name: "This server",
-            createdBy: this.config.users.find((each) => each.role === "owner")?.id ?? "",
+            createdBy: this.#ownerId(),
             users: (server.users ?? []).flatMap((id) => {
                 const person = this.config.userById(id);
 
@@ -3490,7 +3491,7 @@ export class PocketApp {
      */
     #managersOf(id: string): string[] {
         return this.config.users
-            .filter((each) => each.role !== "owner" && this.policy.inCharge(each, id))
+            .filter((each) => !this.policy.isOwner(each) && this.policy.inCharge(each, id))
             .filter(
                 (each) => id === THIS_SERVER || this.config.runnerById(id)?.createdBy !== each.id,
             )
@@ -3801,7 +3802,7 @@ export class PocketApp {
             throw new HttpError(400, "Send person, folder, and on.");
         }
 
-        if (by.role === "viewer") {
+        if (!this.policy.prompts(by)) {
             throw new HttpError(403, "Viewers cannot give folders. Ask to be made a user.");
         }
 
@@ -3859,7 +3860,7 @@ export class PocketApp {
             if (!this.policy.mayStart(target, id)) {
                 throw new HttpError(
                     400,
-                    target.role === "viewer"
+                    !this.policy.prompts(target)
                         ? `${target.name} is a viewer, and folders are given to users only.`
                         : `${target.name} cannot use ${place}. Whoever is in charge of it chooses who uses it.`,
                 );
@@ -4052,7 +4053,7 @@ export class PocketApp {
             );
         }
 
-        if (target.role === "viewer" && to === "start") {
+        if (!this.policy.prompts(target) && to === "start") {
             throw new HttpError(
                 400,
                 `${target.name} is a viewer: they start nothing. Choose Sessions so far or All sessions.`,
@@ -4158,7 +4159,7 @@ export class PocketApp {
             throw new HttpError(400, "on must be true or false.");
         }
 
-        if (declared(right).gives === "owner" && by.role !== "owner") {
+        if (declared(right).gives === "owner" && !this.policy.isOwner(by)) {
             throw new HttpError(403, "Only the owner gives that permission.");
         }
 
@@ -4166,7 +4167,7 @@ export class PocketApp {
 
         this.#requireManages(by, target);
 
-        if (target === undefined || target.role === "owner") {
+        if (target === undefined || this.policy.isOwner(target)) {
             throw new HttpError(404, "No such person");
         }
 
@@ -4229,7 +4230,7 @@ export class PocketApp {
             );
         }
 
-        if (target.role === "viewer") {
+        if (!this.policy.prompts(target)) {
             throw new HttpError(400, "A viewer cannot prompt: make them a user first.");
         }
 
@@ -4261,7 +4262,7 @@ export class PocketApp {
         const length = (value: number) => (value === 0 ? Infinity : value);
 
         if (
-            by.role !== "owner" &&
+            !this.policy.isOwner(by) &&
             length(days === null ? approvalDays({}) : (days as number)) > length(approvalDays(by))
         ) {
             throw new HttpError(403, "You can only give what you have yourself.");
@@ -4276,7 +4277,7 @@ export class PocketApp {
 
     /** The owner's id. */
     #ownerId(): string {
-        return this.config.users.find((each) => each.role === "owner")?.id ?? "";
+        return this.config.owner?.id ?? "";
     }
 
     #computerName(computer: string): string {
@@ -5191,9 +5192,7 @@ export class PocketApp {
             return;
         }
 
-        const current = this.config.userById(user.id);
-
-        if (current === undefined || current.role === "viewer") {
+        if (!this.policy.prompts(user)) {
             throw new HttpError(403, "Viewers cannot prompt. Ask to be made a user.");
         }
     }
@@ -5634,7 +5633,7 @@ export class PocketApp {
         const [folderFavorites, runnerFavorites, pinnedSessions] = await Promise.all([
             this.folderFavorites.list(user),
             this.folderFavorites.runners(user),
-            user.role === "viewer" ? undefined : this.pinnedSessions.list(user),
+            this.policy.syncsPins(user) ? this.pinnedSessions.list(user) : undefined,
         ]);
         const runners = this.runners.list(user);
         const thisServer = this.thisServer(user);
@@ -5667,7 +5666,7 @@ export class PocketApp {
                 ...this.#tellRights(user),
                 // The owner's first start: the app asks them once a page load to link an authenticator, until one is
                 // linked or they say "Not now" (`POST /api/me/setup`).
-                ...(user.role === "owner" &&
+                ...(this.policy.isOwner(user) &&
                 !this.authenticators.linked(user.id) &&
                 user.setupDismissed !== true
                     ? { setup: true as const }
@@ -5696,15 +5695,13 @@ export class PocketApp {
                 // installs: the only ones whose calls it may describe (`pocket.toolCall`).
                 ui: this.#browserModules(user),
                 // Viewers get no commands. Others get conversation commands, and global ones with permission.
-                extensionCommands:
-                    user.role === "viewer"
-                        ? []
-                        : this.webs
-                              .commands()
-                              .filter(
-                                  (command) =>
-                                      command.scope === "conversation" || runsGlobalCommands,
-                              ),
+                extensionCommands: !this.policy.prompts(user)
+                    ? []
+                    : this.webs
+                          .commands()
+                          .filter(
+                              (command) => command.scope === "conversation" || runsGlobalCommands,
+                          ),
                 // Tells the web app this server has people chat and typing indicators.
                 chat: true,
                 projectChat: this.projectChat.on(),
@@ -5749,7 +5746,7 @@ export class PocketApp {
             // Their synced pins, once a browser of theirs gave a list, and only while they can sync.
             ...(pinnedSessions === undefined ? {} : { pinnedSessions }),
             // Linked computers (`runners.ts`), for the owner's Runners sheet and New session's Runs on.
-            ...(user.role === "owner" || runners.length > 0 ? { runners } : {}),
+            ...(this.policy.isOwner(user) || runners.length > 0 ? { runners } : {}),
             // Every theme folder, for Appearance and for the look this tab uses (`theme.js`).
             themes: this.themes.list(managesServer),
         };
@@ -5774,7 +5771,7 @@ export class PocketApp {
     #helloFor(client: Client, hello: Awaited<ReturnType<PocketApp["hello"]>>) {
         return withReveal(
             { ...hello, connection: client.connection },
-            client.user,
+            this.policy.reachesMachine(client.user),
             client.local === true,
         );
     }
@@ -5810,7 +5807,7 @@ export class PocketApp {
 
                 // Whom a viewer meets follows the sessions they may see (`#metBy`): shown one, or no longer, they get
                 // the names for it with the list, and lose the ones they no longer meet.
-                if (user.role === "viewer") {
+                if (!this.policy.seesEveryone(user)) {
                     const people = this.people(user);
                     const told = JSON.stringify(people);
 
@@ -6400,7 +6397,7 @@ export class PocketApp {
      * who can steer.
      */
     cannotAllow(user: User, request: ApprovalRequest): string | undefined {
-        if (user.role === "viewer") {
+        if (!this.policy.prompts(user)) {
             return "You can view this session but not prompt.";
         }
 
@@ -6537,7 +6534,7 @@ export class PocketApp {
         }
 
         if (
-            by.role === "owner" ||
+            this.policy.isOwner(by) ||
             target === undefined ||
             this.policy.mayManagePerson(by, target)
         ) {
@@ -6548,7 +6545,7 @@ export class PocketApp {
             403,
             target.id === by.id
                 ? "You cannot change your own access."
-                : target.role === "owner"
+                : this.policy.isOwner(target)
                   ? "Only the owner can do that"
                   : "Only the owner changes someone who manages users.",
         );
@@ -6577,7 +6574,7 @@ export class PocketApp {
             throw new HttpError(409, "Only a temporary account expires.");
         }
 
-        if (target.role === "owner") {
+        if (this.policy.isOwner(target)) {
             throw new HttpError(400, "The owner can do everything");
         }
 
@@ -6613,12 +6610,12 @@ export class PocketApp {
         }
 
         if (patch.role !== undefined) {
-            if (patch.role !== "guest" && patch.role !== "viewer") {
+            if (!isGivenRole(patch.role)) {
                 throw new HttpError(400, "role must be guest or viewer");
             }
 
             // A temporary account links no authenticator, so it stays a viewer until it is a full account.
-            if (patch.role === "guest" && target.temporary === true) {
+            if (rolePrompts(patch.role) && target.temporary === true) {
                 throw new HttpError(
                     409,
                     `${target.name} has a temporary account. Turn on "Allow viewer to become a user and prompt" first.`,
@@ -6627,8 +6624,8 @@ export class PocketApp {
 
             // Steering needs their own authenticator: it proves it is them when a session needs an approval.
             if (
-                patch.role === "guest" &&
-                target.role === "viewer" &&
+                rolePrompts(patch.role) &&
+                !this.policy.prompts(target) &&
                 !this.authenticators.linked(target.id)
             ) {
                 throw new HttpError(
@@ -6765,9 +6762,7 @@ export class PocketApp {
 
     /** Whether a person is a viewer until they link an authenticator again. */
     pausedPerson(id: string): boolean {
-        const person = this.config.userById(id);
-
-        return person?.role === "viewer" && person.paused !== undefined;
+        return this.policy.isPaused({ id });
     }
 
     /**
@@ -6779,12 +6774,12 @@ export class PocketApp {
             person,
             by,
             code,
-            by.role === "owner" || this.policy.mayManagePerson(by, { id: person }),
+            this.policy.isOwner(by) || this.policy.mayManagePerson(by, { id: person }),
         );
 
         const target = this.config.userById(person);
 
-        if (target?.role === "guest") {
+        if (target !== undefined && this.policy.isUser(target)) {
             // A right that lapses once they are a viewer (`rights.ts` `lapses`) is kept for when they link one again.
             const lapsing = (target.rights ?? []).filter((each) => declared(each).lapses === true);
 
@@ -6806,7 +6801,12 @@ export class PocketApp {
         const person = this.config.userById(user.id);
         const paused = person?.paused;
 
-        if (person?.role !== "viewer" || paused === undefined || person.temporary === true) {
+        if (
+            person === undefined ||
+            paused === undefined ||
+            this.policy.prompts(person) ||
+            person.temporary === true
+        ) {
             return;
         }
 
@@ -6823,7 +6823,7 @@ export class PocketApp {
     async removeUser(by: User, userId: string): Promise<void> {
         this.#requireManages(by, this.config.userById(userId));
 
-        if (this.config.userById(userId)?.role === "owner") {
+        if (this.policy.isOwner({ id: userId })) {
             throw new HttpError(400, "The owner cannot be removed");
         }
 
@@ -6836,7 +6836,7 @@ export class PocketApp {
 
         for (const user of this.config.users) {
             if (
-                user.role !== "owner" &&
+                !this.policy.isOwner(user) &&
                 user.expiresAt !== undefined &&
                 user.expiresAt <= now &&
                 this.config.userById(user.id) !== undefined
@@ -6948,7 +6948,7 @@ export class PocketApp {
         }, context);
 
         // Only a guest is ever locked out: the owner is never asked here, and a viewer prompts nothing.
-        const guests = this.config.users.filter((each) => each.role === "guest");
+        const guests = this.config.users.filter((each) => this.policy.isUser(each));
         const held = new Set(guests.flatMap((each) => each.sessions ?? []));
         const since = this.now() - approvalDays({}) * DAY_MS;
         const approved =
@@ -7190,7 +7190,7 @@ export class PocketApp {
      * viewer asks for, or asks the owner for a right in words.
      */
     requestAccess(person: User, note?: string): void {
-        if (person.role !== "viewer") {
+        if (!this.policy.asksForAccess(person)) {
             throw new HttpError(403, "Only a viewer asks for access.");
         }
 
@@ -7243,7 +7243,11 @@ export class PocketApp {
         } catch {}
 
         for (const user of [...this.config.users]) {
-            if (user.role !== "owner" && user.tunnel !== undefined && user.tunnel !== current) {
+            if (
+                !this.policy.isOwner(user) &&
+                user.tunnel !== undefined &&
+                user.tunnel !== current
+            ) {
                 void this.#forget(user.id);
             }
         }

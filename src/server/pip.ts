@@ -251,7 +251,10 @@ export class Pip {
 
     /** Whether this person may have a PiP: the owner, while its extension is on. */
     available(user: User): boolean {
-        return user.role === "owner" && this.#app.loader.extensionNames().includes(PIP_EXTENSION);
+        return (
+            this.#app.policy.mayHavePip(user) &&
+            this.#app.loader.extensionNames().includes(PIP_EXTENSION)
+        );
     }
 
     /** The conversation of this person's PiP, once they have one. */
@@ -325,7 +328,7 @@ export class Pip {
 
     /** This person's PiP, made the first time they open it. Its agent is set to what PiP runs with each time. */
     async ensure(user: User): Promise<ConversationId> {
-        if (user.role !== "owner") {
+        if (!this.#app.policy.mayHavePip(user)) {
             throw new HttpError(403, "PiP is the owner's for now.");
         }
 

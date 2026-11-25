@@ -588,7 +588,7 @@ export async function conversationRoutes(
     if (third === "reveal" && method === "POST") {
         app.requireSee(user, id);
 
-        if (user.role !== "owner") {
+        if (!app.policy.reachesMachine(user)) {
             throw new HttpError(403, "Only the owner opens a file manager");
         }
 

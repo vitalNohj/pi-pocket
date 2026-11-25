@@ -263,7 +263,7 @@ export class Collab {
     /** Show others that this person is typing, in the chat or to Pi, or that they stopped. */
     setTyping(id: ConversationId, user: User, where: unknown): void {
         const place: TypingPlace | null =
-            where === "chat" || (where === "pi" && user.role !== "viewer") ? where : null;
+            where === "chat" || (where === "pi" && this.#app.policy.prompts(user)) ? where : null;
 
         if (place !== null && !this.#app.canSee(user, id)) {
             return;
@@ -538,11 +538,7 @@ export class Collab {
                         throw new HttpError(403, "Only the driver can hand over the wheel");
                     }
 
-                    if (
-                        target === undefined ||
-                        target.role === "viewer" ||
-                        !app.canSee(target, root)
-                    ) {
+                    if (target === undefined || !app.policy.maySteer(target, String(root))) {
                         throw new HttpError(400, "They cannot drive this session");
                     }
 

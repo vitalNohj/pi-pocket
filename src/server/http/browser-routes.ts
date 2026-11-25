@@ -104,7 +104,7 @@ export async function browserRoutes(
 
     if (action === "servers" && method === "GET") {
         // What runs on this machine, and its pages' titles, is the owner's to see.
-        if (user.role !== "owner") {
+        if (!app.policy.reachesMachine(user)) {
             return json(response, 200, { servers: [] });
         }
 
@@ -186,7 +186,7 @@ export async function browserRoutes(
     const target =
         action === "navigate"
             ? normalizeUrl(String(body.url ?? ""), {
-                  trusted: user.role === "owner",
+                  trusted: app.policy.reachesMachine(user),
                   cwd: app.cwdOf(id),
                   files,
               })
@@ -195,7 +195,7 @@ export async function browserRoutes(
     if (action === "navigate" && target === undefined) {
         throw new HttpError(
             400,
-            user.role === "owner" && files
+            app.policy.reachesMachine(user) && files
                 ? "That is not an address: try localhost:5173, example.com, or a file path."
                 : "That is not a web address: try localhost:5173 or example.com.",
         );

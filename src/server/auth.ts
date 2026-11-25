@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ConfigStore, Role, StoredInvite, User } from "./config.ts";
 import { HttpError } from "./errors.ts";
 import { holds } from "./rights.ts";
+import { isOwner } from "./roles.ts";
 
 export const COOKIE = "pocket_auth";
 
@@ -145,7 +146,7 @@ const byRole: MayInvite = (creator) => holds(creator, "invites");
  */
 export type MaySignInAs = (maker: User, target: User) => boolean;
 
-const ownerOnly: MaySignInAs = (maker) => maker.role === "owner";
+const ownerOnly: MaySignInAs = (maker) => isOwner(maker);
 
 export class Auth {
     readonly #config: ConfigStore;

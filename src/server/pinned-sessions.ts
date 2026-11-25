@@ -55,7 +55,9 @@ export class PinnedSessions {
     /** Send only the signed-in person's committed list, or null if they cannot sync pins or have no list yet. */
     committed(value: Stored | null): void {
         for (const client of this.#app.clients) {
-            const pinned = client.user.role === "viewer" ? undefined : value?.users[client.user.id];
+            const pinned = this.#app.policy.syncsPins(client.user)
+                ? value?.users[client.user.id]
+                : undefined;
 
             client.send("pinned-sessions", pinned === undefined ? null : [...pinned]);
         }

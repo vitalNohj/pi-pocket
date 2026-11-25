@@ -19,6 +19,7 @@ import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { User } from "./config.ts";
 import { describe } from "./errors.ts";
+import { isOwner, prompts } from "./roles.ts";
 import type {
     CommandInfo,
     ConversationWebRequest,
@@ -167,7 +168,7 @@ export type WebUser = Pick<User, "id" | "role" | "sessions">;
  * alone, for a module's parts tested on their own. The owner always may; people invited to one session never.
  */
 function byRole(user: WebUser, access: WebAccess): boolean {
-    if (user.role === "owner") {
+    if (isOwner(user)) {
         return true;
     }
 
@@ -175,7 +176,7 @@ function byRole(user: WebUser, access: WebAccess): boolean {
         return false;
     }
 
-    return access === "view" || (access === "steer" && user.role === "guest");
+    return access === "view" || (access === "steer" && prompts(user));
 }
 
 /** The only browser module a session-invited user may load. */

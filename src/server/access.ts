@@ -9,7 +9,8 @@
  * read whatever that user can read, on this server as on a runner.
  */
 import { HttpError } from "./errors.ts";
-import type { FolderLevel, Role } from "./config.ts";
+import type { FolderLevel } from "./config.ts";
+import type { Role } from "./roles.ts";
 import {
     canHold,
     comesWith,
@@ -570,7 +571,78 @@ export class AccessPolicy {
      * provider, not this policy, decides what it reaches.
      */
     mayUseWorkspaces(person: Pick<Person, "id">): boolean {
+        return this.isOwner(person);
+    }
+
+    // What a person is, by their role. Every caller outside this file asks one of these, named for what it is for, on
+    // the current record: so a stale copy answers nothing, and a new role is decided here (`roles.ts`).
+
+    /** Is `person` the owner. */
+    isOwner(person: Pick<Person, "id">): boolean {
         return this.#current(person)?.role === "owner";
+    }
+
+    /**
+     * Is `person` a user: they prompt, and are not the owner. A user needs an authenticator of their own, can be locked
+     * out of a session, and becomes a viewer when theirs is removed (`isPaused`).
+     */
+    isUser(person: Pick<Person, "id">): boolean {
+        return this.#current(person)?.role === "guest";
+    }
+
+    /**
+     * Does `person` prompt: the owner, and a user. Never a viewer, who reads, chats, and reacts. Whether they may steer
+     * one session is `maySteer`; this is asked where there is no session, or of what follows prompting at all (typing to
+     * Pi, a queued message's draft, commands, giving a folder, sharing).
+     */
+    prompts(person: Pick<Person, "id">): boolean {
+        const current = this.#current(person);
+
+        return current !== undefined && current.role !== "viewer";
+    }
+
+    /**
+     * Does `person` see everyone in People, with when they were here: who prompts. A viewer sees only the people they
+     * meet in a session or may chat with, and nothing more than their names (`app.ts` `people`).
+     */
+    seesEveryone(person: Pick<Person, "id">): boolean {
+        return this.prompts(person);
+    }
+
+    /** Does `person` ask for access (`app.ts` `requestAccess`): a viewer alone; anyone else has what a viewer asks for. */
+    asksForAccess(person: Pick<Person, "id">): boolean {
+        return this.#current(person)?.role === "viewer";
+    }
+
+    /** Is `person` paused: a user made a viewer when their authenticator was removed, until they link one again. */
+    isPaused(person: Pick<Person, "id">): boolean {
+        const current = this.#current(person);
+
+        return current?.role === "viewer" && current.paused !== undefined;
+    }
+
+    /** Are `person`'s pinned sessions kept on the server, for all their devices: who prompts. A viewer's stay in the browser. */
+    syncsPins(person: Pick<Person, "id">): boolean {
+        return this.prompts(person);
+    }
+
+    /** May `person` set a photo of their own: who prompts. */
+    setsPhoto(person: Pick<Person, "id">): boolean {
+        return this.prompts(person);
+    }
+
+    /**
+     * Does `person` reach this machine itself, outside any session: the owner alone. Its file manager, Pi's own folder
+     * and this app's data, the servers that run on it, a file path in the browser tool, the desktop's wallpaper, and
+     * the words of an extension's failure.
+     */
+    reachesMachine(person: Pick<Person, "id">): boolean {
+        return this.isOwner(person);
+    }
+
+    /** May `person` have a PiP: the owner alone, for now. */
+    mayHavePip(person: Pick<Person, "id">): boolean {
+        return this.isOwner(person);
     }
 
     /**

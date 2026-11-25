@@ -17,6 +17,7 @@ import {
     type DesignItem,
 } from "../docs.ts";
 import type { ConversationWebRequest, ExtensionWeb, PocketHost } from "../host.ts";
+import { isOwner } from "../roles.ts";
 import { systemRoutes } from "./design/system-routes.ts";
 
 /** An artifact as the index keeps it, with the fields of bundles (`group`, `kind`) that an older index lacks. */
@@ -369,7 +370,7 @@ export default async function createDesign(host: PocketHost, web?: ExtensionWeb)
                 }
 
                 if (words !== undefined && words !== found.text) {
-                    if (found.by !== request.user.id && request.user.role !== "owner") {
+                    if (found.by !== request.user.id && !isOwner(request.user)) {
                         throw web.error(403, "Only its author changes a comment's words.");
                     }
 
@@ -409,7 +410,7 @@ export default async function createDesign(host: PocketHost, web?: ExtensionWeb)
                     throw web.error(404, "No such comment.");
                 }
 
-                if (item.comments[at]!.by !== request.user.id && request.user.role !== "owner") {
+                if (item.comments[at]!.by !== request.user.id && !isOwner(request.user)) {
                     throw web.error(403, "Only its author deletes a comment.");
                 }
 

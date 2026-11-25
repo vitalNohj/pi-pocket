@@ -17,6 +17,7 @@ import {
     type PersonRight,
 } from "./rights.ts";
 import { codeHash, newIdentity, type Identity } from "./runner-link/secure-link.ts";
+import { ownerOf, type Role } from "./roles.ts";
 
 /** The repository root: `web/` and `src/` live here, and `node_modules/` too, except in an npx or local install. */
 export const APP_ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -48,8 +49,7 @@ export function dataDir(): string {
     return process.env.PI_POCKET_DIR ?? join(homedir(), ".pi-pocket");
 }
 
-/** owner: everything. guest: steers Pi (which can run commands here). viewer: reads, chats, and reacts, never steers. */
-export type Role = "owner" | "guest" | "viewer";
+export type { Role } from "./roles.ts";
 
 export interface User {
     id: string;
@@ -960,6 +960,11 @@ export class ConfigStore {
         return this.#config.users;
     }
 
+    /** The owner's record: the one place that finds it (`roles.ts` `ownerOf`). */
+    get owner(): User | undefined {
+        return ownerOf(this.#config.users);
+    }
+
     get lastModel(): ModelChoice | undefined {
         return this.#config.lastModel;
     }
@@ -1403,7 +1408,7 @@ export class ConfigStore {
      * that ends it (`ComputerAccess.handOver`): `app.ts` `settle` finishes it, also after a restart.
      */
     #oweManaged(person: string): void {
-        const owner = this.#config.users.find((each) => each.role === "owner")?.id;
+        const owner = this.owner?.id;
 
         markOwed((this.#config.server ??= {}), person);
 
@@ -1562,7 +1567,7 @@ export class ConfigStore {
         const token = newToken();
 
         this.#config.ownerToken = token;
-        const owner = this.#config.users.find((user) => user.role === "owner");
+        const owner = this.owner;
 
         if (owner !== undefined) {
             owner.tokenHash = hashToken(token);
@@ -1671,9 +1676,7 @@ export class ConfigStore {
 
     /** Who is in charge of computer `id` by its record: the owner for this server, a runner's linker for it. */
     linkerOf(id: string): string | undefined {
-        return id === THIS_SERVER
-            ? this.#config.users.find((each) => each.role === "owner")?.id
-            : this.runnerById(id)?.createdBy;
+        return id === THIS_SERVER ? this.owner?.id : this.runnerById(id)?.createdBy;
     }
 
     /**

@@ -1206,7 +1206,7 @@ export class Gallery {
         return shareDraft({
             root: this.#dropIns(),
             module,
-            owner: this.#app.config.users.find((each) => each.role === "owner")?.name ?? "",
+            owner: this.#app.config.owner?.name ?? "",
             repoUrl: repoUrlOf(address, this.#read?.index),
             // The packages a drop-in can import by name: Pi Pocket's own.
             packages: new Set(Object.keys(pocketPackage.dependencies ?? {})),
@@ -1236,7 +1236,7 @@ export class Gallery {
         return shareThemeDraft({
             dir: this.#themes(),
             id,
-            owner: this.#app.config.users.find((each) => each.role === "owner")?.name ?? "",
+            owner: this.#app.config.owner?.name ?? "",
             repoUrl: repoUrlOf(address, this.#read?.index),
             version: HERE.version,
         });

@@ -25,6 +25,7 @@ import { inFolder, THIS_SERVER } from "../access.ts";
 import type { ComputerSettings, User } from "../config.ts";
 import { MAX_AVATAR, readAvatar } from "../avatars.ts";
 import { HttpError, optionalText } from "../errors.ts";
+import { isOwner } from "../roles.ts";
 import { isLocalRequest, withReveal } from "../local-browser.ts";
 import { machineRoots, parentFolder } from "../paths.ts";
 import { desktopTheme, wallpaperFile } from "../omarchy.ts";
@@ -212,7 +213,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
     };
 
     const requireOwner = (user: User): void => {
-        if (user.role !== "owner") {
+        if (!app.policy.isOwner(user)) {
             throw new HttpError(403, "Only the owner can do that");
         }
     };
@@ -235,7 +236,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         },
     ): InviteGrant => {
         // A page loaded before device links still asks for an owner invite, which handed out the owner's token.
-        if (body.role === "owner") {
+        if (isOwner(body)) {
             throw new HttpError(
                 400,
                 "Reload Pi Pocket, then use Sign in another device on your own page in People.",
@@ -436,7 +437,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // Another device of theirs was tagged alone when it signed in (`auth.ts` `redeem`): never the person for it.
         if (
-            user.role === "owner" ||
+            app.policy.isOwner(user) ||
             user.tunnel !== undefined ||
             !cookie ||
             app.config.isDevice(cookie)
@@ -481,7 +482,11 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(
                 response,
                 200,
-                withReveal(await app.hello(user), user, isLocalRequest(request)),
+                withReveal(
+                    await app.hello(user),
+                    app.policy.reachesMachine(user),
+                    isLocalRequest(request),
+                ),
             );
         }
 
@@ -505,7 +510,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "me" && second === "avatar" && (method === "POST" || method === "DELETE")) {
-            if (user.role === "viewer") {
+            if (!app.policy.setsPhoto(user)) {
                 throw new HttpError(403, "Viewers do not set a photo.");
             }
 
@@ -733,13 +738,15 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         // The owner and users can sync pins. Viewers keep theirs in the browser.
         if (first === "pinned-sessions" && second === undefined && method === "GET") {
-            const pinned = user.role === "viewer" ? undefined : await app.pinnedSessions.list(user);
+            const pinned = app.policy.syncsPins(user)
+                ? await app.pinnedSessions.list(user)
+                : undefined;
 
             return json(response, 200, { pinned: pinned ?? null });
         }
 
         if (first === "pinned-sessions" && second === undefined && method === "POST") {
-            if (user.role === "viewer") {
+            if (!app.policy.syncsPins(user)) {
                 throw new HttpError(403, "Viewers keep their pins in this browser.");
             }
 
@@ -1048,7 +1055,10 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 theme:
                     theme === null
                         ? null
-                        : { ...theme, wallpaper: theme.wallpaper && user.role === "owner" },
+                        : {
+                              ...theme,
+                              wallpaper: theme.wallpaper && app.policy.reachesMachine(user),
+                          },
             });
         }
 
@@ -1125,7 +1135,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         if (first === "theme" && second === "wallpaper" && method === "GET") {
-            if (user.role !== "owner") {
+            if (!app.policy.reachesMachine(user)) {
                 throw new HttpError(403, "Only the owner sees the desktop's wallpaper");
             }
 

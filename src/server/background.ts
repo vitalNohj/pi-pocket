@@ -1074,9 +1074,7 @@ export class BackgroundTasks {
             item.requestedBy === undefined ? undefined : app.config.userById(item.requestedBy);
         const mayAsk =
             item.requestedBy === undefined ||
-            (person !== undefined &&
-                person.role !== "viewer" &&
-                app.canSee(person, conversationId));
+            (person !== undefined && app.policy.maySteer(person, String(conversationId)));
 
         return mayAsk && app.spend.heldBack(conversationId, item.requestedBy) === undefined;
     }

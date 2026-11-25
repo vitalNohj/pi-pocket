@@ -147,7 +147,7 @@ export async function extensionRoute(
             return;
         }
 
-        return failed(response, error, part.file, user);
+        return failed(response, error, part.file, app.policy.reachesMachine(user));
     } finally {
         scope.close();
     }
@@ -161,7 +161,7 @@ export async function extensionRoute(
             response,
             new Error(`its answer is not JSON: ${describe(error)}`),
             part.file,
-            user,
+            app.policy.reachesMachine(user),
         );
     }
 
@@ -170,11 +170,11 @@ export async function extensionRoute(
 
 /**
  * Answer with what a handler threw: `web.error` or a core request API's HttpError, as it is; anything else, a 500 whose
- * words only the owner gets. A library's error can carry a `status` and words not meant for everyone (a provider's 401 that quotes a
+ * words only who reaches this machine gets (`detailed`: `access.ts` `reachesMachine`, the owner). A library's error can carry a `status` and words not meant for everyone (a provider's 401 that quotes a
  * key): only `web.error` or a core HttpError says they are. A 500 is logged here, with the extension's own stack, and answered here, so the
  * HTTP layer does not log it again.
  */
-function failed(response: ServerResponse, error: unknown, file: string, user: User): void {
+function failed(response: ServerResponse, error: unknown, file: string, detailed: boolean): void {
     const exposed = error instanceof HttpError ? error : exposedError(error);
 
     if (exposed !== undefined) {
@@ -189,10 +189,7 @@ function failed(response: ServerResponse, error: unknown, file: string, user: Us
 
     console.error(`Extension ${file} failed to answer:`, error);
     json(response, 500, {
-        error:
-            user.role === "owner"
-                ? `${file} failed: ${describe(error)}`
-                : "The extension failed to answer.",
+        error: detailed ? `${file} failed: ${describe(error)}` : "The extension failed to answer.",
     });
 }
 

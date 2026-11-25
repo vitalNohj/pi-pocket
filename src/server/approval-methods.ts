@@ -10,6 +10,7 @@
 import { authenticatorLink, checkCode, newSecret, type TotpState } from "./totp.ts";
 import type { Person } from "./access.ts";
 import { HttpError } from "./errors.ts";
+import { isOwner } from "./roles.ts";
 
 /** A proof that someone approves a request. */
 export type Proof = { method: "totp"; code: string } | { method: "owner" };
@@ -147,7 +148,7 @@ export class Authenticators {
      * Remove `person`'s authenticator: they need a code to remove it, as to approve. Who manages them (`manages`: the
      * owner, when not said) removes it without one, for a lost phone.
      */
-    remove(person: string, by: Person, code?: string, manages = by.role === "owner"): void {
+    remove(person: string, by: Person, code?: string, manages = isOwner(by)): void {
         if (!manages || by.id === person) {
             if (this.linked(person) && (code === undefined || !this.check(person, code))) {
                 throw this.refusal(person);

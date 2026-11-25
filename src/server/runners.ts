@@ -64,6 +64,7 @@ import type { FileInfo } from "@earendil-works/pi-durable/env";
 import type { ConfigStore, StoredRunner, User } from "./config.ts";
 import type { ComputerRight } from "./rights.ts";
 import { HttpError } from "./errors.ts";
+import { isOwner, type Role } from "./roles.ts";
 import { limitParallel } from "./folder-access.ts";
 import { LinkLimits, type LinkLocks, WRONG_CODE } from "./link-limits.ts";
 import { runnerPin } from "./versions.ts";
@@ -164,7 +165,7 @@ export type RunnerView = {
     tools?: Hello["tools"];
     createdBy: string;
     /** Granted people, visible only in the owner's list. */
-    users?: { id: string; name: string; role: "owner" | "guest" | "viewer" }[];
+    users?: { id: string; name: string; role: Role }[];
     /** The folders given to each granted person there, by person id; only in the owner's list. */
     given?: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id; only in the owner's list. */
@@ -1277,8 +1278,12 @@ export class Runners {
         this.#config = options.config;
         this.#log = options.log;
         this.#onChange = options.onChange ?? (() => {});
-        const ownerOnly = (_id: string, user: User) =>
-            this.#config.userById(user.id)?.role === "owner";
+
+        const ownerOnly = (_id: string, user: User) => {
+            const current = this.#config.userById(user.id);
+
+            return current !== undefined && isOwner(current);
+        };
 
         this.#mayList = options.mayList ?? ownerOnly;
         this.#mayManage = options.mayManage ?? ownerOnly;

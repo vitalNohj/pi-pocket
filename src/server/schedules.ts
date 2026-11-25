@@ -639,11 +639,7 @@ export class Schedules {
             return { who, why: "they link an authenticator first" };
         }
 
-        if (
-            person === undefined ||
-            person.role === "viewer" ||
-            !app.canSee(person, conversationId)
-        ) {
+        if (person === undefined || !app.policy.maySteer(person, String(conversationId))) {
             return {
                 who,
                 why: `${schedule.by === undefined ? named.name : "they"} can no longer steer here`,

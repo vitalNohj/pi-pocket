@@ -46,7 +46,7 @@ export class ExtensionRequest implements RequestActor {
     }
 
     async createSession(request: { cwd: string; title?: string }): Promise<{ id: number }> {
-        if (this.#access !== "owner" || this.current().role !== "owner") {
+        if (this.#access !== "owner" || !this.#app.policy.isOwner(this.current())) {
             throw new HttpError(403, "Only the owner can start an app-wide session here.");
         }
 

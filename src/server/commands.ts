@@ -1489,7 +1489,7 @@ export class Commands {
     #sharee(user: User, personId: string): User {
         const app = this.#app;
 
-        if (user.role === "viewer") {
+        if (!app.policy.prompts(user)) {
             throw new HttpError(403, "Viewers cannot share sessions. Ask to be made a user.");
         }
 

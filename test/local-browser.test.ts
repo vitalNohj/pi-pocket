@@ -3,7 +3,6 @@
 // the client they name is this machine too.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { User } from "../src/server/config.ts";
 import {
     isLocalRequest,
     type LocalRequest,
@@ -141,12 +140,10 @@ test("without a proxy's headers, the browser must ask for this machine by a name
 });
 
 test("reveal is offered to the owner in a local browser, with a desktop; refused elsewhere with a 403", () => {
-    const owner = { role: "owner" } as User;
-    const guest = { role: "guest" } as User;
-
-    assert.equal(revealOffered(owner, true), hasDesktop());
-    assert.equal(revealOffered(owner, false), false);
-    assert.equal(revealOffered(guest, true), false);
+    // Who reaches this machine itself is the policy's to say (`access.ts` `reachesMachine`: the owner).
+    assert.equal(revealOffered(true, true), hasDesktop());
+    assert.equal(revealOffered(true, false), false);
+    assert.equal(revealOffered(false, true), false);
     assert.throws(() => requireLocalBrowser(request("203.0.113.5")), {
         status: 403,
         message: "Show in file manager works only in a browser on the server's machine",

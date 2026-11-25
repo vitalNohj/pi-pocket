@@ -14,7 +14,6 @@
 import type { IncomingMessage } from "node:http";
 import { BlockList, isIP } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
-import type { User } from "./config.ts";
 import { HttpError } from "./errors.ts";
 import { hasDesktop } from "./reveal.ts";
 
@@ -174,11 +173,12 @@ export function isLocalRequest(request: LocalRequest, machine: Machine = thisMac
 }
 
 /**
- * Whether this person's browser is offered "Show in the file manager" for sessions on this server: the owner's, in a
+ * Whether a browser is offered "Show in the file manager" for sessions on this server: that of someone who reaches
+ * this machine itself (`access.ts` `reachesMachine`: the owner), in a
  * browser on this machine, when it has a desktop. A session on another computer shows it there instead (its runner).
  */
-export function revealOffered(user: User, local: boolean): boolean {
-    return user.role === "owner" && local && hasDesktop();
+export function revealOffered(reachesMachine: boolean, local: boolean): boolean {
+    return reachesMachine && local && hasDesktop();
 }
 
 /** Refuse a reveal on this machine for a browser elsewhere, where nobody would see the window: a 403. */
@@ -192,6 +192,13 @@ export function requireLocalBrowser(request: LocalRequest): void {
 }
 
 /** A `hello` with `server.canReveal` for one browser (`revealOffered`): `GET /api/me` and each tab's stream. */
-export function withReveal<T extends { server: object }>(hello: T, user: User, local: boolean): T {
-    return { ...hello, server: { ...hello.server, canReveal: revealOffered(user, local) } };
+export function withReveal<T extends { server: object }>(
+    hello: T,
+    reachesMachine: boolean,
+    local: boolean,
+): T {
+    return {
+        ...hello,
+        server: { ...hello.server, canReveal: revealOffered(reachesMachine, local) },
+    };
 }

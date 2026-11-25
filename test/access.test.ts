@@ -1613,3 +1613,114 @@ describe("a person leaving a computer", () => {
         assert.equal(policy.maySee(guest, "60"), true);
     });
 });
+
+// What a person is by their role: the questions every caller outside the policy asks, in place of a compare of the role
+// (`roles.ts`, `test/role-boundary.test.ts`). For each: someone it says yes to, and someone it refuses.
+describe("what a person is by their role", () => {
+    const paused: Person = { id: "paused", role: "viewer", paused: {} };
+    const gone: Person = { id: "gone", role: "owner" };
+
+    const asked = () =>
+        world(undefined, undefined, [owner, guest, viewer, stranger, linker, invited, paused]);
+
+    it("the owner is the owner; a user and a viewer are not", () => {
+        const { policy } = asked();
+
+        assert.equal(policy.isOwner(owner), true);
+        assert.equal(policy.isOwner(guest), false);
+        assert.equal(policy.isOwner(viewer), false);
+    });
+
+    it("a user is a user; the owner and a viewer are not", () => {
+        const { policy } = asked();
+
+        assert.equal(policy.isUser(guest), true);
+        assert.equal(policy.isUser(invited), true);
+        assert.equal(policy.isUser(owner), false);
+        assert.equal(policy.isUser(viewer), false);
+        assert.equal(policy.isUser(paused), false);
+    });
+
+    it("the owner and a user prompt; a viewer does not", () => {
+        const { policy } = asked();
+
+        assert.equal(policy.prompts(owner), true);
+        assert.equal(policy.prompts(guest), true);
+        assert.equal(policy.prompts(viewer), false);
+        assert.equal(policy.prompts(paused), false);
+    });
+
+    it("who prompts sees everyone in People, syncs pins, and sets a photo; a viewer does none", () => {
+        const { policy } = asked();
+
+        for (const person of [owner, guest]) {
+            assert.equal(policy.seesEveryone(person), true);
+            assert.equal(policy.syncsPins(person), true);
+            assert.equal(policy.setsPhoto(person), true);
+        }
+
+        assert.equal(policy.seesEveryone(viewer), false);
+        assert.equal(policy.syncsPins(viewer), false);
+        assert.equal(policy.setsPhoto(viewer), false);
+    });
+
+    it("only a viewer asks for access", () => {
+        const { policy } = asked();
+
+        assert.equal(policy.asksForAccess(viewer), true);
+        assert.equal(policy.asksForAccess(paused), true);
+        assert.equal(policy.asksForAccess(guest), false);
+        assert.equal(policy.asksForAccess(owner), false);
+    });
+
+    it("a viewer whose authenticator was removed is paused; another viewer and a user are not", () => {
+        const { policy } = asked();
+
+        assert.equal(policy.isPaused(paused), true);
+        assert.equal(policy.isPaused(viewer), false);
+        assert.equal(policy.isPaused(guest), false);
+        assert.equal(policy.isPaused(owner), false);
+    });
+
+    it("only the owner reaches this machine itself, and has a PiP: not a user who manages the server", () => {
+        const manager: Person = { id: "manager", role: "guest", rights: ["managesServer"] };
+        const { policy } = world(undefined, undefined, [owner, guest, viewer, manager]);
+
+        assert.equal(policy.reachesMachine(owner), true);
+        assert.equal(policy.mayHavePip(owner), true);
+
+        for (const person of [guest, viewer, manager]) {
+            assert.equal(policy.reachesMachine(person), false);
+            assert.equal(policy.mayHavePip(person), false);
+        }
+    });
+
+    it("answers from the current record: a stale copy of a user made a viewer no longer prompts", () => {
+        const { policy, people } = asked();
+        const stale = { ...guest };
+
+        assert.equal(policy.prompts(stale), true);
+        people.set(guest.id, { ...guest, role: "viewer" });
+
+        assert.equal(stale.role, "guest");
+        assert.equal(policy.prompts(stale), false);
+        assert.equal(policy.isUser(stale), false);
+        assert.equal(policy.syncsPins(stale), false);
+        assert.equal(policy.asksForAccess(stale), true);
+    });
+
+    it("says no to every question for someone who is no longer here, whatever their copy says", () => {
+        const { policy } = asked();
+
+        assert.equal(policy.isOwner(gone), false);
+        assert.equal(policy.isUser(gone), false);
+        assert.equal(policy.prompts(gone), false);
+        assert.equal(policy.seesEveryone(gone), false);
+        assert.equal(policy.asksForAccess(gone), false);
+        assert.equal(policy.isPaused(gone), false);
+        assert.equal(policy.syncsPins(gone), false);
+        assert.equal(policy.setsPhoto(gone), false);
+        assert.equal(policy.reachesMachine(gone), false);
+        assert.equal(policy.mayHavePip(gone), false);
+    });
+});

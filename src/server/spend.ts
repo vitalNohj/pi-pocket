@@ -189,7 +189,7 @@ export class Spend {
         return (
             app.attribution.requesterOf(id) ??
             app.sessionMeta(app.rootOf(id))?.createdBy ??
-            app.config.users.find((user) => user.role === "owner")!.id
+            app.config.owner!.id
         );
     }
 
@@ -313,7 +313,8 @@ export class Spend {
         }
 
         const person = app.config.userById(userId);
-        const limit = person === undefined || person.role === "owner" ? undefined : person.budget;
+        const limit =
+            person === undefined || app.policy.isOwner(person) ? undefined : person.budget;
 
         if (limit !== undefined && this.personSpent(userId) >= limit) {
             return { budget: limit, person };
@@ -470,12 +471,11 @@ export class Spend {
      * none. Someone who manages the server could lift their own, so theirs is the owner's to set.
      */
     #cannotLimit(by: User, person: User): HttpError | undefined {
-        if (person.role === "owner") {
+        if (this.#app.policy.isOwner(person)) {
             return new HttpError(400, "The owner has no spend limit");
         }
 
-        return this.#app.policy.managesServer(person) &&
-            this.#app.config.userById(by.id)?.role !== "owner"
+        return this.#app.policy.managesServer(person) && !this.#app.policy.isOwner(by)
             ? new HttpError(
                   403,
                   "Only the owner can change the spend limit of someone who manages the server.",

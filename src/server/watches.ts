@@ -372,7 +372,7 @@ export class Watches {
 
         const person = app.config.userById(personId ?? meta.createdBy ?? "");
 
-        if (person === undefined || person.role === "viewer") {
+        if (person === undefined || !app.policy.prompts(person)) {
             throw new HttpError(403, "A watch works for someone who can steer here.");
         }
 
@@ -960,7 +960,7 @@ export class Watches {
 
         const person = app.config.userById(watch.by);
 
-        if (person === undefined || person.role === "viewer" || !app.canSee(person, id)) {
+        if (person === undefined || !app.policy.maySteer(person, String(id))) {
             return this.#end(runtime, "failed", context, "its person can no longer steer here");
         }
 

@@ -846,7 +846,7 @@ export class Memory {
                           },
                       }
                     : {}),
-                mine: !pendingOnly && user.role !== "viewer" && this.#mayChange(lesson, user.id),
+                mine: !pendingOnly && app.policy.prompts(user) && this.#mayChange(lesson, user.id),
                 ...(lesson.proposal !== undefined &&
                 (managesServer || lesson.proposal.by === user.id)
                     ? {
@@ -911,7 +911,7 @@ export class Memory {
             lessons,
             ...(others.length === 0 ? {} : { others }),
             owner: managesServer,
-            canWrite: !pendingOnly && user.role !== "viewer",
+            canWrite: !pendingOnly && app.policy.prompts(user),
             limits: {
                 project: MAX_PROJECT_LESSONS,
                 everywhere: MAX_EVERYWHERE_LESSONS,

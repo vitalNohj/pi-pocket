@@ -111,6 +111,8 @@ test("startup recovery stops a busy run after uncounted usage crosses its payer'
     const spend = new Spend({
         harness,
         config: { userById: (id: string) => (id === person.id ? person : undefined) },
+        // The owner has no limit (`access.ts` `isOwner`): Alex is a user.
+        policy: { isOwner: () => false },
         attribution: { requesterOf: () => person.id },
         rootOf: (id: ConversationId) => id,
         sessionMeta: () => undefined,
