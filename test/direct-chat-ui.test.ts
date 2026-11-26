@@ -657,14 +657,11 @@ const names = () =>
         );
     `);
 
-/** The switches of the page shown that say what a person may do, as they read. */
+/** The switches of the Permissions pane shown, in every group of it (Account, Pi Pocket, each computer), as they read. */
 const rights = () =>
     inPage<string[]>(`
-        const group = [...document.querySelectorAll(".pages-detail .group")]
-            .find((each) => each.querySelector(".group-title")?.textContent.trim() === "What they may do");
-
         return JSON.stringify(
-            [...(group?.querySelectorAll("[role=switch]") ?? [])].map(
+            [...document.querySelectorAll(".pages-detail .group [role=switch]")].map(
                 (each) => each.getAttribute("aria-label") + (each.disabled ? " (disabled)" : ""),
             ),
         );
