@@ -36,6 +36,7 @@ DisableDirPage=yes
 DisableProgramGroupPage=yes
 DisableReadyPage=no
 PrivilegesRequired=lowest
+ChangesAssociations=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
@@ -94,7 +95,7 @@ Source: "pi-pocket.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-pi-pocket.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "Open Pi Pocket"; AppUserModelID: "PiPocket.Desktop"; AppUserModelToastActivatorCLSID: "{{3482E279-4BAB-4932-BF9D-CE95126FE324}"
+Name: "{autoprograms}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "Open Pi Pocket"; AppUserModelID: "PiPocket.Desktop"; AppUserModelToastActivatorCLSID: "3482E279-4BAB-4932-BF9D-CE95126FE324"
 Name: "{autoprograms}\Pi Pocket (console)"; Filename: "{app}\pi-pocket.cmd"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\pi-pocket.ico"; Comment: "Start Pi Pocket in a console window, to choose how other devices reach it"
 Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--hidden"; WorkingDir: "{%USERPROFILE}"; Tasks: startup
 
