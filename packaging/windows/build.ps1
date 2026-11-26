@@ -110,16 +110,17 @@ $contractReferences = foreach ($contract in $contracts) {
     if (-not $file) { throw "The Windows SDK is missing $contract.winmd." }
     "/r:$($file.FullName)"
 }
-# csc is invoked directly, so it does not get the framework façades that MSBuild adds.
-$runtimeFacade = Join-Path (Split-Path $csc -Parent) 'Facades\System.Runtime.dll'
+# The SDK contracts declare the original System.Runtime 4.0 facade. Prefer the matching desktop reference.
+$runtimeFacade = Join-Path $env:WINDIR 'Microsoft.NET\assembly\GAC_MSIL\System.Runtime\v4.0_4.0.0.0__b03f5f7f11d50a3a\System.Runtime.dll'
 if (-not (Test-Path $runtimeFacade)) {
     $runtimeFacade = Join-Path ${env:ProgramFiles(x86)} 'Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\Facades\System.Runtime.dll'
 }
 if (-not (Test-Path $runtimeFacade)) { throw 'The .NET Framework System.Runtime reference is missing.' }
 $desktopSources = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter '*.cs' -File | ForEach-Object FullName)
 $bootstrap = Join-Path $PSScriptRoot "..\desktop\bridge\bootstrap.js"
+# The .NET 4.8 targeting pack's fallback facade can have a newer version than the WinRT contract reference.
 $compile = @(
-    '/nologo', '/optimize+', '/platform:x64', '/warnaserror+', '/codepage:65001',
+    '/nologo', '/optimize+', '/platform:x64', '/warnaserror+', '/warnaserror-:1701', '/codepage:65001',
     '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll', '/r:System.Xml.Linq.dll',
     '/r:System.Runtime.WindowsRuntime.dll', "/r:$runtimeFacade", "/r:$webCore", "/r:$webForms",
     "/resource:$bootstrap,PocketBridge.js", $sourceFile, (Join-Path $PSScriptRoot 'PocketWindow.cs')
