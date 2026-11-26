@@ -7,6 +7,8 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { fixture } from "./fixture.mjs";
+
+const windows = process.platform === "win32";
 const [exe, input, out] = process.argv.slice(2).map((arg) => resolve(arg));
 const settingsTitle = "Desktop Settings — Pi Pocket";
 const stateFolder = await mkdtemp(join(tmpdir(), "pocket-desktop-smoke-"));
@@ -17,8 +19,41 @@ const remote = await fixture();
 const exec = promisify(execFile);
 let app;
 
-function start(...args) {
-    return spawn(exe, args, { env: environment, stdio: ["ignore", "ignore", "inherit"] });
+async function start() {
+    if (windows) {
+        const { stdout } = await exec(input, ["launch", exe], {
+            env: environment,
+            timeout: 15_000,
+        });
+        const pid = Number(stdout.trim());
+        assert(
+            Number.isSafeInteger(pid) && pid > 0,
+            "the desktop launched as a Windows application",
+        );
+
+        return pid;
+    }
+
+    const child = spawn(exe, { env: environment, stdio: ["ignore", "ignore", "inherit"] });
+
+    await new Promise((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+    });
+
+    return child.pid;
+}
+
+function exited(pid) {
+    try {
+        process.kill(pid, 0);
+        return false;
+    } catch (error) {
+        if (error.code !== "ESRCH") {
+            throw error;
+        }
+        return true;
+    }
 }
 
 async function until(description, condition, timeout = 30_000) {
@@ -38,12 +73,12 @@ async function until(description, condition, timeout = 30_000) {
 const prefs = async () => JSON.parse(await readFile(settings, "utf8")).preferences;
 
 async function gui(command, title, ...args) {
-    const parameters = [String(app.pid), command, title, ...args.map(String)];
+    const parameters = [String(app), command, title, ...args.map(String)];
 
     try {
         return await exec(input, parameters, { timeout: 30_000, windowsHide: true });
     } catch (error) {
-        console.error(`Desktop input ${command} failed (app exit: ${app.exitCode}).`);
+        console.error(`Desktop input ${command} failed (app exited: ${exited(app)}).`);
         if (error.stderr) {
             console.error(error.stderr.trim());
         }
@@ -58,15 +93,22 @@ async function shot(title, name) {
     assert((await stat(file)).size > 4000, `${name} contains a window screenshot`);
 }
 
-function quit() {
-    const closing = start("--quit");
+const quit = () => exec(exe, ["--quit"], { env: environment, timeout: 15_000 });
+const webViewLog = () => readFile(join(stateFolder, "webview2.log"), "utf8").catch(() => "");
 
-    return new Promise((resolve, reject) => {
-        closing.once("error", reject);
-        closing.once("exit", (status) =>
-            status === 0 ? resolve() : reject(new Error(`--quit exited ${status}`)),
+async function waitForSettings(opened) {
+    if (windows) {
+        await until(
+            "Windows Settings loaded the bundled page",
+            async () =>
+                (await webViewLog()).split("The bundled Desktop Settings page loaded.").length >
+                opened,
+            65_000,
         );
-    });
+    } else {
+        await sleep(2500);
+    }
+    await gui("find", settingsTitle);
 }
 
 async function noLocalServer() {
@@ -81,10 +123,9 @@ async function noLocalServer() {
 
 try {
     await mkdir(out, { recursive: true });
-    app = start();
+    app = await start();
     await until("a fresh desktop settings file", () => stat(settings).catch(() => null));
-    await gui("find", settingsTitle);
-    await sleep(2500);
+    await waitForSettings(1);
     assert.equal((await prefs()).home.mode, null);
     assert.equal((await prefs()).window.titleBar, "seamless");
     await noLocalServer();
@@ -100,11 +141,10 @@ try {
         async () => (await prefs()).window.closeToTray === false,
     );
     await gui("close", settingsTitle);
-    const second = start();
+    const second = await start();
 
-    await until("second launch raised the first process", () => second.exitCode === 0);
-    await gui("find", settingsTitle);
-    await sleep(1000);
+    await until("second launch raised the first process", () => exited(second));
+    await waitForSettings(2);
     await gui("click", settingsTitle, 95, 287);
     await gui("click", settingsTitle, 254, 192);
     await until(
@@ -146,13 +186,16 @@ try {
     );
 
     await quit();
-    await until("Quit ended the app", () => app.exitCode !== null);
+    await until("Quit ended the app", () => exited(app));
     console.log("The installed app passed the offline Settings and remote Home smoke test.");
 } finally {
-    await remote.close();
-
-    if (app && app.exitCode === null) {
+    if (app && !exited(app)) {
         await quit().catch(() => {});
-        await until("app cleanup", () => app.exitCode !== null, 10_000).catch(() => app.kill());
+        await until("app cleanup", () => exited(app), 10_000).catch(() => process.kill(app));
+    }
+
+    await remote.close();
+    if (windows) {
+        console.log(await webViewLog());
     }
 }

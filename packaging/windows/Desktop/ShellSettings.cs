@@ -35,8 +35,17 @@ namespace PiPocket
         {
             await host.InitializeWebView(view, ShellWebProfile.Settings);
             if (IsDisposed) { return; }
-            CoreWebView2 core = Browser;
+            try { Configure(host, assets); }
+            catch (Exception error)
+            {
+                host.ReportWebViewFailure(ShellWebProfile.Settings, "bundled page", error);
+                throw;
+            }
+        }
 
+        void Configure(TrayApp host, string assets)
+        {
+            CoreWebView2 core = Browser;
             view.AllowExternalDrop = false;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.AreDevToolsEnabled = false;
@@ -57,6 +66,8 @@ namespace PiPocket
             core.NavigationCompleted += delegate (object sender, CoreWebView2NavigationCompletedEventArgs e)
             {
                 loaded = committed && e.IsSuccess;
+                host.WriteWebViewLog(loaded ? "The bundled Desktop Settings page loaded." :
+                    "The bundled Desktop Settings page did not load: " + e.WebErrorStatus + ".");
                 SelectSection(section);
             };
             core.FrameNavigationStarting += delegate (object sender, CoreWebView2NavigationStartingEventArgs e) { e.Cancel = true; };

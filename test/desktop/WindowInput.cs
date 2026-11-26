@@ -36,6 +36,15 @@ static class WindowInput
     {
         try
         {
+            if (args[0] == "launch")
+            {
+                using (Process app = Process.Start(new ProcessStartInfo(args[1]) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Normal }))
+                {
+                    Console.WriteLine(app.Id);
+                }
+                return 0;
+            }
+
             SetProcessDpiAwarenessContext(new IntPtr(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
             int pid = int.Parse(args[0], CultureInfo.InvariantCulture);
             string operation = args[1];

@@ -33,12 +33,15 @@ namespace PiPocket
                 GC.KeepAlive(view.Handle);
                 if (webEnvironment == null || webEnvironment.IsFaulted || webEnvironment.IsCanceled)
                 {
+                    CoreWebView2Environment.GetAvailableBrowserVersionString(null);
+                    WriteWebViewLog("Creating the WebView2 environment.");
                     webEnvironment = CoreWebView2Environment.CreateAsync(null, webDataFolder);
                 }
 
                 CoreWebView2Environment environment = await webEnvironment;
                 if (view.IsDisposed) { return; }
                 stage = "controller";
+                WriteWebViewLog("Creating the " + profile + " WebView2 controller.");
                 if (profile == ShellWebProfile.Local)
                 {
                     await view.EnsureCoreWebView2Async(environment);
@@ -50,29 +53,33 @@ namespace PiPocket
                     options.IsInPrivateModeEnabled = profile == ShellWebProfile.Settings;
                     await view.EnsureCoreWebView2Async(environment, options);
                 }
+                WriteWebViewLog("The " + profile + " WebView2 controller is ready.");
             }
             catch (Exception error)
             {
-                if (!quitting && !view.IsDisposed)
-                {
-                    string message = string.Format("WebView2 {0} {1} failed: 0x{2:X8}; user data folder: {3}",
-                        profile, stage, error.HResult, webDataFolder);
-                    Log(message);
-                    Console.Error.WriteLine(message);
-                    string folder = stateFolder;
-                    ThreadPool.QueueUserWorkItem(delegate
-                    {
-                        try
-                        {
-                            Directory.CreateDirectory(folder);
-                            File.AppendAllText(Path.Combine(folder, "webview2.log"), message + Environment.NewLine);
-                        }
-                        catch (IOException) { }
-                        catch (UnauthorizedAccessException) { }
-                    });
-                }
+                if (!quitting && !view.IsDisposed) { ReportWebViewFailure(profile, stage, error); }
                 throw;
             }
+        }
+
+        internal void ReportWebViewFailure(ShellWebProfile profile, string stage, Exception error)
+        {
+            WriteWebViewLog(string.Format("WebView2 {0} {1} failed: 0x{2:X8}; user data folder: {3}",
+                profile, stage, error.HResult, webDataFolder));
+        }
+
+        internal void WriteWebViewLog(string message)
+        {
+            Log(message);
+            try
+            {
+                Directory.CreateDirectory(stateFolder);
+                string path = Path.Combine(stateFolder, "webview2.log");
+                if (File.Exists(path) && new FileInfo(path).Length >= 64 * 1024) { File.Delete(path); }
+                File.AppendAllText(path, DateTime.UtcNow.ToString("u") + " " + message + Environment.NewLine);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 }

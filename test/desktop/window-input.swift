@@ -43,6 +43,17 @@ guard let (number, rect) = found else {
     fail("The installed app did not show '\(title)'. Its \(owned.count) windows: \(details)")
 }
 
+func prepareInput() {
+    guard CGPreflightPostEventAccess() else { fail("macOS has not authorized the installer input driver to post Quartz events.") }
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+        NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateIgnoringOtherApps])
+        Thread.sleep(forTimeInterval: 0.3)
+    }
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+        fail("The installed app is not in the foreground.")
+    }
+}
+
 func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
     for pressed in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: pressed) else { fail("Cannot create key event.") }
@@ -51,7 +62,7 @@ func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
             let units = Array(text.utf16)
             units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress!) }
         }
-        event.postToPid(pid)
+        event.post(tap: .cghidEventTap)
     }
 }
 
@@ -65,20 +76,23 @@ case "shot":
     capture.waitUntilExit()
     if capture.terminationStatus != 0 { fail("Could not capture the installed window.") }
 case "click":
+    prepareInput()
     let frame = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 930, height: 710),
         styleMask: [.titled, .closable, .miniaturizable, .resizable])
     let point = CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!)
-    for type: CGEventType in [.leftMouseDown, .leftMouseUp] {
+    for type: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
         else { fail("Cannot create mouse event.") }
-        event.setIntegerValueField(.mouseEventClickState, value: 1)
-        event.postToPid(pid)
+        if type != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }
+        event.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.04)
     }
-case "key":
-    guard let code = ["Tab": CGKeyCode(48), "Space": 49, "Enter": 36][args[4]] else { fail("Unknown test key.") }
-    key(code)
-case "type": for character in args[4] { key(0, text: String(character)) }
-case "close": key(13, flags: .maskCommand) // Cmd+W
+case "type":
+    prepareInput()
+    for character in args[4] { key(0, text: String(character)) }
+case "close":
+    prepareInput()
+    key(13, flags: .maskCommand) // Cmd+W
 default: fail("Unknown test operation.")
 }
 Thread.sleep(forTimeInterval: 0.25)
