@@ -13,7 +13,7 @@ namespace PiPocket
     {
         const string Host = "desktop-settings.invalid";
         const string Address = "https://" + Host + "/index.html";
-        readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill, AllowExternalDrop = false };
+        readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
         readonly Func<string, object, Task<object>> call;
         bool committed;
         bool loaded;
@@ -39,6 +39,7 @@ namespace PiPocket
             if (IsDisposed) { return; }
             CoreWebView2 core = Browser;
 
+            view.AllowExternalDrop = false;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.AreDevToolsEnabled = false;
             core.Settings.AreDefaultScriptDialogsEnabled = false;

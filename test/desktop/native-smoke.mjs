@@ -21,7 +21,7 @@ const exec = promisify(execFile);
 let app;
 
 function start(...args) {
-    return spawn(exe, args, { env: environment, stdio: "ignore" });
+    return spawn(exe, args, { env: environment, stdio: ["ignore", "ignore", "inherit"] });
 }
 
 async function until(description, condition, timeout = 30_000) {

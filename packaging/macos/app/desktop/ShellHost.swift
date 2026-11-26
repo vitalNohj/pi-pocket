@@ -46,14 +46,16 @@ extension AppDelegate {
         let files = FileManager.default
         let existing = ProcessInfo.processInfo.environment["PI_POCKET_DESKTOP_STATE"] == nil &&
             [logFile, appFolder.appendingPathComponent("desktop-upgrade.txt")].contains { files.fileExists(atPath: $0.path) }
+        let fresh = !existing && !files.fileExists(atPath: stateFolder.appendingPathComponent("desktop.json").path)
 
         do {
             controller = try ShellController(folder: stateFolder, assets: assets, existing: existing,
                 receive: { [weak self] in self?.controllerPacket($0) }, disconnected: { [weak self] in self?.controllerFailed() })
+            if openWhenReady && fresh { openSettings("home") }
             controller?.call("subscribe") { [weak self] answer in
                 guard let self = self, !self.quitting else { return }
                 if case .success(let state) = answer, let state = state as? [String: Any] { self.applySnapshot(state) }
-                if self.openWhenReady, (self.prefs["home"] as? [String: Any])?["mode"] as? String != "local", self.page == nil {
+                if self.openWhenReady, !fresh, (self.prefs["home"] as? [String: Any])?["mode"] as? String != "local", self.page == nil {
                     self.openSettings("home")
                 }
                 let login = home.appendingPathComponent("Library/LaunchAgents/io.github.tannermidd.pi-pocket.plist")

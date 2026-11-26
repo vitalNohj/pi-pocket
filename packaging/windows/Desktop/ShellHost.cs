@@ -38,6 +38,7 @@ namespace PiPocket
             stateFolder = string.IsNullOrEmpty(custom) ? Path.Combine(shellFolder, "desktop") : Path.GetFullPath(custom);
             bool existing = string.IsNullOrEmpty(custom) && (File.Exists(logFile) ||
                 File.Exists(Path.Combine(appDir, "window-bounds.txt")) || File.Exists(Path.Combine(appDir, "desktop-upgrade.txt")));
+            bool fresh = !existing && !File.Exists(Path.Combine(stateFolder, "desktop.json"));
             ProcessStartInfo start = new ProcessStartInfo(Path.Combine(appDir, @"node\node.exe"),
                 Quote(Path.Combine(appDir, @"desktop-assets\controller\main.mjs")) + " " + Quote(stateFolder) +
                 " windows " + Quote(Program.Version) + (existing ? " existing" : " new"));
@@ -53,9 +54,11 @@ namespace PiPocket
                 {
                     if (!quitting) { ShowBalloon("Pi Pocket", "Desktop Settings could not connect to the controller. Try reinstalling Pi Pocket.", ToolTipIcon.Warning, null); }
                 }));
-            try { ApplySnapshot(await controller.Call("subscribe")); }
+            Task<object> subscribed = controller.Call("subscribe");
+            if (openWhenReady && fresh) { OpenSettings("home"); }
+            try { ApplySnapshot(await subscribed); }
             catch (InvalidOperationException) { }
-            if (openWhenReady && pageGeneration == 0 && !quitting && ShellWire.Text(ShellWire.Get(ShellWire.Get(snapshot, "preferences"), "home"), "mode") != "local")
+            if (openWhenReady && !fresh && pageGeneration == 0 && !quitting && ShellWire.Text(ShellWire.Get(ShellWire.Get(snapshot, "preferences"), "home"), "mode") != "local")
             {
                 OpenSettings("home");
             }
@@ -223,9 +226,10 @@ namespace PiPocket
             {
                 await made.Initialize(Path.Combine(stateFolder, "Settings WebView2"), Path.Combine(appDir, @"desktop-assets\settings"));
             }
-            catch (Exception)
+            catch (Exception error)
             {
                 made.Dispose();
+                Console.Error.WriteLine("Desktop Settings WebView2 initialization failed: 0x{0:X8}", error.HResult);
                 if (!quitting) { ShowBalloon("Pi Pocket", "Desktop Settings could not open. Install the WebView2 Runtime or run Setup again.", ToolTipIcon.Warning, null); }
             }
         }

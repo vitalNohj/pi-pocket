@@ -32,7 +32,16 @@ for _ in 0..<60 {
     if found != nil { break }
     Thread.sleep(forTimeInterval: 0.3)
 }
-guard let (number, rect) = found else { fail("The installed app did not show '\(title)'.") }
+guard let (number, rect) = found else {
+    let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
+    let owned = windows.filter { $0[kCGWindowOwnerPID as String] as? Int32 == pid }
+    let details = owned.map { window in
+        let title = window[kCGWindowName as String] as? String ?? "(untitled)"
+        let bounds = window[kCGWindowBounds as String] ?? "(no bounds)"
+        return "\(title) \(bounds)"
+    }.joined(separator: "; ")
+    fail("The installed app did not show '\(title)'. Its \(owned.count) windows: \(details)")
+}
 
 func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
     for pressed in [true, false] {
@@ -70,6 +79,6 @@ case "key":
     key(code)
 case "type": for character in args[4] { key(0, text: String(character)) }
 case "close": key(13, flags: .maskCommand) // Cmd+W
- default: fail("Unknown test operation.")
+default: fail("Unknown test operation.")
 }
 Thread.sleep(forTimeInterval: 0.25)

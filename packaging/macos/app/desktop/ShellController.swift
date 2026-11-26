@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 let shellMaxPacket = 65_536
@@ -31,9 +32,14 @@ final class ShellController {
             let stream = output.fileHandleForReading
             var line = Data()
             var overflow = false
+            var buffer = [UInt8](repeating: 0, count: 8192)
 
-            while let data = try? stream.read(upToCount: 8192), !data.isEmpty {
-                for byte in data {
+            // The first response can be much smaller than the buffer. Read what the pipe has now.
+            while true {
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(stream.fileDescriptor, $0.baseAddress, $0.count) }
+                if count < 0 && errno == EINTR { continue }
+                if count <= 0 { break }
+                for byte in buffer.prefix(count) {
                     if byte == 10 {
                         if !overflow, let packet = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any], packet["v"] as? Int == 1 {
                             DispatchQueue.main.async { [weak self] in
