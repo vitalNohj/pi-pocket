@@ -4,7 +4,7 @@ import {
     actions,
     attempt,
     closeSheet,
-    managesRunners,
+    managesThisServer,
     navigate,
     notify,
     openSheet,
@@ -19,7 +19,7 @@ import { html, Icon, Loader, Sheet, shortPath, timeAgo } from "../ui.js";
 export const piSessionsAvailable = (runner) =>
     runner
         ? store.state.runners.some((each) => each.id === runner && each.mayStart !== false)
-        : managesRunners();
+        : managesThisServer();
 
 const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 

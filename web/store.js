@@ -741,19 +741,13 @@ export const canInviteNew = () => store.state.me?.mayInvite ?? (canStart() && ca
  */
 export const managesPeople = () => hasRight("managesUsers") ?? isOwner(store.state.me);
 
-/**
- * Does this person manage runners (`access.ts` `managesRunners`): the owner, and a user the owner lets. They are in
- * charge of this server and of the runners the owner linked, and unlink any runner.
- */
-export const managesRunners = () => hasRight("managesRunners") ?? isOwner(store.state.me);
+/** Is this person in charge of this server: its owner, or someone with Manage this computer here. */
+export const managesThisServer = () =>
+    hasRight("manages", "this-server") ?? isOwner(store.state.me);
 
-/**
- * Whether the app offers this person the Runners sheet: who manages runners (the owner too), who may link computers
- * of their own, and who is in charge of one (`runners.ts` `RunnerView.inCharge`; a server from before it says who
- * linked it).
- */
+/** Offer computers to who is in charge of one or may link their own. */
 export const runnersOffered = () =>
-    managesRunners() ||
+    (store.state.me?.rights?.manages?.length ?? 0) > 0 ||
     canLink() ||
     store.state.runners.some(
         (each) => each.inCharge ?? (each.createdBy === store.state.me?.id && !each.blocked),

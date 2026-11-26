@@ -356,23 +356,34 @@ test("with approvals that need someone else, a user allows their own call only o
         await assert.rejects(app.answerApproval(third.request.id, true, alex), {
             status: 403,
             message:
-                "Nobody is known to have asked for this call, so only the owner, or someone who manages runners, can allow it.",
+                "Nobody is known to have asked for this call, so only the owner, or someone who manages this server, can allow it.",
         });
         assert.equal(await app.answerApproval(third.request.id, true, owner(app)), true);
         await third.answered;
 
-        // So does who manages runners: in charge of this server as the owner is, they allow it too.
+        // A manager of this server can allow it too.
         const mona = await person("Mona", "guest");
         const unasked = ask(quiet, "rm -rf logs");
 
         await assert.rejects(app.answerApproval(unasked.request.id, true, mona), { status: 403 });
-        app.setRight(owner(app), { person: mona.id, right: "managesRunners", on: true });
+        await app.choosePerson(THIS_SERVER, mona.id, true);
+        app.setRight(owner(app), {
+            person: mona.id,
+            right: "manages",
+            on: true,
+            computer: THIS_SERVER,
+        });
         assert.equal(
             await app.answerApproval(unasked.request.id, true, app.config.userById(mona.id)!),
             true,
         );
         assert.deepEqual(await unasked.answered, { allow: true, by: "Mona" });
-        app.setRight(owner(app), { person: mona.id, right: "managesRunners", on: false });
+        app.setRight(owner(app), {
+            person: mona.id,
+            right: "manages",
+            on: false,
+            computer: THIS_SERVER,
+        });
         await app.settle();
 
         // Taken back: as before.

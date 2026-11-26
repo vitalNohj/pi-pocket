@@ -24,7 +24,7 @@ export type Right = {
      * by role.
      */
     viewers?: true;
-    /** Only the owner gives it. Absent: who manages the person does, and only what they hold themselves. */
+    /** Only the owner of Pi Pocket gives this person right, or the owner of the computer gives this computer right. */
     gives?: "owner";
     /** Who holds one of these rights has this one with it. */
     with?: readonly string[];
@@ -35,8 +35,6 @@ export type Right = {
     lapses?: true;
     /** Holding it makes a user an admin (`roleWord`). */
     admin?: true;
-    /** It manages or administers: its switch is in the Management group of a person's page. */
-    management?: true;
     /** Its switch: the name beside it. In small letters it ends "must be a user to …". */
     label: string;
     /** What the person does with it, after their name: a screen reader's name for its switch. */
@@ -47,35 +45,14 @@ export type Right = {
     off?: string;
     /** Under its switch while they have it with another right (`with`). */
     withHint?: string;
-    /** Asked before it is turned on; `{name}` is the person. Absent: nothing is asked. */
+    /** Asked before it is turned on; `{name}` is the person, `{computer}` the computer. Absent: nothing is asked. */
     confirm?: string;
 };
 
 export const RIGHTS = {
-    linksRunners: {
-        scope: "person",
-        whole: true,
-        label: "Link runners",
-        says: "links runners",
-        on: "On: they link computers of their own as runners, which they are in charge of.",
-        off: "Off: they do not link runners.",
-    },
-    invites: {
-        scope: "person",
-        whole: true,
-        management: true,
-        with: ["managesUsers"],
-        label: "Invite people",
-        says: "invites people",
-        on: "On: they invite people, who join as viewers and see what the invite shares.",
-        off: "Off: they do not invite people.",
-        withHint:
-            "On with Manage users: they invite people, who join as viewers and see what the invite shares.",
-    },
     managesUsers: {
         scope: "person",
         whole: true,
-        management: true,
         gives: "owner",
         lapses: true,
         admin: true,
@@ -86,23 +63,9 @@ export const RIGHTS = {
         confirm:
             "Let {name} manage users? They can invite people, make viewers users, change what other people may do, remove them, and sign a device in as a viewer.",
     },
-    managesRunners: {
-        scope: "person",
-        whole: true,
-        management: true,
-        gives: "owner",
-        lapses: true,
-        label: "Manage runners",
-        says: "manages runners",
-        on: "On: they are in charge of this server and the runners you linked, as you are. They can unlink any runner.",
-        off: "Off: they are not in charge of this server or the runners you linked.",
-        confirm:
-            "Let {name} manage runners? They see and prompt every session on this server and on the runners you linked, in any folder, choose who else may, and clean up archived sessions.",
-    },
     managesServer: {
         scope: "person",
         whole: true,
-        management: true,
         gives: "owner",
         lapses: true,
         admin: true,
@@ -113,10 +76,20 @@ export const RIGHTS = {
         confirm:
             "Let {name} manage Pi Pocket? They can turn on extensions, which run code on this server, add providers, which see every prompt, sign providers in and out, and restart it.",
     },
+    invites: {
+        scope: "person",
+        whole: true,
+        with: ["managesUsers"],
+        label: "Invite people",
+        says: "invites people",
+        on: "On: they invite people, who join as viewers and see what the invite shares.",
+        off: "Off: they do not invite people.",
+        withHint:
+            "On with Manage users: they invite people, who join as viewers and see what the invite shares.",
+    },
     runsGlobalCommands: {
         scope: "person",
         whole: true,
-        management: true,
         gives: "owner",
         lapses: true,
         label: "Run global commands",
@@ -125,6 +98,14 @@ export const RIGHTS = {
         off: "Off: they run only the commands for a session.",
         confirm:
             "Let {name} run global commands? Extensions add them to change settings for everyone on this server.",
+    },
+    linksRunners: {
+        scope: "person",
+        whole: true,
+        label: "Link runners",
+        says: "links runners",
+        on: "On: they link computers of their own as runners, which they are in charge of.",
+        off: "Off: they do not link runners.",
     },
     keepsWarm: {
         scope: "person",
@@ -141,6 +122,24 @@ export const RIGHTS = {
         on: "On: they chat with the owner, with users, and with other viewers who have this. They see those people's names in People.",
         off: "Off: they chat only in the sessions shown to them.",
     },
+    manages: {
+        scope: "computer",
+        gives: "owner",
+        lapses: true,
+        label: "Manage this computer",
+        says: "manages",
+        on: "On: they are in charge of this computer, as you are: every session and folder here, its people, its settings, and project trust. They do not unlink it, and do not make other managers.",
+        off: "Off: they have only the folders and sessions given to them here.",
+        confirm:
+            "Let {name} manage {computer}? They see and prompt every session there, in any folder, choose who else may use it, change its settings, and set project trust.",
+    },
+    reshares: {
+        scope: "computer",
+        label: "Share what they were given",
+        says: "shares what they were given on",
+        on: "On: they share sessions that are shared with them there, and give folders that were given to them there.",
+        off: "Off: they share only the sessions they started there.",
+    },
     wheel: {
         scope: "computer",
         label: "Override take turns",
@@ -154,14 +153,6 @@ export const RIGHTS = {
         says: "allows their own calls on",
         on: "On: they allow their own ! commands and calls that Lancet Guard asks about here.",
         off: "Off: whoever is in charge allows their ! commands. While Approvals need someone else is on, someone else allows their calls.",
-    },
-    reshares: {
-        scope: "computer",
-        management: true,
-        label: "Share what they were given",
-        says: "shares what they were given on",
-        on: "On: they share sessions that are shared with them there, and give folders that were given to them there.",
-        off: "Off: they share only the sessions they started there.",
     },
 } as const satisfies Record<string, Right>;
 
@@ -281,13 +272,15 @@ export function roleWord(person: {
 /** What the app is told to draw a right's switch: its words and where it goes, not its rules. */
 export type ToldRight = Pick<
     Right,
-    "scope" | "management" | "label" | "says" | "on" | "off" | "withHint" | "confirm"
-> & { key: RightKey };
+    "scope" | "label" | "says" | "on" | "off" | "withHint" | "confirm"
+> & {
+    key: RightKey;
+};
 
 /** Every right as the app is told it, in the order their switches are shown. */
 export function toldRights(): ToldRight[] {
     return KEYS.map((key) => {
-        const { scope, management, label, says, on, off, withHint, confirm } = declared(key);
+        const { scope, label, says, on, off, withHint, confirm } = declared(key);
 
         return {
             key,
@@ -295,7 +288,6 @@ export function toldRights(): ToldRight[] {
             label,
             says,
             on,
-            ...(management === undefined ? {} : { management }),
             ...(off === undefined ? {} : { off }),
             ...(withHint === undefined ? {} : { withHint }),
             ...(confirm === undefined ? {} : { confirm }),

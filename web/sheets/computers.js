@@ -109,7 +109,7 @@ export function TrustNote() {
 
 /**
  * Linking paused, for one address or the whole server, and the addresses banned for guessing codes, which the owner can
- * lift (`link-limits.ts`): for the owner, and who manages runners.
+ * lift (`link-limits.ts`): for who is in charge of this server.
  */
 export function LinkLocks({ locks, reload }) {
     const intro = html`<h3 class="sheet-page-title">Linking limits</h3>

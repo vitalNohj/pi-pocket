@@ -99,7 +99,7 @@ function LineInput({ value, placeholder, label, onSubmit, onCancel, class: class
 
 /**
  * Where a new session runs, pinned under the places: this server, or a linked computer (`computers.js`). Each person
- * sees the computers they may use. Manage runners… is in the bottom row, beside the options.
+ * sees the computers they may use. Manage computers… is in the bottom row, beside the options.
  */
 function RunsOn({ runner, runners, onPick }) {
     // Only computers this person may start sessions on: the owner also lists runners someone else linked, to unlink.
@@ -872,7 +872,7 @@ export function CwdSheet({
                         class="link small fp-link"
                         onClick=${() => openSheet({ type: "access", view: "computer" })}
                     >
-                        Manage runners…
+                        Manage computers…
                     </button>`
                 }
                 ${

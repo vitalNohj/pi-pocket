@@ -27,11 +27,6 @@ import type { WebAccess } from "./host.ts";
 /** The id of this server's own computer record, as `SessionMeta.runner` is absent for its sessions. */
 export const THIS_SERVER = "this-server";
 
-/** The permission that opens a trusted built-in module's owner parts to someone besides the owner. */
-const OWNER_WEB_PERMISSIONS: Readonly<Partial<Record<string, PersonRight>>> = {
-    "session-cleanup": "managesRunners",
-};
-
 /**
  * What a person is told who may not chat with one person, or not with that one (`AccessPolicy.requireMessage`, and
  * `direct.ts` where a message is stored).
@@ -264,13 +259,9 @@ export class AccessPolicy {
     // Computers.
 
     /**
-     * Is `person` in charge of computer `id`: the owner of this server, the linker of a runner. On a runner someone else
-     * linked, the owner is no one special: they use it only if its linker chose them. A linker made a viewer is in
-     * charge of nothing: their runner is blocked (`blocked`) until they prompt again, and then nobody is in charge of it.
-     *
-     * So is a user the owner lets manage runners (`managesRunners`), wherever the owner is: on this server, and on the
-     * runners the owner linked. Several people can be in charge of such a computer; the one its sessions and tasks go
-     * to, and who hears what it asks, stays the owner (`inChargeOf`).
+     * Is `person` in charge of computer `id`: its owner, or a user chosen for it with Manage this computer. A
+     * runner whose linker is a viewer is blocked (`blocked`), so nobody is in charge of it. The computer's sessions
+     * and tasks still go to its owner (`inChargeOf`).
      */
     inCharge(person: Pick<Person, "id">, id: string): boolean {
         const current = this.#current(person);
@@ -284,15 +275,15 @@ export class AccessPolicy {
             return current.role !== "viewer";
         }
 
-        // An owner record holds every right, but is in charge of a runner only as its linker: a second owner record
-        // (a settings file edited by hand) is no one special on the runners the owner linked.
-        if (current.role === "owner") {
-            return id === THIS_SERVER;
+        if (id === THIS_SERVER && current.role === "owner") {
+            return true;
         }
 
         return (
-            (id === THIS_SERVER || computer.linker === this.#facts.ownerId) &&
-            holds(current, "managesRunners")
+            current.role !== "viewer" &&
+            computer.chosen.includes(current.id) &&
+            computer.holders("manages").includes(current.id) &&
+            !this.blocked(id)
         );
     }
 
@@ -370,8 +361,10 @@ export class AccessPolicy {
             return false;
         }
 
-        if (this.inCharge(person, computer)) {
-            return true;
+        const inCharge = this.inCharge(person, computer);
+
+        if (right === "manages" || inCharge) {
+            return inCharge;
         }
 
         const current = this.#current(person);
@@ -447,12 +440,32 @@ export class AccessPolicy {
     }
 
     /**
-     * May `person` unlink runner `id`: its linker, and the owner and who manages runners (`managesRunners`), who decide
-     * what links to this server. On a runner someone else linked, that is all they do: they list it, and learn nothing
-     * of its people, folders, or sessions.
+     * May `by` give or take back `right` on computer `id`: who is in charge, except that only the computer's
+     * owner chooses who manages it.
      */
+    mayGiveRight(by: Pick<Person, "id">, id: string, right: ComputerRight): boolean {
+        return (
+            this.mayManage(by, id) &&
+            (declared(right).gives !== "owner" || this.#facts.computer(id)?.linker === by.id)
+        );
+    }
+
+    /** Only the computer's owner can unchoose a person who holds Manage this computer. */
+    mayUnchoose(by: Pick<Person, "id">, id: string, target: Pick<Person, "id">): boolean {
+        return (
+            this.mayManage(by, id) &&
+            (this.#facts.computer(id)?.holders("manages").includes(target.id) !== true ||
+                this.mayGiveRight(by, id, "manages"))
+        );
+    }
+
+    /** May `person` unlink runner `id`: its linker while in charge, or the owner of Pi Pocket. */
     mayUnlink(person: Pick<Person, "id">, id: string): boolean {
-        return id !== THIS_SERVER && (this.managesRunners(person) || this.inCharge(person, id));
+        return (
+            id !== THIS_SERVER &&
+            (this.isOwner(person) ||
+                (this.#facts.computer(id)?.linker === person.id && this.inCharge(person, id)))
+        );
     }
 
     /** May `person` link computers of their own: the owner, and the guests the owner lets. */
@@ -466,15 +479,6 @@ export class AccessPolicy {
      */
     managesPeople(person: Pick<Person, "id">): boolean {
         return this.has(person, "managesUsers");
-    }
-
-    /**
-     * Does `person` manage runners: the owner, and the users the owner lets (`managesRunners`). They are in charge of
-     * this server and of the runners the owner linked, as the owner is (`inCharge`), and unlink any runner
-     * (`mayUnlink`).
-     */
-    managesRunners(person: Pick<Person, "id">): boolean {
-        return this.has(person, "managesRunners");
     }
 
     /**
@@ -669,8 +673,9 @@ export class AccessPolicy {
 
     /**
      * May `person` use an extension's routes, browser module, or settings open to `access` on this server: the owner
-     * always; for "owner", also who holds the permission named for a trusted built-in module, if any. For "steer"
-     * and "view", anyone else must be able to use this server, and then "steer" lets guests in and "view" viewers too.
+     * always; for "owner", also who is in charge of a computer, for the built-in session cleanup module alone.
+     * For "steer" and "view", anyone else must be able to use this server, and then "steer" lets guests in and
+     * "view" viewers too.
      * A person invited to one session never may (`extension-web.ts` lets the trusted diagrams client through).
      */
     mayUseExtension(
@@ -689,12 +694,10 @@ export class AccessPolicy {
         }
 
         if (access === "owner") {
-            const right =
-                builtInModule !== undefined && Object.hasOwn(OWNER_WEB_PERMISSIONS, builtInModule)
-                    ? OWNER_WEB_PERMISSIONS[builtInModule]
-                    : undefined;
-
-            return right !== undefined && this.has(current, right);
+            return (
+                builtInModule === "session-cleanup" &&
+                this.#facts.computers().some((id) => this.inCharge(current, id))
+            );
         }
 
         return (
@@ -1394,16 +1397,9 @@ export class AccessPolicy {
             throw new HttpError(
                 403,
                 id === THIS_SERVER
-                    ? "Only the owner, or someone who manages runners, can change this server's settings."
+                    ? "Only the owner, or someone who manages this server, can do this."
                     : "Only whoever is in charge of this computer can change its settings.",
             );
-        }
-    }
-
-    /** Refuse who does not manage runners (`managesRunners`): what guards linking is the owner's, and theirs. */
-    requireManagesRunners(person: Pick<Person, "id">): void {
-        if (!this.managesRunners(person)) {
-            throw new HttpError(403, "Only someone who manages runners can do that.");
         }
     }
 
@@ -1440,7 +1436,7 @@ export class AccessPolicy {
         if (!this.mayUnlink(person, id)) {
             throw new HttpError(
                 403,
-                "Only who linked this computer, the owner, or someone who manages runners can remove it.",
+                "Only who linked this computer or the owner of Pi Pocket can remove it.",
             );
         }
     }

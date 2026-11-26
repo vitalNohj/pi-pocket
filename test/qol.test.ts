@@ -278,7 +278,7 @@ test("a `!` command Lancet Guard asks about waits for who is in charge: allowed,
     const marker = join(folder, "risky.txt");
     const shells = async () => (await entries(id)).filter((entry) => entry.kind === "shell");
     const onlyOwner = (whose: string) =>
-        `Only the owner, or someone who manages runners, can allow a command ${whose} typed.`;
+        `Only the owner, or someone who manages this server, can allow a command ${whose} typed.`;
 
     try {
         await guarded(app, async () => {

@@ -99,10 +99,12 @@ function world(
 }
 
 describe("extension web access", () => {
-    it("opens only the built-in cleanup module's owner parts to people who manage runners", () => {
-        const { policy, people } = world();
+    it("opens only the built-in cleanup module's owner parts to a computer manager", () => {
+        const { policy } = world([
+            computer(THIS_SERVER),
+            computer("runner", { chosen: [stranger.id], ...held("manages", [stranger.id]) }),
+        ]);
 
-        people.set(stranger.id, { ...stranger, rights: ["managesRunners"] });
         assert.equal(policy.mayUseExtension(owner, "owner"), true);
         assert.equal(policy.mayUseExtension(stranger, "owner", "session-cleanup"), true);
         assert.equal(policy.mayUseExtension(stranger, "owner", "updates"), false);

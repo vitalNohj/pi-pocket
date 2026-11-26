@@ -342,8 +342,16 @@ test("each person's row says one word, and names the computers they are in charg
     await app.attach(owners.client);
 
     try {
-        // Managing runners is in charge of this server and of the owner's runners, and tells the owner's tab at once.
-        await done(boss, `users/${mia.id}/rights`, { right: "managesRunners", on: true });
+        // The owner's tab learns at once which computers Mia manages.
+        for (const id of [THIS_SERVER, mac.id]) {
+            await app.choosePerson(id, mia.id, true);
+            await done(boss, `runners/${id}/rights`, {
+                person: mia.id,
+                right: "manages",
+                on: true,
+            });
+        }
+
         await until(
             () => JSON.stringify(row(mia)?.inCharge) === JSON.stringify(["This server", "Mac"]),
             "Mia's computers in the owner's open tab",

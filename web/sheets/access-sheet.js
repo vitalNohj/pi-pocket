@@ -19,7 +19,7 @@ import {
     closeSheet,
     hasRight,
     managesPeople,
-    managesRunners,
+    managesThisServer,
     managesServer,
     openSheet,
     runnersOffered,
@@ -52,6 +52,7 @@ import {
     standing,
     THIS_SERVER,
     toggleUse,
+    unchooseReason,
 } from "./access.js";
 import { ApprovalTime } from "./approvals.js";
 import {
@@ -346,15 +347,14 @@ function unlink(computer) {
 
 /**
  * What a computer's page says above its grid: that it is blocked, or someone else's to change, with what I may do
- * about it, from the rights the server told me (who manages people makes a viewer a user; who manages runners
- * unlinks); and that it is not connected, or linked by an older runner.
+ * about it; and that it is not connected, or linked by an older runner.
  */
 function ComputerNotes({ computer }) {
     const { me, users } = store.state;
     const mine = inCharge(computer);
     const server = computer.id === THIS_SERVER;
     const linker = users.find((each) => each.id === computer.createdBy)?.name;
-    const unlinks = !server && managesRunners();
+    const unlinks = computer.mayUnlink === true;
     const remedy = [
         managesPeople() && computer.createdBy !== me?.id && "make them a user in By person",
         unlinks && "unlink it",
@@ -379,7 +379,7 @@ function ComputerNotes({ computer }) {
                     hasRight("reshares", computer.id) === true
                         ? " They give folders there, and you give the folders given to you, in By person."
                         : " They give folders there, and so does anyone they let share what they were given."
-                }${unlinks ? " You manage runners, so you can unlink it." : ""}
+                }${unlinks ? " You can unlink it." : ""}
             </div>`
         }
         ${
@@ -430,6 +430,7 @@ function UseSwitches({ computer, people }) {
         <div class="group-title">People</div>
         ${people.map((person) => {
             const { chosen } = standing(computer, person);
+            const reason = unchooseReason(computer, person);
             const has = chosen ? sessionsOf(computer, person).length : 0;
             const folders = chosen ? (computer.given?.[person.id] ?? []).length : 0;
 
@@ -449,7 +450,8 @@ function UseSwitches({ computer, people }) {
                 </div>
                 <${Switch}
                     on=${chosen}
-                    disabled=${busy === person.id || Boolean(person.sessions)}
+                    disabled=${busy === person.id || Boolean(person.sessions) || reason !== undefined}
+                    title=${reason}
                     label=${`${person.name} may use ${computer.name}: ${chosen ? "on" : "off"}`}
                     onChange=${() => flip(person)}
                 />
@@ -462,8 +464,8 @@ function UseSwitches({ computer, people }) {
 function ComputerView({ computer }) {
     const mine = inCharge(computer);
     const server = computer.id === THIS_SERVER;
-    // Who is not in charge of a runner and manages runners unlinks it here; who is in charge does in Settings.
-    const unlinks = !server && !mine && managesRunners();
+    // A person who may unlink it and is not in charge does it here, not in Settings.
+    const unlinks = !mine && computer.mayUnlink === true;
     const state = useFind();
     const [hidden, setHidden] = useState(() => new Set());
     const count = store.state.sessions.filter(
@@ -617,7 +619,7 @@ function SettingsView({ sheet }) {
     const asked = () => (sheet?.computer ? `computer:${sheet.computer}` : (sheet?.page ?? null));
     const [view, setView] = useState(asked);
     const [locks, setLocks] = useState(null);
-    const limits = managesRunners();
+    const limits = managesThisServer();
     const loadLocks = () => attempt(async () => setLocks(await api("runners/locks")));
 
     useEffect(() => {
@@ -756,9 +758,10 @@ function ComputerSettings({ computer }) {
             <h3 class="sheet-page-title">${computer.name}</h3>
             ${
                 !server &&
+                (computer.relink || computer.mayUnlink) &&
                 html`<div class="sheet-page-actions">
                     ${computer.relink && html`<button class="button small" onClick=${relink}>Link again</button>`}
-                    <button class="button small ghost danger" onClick=${remove}>Unlink</button>
+                    ${computer.mayUnlink && html`<button class="button small ghost danger" onClick=${remove}>Unlink</button>`}
                 </div>`
             }
         </div>

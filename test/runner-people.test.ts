@@ -1049,7 +1049,7 @@ describe("review drill fixes for people on a computer", () => {
             assert.equal(app.cannotAllow(owner(app), call(here)), undefined);
             assert.equal(
                 app.cannotAllow(host, call(here)),
-                "Nobody is known to have asked for this call, so only the owner, or someone who manages runners, can allow it.",
+                "Nobody is known to have asked for this call, so only the owner, or someone who manages this server, can allow it.",
             );
             // On this server the host is no one special: their own call waits for someone else.
             assert.match(app.cannotAllow(host, call(here, host.id)) ?? "", own);
@@ -1174,7 +1174,7 @@ describe("review drill fixes for people on a computer", () => {
             assert.deepEqual(judged, ["rm -rf a", "rm -rf b", "rm -rf d"]);
             assert.equal(
                 app.cannotAllow(host, third),
-                "Only the owner, or someone who manages runners, can allow a command you typed.",
+                "Only the owner, or someone who manages this server, can allow a command you typed.",
             );
             assert.equal(app.cannotAllow(owner(app), third), undefined);
             assert.equal(await app.answerApproval(third.id, false, owner(app)), true);

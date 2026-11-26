@@ -148,11 +148,17 @@ describe("who reaches this machine itself", () => {
     });
 
     it("lets an owner-only extension route start an app-wide session for the owner, not for a user it is open to", async () => {
-        // Session cleanup's owner parts are open to who manages runners (`access.ts` `mayUseExtension`): they use the
+        // Session cleanup's owner parts are open to a computer manager (`access.ts` `mayUseExtension`): they use the
         // route, and still start no app-wide session through it.
         const manager = person("Manager", "guest");
 
-        app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: true });
+        await app.choosePerson(THIS_SERVER, manager.id, true);
+        app.setRight(owner(app), {
+            person: manager.id,
+            right: "manages",
+            on: true,
+            computer: THIS_SERVER,
+        });
 
         const mine = new ExtensionRequest(
             app,
@@ -469,14 +475,16 @@ describe("what a page is told of a role, so that it compares none", () => {
         }
     });
 
-    it("tells who manages runners that they are in charge of this server, and a user that they are not", async () => {
+    it("tells a manager that they are in charge of this server, and a user that they are not", async () => {
         const mona = person("Mona", "guest");
 
         assert.deepEqual((await flags(mona)).inCharge, []);
+        await app.choosePerson(THIS_SERVER, mona.id, true);
         assert.equal(
             (
-                await call(owner(app), `users/${mona.id}/rights`, {
-                    right: "managesRunners",
+                await call(owner(app), `runners/${THIS_SERVER}/rights`, {
+                    person: mona.id,
+                    right: "manages",
                     on: true,
                 })
             ).status,

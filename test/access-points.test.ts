@@ -223,7 +223,7 @@ describe("the session list", () => {
 });
 
 describe("the session cleanup browser module", () => {
-    it("loads the built-in for a runner manager and updates an open tab when the permission changes", async () => {
+    it("loads the built-in for a computer manager and updates an open tab when the permission changes", async () => {
         const manager = person("Cleanup manager", "guest");
         const tab = fakeTab(undefined, manager);
         const hasCleanup = (modules: readonly { module: string }[]) =>
@@ -237,14 +237,25 @@ describe("the session cleanup browser module", () => {
         try {
             assert.equal(offered(), false);
             assert.equal(cleanup(), undefined);
-            app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: true });
+            await app.choosePerson(THIS_SERVER, manager.id, true);
+            app.setRight(owner(app), {
+                person: manager.id,
+                right: "manages",
+                on: true,
+                computer: THIS_SERVER,
+            });
             await until(offered, "hello adding the cleanup browser module");
             assert.equal(hasCleanup(app.webs.clients(manager)), true);
             assert.equal(hasCleanup(app.webs.clients(guest)), false);
             assert.ok(cleanup() !== undefined);
             assert.equal(app.webs.file("session-cleanup", ["index.js"], guest), undefined);
 
-            app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: false });
+            app.setRight(owner(app), {
+                person: manager.id,
+                right: "manages",
+                on: false,
+                computer: THIS_SERVER,
+            });
             await until(() => !offered(), "hello removing the cleanup browser module");
             assert.equal(cleanup(), undefined);
         } finally {
@@ -255,7 +266,13 @@ describe("the session cleanup browser module", () => {
     it("keeps a drop-in named session-cleanup owner-only", async () => {
         const manager = person("Another cleanup manager", "guest");
 
-        app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: true });
+        await app.choosePerson(THIS_SERVER, manager.id, true);
+        app.setRight(owner(app), {
+            person: manager.id,
+            right: "manages",
+            on: true,
+            computer: THIS_SERVER,
+        });
         const directory = join(root, "cleanup-drop-in");
 
         mkdirSync(directory);
@@ -290,7 +307,13 @@ describe("notification preferences", () => {
         const linker = person("Notification linker", "guest");
 
         app.setRight(owner(app), { person: peopleManager.id, right: "managesUsers", on: true });
-        app.setRight(owner(app), { person: runnerManager.id, right: "managesRunners", on: true });
+        await app.choosePerson(THIS_SERVER, runnerManager.id, true);
+        app.setRight(owner(app), {
+            person: runnerManager.id,
+            right: "manages",
+            on: true,
+            computer: THIS_SERVER,
+        });
         const runner = app.config.addRunner(
             "Notification laptop",
             linker.id,

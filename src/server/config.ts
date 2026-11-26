@@ -12,7 +12,6 @@ import {
     PERSON_RIGHTS,
     canHold,
     declared,
-    holds,
     roleWord,
     type ComputerRight,
     type PersonRight,
@@ -873,6 +872,78 @@ function dropOwed(target: ComputerAccess, people: readonly string[]): boolean {
     return rest.length !== before.length;
 }
 
+/** The person right that Manage this computer replaced, as an older file keeps it. */
+const OLD_MANAGES = "managesRunners";
+
+/**
+ * A file from before Manage this computer gave one person right for this server and every runner the owner linked.
+ * Whoever held it is chosen for each of those computers and manages it there. So is someone paused who kept it for
+ * when their pause ends: a pause keeps who manages a computer. Anyone else who had it kept loses it. Whether anything
+ * changed.
+ */
+function migrateManagers(config: PocketConfig, owner: string | undefined): boolean {
+    let changed = false;
+
+    /** Take the old right out of a kept list; whether it was there. */
+    const take = (target: { rights?: PersonRight[] }): boolean => {
+        const rights: readonly string[] = target.rights ?? [];
+
+        if (!rights.includes(OLD_MANAGES)) {
+            return false;
+        }
+
+        const kept = (target.rights ?? []).filter((each) => (each as string) !== OLD_MANAGES);
+
+        if (kept.length === 0) {
+            delete target.rights;
+        } else {
+            target.rights = kept;
+        }
+
+        return true;
+    };
+
+    for (const user of config.users) {
+        const held = take(user);
+        const paused = user.paused !== undefined && take(user.paused);
+
+        if (!held && !paused) {
+            continue;
+        }
+
+        changed = true;
+
+        if (
+            user.sessions !== undefined ||
+            !((held && user.role === "guest") || (paused && user.role === "viewer"))
+        ) {
+            continue;
+        }
+
+        const computers = [
+            (config.server ??= {}),
+            ...(config.runners ?? []).filter(
+                (runner) => owner !== undefined && runner.createdBy === owner,
+            ),
+        ];
+
+        for (const computer of computers) {
+            if (computer.users?.includes(user.id) !== true) {
+                computer.users = [...(computer.users ?? []), user.id];
+            }
+
+            if (computer.rights?.manages?.includes(user.id) !== true) {
+                computer.rights = {
+                    ...computer.rights,
+                    manages: [...(computer.rights?.manages ?? []), user.id],
+                };
+            }
+        }
+    }
+
+    return changed;
+}
+
 /** Keep each right to the people `keep` names; a right nobody holds leaves no entry. */
 function trimRights(target: ComputerAccess, keep: (person: string) => boolean): void {
     const rights: Partial<Record<ComputerRight, string[]>> = {};
@@ -961,7 +1032,11 @@ export class ConfigStore {
      */
     #migrate(): void {
         const old = this.#config as PocketConfig & { sharedRunnerSessions?: boolean };
-        let changed = gatherRights(old);
+        let changed = migrateManagers(old, this.owner?.id);
+
+        if (gatherRights(old)) {
+            changed = true;
+        }
 
         if (old.access === undefined) {
             if (!knowsAccess(old)) {
@@ -1416,7 +1491,7 @@ export class ConfigStore {
             delete patch.budget;
         }
 
-        const managed = user.role !== "owner" && holds(user, "managesRunners");
+        const couldManage = user.role !== "viewer" && user.sessions === undefined;
 
         Object.assign(user, patch);
 
@@ -1476,29 +1551,33 @@ export class ConfigStore {
             delete user.accessRequest;
         }
 
-        if (managed && !holds(user, "managesRunners")) {
-            this.#oweManaged(user.id);
+        // A viewer or someone limited to sessions loses charge of each computer they managed. A pause keeps the
+        // right, not what their charge gave them. Those hand-overs are owed in the same save.
+        if (user.role === "viewer" || user.sessions !== undefined) {
+            const keep = user.paused !== undefined && user.sessions === undefined;
+
+            for (const computer of [this.#config.server, ...(this.#config.runners ?? [])]) {
+                const managers = computer?.rights?.manages;
+
+                if (computer === undefined || managers?.includes(id) !== true) {
+                    continue;
+                }
+
+                if (!keep) {
+                    computer.rights = {
+                        ...computer.rights,
+                        manages: managers.filter((each) => each !== id),
+                    };
+                    trimRights(computer, () => true);
+                }
+
+                if (couldManage || !keep) {
+                    markOwed(computer, id);
+                }
+            }
         }
 
         this.save();
-    }
-
-    /**
-     * `person` managed runners and no longer does: the right was taken back, or they can no longer hold it (a viewer
-     * now, or limited to sessions). They were in charge of this server and of each runner the owner linked
-     * (`access.ts` `inCharge`), so what they had there by that alone is owed a hand-over on each, marked in the save
-     * that ends it (`ComputerAccess.handOver`): `app.ts` `settle` finishes it, also after a restart.
-     */
-    #oweManaged(person: string): void {
-        const owner = this.owner?.id;
-
-        markOwed((this.#config.server ??= {}), person);
-
-        for (const runner of this.#config.runners ?? []) {
-            if (runner.createdBy === owner) {
-                markOwed(runner, person);
-            }
-        }
     }
 
     /** Each person's linked authenticator, kept with their account. Setting one for someone removed does nothing. */
@@ -1857,10 +1936,15 @@ export class ConfigStore {
                 return false;
             }
 
-            const rest = (computer.rights?.[right] ?? []).filter((each) => each !== person);
+            const holders = computer.rights?.[right] ?? [];
+            const rest = holders.filter((each) => each !== person);
 
             computer.rights = { ...computer.rights, [right]: on ? [...rest, person] : rest };
             trimRights(computer, () => true);
+
+            if (right === "manages" && !on && holders.includes(person)) {
+                markOwed(computer, person);
+            }
 
             return true;
         });

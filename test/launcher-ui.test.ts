@@ -500,59 +500,61 @@ test("New session here starts in the open session's folder", real, async () => {
     );
 });
 
-test(
-    "New session offers Continue a Pi session on this server to a user with Manage runners",
-    real,
-    async (t) => {
-        const { user, token } = await addPerson(app, "Guest", "guest");
-        // A browser of their own: signing in as someone else would ask before changing accounts.
-        const theirs = new Browsers({
-            dataDir: mkdtempSync(join(root, "continue-pi-ui-")),
-            load: async () => undefined,
-            save: () => {},
-        });
+test("New session offers Continue a Pi session on this server to its manager", real, async (t) => {
+    const { user, token } = await addPerson(app, "Guest", "guest");
+    // A browser of their own: signing in as someone else would ask before changing accounts.
+    const theirs = new Browsers({
+        dataDir: mkdtempSync(join(root, "continue-pi-ui-")),
+        load: async () => undefined,
+        save: () => {},
+    });
 
-        t.after(() => theirs.closeAll({ final: true }));
-        const guestPage = await theirs.open(1);
+    t.after(() => theirs.closeAll({ final: true }));
+    const guestPage = await theirs.open(1);
 
-        await guestPage.setViewport(VIEWPORTS.desktop);
-        await guestPage.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
-        assert.ok(await guestPage.waitFor({ selector: '[data-part="app"]' }), "the signed-in app");
-        assert.equal(
-            await guestPage.evaluate(`return (await import('/store.js')).store.state.me?.id`),
-            user.id,
-        );
+    await guestPage.setViewport(VIEWPORTS.desktop);
+    await guestPage.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+    assert.ok(await guestPage.waitFor({ selector: '[data-part="app"]' }), "the signed-in app");
+    assert.equal(
+        await guestPage.evaluate(`return (await import('/store.js')).store.state.me?.id`),
+        user.id,
+    );
 
-        // The links of the sheet's bottom row: Manage runners… is there too, for who manages runners.
-        const links = ".sheet-host:not(.leaving) .fp-options";
+    // The bottom row has the link only while the user is in charge.
+    const links = ".sheet-host:not(.leaving) .fp-options";
 
-        const option = async (): Promise<string | null> => {
-            await guestPage.press("Alt+n");
-            assert.ok(await guestPage.waitFor({ selector: links }), "the New session folder sheet");
+    const option = async (): Promise<string | null> => {
+        await guestPage.press("Alt+n");
+        assert.ok(await guestPage.waitFor({ selector: links }), "the New session folder sheet");
 
-            return JSON.parse(
-                await guestPage.evaluate(`
+        return JSON.parse(
+            await guestPage.evaluate(`
                 return JSON.stringify(
                     [...document.querySelectorAll(${JSON.stringify(`${links} .fp-link`)})]
                         .map((each) => each.textContent.trim())
                         .find((each) => each.startsWith("Continue a Pi session")) ?? null,
                 );
             `),
-            ) as string | null;
-        };
+        ) as string | null;
+    };
 
-        assert.equal(await option(), null, "without Manage runners");
-        await guestPage.evaluate(`(await import('/store.js')).closeSheet()`);
-        app.setRight(owner(app), { person: user.id, right: "managesRunners", on: true });
-        await until(
-            async () =>
-                (await guestPage.evaluate(`
+    assert.equal(await option(), null, "not in charge");
+    await guestPage.evaluate(`(await import('/store.js')).closeSheet()`);
+    await app.choosePerson("this-server", user.id, true);
+    app.setRight(owner(app), {
+        person: user.id,
+        right: "manages",
+        on: true,
+        computer: "this-server",
+    });
+    await until(
+        async () =>
+            (await guestPage.evaluate(`
                     const { store } = await import('/store.js');
 
-                    return store.state.me?.rights?.managesRunners === true;
+                    return store.state.me?.rights?.manages?.includes("this-server") === true;
                 `)) === "true",
-            "Manage runners reaches the guest's tab",
-        );
-        assert.equal(await option(), "Continue a Pi session…", "with Manage runners");
-    },
-);
+        "the new right reaches the guest's tab",
+    );
+    assert.equal(await option(), "Continue a Pi session…", "in charge");
+});

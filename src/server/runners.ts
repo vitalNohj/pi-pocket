@@ -62,7 +62,7 @@ import { LinkNetwork, NetError, type OpenOptions } from "./runner-network.ts";
 import { BACKGROUND_CONTEXT as BACKGROUND, type Context } from "@earendil-works/chord/context";
 import type { FileInfo } from "@earendil-works/pi-durable/env";
 import type { ConfigStore, StoredRunner, User } from "./config.ts";
-import { roleWord, type ComputerRight, type RoleWord } from "./rights.ts";
+import { COMPUTER_RIGHTS, roleWord, type ComputerRight, type RoleWord } from "./rights.ts";
 import { HttpError } from "./errors.ts";
 import { isOwner, roleSaid, type RoleSaid } from "./roles.ts";
 import { limitParallel } from "./folder-access.ts";
@@ -174,12 +174,12 @@ export type RunnerView = {
     seesUntil?: Record<string, Record<string, number>>;
     /** Of those, the ones that person sees only the sessions made from a time on in: that time, by folder. */
     seesFrom?: Record<string, Record<string, number>>;
-    /**
-     * The granted people who hold each right given one person at a time there (`rights.ts`): `wheel`, to take the
-     * wheel from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to
-     * (`allowsOwn`); `reshares`, to share what they were given there (`reshares`). Managers' list.
-     */
+    /** The chosen people who hold each right there; only for who is in charge. */
     rights?: Record<ComputerRight, string[]>;
+    /** The rights the reader may give or take here; only for who is in charge. */
+    gives?: ComputerRight[];
+    /** The reader may unlink this runner. */
+    mayUnlink?: true;
     /** False when this person may not start sessions there: the owner sees a runner someone else linked, to unlink it. */
     mayStart?: false;
     /** Its sessions' browsers use its network (on unless turned off); only in the managers' list. */
@@ -190,15 +190,9 @@ export type RunnerView = {
     allowHttp?: true;
     /** Its linker was made a viewer: nothing starts or runs there until they prompt again (`access.ts` `blocked`). */
     blocked?: true;
-    /**
-     * Is whoever is told this in charge of it (`access.ts` `inCharge`): its linker, or on a runner the owner linked,
-     * who manages runners. Said to a person; the app asks nothing else to know whose it is to change.
-     */
+    /** The reader is in charge of it, as its linker or by Manage this computer. */
     inCharge?: boolean;
-    /**
-     * The users in charge of it because they manage runners (`access.ts` `managesRunners`), by id; only for who is in
-     * charge of it. Their row under it says so: its switch is what they keep once they manage runners no longer.
-     */
+    /** The people in charge of it by Manage this computer, by id; only for who is in charge. */
     managers?: string[];
 };
 
@@ -1237,6 +1231,8 @@ export class Runners {
     readonly #mayList: (id: string, user: User) => boolean;
     /** May this person change computer `id`'s people and settings (`access.ts` `mayManage`). */
     readonly #mayManage: (id: string, user: User) => boolean;
+    readonly #mayGiveRight: (id: string, user: User, right: ComputerRight) => boolean;
+    readonly #mayUnlink: (id: string, user: User) => boolean;
     readonly #mayStart: (id: string, user: User) => boolean;
     readonly #mayUse: (id: string, user: User) => boolean;
     /** May the person with this id still link a computer, or link `runner` again (`access.ts` `mayLink`, `mayManage`). */
@@ -1263,6 +1259,8 @@ export class Runners {
         mayList?: (id: string, user: User) => boolean;
         /** The access policy's "may manage"; absent: the owner only. */
         mayManage?: (id: string, user: User) => boolean;
+        mayGiveRight?: (id: string, user: User, right: ComputerRight) => boolean;
+        mayUnlink?: (id: string, user: User) => boolean;
         /** The access policy's "may start sessions there"; absent: as `mayList`. */
         mayStart?: (id: string, user: User) => boolean;
         /** The access policy's "may use it" (in charge of it, or chosen for it); absent: as `mayList`. */
@@ -1274,7 +1272,7 @@ export class Runners {
         mayLink?: (by: string, runner?: string) => boolean;
         /** The access policy's "is blocked" (its linker is a viewer now); absent: never. */
         blocked?: (id: string) => boolean;
-        /** The ids of the users in charge of `id` because they manage runners; absent: none. */
+        /** The ids of the people in charge of `id` by Manage this computer; absent: none. */
         managers?: (id: string) => string[];
     }) {
         this.#config = options.config;
@@ -1289,6 +1287,8 @@ export class Runners {
 
         this.#mayList = options.mayList ?? ownerOnly;
         this.#mayManage = options.mayManage ?? ownerOnly;
+        this.#mayGiveRight = options.mayGiveRight ?? ownerOnly;
+        this.#mayUnlink = options.mayUnlink ?? ownerOnly;
         this.#mayStart = options.mayStart ?? this.#mayList;
         this.#mayUse = options.mayUse ?? this.#mayList;
         this.#mayLink = options.mayLink ?? (() => true);
@@ -1571,7 +1571,7 @@ export class Runners {
             .filter((runner) => user === undefined || this.#mayList(runner.id, user))
             .map((runner) => {
                 const link = this.#links.get(runner.id);
-                // Its people, folders, and settings are the business of who is in charge of it: its linker.
+                // Its people, folders, and settings are the business of who is in charge of it.
                 const manages = user === undefined || this.#mayManage(runner.id, user);
                 // What the computer is (its system, home folder, runner version, and sign-ins) is for the people who
                 // may use it. The owner lists a computer someone else linked only to unlink it, and learns none of it.
@@ -1581,6 +1581,9 @@ export class Runners {
                     id: runner.id,
                     name: runner.name,
                     createdBy: runner.createdBy,
+                    ...(user !== undefined && this.#mayUnlink(runner.id, user)
+                        ? { mayUnlink: true as const }
+                        : {}),
                     ...(runner.publicKey === undefined
                         ? { relink: true as const }
                         : manages
@@ -1627,6 +1630,11 @@ export class Runners {
                                   ]),
                               ),
                               rights: this.#config.rightsOn(runner.id),
+                              gives: COMPUTER_RIGHTS.filter(
+                                  (right) =>
+                                      user === undefined ||
+                                      this.#mayGiveRight(runner.id, user, right),
+                              ),
                               managers: this.#managers(runner.id),
                           }
                         : {}),

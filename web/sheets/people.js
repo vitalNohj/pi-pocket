@@ -38,15 +38,15 @@ import { accessFolder, below, inFolder, keeps, matches, newest, wordsOf } from "
 import {
     AccessRow,
     choosable,
+    choosePerson,
+    chosenFor,
     computers,
-    ComputerRights,
     countOf,
     groupsOf,
     LevelMenu,
     levelsFor,
     inCharge,
     projectsOf,
-    rightsFor,
     RightSwitch,
     SessionLine,
     TreeGroup,
@@ -67,7 +67,7 @@ import {
     useSelect,
 } from "./session-select.js";
 import { DirectChat } from "./direct.js";
-import { isOwner, isViewer, isUser } from "../roles.js";
+import { isOwner, isViewer, isUser, prompts } from "../roles.js";
 
 /** How long an invite may last: minutes, its button, and how the help text says it. */
 const LASTS = [
@@ -1117,12 +1117,8 @@ function PersonRight({ person, each }) {
     <//>`;
 }
 
-/**
- * What a person is let do everywhere: steer Pi (which takes their own authenticator), link computers of their own, how
- * long their sessions' approvals last, and get in past the one session they were invited to. The owner sets it, or a
- * user who manages users; whether they manage users themselves is the owner's alone.
- */
-function Rights({ person, change }) {
+/** The account settings for a person I manage. */
+function Account({ person, change }) {
     const sessionTitle = (id) =>
         store.state.sessions.find((each) => each.id === id)?.title ?? `session ${id}`;
     const steers = isUser(person);
@@ -1132,8 +1128,27 @@ function Rights({ person, change }) {
             ? person.sessions.map((id) => `“${sessionTitle(id)}”`).join(", ")
             : "a session not shared with you");
 
-    return html`<div class="group">
-        <div class="group-title">What they may do</div>
+    return html`<div class="group" data-part="account">
+        <div class="group-title">Account</div>
+        <${Setting}
+            label="Can prompt"
+            hint=${
+                steers
+                    ? "On: a user. They prompt and start sessions in their folders."
+                    : person.temporary
+                      ? "Off: a viewer. Turn on Allow viewer to become a user and prompt first."
+                      : person.hasCode
+                        ? "Off: a viewer."
+                        : `Off: a viewer. ${person.name} must link an authenticator first.`
+            }
+        >
+            <${Switch}
+                on=${steers}
+                disabled=${!steers && (!person.hasCode || person.temporary === true)}
+                label=${`${person.name} can prompt: ${steers ? "on" : "off"}`}
+                onChange=${() => change({ role: steers ? "viewer" : "guest" })}
+            />
+        <//>
         ${
             !steers &&
             html`<${Setting}
@@ -1176,41 +1191,6 @@ function Rights({ person, change }) {
                 />
             <//>`
         }
-        <${Setting}
-            label="Can prompt"
-            hint=${
-                steers
-                    ? "On: a user. They prompt and start sessions in their folders."
-                    : person.temporary
-                      ? "Off: a viewer. Turn on Allow viewer to become a user and prompt first."
-                      : person.hasCode
-                        ? "Off: a viewer."
-                        : `Off: a viewer. ${person.name} must link an authenticator first.`
-            }
-        >
-            <${Switch}
-                on=${steers}
-                disabled=${!steers && (!person.hasCode || person.temporary === true)}
-                label=${`${person.name} can prompt: ${steers ? "on" : "off"}`}
-                onChange=${() => change({ role: steers ? "viewer" : "guest" })}
-            />
-        <//>
-        ${declaredRights("person").map(
-            (each) =>
-                !each.management &&
-                person.offer?.[each.key] !== undefined &&
-                html`<${PersonRight} key=${each.key} person=${person} each=${each} />`,
-        )}
-        ${
-            steers &&
-            person.approvalDays !== undefined &&
-            html`<${Setting}
-                label="Approvals last"
-                hint=${"A session of theirs locks this long after they last used it."}
-            >
-                <${ApprovalTime} person=${person} plain=${true} />
-            <//>`
-        }
         ${
             only &&
             html`<${Setting}
@@ -1228,6 +1208,16 @@ function Rights({ person, change }) {
                 </button>
             <//>`
         }
+        ${
+            steers &&
+            person.approvalDays !== undefined &&
+            html`<${Setting}
+                label="Approvals last"
+                hint=${"A session of theirs locks this long after they last used it."}
+            >
+                <${ApprovalTime} person=${person} plain=${true} />
+            <//>`
+        }
     </div>`;
 }
 
@@ -1236,35 +1226,58 @@ function placesFor(person) {
     return computers().filter((each) => inCharge(each) && choosable(each, person));
 }
 
-/** What the person may manage, first everywhere, then on each computer where I give rights. */
-function Management({ person, places }) {
+/** The person rights I may give, in their declared order. */
+function PocketRights({ person }) {
     const rights = declaredRights("person").filter(
-        (each) => each.management && person.offer?.[each.key] !== undefined,
+        (each) => person.offer?.[each.key] !== undefined,
     );
-    const computerRights = places
-        ? placesFor(person).flatMap((computer) =>
-              rightsFor(computer, person)
-                  .filter((each) => each.management)
-                  .map((each) => ({ computer, each })),
-          )
-        : [];
 
-    if (rights.length === 0 && computerRights.length === 0) {
+    if (rights.length === 0) {
         return null;
     }
 
-    return html`<div class="group" data-part="management">
-        <div class="group-title">Management</div>
+    return html`<div class="group" data-part="pi-pocket">
+        <div class="group-title">Pi Pocket</div>
         ${rights.map((each) => html`<${PersonRight} key=${each.key} person=${person} each=${each} />`)}
-        ${computerRights.map(
-            ({ computer, each }) => html`<${RightSwitch}
-                key=${`${computer.id}:${each.key}`}
-                computer=${computer}
-                person=${person}
-                each=${each}
-                label=${`${each.label} on ${computer.name}`}
-            />`,
-        )}
+    </div>`;
+}
+
+/** The choice and rights for one computer. */
+function ComputerPermissions({ computer, person }) {
+    const [busy, setBusy] = useState(false);
+    const chosen = chosenFor(computer, person);
+
+    const choose = async () => {
+        setBusy(true);
+
+        try {
+            await choosePerson(computer, person, true);
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const rights = declaredRights("computer").filter(
+        (each) => each.key !== "manages" || computer.gives?.includes(each.key),
+    );
+
+    return html`<div class="access-row" data-part="computer" data-computer=${computer.id}>
+        <div class="group-title">${computer.name}</div>
+        ${
+            chosen
+                ? rights.map(
+                      (each) => html`<${RightSwitch}
+                      key=${each.key}
+                      computer=${computer}
+                      person=${person}
+                      each=${each}
+                  />`,
+                  )
+                : html`<div class="setting wrap">
+                  <div class="grow muted small">Not chosen for ${computer.name}.</div>
+                  <button class="button small" disabled=${busy} onClick=${choose}>Choose</button>
+              </div>`
+        }
     </div>`;
 }
 
@@ -1736,7 +1749,7 @@ function OtherComputer({ card, person, sharing, find, select }) {
  * Select, beside the search, checks several sessions listed, on any of the computers, to share or take back all at
  * once (`session-select.js`). It ends when the computers shown change, and with the page, which is one person's.
  */
-function Access({ person, direct, rights, sharing, reach }) {
+function Access({ person, direct, sharing, reach }) {
     const { me } = store.state;
     const state = useFind();
     const { query, filters, kept } = state;
@@ -1908,7 +1921,6 @@ function Access({ person, direct, rights, sharing, reach }) {
                     key=${computer.id}
                     computer=${computer}
                     person=${person}
-                    rights=${rights}
                     title=${computer.name}
                     find=${find}
                     grouping=${grouping(computer)}
@@ -1946,7 +1958,7 @@ function Access({ person, direct, rights, sharing, reach }) {
 }
 
 /** Their authenticator, for the owner: that one is linked, and its removal for a lost phone. */
-function Authenticator({ person }) {
+function Authenticator({ person, children }) {
     return html`<div class="group">
         <div class="group-title">Sign-in</div>
         <${Setting}
@@ -1982,6 +1994,7 @@ function Authenticator({ person }) {
                 </button>`
             }
         <//>
+        ${children}
     </div>`;
 }
 
@@ -2008,8 +2021,11 @@ export function PersonPage({ person, part, onPart }) {
         managesPeople() &&
         !isOwner(person) &&
         (owner || (!myself && person.rights?.includes("managesUsers") !== true));
-    // What is decided for a person; the owner themselves can do everything.
-    const rules = mine && collab();
+    // Account settings are separate from the rights given on a computer in my charge.
+    const account = mine && collab();
+    const cards =
+        !myself && collab() && prompts(person) && !person.sessions ? placesFor(person) : [];
+    const rules = account || cards.length > 0;
     // Where a person may work, on the computers I am in charge of. A runner's linker who manages nobody sets it under
     // their computer, in Runners.
     const places = (owner || mine) && placesFor(person).length > 0;
@@ -2122,15 +2138,12 @@ export function PersonPage({ person, part, onPart }) {
         <${PageTabs} label=${`${person.name}: parts`} tabs=${tabs} shown=${shown} onShow=${onPart} />
         ${!known && html`<${Loader} />`}
         ${
-            // With Permissions beside it, the rights given on each computer are there (`rights`). No comment goes inside
-            // the tag: a slash there ends it, and what follows is not passed.
             shown === "access" &&
             html`<div class="sheet-pane" data-part="person-access">
                 <${NewSessions} person=${person} sharing=${sharing} />
                 <${Access}
                     person=${person}
                     direct=${places}
-                    rights=${!rules}
                     sharing=${sharing}
                     reach=${reach}
                 />
@@ -2143,21 +2156,21 @@ export function PersonPage({ person, part, onPart }) {
         ${
             shown === "rules" &&
             html`<div class="sheet-pane" data-part="person-rules">
-                <${Rights} person=${person} change=${change} />
-                <${Management} person=${person} places=${places} />
+                ${account && html`<${Account} person=${person} change=${change} />`}
+                <${PocketRights} person=${person} />
+                ${cards.map(
+                    (computer) => html`<${ComputerPermissions}
+                        key=${computer.id}
+                        computer=${computer}
+                        person=${person}
+                    />`,
+                )}
                 ${
-                    places &&
-                    placesFor(person).map(
-                        (computer) =>
-                            html`<${ComputerRights}
-                                key=${computer.id}
-                                computer=${computer}
-                                person=${person}
-                            />`,
-                    )
+                    account &&
+                    html`<${Authenticator} person=${person}>
+                        ${device && !myself && html`<${DeviceLink} key=${person.id} person=${person} />`}
+                    <//>`
                 }
-                <${Authenticator} person=${person} />
-                ${device && !myself && html`<${DeviceLink} key=${person.id} person=${person} />`}
             </div>`
         }
         ${

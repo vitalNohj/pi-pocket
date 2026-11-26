@@ -124,16 +124,15 @@ after(async () => {
 
 test("every right is declared once, and the app is told its words and none of its rules", async () => {
     assert.deepEqual(PERSON_RIGHTS, [
-        "linksRunners",
-        "invites",
         "managesUsers",
-        "managesRunners",
         "managesServer",
+        "invites",
         "runsGlobalCommands",
+        "linksRunners",
         "keepsWarm",
         "chats",
     ]);
-    assert.deepEqual(COMPUTER_RIGHTS, ["wheel", "allows", "reshares"]);
+    assert.deepEqual(COMPUTER_RIGHTS, ["manages", "reshares", "wheel", "allows"]);
     assert.deepEqual([...PERSON_RIGHTS, ...COMPUTER_RIGHTS], Object.keys(RIGHTS));
 
     const said = (await app.hello(owner(app))).server.rights;
@@ -144,26 +143,22 @@ test("every right is declared once, and the app is told its words and none of it
         Object.entries(RIGHTS).map(([key, each]) => [key, each.scope]),
     );
 
-    // What manages, for the Management group of a person's page: the person's, then a computer's.
-    assert.deepEqual(
-        said.filter((each) => each.management).map((each) => each.key),
-        [
-            "invites",
-            "managesUsers",
-            "managesRunners",
-            "managesServer",
-            "runsGlobalCommands",
-            "reshares",
-        ],
-    );
-
     for (const each of said) {
         assert.equal(each.label, declared(each.key).label);
         assert.equal(each.on, declared(each.key).on);
 
         // Who may hold or give it is the server's to decide (`access.ts` `has`, `offer`), never the app's; nor is what
         // makes an admin (`roleWord`), and no right is said in a line of its own on a person's page.
-        for (const rule of ["whole", "viewers", "gives", "with", "lapses", "admin", "line"]) {
+        for (const rule of [
+            "whole",
+            "viewers",
+            "gives",
+            "with",
+            "lapses",
+            "admin",
+            "line",
+            "management",
+        ]) {
             assert.equal(rule in each, false, `${each.key} ${rule}`);
         }
     }
@@ -181,14 +176,10 @@ test("one word says what a person is: owner and viewer by role; admin for a user
     assert.equal(roleWord(user([])), "user");
     assert.equal(roleWord(user(["managesUsers"])), "admin");
     assert.equal(roleWord(user(["managesServer"])), "admin");
-    // Manage runners, Link runners, and Invite people do not make an admin.
-    assert.equal(roleWord(user(["managesRunners"])), "user");
+    // Link runners and Invite people do not make an admin.
     assert.equal(roleWord(user(["linksRunners"])), "user");
     assert.equal(roleWord(user(["invites"])), "user");
-    assert.equal(
-        roleWord(user(["managesRunners", "linksRunners", "invites", "keepsWarm"])),
-        "user",
-    );
+    assert.equal(roleWord(user(["linksRunners", "invites", "keepsWarm"])), "user");
     // A user limited to sessions cannot hold Manage users, also when their record keeps it.
     assert.equal(roleWord(user(["managesUsers"], { sessions: ["1"] })), "user");
     // Paused: a viewer, with the rights that lapse saved for when they link an authenticator again.
@@ -240,7 +231,6 @@ test("one check answers for every right: the owner has them all, a user what the
         assert.equal(app.policy.mayLink(each), has(each, "linksRunners"), each.name);
         assert.equal(app.policy.invites(each), has(each, "invites"), each.name);
         assert.equal(app.policy.managesPeople(each), has(each, "managesUsers"), each.name);
-        assert.equal(app.policy.managesRunners(each), has(each, "managesRunners"), each.name);
         assert.equal(app.policy.managesServer(each), has(each, "managesServer"), each.name);
         assert.equal(
             app.policy.runsGlobalCommands(each),
@@ -256,7 +246,7 @@ test("one check answers for every right: the owner has them all, a user what the
         linksRunners: true,
         invites: true,
         managesUsers: true,
-        managesRunners: true,
+        manages: [THIS_SERVER],
         managesServer: true,
         runsGlobalCommands: true,
         keepsWarm: true,
@@ -269,7 +259,7 @@ test("one check answers for every right: the owner has them all, a user what the
         linksRunners: true,
         invites: false,
         managesUsers: false,
-        managesRunners: false,
+        manages: [],
         managesServer: false,
         runsGlobalCommands: false,
         keepsWarm: true,
@@ -323,13 +313,13 @@ test("one check answers for every right: the owner has them all, a user what the
                 right: "keepsWarm",
                 on: true,
             }),
-        /Send person, right \(wheel, allows, reshares\), and on\./,
+        /Send person, right \(manages, reshares, wheel, allows\), and on\./,
     );
 
     for (const right of COMPUTER_RIGHTS) {
         assert.throws(
             () => app.setRight(owner(app), { person: gil.id, right, on: true }),
-            /Send right \(linksRunners, invites, managesUsers, managesRunners, managesServer, runsGlobalCommands, keepsWarm, chats\) and on\./,
+            /Send right \(managesUsers, managesServer, invites, runsGlobalCommands, linksRunners, keepsWarm, chats\) and on\./,
             right,
         );
     }
@@ -352,7 +342,6 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
         linksRunners: "open",
         invites: "open",
         managesUsers: "open",
-        managesRunners: "open",
         managesServer: "open",
         runsGlobalCommands: "open",
         keepsWarm: "open",
@@ -364,14 +353,13 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
         linksRunners: "open",
         invites: "with",
         managesUsers: "open",
-        managesRunners: "open",
         managesServer: "open",
         runsGlobalCommands: "open",
         keepsWarm: "open",
     });
-    assert.deepEqual(told(owner(app), mona)?.rights, ["invites", "managesUsers", "chats"]);
+    assert.deepEqual(told(owner(app), mona)?.rights, ["managesUsers", "invites", "chats"]);
     // A user who manages users gives only what they have themselves, and never a right only the owner gives: to
-    // manage users, runners, or the server, or run global commands.
+    // manage users or the server, or run global commands.
     assert.deepEqual(told(mona, gil)?.offer, {
         linksRunners: "lacking",
         invites: "open",
@@ -379,9 +367,9 @@ test("one rule says who gives a right, to the setter and to the app alike", asyn
     });
     // They change nobody who manages users, nor themselves; a person reads their own rights, and offers none.
     assert.equal(told(mona, max)?.offer, undefined);
-    assert.deepEqual(told(mona, max)?.rights, ["invites", "managesUsers", "chats"]);
+    assert.deepEqual(told(mona, max)?.rights, ["managesUsers", "invites", "chats"]);
     assert.equal(told(mona, mona)?.offer, undefined);
-    assert.deepEqual(told(mona, mona)?.rights, ["invites", "managesUsers", "chats"]);
+    assert.deepEqual(told(mona, mona)?.rights, ["managesUsers", "invites", "chats"]);
     assert.equal(told(gil, gil)?.offer, undefined);
     assert.equal(told(gil, mona)?.rights, undefined, "nobody else reads them");
     assert.equal(told(owner(app), owner(app))?.offer, undefined);
@@ -561,9 +549,9 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
 
     assert.deepEqual(kept(pia).rights, USERS_RIGHTS);
 
-    // Made a viewer: they hold none; the rights to manage (users, runners, the server) lapse, the others wait for them.
+    // Made a viewer: rights that lapse are dropped; the others wait for them.
     app.config.giveRole(pia.id, "viewer");
-    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "keepsWarm"]);
+    assert.deepEqual(kept(pia).rights, ["invites", "linksRunners", "keepsWarm"]);
 
     for (const right of PERSON_RIGHTS) {
         assert.equal(has(pia, right), false, right);
@@ -578,12 +566,7 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
     // Paused (their authenticator was removed): the ones that lapse are kept for when they link one again.
     const lapsing = PERSON_RIGHTS.filter((right) => declared(right).lapses === true);
 
-    assert.deepEqual(lapsing, [
-        "managesUsers",
-        "managesRunners",
-        "managesServer",
-        "runsGlobalCommands",
-    ]);
+    assert.deepEqual(lapsing, ["managesUsers", "managesServer", "runsGlobalCommands"]);
 
     for (const right of lapsing) {
         give(pia, right);
@@ -592,7 +575,7 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
     linkAuthenticator(app, pia);
     app.removeAuthenticator(pia.id, owner(app));
     assert.equal(kept(pia).role, "viewer");
-    assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "keepsWarm"]);
+    assert.deepEqual(kept(pia).rights, ["invites", "linksRunners", "keepsWarm"]);
     assert.deepEqual(kept(pia).paused, { rights: lapsing });
     // Paused, they are a viewer in word too, though Manage users waits for them.
     assert.equal(roleWord(kept(pia)), "viewer");
@@ -647,7 +630,7 @@ test("a file that kept each right in a field of its own has them gathered into o
     const next = new ConfigStore(directory);
 
     // The four there were then; the rights declared since are nobody's until the owner gives them.
-    const then = ["linksRunners", "invites", "managesUsers", "keepsWarm"];
+    const then = ["managesUsers", "invites", "linksRunners", "keepsWarm"];
 
     assert.deepEqual(next.userById(ann.id)?.rights, then);
     assert.deepEqual(next.userById(pat.id)?.rights, ["keepsWarm"]);
@@ -655,7 +638,12 @@ test("a file that kept each right in a field of its own has them gathered into o
     assert.deepEqual(next.server.rights, { wheel: [ann.id], allows: [ann.id] });
     assert.deepEqual(next.runnerById(laptop.id)?.rights, { allows: [ann.id] });
     assert.deepEqual(next.rightHolders(THIS_SERVER, "wheel"), [ann.id]);
-    assert.deepEqual(next.rightsOn(laptop.id), { wheel: [], allows: [ann.id], reshares: [] });
+    assert.deepEqual(next.rightsOn(laptop.id), {
+        manages: [],
+        wheel: [],
+        allows: [ann.id],
+        reshares: [],
+    });
 
     // Saved so, in that load: no field of the old shape is left.
     const saved = read();

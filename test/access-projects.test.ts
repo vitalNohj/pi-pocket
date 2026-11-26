@@ -124,7 +124,13 @@ before(async () => {
     alex = await person("Alex", "guest");
     vera = await person("Vera", "viewer");
     manager = await person("Manager", "guest");
-    app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: true });
+    await app.choosePerson(THIS_SERVER, manager.id, true);
+    app.setRight(owner(app), {
+        person: manager.id,
+        right: "manages",
+        on: true,
+        computer: THIS_SERVER,
+    });
 
     const linked = app.config.addUser("Host", "guest");
 
@@ -133,7 +139,8 @@ before(async () => {
     laptop = app.config.addRunner("Laptop", host.id, newIdentity().publicKey).id;
     app.config.setUsers(laptop, [owner(app).id, alex.id, vera.id]);
     desk = app.config.addRunner("Desk", owner(app).id, newIdentity().publicKey).id;
-    app.config.setUsers(desk, [alex.id]);
+    app.config.setUsers(desk, [alex.id, manager.id]);
+    app.setRight(owner(app), { person: manager.id, right: "manages", on: true, computer: desk });
 
     server = createServer(
         createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
@@ -152,7 +159,7 @@ after(async () => {
 test("who is in charge of a computer reads its projects; anyone else gets 404", async () => {
     const here = `runners/${THIS_SERVER}/projects`;
 
-    // In: the owner and a user who manages runners, on this server; a runner's linker, and a runner manager on one the
+    // In: the owner and a manager on this server; a runner's linker, and a manager on one the
     // owner linked.
     for (const [by, path] of [
         [owner(app), here],
@@ -166,8 +173,8 @@ test("who is in charge of a computer reads its projects; anyone else gets 404", 
         assert.ok(Array.isArray(answer.body.projects));
     }
 
-    // Refused: a chosen user, a viewer, the owner on a runner someone else linked, a runner's manager on it, and a
-    // computer that does not exist.
+    // Refused: a chosen user, a viewer, the owner and a manager on a runner they do not manage, and a computer
+    // that does not exist.
     for (const [by, path] of [
         [alex, here],
         [vera, here],
@@ -414,7 +421,7 @@ test("trust set from the grid ends the request of a session that waits in a fold
     }
 });
 
-test("someone who loses Manage runners while the projects are read gets 404, and no project names", async () => {
+test("someone who loses charge while the projects are read gets 404, and no project names", async () => {
     const memory = app.memory;
     const project = memory.project;
 
@@ -441,7 +448,12 @@ test("someone who loses Manage runners while the projects are read gets 404, and
         const answer = call<ProjectsView>(manager, `runners/${THIS_SERVER}/projects`);
 
         await reading;
-        app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: false });
+        app.setRight(owner(app), {
+            person: manager.id,
+            right: "manages",
+            on: false,
+            computer: THIS_SERVER,
+        });
         release();
         const { status, body } = await answer;
 
@@ -449,7 +461,12 @@ test("someone who loses Manage runners while the projects are read gets 404, and
     } finally {
         Reflect.deleteProperty(memory, "project");
         release();
-        app.setRight(owner(app), { person: manager.id, right: "managesRunners", on: true });
+        app.setRight(owner(app), {
+            person: manager.id,
+            right: "manages",
+            on: true,
+            computer: THIS_SERVER,
+        });
     }
 });
 

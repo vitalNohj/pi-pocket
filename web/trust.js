@@ -10,7 +10,7 @@ import { html, Icon, Loader, Sheet, shortPath } from "./ui.js";
 /**
  * Whether I decide which projects Pi trusts on the open session's computer: who is in charge of it (`access.ts`
  * `inCharge`), as the server says (`me.inCharge`, the computers I am in charge of): on this server the owner, on a
- * runner its linker, and on both who manages runners. On this server the answer goes into Pi's own settings. With no
+ * runner its linker, and on both whoever has Manage this computer. On this server the answer is saved in Pi's own settings. With no
  * session open, this server's.
  */
 export function trustAvailable() {

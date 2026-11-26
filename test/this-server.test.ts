@@ -108,7 +108,8 @@ test("the owner sees this server as a computer they linked, with nobody chosen a
         sees: {},
         seesUntil: {},
         seesFrom: {},
-        rights: { wheel: [], allows: [], reshares: [] },
+        rights: { manages: [], wheel: [], allows: [], reshares: [] },
+        gives: ["manages", "reshares", "wheel", "allows"],
         inCharge: true,
         managers: [],
     });
@@ -231,7 +232,7 @@ test("who is in charge sets this server's downloads folder, an absolute one; its
     assert.equal("network" in network.body, false);
     assert.deepEqual(file(), { downloads: folder });
 
-    // Not in charge: refused. Who manages runners is in charge here, as the owner is.
+    // Not in charge: refused. A manager of this server is in charge here, as the owner is.
     assert.equal(
         (await call(alex, `runners/${THIS_SERVER}/settings`, { downloads: null })).status,
         403,
@@ -240,7 +241,8 @@ test("who is in charge sets this server's downloads folder, an absolute one; its
 
     const mia = person("Mia", "guest");
 
-    app.setRight(owner(app), { person: mia.id, right: "managesRunners", on: true });
+    await app.choosePerson(THIS_SERVER, mia.id, true);
+    app.setRight(owner(app), { person: mia.id, right: "manages", on: true, computer: THIS_SERVER });
 
     try {
         const cleared = await call<ServerView>(mia, `runners/${THIS_SERVER}/settings`, {
@@ -252,7 +254,7 @@ test("who is in charge sets this server's downloads folder, an absolute one; its
         assert.equal(app.config.serverDownloads, undefined);
         assert.equal(file(), undefined, "no settings left in the file");
     } finally {
-        app.config.removeUser(mia.id);
+        await app.removeUser(owner(app), mia.id);
     }
 });
 

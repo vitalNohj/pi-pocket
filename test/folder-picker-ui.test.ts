@@ -1,5 +1,5 @@
 // The folder picker's layout (New session: pick a folder), in a real Chromium: Runs on is pinned at the foot of the
-// left column and does not scroll with the places, Manage runners… and Continue a Pi session… are in the bottom row
+// left column and does not scroll with the places, Manage computers… and Continue a Pi session… are in the bottom row
 // after the check boxes, and the sheet is as tall as the screen allows, up to 800 px.
 import {
     type App,
@@ -220,7 +220,7 @@ test("Runs on is pinned under the places, and the links are in the bottom row", 
         assert.deepEqual(await page.evaluate<string[]>(partsOf(".fp-options")), [
             "Own git worktree",
             "Show hidden",
-            "Manage runners…",
+            "Manage computers…",
             "Continue a Pi session…",
         ]);
 
@@ -243,9 +243,9 @@ test("Runs on is pinned under the places, and the links are in the bottom row", 
             "602 px high on a 700 px screen (86dvh)",
         );
 
-        // 6. Manage runners… opens Access, By computer.
+        // 6. Manage computers… opens Access, By computer.
         await page.evaluate(
-            `[...document.querySelectorAll(".fp-options .fp-link")].find((each) => each.textContent.trim() === "Manage runners…").click()`,
+            `[...document.querySelectorAll(".fp-options .fp-link")].find((each) => each.textContent.trim() === "Manage computers…").click()`,
         );
         await until(async () => {
             const sheet = (await page.sheet()) as { type?: string; view?: string } | null;

@@ -456,8 +456,12 @@ test("only whoever is in charge of this server lists, looks at, or continues Pi'
         return made;
     };
 
-    const setManagesRunners = (on: boolean) =>
-        call(ownerToken, `users/${guest.user.id}/rights`, { right: "managesRunners", on });
+    const setManages = (on: boolean) =>
+        call(ownerToken, `runners/${THIS_SERVER}/rights`, {
+            person: guest.user.id,
+            right: "manages",
+            on,
+        });
 
     t.after(() => {
         app.config.removeUser(viewer.user.id);
@@ -467,7 +471,7 @@ test("only whoever is in charge of this server lists, looks at, or continues Pi'
     await t.test("a viewer is refused", async () => {
         await checkRoutes(viewer.token, 403);
     });
-    await t.test("a user who may start sessions is refused without Manage runners", async () => {
+    await t.test("a user who may start sessions is refused without charge", async () => {
         assert.ok(app.policy.mayStart(guest.user, THIS_SERVER));
         await checkRoutes(guest.token, 403);
     });
@@ -479,16 +483,16 @@ test("only whoever is in charge of this server lists, looks at, or continues Pi'
         assert.equal(app.sessionMeta(id)?.title, "Fix the checkout total");
         assert.equal(app.folderApprovals.live(String(id)), true, "live approval");
     });
-    await t.test("a user given Manage runners continues with a live approval", async () => {
-        assert.equal((await setManagesRunners(true)).status, 200, "give Manage runners");
+    await t.test("a manager of this server continues with a live approval", async () => {
+        assert.equal((await setManages(true)).status, 200, "give charge");
         const made = await checkRoutes(guest.token, 200);
         const { id } = (await made.json()) as { id: ConversationId };
 
         assert.equal(app.sessionMeta(id)?.createdBy, guest.user.id);
         assert.equal(app.folderApprovals.live(String(id)), true, "live approval");
     });
-    await t.test("the user is refused after Manage runners is taken back", async () => {
-        assert.equal((await setManagesRunners(false)).status, 200, "take back Manage runners");
+    await t.test("the user is refused after charge is taken back", async () => {
+        assert.equal((await setManages(false)).status, 200, "take back charge");
         await checkRoutes(guest.token, 403);
     });
 });

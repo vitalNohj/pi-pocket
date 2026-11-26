@@ -2171,12 +2171,13 @@ export const shortModelName = (name) =>
         .toLowerCase();
 
 /** An on and off switch, named for screen readers by `label`. */
-export function Switch({ on, disabled, label, onChange }) {
+export function Switch({ on, disabled, label, title, onChange }) {
     return html`<button
         type="button"
         role="switch"
         aria-checked=${on ? "true" : "false"}
         aria-label=${label}
+        title=${title}
         class=${`switch ${on ? "on" : ""}`}
         disabled=${disabled}
         onClick=${onChange}

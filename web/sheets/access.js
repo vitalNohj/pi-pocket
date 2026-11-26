@@ -4,16 +4,7 @@
 // `/given`, `/sees`, and `/rights`, `POST /api/sessions/:id/revoke`). One person on one computer is a switch and, under it, one
 // tree with the rows of the Files panel's: the folders given to them there, and in each the sessions they have in it.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import {
-    api,
-    attempt,
-    closeSheet,
-    declaredRights,
-    managesRunners,
-    navigate,
-    notify,
-    store,
-} from "../store.js";
+import { api, attempt, closeSheet, managesThisServer, navigate, notify, store } from "../store.js";
 import { html, Icon, Marked, Switch } from "../ui.js";
 import {
     accessFolder as accessFolderOf,
@@ -41,12 +32,7 @@ import { isOwner, isViewer, isUser } from "../roles.js";
 
 export const THIS_SERVER = "this-server";
 
-/**
- * Whether I am in charge of a computer (`access.ts` `inCharge`): the server says (`inCharge` on its record), since
- * besides its linker, and this server's owner, that is whoever manages runners on this server and the runners the
- * owner linked. A server from before it does not say: its linker, or for this server the owner. Nobody is in charge of
- * a blocked computer: its linker is a viewer now (`blocked`).
- */
+/** Whether I am in charge of a computer, as its record says. */
 export function inCharge(computer) {
     return (
         computer.inCharge ??
@@ -65,10 +51,10 @@ export function computers() {
 
 /** Read the computers again: a sheet that opens shows them as they are now. */
 export async function loadComputers() {
-    // This server's record is the business of who is in charge of it: the owner, and who manages runners.
+    // This server's record is the business of who is in charge of it.
     const [list, server] = await Promise.all([
         api("runners"),
-        managesRunners() ? api("runners/this-server") : null,
+        managesThisServer() ? api("runners/this-server") : null,
     ]);
 
     store.set({ runners: list, thisServer: server });
@@ -84,11 +70,7 @@ export function chosenFor(computer, person) {
     return (computer.users ?? []).some((each) => each.id === person.id);
 }
 
-/**
- * Who a computer's sessions go to when they are taken from someone: the one person they are handed to (`access.ts`
- * `inChargeOf`), its linker, the owner for this server. "you" for that person; their name for a user who is in charge
- * there because they manage runners.
- */
+/** Who receives the sessions taken from someone: the linker, or the owner for this server. */
 export function heir(computer) {
     return computer.createdBy === store.state.me?.id
         ? "you"
@@ -112,19 +94,21 @@ export function keep(view) {
 
 const route = (computer, part) => `runners/${encodeURIComponent(computer.id)}/${part}`;
 
-/**
- * Take `computer` from `person`, or let them use it, as its switch does: said first what that takes from them. True
- * when it was saved.
- */
+/** Why I cannot take this computer from a chosen person, if any. A pause keeps their right. */
+export function unchooseReason(computer, person) {
+    return computer.rights?.manages?.includes(person.id) && !computer.gives?.includes("manages")
+        ? "Only the owner of this computer takes a manager off it."
+        : undefined;
+}
+
+/** Take the computer from the person, or let them use it. True when saved. */
 export function toggleUse(computer, person) {
-    const { chosen, manager } = standing(computer, person);
+    const chosen = chosenFor(computer, person);
 
     if (
         chosen &&
         !confirm(
-            manager
-                ? `Take ${computer.name} from ${person.name}? They manage runners, so they stay in charge of it and nothing moves now. They keep nothing here once that ends.`
-                : `Take ${computer.name} from ${person.name}? They leave its sessions at once, and the sessions they started there move to ${heir(computer)}.`,
+            `Take ${computer.name} from ${person.name}? They leave its sessions at once, and the sessions they started there move to ${heir(computer)}.`,
         )
     ) {
         return Promise.resolve(false);
@@ -335,12 +319,30 @@ export function setRight(computer, person, right, on) {
     });
 }
 
-/** One computer right, as the server declares it (`each`). The label can name the computer in a mixed group. */
-export function RightSwitch({ computer, person, each, label = each.label }) {
+/** One computer right, as the server declares it (`each`). */
+export function RightSwitch({ computer, person, each }) {
     const [busy, setBusy] = useState(false);
-    const on = computer.rights[each.key].includes(person.id);
+    const included = each.key !== "manages" && computer.rights.manages.includes(person.id);
+    const on = included || computer.rights[each.key].includes(person.id);
+    const hint = included
+        ? "Included in Manage this computer."
+        : on
+          ? each.on
+          : (each.off ?? each.on);
 
     const flip = async () => {
+        if (
+            !on &&
+            each.confirm &&
+            !confirm(
+                each.confirm.replace(/\{(name|computer)\}/g, (_, field) =>
+                    field === "name" ? person.name : computer.name,
+                ),
+            )
+        ) {
+            return;
+        }
+
         setBusy(true);
 
         try {
@@ -352,50 +354,15 @@ export function RightSwitch({ computer, person, each, label = each.label }) {
 
     return html`<div class="setting wrap" data-right=${each.key} data-computer=${computer.id}>
         <div class="grow">
-            <div class="small">${label}</div>
-            <div class="muted small">${on ? each.on : (each.off ?? each.on)}</div>
+            <div class="small">${each.label}</div>
+            <div class="muted small">${hint}</div>
         </div>
         <${Switch}
             on=${on}
-            disabled=${busy}
+            disabled=${busy || included}
             label=${`${person.name} ${each.says} ${computer.name}: ${on ? "on" : "off"}`}
             onChange=${flip}
         />
-    </div>`;
-}
-
-/**
- * The rights given one person at a time on `computer` (`rights.ts`), for those who prompt there: chosen, not a viewer,
- * not held to one session. A computer's view names who holds each only for who manages it.
- */
-export function rightsFor(computer, person) {
-    return chosenFor(computer, person) && !isViewer(person) && !person.sessions && computer.rights
-        ? declaredRights("computer").filter((each) => Array.isArray(computer.rights[each.key]))
-        : [];
-}
-
-/**
- * The rights for a computer that do not go in Management, as their own group on a person's page. Nothing where
- * there is none to give.
- */
-export function ComputerRights({ computer, person }) {
-    const rights = rightsFor(computer, person).filter((each) => !each.management);
-
-    if (rights.length === 0) {
-        return null;
-    }
-
-    return html`<div class="group">
-        <div class="group-title">On ${computer.name}</div>
-        ${rights.map(
-            (each) =>
-                html`<${RightSwitch}
-                    key=${each.key}
-                    computer=${computer}
-                    person=${person}
-                    each=${each}
-                />`,
-        )}
     </div>`;
 }
 
@@ -514,7 +481,7 @@ const OTHER = "\0other";
 const ownerId = () => store.state.users.find((each) => isOwner(each))?.id;
 
 /**
- * How `person` stands on `computer`: chosen for it; in charge of it because they manage runners (`manager`); starting
+ * How `person` stands on `computer`: chosen for it; in charge of it by Manage this computer (`manager`); starting
  * sessions there, so with folders (`starts`); and someone sessions there can be given to one at a time (`offers`:
  * chosen, not held to one session, not in charge).
  */
@@ -1769,21 +1736,12 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
  * `find`: People's search and filters over the tree. With it the tree also lists the sessions that can be given to
  * the person; Runners, without it, lists what they have. `select`: People's selection of sessions (`session-select.js`).
  */
-export function AccessRow({
-    computer,
-    person,
-    lead,
-    title,
-    rights: withRights = true,
-    find,
-    grouping,
-    select,
-}) {
+export function AccessRow({ computer, person, lead, title, find, grouping, select }) {
     const [busy, setBusy] = useState(false);
     const tree = treeOf(computer, person, find !== undefined, grouping);
     const { chosen, manager } = standing(computer, person);
     const folders = computer.given?.[person.id] ?? [];
-    const rights = withRights ? rightsFor(computer, person) : [];
+    const reason = unchooseReason(computer, person);
 
     // Under a search or a filter, a computer with nothing to list is left out whole.
     if (find?.active && (tree === null || groupsOf(tree, find).length === 0)) {
@@ -1810,9 +1768,7 @@ export function AccessRow({
                         person.sessions
                             ? "Invited to one session only: not chosen for a computer."
                             : manager
-                              ? chosen
-                                  ? "In charge here because they manage runners. If that ends, they keep their access here."
-                                  : "In charge here because they manage runners. If that ends, they have no access here."
+                              ? "In charge here by Manage this computer."
                               : !chosen
                                 ? tree === null
                                     ? "Off: they see nothing of it."
@@ -1829,20 +1785,12 @@ export function AccessRow({
             </div>
             <${Switch}
                 on=${chosen}
-                disabled=${busy || Boolean(person.sessions)}
+                disabled=${busy || Boolean(person.sessions) || reason !== undefined}
+                title=${reason}
                 label=${`${person.name} may use ${computer.name}: ${chosen ? "on" : "off"}`}
                 onChange=${toggle}
             />
         </div>
-        ${rights.map(
-            (each) =>
-                html`<${RightSwitch}
-                    key=${each.key}
-                    computer=${computer}
-                    person=${person}
-                    each=${each}
-                />`,
-        )}
         ${
             tree !== null &&
             html`<${AccessTree}

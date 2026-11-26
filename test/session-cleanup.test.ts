@@ -18,7 +18,9 @@ import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "../src/server/access.ts";
 import { DeletedDoc, SessionsDoc } from "../src/server/docs.ts";
+import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { createHandler } from "../src/server/http.ts";
 
 const dataDir = join(root, "data");
@@ -163,27 +165,48 @@ test("an archived session leaves the app with Pocket's own files; its transcript
     );
 });
 
-test("only the owner and people who manage runners can plan, clean up, and remove archived sessions", async () => {
-    const id = await worktreeSession("Old work for a runner manager");
+test("11: only a person in charge of a session's computer can plan, clean up, or remove it", async () => {
+    const id = await worktreeSession("Old work for a computer manager");
     const worktree = app.sessionMeta(id)!.worktree!;
     const plain = (await addPerson(app, "Plain user", "guest")).user;
-    const manager = app.config.addUser("Runner manager", "guest");
+    const manager = app.config.addUser("Computer manager", "guest");
+    const other = await newSession(app);
+    const runner = app.config.addRunner("Other computer", owner(app).id, newIdentity().publicKey);
     const ids = [id];
 
     await archive(id);
+    await archive(other);
+    await app.harness.commit(async (tx) => {
+        const { items } = await tx.doc(SessionsDoc);
+
+        items[String(other)]!.runner = runner.id;
+    }, context);
     assert.equal(app.canSee(plain, id), true);
     const forbidden = {
         status: 403,
-        message: "Only the owner, or someone who manages runners, can clean up sessions.",
+        message: "Only who is in charge of a session's computer cleans it up.",
     };
 
-    await assert.rejects(app.sessionCleanup.plan(plain.id, ids), forbidden);
+    assert.deepEqual(await app.sessionCleanup.plan(plain.id, ids), []);
     await assert.rejects(app.sessionCleanup.cleanUp(plain.id, ids), forbidden);
     await assert.rejects(app.sessionCleanup.remove(plain.id, ids), forbidden);
     assert.equal(existsSync(worktree.path), true);
 
-    app.setRight(owner(app), { person: manager.user.id, right: "managesRunners", on: true });
-    const plan = await call("/api/x/session-cleanup/plan", { ids }, manager.token);
+    await app.choosePerson(THIS_SERVER, manager.user.id, true);
+    app.setRight(owner(app), {
+        person: manager.user.id,
+        right: "manages",
+        on: true,
+        computer: THIS_SERVER,
+    });
+    const both = [id, other];
+    const plan = await call("/api/x/session-cleanup/plan", { ids: both }, manager.token);
+
+    await assert.rejects(app.sessionCleanup.cleanUp(manager.user.id, both), forbidden);
+    await assert.rejects(app.sessionCleanup.remove(manager.user.id, both), forbidden);
+    assert.equal(existsSync(worktree.path), true);
+    assert.ok(app.sessionMeta(other) !== undefined);
+    assert.equal(plan.data.sessions.length, 1);
 
     assert.equal(plan.status, 200);
     assert.equal(plan.data.sessions[0].id, id);

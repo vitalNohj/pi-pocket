@@ -7,6 +7,7 @@ import { lstat, opendir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, TaskId } from "@earendil-works/pi-durable";
+import { THIS_SERVER } from "./access.ts";
 import type { PocketApp } from "./app.ts";
 import type { User } from "./config.ts";
 import {
@@ -209,17 +210,41 @@ export class SessionCleanup {
         this.#app = app;
     }
 
-    #requireManagesRunners(userId: string): User {
+    #user(userId: string): User {
         const user = this.#app.config.userById(userId);
 
-        if (user === undefined || !this.#app.policy.managesRunners(user)) {
-            throw new HttpError(
-                403,
-                "Only the owner, or someone who manages runners, can clean up sessions.",
-            );
+        if (user === undefined) {
+            throw new HttpError(403, "Only who is in charge of a session's computer cleans it up.");
         }
 
         return user;
+    }
+
+    /**
+     * Is session `id` `user`'s to clean up: they are in charge of its computer. Nobody is in charge of a computer that
+     * was unlinked, so a session left from one is the owner of Pi Pocket's to remove, when they see it.
+     */
+    #inCharge(user: User, id: ConversationId): boolean {
+        const app = this.#app;
+        const runner = app.runnerOf(id);
+
+        if (runner !== undefined && app.runners.stored(runner) === undefined) {
+            return app.policy.isOwner(user) && app.canSee(user, id);
+        }
+
+        return app.policy.inCharge(user, runner ?? THIS_SERVER);
+    }
+
+    /** Refuse the request before changing any of its sessions. */
+    #requireCharge(user: User, ids: readonly ConversationId[]): void {
+        for (const id of ids) {
+            if (this.#app.sessionMeta(id) !== undefined && !this.#inCharge(user, id)) {
+                throw new HttpError(
+                    403,
+                    "Only who is in charge of a session's computer cleans it up.",
+                );
+            }
+        }
     }
 
     /**
@@ -423,9 +448,8 @@ export class SessionCleanup {
         const app = this.#app;
         const meta = app.sessionMeta(id);
 
-        // A session the person may not see (one on another computer that is its starter's alone) is not theirs to
-        // remove, and a plan tells nothing of it.
-        if (meta === undefined || meta.pip !== undefined || !app.canSee(user, id)) {
+        // A plan tells nothing of a session on a computer this person does not manage.
+        if (meta === undefined || meta.pip !== undefined || !this.#inCharge(user, id)) {
             return undefined;
         }
 
@@ -521,10 +545,10 @@ export class SessionCleanup {
         };
     }
 
-    /** Sessions that are not there, and PiP, are left out. */
+    /** PiP, missing sessions, and sessions on other computers are left out. */
     async plan(userId: string, ids: readonly unknown[]): Promise<SessionPlan[]> {
-        const user = this.#requireManagesRunners(userId);
-        const chosen = this.#ids(ids);
+        const user = this.#user(userId);
+        const chosen = this.#ids(ids).filter((id) => this.#inCharge(user, id));
         const readByForks = this.#readByForks(new Set(chosen.map(Number)));
         const docs = await this.#docs();
         const plans: SessionPlan[] = [];
@@ -542,10 +566,15 @@ export class SessionCleanup {
 
     /** Removes only the worktrees: the sessions and their transcripts stay. */
     async cleanUp(userId: string, ids: readonly unknown[]): Promise<CleanupOutcome[]> {
-        const user = this.#requireManagesRunners(userId);
+        const user = this.#user(userId);
+        const chosen = this.#ids(ids);
         const outcomes: CleanupOutcome[] = [];
 
-        for (const id of this.#ids(ids)) {
+        this.#requireCharge(user, chosen);
+
+        for (const id of chosen) {
+            this.#requireCharge(user, [id]);
+
             const meta = this.#app.sessionMeta(id);
 
             if (meta?.archived !== true || meta.pip !== undefined || !this.#app.canSee(user, id)) {
@@ -590,7 +619,10 @@ export class SessionCleanup {
 
     /** Each is checked again first: one that cannot go now stays, with why. */
     async remove(userId: string, ids: readonly unknown[]): Promise<CleanupOutcome[]> {
-        const user = this.#requireManagesRunners(userId);
+        const user = this.#user(userId);
+        const named = this.#ids(ids);
+
+        this.#requireCharge(user, named);
 
         const depth = (id: ConversationId) => {
             let count = 0;
@@ -603,12 +635,13 @@ export class SessionCleanup {
         };
 
         // Forks before the sessions they came from: a parent's uploads go only once no fork that stays reads them.
-        const named = this.#ids(ids);
         const chosen = [...named].sort((a, b) => depth(b) - depth(a));
         const removed = new Set<number>();
         const outcomes = new Map<number, CleanupOutcome>();
 
         for (const id of chosen) {
+            this.#requireCharge(user, [id]);
+
             let outcome: CleanupOutcome;
 
             try {

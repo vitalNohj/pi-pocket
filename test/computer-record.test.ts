@@ -251,11 +251,21 @@ describe("a right on a computer", () => {
             );
             assert.deepEqual(readFileSync(config.file), before, "and nothing changed");
             assert.deepEqual(config.rightHolders(id, "allows"), [ana]);
-            assert.deepEqual(config.rightsOn(id), { wheel: [], allows: [ana], reshares: [] });
+            assert.deepEqual(config.rightsOn(id), {
+                manages: [],
+                wheel: [],
+                allows: [ana],
+                reshares: [],
+            });
 
             assert.equal(config.setComputerRight(id, ana, "allows", false), true);
             assert.deepEqual(config.rightHolders(id, "allows"), []);
-            assert.deepEqual(config.rightsOn(id), { wheel: [], allows: [], reshares: [] });
+            assert.deepEqual(config.rightsOn(id), {
+                manages: [],
+                wheel: [],
+                allows: [],
+                reshares: [],
+            });
         });
     }
 });
@@ -303,7 +313,7 @@ describe("a computer that does not exist", () => {
         assert.deepEqual(config.leaving(id), []);
         assert.deepEqual(config.handOvers(id), []);
         assert.deepEqual(config.rightHolders(id, "wheel"), []);
-        assert.deepEqual(config.rightsOn(id), { wheel: [], allows: [], reshares: [] });
+        assert.deepEqual(config.rightsOn(id), { manages: [], wheel: [], allows: [], reshares: [] });
         assert.deepEqual(config.givenFolders(id, ana), []);
         assert.deepEqual(config.givenBy(id, ana), {});
         assert.deepEqual(config.seenFolders(id, ana), []);

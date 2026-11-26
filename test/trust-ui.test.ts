@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { THIS_SERVER } from "../src/server/access.ts";
 import { Browsers } from "../src/server/browser.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
 import type { BrowserPage } from "../src/server/browser/page.ts";
@@ -245,124 +246,120 @@ test(
     },
 );
 
-test(
-    "a user the owner lets manage runners is in charge of this server: the page asks them, as the server lets them answer",
-    real,
-    async () => {
-        const mona = await addPerson(app, "Mona", "guest");
-        const folder = project("trust-ui-manager-");
-        const session = await newSession(app, folder);
-        const monas = browser("trust-ui-mona-");
-        const labels = (page: BrowserPage) =>
-            inPage<string[]>(
-                page,
-                `return JSON.stringify([...document.querySelectorAll(".trust-bar button")].map((each) => each.getAttribute("aria-label") ?? each.textContent.trim()))`,
-            );
-        const inCharge = (page: BrowserPage) =>
-            inPage<string[]>(
-                page,
-                `const { store } = await import("/store.js"); return JSON.stringify(store.state.me?.inCharge ?? null)`,
-            );
+test("a user who manages this server gets the trust question and can answer", real, async () => {
+    const mona = await addPerson(app, "Mona", "guest");
+    const folder = project("trust-ui-manager-");
+    const session = await newSession(app, folder);
+    const monas = browser("trust-ui-mona-");
+    const labels = (page: BrowserPage) =>
+        inPage<string[]>(
+            page,
+            `return JSON.stringify([...document.querySelectorAll(".trust-bar button")].map((each) => each.getAttribute("aria-label") ?? each.textContent.trim()))`,
+        );
+    const inCharge = (page: BrowserPage) =>
+        inPage<string[]>(
+            page,
+            `const { store } = await import("/store.js"); return JSON.stringify(store.state.me?.inCharge ?? null)`,
+        );
 
-        try {
-            const page = await monas.open(1);
+    try {
+        const page = await monas.open(1);
 
-            await page.navigate(`${base}/login?token=${encodeURIComponent(mona.token)}`);
-            await go(page, `/s/${session}`);
+        await page.navigate(`${base}/login?token=${encodeURIComponent(mona.token)}`);
+        await go(page, `/s/${session}`);
 
-            // A user like any other: it waits for the owner, and the answer is not hers.
-            await until(
-                async () => (await textOf(page, '[data-part="trust-wait"]')) !== null,
-                "the line that says it waits",
-            );
-            assert.deepEqual(await inCharge(page), []);
-            assert.deepEqual(await labels(page), ["Hide"]);
-            assert.throws(
-                () => app.projectTrust(session, mona.user),
-                /decides which projects Pi trusts/,
-            );
+        // A user like any other: it waits for the owner, and the answer is not hers.
+        await until(
+            async () => (await textOf(page, '[data-part="trust-wait"]')) !== null,
+            "the line that says it waits",
+        );
+        assert.deepEqual(await inCharge(page), []);
+        assert.deepEqual(await labels(page), ["Hide"]);
+        assert.throws(
+            () => app.projectTrust(session, mona.user),
+            /decides which projects Pi trusts/,
+        );
 
-            // The owner lets her manage runners. Her open tab is told, with no reload, and asks her now.
-            const given = await fetch(`${base}/api/users/${mona.user.id}/rights`, {
-                method: "POST",
-                headers: {
-                    authorization: `Bearer ${app.config.ownerToken}`,
-                    "X-Pocket": "1",
-                    "content-type": "application/json",
-                },
-                body: JSON.stringify({ right: "managesRunners", on: true }),
-            });
+        // Her open tab gets the question without a reload.
+        const given = await fetch(`${base}/api/runners/${THIS_SERVER}/rights`, {
+            method: "POST",
+            headers: {
+                authorization: `Bearer ${app.config.ownerToken}`,
+                "X-Pocket": "1",
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({ person: mona.user.id, right: "manages", on: true }),
+        });
 
-            assert.equal(given.status, 200);
-            await until(
-                async () => (await labels(page)).includes("Review"),
-                "the question, for who is in charge now",
-            );
-            assert.deepEqual(await inCharge(page), ["this-server"]);
-            assert.deepEqual(await labels(page), ["Don't trust", "Review", "Not now"]);
-            assert.equal(await textOf(page, '[data-part="trust-wait"]'), null);
+        assert.equal(given.status, 200);
+        await until(
+            async () => (await labels(page)).includes("Review"),
+            "the question, for who is in charge now",
+        );
+        assert.deepEqual(await inCharge(page), ["this-server"]);
+        assert.deepEqual(await labels(page), ["Don't trust", "Review", "Not now"]);
+        assert.equal(await textOf(page, '[data-part="trust-wait"]'), null);
 
-            // She answers, and the server takes it.
-            await tap(page, ".trust-bar", "Review");
-            await until(
-                async () =>
-                    (await textOf(page, '.sheet [data-part="sheet-head"]'))?.includes(
-                        "Project trust",
-                    ) === true,
-                "the trust sheet",
-            );
-            await inPage(
-                page,
-                `
+        // She answers, and the server takes it.
+        await tap(page, ".trust-bar", "Review");
+        await until(
+            async () =>
+                (await textOf(page, '.sheet [data-part="sheet-head"]'))?.includes(
+                    "Project trust",
+                ) === true,
+            "the trust sheet",
+        );
+        await inPage(
+            page,
+            `
                 [...document.querySelectorAll(".sheet .trust-choice")]
                     .find((each) => each.textContent.includes("Trust this folder"))
                     .click();
 
                 return JSON.stringify(true);
             `,
-            );
-            await until(
-                () => app.projectTrust(session, owner(app)).trusted,
-                "the project to be trusted",
-            );
-            await until(async () => (await labels(page)).length === 0, "the bar to go");
+        );
+        await until(
+            () => app.projectTrust(session, owner(app)).trusted,
+            "the project to be trusted",
+        );
+        await until(async () => (await labels(page)).length === 0, "the bar to go");
 
-            // Another project, in a session she starts herself, so it stays hers. She is asked about it. Then the
-            // owner takes the permission back: nobody asked on her behalf while the answer was hers, so no request
-            // changes. Her tab reads the project again as someone who waits, and tells the owner.
-            const other = (
-                await app.commands.createSession(app.config.userById(mona.user.id)!, {
-                    cwd: project("trust-ui-manager-other-"),
-                })
-            ).id;
+        // Another project, in a session she starts herself, so it stays hers. She is asked about it. Then the
+        // owner takes the permission back: nobody asked on her behalf while the answer was hers, so no request
+        // changes. Her tab reads the project again as someone who waits, and tells the owner.
+        const other = (
+            await app.commands.createSession(app.config.userById(mona.user.id)!, {
+                cwd: project("trust-ui-manager-other-"),
+            })
+        ).id;
 
-            await go(page, `/s/${other}`);
-            await until(async () => (await labels(page)).includes("Review"), "the second question");
-            assert.deepEqual(app.trustRequests.list(owner(app)), []);
+        await go(page, `/s/${other}`);
+        await until(async () => (await labels(page)).includes("Review"), "the second question");
+        assert.deepEqual(app.trustRequests.list(owner(app)), []);
 
-            const taken = await fetch(`${base}/api/users/${mona.user.id}/rights`, {
-                method: "POST",
-                headers: {
-                    authorization: `Bearer ${app.config.ownerToken}`,
-                    "X-Pocket": "1",
-                    "content-type": "application/json",
-                },
-                body: JSON.stringify({ right: "managesRunners", on: false }),
-            });
+        const taken = await fetch(`${base}/api/runners/${THIS_SERVER}/rights`, {
+            method: "POST",
+            headers: {
+                authorization: `Bearer ${app.config.ownerToken}`,
+                "X-Pocket": "1",
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({ person: mona.user.id, right: "manages", on: false }),
+        });
 
-            assert.equal(taken.status, 200);
-            await until(
-                async () => (await textOf(page, '[data-part="trust-wait"]')) !== null,
-                "the line that says it waits, once the answer is no longer hers",
-            );
-            assert.deepEqual(await inCharge(page), []);
-            assert.deepEqual(await labels(page), ["Hide"]);
-            await until(
-                () => app.trustRequests.list(owner(app)).length === 1,
-                "the owner to hear of it",
-            );
-        } finally {
-            await monas.closeAll({ final: true });
-        }
-    },
-);
+        assert.equal(taken.status, 200);
+        await until(
+            async () => (await textOf(page, '[data-part="trust-wait"]')) !== null,
+            "the line that says it waits, once the answer is no longer hers",
+        );
+        assert.deepEqual(await inCharge(page), []);
+        assert.deepEqual(await labels(page), ["Hide"]);
+        await until(
+            () => app.trustRequests.list(owner(app)).length === 1,
+            "the owner to hear of it",
+        );
+    } finally {
+        await monas.closeAll({ final: true });
+    }
+});

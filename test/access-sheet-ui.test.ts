@@ -242,14 +242,14 @@ test("the sheet opens from each opener at the right view", real, async () => {
             "By person",
         ],
         [
-            "the folder picker's Manage runners…",
+            "the folder picker's Manage computers…",
             `(async () => {
                 const { openSheet } = await import("/store.js");
                 openSheet({ type: "cwd", mode: "new" });
-                for (let i = 0; i < 80 && ![...document.querySelectorAll(".fp-link")].some((each) => each.textContent.trim() === "Manage runners…"); i++) {
+                for (let i = 0; i < 80 && ![...document.querySelectorAll(".fp-link")].some((each) => each.textContent.trim() === "Manage computers…"); i++) {
                     await new Promise((resolve) => setTimeout(resolve, 50));
                 }
-                [...document.querySelectorAll(".fp-link")].find((each) => each.textContent.trim() === "Manage runners…").click();
+                [...document.querySelectorAll(".fp-link")].find((each) => each.textContent.trim() === "Manage computers…").click();
             })()`,
             "By computer",
         ],

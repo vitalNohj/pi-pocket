@@ -260,8 +260,8 @@ test("a session on another computer that the owner may not see is not theirs to 
         ),
         false,
     );
-    assert.equal((await call("clean-up", { ids: [id] })).data.outcomes[0].done, false);
-    assert.equal((await call("remove", { ids: [id] })).data.outcomes[0].done, false);
+    assert.equal((await call("clean-up", { ids: [id] })).status, 403);
+    assert.equal((await call("remove", { ids: [id] })).status, 403);
     assert.equal(existsSync(worktree.path), true);
     assert.equal(app.sessionMeta(id)?.worktree?.path, worktree.path);
 });
@@ -319,17 +319,18 @@ test("tasks on a computer that is not reached any more are given up, and no proc
 });
 
 test("what cannot be removed there keeps the session, and a plan never makes anyone renew an approval", async () => {
-    // The owner's own sessions on Lina's computer: Lina is in charge there, so they need her approval, as anyone's do.
+    // The owner starts the sessions. Lina can clean them up because she is in charge of their computer.
     const id = await there("Half done", true, owner(app), linas);
     const plain = await there("Nothing there", false, owner(app), linas);
     const worktree = app.sessionMeta(id)!.worktree!;
-    const blocked = async () => (await call("plan", { ids: [id] })).data.sessions[0].blocked;
+    const token = app.config.addDevice(lina.id);
+    const blocked = async () => (await call("plan", { ids: [id] }, token)).data.sessions[0].blocked;
 
     const stays = async (why: RegExp) => {
         assert.match(await blocked(), why);
 
         for (const action of ["clean-up", "remove"]) {
-            const [outcome] = (await call(action, { ids: [id] })).data.outcomes;
+            const [outcome] = (await call(action, { ids: [id] }, token)).data.outcomes;
 
             assert.equal(outcome.done, false, action);
             assert.match(outcome.why, why, action);
@@ -358,12 +359,12 @@ test("what cannot be removed there keeps the session, and a plan never makes any
     rmSync(join(worktree.path, "secrets"), { recursive: true });
     assert.equal(await blocked(), undefined);
 
-    // Its approval ended: a request there would wait for a renewal, so none is made.
+    // The starter's approval ended. Lina still plans it without asking them to renew.
     const asked = waiting();
 
     app.folderApprovals.revoke(String(app.rootOf(id)), true);
     assert.equal(app.policy.steer(owner(app), String(app.rootOf(id))), "locked");
-    await stays(/Its approval has ended/);
+    assert.equal(await blocked(), undefined);
     assert.equal(waiting(), asked, "nobody was asked");
 
     await linasRunner.stop();
@@ -371,7 +372,7 @@ test("what cannot be removed there keeps the session, and a plan never makes any
     await stays(/Lina's laptop is offline/);
 
     // A session with nothing on its computer leaves, also while that computer is away.
-    assert.deepEqual((await call("remove", { ids: [plain] })).data.outcomes, [
+    assert.deepEqual((await call("remove", { ids: [plain] }, token)).data.outcomes, [
         { id: Number(plain), done: true, bytes: 0 },
     ]);
     assert.equal(
@@ -380,7 +381,7 @@ test("what cannot be removed there keeps the session, and a plan never makes any
     );
 });
 
-test("a session on a computer that was unlinked leaves, and what it has there stays", async () => {
+test("a session on a computer that was unlinked leaves for the owner alone, and what it has there stays", async () => {
     const id = await there("On a computer that went", true);
     const worktree = app.sessionMeta(id)!.worktree!;
 
@@ -390,6 +391,14 @@ test("a session on a computer that was unlinked leaves, and what it has there st
     assert.equal(app.canSee(owner(app), id), true, "its starter still sees it");
 
     const asked = waiting();
+    // Nobody is in charge of a computer that is gone: someone in charge of another computer is told nothing of it.
+    const linasToken = app.config.addDevice(lina.id);
+
+    assert.deepEqual((await call("plan", { ids: [id] }, linasToken)).data.sessions, []);
+    assert.equal((await call("clean-up", { ids: [id] }, linasToken)).status, 403);
+    assert.equal((await call("remove", { ids: [id] }, linasToken)).status, 403);
+    assert.ok(app.sessionMeta(id) !== undefined, "it is still there");
+
     const [plan] = (await call("plan", { ids: [id] })).data.sessions;
 
     assert.equal(plan.blocked, undefined, "nothing there is reached, and the session can go");

@@ -1,4 +1,4 @@
-// For the owner and people who manage runners. It uses only `pocket`.
+// For people in charge of a computer. It uses only `pocket`.
 export const pocketApi = 2;
 
 /** Lucide's archive-x icon. */

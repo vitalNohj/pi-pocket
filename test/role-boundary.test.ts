@@ -12,6 +12,26 @@ import { isGivenRole, isOwner, ownerOf, prompts, rolePrompts } from "../src/serv
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const SERVER = join(ROOT, "src", "server");
 
+/** The old person right is named once, where an older settings file is migrated (`config.ts` `migrateManagers`). */
+it("13: no file in src or web names managesRunners, but the migration of an older file", () => {
+    const files = (folder: string): string[] =>
+        readdirSync(folder, { withFileTypes: true }).flatMap((entry) => {
+            const file = join(folder, entry.name);
+
+            return entry.isDirectory() ? files(file) : entry.isFile() ? [file] : [];
+        });
+    const found = ["src", "web"].flatMap((dir) =>
+        files(join(ROOT, dir)).flatMap((file) =>
+            readFileSync(file, "utf8")
+                .split("\n")
+                .filter((line) => line.includes("managesRunners"))
+                .map((line) => `${relative(ROOT, file).split(sep).join("/")}: ${line.trim()}`),
+        ),
+    );
+
+    assert.deepEqual(found, ['src/server/config.ts: const OLD_MANAGES = "managesRunners";']);
+});
+
 /** The files that may compare a role: its rules, what a role can hold, the policy, and the record that keeps it. */
 const COMPARE = ["roles.ts", "rights.ts", "access.ts", "config.ts"];
 

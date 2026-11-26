@@ -386,9 +386,11 @@ export type ServerView = {
      * from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to (`allowsOwn`).
      */
     rights: Record<ComputerRight, string[]>;
-    /** Whoever is told this is in charge of it (`access.ts` `inCharge`): the owner, and who manages runners. */
+    /** The rights whoever is told this may give or take here. */
+    gives: ComputerRight[];
+    /** Whoever is told this is in charge of it. */
     inCharge: true;
-    /** The users in charge of it because they manage runners (`access.ts` `managesRunners`), by id. */
+    /** The people in charge of it by Manage this computer, by id. */
     managers: string[];
     /** The folder on this machine for its sessions' browser downloads, when one was named; else its temporary one. */
     downloads?: string;
@@ -902,10 +904,11 @@ export class PocketApp {
             config: this.config,
             log: (line) => this.#log(line),
             onChange: () => this.#runnersChanged(),
-            // Who may use it; the owner, and who manages runners, see every runner, to unlink one (no folders or
-            // sessions on one someone else linked unless chosen there).
+            // The owner also lists a runner they do not use, to unlink it.
             mayList: (id, user) => this.policy.mayUnlink(user, id) || this.policy.mayUse(user, id),
             mayManage: (id, user) => this.policy.mayManage(user, id),
+            mayGiveRight: (id, user, right) => this.policy.mayGiveRight(user, id, right),
+            mayUnlink: (id, user) => this.policy.mayUnlink(user, id),
             mayStart: (id, user) => this.policy.mayStart(user, id),
             mayUse: (id, user) => this.policy.mayUse(user, id),
             blocked: (id) => this.policy.blocked(id),
@@ -3551,6 +3554,9 @@ export class PocketApp {
                 ]),
             ),
             rights: this.config.rightsOn(THIS_SERVER),
+            gives: COMPUTER_RIGHTS.filter((right) =>
+                this.policy.mayGiveRight(user, THIS_SERVER, right),
+            ),
             inCharge: true,
             managers: this.#managersOf(THIS_SERVER),
             ...(server.settings?.downloads === undefined
@@ -3559,17 +3565,11 @@ export class PocketApp {
         };
     }
 
-    /**
-     * The ids of the users in charge of computer `id` because they manage runners (`access.ts` `inCharge`): not its
-     * linker, and not the owner. A computer's view names them for who is in charge of it.
-     */
+    /** The ids of the people in charge of computer `id` by Manage this computer. */
     #managersOf(id: string): string[] {
-        return this.config.users
-            .filter((each) => !this.policy.isOwner(each) && this.policy.inCharge(each, id))
-            .filter(
-                (each) => id === THIS_SERVER || this.config.runnerById(id)?.createdBy !== each.id,
-            )
-            .map((each) => each.id);
+        return this.config
+            .rightHolders(id, "manages")
+            .filter((person) => this.policy.inCharge({ id: person }, id));
     }
 
     /**
@@ -4269,27 +4269,29 @@ export class PocketApp {
         this.config.setPersonRight(person, right, on);
         void this.#refreshUser(person);
         this.#peopleChanged();
-        // Who links computers changes what the Runners sheet offers them; who manages runners, or no longer does, what
-        // they see and answer on this server and the owner's runners, at once (`settle` hands over the rest).
+        // Who links computers changes what the Runners sheet offers them.
         this.accessChanged();
     }
 
     /**
-     * Who is in charge of computer `id` gives `person` one right there, or takes it back: to take the wheel from a
-     * driver (`wheel`, `access.ts` `overridesTurns`), to allow a call their own message led to while approvals need
-     * someone else (`allows`, `allowsOwn`), or to pass on what they were given there (`reshares`). Only someone chosen
-     * there who prompts: the owner too, on a computer someone else linked. Taking it back undoes nothing done with it:
-     * who took the wheel keeps it, a call they allowed stays allowed, and what they shared or gave stays so.
+     * Who is in charge gives or takes back a right on computer `id` for a user chosen there. Only the computer's
+     * owner chooses who manages it. When someone's charge ends, what they had by it is handed over (`settle`).
      */
     #setComputerRight(by: User, id: string, person: unknown, right: unknown, on: unknown): void {
         if (id !== THIS_SERVER) {
             this.runners.require(id);
         }
 
-        this.policy.requireManage(by, id);
-
         if (typeof person !== "string" || !isRight(right, "computer") || typeof on !== "boolean") {
             throw new HttpError(400, `Send person, right (${COMPUTER_RIGHTS.join(", ")}), and on.`);
+        }
+
+        if (!this.policy.mayGiveRight(by, id, right)) {
+            if (right === "manages") {
+                throw new HttpError(403, "Only the owner of this computer chooses who manages it.");
+            }
+
+            this.policy.requireManage(by, id);
         }
 
         const target = this.config.userById(person);
@@ -4298,7 +4300,11 @@ export class PocketApp {
             throw new HttpError(400, "Choose them for this computer first.");
         }
 
-        if (this.policy.inCharge(target, id)) {
+        if (
+            right === "manages"
+                ? this.config.linkerOf(id) === target.id
+                : this.policy.inCharge(target, id)
+        ) {
             throw new HttpError(
                 400,
                 "Who is in charge of a computer needs no such permission there.",
@@ -4311,6 +4317,11 @@ export class PocketApp {
 
         if (!this.config.setComputerRight(id, person, right, on)) {
             throw new HttpError(400, "Choose them for this computer first.");
+        }
+
+        if (right === "manages") {
+            void this.#refreshUser(person);
+            this.#peopleChanged();
         }
 
         this.accessChanged();
@@ -6498,7 +6509,7 @@ export class PocketApp {
             const whose = own ? "you" : "someone else";
 
             return computer === THIS_SERVER
-                ? `Only the owner, or someone who manages runners, can allow a command ${whose} typed.`
+                ? `Only the owner, or someone who manages this server, can allow a command ${whose} typed.`
                 : `Only ${this.#inChargeName(request.conversationId)}, who is in charge of ${this.#computerName(computer)}, can allow a command ${whose} typed.`;
         }
 
@@ -6509,7 +6520,7 @@ export class PocketApp {
         // Not knowing who asked is not knowing that it was someone else.
         if (request.requestedBy === undefined) {
             return computer === THIS_SERVER
-                ? "Nobody is known to have asked for this call, so only the owner, or someone who manages runners, can allow it."
+                ? "Nobody is known to have asked for this call, so only the owner, or someone who manages this server, can allow it."
                 : `Nobody is known to have asked for this call, so only ${this.#inChargeName(request.conversationId)}, who is in charge of ${this.#computerName(computer)}, can allow it.`;
         }
 
@@ -6823,7 +6834,7 @@ export class PocketApp {
         this.runners.changed();
         this.#scheduleSessions();
 
-        // Someone's charge of computers just ended (`config.ts` `#oweManaged`): what they had there by it moves on.
+        // Someone's charge of a computer just ended: what they had there by it moves on.
         if (
             [THIS_SERVER, ...this.config.runners.map((each) => each.id)].some(
                 (id) => this.config.handOvers(id).length > 0,
@@ -6918,8 +6929,27 @@ export class PocketApp {
      * Who is in charge of computer `id` chooses its people: the whole list. Who is no longer chosen leaves its sessions
      * at once; their sessions there, and their tasks, move to who is in charge (`handOver`).
      */
-    async choosePeople(id: string, users: string[]): Promise<void> {
-        await this.#choose(id, () => users);
+    async choosePeople(id: string, users: string[], by?: User): Promise<void> {
+        await this.#choose(id, (now) => {
+            if (by !== undefined) {
+                this.#requireChoosing(
+                    by,
+                    id,
+                    now.filter((person) => !users.includes(person)),
+                );
+            }
+
+            return users;
+        });
+    }
+
+    /** Check the current list and rights before any change to who is chosen is saved. */
+    #requireChoosing(by: User, id: string, removed: readonly string[]): void {
+        this.policy.requireManage(by, id);
+
+        if (removed.some((person) => !this.policy.mayUnchoose(by, id, { id: person }))) {
+            throw new HttpError(403, "Only the owner of this computer takes a manager off it.");
+        }
     }
 
     /**
@@ -6934,8 +6964,15 @@ export class PocketApp {
     async #choose(id: string, next: (now: readonly string[]) => string[]): Promise<void> {
         await this.#inTurn(async () => {
             const users = next(this.config.computer(id)?.users ?? []);
+            const managers = this.config.rightHolders(id, "manages");
 
             this.config.setUsers(id, users);
+
+            if (
+                managers.some((person) => !this.config.rightHolders(id, "manages").includes(person))
+            ) {
+                this.#peopleChanged();
+            }
 
             // Their tabs leave at once, before the saves below: no event of a session there reaches them meanwhile.
             this.accessChanged();
@@ -7102,9 +7139,9 @@ export class PocketApp {
 
     /**
      * Finish the hand-overs the settings still owe (`config.ts` `ComputerAccess.handOver`), on every computer: after a
-     * change that ended someone's charge of computers (they managed runners and no longer do: `config.ts`
-     * `#oweManaged`), their sessions outside the folders given to them, and the tasks they set up on sessions they no
-     * longer steer, move to who is in charge (`handOver`). The mark was saved with the change, so a restart in between
+     * change that ended someone's charge of a computer, their sessions outside the folders given to them, and the
+     * tasks they set up on sessions they no longer steer, move to its owner (`handOver`). The mark was saved with the
+     * change, so a restart in between
      * leaves it and the next start finishes it. `accessChanged` starts this; a route that made such a change waits
      * for it, so that its answer says what is so.
      */
@@ -7130,15 +7167,14 @@ export class PocketApp {
      * change (`choosePeople`). Read and saved in one step, so two such changes at once both count. A person who cannot be
      * chosen is refused with the reason, where the whole list leaves them out without a word.
      */
-    async choosePerson(id: string, person: string, on: boolean): Promise<void> {
+    async choosePerson(id: string, person: string, on: boolean, by?: User): Promise<void> {
         const target = this.config.userById(person);
 
         if (target === undefined) {
             throw new HttpError(404, "No such person");
         }
 
-        // Its linker, or this server's owner. Someone in charge of it only because they manage runners is chosen as
-        // anyone is: what they are given here is what they keep once they no longer manage runners.
+        // The computer's owner has it without being chosen. A person who manages it must be chosen for it.
         if (
             on &&
             target.id ===
@@ -7154,9 +7190,13 @@ export class PocketApp {
             );
         }
 
-        await this.#choose(id, (now) =>
-            on ? [...now, person] : now.filter((each) => each !== person),
-        );
+        await this.#choose(id, (now) => {
+            if (by !== undefined) {
+                this.#requireChoosing(by, id, on ? [] : [person]);
+            }
+
+            return on ? [...now, person] : now.filter((each) => each !== person);
+        });
     }
 
     /**

@@ -188,7 +188,7 @@ async function authenticatorRoute(
             user,
             body?.code === undefined ? undefined : sixDigits(body.code),
         );
-        // A viewer now: what they were in charge of as one who manages runners is handed over before the answer.
+        // A viewer now: what they had because they managed a computer is handed over before the answer.
         await app.settle();
 
         return status();
@@ -549,8 +549,6 @@ export function createApi(options: HttpOptions, auth: Auth) {
             const body = await readJson<{ right?: unknown; on?: unknown } | null>(request);
 
             app.setRight(user, { person: second, right: body?.right, on: body?.on });
-            // Managing runners taken back: what they had by it alone is handed over before the answer.
-            await app.settle();
 
             return json(response, 200, { ok: true });
         }
@@ -866,7 +864,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
 
         if (first === "users" && second !== undefined && third === undefined && method === "POST") {
             app.setAccess(user, second, await readJson(request));
-            // Made a viewer, or limited to sessions: they manage runners no longer, and what they had by it moves on.
+            // Made a viewer, or limited to sessions: their charge of computers ends, and what they had by it moves on.
             await app.settle();
 
             return json(response, 200, app.people(user));
@@ -1330,9 +1328,9 @@ export function createApi(options: HttpOptions, auth: Auth) {
             });
         }
 
-        // What guards linking (`link-limits.ts`): the owner's, and of who manages runners.
+        // What guards linking (`link-limits.ts`): for who is in charge of this server.
         if (first === "runners" && second === "locks" && third === undefined && method === "GET") {
-            app.policy.requireManagesRunners(user);
+            app.policy.requireManage(user, THIS_SERVER);
 
             return json(response, 200, app.runners.linkLocks());
         }
@@ -1344,7 +1342,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             third === undefined &&
             method === "DELETE"
         ) {
-            app.policy.requireManagesRunners(user);
+            app.policy.requireManage(user, THIS_SERVER);
 
             const address = url.searchParams.get("address") ?? "";
 
@@ -1411,12 +1409,12 @@ export function createApi(options: HttpOptions, auth: Auth) {
             } | null>(request);
 
             if (typeof body?.person === "string" && typeof body.on === "boolean") {
-                await app.choosePerson(second, body.person, body.on);
+                await app.choosePerson(second, body.person, body.on, user);
             } else if (
                 Array.isArray(body?.users) &&
                 body.users.every((id) => typeof id === "string")
             ) {
-                await app.choosePeople(second, body.users as string[]);
+                await app.choosePeople(second, body.users as string[], user);
             } else {
                 throw new HttpError(
                     400,
@@ -1635,6 +1633,8 @@ export function createApi(options: HttpOptions, auth: Auth) {
                 right: body?.right,
                 on: body?.on,
             });
+            // Manage this computer taken back: what they had there by it alone is handed over before the answer.
+            await app.settle();
 
             return json(
                 response,
