@@ -10,7 +10,7 @@ set -u
 
 APP="$HOME/Library/Application Support/Pi Pocket"
 DATA="$HOME/.pi-pocket"
-PACKAGES="io.github.tannermidd.pi-pocket io.github.tannermidd.pi-pocket.login"
+PACKAGES="io.github.tannermidd.pi-pocket io.github.tannermidd.pi-pocket.login io.github.tannermidd.pi-pocket.desktop-update"
 yes=0
 data=ask
 

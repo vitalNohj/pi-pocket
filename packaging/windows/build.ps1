@@ -10,7 +10,9 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$OutDir = (Join-Path $PSScriptRoot "out"),
     [string]$Source = (Join-Path $PSScriptRoot "..\.."),
-    [string]$SignThumbprint = ""
+    [string]$SignThumbprint = "",
+    [switch]$WithDesktopUpdate,
+    [switch]$DesktopOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,21 +48,23 @@ function Get-Checked([string]$Url, [string]$File, [string]$Sha256) {
     Write-Host "SHA256 matches: $actual"
 }
 
-$nodeName = "node-v$NodeVersion-win-x64"
-$nodeZip = Join-Path $work "$nodeName.zip"
-Get-Checked "https://nodejs.org/dist/v$NodeVersion/$nodeName.zip" $nodeZip $NodeSha256
-Expand-Archive -Path $nodeZip -DestinationPath $work
-$nodeDir = Join-Path $work $nodeName
+if (-not $DesktopOnly) {
+    $nodeName = "node-v$NodeVersion-win-x64"
+    $nodeZip = Join-Path $work "$nodeName.zip"
+    Get-Checked "https://nodejs.org/dist/v$NodeVersion/$nodeName.zip" $nodeZip $NodeSha256
+    Expand-Archive -Path $nodeZip -DestinationPath $work
+    $nodeDir = Join-Path $work $nodeName
 
-if (-not (Test-Path (Join-Path $nodeDir "node.exe"))) {
-    throw "The Node.js zip has no $nodeName\node.exe"
-}
+    if (-not (Test-Path (Join-Path $nodeDir "node.exe"))) {
+        throw "The Node.js zip has no $nodeName\node.exe"
+    }
 
-$appDir = Join-Path $work "app"
-& (Join-Path $nodeDir "node.exe") (Join-Path $PSScriptRoot "..\bundle-app.mjs") $Source $appDir $Version
+    $appDir = Join-Path $work "app"
+    & (Join-Path $nodeDir "node.exe") (Join-Path $PSScriptRoot "..\bundle-app.mjs") $Source $appDir $Version
 
-if ($LASTEXITCODE -ne 0) {
-    throw "bundle-app.mjs exited with $LASTEXITCODE"
+    if ($LASTEXITCODE -ne 0) {
+        throw "bundle-app.mjs exited with $LASTEXITCODE"
+    }
 }
 
 # C# 5: the compiler that every Windows 10 and 11 has in its .NET Framework 4.x.
@@ -103,7 +107,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $assets = New-Item -ItemType Directory (Join-Path $desktop "desktop-assets")
-foreach ($name in @("controller", "protocol", "settings")) {
+foreach ($name in @("controller", "protocol", "settings", "feed")) {
     Copy-Item -Recurse (Join-Path $PSScriptRoot "..\desktop\$name") $assets.FullName
 }
 Write-Host "Built $appExe"
@@ -125,7 +129,7 @@ if (-not (Test-Path $iscc)) {
     throw "No ISCC.exe in $innoDir"
 }
 
-$arguments = @("/Qp", "/DAppVersion=$Version", "/DNodeDir=$nodeDir", "/DOutputDir=$OutDir", "/DDesktopDir=$desktop", "/DAppDir=$appDir")
+$arguments = @("/Qp", "/DAppVersion=$Version", "/DOutputDir=$OutDir", "/DDesktopDir=$desktop")
 
 if ($SignThumbprint -ne "") {
     $kits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
@@ -149,13 +153,24 @@ if ($SignThumbprint -ne "") {
     $arguments += "/DSign"
 }
 
-& $iscc @arguments (Join-Path $PSScriptRoot "pi-pocket.iss")
+function Build-Setup([string[]]$Defines, [string]$Name) {
+    & $iscc @arguments @Defines (Join-Path $PSScriptRoot "pi-pocket.iss")
 
-if ($LASTEXITCODE -ne 0) {
-    throw "ISCC exited with $LASTEXITCODE"
+    if ($LASTEXITCODE -ne 0) {
+        throw "ISCC exited with $LASTEXITCODE"
+    }
+
+    $setup = Join-Path $OutDir "$Name-$Version.exe"
+    Write-Host "Built $setup ($([math]::Round((Get-Item $setup).Length / 1MB, 1)) MB)"
+    Write-Host "SHA256 $((Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant())"
 }
 
-$setup = Join-Path $OutDir "Pi-Pocket-Setup-$Version.exe"
-Write-Host "Built $setup ($([math]::Round((Get-Item $setup).Length / 1MB, 1)) MB)"
-Write-Host "SHA256 $((Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant())"
+if (-not $DesktopOnly) {
+    Build-Setup -Defines @("/DNodeDir=$nodeDir", "/DAppDir=$appDir") -Name "Pi-Pocket-Setup"
+}
+
+if ($DesktopOnly -or $WithDesktopUpdate) {
+    Build-Setup -Defines @("/DDesktopUpdate") -Name "Pi-Pocket-Desktop-Update"
+}
+
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue

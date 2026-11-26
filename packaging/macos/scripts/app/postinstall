@@ -23,6 +23,7 @@ if ! "$APP/node/bin/node" "$APP/place-app.mjs" "$VERSION"; then
 fi
 
 cat "$APP/install.log"
+printf '%s\n' "$VERSION" > "$APP/runtime-floor.txt" || exit 1
 
 # Each app goes into ~/Applications. Only an earlier copy is replaced, not another app of the same name: then it stays in
 # $APP. It prints where the app is.

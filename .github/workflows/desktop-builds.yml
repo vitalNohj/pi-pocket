@@ -1,4 +1,4 @@
-# Builds unsigned installers from the branch's source. Nothing is published.
+# Builds unsigned installers from the branch's source. Publishes workflow artifacts only.
 name: Desktop builds
 
 on:
@@ -25,6 +25,19 @@ jobs:
                   node-version: 26
             - run: node --test --test-concurrency=2 test/desktop/*.test.mjs
 
+    update-feed:
+        name: Desktop update feed tests
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              with:
+                  node-version: 26
+            - run: node --test --test-concurrency=2 test/desktop/updates.test.mjs
+
     build:
         name: ${{ matrix.name }}
         runs-on: ${{ matrix.os }}
@@ -46,6 +59,10 @@ jobs:
               with:
                   persist-credentials: false
 
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              with:
+                  node-version: 26
+
             - name: Stage the branch's source to pack
               id: source
               shell: bash
@@ -58,7 +75,8 @@ jobs:
                   mkdir -p "$source"
                   git archive HEAD | tar -x -C "$source"
 
-                  version="$(node -p 'require("./package.json").version')-desktop.$GITHUB_RUN_NUMBER"
+                  base="$(node -p 'require("./package.json").version.split("-")[0]')"
+                  version="$base-desktop.$GITHUB_RUN_NUMBER"
                   npm --prefix "$source" version "$version" --no-git-tag-version --ignore-scripts --workspaces=false
 
                   # Pack this branch's runner beside the app, where `pi-pocket runner` looks first.
@@ -77,6 +95,7 @@ jobs:
                   writeFileSync(manifestPath, `${JSON.stringify(app, null, 4)}\n`);
                   NODE
                   printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+                  printf 'next=%s-desktop.%s\n' "$base" "$((GITHUB_RUN_NUMBER + 1))" >> "$GITHUB_OUTPUT"
 
             - name: Build the unsigned Windows installer
               if: runner.os == 'Windows'
@@ -85,17 +104,64 @@ jobs:
                   VERSION: ${{ steps.source.outputs.version }}
               run: |
                   ./packaging/windows/build.ps1 -Version $env:VERSION -OutDir (Join-Path $env:RUNNER_TEMP "desktop-output") `
-                      -Source (Join-Path $env:RUNNER_TEMP "desktop-source")
+                      -Source (Join-Path $env:RUNNER_TEMP "desktop-source") -WithDesktopUpdate
 
             - name: Build the unsigned macOS package
               if: runner.os == 'macOS'
               env:
                   VERSION: ${{ steps.source.outputs.version }}
-              run: packaging/macos/build.sh "$VERSION" "$RUNNER_TEMP/desktop-output" --source "$RUNNER_TEMP/desktop-source"
+              run: packaging/macos/build.sh "$VERSION" "$RUNNER_TEMP/desktop-output" --source "$RUNNER_TEMP/desktop-source" --with-desktop-update
+
+            - name: Install N and build the N+1 fixture (Windows)
+              if: runner.os == 'Windows'
+              shell: pwsh
+              env:
+                  VERSION: ${{ steps.source.outputs.version }}
+                  NEXT: ${{ steps.source.outputs.next }}
+              run: |
+                  $setup = Join-Path $env:RUNNER_TEMP "desktop-output/Pi-Pocket-Setup-$env:VERSION.exe"
+                  $log = Join-Path $env:RUNNER_TEMP "desktop-setup.log"
+                  $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+                      '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=startup', "/LOG=`"$log`""
+                  )
+                  if ($install.ExitCode -ne 0) { Get-Content $log; throw "Setup exited with $($install.ExitCode)" }
+                  ./packaging/windows/build.ps1 -Version $env:NEXT -OutDir (Join-Path $env:RUNNER_TEMP "desktop-update-next") -DesktopOnly
+
+            - name: Install N and build the N+1 fixture (macOS)
+              if: runner.os == 'macOS'
+              env:
+                  VERSION: ${{ steps.source.outputs.version }}
+                  NEXT: ${{ steps.source.outputs.next }}
+              run: |
+                  installer -pkg "$RUNNER_TEMP/desktop-output/Pi-Pocket-$VERSION.pkg" -target CurrentUserHomeDirectory
+                  "$HOME/Library/Application Support/Pi Pocket/login-item.sh" on
+                  packaging/macos/build.sh "$NEXT" "$RUNNER_TEMP/desktop-update-next" --desktop-only
+
+            - name: Check, stage and apply N+1 without stopping the server
+              shell: bash
+              env:
+                  VERSION: ${{ steps.source.outputs.version }}
+                  NEXT: ${{ steps.source.outputs.next }}
+              run: node test/desktop/updates-smoke.mjs "$VERSION" "$NEXT"
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: always()
+              with:
+                  name: desktop-update-proof-${{ runner.os }}
+                  path: ${{ runner.temp }}/desktop-update-proof
+                  retention-days: 7
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: ${{ matrix.basename }}-${{ steps.source.outputs.version }}
                   path: ${{ runner.temp }}/desktop-output/${{ matrix.basename }}-${{ steps.source.outputs.version }}.${{ matrix.extension }}
+                  if-no-files-found: error
+                  retention-days: 14
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  # GitHub serves this single file as-is, so the updater can check the artifact digest itself.
+                  path: ${{ runner.temp }}/desktop-output/Pi-Pocket-Desktop-Update-${{ steps.source.outputs.version }}.${{ matrix.extension }}
+                  archive: false
                   if-no-files-found: error
                   retention-days: 14

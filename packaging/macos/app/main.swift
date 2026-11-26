@@ -137,9 +137,13 @@ func packageProblem() -> (title: String, advice: String)? {
         return ("Pi Pocket is not fully installed: \(folder.path) holds no pi-pocket package.", again)
     }
 
-    if appVersion != "0.0.0-dev" && compareVersions(version, appVersion) < 0 {
+    // A desktop-only update leaves the full install's runtime version floor in place.
+    let marker = appFolder.appendingPathComponent("runtime-floor.txt")
+    let minimum = (try? String(contentsOf: marker, encoding: .utf8))?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? appVersion
+    if minimum != "0.0.0-dev" && compareVersions(version, minimum) < 0 {
         return (
-            "The pi-pocket package of Pi Pocket is version \(version), older than this app (\(appVersion)).",
+            "The pi-pocket package of Pi Pocket is version \(version), older than this app (\(minimum)).",
             "The install did not finish putting the package in place, so Pi Pocket cannot start. \(again)"
         )
     }
@@ -282,6 +286,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if takeStagedDesktopUpdate(hidden: !openWhenReady) {
+            NSApp.terminate(nil)
+            return
+        }
+
         NSApp.setActivationPolicy(openWhenReady ? .regular : .accessory)
         NSApp.mainMenu = mainMenu()
         makeStatusItem()

@@ -1,0 +1,5 @@
+#!/bin/bash
+set -euo pipefail
+# shellcheck source=packaging/macos/scripts/desktop-update/target.sh
+. "$(dirname "$0")/target.sh"
+desktop_target "$2" >/dev/null
