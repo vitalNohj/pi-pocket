@@ -254,8 +254,21 @@ jobs:
 
             - name: Close hides the window, a second start reopens it, and Quit stops it all
               run: |
+                  Add-Type @'
+                  using System;
+                  using System.Runtime.InteropServices;
+                  public static class PocketWindowTest {
+                      [DllImport("user32.dll", SetLastError = true)]
+                      public static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+                  }
+                  '@
                   $first = Get-Process -Id $env:DESKTOP_PID
-                  if (-not $first.CloseMainWindow()) { throw "Could not close the window" }
+                  $window = [IntPtr][long]$env:WINDOW_HWND
+                  # Send the title bar's Close command. CloseMainWindow sends a bare WM_CLOSE, which WinForms
+                  # treats like a Task Manager close rather than the user closing the window to the tray.
+                  if (-not [PocketWindowTest]::PostMessage($window, 0x0112, [IntPtr]0xF060, [IntPtr]::Zero)) {
+                      throw "Could not send the Close command to the window"
+                  }
                   for ($try = 0; $try -lt 20 -and -not $first.HasExited -and $first.MainWindowHandle -ne 0; $try++) {
                       Start-Sleep -Milliseconds 500
                       $first.Refresh()
