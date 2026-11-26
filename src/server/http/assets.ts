@@ -5,6 +5,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, posix } from "node:path";
 import { APP_ROOT, modulesWith } from "../config.ts";
 import { HttpError } from "../errors.ts";
+import type { PocketApp } from "../app.ts";
+import { DICTATION_ASSET_VERSION, serveDictationAsset } from "../extensions/dictation/assets.ts";
+import { ModelCache } from "../extensions/dictation/model-cache.ts";
 import { type FolderAccess, Unreachable } from "../folder-access.ts";
 import {
     accepted,
@@ -16,6 +19,41 @@ import {
 import { send } from "./io.ts";
 
 export const WEB = join(APP_ROOT, "web");
+
+const speechCaches = new WeakMap<PocketApp, ModelCache>();
+
+/** Reserved first-party asset namespace. This does not add file types or streaming to ordinary modules. */
+export function dictationAsset(
+    app: PocketApp,
+    request: IncomingMessage,
+    response: ServerResponse,
+    parts: string[],
+    signedIn: () => boolean,
+): Promise<void> | undefined {
+    if (parts[1] !== "dictation" || parts[2] !== DICTATION_ASSET_VERSION) {
+        return undefined;
+    }
+
+    if (!signedIn()) {
+        throw new HttpError(401, "Sign in first");
+    }
+
+    let cache = speechCaches.get(app);
+
+    if (cache === undefined) {
+        cache = new ModelCache(join(app.dataDir, "dictation-model-cache-v1"));
+        speechCaches.set(app, cache);
+    }
+
+    return serveDictationAsset(
+        request,
+        response,
+        parts.slice(3),
+        cache,
+        () => signedIn() && app.webs.dictationEnabled(),
+    );
+}
+
 /** A file of a package, wherever npm put the package. */
 const vendor = (name: string, ...path: string[]) => join(modulesWith(name), name, ...path);
 

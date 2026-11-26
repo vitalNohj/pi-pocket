@@ -9,7 +9,10 @@ const STUBS: Record<string, string> = {
         export const useRef = (current) => ({ current });
         export const useEffect = (effect) => globalThis.voiceCleanups.push(effect());
     `,
-    "./store.js": `export const notify = () => {};`,
+    "./store.js": `
+        export const notify = () => {};
+        export const store = globalThis.testVoiceStore;
+    `,
     "./ui.js": `export const html = () => null; export const Icon = () => null;`,
 };
 
@@ -36,11 +39,28 @@ type Voice = {
         options?: { top?: boolean },
     ) => Dictation;
     toggleDictation: () => boolean;
+    registerDictationProvider: (provider: new () => Recognition) => () => void;
+    offlineVoiceKey: () => string;
+    voiceAvailable: () => boolean;
 };
 
 const recognitions: Recognition[] = [];
 
-(globalThis as Record<string, unknown>).voiceCleanups = [];
+const state = { me: { id: "test-owner" }, conversationId: 1, pipOpen: false };
+const listeners = new Set<(value: typeof state) => void>();
+const preferences = new Map<string, string>();
+const world = globalThis as Record<string, unknown>;
+
+world.testVoiceStore = {
+    state,
+    subscribe(listener: (value: typeof state) => void) {
+        listeners.add(listener);
+
+        return () => listeners.delete(listener);
+    },
+};
+world.localStorage = { getItem: (key: string) => preferences.get(key) ?? null };
+world.voiceCleanups = [];
 (globalThis as Record<string, unknown>).document = {
     activeElement: null,
     hidden: false,
@@ -164,5 +184,67 @@ test("a phrase still being heard finishes in place around what was typed after i
     // The next phrase goes where the caret is.
     hear(said(["please fix the login bug", true], ["and add a test", false]));
     assert.equal(box.value, "Please fix the login bug! And add a test");
+    unmountAll();
+});
+
+test("the offline provider uses the same draft path and never falls back for that account", () => {
+    const stock = recognitions.length;
+    const local: Recognition[] = [];
+    const Stock = world.SpeechRecognition as new () => Recognition & {
+        abort: () => void;
+        stop: () => void;
+    };
+    const remove = voice.registerDictationProvider(
+        class extends Stock {
+            constructor() {
+                super();
+                local.push(recognitions.pop()!);
+            }
+        },
+    );
+    const changes: string[] = [];
+    const box = new Box("Draft:");
+    const dictation = voice.useDictation({ current: box }, (text) => changes.push(text));
+
+    preferences.set(voice.offlineVoiceKey(), "on");
+    dictation.toggle();
+    assert.equal(recognitions.length, stock);
+    assert.equal(local.length, 1);
+    local[0]!.onresult!(said(["hello", false]));
+    dictation.stop();
+    local[0]!.onresult!(said(["hello there", true]));
+    assert.deepEqual(changes, ["Draft: hello", "Draft: hello there"]);
+
+    remove();
+    assert.equal(local[0]!.onresult, null);
+    assert.equal(voice.voiceAvailable(), false);
+    assert.equal(voice.toggleDictation(), false);
+    assert.equal(recognitions.length, stock);
+    preferences.delete(voice.offlineVoiceKey());
+    unmountAll();
+});
+
+test("Alt+V goes to PiP; switching the target cancels a late final result", () => {
+    const composer = new Box("Composer");
+    const pip = new Box("PiP:");
+
+    voice.useDictation({ current: composer }, () => {});
+    voice.useDictation({ current: pip }, () => {}, { top: true });
+    state.pipOpen = true;
+    listeners.forEach((listener) => listener(state));
+    assert.equal(voice.toggleDictation(), true);
+
+    const recognition = recognitions.at(-1)!;
+    const late = recognition.onresult!;
+
+    late(said(["hello", false]));
+    assert.equal(pip.value, "PiP: hello");
+    assert.equal(composer.value, "Composer");
+    assert.equal(voice.toggleDictation(), true);
+    state.pipOpen = false;
+    listeners.forEach((listener) => listener(state));
+    late(said(["hello there", true]));
+    assert.equal(pip.value, "PiP: hello");
+    assert.equal(recognition.onresult, null);
     unmountAll();
 });

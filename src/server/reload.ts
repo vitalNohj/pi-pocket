@@ -58,6 +58,7 @@ const ORDER = [
     "codemode.ts",
     "memory.ts",
     "pip.ts",
+    "dictation.ts",
     "triggers.ts",
     "pocket-relay.ts",
     "gallery.ts",
@@ -84,6 +85,7 @@ const OFF_BY_DEFAULT = new Set([
     "session-tags.ts",
     "ask-someone.ts",
     "pocket-relay.ts",
+    "dictation.ts",
 ]);
 const TITLES: Record<string, string> = {
     "prompt.ts": "System prompt",
@@ -101,6 +103,7 @@ const TITLES: Record<string, string> = {
     "codemode.ts": "Codemode",
     "memory.ts": "Memory",
     "pip.ts": "PiP",
+    "dictation.ts": "Offline dictation",
     "triggers.ts": "Triggers",
     "pocket-relay.ts": "Relay",
     "gallery.ts": "Extension gallery",

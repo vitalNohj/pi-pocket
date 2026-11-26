@@ -17,6 +17,7 @@ import { extensionFile } from "./http/extension-routes.ts";
 import { hookRoute } from "./http/hook-routes.ts";
 import { linkRoute } from "./http/link-routes.ts";
 import {
+    dictationAsset,
     KATEX_CSS,
     KATEX_FONT,
     katexFont,
@@ -156,6 +157,18 @@ export function createHandler(options: HttpOptions) {
 
             // An extension module's browser module, for the people it is for (`extension-web.ts`).
             if (parts[0] === "x" && parts[1] !== undefined) {
+                const speech = dictationAsset(
+                    app,
+                    request,
+                    response,
+                    parts,
+                    () => auth.user(request) !== undefined,
+                );
+
+                if (speech !== undefined) {
+                    return await speech;
+                }
+
                 return extensionFile(app, request, response, parts.slice(1), auth.user(request));
             }
 
