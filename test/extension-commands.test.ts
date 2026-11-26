@@ -169,7 +169,7 @@ test("a viewer runs no command, and a user without permission runs no global com
     assert.equal(await runs(id), 1);
 });
 
-test("Run global commands opens running, stopping, suggestions and Running now, not Manage server", async () => {
+test("Run global commands opens running, stopping, suggestions and Running now, not Manage Pi Pocket", async () => {
     const id = await newSession(app);
     const runner = (await addPerson(app, "Command runner", "guest")).user;
     const serverManager = (await addPerson(app, "Server manager", "guest")).user;

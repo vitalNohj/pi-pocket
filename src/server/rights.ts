@@ -35,6 +35,8 @@ export type Right = {
     lapses?: true;
     /** A person's page says it in the line under their name. */
     line?: true;
+    /** It manages or administers: its switch is in the Management group of a person's page. */
+    management?: true;
     /** Its switch: the name beside it. In small letters it ends "must be a user to …". */
     label: string;
     /** What the person does with it, after their name: a screen reader's name for its switch. */
@@ -62,6 +64,7 @@ export const RIGHTS = {
     invites: {
         scope: "person",
         whole: true,
+        management: true,
         with: ["managesUsers"],
         label: "Invite people",
         says: "invites people",
@@ -73,6 +76,7 @@ export const RIGHTS = {
     managesUsers: {
         scope: "person",
         whole: true,
+        management: true,
         gives: "owner",
         lapses: true,
         line: true,
@@ -86,6 +90,7 @@ export const RIGHTS = {
     managesRunners: {
         scope: "person",
         whole: true,
+        management: true,
         gives: "owner",
         lapses: true,
         line: true,
@@ -99,19 +104,21 @@ export const RIGHTS = {
     managesServer: {
         scope: "person",
         whole: true,
+        management: true,
         gives: "owner",
         lapses: true,
         line: true,
-        label: "Manage server",
-        says: "manages the server",
-        on: "On: they change this server's settings: extensions, providers, models, themes, spend limits, and memory lessons, and restart it.",
-        off: "Off: they do not change this server's settings.",
+        label: "Manage Pi Pocket",
+        says: "manages Pi Pocket",
+        on: "On: they change Pi Pocket's settings for everyone: extensions, providers, models, themes, spend limits, and memory lessons, and restart it.",
+        off: "Off: they do not change Pi Pocket's settings.",
         confirm:
-            "Let {name} manage the server? They can turn on extensions, which run code on it, add providers, which see every prompt, sign providers in and out, and restart it.",
+            "Let {name} manage Pi Pocket? They can turn on extensions, which run code on this server, add providers, which see every prompt, sign providers in and out, and restart it.",
     },
     runsGlobalCommands: {
         scope: "person",
         whole: true,
+        management: true,
         gives: "owner",
         lapses: true,
         label: "Run global commands",
@@ -152,10 +159,11 @@ export const RIGHTS = {
     },
     reshares: {
         scope: "computer",
+        management: true,
         label: "Share what they were given",
         says: "shares what they were given on",
-        on: "On: they share sessions that are shared with them here, and give folders that were given to them here.",
-        off: "Off: they share only the sessions they started here.",
+        on: "On: they share sessions that are shared with them there, and give folders that were given to them there.",
+        off: "Off: they share only the sessions they started there.",
     },
 } as const satisfies Record<string, Right>;
 
@@ -245,16 +253,16 @@ export function holds(
     );
 }
 
-/** What the app is told of a right, to draw its switch: its words, and none of its rules. */
+/** What the app is told to draw a right's switch: its words and where it goes, not its rules. */
 export type ToldRight = Pick<
     Right,
-    "scope" | "line" | "label" | "says" | "on" | "off" | "withHint" | "confirm"
+    "scope" | "line" | "management" | "label" | "says" | "on" | "off" | "withHint" | "confirm"
 > & { key: RightKey };
 
 /** Every right as the app is told it, in the order their switches are shown. */
 export function toldRights(): ToldRight[] {
     return KEYS.map((key) => {
-        const { scope, line, label, says, on, off, withHint, confirm } = declared(key);
+        const { scope, line, management, label, says, on, off, withHint, confirm } = declared(key);
 
         return {
             key,
@@ -263,6 +271,7 @@ export function toldRights(): ToldRight[] {
             says,
             on,
             ...(line === undefined ? {} : { line }),
+            ...(management === undefined ? {} : { management }),
             ...(off === undefined ? {} : { off }),
             ...(withHint === undefined ? {} : { withHint }),
             ...(confirm === undefined ? {} : { confirm }),

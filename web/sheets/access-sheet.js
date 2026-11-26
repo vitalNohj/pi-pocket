@@ -4,7 +4,7 @@
 // - By computer: the computers on the left, the chosen computer's grid beside it (`access-grid.js` `ComputerGrid`):
 //   every project, folder, or session there in rows, a column for each person, and under it the people who may use it.
 //   Only for who is offered runners (`store.js` `runnersOffered`) or is in charge of this server.
-// - Settings: what holds for everyone (for who manages the server), Notifications on this device, and for each computer
+// - Settings: what holds for everyone (for who manages Pi Pocket), Notifications on this device, and for each computer
 //   I am in charge of its own settings: how long each person's approvals last, its rules, tools, link again,
 //   unlink (`computers.js`).
 // `openSheet({ type: "access", view, person, part, computer })` opens it at one view, and there at one page.

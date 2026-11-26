@@ -46,6 +46,8 @@ import {
     levelsFor,
     inCharge,
     projectsOf,
+    rightsFor,
+    RightSwitch,
     SessionLine,
     TreeGroup,
     treeOf,
@@ -1190,6 +1192,7 @@ function Rights({ person, change }) {
         <//>
         ${declaredRights("person").map(
             (each) =>
+                !each.management &&
                 person.offer?.[each.key] !== undefined &&
                 html`<${PersonRight} key=${each.key} person=${person} each=${each} />`,
         )}
@@ -1226,6 +1229,38 @@ function Rights({ person, change }) {
 /** The computers I am in charge of that `person` can be chosen for. */
 function placesFor(person) {
     return computers().filter((each) => inCharge(each) && choosable(each, person));
+}
+
+/** What the person may manage, first everywhere, then on each computer where I give rights. */
+function Management({ person, places }) {
+    const rights = declaredRights("person").filter(
+        (each) => each.management && person.offer?.[each.key] !== undefined,
+    );
+    const computerRights = places
+        ? placesFor(person).flatMap((computer) =>
+              rightsFor(computer, person)
+                  .filter((each) => each.management)
+                  .map((each) => ({ computer, each })),
+          )
+        : [];
+
+    if (rights.length === 0 && computerRights.length === 0) {
+        return null;
+    }
+
+    return html`<div class="group" data-part="management">
+        <div class="group-title">Management</div>
+        ${rights.map((each) => html`<${PersonRight} key=${each.key} person=${person} each=${each} />`)}
+        ${computerRights.map(
+            ({ computer, each }) => html`<${RightSwitch}
+                key=${`${computer.id}:${each.key}`}
+                computer=${computer}
+                person=${person}
+                each=${each}
+                label=${`${each.label} on ${computer.name}`}
+            />`,
+        )}
+    </div>`;
 }
 
 /**
@@ -2118,6 +2153,7 @@ export function PersonPage({ person, part, onPart }) {
             shown === "rules" &&
             html`<div class="sheet-pane" data-part="person-rules">
                 <${Rights} person=${person} change=${change} />
+                <${Management} person=${person} places=${places} />
                 ${
                     places &&
                     placesFor(person).map(
@@ -2229,7 +2265,7 @@ function ProjectChatSetting() {
     </div>`;
 }
 
-/** What holds for everyone on this server: the owner sets it, and a user who manages the server. */
+/** What holds for everyone on this server: the owner sets it, and a user who manages Pi Pocket. */
 export function SettingsPage() {
     return html`<div class="sheet-page">
         <h3 class="sheet-page-title">Settings</h3>

@@ -537,12 +537,12 @@ test("what a person may use is set in People, and shows in Runners", real, async
     assert.deepEqual(await switches(), [
         "Gina can prompt: on",
         "Gina links runners: off",
+        "Gina keeps sessions warm: off",
         "Gina invites people: off",
         "Gina manages users: off",
         "Gina manages runners: off",
-        "Gina manages the server: off",
+        "Gina manages Pi Pocket: off",
         "Gina runs global commands: off",
-        "Gina keeps sessions warm: off",
     ]);
 
     // Keep sessions warm: off until the owner turns it on, and off again.
@@ -1586,7 +1586,7 @@ test(
             );
             assert.deepEqual(
                 rules.map(([title]) => title).filter((title) => !title.startsWith("On ")),
-                ["What they may do", "Sign-in"],
+                ["What they may do", "Management", "Sign-in"],
             );
 
             for (const [title, from] of [...places, ...rules]) {
@@ -3312,6 +3312,85 @@ test(
 );
 
 test(
+    "Management groups the switches that manage: the person's, then each computer's; a viewer has no such group",
+    real,
+    async () => {
+        const morgan = app.config.addUser("Morgan", "guest").user;
+        const chosen = app.config.server.users ?? [];
+        const management = [
+            "Invite people",
+            "Manage users",
+            "Manage runners",
+            "Manage Pi Pocket",
+            "Run global commands",
+            "Share what they were given on This server",
+        ];
+        const groups = () =>
+            inPage<Record<string, string[]>>(`
+                return JSON.stringify(Object.fromEntries(
+                    [...document.querySelectorAll('.pages-detail [data-part="person-rules"] .group')]
+                        .map((group) => [
+                            group.querySelector(":scope > .group-title")?.textContent.trim(),
+                            [...group.querySelectorAll(":scope > .setting > .grow > .small:first-child")]
+                                .map((each) => each.textContent.trim()),
+                        ]),
+                ));
+            `);
+        const label = "Morgan shares what they were given on This server";
+
+        app.config.setUsers(THIS_SERVER, [...chosen, morgan.id]);
+        app.accessChanged();
+
+        try {
+            await open("people");
+            await show("Morgan");
+            await showPart("Permissions");
+
+            const shown = await groups();
+
+            assert.deepEqual(Object.keys(shown).slice(0, 3), [
+                "What they may do",
+                "Management",
+                "On This server",
+            ]);
+            assert.deepEqual(shown.Management, management);
+            // What is left under the computer: what they do in a session there, which manages nothing.
+            assert.deepEqual(shown["On This server"], [
+                "Override take turns",
+                "Allow their own calls",
+            ]);
+            // No managing switch is drawn twice.
+            assert.deepEqual(
+                shown["What they may do"]!.filter((each) => management.includes(each)),
+                [],
+            );
+            assert.deepEqual(
+                await inPage<string[]>(`
+                return JSON.stringify([...document.querySelectorAll('[data-part="management"] [data-computer]')]
+                    .map((row) => row.dataset.computer));
+            `),
+                [THIS_SERVER],
+            );
+
+            // A computer's switch there saves as it did under the computer.
+            await flip(label);
+            await until(
+                async () => (await switches()).includes(`${label}: on`),
+                "Share what they were given to turn on",
+            );
+            assert.deepEqual(app.config.rightHolders(THIS_SERVER, "reshares"), [morgan.id]);
+
+            // A viewer manages nothing: no group.
+            await show("Vera");
+            await showPart("Permissions");
+            assert.equal((await groups()).Management, undefined);
+        } finally {
+            await app.removeUser(owner(app), morgan.id);
+        }
+    },
+);
+
+test(
     "a person's rights on a computer are two switches of their Permissions, for those who prompt there: flipped, their open session offers the wheel and their own calls at once",
     real,
     async () => {
@@ -3393,7 +3472,6 @@ test(
                 "This server": [
                     "Gina overrides take turns on This server: off",
                     "Gina allows their own calls on This server: off",
-                    "Gina shares what they were given on This server: off",
                 ],
             });
             await showPart("Folders and sessions");
@@ -3592,8 +3670,8 @@ test(
             assert.deepEqual(await switches(), [
                 "Uma can prompt: on",
                 "Uma links runners: off (disabled)",
-                "Uma invites people: off",
                 "Uma keeps sessions warm: off (disabled)",
+                "Uma invites people: off",
             ]);
             assert.equal(
                 (await text()).split("Off: you can only give what you have yourself.").length - 1,
@@ -3663,7 +3741,7 @@ test(
             );
             assert.equal(await removable(), false);
 
-            // Settings, what holds for everyone, is for who manages the server: not hers until the owner lets her.
+            // Settings, what holds for everyone, is for who manages Pi Pocket: not hers until the owner lets her.
             const listed = () =>
                 inPage<string[]>(
                     `return JSON.stringify([...document.querySelectorAll(".pages-item-title")].map((each) => each.textContent.trim()))`,

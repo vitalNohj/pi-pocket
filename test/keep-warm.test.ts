@@ -305,7 +305,7 @@ test("keep warm: a user the owner lets turns a session on and picks its time; ta
         // The session right does not grant access to the server settings.
         await assert.rejects(
             app.keepWarm.setSettings(guest, { hours: 8 }),
-            /Only someone who manages the server can do that./,
+            /Only someone who manages Pi Pocket can do that./,
         );
 
         // Taken back: what is on stays on, and they can only turn it off.

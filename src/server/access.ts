@@ -1360,7 +1360,7 @@ export class AccessPolicy {
     /** Refuse who does not manage this server (`managesServer`): its settings are the owner's, and theirs. */
     requireManagesServer(person: Pick<Person, "id">): void {
         if (!this.managesServer(person)) {
-            throw new HttpError(403, "Only someone who manages the server can do that.");
+            throw new HttpError(403, "Only someone who manages Pi Pocket can do that.");
         }
     }
 

@@ -143,6 +143,19 @@ test("every right is declared once, and the app is told its words and none of it
         Object.entries(RIGHTS).map(([key, each]) => [key, each.scope]),
     );
 
+    // What manages, for the Management group of a person's page: the person's, then a computer's.
+    assert.deepEqual(
+        said.filter((each) => each.management).map((each) => each.key),
+        [
+            "invites",
+            "managesUsers",
+            "managesRunners",
+            "managesServer",
+            "runsGlobalCommands",
+            "reshares",
+        ],
+    );
+
     for (const each of said) {
         assert.equal(each.label, declared(each.key).label);
         assert.equal(each.on, declared(each.key).on);

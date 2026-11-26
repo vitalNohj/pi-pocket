@@ -412,7 +412,7 @@ test("only server managers set when PiP compacts, to one of its choices; PiP tur
 
     await assert.rejects(
         app.setPipCompactAt(guest, 40_000),
-        /Only someone who manages the server can do that./,
+        /Only someone who manages Pi Pocket can do that./,
     );
     await assert.rejects(app.setPipCompactAt(me, 12_345), /pipCompactAt must be one of/);
     await app.setPipCompactAt(me, 40_000);

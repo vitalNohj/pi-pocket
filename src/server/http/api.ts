@@ -1063,7 +1063,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         // Theme folders (`themes.ts`): everyone signed in lists them and chooses their own look; only people who
-        // manage the server add, edit, or remove them, and report the app icon colors for requests without a cookie.
+        // manage Pi Pocket add, edit, or remove them, and report the app icon colors for requests without a cookie.
         if (first === "app-icon" && second === undefined && method === "PUT") {
             app.policy.requireManagesServer(user);
 
@@ -2074,7 +2074,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
             }
         }
 
-        // Ask each subscription afresh for people who manage the server (three seconds at most; a mark found later
+        // Ask each subscription afresh for people who manage Pi Pocket (three seconds at most; a mark found later
         // comes with the models). Others see what was last found, so they do not make the server ask providers.
         if (first === "providers" && second === undefined && method === "GET") {
             const managesServer = app.policy.managesServer(user);

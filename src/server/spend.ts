@@ -26,8 +26,8 @@ export type SpendSummary = {
     total?: number;
     sessions: { id: number; title: string; spent: number; budget?: number }[];
     /**
-     * Everyone for who manages the server; others see themselves. `locked`: this reader cannot change that person's
-     * limit (the owner has none; only the owner sets the limit of someone who manages the server).
+     * Everyone for who manages Pi Pocket; others see themselves. `locked`: this reader cannot change that person's
+     * limit (the owner has none; only the owner sets the limit of someone who manages Pi Pocket).
      */
     people: { id: string; name: string; spent: number; budget?: number; locked?: true }[];
 };
@@ -467,8 +467,8 @@ export class Spend {
     }
 
     /**
-     * Why `by`, who manages the server, cannot change `person`'s spend limit; undefined when they can. The owner has
-     * none. Someone who manages the server could lift their own, so theirs is the owner's to set.
+     * Why `by`, who manages Pi Pocket, cannot change `person`'s spend limit; undefined when they can. The owner has
+     * none. Someone who manages Pi Pocket could lift their own, so theirs is the owner's to set.
      */
     #cannotLimit(by: User, person: User): HttpError | undefined {
         if (this.#app.policy.isOwner(person)) {
@@ -478,7 +478,7 @@ export class Spend {
         return this.#app.policy.managesServer(person) && !this.#app.policy.isOwner(by)
             ? new HttpError(
                   403,
-                  "Only the owner can change the spend limit of someone who manages the server.",
+                  "Only the owner can change the spend limit of someone who manages Pi Pocket.",
               )
             : undefined;
     }
@@ -529,7 +529,7 @@ export class Spend {
                 name: person.name,
                 spent: this.personSpent(person.id),
                 ...(person.budget === undefined ? {} : { budget: person.budget }),
-                // For who manages the server: a row whose limit is not theirs to change offers no way to.
+                // For who manages Pi Pocket: a row whose limit is not theirs to change offers no way to.
                 ...(managesServer && this.#cannotLimit(user, person) !== undefined
                     ? { locked: true as const }
                     : {}),

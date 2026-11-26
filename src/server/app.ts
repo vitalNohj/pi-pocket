@@ -1027,7 +1027,7 @@ export class PocketApp {
             notify: (message) => this.ownerNotice("warning", message),
             // Everyone's tabs: a theme anyone may have chosen changed, or one came or went.
             changed: () => {
-                // With each one's problem for who manages the server, as `hello` says them.
+                // With each one's problem for who manages Pi Pocket, as `hello` says them.
                 const lists = { full: this.themes.list(true), others: this.themes.list(false) };
 
                 for (const client of this.#clients) {

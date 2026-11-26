@@ -310,11 +310,7 @@ export function choosePerson(computer, person, on) {
     });
 }
 
-/**
- * Give `person` one right on `computer`, or take it back (`app.ts` `setRight`): `wheel`, to take the wheel from a
- * driver there; `allows`, to allow a call their own message led to there; `reshares`, to share what they were given
- * there. True when it was saved.
- */
+/** Give `person` one right on `computer`, or take it back (`app.ts` `setRight`). True when it was saved. */
 export function setRight(computer, person, right, on) {
     return attempt(async () => {
         keep(await api(route(computer, "rights"), { person: person.id, right, on }));
@@ -323,11 +319,8 @@ export function setRight(computer, person, right, on) {
     });
 }
 
-/**
- * One of those rights, as the server declares it (`each`: `rights.ts`, `store.js` `declaredRights`): under a person's
- * switch for a computer, once they prompt there.
- */
-function RightSwitch({ computer, person, each }) {
+/** One computer right, as the server declares it (`each`). The label can name the computer in a mixed group. */
+export function RightSwitch({ computer, person, each, label = each.label }) {
     const [busy, setBusy] = useState(false);
     const on = computer.rights[each.key].includes(person.id);
 
@@ -341,9 +334,9 @@ function RightSwitch({ computer, person, each }) {
         }
     };
 
-    return html`<div class="setting wrap" data-right=${each.key}>
+    return html`<div class="setting wrap" data-right=${each.key} data-computer=${computer.id}>
         <div class="grow">
-            <div class="small">${each.label}</div>
+            <div class="small">${label}</div>
             <div class="muted small">${on ? each.on : (each.off ?? each.on)}</div>
         </div>
         <${Switch}
@@ -366,11 +359,11 @@ export function rightsFor(computer, person) {
 }
 
 /**
- * Those rights of one person on one computer, as a group of their own: a person's page in People shows them with what
- * else the person is let do, apart from their folders and sessions there. Nothing where there is none to give.
+ * The rights for a computer that do not go in Management, as their own group on a person's page. Nothing where
+ * there is none to give.
  */
 export function ComputerRights({ computer, person }) {
-    const rights = rightsFor(computer, person);
+    const rights = rightsFor(computer, person).filter((each) => !each.management);
 
     if (rights.length === 0) {
         return null;

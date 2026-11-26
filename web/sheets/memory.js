@@ -447,7 +447,7 @@ export function MemorySheet({ draft: initial = "", conversationId, pendingOnly =
 
     if (pendingOnly && !managesServer()) {
         return html`<${Sheet} title=${title} onClose=${closeSheet} wide=${true}>
-            <p class="muted">Only someone who manages the server can review pending memories.</p>
+            <p class="muted">Only someone who manages Pi Pocket can review pending memories.</p>
         <//>`;
     }
 
@@ -539,7 +539,7 @@ export function MemorySheet({ draft: initial = "", conversationId, pendingOnly =
 
     return html`<${Sheet} title=${title} onClose=${closeSheet} wide=${true}>
         <p class="muted small">
-            Short lessons Pi keeps across sessions: how to build and test, gotchas, conventions, preferences. ${project ? html`Those for <b>${project.name}</b> go to every session in it, worktrees too; the rest go everywhere.` : "PiP keeps lessons for everywhere."} ${own} Pi proposes one only when asked, or when sure it will help in many later sessions, and someone who manages the server approves; ${data.owner ? "yours count at once" : "yours wait for approval too"}.
+            Short lessons Pi keeps across sessions: how to build and test, gotchas, conventions, preferences. ${project ? html`Those for <b>${project.name}</b> go to every session in it, worktrees too; the rest go everywhere.` : "PiP keeps lessons for everywhere."} ${own} Pi proposes one only when asked, or when sure it will help in many later sessions, and someone who manages Pi Pocket approves; ${data.owner ? "yours count at once" : "yours wait for approval too"}.
         </p>
         ${
             scopes.length > 1 &&

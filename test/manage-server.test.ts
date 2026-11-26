@@ -32,7 +32,7 @@ let manager: User;
 let guest: User;
 let restarts = 0;
 const tokens = new Map<string, string>();
-const noRight = "Only someone who manages the server can do that.";
+const noRight = "Only someone who manages Pi Pocket can do that.";
 
 type Request = [path: string, body?: unknown, method?: string];
 
@@ -141,7 +141,7 @@ test("themes and app icon: managers can see problems and change the shared look"
         name: "Manager's look",
     });
 
-    // A live change tells each open tab the list its person reads: with a theme's problem only for who manages the server.
+    // A live change tells each open tab the list its person reads: with a theme's problem only for who manages Pi Pocket.
     const tabs = [manager, guest].map((user) => fakeTab(undefined, user));
 
     for (const tab of tabs) {
@@ -307,7 +307,7 @@ test("spend: managers set session and guest limits, but only the owner sets a ma
         await refused(
             manager,
             budget(target, null),
-            "Only the owner can change the spend limit of someone who manages the server.",
+            "Only the owner can change the spend limit of someone who manages Pi Pocket.",
         );
     }
 
@@ -356,7 +356,7 @@ test("memory: managers' writes take effect, Pi's wait, and only managers approve
     await refused(
         guest,
         [`${path}/${proposed.id}/approve`, { text: proposed.text }],
-        "Only someone who manages the server can approve lessons.",
+        "Only someone who manages Pi Pocket can approve lessons.",
     );
     assert.equal(
         (await done<Lesson>(manager, [`${path}/${pi.id}/approve`, { text: pi.text }])).pending,
@@ -365,7 +365,7 @@ test("memory: managers' writes take effect, Pi's wait, and only managers approve
     await refused(
         guest,
         [`${path}/${own.id}`, { text: "Other words." }],
-        "Only someone who manages the server, or whoever saved it, can change or forget this lesson.",
+        "Only someone who manages Pi Pocket, or whoever saved it, can change or forget this lesson.",
     );
     const edit = await done<Lesson>(manager, [
         `${path}/${proposed.id}`,
@@ -374,11 +374,11 @@ test("memory: managers' writes take effect, Pi's wait, and only managers approve
 
     assert.equal(edit.pending, undefined);
     assert.equal(edit.text, "Approved with an edit.");
-    // Manage server does not grant a PiP or remove the requirement to review from one's private PiP.
+    // Manage Pi Pocket does not grant a PiP or remove the requirement to review from one's private PiP.
     await refused(
         guest,
         [`${path}?pending=all`],
-        "Only someone who manages the server can review all pending lessons.",
+        "Only someone who manages Pi Pocket can review all pending lessons.",
     );
     await refused(
         manager,

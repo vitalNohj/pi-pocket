@@ -333,7 +333,7 @@ export class Memory {
     }
 
     /**
-     * Pi's writes and writes by people who do not manage the server wait for approval. What Pi read (a web page,
+     * Pi's writes and writes by people who do not manage Pi Pocket wait for approval. What Pi read (a web page,
      * a post, a comment, a file) can talk it into "a lesson", and a lesson reaches every later session.
      */
     #held(writer: Writer): boolean {
@@ -379,7 +379,7 @@ export class Memory {
         if (writer.byPi || !this.#managesServer(writer.userId)) {
             throw new HttpError(
                 403,
-                "Only someone who manages the server can review all pending lessons.",
+                "Only someone who manages Pi Pocket can review all pending lessons.",
             );
         }
 
@@ -549,7 +549,7 @@ export class Memory {
 
     /**
      * Change a lesson's text or forget it; approve or discard what waits. Server managers and the original author
-     * can change or forget a lesson. Pi and people who do not manage the server can only propose edits to a lesson
+     * can change or forget a lesson. Pi and people who do not manage Pi Pocket can only propose edits to a lesson
      * in force. Only a human server manager can approve a proposal. A lesson that waits anyway changes as it is.
      *
      * An approval says what the reviewer saw (`expected`): what waits can change between their look and their tap, so
@@ -602,7 +602,7 @@ export class Memory {
                 if (!reviewer) {
                     throw new HttpError(
                         403,
-                        "Only someone who manages the server can approve lessons.",
+                        "Only someone who manages Pi Pocket can approve lessons.",
                     );
                 }
 
@@ -668,14 +668,14 @@ export class Memory {
 
                 throw new HttpError(
                     403,
-                    "Only someone who manages the server, or whoever asked, can discard this.",
+                    "Only someone who manages Pi Pocket, or whoever asked, can discard this.",
                 );
             }
 
             if (!this.#mayChange(lesson, writer.userId)) {
                 throw new HttpError(
                     403,
-                    "Only someone who manages the server, or whoever saved it, can change or forget this lesson.",
+                    "Only someone who manages Pi Pocket, or whoever saved it, can change or forget this lesson.",
                 );
             }
 

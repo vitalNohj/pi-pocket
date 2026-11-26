@@ -312,7 +312,7 @@ test("a guest's lesson waits for the owner, and is used once approved", async ()
     assert.equal((await app.memory.view(id, owner(app))).lessons[0]?.pending, true);
     await assert.rejects(
         app.memory.edit(id, guest, lesson!.id, "approve"),
-        /Only someone who manages the server can approve lessons./,
+        /Only someone who manages Pi Pocket can approve lessons./,
     );
     await approve(id, lesson!.id);
     assert.ok(await given(repo, "Always-deploy-to-moon"), "used once approved");
@@ -323,7 +323,7 @@ test("a guest's lesson waits for the owner, and is used once approved", async ()
     assert.ok(await given(repo, "Always-deploy-to-moon"), "the approved text stays");
     await assert.rejects(
         app.memory.edit(id, other, lesson!.id, "remove"),
-        /Only someone who manages the server, or whoever saved it, can change or forget this lesson./,
+        /Only someone who manages Pi Pocket, or whoever saved it, can change or forget this lesson./,
     );
     await app.memory.edit(id, owner(app), lesson!.id, "remove");
 });

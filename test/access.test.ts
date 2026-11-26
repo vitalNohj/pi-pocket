@@ -1682,7 +1682,7 @@ describe("what a person is by their role", () => {
         assert.equal(policy.isPaused(owner), false);
     });
 
-    it("only the owner reaches this machine itself, and has a PiP: not a user who manages the server", () => {
+    it("only the owner reaches this machine itself, and has a PiP: not a user who manages Pi Pocket", () => {
         const manager: Person = { id: "manager", role: "guest", rights: ["managesServer"] };
         const { policy } = world(undefined, undefined, [owner, guest, viewer, manager]);
 
