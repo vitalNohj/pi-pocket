@@ -118,8 +118,13 @@ jobs:
 
             - name: Test offline Settings and the two-choice Home in the installed app
               run: |
+                  $driver = Join-Path $env:RUNNER_TEMP 'window-input.exe'
+                  $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+                  & $csc /nologo /target:exe /platform:x64 /warnaserror+ /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+                      "/out:$driver" test/desktop/WindowInput.cs
+                  if ($LASTEXITCODE -ne 0) { throw 'Could not compile the Windows input driver' }
                   node test/desktop/native-smoke.mjs (Join-Path $env:APP 'Pi Pocket.exe') `
-                      test/desktop/window-input.ps1 (Join-Path $env:RUNNER_TEMP 'windows-home')
+                      $driver (Join-Path $env:RUNNER_TEMP 'windows-home')
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               if: always()

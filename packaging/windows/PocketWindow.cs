@@ -57,9 +57,10 @@ namespace PiPocket
         public CoreWebView2 Browser { get { return view.CoreWebView2; } }
         bool ShownToUser { get { return Visible && WindowState != FormWindowState.Minimized; } }
 
-        public async Task Initialize(CoreWebView2Environment environment)
+        public async Task Initialize(ShellWebProfile profile)
         {
-            await view.EnsureCoreWebView2Async(environment);
+            await host.InitializeWebView(view, profile);
+            if (IsDisposed) { return; }
             CoreWebView2 core = Browser;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.AreDevToolsEnabled = host.DeveloperTools;

@@ -36,6 +36,7 @@ namespace PiPocket
         {
             string custom = Environment.GetEnvironmentVariable("PI_POCKET_DESKTOP_STATE");
             stateFolder = string.IsNullOrEmpty(custom) ? Path.Combine(shellFolder, "desktop") : Path.GetFullPath(custom);
+            webDataFolder = Path.Combine(string.IsNullOrEmpty(custom) ? shellFolder : stateFolder, "WebView2 profile");
             bool existing = string.IsNullOrEmpty(custom) && (File.Exists(logFile) ||
                 File.Exists(Path.Combine(appDir, "window-bounds.txt")) || File.Exists(Path.Combine(appDir, "desktop-upgrade.txt")));
             bool fresh = !existing && !File.Exists(Path.Combine(stateFolder, "desktop.json"));
@@ -102,7 +103,6 @@ namespace PiPocket
                 balloons.Clear();
                 balloonAddress = null;
                 edgeFallback = false;
-                webEnvironment = null;
                 pageAddress = ShellWire.Text(active, "address");
                 ready = pageAddress != null;
                 url = ready ? new Uri(pageAddress).GetLeftPart(UriPartial.Authority) : null;
@@ -208,28 +208,30 @@ namespace PiPocket
             });
         }
 
-        internal async void OpenSettings(string section, bool activate = true)
+        internal async void OpenSettings(string section)
         {
             if (quitting || controller == null) { return; }
             if (settings != null)
             {
                 settings.SelectSection(section);
-                if (activate) { settings.Show(); settings.Activate(); }
+                settings.Show();
+                settings.Activate();
                 return;
             }
             ShellSettings made = new ShellSettings(tray.Icon, (command, data) => controller.Call(command, data));
             settings = made;
             made.Disposed += delegate { if (settings == made) { settings = null; } };
             made.SelectSection(section);
-            if (activate) { made.Show(); made.Activate(); }
+            made.Show();
+            made.Activate();
             try
             {
-                await made.Initialize(Path.Combine(stateFolder, "Settings WebView2"), Path.Combine(appDir, @"desktop-assets\settings"));
+                await made.Initialize(this, Path.Combine(appDir, @"desktop-assets\settings"));
             }
-            catch (Exception error)
+            catch (Exception)
             {
+                if (made.IsDisposed) { return; }
                 made.Dispose();
-                Console.Error.WriteLine("Desktop Settings WebView2 initialization failed: 0x{0:X8}", error.HResult);
                 if (!quitting) { ShowBalloon("Pi Pocket", "Desktop Settings could not open. Install the WebView2 Runtime or run Setup again.", ToolTipIcon.Warning, null); }
             }
         }

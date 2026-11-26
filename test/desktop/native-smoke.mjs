@@ -6,10 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 import { fixture } from "./fixture.mjs";
-
-const windows = process.platform === "win32";
 const [exe, input, out] = process.argv.slice(2).map((arg) => resolve(arg));
 const settingsTitle = "Desktop Settings — Pi Pocket";
 const stateFolder = await mkdtemp(join(tmpdir(), "pocket-desktop-smoke-"));
@@ -44,12 +41,7 @@ async function gui(command, title, ...args) {
     const parameters = [String(app.pid), command, title, ...args.map(String)];
 
     try {
-        return windows
-            ? await exec("pwsh.exe", ["-NoProfile", "-File", input, ...parameters], {
-                  timeout: 60_000,
-                  windowsHide: true,
-              })
-            : await exec(input, parameters, { timeout: 25_000 });
+        return await exec(input, parameters, { timeout: 30_000, windowsHide: true });
     } catch (error) {
         console.error(`Desktop input ${command} failed (app exit: ${app.exitCode}).`);
         if (error.stderr) {

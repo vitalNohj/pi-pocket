@@ -31,11 +31,9 @@ namespace PiPocket
             Controls.Add(view);
         }
 
-        public async Task Initialize(string profile, string assets)
+        public async Task Initialize(TrayApp host, string assets)
         {
-            CoreWebView2Environment environment = await CoreWebView2Environment.CreateAsync(null, profile);
-            if (IsDisposed) { return; }
-            await view.EnsureCoreWebView2Async(environment);
+            await host.InitializeWebView(view, ShellWebProfile.Settings);
             if (IsDisposed) { return; }
             CoreWebView2 core = Browser;
 

@@ -249,8 +249,6 @@ namespace PiPocket
         readonly string appDir = Path.GetDirectoryName(Application.ExecutablePath);
         readonly string dataDir;
         readonly string logFile;
-        readonly string webProfile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Pi Pocket", "WebView2 profile");
         readonly object logLock = new object();
         readonly NotifyIcon tray = new NotifyIcon();
         readonly Control ui = new Control();
@@ -266,7 +264,6 @@ namespace PiPocket
         volatile bool quitting;
         bool openingWindow;
         bool edgeFallback;
-        CoreWebView2Environment webEnvironment;
         PocketWindow window;
         readonly List<PocketWindow> popups = new List<PocketWindow>();
         readonly Queue<Action> balloons = new Queue<Action>();
@@ -614,21 +611,12 @@ namespace PiPocket
 
             try
             {
-                if (webEnvironment == null)
-                {
-                    CoreWebView2Environment environment = await CoreWebView2Environment.CreateAsync(null,
-                        localPage ? webProfile : Path.Combine(stateFolder, "Remote WebView2"));
-                    if (quitting || generation != pageGeneration) { return; }
-                    webEnvironment = environment;
-                }
-
-                if (quitting || generation != pageGeneration) { return; }
                 made = new PocketWindow(this, url, tray.Icon, Path.Combine(appDir, "window-bounds.txt"));
                 window = made;
                 made.Disposed += delegate { if (window == made) { window = null; } };
                 made.ShowWindow();
                 if (pendingSession) { pendingSession = false; made.NewSession(); }
-                await made.Initialize(webEnvironment);
+                await made.Initialize(SessionWebProfile);
                 if (quitting || made.IsDisposed || generation != pageGeneration) { return; }
                 string target = localPage ? await Task.Run(() => LocalSignInAddress(url, localPid)) : pageAddress;
                 if (!quitting && !made.IsDisposed && generation == pageGeneration) { made.Browser.Navigate(target); }
@@ -661,14 +649,14 @@ namespace PiPocket
 
         async Task NewSessionWindow()
         {
-            if (webEnvironment == null || !ready || quitting) { return; }
+            if (!ready || quitting) { return; }
             PocketWindow made = new PocketWindow(this, url, tray.Icon, null);
             popups.Add(made);
             made.Disposed += delegate { popups.Remove(made); };
             made.ShowWindow();
             try
             {
-                await made.Initialize(webEnvironment);
+                await made.Initialize(SessionWebProfile);
                 if (!quitting && !made.IsDisposed) { made.Browser.Navigate(pageAddress); }
             }
             catch (Exception) { made.Dispose(); }
@@ -702,7 +690,7 @@ namespace PiPocket
                 popups.Add(popup);
                 popup.Disposed += delegate { popups.Remove(popup); };
                 popup.ShowWindow();
-                await popup.Initialize(webEnvironment);
+                await popup.Initialize(SessionWebProfile);
 
                 if (!quitting && !popup.IsDisposed)
                 {
