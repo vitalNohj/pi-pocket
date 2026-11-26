@@ -24,7 +24,7 @@ import { after, before, test } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import { THIS_SERVER } from "../src/server/access.ts";
-import type { SharingComputer, SharingRow } from "../src/server/commands.ts";
+import type { SharingComputer, SharingOn, SharingRow } from "../src/server/commands.ts";
 import type { User } from "../src/server/config.ts";
 import { SessionsDoc } from "../src/server/docs.ts";
 import { createHandler } from "../src/server/http.ts";
@@ -43,6 +43,10 @@ type Answer = {
     shareNew?: { id: string; name: string; on: boolean }[];
     refused?: { id: number; reason: string }[];
     ok?: boolean;
+    /** A computer's answer (`sharingOn`). */
+    id?: string;
+    name?: string;
+    people?: SharingOn["people"];
 };
 
 /** A person; `chosen` for this server unless they are invited to `sessions` alone. */
@@ -1238,4 +1242,159 @@ test("removing a person clears all of their new-session shares as giver and rece
         assert.deepEqual(app.config.sharesNew(computer, gone.id), []);
         assert.equal(Object.hasOwn(app.config.computer(computer)?.sharesNew ?? {}, gone.id), false);
     }
+});
+
+test("a computer's grid for someone not in charge of it: each person they can give something there, as that person's page says it, and nobody else", async () => {
+    const boss = owner(app);
+    const lea = await person("Grid Lea", "guest");
+    const pat = await person("Grid Pat", "guest");
+    const ana = await person("Grid Ana", "guest");
+    const vera = await person("Grid Vera", "viewer");
+    const nia = await person("Grid Nia", "guest", { chosen: false });
+    const mine = await session("grid: Lea's", lea);
+    const second = await session("grid: Lea's second", lea);
+    const owners = await session("grid: the owner's");
+    const one = await session("grid: one");
+    const sam = await person("Grid Sam", "viewer", { sessions: [String(one)] });
+    const on = (computer: string) => `runners/${computer}/sharing`;
+    const grid = async (by: User, computer = THIS_SERVER) => (await call(by, on(computer))).body;
+    /** What `by` is told of `target` on this server: how they have each session, by its id. */
+    const cell = async (by: User, target: User) =>
+        (await grid(by)).people?.find((each) => each.id === target.id);
+
+    app.setRight(boss, { computer: THIS_SERVER, person: lea.id, right: "reshares", on: true });
+    await app.giveFolders(boss, THIS_SERVER, lea.id, [work]);
+    await app.commands.shareSession(second, now(lea), [ana.id]);
+
+    // Lea started two sessions here: a column for everyone who uses this server and is not in charge of it, a viewer
+    // too, and none for the owner, for herself, for someone not chosen, or for someone invited to one session.
+    const told = await call(lea, on(THIS_SERVER));
+
+    assert.equal(told.status, 200, JSON.stringify(told.body));
+    assert.equal(told.body.id, THIS_SERVER);
+    assert.equal(told.body.name, "This server");
+
+    const columns = new Set(told.body.people?.map((each) => each.id));
+
+    for (const [who, has] of [
+        [ana, true],
+        [pat, true],
+        [vera, true],
+        [boss, false],
+        [lea, false],
+        [nia, false],
+        [sam, false],
+    ] as const) {
+        assert.equal(columns.has(who.id), has, who.name);
+    }
+
+    // Each cell is what that person's page says: the two answers are made by the same code.
+    for (const target of [ana, pat, vera]) {
+        const page = app.commands.sharingWith(now(lea), target.id);
+        const here = page.sessions.filter((each) => each.computer === THIS_SERVER);
+        const column = await cell(lea, target);
+
+        assert.deepEqual(
+            Object.keys(column?.sessions ?? {}).sort(),
+            here.map((each) => String(each.id)).sort(),
+            target.name,
+        );
+
+        for (const each of here) {
+            assert.deepEqual(
+                column?.sessions[String(each.id)],
+                {
+                    state: each.state,
+                    give: each.give,
+                    take: each.take,
+                    ...(each.by === undefined ? {} : { by: each.by }),
+                },
+                `${target.name}: ${each.title}`,
+            );
+        }
+
+        // Her folder is listed for each: theirs to be given.
+        assert.deepEqual(column?.folders, page.computers[0]?.folders, target.name);
+        assert.equal(column?.folders.length, 1, target.name);
+    }
+
+    // Not chosen for it, Nia can be given no folder there: her page says why, and the grid has no column for her.
+    assert.match(
+        String(app.commands.sharingWith(now(lea), nia.id).computers[0]?.reason),
+        /Grid Nia cannot use This server/,
+    );
+
+    // What she can give Ana: the one not shared yet; the one she shared, to take back; her folder, to start sessions in.
+    const anas = await cell(lea, ana);
+
+    assert.deepEqual(anas?.sessions[String(mine)], { state: "none", give: true, take: false });
+    assert.deepEqual(anas?.sessions[String(second)], {
+        state: "shared",
+        give: false,
+        take: true,
+        by: { id: lea.id, name: "Grid Lea" },
+    });
+    assert.deepEqual(
+        anas?.folders.map((each) => [each.path, each.give, each.levels]),
+        [[work, true, ["none", "start"]]],
+    );
+    // A session that is not hers to share is in nobody's column.
+    assert.equal(String(owners) in (anas?.sessions ?? {}), false);
+
+    // Pat started nothing and was given nothing to pass on: nobody is named to them.
+    assert.deepEqual((await grid(pat)).people, []);
+
+    // Who is in charge is told too, though their grid reads the computer's record: every session there is theirs to
+    // share.
+    assert.equal(
+        (await cell(boss, ana))?.sessions[String(owners)]?.give,
+        true,
+        "the owner's own session",
+    );
+});
+
+test("a computer's grid is refused to a viewer, and a computer someone may not use answers as one that is not linked", async () => {
+    const lin = await person("Refuse Lin", "guest", { chosen: false });
+    const gil = await person("Refuse Gil", "guest");
+    const out = await person("Refuse Out", "guest", { chosen: false });
+    const vera = await person("Refuse Vera", "viewer");
+    const laptop = app.config.addRunner("Refuse laptop", lin.id, newIdentity().publicKey).id;
+    const on = (computer: string) => `runners/${computer}/sharing`;
+
+    await app.choosePerson(laptop, vera.id, true);
+
+    // A viewer shares nothing, wherever they are chosen, and for a computer that is not there.
+    for (const computer of [THIS_SERVER, laptop, "no-such-computer"]) {
+        const answer = await call(vera, on(computer));
+
+        assert.equal(answer.status, 403, computer);
+        assert.match(String(answer.body.error), /Viewers cannot share sessions/);
+    }
+
+    // Allowed: who uses it. Gil is chosen for this server, Lin linked the laptop.
+    assert.equal((await call(gil, on(THIS_SERVER))).status, 200);
+    assert.equal((await call(lin, on(laptop))).status, 200);
+
+    // Refused: someone not chosen for it gets what a computer that is not linked gets, word for word.
+    const unknown = await call(gil, on("no-such-computer"));
+
+    assert.equal(unknown.status, 404);
+
+    for (const [who, computer] of [
+        [gil, laptop],
+        [out, THIS_SERVER],
+        [out, laptop],
+        [lin, THIS_SERVER],
+    ] as const) {
+        const answer = await call(who, on(computer));
+
+        assert.equal(answer.status, 404, `${who.name} on ${computer}`);
+        assert.deepEqual(answer.body, unknown.body, `${who.name} on ${computer}`);
+    }
+
+    // Chosen for it, Gil is told; taken off it again, no longer.
+    await app.choosePerson(laptop, gil.id, true);
+    assert.equal((await call(gil, on(laptop))).status, 200);
+    await app.choosePerson(laptop, gil.id, false);
+    assert.equal((await call(gil, on(laptop))).status, 404);
 });

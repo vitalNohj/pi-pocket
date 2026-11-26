@@ -465,6 +465,9 @@ export type SharingRow = {
     reason?: string;
 };
 
+/** What a viewer who asks what they can share is told: they share nothing. */
+const VIEWERS_SHARE_NOTHING = "Viewers cannot share sessions. Ask to be made a user.";
+
 /** One folder on a computer whoever asks is not in charge of, with how one person has it (`Commands` `sharingWith`). */
 export type SharingFolder = {
     path: string;
@@ -489,6 +492,25 @@ export type SharingComputer = {
     /** Why nothing can be given to that person there. */
     reason?: string;
     folders: SharingFolder[];
+};
+
+/**
+ * What whoever asks can give on one computer, to each person there (`Commands` `sharingOn`): the grid of a computer
+ * someone else is in charge of.
+ */
+export type SharingOn = {
+    id: string;
+    name: string;
+    /** The people there is something to give to there, or to take back from, in the order of People. */
+    people: {
+        id: string;
+        /** By session id: how they have each session whoever asks may share with them, or take back from them. */
+        sessions: Record<string, Pick<SharingRow, "state" | "give" | "take" | "by" | "reason">>;
+        /** The folders whoever asks can give them there, or gave them, and the ones they have from someone else. */
+        folders: SharingFolder[];
+        /** Why no folder can be given to them there. */
+        reason?: string;
+    }[];
 };
 
 /**
@@ -1496,7 +1518,7 @@ export class Commands {
         const app = this.#app;
 
         if (!app.policy.prompts(user)) {
-            throw new HttpError(403, "Viewers cannot share sessions. Ask to be made a user.");
+            throw new HttpError(403, VIEWERS_SHARE_NOTHING);
         }
 
         const person = app.people(user).some((each) => each.id === personId)
@@ -1541,42 +1563,33 @@ export class Commands {
         return { root, meta };
     }
 
+    /** A person as a row names them; undefined for one who is gone. */
+    #named(id: string | undefined): { id: string; name: string } | undefined {
+        const found = id === undefined ? undefined : this.#app.config.userById(id);
+
+        return found === undefined ? undefined : { id: found.id, name: found.name };
+    }
+
+    /** A computer's name, as the sheets show it. */
+    #placed(computer: string): string {
+        return computer === THIS_SERVER ? "This server" : this.#app.runners.name(computer);
+    }
+
     /**
-     * What `user` can give `personId`, and take back from them, as a person's page in People lists it.
-     *
-     * `sessions`: the ones `user` may share (`access.ts` `mayShare`) or take back from that person (`mayUnshare`), each
-     * with how the person has it now, newest first; none of them archived. A session on a computer that person is in
-     * charge of is left out: every one there is theirs, and `charge` names those computers.
-     *
-     * `computers`: where `user` is not in charge, the folders they can give that person (their own, while they share
-     * what they were given: `mayGiveFolder`) and the ones they gave them. Where `user` is in charge, the Runners rules
-     * tell them every folder (`app.ts` `thisServer`, `runners.ts` `list`), so none is told here.
-     *
-     * `shareNew`: where `user` can share the sessions they start from now on, and whether they do.
+     * Of `list` (the session list as `user` is told it: `app.ts` `sessions`), the sessions `user` may share with
+     * `person` (`access.ts` `mayShare`) or take back from them (`mayUnshare`), each with how `person` has it now; none
+     * of them archived. One on a computer `person` is in charge of is left out: every one there is theirs, and that
+     * computer is added to `charge`, by name.
      */
-    sharingWith(
+    #sharingRows(
         user: User,
-        personId: string,
-    ): {
-        person: { id: string; name: string };
-        sessions: SharingRow[];
-        charge: { id: string; name: string }[];
-        computers: SharingComputer[];
-        shareNew: { id: string; name: string; on: boolean }[];
-    } {
+        person: User,
+        list: ReturnType<PocketApp["sessions"]>,
+        charge: Map<string, string>,
+    ): SharingRow[] {
         const app = this.#app;
-        const person = this.#sharee(user, personId);
-        const charge = new Map<string, string>();
 
-        const named = (id: string | undefined): { id: string; name: string } | undefined => {
-            const found = id === undefined ? undefined : app.config.userById(id);
-
-            return found === undefined ? undefined : { id: found.id, name: found.name };
-        };
-
-        const placed = (computer: string): string =>
-            computer === THIS_SERVER ? "This server" : app.runners.name(computer);
-        const sessions = app.sessions(user).flatMap((row): SharingRow[] => {
+        return list.flatMap((row): SharingRow[] => {
             const id = row.id as unknown as ConversationId;
             const meta = app.sessionMeta(id);
             const computer = row.runner ?? THIS_SERVER;
@@ -1590,7 +1603,7 @@ export class Commands {
             }
 
             const mine = app.policy.inCharge(user, computer);
-            const name = placed(computer);
+            const name = this.#placed(computer);
 
             if (app.policy.inCharge(person, computer)) {
                 charge.set(computer, name);
@@ -1612,7 +1625,7 @@ export class Commands {
                           : app.policy.mayUse(person, computer)
                             ? "none"
                             : "blocked";
-            const by = state === "shared" ? named(meta.sharedBy?.[person.id]) : undefined;
+            const by = state === "shared" ? this.#named(meta.sharedBy?.[person.id]) : undefined;
 
             return [
                 {
@@ -1624,7 +1637,7 @@ export class Commands {
                     folder: app.folderOf(id)?.path ?? meta.cwd,
                     updatedAt: meta.updatedAt,
                     ...(row.usedAt === undefined ? {} : { usedAt: row.usedAt }),
-                    starter: named(starter) ?? { id: starter, name: "someone" },
+                    starter: this.#named(starter) ?? { id: starter, name: "someone" },
                     state,
                     // One they have by its folder can be shared with them as well: it stays when the folder goes.
                     give: row.mayShare === true && (state === "none" || state === "folder"),
@@ -1647,87 +1660,182 @@ export class Commands {
                 },
             ];
         });
+    }
 
+    /**
+     * The folders `user` can give `person` on computer `id` (their own, while they share what they were given:
+     * `mayGiveFolder`), and the ones they gave them. Undefined where `user` is in charge (the computer's record tells
+     * them every folder: `app.ts` `thisServer`, `runners.ts` `list`), where `person` is, where `user` does not use the
+     * computer, and where there is no such folder.
+     */
+    #sharingFolders(user: User, person: User, id: string): SharingComputer | undefined {
+        const app = this.#app;
+
+        if (
+            app.policy.inCharge(user, id) ||
+            app.policy.inCharge(person, id) ||
+            !app.policy.mayUse(user, id)
+        ) {
+            return undefined;
+        }
+
+        const theirs = app.config.givenFolders(id, person.id);
+        const sees = app.config.seenFolders(id, person.id);
+        const givers = app.config.givenBy(id, person.id);
+        const mine = app.policy.reshares(user, id) ? (app.policy.givenFolders(user, id) ?? []) : [];
+        const paths = [...new Set([...mine, ...theirs.filter((each) => givers[each] === user.id)])];
+
+        if (paths.length === 0) {
+            return undefined;
+        }
+
+        // Folders are for someone who uses the computer already, a viewer too, to read: who uses a computer is
+        // its one in charge's choice. A user gets one to start sessions in.
+        const uses = app.policy.mayUse(person, id) && person.sessions === undefined;
+
+        return {
+            id,
+            name: this.#placed(id),
+            ...(uses
+                ? {}
+                : {
+                      reason:
+                          person.sessions !== undefined
+                              ? `${person.name} is invited to one session only.`
+                              : `${person.name} cannot use ${this.#placed(id)}. Whoever is in charge of it chooses who uses it.`,
+                  }),
+            folders: paths.map((path) => {
+                const has = theirs.includes(path);
+                const on = has && sees.includes(path);
+                const by = has ? this.#named(givers[path]) : undefined;
+                const level = app.config.folderLevel(id, person.id, path);
+
+                return {
+                    path,
+                    has,
+                    sees: on,
+                    give: !has && uses && app.policy.mayGiveFolder(user, id, path),
+                    take: has && app.policy.mayTakeFolder(user, id, person.id, path),
+                    see: has && app.policy.maySetSees(user, id, person.id, path, !on),
+                    ...(by === undefined ? {} : { by }),
+                    level,
+                    // The Access menu offers the levels it can be set to, and the one it has.
+                    levels: FOLDER_LEVELS.filter(
+                        (each) =>
+                            each === level ||
+                            app.policy.maySetLevel(user, id, person, path, level, each),
+                    ),
+                };
+            }),
+        };
+    }
+
+    /**
+     * What `user` can give `personId`, and take back from them, as a person's page in People says it.
+     *
+     * `sessions`: the ones `user` may share or take back from that person (`#sharingRows`), newest first. `charge`
+     * names the computers that person is in charge of, where every session is theirs.
+     *
+     * `computers`: where `user` is not in charge, the folders they can give that person, and the ones they gave them
+     * (`#sharingFolders`).
+     *
+     * `shareNew`: where `user` can share the sessions they start from now on, and whether they do.
+     */
+    sharingWith(
+        user: User,
+        personId: string,
+    ): {
+        person: { id: string; name: string };
+        sessions: SharingRow[];
+        charge: { id: string; name: string }[];
+        computers: SharingComputer[];
+        shareNew: { id: string; name: string; on: boolean }[];
+    } {
+        const app = this.#app;
+        const person = this.#sharee(user, personId);
+        const charge = new Map<string, string>();
+        const sessions = this.#sharingRows(user, person, app.sessions(user), charge);
         const places = [THIS_SERVER, ...app.config.runners.map((each) => each.id)];
-        const computers = places.flatMap((id): SharingComputer[] => {
-            if (
-                app.policy.inCharge(user, id) ||
-                app.policy.inCharge(person, id) ||
-                !app.policy.mayUse(user, id)
-            ) {
-                return [];
-            }
-
-            const theirs = app.config.givenFolders(id, person.id);
-            const sees = app.config.seenFolders(id, person.id);
-            const givers = app.config.givenBy(id, person.id);
-            const mine = app.policy.reshares(user, id)
-                ? (app.policy.givenFolders(user, id) ?? [])
-                : [];
-            const paths = [
-                ...new Set([...mine, ...theirs.filter((each) => givers[each] === user.id)]),
-            ];
-
-            if (paths.length === 0) {
-                return [];
-            }
-
-            // Folders are for someone who uses the computer already, a viewer too, to read: who uses a computer is
-            // its one in charge's choice. A user gets one to start sessions in.
-            const uses = app.policy.mayUse(person, id) && person.sessions === undefined;
-
-            return [
-                {
-                    id,
-                    name: placed(id),
-                    ...(uses
-                        ? {}
-                        : {
-                              reason:
-                                  person.sessions !== undefined
-                                      ? `${person.name} is invited to one session only.`
-                                      : `${person.name} cannot use ${placed(id)}. Whoever is in charge of it chooses who uses it.`,
-                          }),
-                    folders: paths.map((path) => {
-                        const has = theirs.includes(path);
-                        const on = has && sees.includes(path);
-                        const by = has ? named(givers[path]) : undefined;
-                        const level = app.config.folderLevel(id, person.id, path);
-
-                        return {
-                            path,
-                            has,
-                            sees: on,
-                            give: !has && uses && app.policy.mayGiveFolder(user, id, path),
-                            take: has && app.policy.mayTakeFolder(user, id, person.id, path),
-                            see: has && app.policy.maySetSees(user, id, person.id, path, !on),
-                            ...(by === undefined ? {} : { by }),
-                            level,
-                            // The Access menu offers the levels it can be set to, and the one it has.
-                            levels: FOLDER_LEVELS.filter(
-                                (each) =>
-                                    each === level ||
-                                    app.policy.maySetLevel(user, id, person, path, level, each),
-                            ),
-                        };
-                    }),
-                },
-            ];
-        });
 
         return {
             person: { id: person.id, name: person.name },
             sessions,
             charge: [...charge].map(([id, name]) => ({ id, name })),
-            computers,
+            computers: places.flatMap((id) => this.#sharingFolders(user, person, id) ?? []),
             shareNew: places
                 .filter((id) => app.policy.mayShareNew(user, id, person))
                 .map((id) => ({
                     id,
-                    name: placed(id),
+                    name: this.#placed(id),
                     on: app.config.sharesNew(id, user.id).includes(person.id),
                 })),
         };
+    }
+
+    /**
+     * What `user` can give on computer `computer`, to each person there: the grid of a computer in the Access sheet,
+     * for someone who uses it and is not in charge of it. The same answers as `sharingWith`, by computer: each
+     * person's sessions (`#sharingRows`) and folders (`#sharingFolders`). A person is named when there is something
+     * to give them there, or to take back: with nothing of `user`'s to share there, nobody is. Who is in charge of the
+     * computer is never named: everything there is theirs, so there is no row and no folder for them.
+     *
+     * For whoever prompts and may use the computer (`access.ts` `mayUse`). One they may not use answers as one that is
+     * not linked, so nothing tells them it is there.
+     */
+    sharingOn(user: User, computer: string): SharingOn {
+        const app = this.#app;
+
+        if (!app.policy.prompts(user)) {
+            throw new HttpError(403, VIEWERS_SHARE_NOTHING);
+        }
+
+        if (!app.policy.mayUse(user, computer)) {
+            throw new HttpError(404, "That computer is not linked to this server.");
+        }
+
+        const list = app.sessions(user).filter((row) => (row.runner ?? THIS_SERVER) === computer);
+        const people: SharingOn["people"] = [];
+
+        for (const told of app.people(user)) {
+            const person = told.id === user.id ? undefined : app.config.userById(told.id);
+
+            if (person === undefined) {
+                continue;
+            }
+
+            const rows = this.#sharingRows(user, person, list, new Map());
+            const place = this.#sharingFolders(user, person, computer);
+
+            const folders = (place?.folders ?? []).filter(
+                (each) => each.has || each.give || each.take,
+            );
+
+            // Only sessions they cannot have, and no folder that is theirs or can be: there is nothing to give them
+            // here, or to take back.
+            if (folders.length === 0 && rows.every((row) => row.state === "blocked")) {
+                continue;
+            }
+
+            people.push({
+                id: person.id,
+                sessions: Object.fromEntries(
+                    rows.map((row) => [
+                        String(row.id),
+                        {
+                            state: row.state,
+                            give: row.give,
+                            take: row.take,
+                            ...(row.by === undefined ? {} : { by: row.by }),
+                            ...(row.reason === undefined ? {} : { reason: row.reason }),
+                        },
+                    ]),
+                ),
+                folders,
+                ...(place?.reason === undefined ? {} : { reason: place.reason }),
+            });
+        }
+
+        return { id: computer, name: this.#placed(computer), people };
     }
 
     /**

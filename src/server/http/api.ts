@@ -1534,6 +1534,19 @@ export function createApi(options: HttpOptions, auth: Auth) {
             return json(response, 200, { ok: true });
         }
 
+        // What I can give on one computer, to each person there (`commands.ts` `sharingOn`): the Access sheet's grid of a
+        // computer I use and am not in charge of. For whoever prompts; a computer they may not use answers as one that
+        // is not linked.
+        if (
+            first === "runners" &&
+            second !== undefined &&
+            third === "sharing" &&
+            fourth === undefined &&
+            method === "GET"
+        ) {
+            return json(response, 200, app.commands.sharingOn(user, second));
+        }
+
         // The projects of the sessions on a computer and their trust (`projects.ts`), for who is in charge of it: the
         // Access sheet's grid. 404 for anyone else.
         if (
