@@ -1177,6 +1177,33 @@ kbd {
     app-region: no-drag;
 }
 
+/* The desktop hosts apply this only when a native backdrop is available. Do not change the theme tokens: sheets,
+ * fields, menus and cards that use the same tokens still need opaque backgrounds. */
+@media not (forced-colors: active) {
+    :root[data-pocket-window-material],
+    :root[data-pocket-window-material] body {
+        background: transparent;
+    }
+
+    :root[data-pocket-window-material] .layout {
+        background: color-mix(in srgb, var(--bg) var(--pocket-window-opacity), transparent);
+    }
+
+    :root[data-pocket-window-material][data-tiling="on"] .layout {
+        background: transparent;
+    }
+
+    :root[data-pocket-window-material] .layout > .window,
+    :root[data-pocket-window-material] .layout > .window > :is(.pane, .drawer, .home-list),
+    :root[data-pocket-window-material] .layout > .window :is(.topbar, .tabstrip) {
+        background: transparent;
+    }
+
+    :root[data-pocket-window-material][data-tiling="on"] .layout > .window {
+        background: color-mix(in srgb, var(--panel) var(--pocket-window-opacity), transparent);
+    }
+}
+
 /* ─── Top bar ──────────────────────────────────────────────── */
 
 /*

@@ -70,7 +70,6 @@ Name: startup; Description: "Start Pi Pocket when I sign in to Windows"; Flags: 
 [InstallDelete]
 ; An older Node.js must not leave files behind in the new one.
 Type: filesandordirs; Name: "{app}\node"
-Type: files; Name: "{autostartup}\Pi Pocket.lnk"; Tasks: not startup
 ; The package goes in whole, unless a newer one that the app updated to stays. An install that stops after this leaves
 ; no package, never an older one: the app then says to run Setup again.
 Type: filesandordirs; Name: "{app}\app"; Check: ReplaceApp
@@ -97,7 +96,7 @@ Source: "stop-pi-pocket.ps1"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "Open Pi Pocket"; AppUserModelID: "PiPocket.Desktop"; AppUserModelToastActivatorCLSID: "3482E279-4BAB-4932-BF9D-CE95126FE324"
 Name: "{autoprograms}\Pi Pocket (console)"; Filename: "{app}\pi-pocket.cmd"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\pi-pocket.ico"; Comment: "Start Pi Pocket in a console window, to choose how other devices reach it"
-Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--hidden"; WorkingDir: "{%USERPROFILE}"; Tasks: startup
+Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--login"; WorkingDir: "{%USERPROFILE}"; Tasks: startup; Check: NewDesktopInstall
 
 [Registry]
 ; Shell activation and the URL association both belong to this user, not to an administrator's machine.
@@ -125,6 +124,7 @@ Type: files; Name: "{app}\launcher.old.log"
 Type: files; Name: "{app}\window-bounds.txt"
 Type: files; Name: "{app}\desktop-upgrade.txt"
 Type: filesandordirs; Name: "{localappdata}\Pi Pocket\desktop"
+Type: files; Name: "{autostartup}\Pi Pocket.lnk"
 Type: filesandordirs; Name: "{localappdata}\Pi Pocket\WebView2 profile"
 ; Also remove the separate profile that older installs and the missing-Runtime fallback use.
 Type: filesandordirs; Name: "{app}\Edge profile"
@@ -146,6 +146,8 @@ end;
 #else
 var
   KeepApp: Boolean;
+  UpgradingDesktop: Boolean;
+  LegacyStartup: Boolean;
 
 function NextPart(var Text: String): String;
 var
@@ -369,6 +371,11 @@ begin
   StopPiPocket;
 end;
 
+function NewDesktopInstall: Boolean;
+begin
+  Result := not UpgradingDesktop;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Installed: String;
@@ -387,7 +394,9 @@ begin
     exit;
   end;
 
-  if FileExists(ExpandConstant('{app}\Pi Pocket.exe')) and not FileExists(ExpandConstant('{app}\desktop-assets\settings\index.html')) then
+  UpgradingDesktop := FileExists(ExpandConstant('{app}\Pi Pocket.exe'));
+  LegacyStartup := UpgradingDesktop and FileExists(ExpandConstant('{autostartup}\Pi Pocket.lnk'));
+  if UpgradingDesktop and not FileExists(ExpandConstant('{app}\desktop-assets\settings\index.html')) then
     SaveStringToFile(ExpandConstant('{app}\desktop-upgrade.txt'), 'Previous desktop install.', False);
 
   Installed := InstalledAppVersion;
@@ -413,18 +422,33 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Folder, State, TitleBar: String;
 begin
-  if CurStep = ssPostInstall then
+  if CurStep <> ssPostInstall then
+    exit;
+
+  Folder := ExpandConstant('{localappdata}\Pi Pocket\desktop');
+  State := AddBackslash(Folder) + 'window.json';
+  if not FileExists(State) and ForceDirectories(Folder) then
   begin
-    SaveStringToFile(ExpandConstant('{app}\app\setup-finished.txt'),
-      'Pi Pocket Setup {#AppVersion} put the package in this folder in place.' + #13#10, False);
-    { Do not replace an existing handler, for example Pi Pocket GUI. The native app is in Default apps either way. }
-    if not RegKeyExists(HKCR, 'pi-pocket') then
-    begin
-      RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', '', 'URL:Pi Pocket Desktop link');
-      RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', 'URL Protocol', '');
-      RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket\shell\open\command', '', ProtocolCommand);
-    end;
+    TitleBar := 'seamless';
+    if UpgradingDesktop then
+      TitleBar := 'system';
+    if LegacyStartup then
+      SaveStringToFile(State, '{"titleBar":"' + TitleBar + '","startHidden":true}', False)
+    else
+      SaveStringToFile(State, '{"titleBar":"' + TitleBar + '"}', False);
+  end;
+
+  SaveStringToFile(ExpandConstant('{app}\app\setup-finished.txt'),
+    'Pi Pocket Setup {#AppVersion} put the package in this folder in place.' + #13#10, False);
+  { Do not replace an existing handler, for example Pi Pocket GUI. The native app is in Default apps either way. }
+  if not RegKeyExists(HKCR, 'pi-pocket') then
+  begin
+    RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', '', 'URL:Pi Pocket Desktop link');
+    RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', 'URL Protocol', '');
+    RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket\shell\open\command', '', ProtocolCommand);
   end;
 end;
 

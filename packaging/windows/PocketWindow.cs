@@ -17,7 +17,7 @@ namespace PiPocket
         readonly string origin, basePath;
         readonly string boundsFile;
         readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 16384, RecursionLimit = 8 };
-        readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
+        readonly WebView2 view = new WebView2();
         bool committed;
         bool recovered;
         readonly int generation;
@@ -44,8 +44,9 @@ namespace PiPocket
             RestoreSavedBounds();
             Controls.Add(view);
             AddDesktopMenus();
-            VisibleChanged += delegate { PublishVisibility(); };
-            Resize += delegate { PublishVisibility(); };
+            VisibleChanged += delegate { LayoutChrome(); PublishVisibility(); };
+            Resize += delegate { LayoutChrome(); PublishVisibility(); };
+            DpiChanged += delegate { LayoutChrome(); };
         }
 
         public CoreWebView2 Browser { get { return view.CoreWebView2; } }
@@ -90,6 +91,7 @@ namespace PiPocket
                 core.WebResourceResponseReceived += CheckSignIn;
             }
 
+            await InitializeChrome(core.Environment);
             if (bridgeEnabled)
             {
                 bridge = new BridgeView(host.Bridge, this, core, origin, basePath, host.InvokeBridgeAction);
@@ -123,6 +125,7 @@ namespace PiPocket
 
         void Navigate(object sender, CoreWebView2NavigationStartingEventArgs args)
         {
+            downloads.Navigating(args);
             Uri target, current;
             bool downgrade = Uri.TryCreate(Browser.Source, UriKind.Absolute, out current) && current.Scheme == "https" &&
                 Uri.TryCreate(args.Uri, UriKind.Absolute, out target) && target.Scheme == "http";
@@ -135,6 +138,7 @@ namespace PiPocket
             }
 
             navigation = args.NavigationId;
+            ResetWindowPage();
             committed = false;
             if (bridge != null) { bridge.Navigating(navigation); }
         }
@@ -182,7 +186,7 @@ namespace PiPocket
             if (boundsFile != null && args.CloseReason == CloseReason.UserClosing)
             {
                 SaveBounds();
-                if (host.CloseToTray) { args.Cancel = true; Hide(); }
+                if (host.NativeCloseToTray) { args.Cancel = true; Hide(); }
                 else { host.MainClosed(); }
             }
 
@@ -271,10 +275,11 @@ namespace PiPocket
             if (message.Msg == 0x0112 && (message.WParam.ToInt64() & 0xfff0) == 0xf100 && message.LParam == IntPtr.Zero && !fullScreen)
             {
                 altMenu = true;
-                desktopMenu.Show();
+                LayoutChrome();
                 desktopMenu.Focus();
                 return;
             }
+            if (HandleChrome(ref message)) { return; }
             base.WndProc(ref message);
 
             if (message.Msg == TaskbarBadge.ButtonCreated && host != null)

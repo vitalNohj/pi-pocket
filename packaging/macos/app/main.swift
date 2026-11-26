@@ -186,7 +186,7 @@ func log(_ line: String) {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate,
-    WKDownloadDelegate
+    WKScriptMessageHandler
 {
     var window: NSWindow?
     var webView: WKWebView?
@@ -208,7 +208,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     let localStore = WKWebsiteDataStore.nonPersistent()
     let localQueue = DispatchQueue(label: "Pi Pocket local launcher")
     var local: LocalServer?
-    var openWhenReady = !CommandLine.arguments.contains("--hidden")
+    var windowPrefs = WindowPreferences.load()
+    var windowHotkey: WindowHotkey?
+    let windowDownloads = WindowDownloads()
+    let windowKey = UUID().uuidString
+    lazy var openWhenReady = !CommandLine.arguments.contains("--hidden") &&
+        !(CommandLine.arguments.contains("--login") && (windowPrefs.startHidden ?? WindowLogin.legacyHidden))
     var quitting = false
     var checkedSignIn = false
     var termSource: DispatchSourceSignal?
@@ -256,6 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         NSApp.mainMenu = mainMenu()
         makeStatusItem()
         _ = sessionBridge.notices
+        startWindowActions()
         signal(SIGTERM, SIG_IGN)
         let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 
@@ -287,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private func updateSessionVisibility(_ shown: Bool? = nil) {
         visibilityChanged(visible: shown)
         for extra in popups.keys {
-            if let view = extra.contentView as? WKWebView { sessionBridge.visibility(view, shown: shown) }
+            if let view = (extra as? PocketNativeWindow)?.chrome?.webView { sessionBridge.visibility(view, shown: shown) }
         }
     }
 
@@ -375,6 +381,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if quitting { return .terminateLater }
         quitting = true
+        windowHotkey?.clear()
+        windowDownloads.close()
         controller?.close()
         closeSessionWindows()
         settings?.window.close()
@@ -399,8 +407,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     // The view of the window in front: the main one, or a page's own window.
     var frontView: WKWebView? {
-        let key = NSApp.keyWindow
-        return key == window ? webView : (key?.contentView as? WKWebView) ?? webView
+        let key = NSApp.keyWindow as? PocketNativeWindow
+        return key?.chrome?.webView ?? webView ?? popups.keys.compactMap { ($0 as? PocketNativeWindow)?.chrome?.webView }.first
     }
 
     @objc func reload() {
@@ -435,33 +443,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         view.allowsBackForwardNavigationGestures = true
         view.allowsMagnification = true
         if #available(macOS 13.3, *) { view.isInspectable = devTools }
-        let made = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 820),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        let made = placeWebView(view, main: true)
         let help = NSTextField(labelWithString: "")
         let settingsButton = NSButton(title: "Desktop Settings…", target: self, action: #selector(openSettingsMenu))
         let strip = NSStackView(views: [help, settingsButton])
-        let layout = NSStackView(views: [strip, view])
 
         help.lineBreakMode = .byTruncatingTail
         strip.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
         strip.distribution = .fill
-        layout.orientation = .vertical
-        layout.alignment = .leading
-        layout.spacing = 0
-        layout.detachesHiddenViews = true
-        view.translatesAutoresizingMaskIntoConstraints = false
-        view.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true
-        strip.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true
-        view.setContentHuggingPriority(.defaultLow, for: .vertical)
-        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        made.title = "Pi Pocket"
-        made.minSize = NSSize(width: 420, height: 400)
-        made.isReleasedWhenClosed = false
-        made.contentView = layout
-        made.delegate = self
-        made.tabbingMode = .disallowed
-        made.center()
-        made.setFrameAutosaveName("Pi Pocket")
+        made.chrome?.notice = strip
         window = made
         webView = view
         notice = strip
@@ -499,22 +489,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func windowWillClose(_ notification: Notification) {
-        guard let closing = notification.object as? NSWindow else { return }
-        if let view = closing == window ? webView : closing.contentView as? WKWebView { sessionBridge.remove(view) }
-        guard closing == window else { return }
+        guard let closing = notification.object as? PocketNativeWindow else { return }
+        if let view = closing.chrome?.webView { sessionBridge.remove(view) }
+        guard closing === window else { return }
+        closing.saveFrame(usingName: "Pi Pocket")
         webView = nil
         window = nil
         notice = nil
         report("visibility", false)
-        if popups.isEmpty { NSApp.terminate(nil) }
+        if popups.isEmpty && settings == nil { NSApp.terminate(nil) }
     }
 
     func windowDidMiniaturize(_ notification: Notification) { windowVisibility(notification, shown: false) }
     func windowDidDeminiaturize(_ notification: Notification) { windowVisibility(notification) }
     func windowDidBecomeKey(_ notification: Notification) {
         report("focus", true)
-        if let focused = notification.object as? NSWindow,
-            let view = focused == window ? webView : focused.contentView as? WKWebView {
+        if let focused = notification.object as? PocketNativeWindow, let view = focused.chrome?.webView {
             sessionBridge.focus(view)
         }
         windowVisibility(notification)
@@ -524,7 +514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private func windowVisibility(_ notification: Notification, shown: Bool? = nil) {
         if let changed = notification.object as? NSWindow {
             if changed == window { visibilityChanged(visible: shown) }
-            else if let view = changed.contentView as? WKWebView { sessionBridge.visibility(view, shown: shown) }
+            else if let view = (changed as? PocketNativeWindow)?.chrome?.webView { sessionBridge.visibility(view, shown: shown) }
         }
     }
 
@@ -548,6 +538,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         let url = action.request.url
+        if action.targetFrame?.isMainFrame == true, let chrome = (webView.window as? PocketNativeWindow)?.chrome {
+            chrome.firstDownload = eligibleDownload(action) ? url : nil
+        }
         if action.targetFrame?.isMainFrame != false && !inApp(url, from: webView.url) {
             if action.navigationType == .linkActivated, let url = url, ["http", "https", "mailto"].contains(url.scheme ?? "") {
                 NSWorkspace.shared.open(url)
@@ -576,6 +569,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        (webView.window as? PocketNativeWindow)?.chrome?.reset()
         if webView === self.webView {
             pageCommitted = sameOrigin(webView.url)
             reportPage(pageOrigin(webView.url))
@@ -594,35 +588,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         sessionBridge.failed(webView, navigation)
     }
 
+    func isMainServerFrame(_ frame: WKFrameInfo) -> Bool {
+        guard frame.isMainFrame, let address = page?.address, let host = address.host, let scheme = address.scheme else { return false }
+        let origin = frame.securityOrigin
+        let clean = CharacterSet(charactersIn: "[]")
+        let port = scheme == "https" ? 443 : 80
+        return origin.protocol == scheme &&
+            origin.host.trimmingCharacters(in: clean).lowercased() == host.trimmingCharacters(in: clean).lowercased() &&
+            (origin.port == 0 ? port : origin.port) == (address.port ?? port)
+    }
+
+    func eligibleDownload(_ action: WKNavigationAction) -> Bool {
+        return page?.bridge == true && action.navigationType == .linkActivated && isMainServerFrame(action.sourceFrame) &&
+            action.targetFrame?.isMainFrame != false && WindowDownloads.fileRoute(action.request.url, onServer: sameOrigin)
+    }
+
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        download.delegate = self
+        (webView.window as? PocketNativeWindow)?.chrome?.firstDownload = nil
+        windowDownloads.attach(download, to: webView.window, direct: eligibleDownload(navigationAction))
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        download.delegate = self
-    }
-
-    func download(
-        _ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String,
-        completionHandler: @escaping (URL?) -> Void
-    ) {
-        let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? home
-        let name = (suggestedFilename as NSString).lastPathComponent
-        let base = (name as NSString).deletingPathExtension
-        let ext = (name as NSString).pathExtension
-        var target = folder.appendingPathComponent(name.isEmpty ? "download" : name)
-        var count = 1
-
-        while FileManager.default.fileExists(atPath: target.path) {
-            count += 1
-            target = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(count)" : "\(base) \(count).\(ext)")
-        }
-
-        completionHandler(target)
-    }
-
-    func downloadDidFinish(_ download: WKDownload) {
-        if notices { sessionBridge.notices.local("Download complete.") }
+        let chrome = (webView.window as? PocketNativeWindow)?.chrome
+        let direct = navigationResponse.isForMainFrame && chrome?.firstDownload != nil &&
+            chrome?.firstDownload == navigationResponse.response.url
+        chrome?.firstDownload = nil
+        windowDownloads.attach(download, to: webView.window, direct: direct)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -657,7 +648,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         for action: WKNavigationAction, windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         if let url = action.request.url {
-            if inApp(url, from: webView.url) {
+            if inApp(url, from: webView.url) && !(windowPrefs.externalPages == true && sameOrigin(url)) {
                 return popup(configuration)
             } else if ["http", "https", "mailto"].contains(url.scheme ?? "") {
                 NSWorkspace.shared.open(url)
@@ -680,18 +671,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             view.isInspectable = devTools
         }
 
-        let made = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered, defer: false)
-
-        made.title = "Pi Pocket"
-        made.minSize = NSSize(width: 420, height: 400)
-        made.isReleasedWhenClosed = false
-        made.contentView = view
-        made.delegate = self
-        made.tabbingMode = .disallowed
-        made.center()
+        let made = placeWebView(view, main: false)
         if let page = page, page.bridge { sessionBridge.add(view, address: page.address) }
         popups[made] = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: made, queue: .main
@@ -700,6 +680,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             DispatchQueue.main.async {
                 if let observer = self?.popups.removeValue(forKey: made) {
                     NotificationCenter.default.removeObserver(observer)
+                    if let self = self, !self.quitting, self.window == nil, self.settings == nil, self.popups.isEmpty {
+                        NSApp.terminate(nil)
+                    }
                 }
             }
         }
@@ -766,6 +749,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         completionHandler(alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil)
     }
 
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "pocketWindow", page?.bridge == true,
+            isMainServerFrame(message.frameInfo),
+            let view = message.webView, (view === webView ? pageCommitted : (view.window.map { popups[$0] != nil } ?? false)),
+            sameOrigin(view.url),
+            let body = message.body as? [String: Any], let type = body["type"] as? String,
+            let encoded = try? JSONSerialization.data(withJSONObject: body), encoded.count <= 16_384 else { return }
+        windowMessage(message, body: body, type: type)
+    }
 }
 
 let app = NSApplication.shared

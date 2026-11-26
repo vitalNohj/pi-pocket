@@ -267,8 +267,8 @@ jobs:
                   plutil -lint "$AGENT"
                   plutil -p "$AGENT"
                   opens="$(plutil -extract ProgramArguments.3 raw "$AGENT")"
-                  if [ "$opens" != "$BUNDLE" ] || [ "$(plutil -extract ProgramArguments.5 raw "$AGENT")" != --hidden ]; then
-                      echo "The sign-in item opens $opens, not Pi Pocket.app with --hidden"
+                  if [ "$opens" != "$BUNDLE" ] || [ "$(plutil -extract ProgramArguments.5 raw "$AGENT")" != --login ]; then
+                      echo "The sign-in item opens $opens, not Pi Pocket.app with --login"
                       exit 1
                   fi
 
