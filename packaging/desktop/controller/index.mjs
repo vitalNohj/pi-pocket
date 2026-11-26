@@ -169,8 +169,7 @@ export class DesktopController {
                     .catch(() => {});
 
                 if (mode === "remote" && connectAtStartup) {
-                    // A saved HTML preview was already explicitly accepted. It still must pass today's probe.
-                    await this.#connect(remoteAddress, true, true);
+                    await this.#connect(remoteAddress);
                 }
             }
         } catch (error) {
@@ -530,10 +529,10 @@ export class DesktopController {
         return this.#switched;
     }
 
-    async #connect(address, preview = false, startup = false) {
+    async #connect(address, preview = false) {
         const check = this.#state.home.check;
 
-        if (preview && !startup && (check?.address !== address || check?.status !== "preview")) {
+        if (preview && (check?.address !== address || check?.status !== "preview")) {
             throw invalid();
         }
 
@@ -745,7 +744,7 @@ export class DesktopController {
         if (active?.mode === "remote") {
             await this.#health(active);
         } else if (this.#state.preferences.home.remoteAddress) {
-            await this.#connect(this.#state.preferences.home.remoteAddress, true, true);
+            await this.#connect(this.#state.preferences.home.remoteAddress);
         } else {
             throw unavailable();
         }

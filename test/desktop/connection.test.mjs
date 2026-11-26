@@ -178,6 +178,32 @@ test("checks do not change the active connection, and Retry keeps the page gener
     assert.equal(controller.snapshot().home.active.generation, first.generation);
 });
 
+test("a saved address never bypasses confirmation for an HTML preview", async (t) => {
+    const remote = await fixture();
+    t.after(() => remote.close());
+    const { action, folder } = await desktop(t);
+    await action("home.connect", { address: remote.address });
+    remote.setMode("sso");
+
+    const reopened = await desktop(t, false, folder);
+    await reopened.controller.begin();
+    assert.equal(reopened.controller.snapshot().home.active, null);
+    assert.equal(reopened.controller.snapshot().home.check.status, "preview");
+    await assert.rejects(reopened.action("home.retry"), { code: "preview" });
+    assert.equal(reopened.controller.snapshot().home.active, null);
+    assert.equal(
+        (await reopened.action("home.preview", { address: remote.address })).kind,
+        "preview",
+    );
+
+    const afterPreview = await desktop(t, false, folder);
+    await afterPreview.controller.begin();
+    assert.equal(afterPreview.controller.snapshot().home.active, null);
+    remote.setMode("pocket");
+    await afterPreview.action("home.retry");
+    assert.equal(afterPreview.controller.snapshot().home.active.kind, "pocket");
+});
+
 test("legacy manifest, explicit HTML preview, and allowed redirects are separate paths", async (t) => {
     const legacy = await fixture({ mode: "legacy" });
     const sso = await fixture({ mode: "sso" });
