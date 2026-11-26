@@ -1,8 +1,7 @@
 // The open sheet: which component shows it. The sheets themselves are in web/sheets/, and a few beside their features
-// (chat.js, notify.js, share.js).
+// (chat.js, share.js).
 import { ChatSheet } from "./chat.js";
 import { ExtensionSheet, onExtensionsGone } from "./extension-ui.js";
-import { NotificationsSheet } from "./notify.js";
 import { ShareSheet } from "./share.js";
 import { AppearanceSheet } from "./sheets/appearance.js";
 import { AllArtifactsSheet } from "./sheets/all-artifacts.js";
@@ -282,9 +281,6 @@ function sheetBody(sheet) {
         // People and computers, and who has what where (`access-sheet.js`): `view` "person", "computer", "settings".
         case "access":
             body = html`<${AccessSheet} />`;
-            break;
-        case "notifications":
-            body = html`<${NotificationsSheet} />`;
             break;
         case "menu":
             body = html`<${MenuSheet} places=${!sheet.fromPlaces} />`;

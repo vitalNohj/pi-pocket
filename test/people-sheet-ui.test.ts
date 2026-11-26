@@ -460,6 +460,64 @@ const has = (label: string) =>
         `return JSON.stringify(document.querySelector(${JSON.stringify(`.pages-detail [aria-label=${JSON.stringify(label)}]`)}) !== null)`,
     );
 
+/**
+ * One's own page as it is laid out: what its head holds, in order (the face, the title, each photo button, Sign out),
+ * the parts of one's account under it, in order, whether the authenticator is the last thing on the page, and how far
+ * Sign out's right edge is from the head's. Also any line of the page that says what a role does (`said`, which no page
+ * has: "You/They prompt and start sessions…", "You/They read the sessions shared…", "They see every session…"), and
+ * what comes first after the role line and the tabs (`next`: "name" for the Name row).
+ */
+const ownLayout = () =>
+    inPage<{
+        head: string[];
+        body: string[];
+        last: boolean;
+        gap: number | null;
+        said: string[];
+        next: string | null;
+    }>(`
+        const page = document.querySelector(".pages-detail .sheet-page");
+        const head = page.querySelector(".sheet-page-head");
+        const parts = [
+            [".my-name:not(.my-request)", "name"],
+            [".my-request", "request access"],
+            ['[role="switch"][aria-label^="Keep pinned sessions synced"]', "pin sync"],
+            [".device-link", "device"],
+            [".my-authenticator", "authenticator"],
+        ];
+        const out = head.querySelector(".my-signout button");
+        let next = head.nextElementSibling?.nextElementSibling ?? null;
+
+        while (next?.matches(".sheet-tabs, .sheet-pane")) {
+            next = next.nextElementSibling;
+        }
+
+        return JSON.stringify({
+            head: [...head.children].flatMap((each) =>
+                each.matches(".people-here")
+                    ? ["face"]
+                    : each.matches(".sheet-page-title")
+                      ? ["title"]
+                      : each.matches(".my-photo, .sheet-page-actions")
+                        ? [...each.querySelectorAll("button")].map((button) => button.textContent.trim())
+                        : [each.className],
+            ),
+            body: [...page.querySelectorAll(parts.map(([selector]) => selector).join(", "))]
+                .filter((each) => !head.contains(each))
+                .map((each) => parts.find(([selector]) => each.matches(selector))[1]),
+            last: page.lastElementChild?.matches(".my-authenticator") === true,
+            gap: out ? head.getBoundingClientRect().right - out.getBoundingClientRect().right : null,
+            said: [...page.querySelectorAll("p")]
+                .map((each) => each.textContent.replace(/\\s+/g, " ").trim())
+                .filter((each) => /(You|They) (prompt and start sessions|read the sessions shared|see every session)/.test(each)),
+            next: next === null
+                ? null
+                : next.querySelector(".my-name:not(.my-request)")
+                  ? "name"
+                  : next.className || next.tagName,
+        });
+    `);
+
 /** This machine's home folder, as the server says it while no test sets another (`asHome`). */
 const realHome = homedir();
 
@@ -1937,21 +1995,14 @@ test(
     real,
     async () => {
         const { user, token } = app.config.addUser("Nora", "viewer");
-        /** The rows of one's own account on the page shown: their labels, in order. */
-        const rows = () =>
-            inPage<string[]>(`
-            const detail = document.querySelector(".pages-detail");
 
-            return JSON.stringify([
-                detail.querySelector(".my-photo") && "photo",
-                detail.querySelector('.my-name input[aria-label="Name"]') && "name",
-                detail.querySelector(".my-request") && "request access",
-                detail.querySelector(".device-link") && "device",
-                detail.querySelector('[role="switch"][aria-label^="Keep pinned sessions synced"]') && "pin sync",
-                detail.querySelector(".my-authenticator") && "authenticator",
-                detail.querySelector(".my-signout") && "sign out",
-            ].filter(Boolean));
-        `);
+        /** The rows of one's own account on the page shown, in order; Sign out, in the head, last. */
+        const rows = async () => {
+            const { head, body } = await ownLayout();
+
+            return [...body, ...(head.includes("Sign out") ? ["sign out"] : [])];
+        };
+
         const title = () =>
             inPage<string>(
                 `return JSON.stringify(document.querySelector(".sheet-page-title").textContent.replace(/\\s+/g, " ").trim())`,
@@ -1988,7 +2039,18 @@ test(
                 "their own page",
             );
             await until(async () => (await rows()).includes("authenticator"), "the authenticator");
-            assert.deepEqual(await rows(), ["name", "request access", "authenticator", "sign out"]);
+            // No photo button in the head: Sign out alone, at its right. Then Name, Request access, Authenticator.
+            const layout = await ownLayout();
+
+            assert.deepEqual(layout.head, ["face", "title", "Sign out"]);
+            assert.deepEqual(layout.body, ["name", "request access", "authenticator"]);
+            assert.equal(layout.last, true, "the authenticator is last");
+            assert.deepEqual(layout.said, [], "no line of what a viewer does");
+            assert.equal(layout.next, "name", "Name first under the role line");
+            assert.ok(
+                layout.gap !== null && Math.abs(layout.gap) <= 2,
+                `Sign out at the right: ${layout.gap}`,
+            );
 
             // A viewer has no list of the people here: their own row alone.
             assert.deepEqual(
@@ -2074,6 +2136,229 @@ test(
             page = owners;
             await theirs.closeAll({ final: true });
         }
+    },
+);
+
+test(
+    "a user's own page: the photo buttons and Sign out in its head, then Name, pin sync, another device, and the authenticator last, also on a phone",
+    real,
+    async () => {
+        const { user, token } = app.config.addUser("Lee", "guest");
+        const made: Browsers[] = [];
+        const owners = page;
+        const photo = Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            "base64",
+        );
+
+        /** Their own page, opened anew at `viewport`, once its authenticator group is drawn. */
+        const ownPage = async (viewport = DESKTOP) => {
+            await open("people", viewport);
+            await until(
+                async () => (await ownLayout()).body.includes("authenticator"),
+                "Lee's own page",
+            );
+        };
+
+        /**
+         * The lines of the head: how far the vertical middles of Sign out and of the photo buttons are from the title's,
+         * the top of the photo buttons and of Sign out less the bottom of the title, and how far Sign out's right edge is
+         * from the head's. Null for a part that is not there.
+         */
+        const lines = () =>
+            inPage<{
+                outMiddle: number;
+                photoMiddle: number | null;
+                photoTop: number | null;
+                outTop: number;
+                outRight: number;
+            }>(`
+                await Promise.all(document.getAnimations().map((each) => each.finished.catch(() => {})));
+                const head = document.querySelector(".pages-detail .sheet-page-head");
+                const title = head.querySelector(".sheet-page-title").getBoundingClientRect();
+                const out = head.querySelector(".my-signout button").getBoundingClientRect();
+                const photo = head.querySelector(".my-photo")?.getBoundingClientRect() ?? null;
+                const middle = (box) => box.top + box.height / 2;
+
+                return JSON.stringify({
+                    outMiddle: middle(out) - middle(title),
+                    photoMiddle: photo && middle(photo) - middle(title),
+                    photoTop: photo && photo.top - title.bottom,
+                    outTop: out.top - title.bottom,
+                    outRight: head.getBoundingClientRect().right - out.right,
+                });
+            `);
+
+        /**
+         * On a phone: what in the head runs past the screen's edge, and whether a click at the middle of Sign out, once
+         * it is in view, hits it.
+         */
+        const phone = () =>
+            inPage<{ wider: string[]; hit: boolean }>(`
+                await Promise.all(document.getAnimations().map((each) => each.finished.catch(() => {})));
+                const head = document.querySelector(".pages-detail .sheet-page-head");
+                const out = head.querySelector(".my-signout button");
+
+                // On a phone the page stands under the list: brought into view, as a finger scrolls to it.
+                out.scrollIntoView({ block: "center" });
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                const box = out.getBoundingClientRect();
+
+                return JSON.stringify({
+                    wider: [head, ...head.querySelectorAll("*")]
+                        .filter((each) => each.getBoundingClientRect().right > innerWidth + 0.5 || each.getBoundingClientRect().left < -0.5)
+                        .map((each) => each.className || each.tagName),
+                    hit: document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest("button") === out,
+                });
+            `);
+
+        try {
+            page = await ownBrowser(made, token);
+
+            // Without a photo: Add photo alone, then Sign out at the head's right.
+            await ownPage();
+
+            const bare = await ownLayout();
+
+            assert.deepEqual(bare.head, ["face", "title", "Add photo", "Sign out"]);
+            assert.ok(
+                bare.gap !== null && Math.abs(bare.gap) <= 2,
+                `Sign out at the right: ${bare.gap}`,
+            );
+            assert.deepEqual(bare.body, ["name", "pin sync", "device", "authenticator"]);
+            assert.equal(bare.last, true, "nothing after the authenticator");
+            assert.deepEqual(bare.said, [], "no line of what a user does");
+            assert.equal(bare.next, "name", "Name first under the role line");
+
+            // Nor has another person's page, a user's, a viewer's, or the owner's: their title and role line, and no
+            // line of what they do. Not under a chat either: Lee has none here, so no page is the chat alone.
+            app.setRight(owner(app), { person: user.id, right: "chats", on: false });
+            await ownPage();
+
+            for (const [name, role] of [
+                ["Gina", "user"],
+                ["Vera", "viewer"],
+                ["Owner", "owner"],
+            ] as const) {
+                await show(name);
+                await until(
+                    () =>
+                        inPage<boolean>(`
+                            const page = document.querySelector(".pages-detail .sheet-page");
+                            const line = page?.querySelector(".sheet-page-head + .muted.small")?.textContent.trim() ?? "";
+
+                            return JSON.stringify(
+                                page.querySelector(".sheet-page-title").textContent.trim() === ${JSON.stringify(name)} &&
+                                    line.startsWith(${JSON.stringify(role)}) &&
+                                    page.querySelector(".loader") === null,
+                            );
+                        `),
+                    `${name}'s page, loaded`,
+                );
+                // Its parts are drawn: what the page has to say, it says now.
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                assert.deepEqual((await ownLayout()).said, [], `no line of what ${name} does`);
+            }
+
+            await ownPage();
+            assert.equal(
+                await inPage<string | null>(
+                    `return JSON.stringify(document.querySelector(".pages-detail .my-photo button").title)`,
+                ),
+                "Shown in place of your initials, to everyone who can see you.",
+            );
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify([...document.querySelectorAll(".pages-detail .setting .small")].some((each) => each.textContent.trim() === "Photo"))`,
+                ),
+                false,
+                "no Photo row",
+            );
+
+            // With a photo: Change photo and Remove photo.
+            app.setAvatar(user, photo);
+            await ownPage();
+            assert.deepEqual((await ownLayout()).head, [
+                "face",
+                "title",
+                "Change photo",
+                "Remove photo",
+                "Sign out",
+            ]);
+
+            // On a wide screen the head is one line: the photo buttons and Sign out beside the title.
+            const wide = await lines();
+
+            assert.ok(
+                Math.abs(wide.outMiddle) <= 2,
+                `Sign out beside the title: ${JSON.stringify(wide)}`,
+            );
+            assert.ok(
+                Math.abs(wide.photoMiddle ?? 99) <= 2,
+                `the photo buttons beside the title: ${JSON.stringify(wide)}`,
+            );
+
+            // On a phone the head takes two lines: the name with Sign out at its right, then the photo buttons. Nothing
+            // runs past the edge, and Sign out takes a click.
+            for (const avatar of [photo, undefined]) {
+                const said = `with${avatar ? "" : "out"} a photo`;
+
+                app.setAvatar(user, avatar);
+                await ownPage(VIEWPORTS.mobile);
+                assert.deepEqual(await phone(), { wider: [], hit: true }, said);
+                assert.ok(Math.abs((await ownLayout()).gap ?? 99) <= 2, "Sign out at the right");
+
+                const two = await lines();
+
+                assert.ok(
+                    Math.abs(two.outMiddle) <= 2,
+                    `${said}: Sign out on line 1: ${JSON.stringify(two)}`,
+                );
+                assert.ok(
+                    (two.photoTop ?? -99) >= 0,
+                    `${said}: the photo buttons on line 2: ${JSON.stringify(two)}`,
+                );
+            }
+
+            // A long name wraps in its own place: Sign out stays on line 1, at the right, and nothing runs past the edge.
+            app.config.updateUser(user.id, { name: "Bartholomew Featherstonehaugh-Montgomery" });
+            app.setAvatar(user, photo);
+            await ownPage(VIEWPORTS.mobile);
+            assert.deepEqual(await phone(), { wider: [], hit: true }, "a long name");
+
+            const long = await lines();
+
+            assert.ok(long.outTop < 0, `a long name: Sign out on line 1: ${JSON.stringify(long)}`);
+            assert.ok(
+                Math.abs(long.outRight) <= 2,
+                `a long name: Sign out at the right: ${JSON.stringify(long)}`,
+            );
+            assert.ok(
+                (long.photoTop ?? -99) >= 0,
+                `a long name: the photo buttons below: ${JSON.stringify(long)}`,
+            );
+        } finally {
+            page = owners;
+            await Promise.all(made.map((each) => each.closeAll({ final: true })));
+            await app.removeUser(owner(app), user.id);
+        }
+
+        // Someone else's page has no Sign out and no photo buttons, and its line comes under its parts.
+        await open("people");
+        await show("Vera");
+
+        const theirs = await ownLayout();
+
+        assert.equal(theirs.head.includes("Sign out"), false);
+        assert.equal(
+            theirs.head.some((each) => each.endsWith("photo")),
+            false,
+        );
+        assert.deepEqual(
+            theirs.body.filter((each) => each !== "device"),
+            [],
+        );
+        assert.equal(theirs.last, false);
     },
 );
 

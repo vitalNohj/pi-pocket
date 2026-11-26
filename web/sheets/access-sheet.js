@@ -7,7 +7,8 @@
 // - Settings: what holds for everyone (for who manages Pi Pocket), Notifications on this device, and for each computer
 //   I am in charge of its own settings: how long each person's approvals last, its rules, tools, link again,
 //   unlink (`computers.js`).
-// `openSheet({ type: "access", view, person, part, computer })` opens it at one view, and there at one page.
+// `openSheet({ type: "access", view, person, part, computer, page })` opens it at one view, and there at one page:
+// `page` is a page of Settings ("notifications", "settings", "limits").
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { NotificationsPage } from "../notify.js";
 import {
@@ -605,13 +606,16 @@ function ComputerView({ computer }) {
     </div>`;
 }
 
-/** Settings: what holds for everyone, Notifications here, and each computer I am in charge of. */
+/**
+ * Settings: what holds for everyone, Notifications here, and each computer I am in charge of. It opens on the page asked
+ * for (`page`, or a computer), when it is this person's, else on Settings for who manages Pi Pocket, else on
+ * Notifications.
+ */
 function SettingsView({ sheet }) {
     const settings = managesServer();
     const own = allComputers().filter(inCharge);
-    const [view, setView] = useState(
-        sheet?.computer ? `computer:${sheet.computer}` : settings ? "settings" : "notifications",
-    );
+    const asked = () => (sheet?.computer ? `computer:${sheet.computer}` : (sheet?.page ?? null));
+    const [view, setView] = useState(asked);
     const [locks, setLocks] = useState(null);
     const limits = managesRunners();
     const loadLocks = () => attempt(async () => setLocks(await api("runners/locks")));
@@ -621,6 +625,13 @@ function SettingsView({ sheet }) {
             loadLocks();
         }
     }, [store.state.runners]);
+
+    // Asked again while open, at another page.
+    useEffect(() => {
+        if (sheet?.computer || sheet?.page) {
+            setView(asked());
+        }
+    }, [sheet]);
 
     const shown =
         (view === "settings" && settings) ||
@@ -680,7 +691,7 @@ function SettingsView({ sheet }) {
         ${shown === "settings" && html`<${SettingsPage} />`}
         ${
             shown === "notifications" &&
-            html`<div class="sheet-page">
+            html`<div class="sheet-page notifications-page">
                 <h3 class="sheet-page-title">Notifications</h3>
                 <${NotificationsPage} />
             </div>`

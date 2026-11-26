@@ -1,8 +1,8 @@
 // Phone notifications: this device subscribes to the server's pushes, and each person picks what they hear about.
 import { useEffect, useState } from "preact/hooks";
 import { callHost, hostCan } from "./host.js";
-import { api, attempt, closeSheet, notify, sessionUnread, store } from "./store.js";
-import { html, Loader, Sheet, Switch } from "./ui.js";
+import { api, attempt, notify, sessionUnread, store } from "./store.js";
+import { html, Loader, Switch } from "./ui.js";
 import { isOwner } from "./roles.js";
 
 const supported =
@@ -135,20 +135,7 @@ const KINDS = [
     ],
 ];
 
-export function NotificationsSheet() {
-    return html`<${Sheet}
-        title="Notifications"
-        onClose=${closeSheet}
-        className="notifications-sheet"
-    >
-        <${NotificationsPage} />
-    <//>`;
-}
-
-/**
- * Notifications on this device: on or off, and what about. The Notifications sheet holds it, and the Settings view of
- * the Access sheet (`access-sheet.js`).
- */
+/** Notifications on this device: on or off, and what about. A page of the Settings view of Access (`access-sheet.js`). */
 export function NotificationsPage() {
     const [info, setInfo] = useState(null);
     const [subscription, setSubscription] = useState(undefined);

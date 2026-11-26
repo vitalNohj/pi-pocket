@@ -61,7 +61,7 @@ The viewer's **Download** button is a plain download of `/api/c/<id>/download?pa
 
 ### Notifications
 
-The server decides as for Web Push (`alerts.ts`): who can see the session, the kinds each person turned on in Menu → Notifications, and whether they are looking at it. Then it sends the message through Web Push to their subscribed devices, and to each of their embedders' connections (`PocketApp.notifyEmbedders`). An embedder that is not running gets nothing: nothing waits for it.
+The server decides as for Web Push (`alerts.ts`): who can see the session, the kinds each person turned on in Access → Settings → Notifications, and whether they are looking at it. Then it sends the message through Web Push to their subscribed devices, and to each of their embedders' connections (`PocketApp.notifyEmbedders`). An embedder that is not running gets nothing: nothing waits for it.
 
 ```js
 {
