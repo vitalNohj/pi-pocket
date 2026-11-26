@@ -1775,9 +1775,11 @@ export class Commands {
     /**
      * What `user` can give on computer `computer`, to each person there: the grid of a computer in the Access sheet,
      * for someone who uses it and is not in charge of it. The same answers as `sharingWith`, by computer: each
-     * person's sessions (`#sharingRows`) and folders (`#sharingFolders`). A person is named when there is something
-     * to give them there, or to take back: with nothing of `user`'s to share there, nobody is. Who is in charge of the
-     * computer is never named: everything there is theirs, so there is no row and no folder for them.
+     * person's sessions (`#sharingRows`) and folders (`#sharingFolders`). A person is named when `user` can do
+     * something for them there: share a session or take one back, give a folder, take it back, or change its level.
+     * What they have from someone else is told beside that, and never names them by itself: with nothing of `user`'s
+     * to give or take there, nobody is named. Who is in charge of the computer is never named: everything there is
+     * theirs, so there is no row and no folder for them.
      *
      * For whoever prompts and may use the computer (`access.ts` `mayUse`). One they may not use answers as one that is
      * not linked, so nothing tells them it is there.
@@ -1810,9 +1812,15 @@ export class Commands {
                 (each) => each.has || each.give || each.take,
             );
 
-            // Only sessions they cannot have, and no folder that is theirs or can be: there is nothing to give them
-            // here, or to take back.
-            if (folders.length === 0 && rows.every((row) => row.state === "blocked")) {
+            // Nothing to do for them here: no session to share with them or to take back, and no folder to give, to
+            // take back, or to set to another level. A folder two people were given by someone else, or a session
+            // someone else shared with them, is no reason for a column.
+            if (
+                !rows.some((row) => row.give || row.take) &&
+                !folders.some(
+                    (each) => each.give || each.take || each.see || each.levels.length > 1,
+                )
+            ) {
                 continue;
             }
 

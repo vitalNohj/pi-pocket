@@ -180,8 +180,16 @@ export type RunnerView = {
     gives?: ComputerRight[];
     /** The reader may unlink this runner. */
     mayUnlink?: true;
-    /** False when this person may not start sessions there: the owner sees a runner someone else linked, to unlink it. */
+    /**
+     * False when this person may not start sessions there: a viewer, anyone while it is blocked, and the owner on a
+     * runner someone else linked that they are not chosen for.
+     */
     mayStart?: false;
+    /**
+     * False when this person may not use it at all (`access.ts` `mayUse`): the owner lists a runner someone else
+     * linked only to unlink it. Nothing there is theirs to see or to share.
+     */
+    mayUse?: false;
     /** Its sessions' browsers use its network (on unless turned off); only in the managers' list. */
     network?: boolean;
     /** Where its sessions' browser downloads go, when not its temporary folder; only in the managers' list. */
@@ -1653,6 +1661,7 @@ export class Runners {
                     ...(user !== undefined && !this.#mayStart(runner.id, user)
                         ? { mayStart: false as const }
                         : {}),
+                    ...(uses ? {} : { mayUse: false as const }),
                     online: link?.online === true,
                     away: link?.away === true,
                     ...(runner.lastSeen === undefined ? {} : { lastSeen: runner.lastSeen }),

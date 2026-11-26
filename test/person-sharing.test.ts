@@ -1353,6 +1353,62 @@ test("a computer's grid for someone not in charge of it: each person they can gi
     );
 });
 
+test("a computer's grid names a person only when there is something to do for them: what they have from someone else is no column", async () => {
+    const boss = owner(app);
+    const rea = await person("Column Rea", "guest");
+    const tom = await person("Column Tom", "guest");
+    const ula = await person("Column Ula", "guest");
+    const columns = async (by: User) =>
+        ((await call(by, `runners/${THIS_SERVER}/sharing`)).body.people ?? []).map(
+            (each) => each.id,
+        );
+
+    // The owner gives Rea and Tom the same folder, and lets Rea pass on what she was given. Neither started a session.
+    app.setRight(boss, { computer: THIS_SERVER, person: rea.id, right: "reshares", on: true });
+    await app.giveFolders(boss, THIS_SERVER, rea.id, [work]);
+    await app.giveFolders(boss, THIS_SERVER, tom.id, [work]);
+
+    // Tom has it from the owner: Rea can not give it again, take it back, or change its level, so he has no column.
+    // Ula does not have it: Rea can give it to her.
+    const reas = await columns(rea);
+
+    assert.equal(reas.includes(tom.id), false, "Tom: nothing to do for him");
+    assert.equal(reas.includes(ula.id), true, "Ula: the folder can be given to her");
+
+    const page = app.commands.sharingWith(now(rea), tom.id).computers[0]?.folders[0];
+
+    assert.deepEqual(
+        [page?.has, page?.give, page?.take, page?.see, page?.levels.length],
+        [true, false, false, false, 1],
+        "his page says the same: he has it, and nothing about it is hers to change",
+    );
+
+    // Once she gave it, Ula keeps her column: it is Rea's to take back.
+    await app.giveFolder(now(rea), THIS_SERVER, ula.id, work, true);
+    assert.equal((await columns(rea)).includes(ula.id), true, "Ula: hers to take back");
+
+    // A session Tom started and shared with Rea is hers to pass on, but not to him: he started it, and only who is in
+    // charge takes a started session. It is listed for him with nothing to do, and that is no column.
+    const toms = await session("column: Tom's", tom);
+
+    await app.commands.shareSession(toms, now(tom), [rea.id]);
+    assert.equal(app.policy.mayShare(now(rea), String(toms)), true);
+    assert.deepEqual(
+        rows(rea, tom).get("column: Tom's") === undefined
+            ? undefined
+            : [
+                  rows(rea, tom).get("column: Tom's")!.state,
+                  rows(rea, tom).get("column: Tom's")!.give,
+                  rows(rea, tom).get("column: Tom's")!.take,
+              ],
+        ["started", false, false],
+    );
+    assert.equal((await columns(rea)).includes(tom.id), false, "Tom: he started it");
+    // One Rea can share with him is a column.
+    await session("column: Rea's", rea);
+    assert.equal((await columns(rea)).includes(tom.id), true, "Tom: a session to share with him");
+});
+
 test("a computer's grid is refused to a viewer, and a computer someone may not use answers as one that is not linked", async () => {
     const lin = await person("Refuse Lin", "guest", { chosen: false });
     const gil = await person("Refuse Gil", "guest");
@@ -1391,6 +1447,19 @@ test("a computer's grid is refused to a viewer, and a computer someone may not u
         assert.equal(answer.status, 404, `${who.name} on ${computer}`);
         assert.deepEqual(answer.body, unknown.body, `${who.name} on ${computer}`);
     }
+
+    // The owner lists a computer someone else linked only to unlink it. Its record says they do not use it, so the
+    // page asks nothing about it; asked all the same, it answers as one that is not linked.
+    const boss = owner(app);
+    const listed = (by: User) => app.runners.list(now(by)).find((each) => each.id === laptop);
+
+    assert.equal(listed(boss)?.mayUnlink, true);
+    assert.equal(listed(boss)?.mayUse, false);
+    assert.deepEqual((await call(boss, on(laptop))).body, unknown.body);
+    assert.equal((await call(boss, on(laptop))).status, 404);
+    // Who uses it has no such mark: its linker, and someone chosen for it.
+    assert.equal(listed(lin) !== undefined && !("mayUse" in listed(lin)!), true);
+    assert.equal(listed(vera) !== undefined && !("mayUse" in listed(vera)!), true);
 
     // Chosen for it, Gil is told; taken off it again, no longer.
     await app.choosePerson(laptop, gil.id, true);
