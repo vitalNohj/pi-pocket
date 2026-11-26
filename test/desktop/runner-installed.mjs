@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -56,9 +55,8 @@ async function smoke() {
     await installed("bin/strip-types.js");
     const { PocketApp } = await installed("src/server/app.ts");
     const { createHandler } = await installed("src/server/http.ts");
-    const resolve = createRequire(join(pocket, "package.json")).resolve;
-    const { BACKGROUND_CONTEXT } = await import(
-        pathToFileURL(resolve("@earendil-works/chord/context")).href
+    const { BACKGROUND_CONTEXT } = await installed(
+        "node_modules/@earendil-works/chord/dist/context/index.js",
     );
     const root = mkdtempSync(join(tmpdir(), "pocket-installed-runner-"));
     const dir = join(root, "runner config with spaces");

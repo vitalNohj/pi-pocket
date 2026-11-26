@@ -64,7 +64,7 @@ export function boundedLines(onLine) {
     };
 }
 
-const timestamp = /^\[[\d\s:.]{1,24}\] /;
+const timestamp = /^\[[\p{Nd}\p{Zs}\p{Cf}:.]{1,32}\] /u;
 
 // Never show raw output. Even normal logs can contain a server-supplied WebSocket reason or tool output.
 export function runnerLog(line, server) {
