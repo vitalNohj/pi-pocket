@@ -590,7 +590,6 @@ export function MenuSheet({ places = true }) {
             }
             ${(collab() || runnersOffered()) && item("Access", () => openSheet({ type: "access", view: collab() ? "person" : "computer" }), `${directUnreadTotal() > 0 ? `${directUnreadTotal()} new · ` : ""}${!collab() ? runnersHint() : isViewer(me) ? "your account · you can view" : "people and computers"}`)}
             ${!collab() && item("Sign in another device", () => openSheet({ type: "invite" }))}
-            ${collab() && item("Notifications", () => openSheet({ type: "notifications" }), "Pi finished, approvals, chat")}
             ${item("Running now", openRunning, "everything Pi is doing")}
             ${view.conversation && item("Background", () => openSheet({ type: "background" }), "what commands print as they run")}
             ${item("Spend", () => openSheet({ type: "spend" }), managesServer() ? "by person and session, limits" : "yours")}

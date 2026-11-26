@@ -5061,7 +5061,7 @@ pre.diff .del {
     background: var(--bg);
 }
 
-.notifications-sheet .extension {
+.notifications-page .extension {
     align-items: center;
 }
 
@@ -10597,9 +10597,8 @@ div.group-head {
     border-radius: calc(var(--r-control) + 1px);
 }
 
-/* Away from Save, in the color of what cannot be undone here. */
-.button.sheet-footer.signout {
-    margin-top: 14px;
+/* Sign out, in the head of your own page in People: in the color of what signs this device out. */
+.button.signout {
     color: var(--err);
 }
 
@@ -25291,11 +25290,26 @@ pre.gallery-code {
     }
 }
 
-/* Your picture on your own page in People: only its buttons, as the page head shows the face. */
+/* Your picture in the head of your own page in People, after your name: only its buttons, as the head shows the face.
+ * Sign out follows it, at the right of the head (`.sheet-page-actions my-signout`); on a phone, below. */
 .my-photo {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+}
+
+/* On a phone the head of your own page takes two lines: your name with Sign out at its right, then the photo buttons. */
+@media (max-width: 719px) {
+    .my-head > .sheet-page-title {
+        flex: 1 1 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .my-head > .my-photo {
+        order: 1;
+        flex-basis: 100%;
+    }
 }
 
 /* Your name on your own page in People: the field takes the room there is, and Save stays beside it. */
@@ -25353,11 +25367,6 @@ pre.gallery-code {
     border-color: var(--accent-fill);
     background: var(--accent-soft);
     color: var(--accent);
-}
-
-/* Sign out, last on your own page in People: apart from the rest, and only as wide as its words. */
-.my-signout {
-    padding-top: 0.5rem;
 }
 
 /* Your authenticator on your own page in People: its state, or the steps to link or remove it. */

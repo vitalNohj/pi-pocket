@@ -290,6 +290,127 @@ test("a viewer has By person and Settings, and no By computer", real, async () =
     }
 });
 
+/** The titles of the Settings list, and the title of the page shown beside it. */
+const settingsShown = () =>
+    inPage<{ list: string[]; page: string | null }>(`
+        return JSON.stringify({
+            list: [...document.querySelectorAll(".access-sheet .pages-item-title")].map((each) => each.textContent.trim()),
+            page: document.querySelector(".access-sheet .pages-detail .sheet-page-title")?.textContent.trim() ?? null,
+        });
+    `);
+
+/** Open the Access sheet at Settings, asking for `page`, and wait for a page beside the list. */
+async function openSettings(page_?: string): Promise<void> {
+    await inPage(`
+        const { openSheet } = await import("/store.js");
+
+        openSheet({ type: "access", view: "settings"${page_ ? `, page: ${JSON.stringify(page_)}` : ""} });
+
+        return JSON.stringify(true);
+    `);
+    await until(
+        async () => (await settingsShown()).page !== null,
+        `Settings at ${page_ ?? "its first page"}`,
+    );
+}
+
+test(
+    "Settings lists Settings for everyone only for who manages the server, Notifications for everyone, and a page asked for only when it is theirs",
+    real,
+    async () => {
+        // The owner: both, and Settings first; a page asked for opens, also while the sheet is open.
+        await load();
+        await openSettings();
+        assert.deepEqual((await settingsShown()).list.slice(0, 2), ["Settings", "Notifications"]);
+        assert.equal((await settingsShown()).page, "Settings");
+        assert.ok(!(await settingsShown()).list.includes("Your settings"));
+        await openSettings("notifications");
+        await until(
+            async () => (await settingsShown()).page === "Notifications",
+            "Notifications, asked while open",
+        );
+        await openSettings("settings");
+        await until(
+            async () => (await settingsShown()).page === "Settings",
+            "Settings, asked while open",
+        );
+
+        // A viewer: Notifications, no Settings; Settings asked for falls back to Notifications.
+        const theirs = new Browsers({
+            dataDir: mkdtempSync(join(root, "access-sheet-settings-")),
+            load: async () => undefined,
+            save: () => {},
+        });
+        const owners = page;
+
+        try {
+            page = await theirs.open(1);
+            await page.navigate(`${base}/login?token=${encodeURIComponent(viewerToken)}`);
+            await load();
+            await openSettings("settings");
+
+            const shown_ = await settingsShown();
+
+            assert.ok(shown_.list.includes("Notifications"), JSON.stringify(shown_.list));
+            assert.ok(!shown_.list.includes("Settings"), JSON.stringify(shown_.list));
+            assert.ok(!shown_.list.includes("Your settings"), JSON.stringify(shown_.list));
+            assert.equal(shown_.page, "Notifications", "Settings is not theirs");
+        } finally {
+            page = owners;
+            await theirs.closeAll({ final: true });
+        }
+    },
+);
+
+test(
+    "Notifications is no row of the menu; the launcher's opens it in Access → Settings",
+    real,
+    async () => {
+        await load();
+        await inPage(`
+        const { openSheet } = await import("/store.js");
+
+        openSheet({ type: "menu" });
+
+        return JSON.stringify(true);
+    `);
+        await until(
+            async () =>
+                await inPage<boolean>(
+                    `return JSON.stringify([...document.querySelectorAll(".list-item")].some((each) => each.textContent.startsWith("Access")))`,
+                ),
+            "the menu",
+        );
+        assert.deepEqual(
+            await inPage<string[]>(
+                `return JSON.stringify([...document.querySelectorAll(".list-item")].map((each) => each.textContent.trim()).filter((each) => each.startsWith("Notifications")))`,
+            ),
+            [],
+        );
+
+        await load();
+        await page.evaluate(`
+        const { store } = await import("/store.js");
+        store.set({ launcher: true });
+        for (let i = 0; i < 50 && !document.querySelector(".launcher input"); i++) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        const input = document.querySelector(".launcher input");
+        input.value = "Notifications";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        [...document.querySelectorAll(".launcher-item")].find((each) => each.textContent.includes("Notifications")).click();
+        return null;
+    `);
+        await until(async () => (await shown()).view === "Settings", "Access at Settings");
+        await until(
+            async () => (await settingsShown()).page === "Notifications",
+            "the Notifications page",
+        );
+        assert.equal((await shown()).type, "access");
+    },
+);
+
 /**
  * Scrolled sideways by `by` pixels, each person column's left edge in the head and in each row: the same in every
  * row, so a row never shows other people than the head.

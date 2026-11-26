@@ -243,7 +243,7 @@ test("on a phone, the Authenticator group fits the owner's page in People", real
     await press("Open Access");
     await until(async () => (await group()) !== null, "the group on a phone");
     assert.deepEqual(await wider(), [], "the page fits");
-    // Every row of the account is there, and Sign out, last, is reached by scrolling.
+    // Every row of the account is there, Sign out in the page head, and the authenticator last.
     assert.deepEqual(
         await inPage(`
             const detail = document.querySelector(".pages-detail");
@@ -256,15 +256,16 @@ test("on a phone, the Authenticator group fits the owner's page in People", real
             const box = out.getBoundingClientRect();
 
             return JSON.stringify({
-                rows: [".my-photo", ".my-name", ".device-link", ".my-authenticator", ".my-signout"].map(
+                rows: [".my-photo", ".my-name", ".device-link", ".my-authenticator", ".sheet-page-head .my-signout"].map(
                     (each) => detail.querySelector(each) !== null,
                 ),
+                last: detail.querySelector(".sheet-page").lastElementChild?.matches(".my-authenticator") === true,
                 // Within a pixel: the sheet's height is a fraction of the screen's.
                 reached: box.top >= 0 && box.bottom <= innerHeight + 1 && box.right <= innerWidth,
                 hit: Boolean(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest(".my-signout")),
             });
         `),
-        { rows: [true, true, true, true, true], reached: true, hit: true },
+        { rows: [true, true, true, true, true], last: true, reached: true, hit: true },
     );
     await inPage(`
         [...document.querySelectorAll(".pages-detail .my-authenticator button")]

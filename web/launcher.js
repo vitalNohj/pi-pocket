@@ -469,7 +469,7 @@ function actionItems() {
             label: "Notifications",
             detail: "Pi finished, approvals, chat",
             icon: "pulse",
-            run: () => openSheet({ type: "notifications" }),
+            run: () => openSheet({ type: "access", view: "settings", page: "notifications" }),
         },
         triggersOn() &&
             !isViewer(me) && {

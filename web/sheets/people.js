@@ -829,8 +829,8 @@ export function lastSeen(person) {
 }
 
 /**
- * Your own picture, on your own page in People: choose one (cropped and shrunk here before it is sent), or take it
- * away. The page head beside it shows the face, so here are only its buttons.
+ * Your own picture, in the head of your own page in People, after your name: choose one (cropped and shrunk here before
+ * it is sent), or take it away. The head shows the face, so here are only its buttons.
  */
 function MyPhoto() {
     const { me, users } = store.state;
@@ -847,23 +847,25 @@ function MyPhoto() {
         }
     };
 
-    return html`<${Setting} label="Photo" hint="Shown in place of your initials, to everyone who can see you.">
-        <div class="my-photo">
-            <input ref=${input} type="file" accept="image/*" hidden onChange=${choose} />
-            <button class="button small" onClick=${() => input.current.click()}>
-                ${person.avatar ? "Change photo" : "Add photo"}
-            </button>
-            ${
-                person.avatar &&
-                html`<button
-                    class="button small ghost"
-                    onClick=${() => attempt(() => api("me/avatar", undefined, { method: "DELETE" }))}
-                >
-                    Remove photo
-                </button>`
-            }
-        </div>
-    <//>`;
+    return html`<div class="my-photo">
+        <input ref=${input} type="file" accept="image/*" hidden onChange=${choose} />
+        <button
+            class="button small"
+            title="Shown in place of your initials, to everyone who can see you."
+            onClick=${() => input.current.click()}
+        >
+            ${person.avatar ? "Change photo" : "Add photo"}
+        </button>
+        ${
+            person.avatar &&
+            html`<button
+                class="button small ghost"
+                onClick=${() => attempt(() => api("me/avatar", undefined, { method: "DELETE" }))}
+            >
+                Remove photo
+            </button>`
+        }
+    </div>`;
 }
 
 /** Your own name, on your own page in People: as others see it on your messages. */
@@ -1952,8 +1954,10 @@ function Authenticator({ person }) {
  * Runners), and Permissions (what they may do, on this server and on each computer, and their sign-in). The part shown stays
  * the same from one person to the next (`part`, kept by the sheet). Whoever prompts and manages nobody gets the first
  * part alone, of what they have to give: their own runners, and their sessions and folders on other computers
- * (`Access`). With nothing to give, the page has no such part. Anyone else reads who they are. One's own page is one's
- * account: photo, name, another device of one's own, the authenticator, and Sign out.
+ * (`Access`). With nothing to give, the page has no such part. Anyone else reads who they are, in the head and the role
+ * line under it. One's own page is one's account: its head holds the photo buttons and Sign out; under the tabs, the
+ * name, a viewer's request for access, the owner's approval time, pinned sessions synced, another device of one's own,
+ * and the authenticator, last.
  */
 export function PersonPage({ person, part, onPart }) {
     const { me } = store.state;
@@ -2019,17 +2023,26 @@ export function PersonPage({ person, part, onPart }) {
         });
 
     return html`<div class="sheet-page">
-        <div class="sheet-page-head">
+        <div class=${myself ? "sheet-page-head my-head" : "sheet-page-head"}>
             <${Face} person=${person} size=${36} />
             <h3 class="sheet-page-title">
                 ${person.name}${myself ? html` <span class="muted small">(you)</span>` : ""}
             </h3>
-            <div class="sheet-page-actions">
-                ${
-                    mine &&
-                    html`<button class="button small ghost danger" onClick=${remove}>Remove</button>`
-                }
-            </div>
+            ${myself && !viewer && html`<${MyPhoto} />`}
+            ${
+                myself
+                    ? html`<div class="sheet-page-actions my-signout">
+                          <button class="button small ghost danger signout" onClick=${signOut}>
+                              <${Icon} name="logout" size=${14} /> Sign out
+                          </button>
+                      </div>`
+                    : html`<div class="sheet-page-actions">
+                          ${
+                              mine &&
+                              html`<button class="button small ghost danger" onClick=${remove}>Remove</button>`
+                          }
+                      </div>`
+            }
         </div>
         <div class="muted small">
             ${[
@@ -2087,32 +2100,9 @@ export function PersonPage({ person, part, onPart }) {
                 />
             </div>`
         }
-        ${myself && !viewer && html`<${MyPhoto} />`}
-        ${myself && html`<${MyName} key=${person.name} person=${person} />`}
-        ${
-            // A paused person asks for nothing: linking an authenticator gives back what they had.
-            myself && viewer && !person.paused && html`<${RequestAccess} person=${person} />`
-        }
         ${
             // Someone else's, with their permissions: there (below).
-            device &&
-            (myself || !rules) &&
-            html`<${DeviceLink} key=${person.id} person=${person} />`
-        }
-        ${
-            asked &&
-            person.approvalDays !== undefined &&
-            html`<${Setting}
-                label="Approvals last"
-                hint="How long your session stays open on a computer someone else is in charge of, after you last used it."
-            >
-                <${ApprovalTime} person=${person} plain=${true} />
-            <//>`
-        }
-        ${myself && !viewer && html`<${PinSync} />`}
-        ${
-            // A temporary account gets nothing here: it links none.
-            myself && html`<${MyAuthenticator} paused=${person.paused} />`
+            device && !myself && !rules && html`<${DeviceLink} key=${person.id} person=${person} />`
         }
         ${
             shown === "rules" &&
@@ -2140,31 +2130,29 @@ export function PersonPage({ person, part, onPart }) {
             </div>`
         }
         ${
-            !rules &&
-            !places &&
-            // Not before the page's parts are known, nor under the chat: there it would read as a line about the chat.
-            known &&
-            shown !== "chat" &&
-            // The owner's own page says nothing of what they may do: they know.
-            !(myself && isOwner(person)) &&
-            html`<p class="muted small">
-                ${
-                    isOwner(person)
-                        ? "They see every session on this server and on the runners they linked."
-                        : isViewer(person)
-                          ? `${myself ? "You read" : "They read"} the sessions shared with ${myself ? "you" : "them"}, and cannot prompt.`
-                          : `${myself ? "You prompt" : "They prompt"} and start sessions in ${myself ? "your" : "their"} folders.`
-                }
-            </p>`
-        }
-        ${
-            // Last, away from the rest, in the color of what signs this device out.
+            // One's own account; the authenticator last.
             myself &&
-            html`<div class="my-signout">
-                <button class="button ghost sheet-footer signout" onClick=${signOut}>
-                    <${Icon} name="logout" size=${16} /> Sign out
-                </button>
-            </div>`
+            html`<${MyName} key=${person.name} person=${person} />
+                ${
+                    // A paused person asks for nothing: linking an authenticator gives back what they had.
+                    viewer && !person.paused && html`<${RequestAccess} person=${person} />`
+                }
+                ${
+                    asked &&
+                    person.approvalDays !== undefined &&
+                    html`<${Setting}
+                        label="Approvals last"
+                        hint="How long your session stays open on a computer someone else is in charge of, after you last used it."
+                    >
+                        <${ApprovalTime} person=${person} plain=${true} />
+                    <//>`
+                }
+                ${!viewer && html`<${PinSync} />`}
+                ${device && html`<${DeviceLink} key=${person.id} person=${person} />`}
+                ${
+                    // A temporary account gets nothing here: it links none.
+                    html`<${MyAuthenticator} paused=${person.paused} />`
+                }`
         }
     </div>`;
 }

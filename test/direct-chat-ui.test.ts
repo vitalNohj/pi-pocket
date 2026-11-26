@@ -592,9 +592,9 @@ test(
     },
 );
 
-test("a page's line about what its person may do is not under the chat", real, async () => {
-    // A user has nothing to give a viewer or the owner here: a viewer's page is that line alone, and the owner's is
-    // the chat alone, with no tabs.
+test("no page has a line about what its person may do, nor under the chat", real, async () => {
+    // A user has nothing to give a viewer or the owner here: a viewer's page is its head and role line alone, and the
+    // owner's is the chat alone, with no tabs.
     const theirs = new Browsers({
         dataDir: mkdtempSync(join(root, "direct-chat-gina-")),
         load: async () => undefined,
@@ -616,8 +616,17 @@ test("a page's line about what its person may do is not under the chat", real, a
         await openPeople();
         await show("Vera");
         await until(
-            () => says("They read the sessions shared with them, and cannot prompt."),
-            "the line on a viewer's page",
+            async () =>
+                await inPage<boolean>(
+                    `return JSON.stringify(document.querySelector(".pages-detail .sheet-page-head + .muted.small")?.textContent.trim().startsWith("viewer") === true && document.querySelector(".pages-detail .loader") === null)`,
+                ),
+            "a viewer's page and its role line",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        assert.equal(
+            await says("They read the sessions"),
+            false,
+            "no line about what a viewer does",
         );
 
         await show("Owner");
