@@ -363,7 +363,7 @@ namespace PiPocket
         [ComImport, Guid("56FDF344-FD6D-11d0-958A-006097C9A090")]
         class TaskbarList { }
 
-        [ComImport, Guid("EA1AFB91-9E28-4B86-90E9-9E9F8A5EEA84"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        [ComImport, Guid("EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         interface ITaskbarList3
         {
             // All methods before SetOverlayIcon, in vtable order, including those from ITaskbarList and ITaskbarList2.
@@ -387,12 +387,19 @@ namespace PiPocket
 
         public static void Set(IntPtr window, int count)
         {
-            ITaskbarList3 taskbar = null;
+            object shell = null;
             IntPtr icon = IntPtr.Zero;
 
             try
             {
-                taskbar = (ITaskbarList3)new TaskbarList();
+                shell = new TaskbarList();
+                ITaskbarList3 taskbar = shell as ITaskbarList3;
+
+                if (taskbar == null)
+                {
+                    return;
+                }
+
                 taskbar.HrInit();
 
                 if (count > 0)
@@ -424,9 +431,9 @@ namespace PiPocket
                     DestroyIcon(icon);
                 }
 
-                if (taskbar != null)
+                if (shell != null)
                 {
-                    Marshal.ReleaseComObject(taskbar);
+                    Marshal.ReleaseComObject(shell);
                 }
             }
         }
