@@ -175,7 +175,8 @@ export function levelFor(computer, person, folder) {
         chosenFor(computer, person) && !person.sessions ? (computer.given?.[person.id] ?? []) : [];
     const sees = seenFolders(computer, person);
     const until = untilOf(computer, person);
-    const level = levelOf(folder, given, sees, until);
+    const from = fromOf(computer, person);
+    const level = levelOf(folder, given, sees, until, from);
 
     if (level !== "none") {
         return { level };
@@ -187,7 +188,22 @@ export function levelFor(computer, person, folder) {
 
     return holder === undefined
         ? { level }
-        : { level, from: { folder: holder, level: levelOf(holder, given, sees, until) } };
+        : { level, from: { folder: holder, level: levelOf(holder, given, sees, until, from) } };
+}
+
+/**
+ * The time of the level `person` has of `folder` on `computer` (`level`): up to which for "past", from which for
+ * "new", undefined for any other. For a level from a folder above (`from`), that folder's time.
+ */
+export function timeOf(computer, person, folder, level, from) {
+    const shown = from?.level ?? level;
+    const at = from?.folder ?? folder;
+
+    if (shown === "past") {
+        return untilOf(computer, person)[at];
+    }
+
+    return shown === "new" ? fromOf(computer, person)[at] : undefined;
 }
 
 /**
@@ -448,8 +464,11 @@ export function seenFolders(computer, person) {
     return (computer.sees?.[person.id] ?? []).filter((each) => given.includes(each));
 }
 
-/** Of those, the ones `person` sees only the sessions made up to a time in ("Sessions so far"): that time, by folder. */
+/** Of those, the ones `person` sees only the sessions made up to a time in ("Current sessions"): that time, by folder. */
 export const untilOf = (computer, person) => computer.seesUntil?.[person.id] ?? {};
+
+/** Of those, the ones `person` sees only the sessions made from a time on in ("New sessions"): that time, by folder. */
+export const fromOf = (computer, person) => computer.seesFrom?.[person.id] ?? {};
 
 /** The home folder of `computer`, as the tree's top row: this server's, or a runner's as it said when it connected. */
 export function homeOf(computer) {
@@ -472,9 +491,10 @@ export function sessionsOf(computer, person) {
     );
     const sees = seenFolders(computer, person);
     const until = untilOf(computer, person);
+    const from = fromOf(computer, person);
 
     return there.filter(
-        (each) => holds(person, each) || seenBy(sees, each, there, until) !== undefined,
+        (each) => holds(person, each) || seenBy(sees, each, there, until, from) !== undefined,
     );
 }
 
@@ -534,8 +554,9 @@ export function treeOf(computer, person, giving, { group = "folders", projects }
     const worktrees = there.filter((each) => each.worktree);
     const sees = seenFolders(computer, person);
     const until = untilOf(computer, person);
+    const since = fromOf(computer, person);
     const theirs = (session) =>
-        holds(person, session) || seenBy(sees, session, worktrees, until) !== undefined;
+        holds(person, session) || seenBy(sees, session, worktrees, until, since) !== undefined;
     // Archived ones too: whether they have anything here at all.
     const held = there.filter(theirs);
 
@@ -555,7 +576,7 @@ export function treeOf(computer, person, giving, { group = "folders", projects }
 
     const row = (session, folder) => {
         const own = holds(person, session);
-        const by = own ? undefined : seenBy(sees, session, worktrees, until);
+        const by = own ? undefined : seenBy(sees, session, worktrees, until, since);
 
         return {
             id: session.id,
@@ -573,7 +594,7 @@ export function treeOf(computer, person, giving, { group = "folders", projects }
 
     // `from`: the nearest folder above with a level, which this one has too while it has none of its own.
     const nodeOf = (node, from) => {
-        const level = levelOf(node.folder, given, sees, until);
+        const level = levelOf(node.folder, given, sees, until, since);
         const children = node.children.map((each) =>
             nodeOf(each, level === "none" ? from : { folder: node.folder, level }),
         );
@@ -609,7 +630,7 @@ export function treeOf(computer, person, giving, { group = "folders", projects }
 
         return holder === undefined
             ? undefined
-            : { folder: holder, level: levelOf(holder, given, sees, until) };
+            : { folder: holder, level: levelOf(holder, given, sees, until, since) };
     };
 
     const roots = arranged.roots.map((each) =>
@@ -627,6 +648,7 @@ export function treeOf(computer, person, giving, { group = "folders", projects }
         offers: gives,
         sees,
         until,
+        since,
         there,
         worktrees,
         given,
@@ -1137,9 +1159,10 @@ export function PopMenu({ face, buttonClass, label, title, disabled, menuLabel, 
 }
 
 /**
- * The levels of the Access menu of a folder's row (`src/server/config.ts` `FolderLevel`), each including the ones
- * before it: its name in the menu, what the row says when it is chosen, and the one line under its name that says
- * what the person gets. A viewer's menu has no "start": they read, and start nothing.
+ * The levels of the Access menu of a folder's row (`src/server/config.ts` `FolderLevel`): its name in the menu, what
+ * the row says when it is chosen, and the one line under its name that says what the person gets. Each level from
+ * "start" on lets a user start sessions here; "past", "new", and "all" each show the sessions of others here too: the
+ * ones here now, the ones started from now on, or both. A viewer's menu has no "start": they read, and start nothing.
  */
 export const LEVELS = {
     none: {
@@ -1154,28 +1177,46 @@ export const LEVELS = {
         user: "They start sessions here, and see theirs and the ones shared with them.",
     },
     past: {
-        name: "Sessions so far",
-        short: "So far",
-        user: "They start sessions here, and see every session here now, not later ones.",
-        viewer: "They read every session here now, whoever started it. Not later ones.",
+        name: "Current sessions",
+        short: "Current",
+        user: "They start sessions here, and see every session here now. Not ones started later.",
+        viewer: "They read every session here now, whoever started it. Not ones started later.",
+    },
+    new: {
+        name: "New sessions",
+        short: "New",
+        user: "They start sessions here, and see every session started here from now on. Not the ones here now.",
+        viewer: "They read every session started here from now on, whoever starts it. Not the ones here now.",
     },
     all: {
         name: "All sessions",
         short: "All",
-        user: "They start sessions here, and see every session here, also later ones.",
-        viewer: "They read every session here, whoever started it, also later ones.",
+        user: "They start sessions here, and see every session here: the ones here now and the ones started later.",
+        viewer: "They read every session here, whoever started it: the ones here now and the ones started later.",
     },
 };
 
 /** The levels `person` can be given in the Access menu: a viewer's have no "start". */
 export const levelsFor = (person) =>
-    isViewer(person) ? ["none", "past", "all"] : ["none", "start", "past", "all"];
+    isViewer(person) ? ["none", "past", "new", "all"] : ["none", "start", "past", "new", "all"];
+
+/** The line under the level shown that says its time (`at`): up to it for "past", from it for "new". */
+function timeLine(level, at) {
+    if (at === undefined) {
+        return [];
+    }
+
+    const when = new Date(at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+
+    return level === "past" ? [`Up to ${when}.`] : level === "new" ? [`From ${when}.`] : [];
+}
 
 /**
  * The Access menu of a folder (`PopMenu`): a button that says what the person has of it now (`level`, in that level's
  * colour), and open, one item for each level they can be given (`levels`), each with what they get (`LEVELS`).
  * `reason`: why nothing can be changed here; the button is then off, with the reason beside it, or in its title
- * where there is no room beside it (`compact`: a cell of the grid).
+ * where there is no room beside it (`compact`: a cell of the grid). `at`: the time of the level shown (`timeOf`), said
+ * on its item.
  */
 export function LevelMenu({
     person,
@@ -1183,6 +1224,7 @@ export function LevelMenu({
     where,
     level,
     from,
+    at,
     levels,
     reason,
     busy,
@@ -1204,7 +1246,10 @@ export function LevelMenu({
             items=${levels.map((each) => ({
                 key: each,
                 name: LEVELS[each].name,
-                says: [LEVELS[each][viewer ? "viewer" : "user"]],
+                says: [
+                    LEVELS[each][viewer ? "viewer" : "user"],
+                    ...(each === shown ? timeLine(each, at) : []),
+                ],
                 checked: each === level,
             }))}
             onPick=${onPick}
@@ -1339,7 +1384,7 @@ export function InfoTip({ about, text }) {
  * Revoke of its own.
  */
 function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT }) {
-    const { offers, sees, until, worktrees, given: folders } = tree;
+    const { offers, sees, until, since, worktrees, given: folders } = tree;
     const { chosen, manager, starts } = standing(computer, person);
     const groups = useGroups(find);
     const [busy, setBusy] = useState(false);
@@ -1402,7 +1447,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
 
     const revoke = async (row) => {
         // A folder whose sessions they see still gives it to them: said, since Revoke then changes little.
-        const kept = seenBy(sees, row.session, worktrees, until);
+        const kept = seenBy(sees, row.session, worktrees, until, since);
         const still =
             kept === undefined
                 ? ""
@@ -1572,6 +1617,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
                 where=${computer.name}
                 level=${node.level}
                 from=${node.from}
+                at=${timeOf(computer, person, node.folder, node.level, node.from)}
                 levels=${levelsFor(person)}
                 reason=${reason}
                 busy=${busy}
@@ -1624,6 +1670,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
                     where=${computer.name}
                     level=${level}
                     from=${from}
+                    at=${timeOf(computer, person, row.path, level, from)}
                     levels=${levelsFor(person)}
                     reason=${reason}
                     busy=${busy}
@@ -1652,7 +1699,7 @@ function AccessTree({ computer, person, tree, find = NO_FIND, select = NO_SELECT
             revoke: row.own,
             started: row.session.createdBy === person.id,
             heir: heir(computer),
-            kept: seenBy(sees, row.session, worktrees, until) !== undefined,
+            kept: seenBy(sees, row.session, worktrees, until, since) !== undefined,
         })),
     );
 

@@ -8423,9 +8423,9 @@ div.group-head {
     color: var(--accent);
 }
 
-/* The key of the levels: one strip of four cells, each a level's name in its button's colour over what it gives. Where
- * the strip is narrow (a phone), two rows of two: no level is cut, and nothing scrolls sideways. Its "i", before them,
- * explains the people columns. */
+/* The key of the levels: one strip of five cells, each a level's name in its button's colour over what it gives. Where
+ * the strip is narrow (a phone), rows of two, the last cell alone on its row: no level is cut, and nothing scrolls
+ * sideways. Its "i", before them, explains the people columns. */
 .ak-key {
     container-type: inline-size;
     display: flex;
@@ -8443,7 +8443,7 @@ div.group-head {
 
 .ak-levels {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     flex: 1;
     min-width: 0;
     margin: 0;
@@ -8480,6 +8480,7 @@ div.group-head {
 
 .lv-start,
 .lv-past,
+.lv-new,
 .lv-all {
     color: var(--accent);
 }

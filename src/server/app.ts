@@ -379,6 +379,8 @@ export type ServerView = {
     sees: Record<string, string[]>;
     /** Of those, the ones they see only the sessions made up to a time in: that time, by person id, then by folder. */
     seesUntil: Record<string, Record<string, number>>;
+    /** Of those, the ones they see only the sessions made from a time on in: that time, by person id, then by folder. */
+    seesFrom: Record<string, Record<string, number>>;
     /**
      * The chosen people who hold each right given one person at a time here (`rights.ts`): `wheel`, to take the wheel
      * from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to (`allowsOwn`).
@@ -3462,6 +3464,7 @@ export class PocketApp {
                     given: (person) => config.givenFolders(id, person),
                     sees: (person) => config.seenFolders(id, person),
                     seesUntil: (person) => config.seenUntil(id, person),
+                    seesFrom: (person) => config.seenFrom(id, person),
                     givenBy: (person) => config.givenBy(id, person),
                     holders: (right) => config.rightHolders(id, right),
                     sharesNew: (giver) => config.sharesNew(id, giver),
@@ -3539,6 +3542,12 @@ export class PocketApp {
                 (server.users ?? []).map((id) => [
                     id,
                     { ...this.config.seenUntil(THIS_SERVER, id) },
+                ]),
+            ),
+            seesFrom: Object.fromEntries(
+                (server.users ?? []).map((id) => [
+                    id,
+                    { ...this.config.seenFrom(THIS_SERVER, id) },
                 ]),
             ),
             rights: this.config.rightsOn(THIS_SERVER),
@@ -4064,8 +4073,9 @@ export class PocketApp {
     /**
      * `by` sets what `person` has of `folder` on computer `id` (the Access menu of a folder's row in People:
      * `config.ts` `FolderLevel`), in one save: "none" takes it back, "start" gives it to start sessions in (a user),
-     * "past" also shows them every session made in it up to now, and "all" every one, also later ones. A viewer gets
-     * "past" and "all" alone: they read, and start nothing. Who may change what is `access.ts` `maySetLevel`, asked
+     * "past" also shows them every session made in it up to now, "new" every one made in it from now on, and "all"
+     * every one, the ones there now and later ones. A viewer gets "past", "new", and "all" alone: they read, and start
+     * nothing. Who may change what is `access.ts` `maySetLevel`, asked
      * again where it is saved. A folder new to them is resolved to its real path there, as `giveFolders` does. What they
      * lose by it (sessions they started in it, the tasks they set up on sessions they no longer see) moves to who is
      * in charge, in the hand-over of that save.
@@ -4121,7 +4131,7 @@ export class PocketApp {
         if (!this.policy.prompts(target) && to === "start") {
             throw new HttpError(
                 400,
-                `${target.name} is a viewer: they start nothing. Choose Sessions so far or All sessions.`,
+                `${target.name} is a viewer: they start nothing. Choose Current sessions, New sessions, or All sessions.`,
             );
         }
 

@@ -1571,7 +1571,7 @@ export function createApi(options: HttpOptions, auth: Auth) {
         }
 
         // What one person has of one folder on a computer, as one level (`app.ts` `setFolderLevel`): none, start, past,
-        // or all. Who is in charge there sets any; someone who passes on what they were given, what was theirs to give.
+        // new, or all. Who is in charge there sets any; someone who passes on what they were given, what was theirs to give.
         if (first === "runners" && second !== undefined && third === "level" && method === "POST") {
             const body = await readJson<{
                 person?: unknown;

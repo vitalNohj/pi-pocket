@@ -23,6 +23,7 @@ import {
 import {
     chosenFor,
     choosable,
+    fromOf,
     holds,
     homeOf,
     InfoTip,
@@ -37,6 +38,7 @@ import {
     setTrust,
     standing,
     THIS_SERVER,
+    timeOf,
     trustOfProject,
     untilOf,
     useAllFolders,
@@ -56,14 +58,15 @@ export const TIPS = {
 const KEY = [
     ["none", "None", "only sessions shared one by one"],
     ["start", "Start", "starts sessions, sees their own"],
-    ["past", "So far", "also every session here now"],
-    ["all", "All", "also every session that starts later"],
+    ["past", "Current", "also every session here now"],
+    ["new", "New", "also every session started from now on"],
+    ["all", "All", "also every session, now and later"],
 ];
 
 /**
- * The key of the access levels: one strip of four cells, each a level's name in its button's colour over what it gives.
- * Where the strip is narrow (a phone), two rows of two: no level is cut, and nothing scrolls sideways. Its "i", before
- * them, explains the people columns, the same for every person.
+ * The key of the access levels: one strip of five cells, each a level's name in its button's colour over what it gives.
+ * Where the strip is narrow (a phone), rows of two, the last cell alone on its row: no level is cut, and nothing
+ * scrolls sideways. Its "i", before them, explains the people columns, the same for every person.
  */
 export function AccessKey() {
     return html`<div class="ak-key" role="note" aria-label="Access levels">
@@ -471,11 +474,13 @@ export function gridOf(computer, people, { group, projects }) {
         person,
         seenFolders(computer, person),
         untilOf(computer, person),
+        fromOf(computer, person),
     ]);
     const has = (session) =>
         seen.some(
-            ([person, sees, until]) =>
-                holds(person, session) || seenBy(sees, session, worktrees, until) !== undefined,
+            ([person, sees, until, from]) =>
+                holds(person, session) ||
+                seenBy(sees, session, worktrees, until, from) !== undefined,
         );
     const row = (session, folder) => ({
         id: session.id,
@@ -559,8 +564,13 @@ function stateOf(computer, person, session, worktrees) {
         return "shared";
     }
 
-    return seenBy(seenFolders(computer, person), session, worktrees, untilOf(computer, person)) !==
-        undefined
+    return seenBy(
+        seenFolders(computer, person),
+        session,
+        worktrees,
+        untilOf(computer, person),
+        fromOf(computer, person),
+    ) !== undefined
         ? "folder"
         : "none";
 }
@@ -717,6 +727,7 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
             where=${computer.name}
             level=${level}
             from=${from}
+            at=${timeOf(computer, person, node.folder, level, from)}
             levels=${levelsFor(person)}
             reason=${reasonOf(computer, person)}
             compact=${true}

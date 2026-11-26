@@ -279,7 +279,7 @@ describe("who prompts", () => {
             {
                 status: 400,
                 message:
-                    "Viewer is a viewer: they start nothing. Choose Sessions so far or All sessions.",
+                    "Viewer is a viewer: they start nothing. Choose Current sessions, New sessions, or All sessions.",
             },
         );
 

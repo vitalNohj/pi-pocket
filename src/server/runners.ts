@@ -172,6 +172,8 @@ export type RunnerView = {
     sees?: Record<string, string[]>;
     /** Of those, the ones that person sees only the sessions made up to a time in: that time, by folder. */
     seesUntil?: Record<string, Record<string, number>>;
+    /** Of those, the ones that person sees only the sessions made from a time on in: that time, by folder. */
+    seesFrom?: Record<string, Record<string, number>>;
     /**
      * The granted people who hold each right given one person at a time there (`rights.ts`): `wheel`, to take the
      * wheel from a driver (`access.ts` `overridesTurns`); `allows`, to allow a call their own message led to
@@ -1616,6 +1618,12 @@ export class Runners {
                                   (runner.users ?? []).map((id) => [
                                       id,
                                       { ...this.#config.seenUntil(runner.id, id) },
+                                  ]),
+                              ),
+                              seesFrom: Object.fromEntries(
+                                  (runner.users ?? []).map((id) => [
+                                      id,
+                                      { ...this.#config.seenFrom(runner.id, id) },
                                   ]),
                               ),
                               rights: this.#config.rightsOn(runner.id),

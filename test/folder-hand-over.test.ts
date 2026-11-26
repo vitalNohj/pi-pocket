@@ -210,6 +210,49 @@ test("all sessions in a folder, turned off and cut short by a restart: the next 
     assert.deepEqual(owed(), []);
 });
 
+test("New sessions after All sessions, cut short by a restart: the next start hands over her tasks on the sessions made before", async () => {
+    const before = await sessionIn(second, owner(app));
+    const hers = await sessionIn(second, vera);
+
+    await app.setFolderLevel(owner(app), THIS_SERVER, vera.id, second, "all");
+    assert.deepEqual(owed(), [], "All sessions owes nothing");
+    assert.equal(app.canSee(vera, before), true, "by its folder");
+    await hookOf("vera-on-before", vera, before);
+    await hookOf("vera-on-her-own", vera, hers);
+
+    // A session is made in one millisecond and the level set in a later one, so the time between them is the level's.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // The level is saved in the settings, and the server stops before anything else is.
+    app.config.setFolderLevel(THIS_SERVER, vera.id, second, "new", Date.now(), owner(app).id);
+    assert.deepEqual(owed(), [vera.id], "the hand-over is owed, in that same save");
+    assert.equal(app.canSee(vera, before), false, "a session made before left her at once");
+    assert.equal(await hookBy("vera-on-before"), vera.id, "her task on it is not handed over yet");
+    await restart();
+
+    assert.equal(
+        await hookBy("vera-on-before"),
+        owner(app).id,
+        "the task goes to who is in charge",
+    );
+    assert.equal(starterOf(hers), vera.id, "her own session in the folder stays hers");
+    assert.equal(await hookBy("vera-on-her-own"), vera.id, "with her task on it");
+    assert.deepEqual(owed(), [], "and nothing is left to finish");
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const later = await sessionIn(second, owner(app));
+
+    assert.equal(app.config.folderLevel(THIS_SERVER, vera.id, second), "new");
+    assert.equal(app.canSee(vera, later), true, "a session made later is hers");
+
+    // Back to All sessions: she has the earlier one again, and nothing is owed.
+    await app.setFolderLevel(owner(app), THIS_SERVER, vera.id, second, "all");
+    assert.equal(app.canSee(vera, before), true);
+    assert.deepEqual(owed(), []);
+    await app.seeFolder(owner(app), THIS_SERVER, vera.id, second, false);
+});
+
 test("a session moved out of a folder someone accesses all sessions in: their tasks on it go to who is in charge, in the save of the move", async () => {
     const deeper = folder("hand-over-second/deeper");
     const out = await sessionIn(second, owner(app));

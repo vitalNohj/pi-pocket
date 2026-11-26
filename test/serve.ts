@@ -218,7 +218,7 @@ if (process.env.PI_POCKET_TEST_ACCESS) {
     const added = await Promise.all(people.map(([name, role]) => addPerson(app, name, role)));
 
     added.forEach(({ user }, index) => {
-        const level = (["all", "start", "past", "none"] as const)[index % 4]!;
+        const level = (["all", "start", "past", "new", "none"] as const)[index % 5]!;
 
         app.config.setGivenFolders(THIS_SERVER, user.id, []);
 

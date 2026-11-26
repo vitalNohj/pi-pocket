@@ -101,29 +101,33 @@ export function leaving(folder, folders, started, there) {
 /**
  * The folder of `sees` (the folders a person sees every session in) that gives them `session`, or undefined: the
  * server's rule (`src/server/access.ts` `seesFolder`), by the folder the session counts as working in. `until`: the
- * folders they see only the sessions made up to a time in ("Sessions so far"), with that time; a session made later
- * is not theirs by such a folder.
+ * folders they see only the sessions made up to a time in ("Current sessions"), with that time; a session made later
+ * is not theirs by such a folder. `from`: the folders they see only the sessions made at or after a time in ("New
+ * sessions"), with that time; a session made earlier is not theirs by such a folder.
  */
-export function seenBy(sees, session, there, until = {}) {
+export function seenBy(sees, session, there, until = {}, from = {}) {
     if (sees.length === 0) {
         return undefined;
     }
 
     const at = accessFolder(session, there);
+    const made = session.createdAt ?? 0;
 
     return sees.find(
         (each) =>
             inFolder(at, each) &&
-            (until[each] === undefined || (session.createdAt ?? 0) <= until[each]),
+            (until[each] === undefined || made <= until[each]) &&
+            (from[each] === undefined || made >= from[each]),
     );
 }
 
 /**
  * What a person has of one folder, as one level of the Access menu of its row (`src/server/config.ts` `FolderLevel`):
- * "none"; "start", given to start sessions in; "past", and every session made in it up to a time; "all", and every
- * session in it, also later ones. From a computer's record: `given`, `sees`, and `until` (`seesUntil`) of that person.
+ * "none"; "start", given to start sessions in; "past", and every session made in it up to a time; "new", and every
+ * session made in it from a time on; "all", and every session in it, the ones there now and later ones. From a
+ * computer's record: `given`, `sees`, `until` (`seesUntil`), and `from` (`seesFrom`) of that person.
  */
-export function levelOf(folder, given, sees, until) {
+export function levelOf(folder, given, sees, until, from) {
     if (!given.includes(folder)) {
         return "none";
     }
@@ -132,7 +136,11 @@ export function levelOf(folder, given, sees, until) {
         return "start";
     }
 
-    return until[folder] === undefined ? "all" : "past";
+    if (until[folder] !== undefined) {
+        return "past";
+    }
+
+    return from[folder] === undefined ? "all" : "new";
 }
 
 /**

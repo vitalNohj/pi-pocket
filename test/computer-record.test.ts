@@ -124,6 +124,116 @@ describe("the folders given on a computer", () => {
     }
 });
 
+describe("a folder's level on a computer", () => {
+    /** What Ana has of /a: the level, and both times. */
+    const state = (config: ConfigStore, id: string, ana: string) => ({
+        level: config.folderLevel(id, ana, "/a"),
+        until: config.seenUntil(id, ana)["/a"],
+        from: config.seenFrom(id, ana)["/a"],
+    });
+
+    /** A store where Ana uses the computer and has /a at `level`, set at time 100, with no hand-over owed. */
+    const at = (kind: Kind, level: "start" | "past" | "new" | "all") => {
+        const made = setUp(kind);
+
+        made.config.setUsers(made.id, [made.ana]);
+        made.config.setFolderLevel(made.id, made.ana, "/a", level, 100, made.inCharge);
+        made.config.clearHandOvers(made.id, made.config.handOvers(made.id));
+
+        return made;
+    };
+
+    for (const kind of kinds) {
+        it(`on ${kind}: each move between the levels leaves the right times`, () => {
+            const moves = [
+                ["start", "new", { level: "new", until: undefined, from: 200 }],
+                ["all", "new", { level: "new", until: undefined, from: 200 }],
+                ["past", "new", { level: "new", until: undefined, from: 200 }],
+                ["new", "past", { level: "past", until: 200, from: undefined }],
+                ["all", "past", { level: "past", until: 200, from: undefined }],
+                ["past", "all", { level: "all", until: undefined, from: undefined }],
+                ["new", "all", { level: "all", until: undefined, from: undefined }],
+                ["new", "start", { level: "start", until: undefined, from: undefined }],
+                ["past", "start", { level: "start", until: undefined, from: undefined }],
+                ["new", "none", { level: "none", until: undefined, from: undefined }],
+                ["past", "none", { level: "none", until: undefined, from: undefined }],
+            ] as const;
+
+            for (const [before, after, expected] of moves) {
+                const { config, id, ana } = at(kind, before);
+
+                config.setFolderLevel(id, ana, "/a", after, 200);
+                assert.deepEqual(state(config, id, ana), expected, `${before} to ${after}`);
+            }
+
+            // A new level takes the time it is set at.
+            const { config, id, ana } = at(kind, "new");
+
+            assert.deepEqual(state(config, id, ana), { level: "new", until: undefined, from: 100 });
+            assert.deepEqual(
+                (savedRecord(config, id)?.seesFrom as Record<string, unknown>)[ana],
+                { "/a": 100 },
+                "saved in the file",
+            );
+        });
+
+        it(`on ${kind}: New sessions set again keeps its time; so does Current sessions`, () => {
+            for (const level of ["new", "past"] as const) {
+                const { config, id, ana } = at(kind, level);
+
+                config.setFolderLevel(id, ana, "/a", level, 500);
+                assert.equal(state(config, id, ana)[level === "new" ? "from" : "until"], 100);
+            }
+        });
+
+        it(`on ${kind}: New sessions from All or Current sessions owes a hand-over; from Start, and All from New, not`, () => {
+            for (const [before, after, owed] of [
+                ["all", "new", true],
+                ["past", "new", true],
+                ["start", "new", false],
+                ["new", "all", false],
+                ["new", "past", false],
+                ["new", "start", true],
+            ] as const) {
+                const { config, id, ana } = at(kind, before);
+
+                config.setFolderLevel(id, ana, "/a", after, 200);
+                assert.deepEqual(config.handOvers(id), owed ? [ana] : [], `${before} to ${after}`);
+
+                if (owed) {
+                    assert.deepEqual(savedRecord(config, id)?.handOver, [ana], "in that same save");
+                }
+            }
+        });
+
+        it(`on ${kind}: a folder no longer seen loses its time, and the switch on is every session`, () => {
+            const { config, id, ana } = at(kind, "new");
+
+            // Taken back with the list of folders: no time stays behind.
+            config.setGivenFolders(id, ana, ["/b"]);
+            assert.deepEqual(config.seenFrom(id, ana), {});
+            assert.equal(savedRecord(config, id)?.seesFrom, undefined, "no record left");
+
+            // The switch on: no time of either kind.
+            const again = at(kind, "new");
+
+            again.config.setSeenFolder(again.id, again.ana, "/a", true);
+            assert.deepEqual(state(again.config, again.id, again.ana), {
+                level: "all",
+                until: undefined,
+                from: undefined,
+            });
+
+            // The switch off: neither.
+            const off = at(kind, "new");
+
+            off.config.setSeenFolder(off.id, off.ana, "/a", false);
+            assert.deepEqual(off.config.seenFrom(off.id, off.ana), {});
+            assert.equal(off.config.folderLevel(off.id, off.ana, "/a"), "start");
+        });
+    }
+});
+
 describe("a right on a computer", () => {
     for (const kind of kinds) {
         it(`on ${kind}: is given to a chosen person only, and both reads agree`, () => {
