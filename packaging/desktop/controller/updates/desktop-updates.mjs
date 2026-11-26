@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
     copyFile,
@@ -12,7 +12,7 @@ import {
     stat,
     writeFile,
 } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -186,76 +186,86 @@ function layout(app) {
     throw new Error("Desktop updates are not available from this install location.");
 }
 
-function runDetached(executable, args) {
+function runDetached(executable, args, windowsHide = true) {
     return new Promise((done, fail) => {
         const child = spawn(executable, args, {
             detached: true,
             stdio: "ignore",
-            windowsHide: true,
+            windowsHide,
         });
 
         child.once("error", fail);
         child.once("spawn", () => {
             child.unref();
-            done();
+            done(child.pid);
         });
     });
 }
 
-async function reserveHandoff(folder) {
-    const lock = join(folder, handoffFile);
-    const info = await stat(lock).catch(() => null);
+function validPid(pid) {
+    return Number.isInteger(pid) && pid > 0 && pid <= 0x7fffffff;
+}
 
-    if (info && Date.now() - info.mtimeMs < lockTime) {
-        return false;
-    }
+async function handoffIsActive(folder) {
+    const lock = await readRecord(folder, handoffFile);
+    const age = Date.now() - lock?.started;
 
-    if (info) {
-        await rm(lock, { force: true });
-    }
-
-    try {
-        await writeFile(lock, "{}\n", { flag: "wx", mode: 0o600 });
-
-        return true;
-    } catch (error) {
-        if (error.code === "EEXIST") {
-            return false;
-        }
-
-        throw error;
-    }
+    // A reboot can recycle a PID. Do not count locks that are older than this boot.
+    return (
+        validPid(lock?.pid) &&
+        age >= 0 &&
+        age < Math.min(lockTime, uptime() * 1000 + 1000) &&
+        processExists(lock.pid)
+    );
 }
 
 // Run before starting an owned server, or only when the host can quit without stopping one.
 // The detached helper waits for this app PID, not for any server or runner processes.
-async function handoff(current, app, folder, args) {
-    const locked = await stat(join(folder, handoffFile)).catch(() => null);
-
-    if (locked && Date.now() - locked.mtimeMs < lockTime) {
+async function handoff(current, app, folder, appPid, mode) {
+    if (await handoffIsActive(folder)) {
         return { phase: "busy", current };
     }
 
+    const lockPath = join(folder, handoffFile);
+
+    await rm(lockPath, { force: true });
     const update = await readRecord(folder, pendingFile);
 
     if (!recordIsValid(update, current, process.platform)) {
         return { phase: "idle", current };
     }
 
-    if (!(await reserveHandoff(folder))) {
-        return { phase: "busy", current };
+    if (!validPid(Number(appPid))) {
+        throw new Error("A desktop update needs the app's process ID.");
+    }
+
+    // The native host enforces a single desktop instance. Record our PID until the
+    // detached worker can take ownership, and never let an unregistered worker install.
+    const lock = { pid: process.pid, started: Date.now(), ticket: randomUUID() };
+
+    try {
+        await writeFile(lockPath, `${JSON.stringify(lock)}\n`, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+        if (error.code === "EEXIST" && (await handoffIsActive(folder))) {
+            return { phase: "busy", current };
+        }
+
+        throw error;
     }
 
     try {
-        await runDetached(process.execPath, [
+        lock.pid = await runDetached(process.execPath, [
             fileURLToPath(import.meta.url),
             "finish",
             current,
             app,
-            ...args,
+            appPid,
+            lock.ticket,
+            ...(mode === "--hidden" ? [mode] : []),
         ]);
+        await writeRecord(folder, handoffFile, lock);
     } catch (error) {
-        await rm(join(folder, handoffFile), { force: true });
+        await rm(lockPath, { force: true });
 
         throw error;
     }
@@ -273,25 +283,30 @@ function processExists(pid) {
     }
 }
 
-async function finish(current, { app, install }, folder, pidText, hidden) {
+async function finish(current, { app, install }, folder, pidText, ticket, hidden) {
     const pid = Number(pidText);
 
-    if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) {
+    if (!validPid(pid)) {
         throw new Error("A desktop update needs the app's process ID.");
+    }
+
+    for (let elapsed = 0; elapsed < 20_000 && processExists(pid); elapsed += 100) {
+        await setTimeout(100);
+    }
+
+    const owner = await readRecord(folder, handoffFile);
+
+    if (owner?.pid !== process.pid || owner.ticket !== ticket) {
+        // The native host did not get a completed handoff. Leave its staged update alone.
+        return { phase: "idle", current };
     }
 
     const update = await readRecord(folder, pendingFile);
     const result = { phase: "error", current, version: update?.version };
-    let exited = false;
+    const exited = !processExists(pid);
     let file;
 
     try {
-        for (let elapsed = 0; elapsed < 20_000 && processExists(pid); elapsed += 100) {
-            await setTimeout(100);
-        }
-
-        exited = !processExists(pid);
-
         if (!exited) {
             throw new Error("Pi Pocket did not close. Check for the desktop update again.");
         }
@@ -329,9 +344,14 @@ async function finish(current, { app, install }, folder, pidText, hidden) {
         result.message = error.message;
     } finally {
         // Consume the attempt even if the OS would not install it. Do not loop on every app start.
-        await rm(join(folder, pendingFile), { force: true });
-        await writeRecord(folder, "last-result.json", result);
-        await rm(join(folder, handoffFile), { force: true });
+        try {
+            await rm(join(folder, pendingFile), { force: true });
+            await writeRecord(folder, "last-result.json", result);
+        } catch (error) {
+            console.error("Could not record the desktop update result:", error.message);
+        } finally {
+            await rm(join(folder, handoffFile), { force: true }).catch(() => {});
+        }
     }
 
     if (result.phase === "applied") {
@@ -342,7 +362,8 @@ async function finish(current, { app, install }, folder, pidText, hidden) {
         const args = hidden ? ["--hidden"] : [];
 
         if (process.platform === "win32") {
-            await runDetached(app, args);
+            // SW_HIDE also hides the first WinForms window, not just the helper's console.
+            await runDetached(app, args, hidden);
         } else {
             await waitForCommand("/usr/bin/open", [
                 "-a",
@@ -379,9 +400,9 @@ async function main([command, current, app, ...args]) {
         }
 
         case "handoff":
-            return handoff(current, location.app, folder, args);
+            return handoff(current, location.app, folder, args[0], args[1]);
         case "finish":
-            return finish(current, location, folder, args[0], args[1] === "--hidden");
+            return finish(current, location, folder, args[0], args[1], args[2] === "--hidden");
         default:
             throw new Error("Unknown desktop update command.");
     }

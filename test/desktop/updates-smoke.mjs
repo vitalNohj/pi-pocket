@@ -87,6 +87,18 @@ async function hash(file) {
         .digest("hex");
 }
 
+async function savedConfig() {
+    const settings = await json(config);
+
+    // Closing and reopening the web view changes people's server presence timestamps.
+    for (const user of settings.users) {
+        delete user.lastSeen;
+    }
+
+    // Compare a fingerprint so a failed assertion does not log the owner token.
+    return createHash("sha256").update(JSON.stringify(settings)).digest("hex");
+}
+
 function appVersion() {
     if (win) {
         return powershell("(Get-Item -LiteralPath $env:PP_APP).VersionInfo.ProductVersion", {
@@ -231,8 +243,9 @@ try {
         async () => (await json(running)).pid === server.pid && (await serverInfo()),
     );
     await writeFile(savedData, "saved before desktop-only update\n");
-    const kept = [runtime, manifest, runtimeFloor, startup, config, savedData];
+    const kept = [runtime, manifest, runtimeFloor, startup, savedData];
     const before = await Promise.all(kept.map(hash));
+    const configBefore = await savedConfig();
     const originalServerInfo = await serverInfo();
 
     launchApp();
@@ -278,6 +291,11 @@ try {
     });
     assert.equal((await json(running)).pid, server.pid);
     assert.deepEqual(await serverInfo(), originalServerInfo);
+    // Simulate a freshly orphaned handoff so startup has to reclaim it immediately.
+    await writeFile(
+        join(cache, "applying.json"),
+        JSON.stringify({ pid: oldPid, started: Date.now() }),
+    );
     launchApp();
 
     const newPid = await attachedApp(next, oldPid);
@@ -291,10 +309,11 @@ try {
     assert.equal(server.exitCode, null);
     assert.deepEqual(await serverInfo(), originalServerInfo);
     assert.deepEqual(await Promise.all(kept.map(hash)), before);
+    assert.equal(await savedConfig(), configBefore, "Pi Pocket settings changed");
     screenshot("after", newPid);
     const summary =
         `Desktop: ${current} (PID ${oldPid}) → ${next} (PID ${newPid}).\n` +
-        `Console server PID ${server.pid} still answers. Its Node runtime, package manifest, install marker, sign-in setting, config and data did not change.\n`;
+        `Console server PID ${server.pid} still answers. Its Node runtime, package manifest, install marker, sign-in setting and data did not change. Server settings stayed the same apart from presence timestamps.\n`;
 
     await writeFile(join(proof, "result.txt"), summary);
     console.log(summary);
