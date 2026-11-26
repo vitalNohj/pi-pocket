@@ -46,7 +46,7 @@ guard let (number, rect) = found else {
 func prepareInput() {
     guard CGPreflightPostEventAccess() else { fail("macOS has not authorized the installer input driver to post Quartz events.") }
     if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
-        NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateIgnoringOtherApps])
+        NSRunningApplication(processIdentifier: pid)?.activate(options: [])
         Thread.sleep(forTimeInterval: 0.3)
     }
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {

@@ -4,6 +4,7 @@
 // A newer pi-pocket package replaces nothing here, so this app uses only --desktop, launcher-running.json,
 // /api/pocket/info, /api/sign-in-link, and /api/restart.
 import Cocoa
+import CoreFoundation
 import UserNotifications
 import WebKit
 
@@ -386,13 +387,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         controller?.close()
         closeSessionWindows()
         settings?.window.close()
+        let loop = CFRunLoopGetMain()
+        let mode = RunLoop.Mode.modalPanel.rawValue as CFString
         localQueue.async {
             do { try self.stopLocal() }
             catch {
                 // Only this app's own direct child. A borrowed launcher has no Process handle here.
                 self.launcher?.terminate()
             }
-            DispatchQueue.main.async { sender.reply(toApplicationShouldTerminate: true) }
+            // AppKit waits in modal panel mode after .terminateLater. Use that mode for the reply.
+            CFRunLoopPerformBlock(loop, mode) { sender.reply(toApplicationShouldTerminate: true) }
+            CFRunLoopWakeUp(loop)
         }
         return .terminateLater
     }
