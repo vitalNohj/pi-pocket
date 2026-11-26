@@ -524,8 +524,8 @@ for (const [name, viewport] of [
                 "Project trust scrolls with the people on a desktop, and stays on a phone",
             );
 
-            // The key is four cells, in one row on a desktop and two rows of two on a phone: no level is cut, the key
-            // does not scroll sideways, and nothing but what scrolls sideways is wider than the screen.
+            // The key is five cells, in one row on a desktop and rows of two on a phone, the last alone: no level is
+            // cut, the key does not scroll sideways, and nothing but what scrolls sideways is wider than the screen.
             const layout = await inPage<{
                 key: string[];
                 keyRows: number[];
@@ -566,10 +566,15 @@ for (const [name, viewport] of [
             assert.deepEqual(layout.key, [
                 "None: only sessions shared one by one",
                 "Start: starts sessions, sees their own",
-                "So far: also every session here now",
-                "All: also every session that starts later",
+                "Current: also every session here now",
+                "New: also every session started from now on",
+                "All: also every session, now and later",
             ]);
-            assert.deepEqual(layout.keyRows, viewport === DESKTOP ? [4] : [2, 2], "the key's rows");
+            assert.deepEqual(
+                layout.keyRows,
+                viewport === DESKTOP ? [5] : [2, 2, 1],
+                "the key's rows",
+            );
             assert.deepEqual(layout.keyCut, [], "no level of the key is cut");
             assert.deepEqual(layout.wider, []);
 
@@ -1306,6 +1311,268 @@ test(
         } finally {
             app.config.setUsers(laptop, []);
             app.accessChanged();
+        }
+    },
+);
+
+/** Open the folder rows of the grid that lead to `path`, and its own. */
+async function openGridTo(path: string): Promise<void> {
+    for (let round = 0; round < 12; round++) {
+        const opened = await inPage<boolean>(`
+            const path = ${JSON.stringify(path)};
+            const row = [...document.querySelectorAll(".ag-group .ag-toggle")].find(
+                (each) => each.getAttribute("aria-expanded") !== "true" && (each.title === path || path.startsWith(each.title + "/")),
+            );
+
+            row?.click();
+
+            return JSON.stringify(row !== undefined);
+        `);
+
+        if (!opened) {
+            return;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+}
+
+/** The Access button of `name`'s cell on the grid's row of `folder`, as a script finds it. */
+const cellOf = (name: string, folder: string) =>
+    `document.querySelector(${JSON.stringify(`.ag-group .at-level[aria-label^=${JSON.stringify(`Access of ${name} to ${folder} on `)}]`)})`;
+
+/** The items of the open Access menu: each name, whether it is checked, and the lines under it. */
+const menuItems = () =>
+    inPage<{ name: string; checked: boolean; says: string[] }[]>(`
+        return JSON.stringify(
+            [...document.querySelectorAll(".at-level-menu .at-level-item")].map((each) => ({
+                name: each.querySelector(".at-level-name").textContent.trim(),
+                checked: each.getAttribute("aria-checked") === "true",
+                says: [...each.querySelectorAll(".at-level-says")].map((line) => line.textContent.trim()),
+            })),
+        );
+    `);
+
+/** Open the Access menu of `name`'s cell on the row of `folder`, and wait for its items. */
+async function openCell(name: string, folder: string): Promise<void> {
+    // A menu open before closes first, by its own button: its items are not this one's.
+    await inPage(
+        `document.querySelector('.at-level[aria-expanded="true"]')?.click(); return JSON.stringify(true);`,
+    );
+    await until(async () => (await menuItems()).length === 0, "no menu open");
+    await until(
+        async () =>
+            await inPage<boolean>(
+                `return JSON.stringify(${cellOf(name, folder)}?.disabled === false)`,
+            ),
+        `the Access menu of ${name} on ${folder}`,
+    );
+    await inPage(`${cellOf(name, folder)}.click(); return JSON.stringify(true);`);
+    await until(async () => (await menuItems()).length > 0, "its items");
+    await inPage(`
+        await Promise.all(document.getAnimations().map((each) => each.finished.catch(() => undefined)));
+
+        return JSON.stringify(true);
+    `);
+}
+
+/** Pick `level` (its name) in the open Access menu. */
+const pickItem = (level: string) =>
+    inPage(`
+        [...document.querySelectorAll(".at-level-menu .at-level-item")]
+            .find((each) => each.querySelector(".at-level-name").textContent.trim() === ${JSON.stringify(level)})
+            .click();
+
+        return JSON.stringify(true);
+    `);
+
+/** What the cell of `name`'s column says on each session row of the grid, by the session's title. */
+const sessionCells = (name: string) =>
+    inPage<Record<string, string>>(`
+        const at = [...document.querySelectorAll(".ag-head .ag-who-name")].findIndex(
+            (each) => each.textContent.trim() === ${JSON.stringify(name)},
+        );
+
+        return JSON.stringify(
+            Object.fromEntries(
+                [...document.querySelectorAll(".ag-session")].map((row) => [
+                    row.querySelector(".ag-title").textContent.trim(),
+                    [...row.querySelectorAll(".ag-cell")][at]?.textContent.replace(${JSON.stringify(name)}, "").replace(/\\s+/g, " ").trim() ?? "",
+                ]),
+            ),
+        );
+    `);
+
+test(
+    "the Access menu offers Current, New, and All sessions; New shows only what starts later, and each says its time",
+    real,
+    async () => {
+        const folder = join(root, "levels-ui");
+
+        mkdirSync(folder, { recursive: true });
+
+        const real_ = realpathSync(folder);
+        const [user, viewer] = [people[0]!, people[1]!];
+
+        /** A session the owner starts in the folder, shared with nobody one at a time. */
+        const make = async (title: string) => {
+            const { id } = await app.commands.createSession(owner(app), { cwd: real_, title });
+
+            await app.commands.shareSession(id, owner(app), []);
+
+            return id;
+        };
+
+        await make("Made before");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+
+        try {
+            await load(DESKTOP);
+            await openAt("computer", THIS_SERVER);
+            await grid();
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify([...document.querySelectorAll(".ag-group .ag-toggle")].some((each) => each.title === ${JSON.stringify(real_)} || ${JSON.stringify(real_)}.startsWith(each.title + "/")))`,
+                    ),
+                "the folder's row",
+            );
+            await openGridTo(real_);
+            await until(
+                async () => (await sessionCells(viewer.name))["Made before"] !== undefined,
+                "the session made before",
+            );
+            assert.equal((await sessionCells(viewer.name))["Made before"], "Invite");
+
+            // A user's menu: Start sessions after No access, then the three that show sessions.
+            await openCell(user.name, real_);
+            assert.deepEqual(
+                (await menuItems()).map((each) => each.name),
+                ["No access", "Start sessions", "Current sessions", "New sessions", "All sessions"],
+            );
+            writeFileSync(
+                "/tmp/levels-menu-user.png",
+                Buffer.from((await page.screenshot()).data, "base64"),
+            );
+
+            // A viewer's: no Start sessions.
+            await openCell(viewer.name, real_);
+            assert.deepEqual(
+                (await menuItems()).map((each) => each.name),
+                ["No access", "Current sessions", "New sessions", "All sessions"],
+            );
+            await pickItem("New sessions");
+            await until(
+                () => app.config.folderLevel(THIS_SERVER, viewer.id, real_) === "new",
+                "New sessions to be saved",
+            );
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(${cellOf(viewer.name, real_)}?.textContent.trim() === "New")`,
+                    ),
+                "the button to say New",
+            );
+
+            // One started from now on is theirs through the folder; the one made before stays out.
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            await make("Made after");
+            await until(
+                async () => (await sessionCells(viewer.name))["Made after"] === "Through folder",
+                "the later session in their column",
+            );
+            assert.equal((await sessionCells(viewer.name))["Made before"], "Invite");
+
+            // Its checked item says from when.
+            await openCell(viewer.name, real_);
+
+            const atNew = await menuItems();
+            const from = app.config.seenFrom(THIS_SERVER, viewer.id)[real_]!;
+
+            assert.deepEqual(
+                atNew.filter((each) => each.checked).map((each) => each.name),
+                ["New sessions"],
+            );
+            assert.equal(atNew.find((each) => each.checked)!.says.length, 2);
+            assert.match(atNew.find((each) => each.checked)!.says[1]!, /^From /);
+            assert.equal(
+                atNew.find((each) => each.checked)!.says[1],
+                `From ${await inPage<string>(`return JSON.stringify(new Date(${from}).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))`)}.`,
+            );
+            assert.deepEqual(
+                atNew.filter((each) => !each.checked).map((each) => each.says.length),
+                [1, 1, 1],
+                "no time on the others",
+            );
+            writeFileSync(
+                "/tmp/levels-menu-viewer.png",
+                Buffer.from((await page.screenshot()).data, "base64"),
+            );
+
+            // Current sessions: its checked item says up to when; the later session leaves their column.
+            await pickItem("Current sessions");
+            await until(
+                () => app.config.folderLevel(THIS_SERVER, viewer.id, real_) === "past",
+                "Current sessions to be saved",
+            );
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(${cellOf(viewer.name, real_)}?.textContent.trim() === "Current")`,
+                    ),
+                "the button to say Current",
+            );
+            await openCell(viewer.name, real_);
+
+            const atPast = (await menuItems()).find((each) => each.checked)!;
+
+            assert.equal(atPast.name, "Current sessions");
+            assert.equal(atPast.says.length, 2);
+            assert.match(atPast.says[1]!, /^Up to /);
+
+            // All sessions: no time.
+            await pickItem("All sessions");
+            await until(
+                () => app.config.folderLevel(THIS_SERVER, viewer.id, real_) === "all",
+                "All sessions to be saved",
+            );
+            await until(
+                async () =>
+                    await inPage<boolean>(
+                        `return JSON.stringify(${cellOf(viewer.name, real_)}?.textContent.trim() === "All")`,
+                    ),
+                "the button to say All",
+            );
+            await openCell(viewer.name, real_);
+            assert.deepEqual(
+                (await menuItems()).map((each) => each.says.length),
+                [1, 1, 1, 1],
+                "no time on any item",
+            );
+            await inPage(
+                `document.querySelector('.at-level[aria-expanded="true"]')?.click(); return JSON.stringify(true);`,
+            );
+
+            // The key, as pictures: one row at 1280 px, rows of two at 390 px.
+            await inPage(
+                `document.querySelector(".ak-key").scrollIntoView({ block: "start" }); return JSON.stringify(true);`,
+            );
+            writeFileSync(
+                "/tmp/levels-key-1280.png",
+                Buffer.from((await page.screenshot()).data, "base64"),
+            );
+            await load(PHONE);
+            await openAt("computer", THIS_SERVER);
+            await grid();
+            await inPage(
+                `document.querySelector(".ak-key").scrollIntoView({ block: "start" }); return JSON.stringify(true);`,
+            );
+            writeFileSync(
+                "/tmp/levels-key-390.png",
+                Buffer.from((await page.screenshot()).data, "base64"),
+            );
+        } finally {
+            await app.setFolderLevel(owner(app), THIS_SERVER, viewer.id, real_, "none");
         }
     },
 );

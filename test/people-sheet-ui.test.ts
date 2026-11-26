@@ -1088,7 +1088,7 @@ test(
         await until(async () => (await menu()).length > 0, "her Access menu");
         assert.deepEqual(
             (await menu()).map((each) => each.split(":")[0]),
-            ["No access", "Sessions so far", "All sessions"],
+            ["No access", "Current sessions", "New sessions", "All sessions"],
         );
         assert.ok(
             (await menu()).every((each) => (each.split(": ")[1] ?? "").length > 0),
@@ -6038,7 +6038,7 @@ test(
                     await inPage<string[]>(
                         `return JSON.stringify([...document.querySelectorAll(".at-level-menu .at-level-name")].map((each) => each.textContent.trim()))`,
                     ),
-                    ["No access", "Sessions so far", "All sessions"],
+                    ["No access", "Current sessions", "New sessions", "All sessions"],
                 );
 
                 // Someone in charge of the computer, as who manages runners is, is given no folder there: no All

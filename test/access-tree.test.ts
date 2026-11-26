@@ -428,6 +428,43 @@ test("a folder they see every session in gives them the sessions in it, in what 
     assert.equal(seenBy(["/other", "/home/a"], above, there), "/home/a");
 });
 
+test("a folder seen up to a time or from a time on gives only the sessions made then, as the server judges", () => {
+    const seenBy = tree.seenBy as (
+        sees: string[],
+        session: Session & { createdAt?: number },
+        there: Session[],
+        until?: Record<string, number>,
+        from?: Record<string, number>,
+    ) => string | undefined;
+    const levelOf = tree.levelOf as (
+        folder: string,
+        given: string[],
+        sees: string[],
+        until: Record<string, number>,
+        from: Record<string, number>,
+    ) => string;
+    const made = (createdAt: number) => ({ id: createdAt, cwd: "/home/a/app", createdAt });
+    const sees = ["/home/a/app"];
+    const at = { "/home/a/app": 200 };
+
+    // Current sessions: up to the time, not after it.
+    assert.equal(seenBy(sees, made(200), [], at), "/home/a/app");
+    assert.equal(seenBy(sees, made(201), [], at), undefined);
+    // New sessions: at the time and after it, not before it.
+    assert.equal(seenBy(sees, made(199), [], {}, at), undefined);
+    assert.equal(seenBy(sees, made(200), [], {}, at), "/home/a/app");
+    assert.equal(seenBy(sees, made(201), [], {}, at), "/home/a/app");
+    // All sessions: both.
+    assert.equal(seenBy(sees, made(1), [], {}, {}), "/home/a/app");
+
+    // The level, in the order of the server's `folderLevel`.
+    assert.equal(levelOf("/x", [], [], {}, {}), "none");
+    assert.equal(levelOf("/x", ["/x"], [], {}, { "/x": 1 }), "start");
+    assert.equal(levelOf("/x", ["/x"], ["/x"], { "/x": 1 }, {}), "past");
+    assert.equal(levelOf("/x", ["/x"], ["/x"], {}, { "/x": 1 }), "new");
+    assert.equal(levelOf("/x", ["/x"], ["/x"], {}, {}), "all");
+});
+
 type Browsed = { folder?: { name: string; path: string }; note?: string; more?: number };
 
 const browseRows = tree.browseRows as (input: {

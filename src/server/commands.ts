@@ -683,7 +683,7 @@ export class Commands {
                             // This initializer only adds the new session's record.
                             const sessions = await tx.doc(SessionsDoc);
                             // When its record is written, not when the request came: a worktree is made between the
-                            // two, and "Sessions so far" (`access.ts` `seesFolder`) goes by this time.
+                            // two, and "Current sessions" and "New sessions" (`access.ts` `seesFolder`) go by this time.
                             const now = Date.now();
 
                             (await tx.doc(AgentDoc, id)).extensions = app.remoteExtensions();
@@ -793,7 +793,7 @@ export class Commands {
                             // This initializer only adds the new session's record.
                             const sessions = await tx.doc(SessionsDoc);
                             // When its record is written, not when the request came: a worktree is made between the
-                            // two, and "Sessions so far" (`access.ts` `seesFolder`) goes by this time.
+                            // two, and "Current sessions" and "New sessions" (`access.ts` `seesFolder`) go by this time.
                             const now = Date.now();
 
                             sessions.items[String(id)] = {

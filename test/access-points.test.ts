@@ -1796,6 +1796,7 @@ describe("a folder's level, for a viewer and a user", () => {
             assert.deepEqual(app.config.givenFolders(THIS_SERVER, vera.id), [folder]);
             assert.deepEqual(app.config.seenFolders(THIS_SERVER, vera.id), [folder]);
             assert.deepEqual(app.config.seenUntil(THIS_SERVER, vera.id), {});
+            assert.deepEqual(app.config.seenFrom(THIS_SERVER, vera.id), {});
             assert.deepEqual(listed(vera), [String(before1)]);
             await until(() => everListed(watching).has(String(before1)), "the list, sent again");
 
@@ -1846,12 +1847,13 @@ describe("a folder's level, for a viewer and a user", () => {
             assert.deepEqual(app.config.givenFolders(THIS_SERVER, vera.id), []);
             assert.deepEqual(app.config.seenFolders(THIS_SERVER, vera.id), []);
             assert.deepEqual(app.config.seenUntil(THIS_SERVER, vera.id), {});
+            assert.deepEqual(app.config.seenFrom(THIS_SERVER, vera.id), {});
         } finally {
             app.detach(tab.client);
         }
     });
 
-    it("at Sessions so far shows what was made before the change, not what another person makes after it", async () => {
+    it("at Current sessions shows what was made before the change, not what another person makes after it", async () => {
         const watching = fakeTab(undefined, vera);
 
         await app.attach(watching.client);
@@ -1877,7 +1879,7 @@ describe("a folder's level, for a viewer and a user", () => {
             assert.ok(listed(vera).includes(String(after1)));
             await until(() => everListed(watching).has(String(after1)), "the later one, now");
 
-            // Back to Sessions so far: nothing that exists is hidden; what starts after it is.
+            // Back to Current sessions: nothing that exists is hidden; what starts after it is.
             await pause();
             await level(owner(app), { person: vera.id, folder, level: "past" });
             assert.ok(listed(vera).includes(String(before1)));
@@ -1893,7 +1895,52 @@ describe("a folder's level, for a viewer and a user", () => {
         }
     });
 
-    it("lets a user at Sessions so far start sessions there and keep their own later ones; a viewer is refused Start sessions", async () => {
+    it("at New sessions shows what another person makes after the change, not what was made before it", async () => {
+        const watching = fakeTab(undefined, vera);
+
+        await app.attach(watching.client);
+
+        try {
+            await pause();
+            const answer = await level(owner(app), { person: vera.id, folder, level: "new" });
+
+            assert.equal(answer.status, 200, JSON.stringify(answer.body));
+            assert.equal(app.config.folderLevel(THIS_SERVER, vera.id, folder), "new");
+            assert.equal(typeof app.config.seenFrom(THIS_SERVER, vera.id)[folder], "number");
+            assert.deepEqual(app.config.seenUntil(THIS_SERVER, vera.id), {});
+            // The computer's record sent to the page says the time.
+            assert.deepEqual(
+                (answer.body as { seesFrom?: Record<string, unknown> }).seesFrom?.[vera.id],
+                app.config.seenFrom(THIS_SERVER, vera.id),
+            );
+            assert.deepEqual(app.thisServer(owner(app))?.seesFrom[vera.id], {
+                ...app.config.seenFrom(THIS_SERVER, vera.id),
+            });
+
+            // Made before: not in the list, not by its id, not in a live update.
+            assert.ok(!listed(vera).includes(String(before1)));
+            assert.equal((await call(vera, `c/${before1}/history`)).status, 404);
+            await pause();
+
+            const after1 = await newSession(app, levelled);
+
+            // Made after: in the list, by its id to read, and in the live updates.
+            assert.ok(listed(vera).includes(String(after1)));
+            assert.equal((await call(vera, `c/${after1}/history`)).status, 200);
+            await until(() => everListed(watching).has(String(after1)), "the later session");
+            assert.equal(everSent(watching, before1), false);
+
+            // Set again, it keeps its time: what was made before stays out, what was made after stays in.
+            await level(owner(app), { person: vera.id, folder, level: "new" });
+            assert.ok(!listed(vera).includes(String(before1)));
+            assert.ok(listed(vera).includes(String(after1)));
+        } finally {
+            app.detach(watching.client);
+            await level(owner(app), { person: vera.id, folder, level: "none" });
+        }
+    });
+
+    it("lets a user at Current sessions start sessions there and keep their own later ones; a viewer is refused Start sessions", async () => {
         assert.equal(
             (await level(owner(app), { person: ulla.id, folder, level: "past" })).status,
             200,
@@ -1911,7 +1958,10 @@ describe("a folder's level, for a viewer and a user", () => {
         const refused = await level(owner(app), { person: vera.id, folder, level: "start" });
 
         assert.equal(refused.status, 400);
-        assert.match(String((refused.body as { error?: string }).error), /viewer/);
+        assert.match(
+            String((refused.body as { error?: string }).error),
+            /is a viewer: they start nothing\. Choose Current sessions, New sessions, or All sessions\./,
+        );
         await level(owner(app), { person: ulla.id, folder, level: "none" });
     });
 
@@ -1931,7 +1981,7 @@ describe("a folder's level, for a viewer and a user", () => {
         );
     });
 
-    it("at Sessions so far hides a session whose making ended after the change, though it began before", async () => {
+    it("at Current sessions hides a session whose making ended after the change, though it began before", async () => {
         const harness = app.harness;
         const make = harness.createConversation;
 
@@ -1969,7 +2019,7 @@ describe("a folder's level, for a viewer and a user", () => {
 
             assert.ok(
                 !listed(vera).includes(String(late)),
-                "a session that did not exist when Sessions so far was set is shown",
+                "a session that did not exist when Current sessions was set is shown",
             );
         } finally {
             Reflect.deleteProperty(harness, "createConversation");

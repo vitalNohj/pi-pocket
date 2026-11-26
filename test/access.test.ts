@@ -54,6 +54,7 @@ function computer(id: string, patch: Partial<Computer> = {}): Computer {
         given: (person) => (person === guest.id ? ["/given"] : []),
         sees: () => [],
         seesUntil: () => ({}),
+        seesFrom: () => ({}),
         givenBy: () => ({}),
         holders: () => [],
         sharesNew: () => [],
@@ -566,11 +567,13 @@ describe("may this person see every session in a folder", () => {
 });
 
 describe("what a level of a folder shows", () => {
-    // The guest and the viewer have /given on this server; who sees its sessions, and up to when, is the test's.
-    // Session 70 was made at 100 by the stranger in /given, 71 at 300 in /given, 72 at 100 beside it in /given-too.
+    // The guest and the viewer have /given on this server; who sees its sessions, and up to or from when, is the
+    // test's. Session 70 was made at 100 by the stranger in /given, 71 at 300 in /given, 72 at 100 beside it in
+    // /given-too.
     const levels = (
         sees: (person: string) => readonly string[],
         until: (person: string) => Readonly<Record<string, number>> = () => ({}),
+        from: (person: string) => Readonly<Record<string, number>> = () => ({}),
     ) =>
         world(
             [
@@ -579,6 +582,7 @@ describe("what a level of a folder shows", () => {
                         person === guest.id || person === viewer.id ? ["/given"] : [],
                     sees,
                     seesUntil: until,
+                    seesFrom: from,
                 }),
             ],
             [
@@ -614,8 +618,9 @@ describe("what a level of a folder shows", () => {
         );
     const everyone = () => ["/given"];
     const soFar = () => ({ "/given": 200 });
+    const fromNow = () => ({ "/given": 200 });
 
-    it("at Sessions so far, shows a session made before the change, and not one another person made after it", () => {
+    it("at Current sessions, shows a session made before the change, and not one another person made after it", () => {
         const { policy } = levels(everyone, soFar);
 
         for (const person of [guest, viewer]) {
@@ -638,7 +643,38 @@ describe("what a level of a folder shows", () => {
         }
     });
 
-    it("from All sessions to Sessions so far, hides nothing made by then, and what starts later", () => {
+    it("at New sessions, refuses a session made before the change, and shows one made at it and one after it", () => {
+        const { policy } = levels(everyone, undefined, fromNow);
+
+        for (const person of [guest, viewer]) {
+            assert.equal(policy.maySee(person, "70"), false, person.id);
+            assert.equal(policy.maySee(person, "71"), true, person.id);
+        }
+
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given", 199), false);
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given", 200), true);
+        assert.equal(policy.seesFolder(guest, THIS_SERVER, "/given", 201), true);
+        // A session made at any time after it is seen: whether they see every session in it is `seesEvery`'s.
+        assert.equal(policy.seesFolder(viewer, THIS_SERVER, "/given", Infinity), true);
+    });
+
+    it("asks whether someone sees every session in a folder: All sessions only, not Current, New, or Start", () => {
+        const all = levels(everyone).policy;
+
+        assert.equal(all.seesEvery(guest, THIS_SERVER, "/given"), true);
+        assert.equal(all.seesEvery(guest, THIS_SERVER, "/given/app"), true, "a folder inside it");
+        assert.equal(all.seesEvery(guest, THIS_SERVER, "/given-too"), false, "a folder beside it");
+        assert.equal(levels(everyone, soFar).policy.seesEvery(guest, THIS_SERVER, "/given"), false);
+        assert.equal(
+            levels(everyone, undefined, fromNow).policy.seesEvery(guest, THIS_SERVER, "/given"),
+            false,
+        );
+        assert.equal(levels(() => []).policy.seesEvery(guest, THIS_SERVER, "/given"), false);
+        // Who is in charge sees every session by that, not by a folder.
+        assert.equal(all.seesEvery(owner, THIS_SERVER, "/given"), false);
+    });
+
+    it("from All sessions to Current sessions, hides nothing made by then, and what starts later", () => {
         // The change was made at 300: 70 and 71 exist then, a session made at 301 does not.
         const { policy } = levels(everyone, () => ({ "/given": 300 }));
 
@@ -654,9 +690,13 @@ describe("what a level of a folder shows", () => {
         assert.equal(levels(() => []).policy.maySee(guest, "70"), false);
     });
 
-    it("lets a viewer at either level read and never prompt, start, or work in the folder", () => {
-        for (const until of [() => ({}), soFar]) {
-            const { policy } = levels(everyone, until);
+    it("lets a viewer at any level that shows sessions read and never prompt, start, or work in the folder", () => {
+        for (const [until, from] of [
+            [() => ({}), () => ({})],
+            [soFar, () => ({})],
+            [() => ({}), () => ({ "/given": 50 })],
+        ] as const) {
+            const { policy } = levels(everyone, until, from);
 
             assert.equal(policy.maySee(viewer, "70"), true);
             assert.equal(policy.maySteer(viewer, "70"), false);
@@ -694,7 +734,7 @@ describe("who may set a folder's level", () => {
     it("lets who is in charge set any level, and a viewer's but Start sessions", () => {
         const { policy } = setting();
 
-        for (const level of ["start", "past", "all", "none"] as const) {
+        for (const level of ["start", "past", "new", "all", "none"] as const) {
             assert.equal(
                 policy.maySetLevel(owner, THIS_SERVER, plain, "/x", "none", level),
                 true,
@@ -703,8 +743,50 @@ describe("who may set a folder's level", () => {
         }
 
         assert.equal(policy.maySetLevel(owner, THIS_SERVER, viewer, "/x", "none", "past"), true);
+        assert.equal(policy.maySetLevel(owner, THIS_SERVER, viewer, "/x", "none", "new"), true);
         assert.equal(policy.maySetLevel(owner, THIS_SERVER, viewer, "/x", "none", "all"), true);
         assert.equal(policy.maySetLevel(owner, THIS_SERVER, viewer, "/x", "none", "start"), false);
+        assert.equal(policy.maySetLevel(owner, THIS_SERVER, viewer, "/x", "new", "start"), false);
+    });
+
+    it("lets a giver at All sessions let another see the sessions, and one at New sessions or Current not", () => {
+        // The guest has /proj from the lead at Start sessions; the lead's own level of /proj is the test's.
+        const all = setting().policy;
+
+        for (const level of ["past", "new", "all"] as const) {
+            assert.equal(all.maySetLevel(lead, THIS_SERVER, guest, "/proj", "start", level), true);
+            assert.equal(all.maySetLevel(lead, THIS_SERVER, viewer, "/proj", "none", level), true);
+        }
+
+        assert.equal(all.maySetSees(lead, THIS_SERVER, guest.id, "/proj", true), true);
+
+        /** The giver's own time on /proj; nobody else has one. */
+        const time = (person: string): Record<string, number> =>
+            person === lead.id ? { "/proj": 100 } : {};
+
+        for (const patch of [{ seesFrom: time }, { seesUntil: time }]) {
+            const { policy } = setting(patch);
+
+            for (const level of ["past", "new", "all"] as const) {
+                assert.equal(
+                    policy.maySetLevel(lead, THIS_SERVER, guest, "/proj", "start", level),
+                    false,
+                    level,
+                );
+                assert.equal(
+                    policy.maySetLevel(lead, THIS_SERVER, viewer, "/proj", "none", level),
+                    false,
+                    level,
+                );
+            }
+
+            assert.equal(policy.maySetSees(lead, THIS_SERVER, guest.id, "/proj", true), false);
+            // They still give it to start in, and take it back.
+            assert.equal(
+                policy.maySetLevel(lead, THIS_SERVER, guest, "/proj", "start", "none"),
+                true,
+            );
+        }
     });
 
     it("refuses someone in charge, invited to one session, or not chosen as the one given it", () => {
