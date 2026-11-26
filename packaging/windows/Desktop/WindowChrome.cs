@@ -147,13 +147,13 @@ namespace PiPocket
             if (DwmSetWindowAttribute(Handle, 20, ref immersive, 4) != 0) { DwmSetWindowAttribute(Handle, 19, ref immersive, 4); }
             int backdrop = pageChrome && host.WindowPrefs.seeThrough && !accessible && !fullScreen && AllowsTransparency()
                 ? (host.WindowPrefs.material == "mica" ? 2 : 3) : 1; // DWMSBT_MAINWINDOW / TRANSIENTWINDOW
-            var margins = backdrop == 1 ? new Margins { Top = Math.Max(0, caption.Bottom) } : new Margins { Top = -1 };
+            var margins = backdrop == 1 ? new Margins { Top = FrameExtension } : new Margins { Top = -1 };
             int glass = DwmExtendFrameIntoClientArea(Handle, ref margins);
             int result = DwmSetWindowAttribute(Handle, 38, ref backdrop, 4);
             translucent = backdrop != 1 && glass == 0 && result == 0;
             if (backdrop != 1 && !translucent)
             {
-                margins.Top = Math.Max(0, caption.Bottom);
+                margins.Top = FrameExtension;
                 DwmExtendFrameIntoClientArea(Handle, ref margins);
             }
 
@@ -162,8 +162,10 @@ namespace PiPocket
             int foreground = !accessible && text.HasValue ? ColorRef(text.Value) : -1;
             DwmSetWindowAttribute(Handle, 35, ref background, 4); // DWMWA_CAPTION_COLOR, Win11
             DwmSetWindowAttribute(Handle, 36, ref foreground, 4);
-            BackColor = translucent ? Color.Black : (!accessible ? frame ?? SystemColors.Window : SystemColors.Window);
-            view.DefaultBackgroundColor = translucent ? Color.Transparent : BackColor;
+            Color surface = !accessible ? frame ?? SystemColors.Window : SystemColors.Window;
+            // Black in the extended area lets DWM paint the window buttons over the custom frame.
+            BackColor = translucent || seamless ? Color.Black : surface;
+            view.DefaultBackgroundColor = translucent ? Color.Transparent : surface;
             bool showMenu = !fullScreen && (host.NativeShowMenuBar || altMenu);
             bool showNotice = !fullScreen && remoteNotice.Text.Length > 0;
             desktopMenu.Visible = showMenu;
@@ -183,10 +185,15 @@ namespace PiPocket
 
             // A child HWND would otherwise cover (and receive input over) the OS-owned caption buttons.
             Region clip = null;
-            if (top == 0 && !caption.IsEmpty)
+            if (top == 0 && seamless)
             {
                 clip = new Region(view.ClientRectangle);
                 clip.Exclude(caption);
+                if (!IsZoomed(Handle))
+                {
+                    // This narrow strip belongs to the native top resize handle, not to the child window.
+                    clip.Exclude(new Rectangle(0, 0, view.Width, TopResize));
+                }
             }
             view.Region = clip;
             if (viewClip != null) { viewClip.Dispose(); }
@@ -228,6 +235,10 @@ namespace PiPocket
             }
         }
 
+        int FrameExtension { get { return seamless ? Math.Max(caption.Bottom, GetSystemMetricsForDpi(4, (uint)Dpi) + FrameThickness(33)) : 0; } }
+        int FrameThickness(int metric) { return GetSystemMetricsForDpi(metric, (uint)Dpi) + GetSystemMetricsForDpi(92, (uint)Dpi); }
+        int TopResize { get { return Math.Max(1, Dpi / 32); } }
+
         Rectangle CaptionBounds()
         {
             Rect bounds, window;
@@ -264,33 +275,42 @@ namespace PiPocket
         bool HandleChrome(ref Message message)
         {
             if (!seamless) { return false; }
+            IntPtr result;
+            bool handled = DwmDefWindowProc(message.HWnd, message.Msg, message.WParam, message.LParam, out result);
             if (message.Msg == 0x0083 && message.WParam != IntPtr.Zero) // WM_NCCALCSIZE
             {
-                DefWndProc(ref message);
+                // Use the window's own rectangle, not DefWindowProc's caption-inset rectangle. DWM draws its buttons
+                // in the extended frame. Keep the side and bottom sizing borders and the invisible maximized inset.
                 Rect client = (Rect)Marshal.PtrToStructure(message.LParam, typeof(Rect));
-                // Keep the OS-sized frame, including the different maximized work-area inset. Remove only the caption.
-                client.Top -= GetSystemMetricsForDpi(4, (uint)Dpi);
+                int horizontal = FrameThickness(32);
+                int vertical = FrameThickness(33);
+                client.Left += horizontal;
+                client.Right -= horizontal;
+                client.Bottom -= vertical;
+                if (IsZoomed(message.HWnd)) { client.Top += vertical; }
                 Marshal.StructureToPtr(client, message.LParam, false);
                 message.Result = IntPtr.Zero;
                 return true;
             }
-            if (message.Msg == 0x0084 || message.Msg == 0x02A2) // WM_NCHITTEST / WM_NCMOUSELEAVE
+            if (handled)
             {
-                IntPtr result;
-                if (DwmDefWindowProc(message.HWnd, message.Msg, message.WParam, message.LParam, out result))
+                message.Result = result;
+                return true;
+            }
+            if (message.Msg == 0x0084) // WM_NCHITTEST
+            {
+                Point p = PointToClient(new Point(unchecked((short)message.LParam.ToInt64()),
+                    unchecked((short)(message.LParam.ToInt64() >> 16))));
+                if (p.Y >= 0 && p.Y < TopResize && !IsZoomed(message.HWnd))
                 {
-                    message.Result = result;
+                    int side = FrameThickness(32);
+                    message.Result = new IntPtr(p.X < side ? 13 : p.X >= ClientSize.Width - side ? 14 : 12);
                     return true;
                 }
-                if (message.Msg == 0x0084)
+                if (p.Y >= 0 && p.Y < view.Top && !caption.Contains(p))
                 {
-                    Point p = PointToClient(new Point(unchecked((short)message.LParam.ToInt64()),
-                        unchecked((short)(message.LParam.ToInt64() >> 16))));
-                    if (p.Y >= 0 && p.Y < view.Top && !caption.Contains(p))
-                    {
-                        message.Result = new IntPtr(2); // native fallback band (HTCAPTION)
-                        return true;
-                    }
+                    message.Result = new IntPtr(2); // native fallback band (HTCAPTION)
+                    return true;
                 }
             }
             return false;
@@ -322,6 +342,7 @@ namespace PiPocket
         [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
         [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int w, int h, uint flags);
         [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+        [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr hwnd);
         [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr hwnd);
         [DllImport("user32.dll")] static extern int GetSystemMetricsForDpi(int index, uint dpi);
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();

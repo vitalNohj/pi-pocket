@@ -17,6 +17,9 @@ public static class NativeWindowFixture {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr w, out Rect r);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr w, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr w, ref Point p);
+    [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr w);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr w, int command);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr w, int attribute, out Rect bounds, int size);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
     public static IntPtr[] Windows(int process) {
@@ -35,7 +38,18 @@ public static class NativeWindowFixture {
     public static void Click(IntPtr w, int x, int y) {
         var p = new Point { X = x, Y = y };
         ClientToScreen(w, ref p);
-        SetCursorPos(p.X, p.Y);
+        ClickScreen(p.X, p.Y);
+    }
+    public static void ClickMaximize(IntPtr w) {
+        Rect window, buttons;
+        if (!GetWindowRect(w, out window) || DwmGetWindowAttribute(w, 5, out buttons, Marshal.SizeOf(typeof(Rect))) != 0 ||
+            buttons.Right <= buttons.Left || buttons.Bottom <= buttons.Top) {
+            throw new InvalidOperationException("No native caption bounds");
+        }
+        ClickScreen(window.Left + (buttons.Left + buttons.Right) / 2, window.Top + (buttons.Top + buttons.Bottom) / 2);
+    }
+    static void ClickScreen(int x, int y) {
+        SetCursorPos(x, y);
         mouse_event(2, 0, 0, 0, UIntPtr.Zero);
         mouse_event(4, 0, 0, 0, UIntPtr.Zero);
     }
@@ -91,6 +105,12 @@ try {
         Start-Sleep -Seconds 2
         Screenshot "$chrome-light"
         if ($chrome -eq 'seamless') {
+            [NativeWindowFixture]::ClickMaximize($window)
+            Wait-For 'maximize with the native button' { [NativeWindowFixture]::IsZoomed($window) }
+            Screenshot 'seamless-maximized'
+            [void][NativeWindowFixture]::ShowWindow($window, 9) # SW_RESTORE
+            Wait-For 'restore the window' { -not [NativeWindowFixture]::IsZoomed($window) }
+            Start-Sleep -Seconds 1
             [NativeWindowFixture]::Click($window, 616, 212)
             Wait-For 'save the session file without replacing the existing file' { Test-Path -LiteralPath $completed }
             if ((Get-Content -Raw $completed).Trim() -ne 'Pi Pocket desktop download fixture' -or
@@ -117,7 +137,7 @@ try {
         Start-Process -FilePath $appExe -ArgumentList '--quit' -Wait
         Wait-For 'quit' { $app.Refresh(); $app.HasExited }
     }
-    'System and Seamless; light and dark; a second window; existing name kept; Save dialog cancelled.' |
+    'System and Seamless; light and dark; native maximize; a second window; existing name kept; Save dialog cancelled.' |
         Set-Content (Join-Path $out 'assertions.txt')
 } catch {
     Screenshot 'failure'
