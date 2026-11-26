@@ -7744,8 +7744,8 @@ div.group-head {
     }
 }
 
-/* One person on one computer (`sheets/access.js` `AccessRow`), a person under a computer in Runners and a computer
- * under a person in People: whether they may use it, then the tree of their folders and their sessions there. */
+/* One computer's card under a person's Permissions (`sheets/people.js` `ComputerPermissions`): its name, then that
+ * person's rights there, or Choose. */
 .access-row {
     display: flex;
     flex-direction: column;
@@ -7761,186 +7761,32 @@ div.group-head {
     margin-top: 0;
 }
 
-/* That tree (`AccessTree`), with the rows of the Files panel's (`.ft-row`): a folder given to them, and one level in
- * the sessions they have in it. A line is a row and, at its end, what takes it back. */
-.at-tree {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding-top: 8px;
-    border-top: 1px solid var(--hair);
-    min-width: 0;
+/* A computer on a person's page. Only a row that opens the grid responds to a press. */
+.person-computer {
+    min-height: 44px;
+    width: 100%;
+    gap: 10px;
+    text-align: left;
 }
 
-.at-node,
-.at-group {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-}
-
-/* The sessions of an opened row: as high as 18 of one line each (such a row is 28px, `.ft-row`, and 4px from the
- * next), then that list scrolls alone. A session whose place does not fit beside its name takes two lines
- * (`.at-about`), so fewer of those show at once. The room around it keeps the focus ring of a button at its edge
- * whole. */
-.at-group {
-    --rows: 18;
-    max-height: calc(var(--rows) * 28px + (var(--rows) - 1) * 4px + 4px);
-    margin: -2px;
-    padding: 2px;
-    overflow-y: auto;
-}
-
-.at-group > * {
-    flex: none;
-}
-
-.at-line {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-}
-
-.at-line > .ft-row {
-    flex: 1 1 0;
-    width: auto;
-    min-width: 0;
-}
-
-.at-tree .ft-row .icon:not(.chev) {
-    color: var(--muted);
-}
-
-.at-count,
-.at-how,
-.at-where {
-    color: var(--muted);
-    font-size: 11.5px;
-}
-
-.at-count {
-    flex: none;
-    font-variant-numeric: tabular-nums;
-}
-
-/* A session: its name, how they have it, and where it works; its buttons go under it where the two do not fit. It is
- * not pressed itself, so it does not light up under the pointer. Its icon and its buttons stay level with the name's
- * first line when what it says takes more lines. */
-.at-session {
-    flex-wrap: wrap;
-    align-items: flex-start;
-}
-
-.at-session > .ft-row {
-    flex: 1 1 15rem;
-    align-items: flex-start;
-    padding-top: 6px;
-    padding-bottom: 5px;
-    background: none;
-    white-space: normal;
-}
-
-.at-session > .ft-row > .icon {
-    flex: none;
-    margin-top: 1px;
-}
-
-.at-session > .at-actions {
-    margin-top: 1px;
-}
-
-/* Its name, how they have it, and its place, side by side while they fit. Nothing is cut short: what does not fit
- * beside the name goes under it, whole, and a name or place longer than the line takes more lines. A place cut short
- * would lose its end, which is what tells two folders apart. */
-.at-about {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    flex: 1 1 0;
-    gap: 2px 6px;
-    min-width: 0;
-}
-
-.at-session-name,
-.at-how,
-.at-where {
-    flex: 0 1 auto;
+.person-computer > .grow {
     min-width: 0;
     overflow-wrap: anywhere;
 }
 
-.at-session-name {
-    color: var(--text);
-}
-
-.at-where {
-    color: var(--faint);
-}
-
-/* A session they do not have, listed to be given (Invite at its end): its name is as quiet as the rest of its line. */
-.at-session.off .at-session-name {
+.person-computer > svg {
+    flex: none;
     color: var(--muted);
 }
 
-/* A folder's whole path shows, on more lines where one is too short: its end is what tells two folders apart. */
-.at-tree .at-folder {
-    padding-top: 4px;
-    padding-bottom: 4px;
-    white-space: normal;
+.person-computer-line {
+    display: block;
 }
 
-/* It breaks after a separator only (`access.js` `pathParts`), so a folder's name stays whole; a name longer than the
- * line still breaks. */
-.at-folder > .ft-name {
-    overflow-wrap: break-word;
-    min-width: 0;
-}
-
-.at-actions {
-    display: flex;
-    align-items: center;
-    flex: none;
-    gap: 8px;
-    margin-left: auto;
-}
-
-/* The tree's buttons are a row high, so the lines keep their distance and two buttons never touch. */
-.at-tree .button.small {
-    min-height: 26px;
-    padding: 2px 10px;
-}
-
-/* What ends a line (Revoke, Remove) has one width, and a line without it keeps its place: the buttons before it are
- * one column down the tree. */
-.at-end {
-    flex: none;
-    width: 4.75rem;
-    justify-content: center;
-}
-
-/* A folder's line: the folder, then whether they see every session in it, and Remove; those go under it where the
- * line is too short for both. */
-.at-folder-line {
-    flex-wrap: wrap;
-}
-
-.at-folder-line > .ft-row {
-    flex: 1 1 12rem;
-}
-
-/* Its switch's name takes more lines where the line is short, as on a phone. */
-.at-folder-line > .at-actions {
-    flex: 0 1 auto;
-    min-width: 0;
-}
-
-.at-sees {
-    min-width: 0;
-    color: var(--muted);
-    font-size: 11.5px;
-    text-align: right;
+@media (hover: hover) {
+    button.person-computer:hover {
+        background: var(--hover);
+    }
 }
 
 /* A folder's Access menu (`access.js` `LevelMenu`): a button of one width that says the level, so the buttons are one
@@ -7954,21 +7800,8 @@ div.group-head {
     min-width: 0;
 }
 
-.at-tree .at-level {
-    flex: none;
-    justify-content: space-between;
-    gap: 4px;
-    width: 4.75rem;
-}
-
 .at-level .icon {
     color: var(--faint);
-}
-
-/* A level a folder has from the folder above it: as quiet as its count. */
-.at-tree .at-level.inherited {
-    color: var(--muted);
-    font-style: italic;
 }
 
 .at-level-menu {
@@ -8031,31 +7864,18 @@ div.group-head {
     line-height: 1.35;
 }
 
-.at-tree .at-note {
-    height: auto;
-    padding-top: 4px;
-    padding-bottom: 4px;
-    white-space: normal;
-}
-
-/* All folders (`access.js` `useAllFolders`): the row that shows the rest of a long list. */
-.at-tree .at-more,
-.ag-more {
-    color: var(--accent);
-    font-size: 12px;
-}
-
+/* All folders: the rest of a long list, and its touch targets. */
 .ag-more {
     min-height: 32px;
     padding: 0;
     border: 0;
     background: none;
+    color: var(--accent);
+    font-size: 12px;
     font-weight: 500;
 }
 
-/* A thumb's height for each control of All folders: its rows are that high already (`.ft-row`, `.ag-row`). */
 @media (pointer: coarse) {
-    .at-tree .at-browse + .at-actions .at-level,
     .ag-all .ag-toggle,
     .ag-browse .ag-toggle,
     .ag-browse .ag-cell .at-level,
@@ -8064,55 +7884,10 @@ div.group-head {
     }
 }
 
-/* When I last used a session, at the end of its row: one narrow column down a list. */
-.at-used {
-    flex: none;
-    min-width: 2.2em;
-    margin-left: auto;
-    padding-top: 1px;
-    color: var(--faint);
-    font-size: 11.5px;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-}
-
-/* A folder they do not have, listed to be given (Add at its end): as quiet as a session they do not have. */
-.at-node.off > .at-line > .ft-row.dir {
-    color: var(--muted);
-}
-
-/* What a search found, in a session's name, its place, or a folder's path. */
-.at-tree mark {
+.ag-table mark {
     border-radius: 2px;
     background: color-mix(in srgb, var(--accent) 24%, transparent);
     color: inherit;
-}
-
-/* A person's folders and sessions in People (`people.js` `Access`): one card for each computer, under the search and
- * the filters over them all. */
-.access {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    min-width: 0;
-}
-
-.access > .group-title {
-    margin-bottom: 0;
-}
-
-/* The search and its filters stay in sight while the cards under them scroll. Their own background covers what passes
- * under them, and the room around them keeps a focus ring whole. */
-.access-find {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin: 0 -4px;
-    padding: 6px 4px 8px;
-    background: var(--panel);
 }
 
 /* The field holds, at its end, how many sessions are listed and what clears the search and the filters. */
@@ -8202,14 +7977,13 @@ div.group-head {
     color: var(--accent);
 }
 
-/* Sessions selected on a person's page (`sheets/session-select.js`): Select in the tool row, a checkbox at the start of
- * each session and folder listed, and the bar under the tool row that shares or takes back what is checked. */
+/* Select in the Computer grid: a checkbox on each session and folder, and a bar over the grid. */
 .sel-toggle {
     flex: none;
 }
 
 /* A checkbox's whole box takes the press: a row high, and on a touch screen 44px each way. */
-.access {
+.access-sheet {
     --sel-size: 28px;
 }
 
@@ -8236,7 +8010,7 @@ div.group-head {
 }
 
 @media (pointer: coarse) {
-    .access {
+    .access-sheet {
         --sel-size: 44px;
     }
 
@@ -8244,11 +8018,6 @@ div.group-head {
         width: 18px;
         height: 18px;
     }
-}
-
-/* A session's checkbox stays level with the first line of its name. */
-.at-session > .sel-check {
-    align-self: flex-start;
 }
 
 .sel-bar {
@@ -8567,61 +8336,6 @@ div.group-head {
     overflow-y: auto;
 }
 
-/* A project's row in a person's tree: its name, then its folder, quieter, on one line cut short at its end. */
-.at-folder.at-project > .ft-name {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    min-width: 0;
-    overflow: hidden;
-}
-
-.at-project .at-path {
-    overflow: hidden;
-    min-width: 0;
-    color: var(--faint);
-    font-size: 11.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-@media (max-width: 719px) {
-    .at-folder.at-project > .ft-name {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0;
-    }
-
-    .at-project .at-path {
-        max-width: 100%;
-    }
-}
-
-/* Above the projects of a computer ("By project"), and between them and its other folders ("By folders"). */
-.at-heading {
-    margin: 8px 0 2px;
-    padding: 0 8px;
-    color: var(--faint);
-    font-size: 12px;
-    font-weight: 500;
-}
-
-/* The first heading stands at the tree's own top padding. */
-.at-tree > .at-heading:first-child {
-    margin-top: 0;
-}
-
-/* The tag of a project nobody changes the trust of here: People. */
-.at-trust-tag {
-    margin-left: 6px;
-    padding: 0 6px;
-    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
-    border-radius: var(--r-tag);
-    color: var(--warn);
-    font: 10.5px var(--sans);
-    white-space: nowrap;
-}
-
 /* A window too narrow for a computer's name, Group by, and New session in one row: Group by goes under the name. */
 @media (max-width: 1019px) {
     .ac-head > .ak-group {
@@ -8900,6 +8614,25 @@ div.group-head {
     color: var(--muted);
 }
 
+.ag-go :is(.ag-title, .ag-sub) {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.ag-used {
+    flex: none;
+    margin-left: auto;
+    color: var(--faint);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+@media (hover: hover) {
+    .ag-go:hover .ag-title {
+        text-decoration: underline;
+    }
+}
+
 .ag-sub {
     overflow: hidden;
     color: var(--faint);
@@ -8916,6 +8649,34 @@ div.group-head {
     color: var(--muted);
     font-size: 12px;
     white-space: nowrap;
+}
+
+/* A separate invite fits beside the level the folder already gives. */
+.ag-folder-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    gap: 2px;
+}
+
+.ag-folder-state .ag-state {
+    min-width: 0;
+    width: auto;
+    text-align: center;
+    white-space: normal;
+}
+
+.ag-invite-also.button {
+    flex: none;
+    width: 28px;
+    padding-inline: 0;
+}
+
+@media (pointer: coarse) {
+    .ag-invite-also.button {
+        width: 40px;
+    }
 }
 
 .ag-act {
@@ -9194,9 +8955,16 @@ div.group-head {
         white-space: nowrap;
     }
 
-    .ag-cell .at-level,
-    .ag-cell .ag-act {
+    .access-sheet .ag-table :is(button, .sel-check),
+    .access-sheet .ak-tools-row :is(.access-pick, .access-clear, .sel-toggle),
+    .access-sheet .sel-bar :is(.sel-all, .button),
+    .access-sheet .ac-head .ak-group button {
         min-height: 40px;
+    }
+
+    .access-sheet .ag-table :is(.ag-all, .ag-browse) button,
+    .access-sheet .ag-table .ag-more {
+        min-height: 44px;
     }
 
     .ag-cell .ag-state {
@@ -9251,23 +9019,6 @@ div.group-head {
 
     .ag-after {
         width: var(--view-w, 100%);
-    }
-}
-
-/* On a phone a session's line has no room for its name, how they have it, and its place side by side: the name takes
- * the line, the other two go under it, and its buttons under those. */
-@media (max-width: 719px) {
-    .at-session > .ft-row {
-        flex: 1 1 100%;
-    }
-
-    .at-session-name {
-        flex: 1 1 100%;
-    }
-
-    /* With its checkbox, the name takes the rest of that line. */
-    .at-session > .sel-check + .ft-row {
-        flex-basis: calc(100% - var(--sel-size) - 6px);
     }
 }
 
@@ -25348,26 +25099,6 @@ pre.gallery-code {
 
 .access-asked .button {
     flex: none;
-}
-
-/* Invite to your runner, on another person's page in People (`people.js` `Reach`): the button, a line where it does
- * nothing, and under them what it opens. */
-.reach {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 0;
-}
-
-.reach-buttons {
-    flex-wrap: wrap;
-}
-
-/* The button whose panel is open under it. */
-.reach-buttons .button[aria-expanded="true"] {
-    border-color: var(--accent-fill);
-    background: var(--accent-soft);
-    color: var(--accent);
 }
 
 /* Your authenticator on your own page in People: its state, or the steps to link or remove it. */

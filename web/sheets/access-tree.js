@@ -1,7 +1,6 @@
-// How one person's sessions on one computer sit under the folders given to them there, for the tree in the People and
-// Runners sheets (`access.js` `AccessTree`). It follows the server's own rules, so the tree shows what the server
-// does: which folder a session counts as working in (`src/server/app.ts` `#accessFolder`), and which given folder
-// holds it (`src/server/access.ts` `inFolder`). Plain functions with no imports, so tests load them as they are.
+// How the Computer grid groups its folders and sessions, and how search and filters keep them. A session's folder
+// and whether it is inside another follow the server's rules (`app.ts` `#accessFolder`, `access.ts` `inFolder`).
+// Plain functions with no imports, so tests load them as they are.
 
 /**
  * Whether a folder's path is Windows' kind (`C:\a\b`), where `\` parts folders as `/` does. A path that starts with

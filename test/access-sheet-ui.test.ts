@@ -5,6 +5,7 @@
 import { newIdentity } from "../src/server/runner-link/secure-link.ts";
 import {
     addPerson,
+    answerRequests,
     type App,
     cleanUp,
     home,
@@ -264,6 +265,7 @@ test("the sheet opens from each opener at the right view", real, async () => {
 });
 
 test("a viewer has People and Settings, and no Computer", real, async () => {
+    const laptop = app.config.runners.find((each) => each.name === "Laptop")!.id;
     const theirs = new Browsers({
         dataDir: mkdtempSync(join(root, "access-sheet-viewer-")),
         load: async () => undefined,
@@ -272,9 +274,21 @@ test("a viewer has People and Settings, and no Computer", real, async () => {
     const owners = page;
 
     try {
+        // Chosen for the Laptop, so they are told of it: a viewer still asks nothing of what can be shared there
+        // (`GET /api/runners/:id/sharing` refuses a viewer).
+        await app.choosePerson(laptop, people[1]!.id, true);
         page = await theirs.open(1);
         await page.navigate(`${base}/login?token=${encodeURIComponent(viewerToken)}`);
         await load();
+        await inPage(`
+            const fetch = window.fetch.bind(window);
+            window.sharingReads = [];
+            window.fetch = (url, init) => {
+                if (/^\\/api\\/runners\\/[^/]+\\/sharing$/.test(String(url))) window.sharingReads.push(String(url));
+                return fetch(url, init);
+            };
+            return JSON.stringify(true);
+        `);
         await openAt("computer");
         assert.deepEqual(
             await inPage<string[]>(
@@ -289,9 +303,26 @@ test("a viewer has People and Settings, and no Computer", real, async () => {
             ),
             false,
         );
+        assert.equal(
+            await inPage<boolean>(`
+                const { store } = await import("/store.js");
+
+                return JSON.stringify(store.state.runners.some((each) => each.name === "Laptop"));
+            `),
+            true,
+            "the viewer is told of the Laptop",
+        );
+        // The refresh after the list of computers is in runs at once, and again a second after a change.
+        await new Promise((done) => setTimeout(done, 1500));
+        assert.deepEqual(
+            await inPage<string[]>(`return JSON.stringify(window.sharingReads)`),
+            [],
+            "no sharing read by a viewer",
+        );
     } finally {
         page = owners;
         await theirs.closeAll({ final: true });
+        await app.choosePerson(laptop, people[1]!.id, false);
     }
 });
 
@@ -726,7 +757,7 @@ for (const [name, viewport] of [
                 },
             );
 
-            // People has 1: in the key row.
+            // The person's Computers tab has no key or tree. The same project groupings and tips are one jump away.
             await openAt("person");
             // The list of the view before may still show for a moment: wait for the person's row.
             await until(
@@ -744,28 +775,48 @@ for (const [name, viewport] of [
             return JSON.stringify(true);
         `);
             await until(
-                async () =>
-                    await inPage<boolean>(
-                        `return JSON.stringify(document.querySelector(".pages-detail .ak-key") !== null)`,
-                    ),
-                "the key on their page",
+                () =>
+                    inPage<boolean>(`
+                return JSON.stringify(Boolean(document.querySelector(
+                    '.pages-detail [data-part="person-computer"][data-computer="this-server"]',
+                )));
+            `),
+                "their This server row",
+            );
+            assert.equal(
+                await inPage<boolean>(`
+                return JSON.stringify(Boolean(document.querySelector(".pages-detail .at-tree, .pages-detail .ak-key")));
+            `),
+                false,
+            );
+            await inPage(`
+                document.querySelector('.pages-detail [data-part="person-computer"][data-computer="this-server"]').click();
+                return JSON.stringify(true);
+            `);
+            await until(
+                async () => (await gridNames()).join() === people[0]!.name,
+                "just their column",
+            );
+            await until(
+                () =>
+                    inPage<boolean>(`
+                return JSON.stringify(document.querySelector(".ag-first-head > span")?.textContent.trim() === "By project");
+            `),
+                "their projects known",
             );
             assert.deepEqual(
                 await inPage<string[]>(`
-                return JSON.stringify([...document.querySelectorAll(".pages-detail .info-tip")].map((each) => each.getAttribute("aria-label") + (each.closest(".ak-key") ? " (key)" : "")));
+                const children = [...document.querySelectorAll(".ag-table > .ag-row:not(.ag-head)")];
+                return JSON.stringify([document.querySelector(".ag-first-head > span").textContent.trim(),
+                    ...children.map((row) => row.classList.contains("ag-heading") ? row.textContent.trim() : "row")]);
             `),
-                ["About the people columns (key)"],
-            );
-
-            // Their tree has the same two headings: the projects, then the folders in no project.
-            assert.deepEqual(
-                await inPage<string[]>(`
-                const tree = document.querySelector(".pages-detail .at-tree");
-
-                return JSON.stringify([...tree.children].map((each) => each.classList.contains("at-heading") ? each.textContent.trim() : each.classList.contains("at-node") ? "row" : "other"));
-            `),
-                // Three projects; Home and the folder given to them; All folders last.
                 ["By project", "row", "row", "row", "By folders", "row", "row", "row"],
+            );
+            assert.deepEqual(
+                await inPage<string[]>(`
+                return JSON.stringify([...document.querySelectorAll(".pages-detail .info-tip")].map((tip) => tip.getAttribute("aria-label")).sort());
+            `),
+                ["About Project trust", "About projects", "About the people columns"],
             );
         },
     );
@@ -1066,6 +1117,403 @@ test(
         }
     },
 );
+
+/** Use another person's own signed-in browser, then go back to the owner's. */
+async function asPerson(token: string, run: () => Promise<void>) {
+    const owners = page;
+    const theirs = new Browsers({
+        dataDir: mkdtempSync(join(root, "access-sheet-person-")),
+        load: async () => undefined,
+        save: () => {},
+    });
+
+    try {
+        page = await theirs.open(1);
+        await page.navigate(`${base}/login?token=${encodeURIComponent(token)}`);
+        await load();
+        await run();
+    } finally {
+        page = owners;
+        await theirs.closeAll({ final: true });
+    }
+}
+
+const viewNames = () =>
+    inPage<string[]>(`
+    return JSON.stringify([...document.querySelectorAll(".access-sheet .ac-views button")].map((each) => each.textContent.trim()));
+`);
+
+const gridNames = () =>
+    inPage<string[]>(`
+    return JSON.stringify([...document.querySelectorAll(".ag-head .ag-who-name")].map((each) => each.textContent.trim()));
+`);
+
+const partText = (part: string) =>
+    inPage<string | null>(`
+    return JSON.stringify(document.querySelector(${JSON.stringify(`[data-part="${part}"]`)})?.textContent.replace(/\\s+/g, " ").trim() ?? null);
+`);
+
+const pressSharingCell = (label: string) =>
+    inPage(`
+    document.querySelector(${JSON.stringify(`.ag-table button[aria-label=${JSON.stringify(label)}]`)}).click();
+    return JSON.stringify(true);
+`);
+
+const hasGrid = () =>
+    inPage<boolean>(`return JSON.stringify(Boolean(document.querySelector(".ag-table")));`);
+
+test("a user who cannot link has Computer exactly when they have a computer", real, async () => {
+    const person = app.config.addUser("Starter", "guest");
+
+    try {
+        await asPerson(person.token, async () => {
+            await openAt("person");
+            assert.deepEqual(await viewNames(), ["People", "Settings"]);
+            await app.choosePerson(THIS_SERVER, person.user.id, true);
+            await until(async () => (await viewNames()).length === 3, "the Computer view");
+            assert.deepEqual(await viewNames(), ["People", "Computer", "Settings"]);
+            await openAt("computer", THIS_SERVER);
+            await until(
+                async () => (await partText("nothing-to-share")) !== null,
+                "the empty answer from This server",
+            );
+            assert.deepEqual(
+                await inPage<string[]>(`
+                return JSON.stringify([...document.querySelectorAll(".access-sheet .pages-item-title")].map((each) => each.textContent.trim()));
+            `),
+                ["This server"],
+            );
+            assert.equal(
+                await partText("nothing-to-share"),
+                "Nothing of yours to share on This server yet. A session you start here can be shared with the people who use it.",
+            );
+            assert.equal(await hasGrid(), false);
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify(Boolean(document.querySelector(".ak-tools, .ak-key")));`,
+                ),
+                false,
+            );
+            await app.choosePerson(THIS_SERVER, person.user.id, false);
+            await until(
+                async () => (await viewNames()).length === 2,
+                "the Computer view goes away again",
+            );
+            assert.deepEqual(await viewNames(), ["People", "Settings"]);
+        });
+    } finally {
+        await app.removeUser(owner(app), person.user.id);
+    }
+});
+
+test(
+    "a runner the owner can only unlink does not ask for sharing or show its empty state",
+    real,
+    async () => {
+        const linker = app.config.addUser("Nobody else's linker", "guest").user;
+        const runner = app.config.addRunner(
+            "Private computer",
+            linker.id,
+            newIdentity().publicKey,
+        ).id;
+
+        try {
+            await load();
+            await inPage(`
+            const fetch = window.fetch.bind(window);
+            window.sharingReads = [];
+            window.fetch = (url, init) => {
+                if (String(url) === ${JSON.stringify(`/api/runners/${runner}/sharing`)}) window.sharingReads.push(url);
+                return fetch(url, init);
+            };
+            return JSON.stringify(true);
+        `);
+            await openAt("computer", runner);
+            await until(
+                async () => (await partText("read-only"))?.includes("You do not use it") === true,
+                "the unlink-only page",
+            );
+            // Wait for the opening reads and also ask for this computer directly.
+            const reads = await inPage<string[]>(`
+            const access = await import("/sheets/access.js");
+            await access.loadSharings();
+            await access.loadSharing(access.computers().find((each) => each.id === ${JSON.stringify(runner)}));
+            return JSON.stringify(window.sharingReads);
+        `);
+
+            assert.deepEqual(reads, []);
+            assert.deepEqual(
+                await inPage<string[]>(`
+            return JSON.stringify([...document.querySelectorAll(".pages-detail .sheet-page-actions button")].map((each) => each.textContent.trim()));
+        `),
+                ["Unlink"],
+            );
+            assert.equal(await hasGrid(), false);
+            assert.equal(await partText("nothing-to-share"), null);
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify(Boolean(document.querySelector(".pages-detail .ak-group, .pages-detail .ak-key, .pages-detail .ak-tools")));`,
+                ),
+                false,
+            );
+        } finally {
+            await app.unlinkRunner(runner);
+            await app.removeUser(owner(app), linker.id);
+        }
+    },
+);
+
+test(
+    "someone not in charge gets only their sharing grid and can share, revoke, and give a folder",
+    real,
+    async () => {
+        const giver = app.config.addUser("Giver", "guest");
+        const recipient = app.config.addUser("Folder recipient", "guest").user;
+        const passer = app.config.addUser("Other recipient", "guest").user;
+        const outsider = app.config.addUser("Not chosen", "guest").user;
+        const folder = realpathSync(mkdtempSync(join(root, "offer-")));
+        const stop = answerRequests(app, () => true);
+
+        try {
+            for (const person of [giver.user, recipient, passer]) {
+                await app.choosePerson(THIS_SERVER, person.id, true);
+            }
+
+            await app.giveFolders(owner(app), THIS_SERVER, giver.user.id, [folder]);
+            app.setRight(owner(app), {
+                computer: THIS_SERVER,
+                person: giver.user.id,
+                right: "reshares",
+                on: true,
+            });
+            const first = (
+                await app.commands.createSession(giver.user, {
+                    cwd: folder,
+                    title: "Offer a first session",
+                })
+            ).id;
+
+            await app.commands.createSession(giver.user, {
+                cwd: folder,
+                title: "Offer a second session",
+            });
+            await app.commands.createSession(owner(app), {
+                cwd: folder,
+                title: "The owner's private session",
+            });
+            const answer = app.commands.sharingOn(giver.user, THIS_SERVER);
+
+            await asPerson(giver.token, async () => {
+                await openAt("computer", THIS_SERVER);
+                await until(
+                    async () => (await gridNames()).length === answer.people.length,
+                    "the sharing columns",
+                );
+                assert.deepEqual(
+                    new Set(await gridNames()),
+                    new Set(answer.people.map(({ id }) => app.config.userById(id)!.name)),
+                );
+                assert.ok((await gridNames()).includes(recipient.name));
+                assert.ok(!(await gridNames()).includes(outsider.name));
+                assert.match(
+                    (await partText("read-only"))!,
+                    /You share your sessions here, and give the folders given to you\./,
+                );
+                assert.deepEqual(
+                    await inPage<{
+                        trust: boolean;
+                        folders: boolean;
+                        switches: boolean;
+                        by: boolean;
+                    }>(`
+                return JSON.stringify({ trust: Boolean(document.querySelector(".ag-trust-head")),
+                    folders: Boolean(document.querySelector(".ag-all")), switches: Boolean(document.querySelector(".ag-people")),
+                    by: Boolean(document.querySelector("select[aria-label='Started by']")) });
+            `),
+                    { trust: false, folders: false, switches: false, by: false },
+                );
+                await pressSharingCell(`Open ${folder}`);
+                const titles = await inPage<string[]>(`
+                return JSON.stringify([...document.querySelectorAll(".ag-session .ag-title")].map((each) => each.textContent.trim()));
+            `);
+
+                assert.deepEqual(titles.sort(), [
+                    "Offer a first session",
+                    "Offer a second session",
+                ]);
+                await pressSharingCell("Invite Folder recipient to Offer a first session");
+                await until(
+                    () => app.sessionMeta(first)?.sharedWith?.includes(recipient.id) === true,
+                    "the direct share",
+                );
+                await until(
+                    () =>
+                        inPage<boolean>(
+                            `return JSON.stringify(document.querySelector('button[aria-label="Revoke Offer a first session from Folder recipient"]')?.disabled === false);`,
+                        ),
+                    "Revoke taking a click",
+                );
+                await inPage(`window.confirm = () => true; return JSON.stringify(true);`);
+                await pressSharingCell("Revoke Offer a first session from Folder recipient");
+                await until(
+                    () => !app.sessionMeta(first)?.sharedWith?.includes(recipient.id),
+                    "the share taken back",
+                );
+                const label = `Access of Folder recipient to ${folder} on This server: No access`;
+
+                await until(
+                    () =>
+                        inPage<boolean>(
+                            `return JSON.stringify(document.querySelector(${JSON.stringify(`button[aria-label=${JSON.stringify(label)}]`)})?.disabled === false);`,
+                        ),
+                    "the folder's menu taking a click",
+                );
+                await pressSharingCell(label);
+                await until(
+                    () =>
+                        inPage<boolean>(
+                            `return JSON.stringify(Boolean(document.querySelector(".at-level-menu")));`,
+                        ),
+                    "the folder's levels",
+                );
+                await inPage(`
+                [...document.querySelectorAll(".at-level-menu .at-level-item")].find((each) => each.querySelector(".at-level-name").textContent.trim() === "Start sessions").click();
+                return JSON.stringify(true);
+            `);
+                await until(
+                    () => app.config.givenFolders(THIS_SERVER, recipient.id).includes(folder),
+                    "the folder given",
+                );
+                assert.equal(
+                    app.config.givenFolders(THIS_SERVER, passer.id).includes(folder),
+                    false,
+                );
+            });
+        } finally {
+            stop();
+
+            for (const person of [giver.user, recipient, passer, outsider]) {
+                await app.removeUser(owner(app), person.id);
+            }
+        }
+    },
+);
+
+test(
+    "a refused sharing read ends loading and the next read can bring back the grid",
+    real,
+    async () => {
+        const giver = app.config.addUser("Refused read", "guest");
+        const stop = answerRequests(app, () => true);
+        const folder = realpathSync(mkdtempSync(join(root, "refused-")));
+
+        try {
+            await app.choosePerson(THIS_SERVER, giver.user.id, true);
+            await app.giveFolders(owner(app), THIS_SERVER, giver.user.id, [folder]);
+            await app.commands.createSession(giver.user, {
+                cwd: folder,
+                title: "Visible after a good read",
+            });
+            await asPerson(giver.token, async () => {
+                await inPage(`
+                window.realFetch = window.fetch;
+                window.fetch = (url, init) => url === "/api/runners/this-server/sharing" ? Promise.resolve(new Response("", { status: 403 })) : window.realFetch(url, init);
+                return JSON.stringify(true);
+            `);
+                await openAt("computer", THIS_SERVER);
+                await until(
+                    () =>
+                        inPage<boolean>(
+                            `const { store } = await import("/store.js"); return JSON.stringify(store.state.accessSharing?.["this-server"]?.failed === true);`,
+                        ),
+                    "the refused read",
+                );
+                assert.equal(await hasGrid(), false);
+                assert.equal(await partText("nothing-to-share"), null);
+                assert.equal(
+                    await inPage<boolean>(
+                        `return JSON.stringify(Boolean(document.querySelector(".ac-computer .loader")));`,
+                    ),
+                    false,
+                );
+                await inPage(`
+                window.fetch = window.realFetch;
+                const access = await import("/sheets/access.js");
+                await access.loadSharings();
+                return JSON.stringify(true);
+            `);
+                await until(hasGrid, "the grid after a good read");
+            });
+        } finally {
+            stop();
+            await app.removeUser(owner(app), giver.user.id);
+        }
+    },
+);
+
+test("a sharing answer that left before a share does not undo the newer answer", real, async () => {
+    const giver = app.config.addUser("Recent giver", "guest");
+    const to = people[0]!;
+    const stop = answerRequests(app, () => true);
+    const folder = realpathSync(mkdtempSync(join(root, "recent-")));
+
+    try {
+        await app.choosePerson(THIS_SERVER, giver.user.id, true);
+        await app.giveFolders(owner(app), THIS_SERVER, giver.user.id, [folder]);
+        const { id } = await app.commands.createSession(giver.user, {
+            cwd: folder,
+            title: "A recent session",
+        });
+
+        await asPerson(giver.token, async () => {
+            await openAt("computer", THIS_SERVER);
+            await until(hasGrid, "the sharing grid");
+            const result = await inPage<{ before: string; saved: string; after: string }>(`
+                const access = await import("/sheets/access.js");
+                const { api } = await import("/store.js");
+                const computer = access.computers().find((each) => each.id === "this-server");
+                const cell = () => access.sharingOf(computer).people.find((each) => each.id === ${JSON.stringify(to.id)}).sessions[${JSON.stringify(id)}].state;
+                const fetching = window.fetch;
+                let release;
+                const gate = new Promise((resolve) => release = resolve);
+                let answered;
+                const waiting = new Promise((resolve) => answered = resolve);
+                let intercepted = false;
+
+                window.fetch = async (url, init) => {
+                    if (url !== "/api/runners/this-server/sharing" || intercepted) return fetching(url, init);
+                    intercepted = true;
+                    const response = await fetching(url, init);
+                    const body = await response.text();
+                    answered();
+                    await gate;
+                    return new Response(body, { status: response.status, headers: response.headers });
+                };
+
+                try {
+                    const before = cell();
+                    const older = access.loadSharing(computer);
+                    await waiting;
+                    await api(${JSON.stringify(`users/${to.id}/sharing`)}, { share: [${Number(id)}] });
+                    await access.loadSharing(computer);
+                    const saved = cell();
+                    release();
+                    await older;
+                    return JSON.stringify({ before, saved, after: cell() });
+                } finally {
+                    window.fetch = fetching;
+                    release();
+                }
+            `);
+
+            assert.deepEqual(result, { before: "none", saved: "shared", after: "shared" });
+            assert.equal(app.sessionMeta(id)?.sharedWith?.includes(to.id), true);
+        });
+    } finally {
+        stop();
+        await app.removeUser(owner(app), giver.user.id);
+    }
+});
 
 test(
     "a projects answer that left before a trust change does not undo it when it comes in late",

@@ -1,17 +1,17 @@
-// The parts of the Access sheet (`access-sheet.js`) over its lists: the tool row (search, two filters, the People
-// filter, Group by), the key of the access levels, the trust menu of a project, and the grid of Computer, where each
-// row is a project, a folder, or a session on one computer and each column one person chosen for it.
+// The Computer view of Access: its tools, its key, and one grid of projects, folders and sessions, with a column
+// for each person shown. The grid reads one source, made from the computer's record for who is in charge, and from
+// what the server says the reader can give or take for everyone else.
 //
-// The grid is one scroller (`.ag-scroll`): its head row and its first two columns stay in sight while it scrolls, so a
-// row's cells and the people over them always move together. On a phone a row's name takes a line of its own over its
-// cells, and stays where it is while the cells scroll sideways under it.
+// The head and first columns stay in sight while the grid scrolls. On a phone each row's name stands above its cells
+// and stays in sight while they scroll sideways.
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Avatar } from "../avatar.js";
 import { shortPath } from "../folder-paths.js";
-import { api, attempt, notify, store } from "../store.js";
+import { api, attempt, closeSheet, navigate, notify, store } from "../store.js";
 import { html, Icon, Marked } from "../ui.js";
 import {
     accessFolder,
+    ago,
     arrange,
     below,
     foldersOf,
@@ -22,15 +22,15 @@ import {
 } from "./access-tree.js";
 import {
     chosenFor,
-    choosable,
     fromOf,
-    holds,
+    heir,
     homeOf,
     InfoTip,
-    inCharge,
     LevelMenu,
     levelFor,
     levelsFor,
+    loadSharing,
+    locked,
     placeIn,
     PopMenu,
     seenFolders,
@@ -44,7 +44,9 @@ import {
     useAllFolders,
     useGroups,
 } from "./access.js";
+import { ordered } from "./people.js";
 import { canShare } from "./session-share.js";
+import { folderCheck, SelectBar, sessionCheck, useListed } from "./session-select.js";
 import { isOwner } from "../roles.js";
 
 /** The explanations of the grid's column heads, and of the people columns (in the key row). */
@@ -443,55 +445,185 @@ export function TrustMenu({ computer, project, entry, fallback }) {
     </div>`;
 }
 
-/** The owner's id: a session from before sessions had a starter is theirs (`access.ts` `starter`). */
-const ownerId = () => store.state.users.find((each) => isOwner(each))?.id;
+/** The sessions of one computer, without its archived sessions. */
+const sessionsOn = (computer) =>
+    store.state.sessions.filter(
+        (each) => (each.runner ?? THIS_SERVER) === computer.id && !each.archived,
+    );
+
+/** The name, home folder, and connection of a computer, for the grid and its menus. */
+const placeOf = (computer) => ({
+    id: computer.id,
+    name: computer.name,
+    online: computer.online,
+    home: homeOf(computer),
+    owner: store.state.users.find((each) => isOwner(each))?.id,
+});
+
+/** The grid for someone in charge: every session, and what the people shown have in the computer's record. */
+export function recordSource(computer, people) {
+    const sessions = sessionsOn(computer);
+    const worktrees = sessions.filter((each) => each.worktree);
+    const seen = new Map(
+        people.map((person) => [
+            person.id,
+            [seenFolders(computer, person), untilOf(computer, person), fromOf(computer, person)],
+        ]),
+    );
+
+    const kept = (person, session) => {
+        const [sees, until, from] = seen.get(person.id);
+
+        return seenBy(sees, session, worktrees, until, from);
+    };
+
+    return {
+        ...placeOf(computer),
+        browseHome: true,
+        people,
+        sessions,
+        worktrees,
+        folders: [
+            ...new Set(
+                people.flatMap((person) =>
+                    chosenFor(computer, person) && !person.sessions
+                        ? (computer.given?.[person.id] ?? [])
+                        : [],
+                ),
+            ),
+        ],
+        session(person, session) {
+            const reason = reasonOf(computer, person);
+            const state = stateOf(person, session, kept(person, session), reason);
+
+            return {
+                state,
+                give: (state === "none" || state === "folder") && !reason && canShare(session),
+                take: state === "shared" || state === "invited" || state === "started",
+                reason,
+            };
+        },
+        folder(person, path) {
+            const { level, from } = levelFor(computer, person, path);
+
+            return {
+                level,
+                from,
+                at: timeOf(computer, person, path, level, from),
+                levels: levelsFor(person),
+                reason: reasonOf(computer, person),
+            };
+        },
+        setLevel: (person, node, level) => setLevelOf(computer, person, node.folder, level),
+        heir: heir(computer),
+        kept,
+        changed() {},
+    };
+}
+
+/** The people named in a sharing answer, in the order of People. */
+export function answerPeople(answer) {
+    const ids = new Set(answer?.people.map((each) => each.id));
+
+    return ordered(store.state.users.filter((each) => ids.has(each.id)));
+}
+
+const BLOCKED = { state: "blocked", give: false, take: false };
+
+/** The grid for someone else: only the sessions, folders and actions the sharing answer tells them of. */
+export function answerSource(computer, answer) {
+    const people = answerPeople(answer);
+    const ids = new Set(people.map((each) => each.id));
+    const entries = new Map(
+        answer.people.filter((each) => ids.has(each.id)).map((each) => [each.id, each]),
+    );
+    const sessionIds = new Set([...entries.values()].flatMap((each) => Object.keys(each.sessions)));
+    const sessions = sessionsOn(computer).filter((each) => sessionIds.has(String(each.id)));
+    const folders = new Map(
+        [...entries.values()].map((each) => [
+            each.id,
+            new Map(each.folders.map((folder) => [folder.path, folder])),
+        ]),
+    );
+    const to = `whoever is in charge of ${computer.name}`;
+
+    return {
+        ...placeOf(computer),
+        people,
+        sessions,
+        worktrees: sessions.filter((each) => each.worktree),
+        folders: [...new Set([...folders.values()].flatMap((each) => [...each.keys()]))],
+        session: (person, session) => entries.get(person.id)?.sessions[session.id] ?? BLOCKED,
+        folder(person, path) {
+            const cell = folders.get(person.id)?.get(path);
+
+            if (cell === undefined) {
+                return undefined;
+            }
+
+            const levels = levelsFor(person).filter((each) => cell.levels.includes(each));
+
+            return {
+                level: cell.level,
+                levels,
+                by: cell.by,
+                reason:
+                    levels.length > 1
+                        ? undefined
+                        : entries.get(person.id).reason
+                          ? "Cannot be given here"
+                          : "Not yours to change",
+            };
+        },
+        async setLevel(person, node, level) {
+            if (
+                level === "none" &&
+                !confirm(
+                    `Take ${node.folder} from ${person.name}? The sessions they started in it move to ${to}, with the tasks they set up there. Sessions shared with them stay.`,
+                )
+            ) {
+                return false;
+            }
+
+            return attempt(async () => {
+                await api(`runners/${encodeURIComponent(computer.id)}/level`, {
+                    person: person.id,
+                    folder: node.folder,
+                    level,
+                });
+
+                return true;
+            });
+        },
+        heir: to,
+        changed: () => loadSharing(computer),
+    };
+}
 
 /**
- * The rows of the grid of one computer, for `people` (its columns): every session there that is not archived, under
- * the projects, the folders given to any of them, and the folders the sessions work in (`access-tree.js` `arrange`),
- * Home first; or with `group` "sessions" the sessions alone (`flat`). Each session row as `keeps` reads it: it counts
- * as "has" when one of `people` has it.
+ * The source's folders and sessions as rows. A session counts as held when one of the people shown has it.
  */
-export function gridOf(computer, people, { group, projects }) {
-    const there = store.state.sessions.filter(
-        (each) => (each.runner ?? THIS_SERVER) === computer.id,
-    );
-    const worktrees = there.filter((each) => each.worktree);
-    const listed = there.filter((each) => !each.archived);
-    const given = [
-        ...new Set(
-            people.flatMap((person) =>
-                chosenFor(computer, person) && !person.sessions
-                    ? (computer.given?.[person.id] ?? [])
-                    : [],
-            ),
-        ),
-    ];
-    const home = homeOf(computer);
+export function gridOf(source, { group, projects }) {
+    const { home, people, sessions, worktrees, folders: given } = source;
     const homeKey = home === undefined ? undefined : foldersOf(home, [], [], [])[0]?.folder;
-    const owner = ownerId();
-    const seen = people.map((person) => [
-        person,
-        seenFolders(computer, person),
-        untilOf(computer, person),
-        fromOf(computer, person),
-    ]);
-    const has = (session) =>
-        seen.some(
-            ([person, sees, until, from]) =>
-                holds(person, session) ||
-                seenBy(sees, session, worktrees, until, from) !== undefined,
-        );
-    const row = (session, folder) => ({
-        id: session.id,
-        session,
-        title: session.title ?? "New session",
-        has: has(session),
-        usedAt: session.usedAt,
-        updatedAt: session.updatedAt,
-        starter: session.createdBy ?? owner,
-        places: [session.cwd, folder],
-    });
+
+    const row = (session, folder) => {
+        const cells = new Map(people.map((person) => [person.id, source.session(person, session)]));
+
+        return {
+            id: session.id,
+            session,
+            cells,
+            title: session.title ?? "New session",
+            has: [...cells.values()].some(
+                (cell) => cell.state !== "none" && cell.state !== "blocked",
+            ),
+            usedAt: session.usedAt,
+            updatedAt: session.updatedAt,
+            starter: session.createdBy ?? source.owner,
+            places: [session.cwd, folder],
+        };
+    };
 
     const nodeOf = (node) => {
         const rows = node.sessions.map((each) => row(each, node.folder));
@@ -509,9 +641,9 @@ export function gridOf(computer, people, { group, projects }) {
     };
 
     const arranged = arrange({
-        home,
+        home: source.browseHome ? home : undefined,
         folders: given,
-        sessions: listed,
+        sessions,
         there: worktrees,
         projects: projects ?? [],
         group,
@@ -524,9 +656,7 @@ export function gridOf(computer, people, { group, projects }) {
 
     return {
         roots,
-        other: arranged.other,
         flat,
-        worktrees,
         rows: [...folders.flatMap((each) => each.rows), ...flat],
     };
 }
@@ -551,7 +681,7 @@ function shownRows(nodes, find) {
  * What `person` has of `session` themselves: invited to it alone, started it, shared with them; or by a folder whose
  * sessions they see; or nothing.
  */
-function stateOf(computer, person, session, worktrees) {
+function stateOf(person, session, kept, reason) {
     if (person.sessions?.includes(session.id)) {
         return "invited";
     }
@@ -564,15 +694,7 @@ function stateOf(computer, person, session, worktrees) {
         return "shared";
     }
 
-    return seenBy(
-        seenFolders(computer, person),
-        session,
-        worktrees,
-        untilOf(computer, person),
-        fromOf(computer, person),
-    ) !== undefined
-        ? "folder"
-        : "none";
+    return kept !== undefined ? "folder" : reason ? "blocked" : "none";
 }
 
 /** Why `person`'s level cannot be changed on `computer`, or undefined when it can. */
@@ -625,115 +747,179 @@ function useMore(box) {
 }
 
 /**
- * The grid of one computer (Computer): a row for each project, folder, or session (`gridOf`), the project's or
- * folder's name and its trust first, then one cell for each person shown (`people`): their Access menu on a folder or a
- * project (`LevelMenu`, on its top folder), and on a session what they have of it, with Invite or Revoke. After the
- * rows, in the same scroller, the people who may use the computer, each with the switch that lets them (`after`).
+ * The source's grid, with an Access menu on a folder or project and a state or action on a session. Only one
+ * person shown: the grid can select sessions. Who is in charge can also change trust, browse All folders and
+ * choose people.
  */
-export function ComputerGrid({ computer, people, grid, find, trustColumn, fallback, after }) {
+export function ComputerGrid({
+    source,
+    grid,
+    find,
+    select,
+    trustColumn,
+    fallback,
+    after,
+    allFolders,
+}) {
+    const { home, name, people } = source;
     const groups = useGroups(find);
     const scroller = useRef(null);
     const more = useMore(scroller);
     const [busy, setBusy] = useState(false);
-    const home = homeOf(computer);
     const shown = shownRows(grid.roots, find);
     const flat = grid.flat.filter((row) => keeps(find, row));
     const projectsShown = shown.filter((each) => each.project).length;
-    // Every folder of the computer, its last row, for who is in charge of it while people are shown and nothing is
-    // searched for.
-    const all = useAllFolders(
-        computer,
-        groups,
-        inCharge(computer) && people.length > 0 && !find.active,
+    const all = useAllFolders(source, groups, allFolders && people.length > 0 && !find.active);
+    const one = people.length === 1 ? people[0] : undefined;
+    const drawn = (node) =>
+        groups.isOpen(node.key) ? [...node.children.flatMap(drawn), ...node.listed] : [];
+    const selecting = one !== undefined && select.on;
+
+    useListed(
+        select,
+        source.id,
+        one === undefined
+            ? []
+            : [...shown.flatMap(drawn), ...flat].map((row) => {
+                  const cell = row.cells.get(one.id);
+
+                  return {
+                      id: row.id,
+                      share: cell.give,
+                      revoke: cell.take,
+                      started: cell.state === "started",
+                      heir: source.heir,
+                      kept: source.kept?.(one, row.session) !== undefined,
+                  };
+              }),
     );
 
-    const revoke = async (person, row) => {
-        if (!confirm(`Stop sharing “${row.title}” with ${person.name}?`)) {
-            return;
-        }
-
-        find.keep([row.id]);
+    const save = async (run) => {
         setBusy(true);
 
         try {
-            await attempt(() => api(`sessions/${row.id}/revoke`, { person: person.id }));
+            await run();
         } finally {
             setBusy(false);
         }
     };
 
-    const invite = async (person, row) => {
+    const send = (person, row, what) => {
         find.keep([row.id]);
-        setBusy(true);
 
-        try {
-            await attempt(async () => {
+        return save(() =>
+            attempt(async () => {
                 const answer = await api(`users/${encodeURIComponent(person.id)}/sharing`, {
-                    share: [row.id],
+                    [what]: [row.id],
                 });
 
                 if (answer.refused.length > 0) {
                     notify("error", answer.refused[0].reason);
                 }
-            });
-        } finally {
-            setBusy(false);
+
+                await source.changed();
+            }),
+        );
+    };
+
+    const revoke = (person, row, state) => {
+        const asked =
+            state === "invited"
+                ? `Take “${row.title}” from ${person.name}? They were invited to it alone.`
+                : `Stop sharing “${row.title}” with ${person.name}?`;
+        const kept = source.kept?.(person, row.session);
+        const still =
+            kept === undefined
+                ? ""
+                : ` They still have it after that: they see the sessions in ${kept}.`;
+
+        if (confirm(asked + still)) {
+            void send(person, row, "revoke");
         }
     };
 
     const sessionCell = (person, row) => {
-        const state = stateOf(computer, person, row.session, grid.worktrees);
+        const { state, give, take, by, reason } = row.cells.get(person.id);
 
         if (state === "started") {
             return html`<span class="ag-state">Started by them</span>`;
         }
 
         if (state === "shared" || state === "invited") {
-            return html`<button
-                type="button"
-                class="button small ghost ag-act"
-                disabled=${busy || state === "invited"}
-                aria-label=${`Revoke ${row.title} from ${person.name}`}
-                title=${state === "invited" ? "Invited to it alone: revoke it on their page" : undefined}
-                onClick=${() => revoke(person, row)}
-            >
-                Revoke
-            </button>`;
+            const title = by ? `Shared by ${by.name}` : undefined;
+
+            return take && !selecting
+                ? html`<button
+                    type="button"
+                    class="button small ghost ag-act"
+                    disabled=${busy}
+                    aria-label=${`Revoke ${row.title} from ${person.name}`}
+                    title=${title}
+                    onClick=${() => revoke(person, row, state)}
+                >
+                    Revoke
+                </button>`
+                : html`<span class="ag-state" title=${title}>Shared</span>`;
         }
 
         if (state === "folder") {
-            return html`<span class="ag-state">Through folder</span>`;
+            return html`<span class="ag-folder-state">
+                <span class="ag-state">Through folder</span>
+                ${
+                    give &&
+                    !selecting &&
+                    html`<button
+                    type="button"
+                    class="button small ghost ag-act ag-invite-also"
+                    disabled=${busy}
+                    aria-label=${`Invite ${person.name} to ${row.title}`}
+                    title="Invite them to it as well: they keep it when the folder goes."
+                    onClick=${() => send(person, row, "share")}
+                >
+                    <${Icon} name="plus" size=${12} />
+                </button>`
+                }
+            </span>`;
         }
 
-        return canShare(row.session)
+        return state === "none" && give && !selecting
             ? html`<button
                   type="button"
                   class="button small ghost ag-act"
                   disabled=${busy}
                   aria-label=${`Invite ${person.name} to ${row.title}`}
-                  onClick=${() => invite(person, row)}
+                  onClick=${() => send(person, row, "share")}
               >
                   <${Icon} name="plus" size=${12} /> Invite
               </button>`
-            : html`<span class="ag-state">—</span>`;
+            : html`<span class="ag-state" title=${state === "blocked" ? reason : undefined}>—</span>`;
     };
 
     const levelCell = (person, node) => {
-        const { level, from } = levelFor(computer, person, node.folder);
+        const cell = source.folder(person, node.folder);
+
+        if (cell === undefined) {
+            return html`<span class="ag-state">—</span>`;
+        }
 
         return html`<${LevelMenu}
             person=${person}
             folder=${node.folder}
-            where=${computer.name}
-            level=${level}
-            from=${from}
-            at=${timeOf(computer, person, node.folder, level, from)}
-            levels=${levelsFor(person)}
-            reason=${reasonOf(computer, person)}
-            compact=${true}
+            where=${name}
+            level=${cell.level}
+            from=${cell.from}
+            at=${cell.at}
+            levels=${cell.levels}
+            reason=${cell.reason}
+            by=${cell.by?.id !== store.state.me?.id ? cell.by?.name : undefined}
+            busy=${busy || select.busy}
             onPick=${(next) => {
                 find.keep(node.all.map((each) => each.id));
-                void setLevelOf(computer, person, node.folder, next);
+                void save(async () => {
+                    if (await source.setLevel(person, node, next)) {
+                        await source.changed();
+                    }
+                });
             }}
         />`;
     };
@@ -753,16 +939,40 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
               ? shortPath(row.session.cwd, home)
               : below(row.session.cwd, folder);
 
+        const isLocked = locked(row.session);
+        const sub = [where, isLocked && "locked until allowed"].filter(Boolean).join(" · ");
+
         return html`<div class="ag-row ag-session" key=${`s:${row.id}`} role="row">
             <div class="ag-first" role="rowheader" style=${`--depth:${depth}`}>
-                <span class="ag-chev-space"></span>
-                <${Icon} name="chat" size=${13} />
-                <span class="ag-name-box">
-                    <span class=${`ag-title ${row.has ? "" : "off"}`}>
-                        <${Marked} text=${row.title} hits=${hitsOf(row.title, find.words)} />
+                ${selecting && sessionCheck(select, row)}
+                <button
+                    type="button"
+                    class="ag-toggle ag-go"
+                    aria-label=${`Go to ${row.title}`}
+                    title=${row.session.cwd}
+                    onClick=${() => {
+                        closeSheet();
+                        navigate(row.id);
+                    }}
+                >
+                    <span class="ag-chev-space"></span>
+                    <${Icon} name="chat" size=${13} />
+                    <span class="ag-name-box">
+                        <span class=${`ag-title ${row.has ? "" : "off"}`}>
+                            <${Marked} text=${row.title} hits=${hitsOf(row.title, find.words)} />
+                        </span>
+                        ${sub && html`<span class="ag-sub"><${Marked} text=${sub} hits=${hitsOf(sub, find.words)} /></span>`}
                     </span>
-                    ${where && html`<span class="ag-sub"><${Marked} text=${where} hits=${hitsOf(where, find.words)} /></span>`}
-                </span>
+                </button>
+                ${
+                    row.usedAt !== undefined &&
+                    html`<span
+                    class="ag-used"
+                    title=${`Last used by you: ${new Date(row.usedAt).toLocaleString()}`}
+                >
+                    ${ago(row.usedAt, find.now)}
+                </span>`
+                }
             </div>
             ${trustColumn && html`<div class="ag-trust-cell empty"></div>`}
             ${cells((person) => sessionCell(person, row))}
@@ -781,10 +991,12 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
                 ? shortPath(node.folder, home)
                 : below(node.folder, parent.folder);
         const count = node.all.length;
+        const held = one ? node.all.filter((each) => each.has).length : count;
+        const amount = held === count ? count : `${held} of ${count}`;
         const worktrees = project ? node.all.filter((each) => each.session.worktree).length : 0;
         const sub = [
             project && shortPath(node.folder, home),
-            `${count} ${count === 1 ? "session" : "sessions"}${worktrees > 0 ? `, ${worktrees} in worktrees` : ""}`,
+            `${amount} ${count === 1 ? "session" : "sessions"}${worktrees > 0 ? `, ${worktrees} in worktrees` : ""}`,
         ].filter(Boolean);
         const untrusted =
             trust !== undefined && !trust.mixed && trust.root.saved !== null && !trust.root.trusted;
@@ -798,6 +1010,14 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
 
         return html`<div class=${`ag-row ag-group ${untrusted ? "untrusted" : ""}`} key=${node.key} role="row">
                 <div class="ag-first" role="rowheader" style=${`--depth:${depth}`}>
+                    ${
+                        selecting &&
+                        folderCheck(
+                            select,
+                            `${node.folder} on ${source.name}`,
+                            drawn(node).map((row) => row.id),
+                        )
+                    }
                     <button
                         type="button"
                         class="ag-toggle"
@@ -820,7 +1040,7 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
                         ${
                             project &&
                             html`<span class="ag-trust-label" aria-hidden="true">Project trust</span>
-                                <${TrustMenu} computer=${computer} project=${project} fallback=${fallback} />`
+                                <${TrustMenu} computer=${source} project=${project} fallback=${fallback} />`
                         }
                     </div>`
                 }
@@ -846,7 +1066,7 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
                         trustColumn &&
                         html`<div class="ag-trust-cell">
                             <span class="ag-trust-label" aria-hidden="true">Project trust</span>
-                            <${TrustMenu} computer=${computer} entry=${entry} fallback=${fallback} />
+                            <${TrustMenu} computer=${source} entry=${entry} fallback=${fallback} />
                         </div>`
                     }
                     ${cells(() => html`<span class="ag-state">Through project</span>`)}
@@ -918,14 +1138,20 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
         });
 
     const nothing = find.active && shown.length === 0 && flat.length === 0;
+    const filters = find.access !== "" || find.time !== "" || find.by !== "";
+    const noMatches =
+        find.words.length > 0
+            ? `No session matches “${find.query}”${filters ? " with these filters" : ""}.`
+            : "No session matches these filters.";
 
-    return html`<div class=${`ag-wrap ${more ? "more" : ""}`}>
+    return html`${selecting && html`<${SelectBar} select=${select} person=${one} find=${find} onAnswer=${source.changed} />`}
+    <div class=${`ag-wrap ${more ? "more" : ""}`}>
         <div
             class=${`ag-scroll ${trustColumn ? "with-trust" : ""}`}
             ref=${scroller}
             style=${`--n:${people.length};--cells:${people.length > 0 ? `repeat(${people.length}, var(--cw))` : "0px"}`}
         >
-            <div class="ag-table" role="table" aria-label=${`Access on ${computer.name}`}>
+            <div class="ag-table" role="table" aria-label=${`Access on ${name}`}>
                 <div class="ag-row ag-head" role="row">
                     <div class="ag-first ag-first-head" role="columnheader">
                         <span>${find.group === "sessions" ? "Session" : find.group === "folders" ? "Folder" : projectsShown > 0 ? "By project" : "By folders"}</span>
@@ -975,8 +1201,8 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
                                     type="button"
                                     class="ag-toggle"
                                     aria-expanded=${all.open}
-                                    aria-label=${`${all.open ? "Close" : "Open"} All folders of ${computer.name}`}
-                                    title=${`Every folder on ${computer.name}`}
+                                    aria-label=${`${all.open ? "Close" : "Open"} All folders of ${name}`}
+                                    title=${`Every folder on ${name}`}
                                     onClick=${all.toggle}
                                 >
                                     <${Icon} name="chevron" size=${11} class=${`chev ${all.open ? "open" : ""}`} />
@@ -993,7 +1219,7 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
                     nothing &&
                     html`<div class="ag-row ag-empty" role="row">
                         <div class="ag-first">
-                            <span class="muted small">Nothing here matches. <button type="button" class="access-clear" onClick=${find.clear}>Clear</button></span>
+                            <span class="muted small">${noMatches}${" "}<button type="button" class="access-clear" onClick=${find.clear}>Clear</button></span>
                         </div>
                     </div>`
                 }
@@ -1002,11 +1228,4 @@ export function ComputerGrid({ computer, people, grid, find, trustColumn, fallba
         </div>
         <div class="ag-fade" aria-hidden="true"></div>
     </div>`;
-}
-
-/** The people who can be chosen for `computer`, each a column of its grid while chosen. */
-export function peopleOf(computer) {
-    return store.state.users.filter(
-        (person) => !isOwner(person) && choosable(computer, person) && inCharge(computer),
-    );
 }

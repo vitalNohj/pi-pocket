@@ -269,7 +269,7 @@ test("a user's page has a Chat tab; a viewer's page and one's own have none", re
     await openPeople();
     await show("Gina");
     await until(async () => (await tabs()).length > 0, "Gina's tabs");
-    assert.deepEqual(await tabs(), ["Folders and sessions (shown)", "Permissions", "Chat"]);
+    assert.deepEqual(await tabs(), ["Computers (shown)", "Permissions", "Chat"]);
 
     await show("Vera");
     assert.equal(
@@ -657,14 +657,11 @@ const names = () =>
         );
     `);
 
-/** The switches of the page shown that say what a person may do, as they read. */
+/** The switches of the Permissions pane shown, in every group of it (Account, Pi Pocket, each computer), as they read. */
 const rights = () =>
     inPage<string[]>(`
-        const group = [...document.querySelectorAll(".pages-detail .group")]
-            .find((each) => each.querySelector(".group-title")?.textContent.trim() === "What they may do");
-
         return JSON.stringify(
-            [...(group?.querySelectorAll("[role=switch]") ?? [])].map(
+            [...document.querySelectorAll(".pages-detail .group [role=switch]")].map(
                 (each) => each.getAttribute("aria-label") + (each.disabled ? " (disabled)" : ""),
             ),
         );

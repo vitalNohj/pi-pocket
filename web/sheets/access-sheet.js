@@ -1,15 +1,9 @@
-// The Access sheet: who has what, and where. One sheet in three views, chosen in its head:
-// - People: the people on the left, the chosen person's page beside it (`people.js` `PersonPage`), with their
-//   folders and sessions on each computer as a tree.
-// - Computer: the computers on the left, the chosen computer's grid beside it (`access-grid.js` `ComputerGrid`):
-//   every project, folder, or session there in rows, a column for each person, and under it the people who may use it.
-//   Only for who is offered runners (`store.js` `runnersOffered`) or is in charge of this server.
-// - Settings: what holds for everyone (for who manages Pi Pocket), Notifications on this device, and for each computer
-//   I am in charge of its own settings: how long each person's approvals last, its rules, tools, link again,
-//   unlink (`computers.js`).
-// `openSheet({ type: "access", view, person, part, computer, page })` opens it at one view, and there at one page:
-// `page` is a page of Settings ("notifications", "settings", "limits").
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+// Access has three views: People shows a person's computers and permissions. Computer shows one grid of what the
+// reader can give or take, with trust, All folders and use switches for who is in charge. Settings holds the common
+// settings, notifications, and the settings of the computers in the reader's charge.
+// openSheet({ type: "access", view, person, part, computer, only, page }) opens a view and page; `only` starts the
+// Computer grid with just that person shown.
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { NotificationsPage } from "../notify.js";
 import {
     api,
@@ -22,18 +16,20 @@ import {
     managesThisServer,
     managesServer,
     openSheet,
-    runnersOffered,
     store,
 } from "../store.js";
 import { html, Icon, Loader, Sheet, Switch, useMinute } from "../ui.js";
 import { keeps, wordsOf } from "./access-tree.js";
 import {
     AccessKey,
+    answerPeople,
+    answerSource,
     ComputerGrid,
     GroupBy,
     gridOf,
     PeopleFilter,
     Pick,
+    recordSource,
     roleWord,
     SearchField,
     TIMES,
@@ -43,12 +39,15 @@ import {
 import {
     chosenFor,
     choosable,
+    ComputerDot,
     computers as allComputers,
     inCharge,
     loadComputers,
     loadProjects,
+    loadSharings,
     projectsOf,
     sessionsOf,
+    sharingOf,
     standing,
     THIS_SERVER,
     toggleUse,
@@ -69,30 +68,37 @@ import {
 } from "./computers.js";
 import { PageItem, Pages } from "./pages.js";
 import { Face, lastSeen, ordered, PersonPage, roleText, SettingsPage } from "./people.js";
-import { isOwner, isViewer } from "../roles.js";
-
-/** Who sees Computer: who is offered runners, or is in charge of this server. */
-const byComputer = () =>
-    runnersOffered() || (store.state.thisServer !== null && inCharge(store.state.thisServer));
+import { SelectButton, useSelect } from "./session-select.js";
+import { isOwner, isViewer, prompts } from "../roles.js";
 
 /** The views of the sheet this person has, in the order of its switch. */
 function viewsOf() {
+    const { me } = store.state;
+    const computer =
+        !isViewer(me) && ((prompts(me) && !me.sessions && allComputers().length > 0) || canLink());
+
     return [
         ["person", "People"],
-        byComputer() && ["computer", "Computer"],
+        computer && ["computer", "Computer"],
         ["settings", "Settings"],
     ].filter(Boolean);
 }
 
-/**
- * Load the computers and the people when the sheet opens, and the projects of the computers I am in charge of: again
- * a second after the sessions change while it is open, since a new session can start a new project.
- */
+/** Load the people and computers on open. The grids' answers follow the list of computers and sessions. */
 function useLoad() {
     const [loaded, setLoaded] = useState(false);
-    const sessions = store.state.sessions;
+    const { sessions, runners, thisServer, me } = store.state;
     const stamp = useMemo(
-        () => sessions.map((each) => `${each.id}:${each.cwd}:${each.archived ? 1 : 0}`).join(","),
+        () =>
+            JSON.stringify(
+                sessions.map((each) => [
+                    each.id,
+                    each.cwd,
+                    each.sharedWith,
+                    each.archived,
+                    each.mayShare,
+                ]),
+            ),
         [sessions],
     );
     const first = useRef(true);
@@ -103,21 +109,27 @@ function useLoad() {
 
             store.set({ users: list });
             setLoaded(true);
-            await loadProjects();
         });
     }, []);
 
     useEffect(() => {
+        if (!loaded) {
+            return undefined;
+        }
+
+        const refresh = () => Promise.all([loadProjects(), loadSharings()]);
+
         if (first.current) {
             first.current = false;
+            void refresh();
 
             return undefined;
         }
 
-        const timer = setTimeout(() => void loadProjects(), 1000);
+        const timer = setTimeout(refresh, 1000);
 
         return () => clearTimeout(timer);
-    }, [stamp]);
+    }, [loaded, stamp, runners, thisServer, me?.mayStart]);
 
     return loaded;
 }
@@ -201,15 +213,10 @@ function ByPerson({ sheet }) {
 
 /** A computer's row in a list on the left: its state, and who uses it. */
 function ComputerItem({ computer, selected, onSelect, detail }) {
-    const server = computer.id === THIS_SERVER;
-
     return html`<${PageItem}
         selected=${selected}
         onSelect=${onSelect}
-        lead=${html`<span
-            class=${`runner-dot ${server || computer.online ? "on" : computer.away ? "away" : ""}`}
-            aria-hidden="true"
-        ></span>`}
+        lead=${html`<${ComputerDot} computer=${computer} />`}
         title=${computer.name}
         detail=${detail}
     />`;
@@ -233,9 +240,13 @@ function peopleHere(computer) {
  * session there. The list on the left and the People filter both count these.
  */
 function columnPeople(computer) {
+    if (computer.mayUse === false) {
+        return [];
+    }
+
     return inCharge(computer)
         ? peopleHere(computer).filter((person) => chosenFor(computer, person) || person.sessions)
-        : [];
+        : answerPeople(sharingOf(computer));
 }
 
 /** What a computer's row says in Computer: its state, and how many people have a column in its grid. */
@@ -291,6 +302,13 @@ function ByComputer({ sheet }) {
     const loaded = store.state.runners !== undefined;
     const [view, setView] = useState(sheet?.computer ? `computer:${sheet.computer}` : null);
     const computers = allComputers();
+
+    useEffect(() => {
+        if (sheet?.computer) {
+            setView(`computer:${sheet.computer}`);
+        }
+    }, [sheet]);
+
     const shown =
         view === "link" && canLink()
             ? view
@@ -304,6 +322,7 @@ function ByComputer({ sheet }) {
                     ? "link"
                     : "about";
     const current = computers.find((each) => `computer:${each.id}` === shown);
+    const only = current?.id === sheet?.computer ? sheet?.only : undefined;
 
     const list = html`<div class="group-title">Computers</div>
         ${loaded && computers.length === 0 && html`<p class="muted small runner-none">No computers linked yet.</p>`}
@@ -327,7 +346,7 @@ function ByComputer({ sheet }) {
         }`;
 
     return html`<${Pages} label="Computers" list=${list}>
-        ${current && html`<${ComputerView} key=${current.id} computer=${current} />`}
+        ${current && html`<${ComputerView} key=${JSON.stringify([current.id, only])} computer=${current} only=${only} />`}
         ${shown === "link" && html`<${LinkComputer} onDone=${() => setView(null)} />`}
         ${shown === "about" && html`<${AboutRunners} />`}
     <//>`;
@@ -355,6 +374,15 @@ function ComputerNotes({ computer }) {
     const server = computer.id === THIS_SERVER;
     const linker = users.find((each) => each.id === computer.createdBy)?.name;
     const unlinks = computer.mayUnlink === true;
+    const owner = users.find(isOwner)?.name ?? "The owner";
+    const linked = `Linked by ${linker ?? "someone else"}, who is in charge of it`;
+
+    if (computer.mayUse === false && !computer.blocked) {
+        return html`<div class="runner-note" data-part="read-only">
+            ${linked}. You do not use it, and see nothing on it. You can unlink it.
+        </div>`;
+    }
+
     const remedy = [
         managesPeople() && computer.createdBy !== me?.id && "make them a user in People",
         unlinks && "unlink it",
@@ -374,11 +402,10 @@ function ComputerNotes({ computer }) {
             !mine &&
             !computer.blocked &&
             html`<div class="runner-note" data-part="read-only">
-                Linked by ${linker ?? "someone else"}, who is in charge of it: only they choose its people and change
-                its settings.${
+                ${server ? `${owner} is in charge of This server` : linked}: only they choose its people and change its settings.${
                     hasRight("reshares", computer.id) === true
-                        ? " They give folders there, and you give the folders given to you, in People."
-                        : " They give folders there, and so does anyone they let share what they were given."
+                        ? " You share your sessions here, and give the folders given to you."
+                        : " You share the sessions you started here."
                 }${unlinks ? " You can unlink it." : ""}
             </div>`
         }
@@ -460,17 +487,21 @@ function UseSwitches({ computer, people }) {
     </div>`;
 }
 
-/** One computer in Computer. Who is not in charge of it reads what it is, and nothing of who has what there. */
-function ComputerView({ computer }) {
+/** One computer: what it is, and what the reader can give or take there. */
+function ComputerView({ computer, only }) {
     const mine = inCharge(computer);
+    const usable = computer.mayUse !== false && !computer.blocked;
     const server = computer.id === THIS_SERVER;
     // A person who may unlink it and is not in charge does it here, not in Settings.
     const unlinks = !mine && computer.mayUnlink === true;
     const state = useFind();
-    const [hidden, setHidden] = useState(() => new Set());
-    const count = store.state.sessions.filter(
-        (each) => (each.runner ?? THIS_SERVER) === computer.id && !each.archived,
-    ).length;
+    const page = useRef(null);
+    const [picked, setHidden] = useState(null);
+    const count = usable
+        ? store.state.sessions.filter(
+              (each) => (each.runner ?? THIS_SERVER) === computer.id && !each.archived,
+          ).length
+        : 0;
     const head = [
         server ? "Pi Pocket itself" : computer.blocked ? "Blocked" : status(computer),
         `${count} ${count === 1 ? "session" : "sessions"}`,
@@ -481,34 +512,64 @@ function ComputerView({ computer }) {
 
     useMinute();
 
+    useLayoutEffect(() => {
+        if (only !== undefined && matchMedia("(max-width: 719px)").matches) {
+            page.current.scrollIntoView({ block: "start" });
+        }
+    }, [only]);
+
     const everyone = mine ? peopleHere(computer) : [];
     const chosen = columnPeople(computer);
+    const onlyOff = chosen.some((each) => each.id === only)
+        ? undefined
+        : everyone.find((each) => each.id === only);
+    const target = onlyOff || chosen.some((each) => each.id === only) ? only : undefined;
+    const hidden =
+        picked ??
+        new Set(
+            target === undefined
+                ? []
+                : chosen.filter((each) => each.id !== target).map((each) => each.id),
+        );
     const people = chosen.filter((person) => !hidden.has(person.id));
+    const select = useSelect(JSON.stringify([computer.id, people.map((each) => each.id)]));
     const projects = mine ? projectsOf(computer) : undefined;
     const group =
         state.group === "projects" && projects === undefined
             ? "folders"
             : (state.group ?? (projects === undefined ? "folders" : "projects"));
-    const grid = gridOf(computer, people, { group, projects: projects?.projects });
+    const answer = usable ? sharingOf(computer) : undefined;
+    const source = mine
+        ? recordSource(computer, people)
+        : answerSource(computer, {
+              people: answer?.people.filter((each) => !hidden.has(each.id)) ?? [],
+          });
+    const grid = gridOf(source, { group, projects: projects?.projects });
+    const starters = new Set(grid.rows.map((each) => each.starter));
+    const by = ordered(store.state.users.filter((each) => starters.has(each.id)));
     const words = wordsOf(state.query);
     const { filters } = state;
-    const active = words.length > 0 || filters.access !== "" || filters.time !== "";
+    const start = by.length > 1 ? filters.by : "";
+    const active = words.length > 0 || filters.access !== "" || filters.time !== "" || start !== "";
     const find = {
         words,
+        query: state.query.trim(),
         access: filters.access,
         time: filters.time,
-        by: "",
+        by: start,
         active,
         kept: state.kept,
         group,
         now: Date.now(),
-        stamp: JSON.stringify([words, filters.access, filters.time, group]),
+        stamp: JSON.stringify([words, filters.access, filters.time, start, group]),
         keep: state.keep,
         clear: state.clear,
     };
     const found = grid.rows.filter((each) => keeps(find, each)).length;
+    const hasGrid = usable && (mine || chosen.length > 0);
+    const mayStart = usable && computer.mayStart !== false;
 
-    return html`<div class="sheet-page ac-computer">
+    return html`<div class="sheet-page ac-computer" ref=${page}>
         <div class="sheet-page-head ac-head">
             <span class="ac-icon"><${Icon} name="monitor" size=${18} /></span>
             <div class="grow">
@@ -516,7 +577,7 @@ function ComputerView({ computer }) {
                 <div class="muted small">${head}</div>
             </div>
             ${
-                mine &&
+                usable &&
                 html`<${GroupBy}
                     value=${group}
                     projects=${projects !== undefined}
@@ -524,7 +585,7 @@ function ComputerView({ computer }) {
                 />`
             }
             ${
-                (computer.mayStart !== false || unlinks) &&
+                (mayStart || unlinks) &&
                 html`<div class="sheet-page-actions">
                     ${
                         unlinks &&
@@ -533,7 +594,7 @@ function ComputerView({ computer }) {
                         </button>`
                     }
                     ${
-                        computer.mayStart !== false &&
+                        mayStart &&
                         html`<button
                         class="button small primary"
                         disabled=${!server && !computer.online}
@@ -552,16 +613,32 @@ function ComputerView({ computer }) {
             }
         </div>
         <${ComputerNotes} computer=${computer} />
+        ${usable && !mine && answer === undefined && html`<${Loader} />`}
         ${
-            mine &&
+            usable &&
+            answer &&
+            !answer.failed &&
+            answer.people.length === 0 &&
+            html`<p
+            class="muted small"
+            data-part="nothing-to-share"
+        >
+            Nothing of yours to share on ${computer.name} yet. A session you start here can be shared with the people who use it.
+        </p>`
+        }
+        ${
+            hasGrid &&
             html`<div class="ak-tools" role="search" aria-label=${`Find on ${computer.name}`}>
-                    <${SearchField}
+                    ${
+                        (mine || grid.rows.length > 1 || source.folders.length > 1 || active) &&
+                        html`<${SearchField}
                         state=${state}
                         active=${active}
                         found=${found}
                         total=${grid.rows.length}
                         placeholder="Search folders and sessions"
-                    />
+                    />`
+                    }
                     <div class="ak-tools-row">
                         <div class="access-picks">
                             <${Pick}
@@ -577,32 +654,53 @@ function ComputerView({ computer }) {
                                 onChange=${(value) => state.filter("time", value)}
                             />
                             ${
+                                by.length > 1 &&
+                                html`<${Pick}
+                                name="Started by"
+                                value=${start}
+                                choices=${[["", "Anyone"], ...by.map((each) => [each.id, each.name, `Started by ${each.name}`])]}
+                                onChange=${(value) => state.filter("by", value)}
+                            />`
+                            }
+                            ${
                                 chosen.length > 0 &&
                                 html`<${PeopleFilter}
-                                    people=${chosen}
-                                    hidden=${hidden}
-                                    onChange=${setHidden}
-                                />`
+                                people=${chosen}
+                                hidden=${hidden}
+                                onChange=${setHidden}
+                            />`
                             }
+                            ${people.length === 1 && html`<${SelectButton} select=${select} />`}
                         </div>
                     </div>
                 </div>
-                <${AccessKey} />
+                ${(mine || source.folders.length > 0) && html`<${AccessKey} />`}
                 ${
-                    chosen.length === 0
-                        ? html`<p class="muted small">No one else may use ${computer.name}. Turn someone on below.</p>`
-                        : people.length === 0
-                          ? html`<p class="muted small">No one is shown. Choose people in the filter.</p>`
-                          : null
+                    onlyOff
+                        ? html`<p class="muted small" data-part="only-off">
+                    ${onlyOff.name} may not use ${computer.name} yet. Turn them on under People, below.
+                </p>`
+                        : chosen.length === 0
+                          ? html`<p class="muted small">No one else may use ${computer.name}. Turn someone on below.</p>`
+                          : people.length === 0
+                            ? html`<p class="muted small">No one is shown. Choose people in the filter.</p>`
+                            : null
                 }
                 <${ComputerGrid}
-                    computer=${computer}
-                    people=${people}
+                    source=${source}
                     grid=${grid}
                     find=${find}
-                    trustColumn=${group !== "sessions" && projects !== undefined}
-                    fallback=${projects?.defaultProjectTrust}
-                    after=${html`<${UseSwitches} computer=${computer} people=${everyone} />`}
+                    select=${select}
+                    ...${
+                        mine
+                            ? {
+                                  trustColumn: group !== "sessions" && projects !== undefined,
+                                  fallback: projects?.defaultProjectTrust,
+                                  after: html`<${UseSwitches} computer=${computer} people=${everyone} />`,
+                                  allFolders: true,
+                              }
+                            : {}
+                    }
                 />`
         }
     </div>`;

@@ -1,10 +1,6 @@
-// People with access to this server, and invites for more. The People sheet is laid out as the Runners sheet is
-// (`pages.js`): everyone on the left, the chosen person's page beside it. The owner manages a person there, in two
-// parts: Folders and sessions (where they may work: their folders and their sessions on each computer, as in Runners:
-// `access.js`), and Permissions (what they may do, and their sign-in). A user the owner lets manage users (`store.js`
-// `managesPeople`) does the same for the people they may change. Whoever else prompts sees, on another person's page,
-// what they have to give that person: their own runners, and their sessions and folders on other computers. One search
-// and three filters stand over those lists (`Access`). Anyone else reads who is here, and has their own things.
+// People in the Access sheet: everyone on the left, the chosen person's page beside it. Computers says where
+// they work and opens the grid of one computer with that person shown. Permissions holds their account, what they
+// may do, and their sign-in. What can be changed follows what the server lets the reader do.
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Avatar, avatarBlob } from "../avatar.js";
 import { shortPath } from "../folder-paths.js";
@@ -16,8 +12,8 @@ import {
     collab,
     declaredRights,
     managesPeople,
-    navigate,
     notify,
+    openSheet,
     serverClockOffset,
     signOut,
     store,
@@ -34,38 +30,22 @@ import {
     timeAgo,
     useMinute,
 } from "../ui.js";
-import { accessFolder, below, inFolder, keeps, matches, newest, wordsOf } from "./access-tree.js";
+import { accessFolder, matches, newest, wordsOf } from "./access-tree.js";
 import {
-    AccessRow,
     choosable,
     choosePerson,
     chosenFor,
+    ComputerDot,
     computers,
-    countOf,
-    groupsOf,
-    LevelMenu,
-    levelsFor,
     inCharge,
-    projectsOf,
     RightSwitch,
-    SessionLine,
-    TreeGroup,
-    treeOf,
-    useGroups,
+    sessionsOf,
+    standing,
 } from "./access.js";
 import { ApprovalTime, TasksExpire } from "./approvals.js";
 import { MyAuthenticator } from "./authenticator.js";
 import { PageTabs } from "./pages.js";
-import { AccessKey, GroupBy, Pick, SearchField, TIMES, ACCESS, useFind } from "./access-grid.js";
 import { canShare } from "./session-share.js";
-import {
-    folderCheck,
-    SelectBar,
-    SelectButton,
-    sessionCheck,
-    useListed,
-    useSelect,
-} from "./session-select.js";
 import { DirectChat } from "./direct.js";
 import { isOwner, isViewer, isUser, prompts } from "../roles.js";
 
@@ -1285,14 +1265,11 @@ function ComputerPermissions({ computer, person }) {
  * What the server says of one person and me (`GET /api/users/:id/sharing`): my sessions with how they have each, the
  * folders I can give them, the computers they are in charge of, and where I can share my new sessions with them. Asked
  * while `on`, and again when what the answer stands on changes: my sessions and whom each is shared with, who they are, and
- * where they are chosen. `reload` asks again after a change the server does not tell this tab of (a folder I gave on
- * someone else's computer). `ready`: the server has answered, or refused, or is not asked: until then nobody knows
- * what there is to give.
+ * where they are chosen. `ready`: the server has answered, refused, or is not asked.
  */
 function useSharing(person, on) {
     const [told, setTold] = useState(null);
     const [ready, setReady] = useState(false);
-    const [turn, setTurn] = useState(0);
     const path = `users/${encodeURIComponent(person.id)}/sharing`;
     const stamp = JSON.stringify([
         store.state.sessions.map((each) => [
@@ -1307,6 +1284,8 @@ function useSharing(person, on) {
         person.sessions,
         computers().map((each) => [
             each.id,
+            each.mayUse,
+            each.inCharge,
             (each.users ?? []).map((user) => user.id),
             each.given?.[person.id],
             each.sees?.[person.id],
@@ -1335,15 +1314,9 @@ function useSharing(person, on) {
         return () => {
             live = false;
         };
-    }, [path, stamp, on, turn]);
+    }, [path, stamp, on]);
 
-    return {
-        told,
-        setTold,
-        ready: !on || ready,
-        path,
-        reload: () => setTurn((now) => now + 1),
-    };
+    return { told, setTold, ready: !on || ready };
 }
 
 /** Share the sessions I start from now on with this person, on each computer where I can. */
@@ -1394,567 +1367,119 @@ function NewSessions({ person, sharing }) {
     </div>`;
 }
 
-/** Whether a person has a session of mine now, whichever way (`commands.ts` `SharingRow` `state`). */
-const theirs = (row) => row.state !== "none" && row.state !== "blocked";
+/** A count with its word: "1 session", "2 sessions". */
+const countOf = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
-/**
- * What I can give `person` on the computers I am not in charge of, from the server's answer (`told`: `useSharing`):
- * one card for each such computer (`cards`), with the folders I can give them there or gave them, my sessions there
- * under the folder each counts as working in (`access-tree.js` `inFolder`, the deepest one), and the rest of them. A
- * session they cannot have (they cannot use its computer) is not listed: the card says why (`note`). A folder with no
- * session of mine to list, which they do not have and I can neither give them nor take back, is left out: it would
- * say nothing. `charge`: the computers they are in charge of, where every session is theirs already, by name.
- */
-function reachOf(told, person) {
-    const mine = (id) => computers().some((each) => each.id === id && inCharge(each));
-    const cards = new Map();
-
-    const card = (id, name) => {
-        if (!cards.has(id)) {
-            cards.set(id, { id, name, starts: true, folders: [], other: [], rows: [], blocked: 0 });
-        }
-
-        return cards.get(id);
-    };
-
-    for (const each of told?.computers ?? []) {
-        if (!mine(each.id)) {
-            const at = card(each.id, each.name);
-
-            at.reason = each.reason;
-            at.folders = each.folders.map((folder) => ({
-                folder: folder.path,
-                info: folder,
-                rows: [],
-            }));
-        }
+/** What one person's row says here, and whether it can lead to a column or a switch. */
+function computerRow(computer, person, told) {
+    if (computer.mayUse === false) {
+        return undefined;
     }
 
-    for (const each of told?.sessions ?? []) {
-        if (mine(each.computer)) {
-            continue;
+    if (inCharge(computer)) {
+        if (!choosable(computer, person)) {
+            return { line: "In charge here: every session there is theirs." };
         }
 
-        const at = card(each.computer, each.computerName);
+        const sessions = sessionsOf(computer, person).length;
+        const { chosen, manager } = standing(computer, person);
 
-        if (each.state === "blocked") {
-            at.blocked += 1;
-            at.why = each.reason;
-
-            continue;
+        if (person.sessions) {
+            return sessions === 0
+                ? { line: "Invited to one session only: nothing here." }
+                : {
+                      jump: true,
+                      line: `Invited to one session only · ${countOf(sessions, "session")}`,
+                  };
         }
 
-        let best;
+        const folders = (computer.given?.[person.id] ?? []).length;
+        const line = manager
+            ? "In charge here"
+            : chosen
+              ? `${countOf(folders, "folder")} · ${countOf(sessions, "session")}`
+              : sessions > 0
+                ? `Not chosen · ${countOf(sessions, "session")} shared`
+                : "Not chosen";
 
-        for (const node of at.folders) {
-            if (
-                inFolder(each.folder, node.folder) &&
-                (best === undefined || node.folder.length > best.folder.length)
-            ) {
-                best = node;
-            }
-        }
+        return { jump: true, line };
+    }
 
-        const row = {
-            ...each,
-            has: theirs(each),
-            starter: each.starter.id,
-            places: best === undefined ? [each.cwd] : [each.cwd, best.folder],
+    const { id, name } = computer;
+
+    if (told?.charge.some((each) => each.id === id)) {
+        return { line: "In charge there: every session there is theirs." };
+    }
+
+    const sessions = told?.sessions.filter((each) => each.computer === id) ?? [];
+    const place = told?.computers.find((each) => each.id === id);
+
+    if (person.sessions) {
+        const titles = sessions
+            .filter((each) => each.state === "invited")
+            .map((each) => `“${each.title}”`);
+
+        return titles.length > 0
+            ? { line: `${person.name} is invited to one session only: ${titles.join(", ")}.` }
+            : sessions.length > 0
+              ? { line: `${person.name} is invited to one session only.` }
+              : undefined;
+    }
+
+    const folders = place?.folders ?? [];
+    const offered = folders.filter((each) => each.has || each.levels.length > 1);
+    const jump =
+        sessions.some((each) => each.give || each.take) ||
+        offered.some((each) => each.levels.length > 1);
+    const possible = sessions.filter((each) => each.state !== "blocked");
+
+    if (jump || possible.length > 0 || offered.length > 0) {
+        const has = possible.filter((each) => each.state !== "none").length;
+        const given = offered.filter((each) => each.has).length;
+        const line =
+            `${has} of ${sessions.length} of your sessions` +
+            (offered.length > 0 ? ` · ${given} of ${offered.length} of your folders` : "");
+
+        return { jump, line };
+    }
+
+    if (sessions.length > 0) {
+        return {
+            line: `${person.name} cannot use ${name}. Whoever is in charge of it chooses who uses it.`,
         };
-
-        (best?.rows ?? at.other).push(row);
-        at.rows.push(row);
     }
 
-    for (const at of cards.values()) {
-        at.folders = at.folders.filter(
-            (each) => each.rows.length > 0 || each.info.has || each.info.give || each.info.take,
-        );
-
-        if (at.blocked > 0) {
-            const yours = at.blocked === 1 ? "your session" : `your ${at.blocked} sessions`;
-
-            at.note =
-                at.why === "invited to one session only"
-                    ? `${person.name} is invited to one session only, so ${yours} here cannot be shared with them.`
-                    : `${person.name} cannot use ${at.name}, so ${yours} here cannot be shared with them. Whoever is in charge of it chooses who uses it.`;
-        } else if (at.reason && at.folders.every((each) => !each.info.has)) {
-            at.note = at.reason;
-        }
-    }
-
-    return {
-        cards: [...cards.values()],
-        charge: (told?.charge ?? []).filter((each) => !mine(each.id)).map((each) => each.name),
-    };
+    return undefined;
 }
 
-/**
- * One person on a computer someone else is in charge of, for me who share what I have there (`reachOf`): its folders I
- * can give them, or gave them, and my sessions there, as the tree of a computer of my own (`access.js` `TreeGroup`).
- * A folder they do not have ends in Add; one I gave them, in Remove, and its switch lets them access all sessions in
- * it while I see them all myself (`access.ts` `mayGiveFolder`, `mayTakeFolder`, `maySetSees`). A session ends in
- * Invite, or in Revoke where the share is mine to end (`mayUnshare`): one someone else shared says who, and has
- * neither. Whether they use the computer at all is its one in charge's choice, so there is no switch for it here.
- * While sessions are selected (`select`: `session-select.js`), each session and folder drawn has its checkbox in place
- * of Invite and Revoke.
- */
-function OtherComputer({ card, person, sharing, find, select }) {
-    const [busy, setBusy] = useState(false);
-    const groups = useGroups(find);
-    const { me } = store.state;
-    const on = `${person.name} on ${card.name}`;
-    const shown = groupsOf(card, find);
+/** A row opens Computer for this person when there is something to show or a switch to turn on. */
+function PersonComputer({ person, computer, line, jump }) {
+    const body = html`<${ComputerDot} computer=${computer} />
+        <span class="grow">
+            <strong>${computer.name}</strong>
+            <span class="muted small person-computer-line">${line}</span>
+        </span>`;
 
-    // The sessions drawn, for the selection: in the rows that are open, each with what the server says can be done.
-    useListed(
-        select,
-        `card:${card.id}`,
-        shown
-            .filter((each) => groups.isOpen(each.key))
-            .flatMap((each) => each.listed)
-            .map((row) => ({ id: row.id, share: row.give, revoke: row.take })),
-    );
-
-    if (find.active && shown.length === 0) {
-        return null;
-    }
-
-    const act = async (run) => {
-        setBusy(true);
-
-        try {
-            await attempt(run);
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    const share = (row, body) => {
-        find.keep([row.id]);
-
-        return act(async () => {
-            const answer = await api(sharing.path, body);
-
-            sharing.setTold(answer);
-
-            if (answer.refused.length > 0) {
-                notify("error", answer.refused[0].reason);
-            }
-        });
-    };
-
-    const revoke = (row) =>
-        confirm(`Stop sharing “${row.title}” with ${person.name}?`) &&
-        share(row, { revoke: [row.id] });
-
-    const folderRoute = (part) => `runners/${encodeURIComponent(card.id)}/${part}`;
-
-    // The server tells this tab of no change on a computer it is not in charge of: asked again after each. Taken
-    // back, the sessions they started in it go to whoever is in charge: said first.
-    const setLevel = (node, level) => {
-        if (
-            level === "none" &&
-            !confirm(
-                `Take ${node.folder} from ${person.name}? The sessions they started in it move to whoever is in charge of ${card.name}, with the tasks they set up there. Sessions shared with them stay.`,
-            )
-        ) {
-            return undefined;
-        }
-
-        find.keep(node.rows.map((each) => each.id));
-
-        return act(async () => {
-            await api(folderRoute("level"), { person: person.id, folder: node.folder, level });
-            sharing.reload();
-        });
-    };
-
-    const how = (row) =>
-        row.state === "started"
-            ? "started it"
-            : row.state === "invited"
-              ? "invited to it alone"
-              : row.state === "folder"
-                ? "accesses all sessions in its folder"
-                : row.state === "none"
-                  ? "not shared with them"
-                  : row.by === undefined
-                    ? "shared with them"
-                    : `shared by ${row.by.id === me?.id ? "you" : row.by.name}`;
-
-    const go = (row) => {
-        closeSheet();
-        navigate(row.id);
-    };
-
-    const inside = (key, rows, folder) => html`
-        ${rows.length === 0 && html`<div class="ft-row muted at-note" style="--depth:1">No session of yours ${folder === undefined ? "here" : "in it"}.</div>`}
-        ${groups.inOrder(key, rows).map(
-            (row) =>
-                html`<${SessionLine}
-                    key=${row.id}
-                    name=${row.title}
-                    how=${how(row)}
-                    where=${folder === undefined ? row.cwd : below(row.cwd, folder)}
-                    used=${row.usedAt}
-                    words=${find.words}
-                    off=${!row.has}
-                    check=${sessionCheck(select, row)}
-                >
-                    <button
-                        class="button small"
-                        aria-label=${`Go to ${row.title}`}
-                        onClick=${() => go(row)}
-                    >
-                        Go to session
-                    </button>
-                    ${
-                        // A share that is mine to end: Revoke. One I can give them: Invite in its place. Neither (a
-                        // share someone else made), or while sessions are selected: the place stays, so the buttons
-                        // before it are one column.
-                        select.on
-                            ? html`<span class="at-end" aria-hidden="true"></span>`
-                            : row.take
-                              ? html`<button
-                                  class="button small ghost at-end"
-                                  disabled=${busy}
-                                  aria-label=${`Revoke ${row.title} from ${person.name}`}
-                                  onClick=${() => revoke(row)}
-                              >
-                                  Revoke
-                              </button>`
-                              : row.give
-                                ? html`<button
-                                    class="button small at-end"
-                                    disabled=${busy}
-                                    aria-label=${`Invite ${person.name} to ${row.title}`}
-                                    title=${
-                                        row.state === "folder"
-                                            ? "They have it through the folder now. Invited, they keep it when that ends."
-                                            : undefined
-                                    }
-                                    onClick=${() => share(row, { share: [row.id] })}
-                                >
-                                    Invite
-                                </button>`
-                                : html`<span class="at-end" aria-hidden="true"></span>`
-                    }
-                <//>`,
-        )}
-    `;
-
-    const rest = card.folders.length > 0 ? "Your other sessions" : "Your sessions";
-
-    return html`<div class="access-row" data-computer=${card.id}>
-        <div class="setting wrap">
-            <div class="grow">
-                <div class="small"><strong>${card.name}</strong></div>
-                <div class="muted small">
-                    ${card.note ?? "Someone else is in charge here. You share what you have here."}
-                </div>
-            </div>
-        </div>
-        ${
-            shown.length > 0 &&
-            html`<div class="at-tree" role="group" aria-label=${`Folders and sessions of ${on}`}>
-                ${shown.map((each) => {
-                    if (each.folder === undefined) {
-                        return html`<${TreeGroup}
-                            key=${each.key}
-                            name=${rest}
-                            label=${`${rest} on ${card.name}: ${countOf(each.rows)}`}
-                            count=${countOf(each.rows)}
-                            title=${card.folders.length > 0 ? "In none of these folders." : undefined}
-                            open=${groups.isOpen(each.key)}
-                            onToggle=${() => groups.toggle(each.key)}
-                            check=${folderCheck(
-                                select,
-                                `${rest} on ${card.name}`,
-                                groups.isOpen(each.key) ? each.listed.map((row) => row.id) : [],
-                            )}
-                        >
-                            <div class="at-group" role="group">
-                                ${inside(each.key, each.listed, undefined)}
-                            </div>
-                        <//>`;
-                    }
-
-                    const { info } = each;
-
-                    return html`<${TreeGroup}
-                        key=${each.key}
-                        folder=${true}
-                        name=${each.folder}
-                        label=${`Folder ${each.folder} of ${on}: ${countOf(each.rows)}`}
-                        count=${countOf(each.rows)}
-                        open=${groups.isOpen(each.key)}
-                        onToggle=${() => groups.toggle(each.key)}
-                        words=${find.words}
-                        off=${!info.has}
-                        check=${folderCheck(
-                            select,
-                            `${each.folder} on ${card.name}`,
-                            groups.isOpen(each.key) ? each.listed.map((row) => row.id) : [],
-                        )}
-                        actions=${html`${
-                            info.has &&
-                            info.by &&
-                            info.by.id !== me?.id &&
-                            html`<span class="at-sees">given by ${info.by.name}</span>`
-                        }
-                            <${LevelMenu}
-                                person=${person}
-                                folder=${each.folder}
-                                where=${card.name}
-                                level=${info.level}
-                                levels=${levelsFor(person).filter((one) => info.levels.includes(one))}
-                                reason=${
-                                    info.levels.length > 1
-                                        ? undefined
-                                        : card.reason
-                                          ? "Cannot be given here"
-                                          : "Not yours to change"
-                                }
-                                busy=${busy}
-                                onPick=${(level) => setLevel(each, level)}
-                            />`}
-                    >
-                        <div class="at-group" role="group">
-                            ${inside(each.key, each.listed, each.folder)}
-                        </div>
-                    <//>`;
+    return jump
+        ? html`<button
+            class="setting person-computer"
+            type="button"
+            data-part="person-computer"
+            data-computer=${computer.id}
+            aria-label=${`${person.name} on ${computer.name}: open in Computer`}
+            onClick=${() =>
+                openSheet({
+                    type: "access",
+                    view: "computer",
+                    computer: computer.id,
+                    only: person.id,
+                    person: person.id,
                 })}
-            </div>`
-        }
-    </div>`;
-}
-
-/**
- * A person's folders and sessions, for whoever can give them some: one card for each computer, under one search and
- * three filters over them all.
- *
- * A computer I am in charge of is the record Runners shows by computer (`access.js` `AccessRow`): whether they use it,
- * the folders given to them there, and every session there that is theirs or mine to share, each given and taken back
- * alone. The owner, and whoever manages this person, has those on the page (`direct`); a runner's linker who manages
- * nobody opens their own from Invite to your runner, greyed out with no runner. Any other computer shows what I have
- * there to share (`OtherComputer`).
- *
- * The search finds a session by its name or its folder, and a folder by its path. The filters keep the sessions they
- * have or do not have, the ones I last used within a time, and the ones one person started. Under either, a folder or
- * a computer with nothing to list is left out and the others are open. In an open row the session I used last is
- * first. A row changed since the search last changed stays listed, to be changed back where it stands. An archived
- * session is not listed.
- *
- * Select, beside the search, checks several sessions listed, on any of the computers, to share or take back all at
- * once (`session-select.js`). It ends when the computers shown change, and with the page, which is one person's.
- */
-function Access({ person, direct, sharing, reach }) {
-    const { me } = store.state;
-    const state = useFind();
-    const { query, filters, kept } = state;
-    const own = placesFor(person);
-    // A linker who manages nobody: their runners open from the button, and are open where the person is there already.
-    const [opened, setOpened] = useState(() =>
-        own.some((each) => treeOf(each, person, false) !== null),
-    );
-
-    useMinute();
-
-    const mine = direct || opened ? own : [];
-    // Grouped by projects where the projects of a computer are known (I am in charge of it), else by folders.
-    const known = mine.some((each) => projectsOf(each) !== undefined);
-    const group = state.group ?? (known ? "projects" : "folders");
-
-    const grouping = (computer) => {
-        const projects = projectsOf(computer)?.projects;
-
-        return group === "projects" && projects === undefined
-            ? { group: "folders" }
-            : { group, projects };
-    };
-
-    const trees = mine.map((computer) => ({
-        computer,
-        tree: treeOf(computer, person, true, grouping(computer)),
-    }));
-    const rows = [
-        ...trees.flatMap((each) => each.tree?.rows ?? []),
-        ...reach.cards.flatMap((each) => each.rows),
-    ];
-    // What there is to search: the sessions listed, and the folders. A search is offered over more than one session,
-    // or more than one folder: there is nothing to find among less.
-    const folders =
-        trees.reduce((sum, each) => sum + (each.tree?.folders.length ?? 0), 0) +
-        reach.cards.reduce((sum, each) => sum + each.folders.length, 0);
-    const searched = rows.length > 1 || folders > 1;
-    // Select stands beside the search: with the tool row gone, the selection ends too.
-    const select = useSelect(
-        JSON.stringify([
-            person.id,
-            searched,
-            ...mine.map((each) => each.id),
-            ...reach.cards.map((each) => each.id),
-        ]),
-    );
-    const name = (id) =>
-        id === me?.id
-            ? "You"
-            : (store.state.users.find((each) => each.id === id)?.name ?? "Someone");
-    const starters = [...new Set(rows.map((each) => each.starter))]
-        .filter(Boolean)
-        .sort((one, other) =>
-            one === me?.id ? -1 : other === me?.id ? 1 : name(one).localeCompare(name(other)),
-        );
-    const by = starters.includes(filters.by) ? filters.by : "";
-    const words = wordsOf(query);
-    const active = words.length > 0 || filters.access !== "" || filters.time !== "" || by !== "";
-    const find = {
-        words,
-        access: filters.access,
-        time: filters.time,
-        by,
-        active,
-        kept,
-        group,
-        now: Date.now(),
-        stamp: JSON.stringify([words, filters.access, filters.time, by, group]),
-        keep: state.keep,
-        clear: state.clear,
-    };
-    const found = rows.filter((each) => keeps(find, each)).length;
-    // Whether anything is drawn under what is searched for: a folder found by its path counts, with no session in it.
-    const none =
-        active &&
-        trees.every((each) => each.tree === null || groupsOf(each.tree, find).length === 0) &&
-        reach.cards.every((each) => groupsOf(each, find).length === 0);
-
-    const { filter, clear } = state;
-
-    return html`<div class="group access">
-        <div class="group-title">${direct ? "Where they may work" : "What they have from you"}</div>
-        ${
-            !direct &&
-            html`<div class="reach">
-                <div class="row reach-buttons">
-                    <button
-                        class="button small"
-                        aria-expanded=${opened && own.length > 0}
-                        disabled=${own.length === 0}
-                        onClick=${() => setOpened(!opened)}
-                    >
-                        Invite to your runner
-                    </button>
-                </div>
-                ${own.length === 0 && html`<div class="muted small">You have no runner of your own.</div>`}
-            </div>`
-        }
-        ${
-            searched &&
-            html`<div class="access-find" role="search" aria-label=${`Find among the folders and sessions of ${person.name}`}>
-                <div class="ak-tools">
-                    <${SearchField}
-                        state=${state}
-                        active=${active}
-                        found=${found}
-                        total=${rows.length}
-                        placeholder="Search sessions and folders"
-                    />
-                    <${SelectButton} select=${select} />
-                    <div class="ak-tools-row">
-                <div class="access-picks">
-                    <${Pick}
-                        name="Access"
-                        value=${filters.access}
-                        choices=${ACCESS}
-                        onChange=${(value) => filter("access", value)}
-                    />
-                    <${Pick}
-                        name="Last used by you"
-                        value=${filters.time}
-                        choices=${TIMES}
-                        onChange=${(value) => filter("time", value)}
-                    />
-                    ${
-                        starters.length > 1 &&
-                        html`<${Pick}
-                            name="Started by"
-                            value=${by}
-                            choices=${[
-                                ["", "Anyone"],
-                                ...starters.map((id) => [
-                                    id,
-                                    name(id),
-                                    `Started by ${id === me?.id ? "you" : name(id)}`,
-                                ]),
-                            ]}
-                            onChange=${(value) => filter("by", value)}
-                        />`
-                    }
-                </div>
-                        <${GroupBy}
-                            value=${group}
-                            projects=${known}
-                            onChange=${state.setGroup}
-                        />
-                    </div>
-                </div>
-                <${AccessKey} />
-                <${SelectBar}
-                    select=${select}
-                    person=${person}
-                    find=${find}
-                    onAnswer=${(answer) => sharing.told !== null && sharing.setTold(answer)}
-                />
-            </div>`
-        }
-        ${
-            none &&
-            html`<p class="muted small access-none">
-                ${words.length > 0 ? `No session matches “${query.trim()}”${filters.access !== "" || filters.time !== "" || by !== "" ? " with these filters" : ""}.` : "No session matches these filters."}${" "}
-                <button type="button" class="access-clear" onClick=${clear}>Clear</button>
-            </p>`
-        }
-        ${trees.map(
-            ({ computer }) =>
-                html`<${AccessRow}
-                    key=${computer.id}
-                    computer=${computer}
-                    person=${person}
-                    title=${computer.name}
-                    find=${find}
-                    grouping=${grouping(computer)}
-                    select=${select}
-                    lead=${html`<span
-                        class=${`runner-dot ${computer.id === "this-server" || computer.online ? "on" : computer.away ? "away" : ""}`}
-                        aria-hidden="true"
-                    ></span>`}
-                />`,
-        )}
-        ${reach.cards.map(
-            (card) =>
-                html`<${OtherComputer}
-                    key=${card.id}
-                    card=${card}
-                    person=${person}
-                    sharing=${sharing}
-                    find=${find}
-                    select=${select}
-                />`,
-        )}
-        ${
-            !active &&
-            reach.charge.length > 0 &&
-            !isOwner(person) &&
-            html`<p class="muted small">
-                ${
-                    rows.length === 0
-                        ? `${person.name} is in charge of ${reach.charge.join(", ")}: every session there is theirs.`
-                        : `Not listed: your sessions on ${reach.charge.join(", ")}. ${person.name} is in charge there, so every session there is theirs.`
-                }
-            </p>`
-        }
-    </div>`;
+        >
+            ${body}
+            <${Icon} name="chevron" size=${13} />
+        </button>`
+        : html`<div class="setting person-computer" data-computer=${computer.id}>${body}</div>`;
 }
 
 /** Their authenticator, for the owner: that one is linked, and its removal for a lost phone. */
@@ -1999,17 +1524,11 @@ function Authenticator({ person, children }) {
 }
 
 /**
- * One person: who they are, then what there is to do with them. For the owner, and for a user who manages users on the
- * people they may change (`mine`), another person's page has two parts (`pages.js` `PageTabs`): Folders and sessions
- * (each computer with their folders and the sessions there, each session given and taken back on its row, as in
- * Runners), and Permissions (what they may do, on this server and on each computer, and their sign-in). The part shown stays
- * the same from one person to the next (`part`, kept by the sheet). Whoever prompts and manages nobody gets the first
- * part alone, of what they have to give: their own runners, and their sessions and folders on other computers
- * (`Access`). With nothing to give, the page has no such part. Anyone else reads who they are, in the head and the role
- * line under it. One's own page is one's account: its head holds the photo buttons and Sign out; under the tabs, the
- * name, a viewer's request for access, the owner's approval time, pinned sessions synced, another device of one's own,
- * and the authenticator, last.
+ * A person's page: Computers and Permissions, with Chat when the server offers it. The part shown stays from one
+ * person to the next. The reader sees what they can give that person or change for them. One's own page is one's
+ * account: photo, sign out, name, access request, approval time, pins, another device, and authenticator.
  */
+
 export function PersonPage({ person, part, onPart }) {
     const { me } = store.state;
     const owner = isOwner(me);
@@ -2026,26 +1545,19 @@ export function PersonPage({ person, part, onPart }) {
     const cards =
         !myself && collab() && prompts(person) && !person.sessions ? placesFor(person) : [];
     const rules = account || cards.length > 0;
-    // Where a person may work, on the computers I am in charge of. A runner's linker who manages nobody sets it under
-    // their computer, in Runners.
-    const places = (owner || mine) && placesFor(person).length > 0;
     // One's own approval time counts only on a computer someone else is in charge of.
     const asked = owner && myself && computers().some((each) => !inCharge(each));
-    // What I give them: for whoever prompts and starts sessions, on someone else's page (`useSharing`).
     const gives = !myself && collab() && (owner || isUser(me)) && !me?.sessions;
     const sharing = useSharing(person, gives);
-    const reach = reachOf(sharing.told, person);
-    // Whether what I have to give them is known: on a computer of my own at once, on someone else's once the server has
-    // said. Until then the page draws none of its parts, so that none shows first and then gives way to another.
-    const known = placesFor(person).length > 0 || sharing.ready;
-    // Their folders and sessions show to whoever has something to give them, including new sessions.
-    const access =
-        places ||
-        (gives &&
-            (placesFor(person).length > 0 ||
-                (sharing.told?.shareNew.length ?? 0) > 0 ||
-                reach.cards.length > 0 ||
-                (reach.charge.length > 0 && !isOwner(person))));
+    const rows = gives
+        ? computers().flatMap((computer) => {
+              const row = computerRow(computer, person, sharing.told);
+
+              return row === undefined ? [] : [{ computer, ...row }];
+          })
+        : [];
+    const known = rows.some((row) => inCharge(row.computer)) || sharing.ready;
+    const access = rows.length > 0 || (sharing.told?.shareNew.length ?? 0) > 0;
     // A sign-in link: one's own (`access.ts` `mayAddDevice`: no viewer's, but a paused user's, who links an
     // authenticator again on that device), the owner's for anyone, and for a viewer whoever manages them
     // (`maySignInAs`).
@@ -2058,7 +1570,7 @@ export function PersonPage({ person, part, onPart }) {
     // The parts of another person's page; one part alone shows without tabs.
     const tabs = known
         ? [
-              access && ["access", "Folders and sessions"],
+              access && ["access", "Computers"],
               rules && ["rules", "Permissions"],
               chat && ["chat", "Chat", store.state.directUnread[person.id] ?? 0],
           ].filter(Boolean)
@@ -2140,13 +1652,22 @@ export function PersonPage({ person, part, onPart }) {
         ${
             shown === "access" &&
             html`<div class="sheet-pane" data-part="person-access">
+                ${
+                    rows.length > 0 &&
+                    html`<div class="group">
+                    <div class="group-title">Computers</div>
+                    ${rows.map(
+                        ({ computer, line, jump }) => html`<${PersonComputer}
+                        key=${computer.id}
+                        person=${person}
+                        computer=${computer}
+                        line=${line}
+                        jump=${jump}
+                    />`,
+                    )}
+                </div>`
+                }
                 <${NewSessions} person=${person} sharing=${sharing} />
-                <${Access}
-                    person=${person}
-                    direct=${places}
-                    sharing=${sharing}
-                    reach=${reach}
-                />
             </div>`
         }
         ${

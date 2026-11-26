@@ -1,7 +1,7 @@
 // Session approvals (`src/server/folder-approvals.ts`): each session someone works in on a computer they are not in
 // charge of has one. It lasts its last user's approval time after their last use; then the session is locked until its
-// starter's code (the card in the session: `folder-requests.js`) or the Allow of who is in charge (there, or on the
-// session's row under the person: `access.js`) renews it. Here: the owner's choice of each person's approval time
+// starter's code or Allow by who is in charge renews it in the session (`folder-requests.js`). Here: the owner's
+// choice of each person's approval time
 // (`config.ts` `APPROVAL_DAYS`), and of whether tasks stop with their session's approval. The approvals themselves
 // are not listed anywhere.
 import { api, attempt, store } from "../store.js";

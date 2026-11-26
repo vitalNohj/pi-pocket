@@ -1,15 +1,12 @@
-// A selection of sessions on a person's page in People, to share or take back several at once with one request
-// (`POST /api/users/:id/sharing`, `commands.ts` `shareWith`): the tree of a computer I am in charge of (`access.js`
-// `AccessTree`) and the list of my sessions on one someone else is in charge of (`people.js` `OtherComputer`) use it
-// alike. Select in the tool row turns it on: each listed session and folder then has a checkbox, and a bar over the
-// list shares or takes back what is checked. Only what is listed can be checked: a row that leaves the list (under a
-// search, a folder closed, a session gone) leaves the selection too.
+// The selection of one computer and one person. Select puts a checkbox on each drawn session and folder in
+// Computer. The bar shares or takes back what is checked (POST /api/users/:id/sharing). A session out of sight
+// because of a search, a closed folder or a change in the session list is no longer checked.
 import { useEffect, useLayoutEffect, useState } from "preact/hooks";
 import { api, attempt, notify } from "../store.js";
 import { html } from "../ui.js";
 
 /**
- * The selection of one page. `scope`: the person and the computers shown; a change of it ends the selection mode.
+ * `scope`: the computer and the people shown. A change ends Select.
  *
  * Each list on the page tells what it lists now (`useListed`): one entry for each session row it draws, `{ id, share,
  * revoke, started, heir, kept }`: whether it can be shared with the person now, or taken back from them; whether they
@@ -105,16 +102,6 @@ export function chunks(ids, size = MOST) {
 
     return lists;
 }
-
-/** What nothing selects: a list drawn outside a page with a selection. */
-export const NO_SELECT = {
-    on: false,
-    busy: false,
-    has: () => false,
-    set() {},
-    report() {},
-    drop() {},
-};
 
 /** One list of the page tells the selection what it lists now (`useSelect`), under its own `key`. */
 export function useListed(select, key, entries) {
@@ -213,7 +200,7 @@ export function SelectBar({ select, person, find, onAnswer }) {
                         [what]: some,
                     });
 
-                    onAnswer?.(answer);
+                    await onAnswer();
                     refused.push(...answer.refused);
                 }
 
@@ -240,23 +227,11 @@ export function SelectBar({ select, person, find, onAnswer }) {
     const revoke = () => {
         const ids = revoking.map((each) => each.id);
         const started = revoking.filter((each) => each.started);
-        const heirs = [...new Set(started.map((each) => each.heir))];
         const kept = revoking.filter((each) => each.kept).length;
-        // The sessions they started move to whoever is in charge of each one's computer: where those differ, how many
-        // go to each.
-        const to =
-            heirs.length === 1
-                ? heirs[0]
-                : heirs
-                      .map(
-                          (heir) =>
-                              `${heir} (${started.filter((each) => each.heir === heir).length})`,
-                      )
-                      .join(", ");
         const asked =
             `Revoke ${sessions(ids.length)} from ${person.name}?` +
             (started.length > 0
-                ? ` ${started.length} they started move to ${to}, with the tasks they set up in them.`
+                ? ` ${started.length} they started move to ${started[0].heir}, with the tasks they set up in them.`
                 : "") +
             (kept > 0 ? ` They still have ${kept} of them through a folder.` : "");
 
