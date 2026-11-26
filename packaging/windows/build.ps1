@@ -111,18 +111,30 @@ $contractReferences = foreach ($contract in $contracts) {
     "/r:$($file.FullName)"
 }
 # The SDK contracts declare the original System.Runtime 4.0 facade. Prefer the matching desktop reference.
+$targetFacades = Join-Path ${env:ProgramFiles(x86)} 'Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\Facades'
 $runtimeFacade = Join-Path $env:WINDIR 'Microsoft.NET\assembly\GAC_MSIL\System.Runtime\v4.0_4.0.0.0__b03f5f7f11d50a3a\System.Runtime.dll'
-if (-not (Test-Path $runtimeFacade)) {
-    $runtimeFacade = Join-Path ${env:ProgramFiles(x86)} 'Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\Facades\System.Runtime.dll'
+if (-not (Test-Path -LiteralPath $runtimeFacade -PathType Leaf)) {
+    $runtimeFacade = Join-Path $targetFacades 'System.Runtime.dll'
 }
-if (-not (Test-Path $runtimeFacade)) { throw 'The .NET Framework System.Runtime reference is missing.' }
+if (-not (Test-Path -LiteralPath $runtimeFacade -PathType Leaf)) {
+    throw 'The .NET Framework System.Runtime reference is missing.'
+}
+# The WinRT event signatures also use EventRegistrationToken from this facade.
+$interopName = 'System.Runtime.InteropServices.WindowsRuntime.dll'
+$interopFacade = Join-Path (Split-Path $csc -Parent) $interopName
+if (-not (Test-Path -LiteralPath $interopFacade -PathType Leaf)) {
+    $interopFacade = Join-Path $targetFacades $interopName
+}
+if (-not (Test-Path -LiteralPath $interopFacade -PathType Leaf)) {
+    throw "The .NET Framework $interopName reference is missing. Install the .NET Framework 4.8 targeting pack."
+}
 $desktopSources = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter '*.cs' -File | ForEach-Object FullName)
 $bootstrap = Join-Path $PSScriptRoot "..\desktop\bridge\bootstrap.js"
 # The .NET 4.8 targeting pack's fallback facade can have a newer version than the WinRT contract reference.
 $compile = @(
     '/nologo', '/optimize+', '/platform:x64', '/warnaserror+', '/warnaserror-:1701', '/codepage:65001',
     '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll', '/r:System.Xml.Linq.dll',
-    '/r:System.Runtime.WindowsRuntime.dll', "/r:$runtimeFacade", "/r:$webCore", "/r:$webForms",
+    '/r:System.Runtime.WindowsRuntime.dll', "/r:$runtimeFacade", "/r:$interopFacade", "/r:$webCore", "/r:$webForms",
     "/resource:$bootstrap,PocketBridge.js", $sourceFile, (Join-Path $PSScriptRoot 'PocketWindow.cs')
 ) + $contractReferences + $desktopSources
 & $csc /target:winexe "/out:$appExe" "/win32icon:$(Join-Path $PSScriptRoot 'pi-pocket.ico')" `

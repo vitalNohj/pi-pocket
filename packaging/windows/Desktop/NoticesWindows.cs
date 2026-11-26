@@ -154,11 +154,10 @@ namespace PiPocket
                 if (slot == Finishes)
                 {
                     var included = new HashSet<NoticeData>(finishes);
-                    // The .NET Framework compiler exposes this WinRT event as add/remove accessors.
-                    notification.add_Dismissed(delegate(ToastNotification sender, ToastDismissedEventArgs args)
+                    notification.Dismissed += delegate(ToastNotification sender, ToastDismissedEventArgs args)
                     {
                         if (args.Reason == ToastDismissalReason.UserCanceled) { ui(() => DismissFinishes(ticket, included)); }
-                    });
+                    };
                 }
                 if (tickets.Count >= 128) { Remove(tickets.OrderBy(pair => pair.Value.Expires).First().Key); }
                 tickets[slot] = ticket;
