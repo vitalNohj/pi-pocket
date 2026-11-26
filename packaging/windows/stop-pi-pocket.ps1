@@ -4,7 +4,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File stop-pi-pocket.ps1 -App <install folder> [-Check]
 #
 # Processes are found by their executable path, whatever their command line says: the desktop app, the install's node.exe
-# and what it started, Edge's processes for the app's window (by its profile folder), and the launcher's tunnel.
+# and what it started, the window's WebView2 or fallback Edge processes (by profile folder), and the launcher's tunnel.
 #
 # -Check: exit 1 when Pi Pocket runs, 0 when not. Otherwise it asks the app to quit, waits up to 25 seconds, then ends what
 # is left, again until none is left, as the launcher can start a new server.
@@ -17,6 +17,8 @@ $ErrorActionPreference = "Continue"
 $appExe = Join-Path $App "Pi Pocket.exe"
 $nodeDir = (Join-Path $App "node") + "\"
 $edgeProfile = Join-Path $App "Edge profile"
+$webProfile = Join-Path $env:LOCALAPPDATA "Pi Pocket\WebView2 profile"
+$webViewArgument = '--user-data-dir="?' + [regex]::Escape($webProfile) + '("|\s|$)'
 $cloudflared = (Join-Path $env:USERPROFILE ".pi-pocket\bin") + "\"
 
 function Test-Under([string]$Path, [string]$Folder) {
@@ -29,7 +31,8 @@ function Find-PiPocket {
     $rest = @($all | Where-Object {
             (Test-Under $_.ExecutablePath $nodeDir) -or
             (Test-Under $_.ExecutablePath $cloudflared) -or
-            ($_.Name -eq "msedge.exe" -and $_.CommandLine -and $_.CommandLine.Contains($edgeProfile))
+            ($_.Name -eq "msedge.exe" -and $_.CommandLine -and $_.CommandLine.Contains($edgeProfile)) -or
+            ($_.Name -eq "msedgewebview2.exe" -and $_.CommandLine -match $webViewArgument)
         })
 
     return @{ Desktop = $desktop; Rest = $rest }

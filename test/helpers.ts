@@ -17,9 +17,8 @@ import type { Client } from "../src/server/room.ts";
 
 export const context = BACKGROUND_CONTEXT;
 
-// Its real path: on macOS the temporary folder is under `/var`, a link to `/private/var`, and the app gives the real path
-// of the folders it works in.
-export const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-pocket-test-")));
+// Match the app's real paths: expand `/var` on macOS and short names such as `RUNNER~1` on Windows.
+export const root = realpathSync.native(mkdtempSync(join(tmpdir(), "pi-pocket-test-")));
 /**
  * A loopback address of its own for a test's server, apart from other tests' `127.0.0.1`. macOS answers only on
  * `127.0.0.1`: a listen on `127.0.0.2` fails there.
