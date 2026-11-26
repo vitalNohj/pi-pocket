@@ -4516,12 +4516,12 @@ export const showsPip = (state = store.state) =>
     state.conversationId !== null &&
     (state.conversationId === state.pip?.id || state.view.conversation?.pip === true);
 
-/** Reply to a passage of the conversation shown: on PiP's board, it is PiP's quote. */
-export function quoteReply(text) {
+/** Reply to a passage, with its source if any: on PiP's board, it is PiP's quote. */
+export function quoteReply(text, source) {
+    const quote = source ? { text, source } : { text };
+
     store.set((state) =>
-        showsPip(state)
-            ? { pipQuote: { text } }
-            : { replyQuotes: [...state.replyQuotes, { text }] },
+        showsPip(state) ? { pipQuote: quote } : { replyQuotes: [...state.replyQuotes, quote] },
     );
 }
 

@@ -2489,7 +2489,7 @@ export class Commands {
 
         return [
             `${CONTEXT_BLOCK} session="${session}" title="${title}" folder="${folder}">`,
-            `The quoted passage at the start of this message comes from Pi's reply in session ${session}.`,
+            `The quoted passage at the start of this message comes from session ${session}.`,
             "Read that session with session_read for more context when the question needs it.",
             "</pocket-context>",
         ].join("\n");

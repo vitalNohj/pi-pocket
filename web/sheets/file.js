@@ -121,7 +121,7 @@ export function FileView({ path, line, refresh, onOpen = openFile, onLoad }) {
     const shown = file?.display ?? path;
     const name = shown.replace(/\/$/, "").split("/").pop() || shown;
 
-    return html`<div class="file-viewer">
+    return html`<div class="file-viewer" data-quote-file=${shown}>
         <div class="file-tools">
             <span class="muted small mono file-path" title=${file?.path ?? path}>
                 ${shown}

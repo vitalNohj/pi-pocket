@@ -665,7 +665,9 @@ test("one tap serves one follow-up: no other event of the same tap gives it back
         addEventListener: (type: string, listener: (event: unknown) => void) =>
             listeners.set(type, [...(listeners.get(type) ?? []), listener]),
         dispatchEvent: () => true,
+        getSelection: () => null,
         setTimeout,
+        clearTimeout,
     };
 
     new Function(

@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { mentionedPaths } from "../src/server/files.ts";
 
 type Block = { start: number; end: number; text: string };
+type Source = { label: string; line: string };
+type Quote = { text: string; source?: Source };
 type Step = {
     mark?: number;
     remove?: Block;
@@ -38,6 +40,7 @@ const {
     insertQuote: (
         text: string,
         passage: string,
+        source?: Source,
     ) => { text: string; at: number; block: string; start: number; end: number };
     isPiece: (text: string, piece: Block) => boolean;
     lineUnder: (text: string, block: Block) => { text: string; at: number };
@@ -56,9 +59,9 @@ const {
         data: string | null,
         marked: number | null,
     ) => Step;
-    splitQuote: (text: string) => { passage: string; rest: string } | null;
-    withQuote: (passage: string | null, reply: string) => string;
-    withQuotes: (passages: string[], reply: string) => string;
+    splitQuote: (text: string) => { passage: string; rest: string; source?: string } | null;
+    withQuote: (passage: string | null, reply: string, source?: Source) => string;
+    withQuotes: (quotes: Quote[], reply: string) => string;
     withoutQuote: (text: string, block: Block) => { text: string; at: number };
 };
 
@@ -76,7 +79,7 @@ test("with no passage the reply goes out as it is, and a plain message shows no 
 });
 
 test("strips' passages go first, each a quote of its own, in order", () => {
-    const sent = withQuotes(["one", "two\nlines"], "why?");
+    const sent = withQuotes([{ text: "one" }, { text: "two\nlines" }], "why?");
 
     assert.equal(sent, "> one\n\n> two\n> lines\n\nwhy?");
     assert.deepEqual(quoteParts(sent), [
@@ -84,8 +87,54 @@ test("strips' passages go first, each a quote of its own, in order", () => {
         { quote: "two\nlines" },
         { text: "why?" },
     ]);
-    assert.equal(withQuotes(["only"], ""), "> only");
+    assert.equal(withQuotes([{ text: "only" }], ""), "> only");
     assert.equal(withQuotes([], "plain"), "plain");
+});
+
+const FILE: Source = { label: "the plan.md", line: 'From @"docs/the plan.md":' };
+const ARTIFACT: Source = {
+    label: "Review pack",
+    line: 'From the artifact "Review pack" (review-pack, v3):',
+};
+
+test("a file source is an @ mention above its quote, and the box keeps it with the piece", () => {
+    const draft = insertQuote("words", "a line\n\nnext", FILE);
+    const piece = { start: draft.start, end: draft.end, text: draft.block };
+    const sent = messageText(draft.text, [piece]);
+
+    assert.equal(sent, `words\n\n${FILE.line}\n> a line\n>\n> next`);
+    assert.deepEqual(mentionedPaths(sent), [
+        { written: "docs/the plan.md", candidates: ["docs/the plan.md"] },
+    ]);
+    assert.equal(withoutQuote(draft.text, piece).text, "words");
+});
+
+test("Ask PiP sends and reads back the artifact title, id and version above the quote", () => {
+    const sent = withQuote("some words", "why?", ARTIFACT);
+
+    assert.equal(sent, `${ARTIFACT.line}\n> some words\n\nwhy?`);
+    assert.deepEqual(splitQuote(sent), {
+        source: ARTIFACT.line,
+        passage: "some words",
+        rest: "why?",
+    });
+});
+
+test("strips with and without sources go first in the order they were added", () => {
+    const sent = withQuotes(
+        [
+            { text: "a reply" },
+            { text: "from the file", source: FILE },
+            { text: "from the page", source: ARTIFACT },
+            { text: "another reply" },
+        ],
+        "why?",
+    );
+
+    assert.equal(
+        sent,
+        `> a reply\n\n${FILE.line}\n> from the file\n\n${ARTIFACT.line}\n> from the page\n\n> another reply\n\nwhy?`,
+    );
 });
 
 test("a long passage is cut", () => {

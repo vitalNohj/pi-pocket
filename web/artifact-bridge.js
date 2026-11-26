@@ -5,10 +5,11 @@
 //
 // Design mode (`docs/design/design-mode.md`) adds a line the other way, for the workspace: `send` puts the app's
 // messages to a frame (inspect, text edit, tweaks, pins, goto), and `onMessage` hears what the frame's inspector says
-// (a pick, a text edit, the tweaks manifest, a deck's slides). The page's own script cannot send those four: they come
-// from the inspector (`src/server/http/artifact-inspect.ts`) down the line, and the app checks their shape and length
-// (`checkPageMessage`) before it hands them on as data.
+// (a pick, a text edit, the tweaks manifest, a deck's slides). A viewer also hears the page's selected text. These
+// reports come down the line from the app's script in the frame, not through the page's `parent.postMessage`. The app
+// checks their shape and length (`checkPageMessage`) before it hands them on as data.
 import { useLayoutEffect, useRef } from "preact/hooks";
+import { QUOTE_MAX } from "./quote-text.js";
 import { api, canSteer, insertIntoComposer, notify, store } from "./store.js";
 
 /** The most a follow-up's text and its selection (as JSON) may take, and how often a frame may send one. */
@@ -206,7 +207,7 @@ function checkKnob(raw) {
 }
 
 /**
- * What the frame's inspector said, as clean data the app may use, or null when it is not one of the messages or
+ * What the frame reported, as clean data the app may use, or null when it is not one of the messages or
  * has the wrong shape. A new object is built from the known fields only, whatever else the message had.
  */
 export function checkPageMessage(data) {
@@ -215,6 +216,33 @@ export function checkPageMessage(data) {
     }
 
     switch (data.type) {
+        case "pocket-selection": {
+            const { text, rect } = data;
+
+            if (!isText(text, QUOTE_MAX) || text !== text.trim()) {
+                return null;
+            }
+
+            if (text === "") {
+                return rect === null ? { type: data.type, text, rect: null } : null;
+            }
+
+            if (
+                !isRecord(rect) ||
+                ![rect.x, rect.y, rect.width, rect.height].every(isNumber) ||
+                rect.width <= 0 ||
+                rect.height <= 0
+            ) {
+                return null;
+            }
+
+            return {
+                type: data.type,
+                text,
+                rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            };
+        }
+
         case "pocket-picked": {
             const target = checkTarget(data.target);
 
@@ -411,7 +439,7 @@ export function sendToFrame(frame, message, { wait = true } = {}) {
     const { message: clean } = checkAppMessage(message);
     const hook = frame && hookOf(frame);
 
-    if (!clean || !hook) {
+    if (!clean || !hook || hook.selectionOnly) {
         return false;
     }
 
@@ -484,21 +512,21 @@ const RATE = 60;
 
 /**
  * Hear the first page of the frame `ref`: follow-ups always, saved state only for an artifact (`artifact`, its id).
- * `source` names the page in the box ("the artifact “Plan”"). `enabled` is false for a page that has no bridge (SVG,
- * Markdown). The page asks with `parent.postMessage`, as a page does, but the frame page it starts with (`ARTIFACT_BRIDGE`)
+ * `source` names the page in the box ("the artifact “Plan”"). `selectionOnly` hears only selections (Markdown).
+ * The page asks with `parent.postMessage`, as a page does, but the frame page it starts with (`ARTIFACT_BRIDGE`)
  * takes the call, checks that a person tapped the page (a real tap, which the page cannot make), and sends it down the
  * line. A follow-up so reaches us only after a tap; a frame inside PiP's panel adds nothing to the session's box.
  *
- * Design mode (stream B) adds, in `settings` (read each time, so they may change):
- * - `onMessage(message, frame)`: a checked `pocket-picked`, `pocket-text-edited`, `pocket-tweaks`, or `pocket-deck`
- *   (`checkPageMessage`). Not for a viewer's frame in PiP's panel, nor once the session is another.
+ * In `settings` (read each time, so they may change):
+ * - `onMessage(message, frame)`: a checked selection or Design mode report (`checkPageMessage`). Not for a viewer's
+ *   frame in PiP's panel, nor once the session is another.
  * - `onReady(frame)`: the frame's page opened its line. Its page has just started: say the modes again.
  *
  * Returns `{ send(message), ready(), detach() }`. `send` is `sendToFrame` for this frame (see there); `ready` is true
  * once the page opened its line. Use it in a component with `useArtifactBridge`.
  */
 export function attachBridge(ref, settings = {}) {
-    const { artifact = null, source = "the page" } = settings;
+    const { artifact = null, source = "the page", selectionOnly = false } = settings;
     const conversationId = store.state.conversationId;
     let lastFollowUp = 0;
     let windowStart = 0;
@@ -606,7 +634,12 @@ export function attachBridge(ref, settings = {}) {
 
     const hook = {
         ref,
+        selectionOnly,
         handle: (frame, data) => {
+            if (selectionOnly && data.type !== "pocket-selection") {
+                return;
+            }
+
             if (data.type === "pocket-follow-up") {
                 followUp(frame, data);
             } else if (data.type === "pocket-state-get" || data.type === "pocket-state-set") {
@@ -632,9 +665,8 @@ export function attachBridge(ref, settings = {}) {
 }
 
 /**
- * `attachBridge` for a component: `useArtifactBridge(ref, { artifact, source, enabled, onMessage, onReady })`. It
- * returns one `{ send, ready }` that stays the same between renders; `send` says no (false) while `enabled` is false.
- * The callbacks may change between renders; the bridge is made again only when `artifact`, `source`, or `enabled` do.
+ * `attachBridge` for a component, with `enabled` false for a page with no bridge (SVG). The `{ send, ready }` stays
+ * the same between renders; `send` says no (false) while disabled. The callbacks may change between renders.
  */
 export function useArtifactBridge(ref, settings) {
     const live = useRef({});
@@ -654,7 +686,7 @@ export function useArtifactBridge(ref, settings) {
         };
     }
 
-    const { artifact = null, source, enabled = true } = settings;
+    const { artifact = null, source, enabled = true, selectionOnly = false } = settings;
 
     useLayoutEffect(() => {
         if (!enabled) {
@@ -665,6 +697,7 @@ export function useArtifactBridge(ref, settings) {
         const bridge = attachBridge(ref, {
             artifact,
             source,
+            selectionOnly,
             get onMessage() {
                 return live.current.onMessage;
             },
@@ -679,7 +712,7 @@ export function useArtifactBridge(ref, settings) {
             control.current.attached.current = null;
             bridge.detach();
         };
-    }, [artifact, source, enabled]);
+    }, [artifact, source, enabled, selectionOnly]);
 
     return control.current.api;
 }

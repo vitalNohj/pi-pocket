@@ -141,6 +141,9 @@ parent.postMessage({ type: "pocket-state-set", requestId: "away", state: { away:
 </script>
 `;
 
+/** A passage at a known place in the frame: double-click it to select it. */
+const PASSAGE = `<p style="position:fixed;top:90px;left:120px;margin:0;font:20px/20px monospace">Selected</p>`;
+
 let app: App;
 let server: Server;
 let browsers: Browsers;
@@ -288,6 +291,8 @@ before(async () => {
     ({ id: session } = await app.commands.createSession(owner(app), { cwd: work }));
     await publish("focus", FOCUS);
     await publish("schema", SCHEMA);
+    await publish("quote-html", `<!doctype html>${PASSAGE}`);
+    await publish("quote-markdown", `# Quote from Markdown\n\n${PASSAGE}`, "markdown");
     elsewhere = createServer((request, response) => {
         const url = new URL(request.url ?? "/", "http://x");
 
@@ -505,6 +510,131 @@ test("a schema that is not a string is refused for a get and a set alike", real,
     });
     await closeSheet();
 });
+
+test("the bridge checks an artifact's selection as bounded data", real, async () => {
+    const checked = await inPage<unknown[]>(`
+        const { checkPageMessage } = await import('/artifact-bridge.js');
+        const { QUOTE_MAX } = await import('/quote-text.js');
+        const type = 'pocket-selection';
+        const rect = { x: 12, y: -1.5, width: 45, height: 17 };
+        const good = { type, text: 'words', rect };
+        return JSON.stringify([
+            checkPageMessage({ ...good, rect: { ...rect, extra: 'discarded' }, other: true }),
+            checkPageMessage({ type, text: '', rect: null }),
+            checkPageMessage({ ...good, text: 'x'.repeat(QUOTE_MAX + 1) }),
+            checkPageMessage({ ...good, text: ' ' }),
+            checkPageMessage({ ...good, text: {} }),
+            checkPageMessage({ ...good, rect: null }),
+            checkPageMessage({ ...good, rect: { ...rect, x: '12' } }),
+            checkPageMessage({ ...good, rect: { ...rect, y: Infinity } }),
+            checkPageMessage({ ...good, rect: { ...rect, width: -1 } }),
+        ]);
+    `);
+
+    assert.deepEqual(checked, [
+        {
+            type: "pocket-selection",
+            text: "words",
+            rect: { x: 12, y: -1.5, width: 45, height: 17 },
+        },
+        { type: "pocket-selection", text: "", rect: null },
+        ...Array(7).fill(null),
+    ]);
+});
+
+for (const kind of ["html", "markdown"]) {
+    test(
+        `Reply from a ${kind} artifact: place the pill by the passage and close the viewer`,
+        real,
+        async () => {
+            await closeSheet();
+            await setBox("");
+            await openViewer(`quote-${kind}`);
+            // Give the frame a nonzero offset in both directions. The viewer also slides in.
+            await inPage(
+                `document.querySelector('.viewer').style.paddingInline = '30px'; return 'null';`,
+            );
+            const frameBox = () =>
+                inPage<{ x: number; y: number }>(
+                    `return JSON.stringify(document.querySelector('.viewer iframe').getBoundingClientRect());`,
+                );
+            const pill = ".quote-reply-button";
+            const see = (condition: string, what: string) =>
+                until(
+                    () => inPage<boolean>(`return JSON.stringify(Boolean(${condition}));`),
+                    what,
+                    SLOW,
+                );
+
+            const select = async () => {
+                // On a busy machine a just-opened frame can miss the first tap.
+                for (let attempt = 0; attempt < 6; attempt += 1) {
+                    const frame = await frameBox();
+
+                    await page.click({ x: frame.x + 135, y: frame.y + 100 }, { count: 2 });
+
+                    try {
+                        await until(
+                            () =>
+                                inPage<boolean>(
+                                    `return JSON.stringify(!!document.querySelector('${pill}'));`,
+                                ),
+                            "the artifact's pill",
+                            800,
+                        );
+
+                        return;
+                    } catch {
+                        // Try the same tap again once the frame holds still.
+                    }
+                }
+
+                throw new Error("The artifact's selection did not show the pill");
+            };
+
+            await select();
+            assert.equal(await boxText(), "", "selection alone writes nothing");
+            const frame = await frameBox();
+            const place = await inPage<{ top: number; left: number }>(`
+            const { style } = document.querySelector('${pill}');
+            return JSON.stringify({ top: parseFloat(style.top), left: parseFloat(style.left) });
+        `);
+
+            assert.ok(Math.abs(place.left - (frame.x + 120)) <= 1);
+            assert.ok(Math.abs(place.top - (frame.y + 90 - 40)) <= 5);
+            await page.click({ x: frame.x + 25, y: frame.y + 150 });
+            await see(
+                `!document.querySelector('${pill}')`,
+                "no pill after clearing the frame's selection",
+            );
+            await select();
+
+            await inPage(
+                `(await import('/theme.js')).setPrefs({ quoteReply: false }); return 'null';`,
+            );
+            await see(
+                `document.querySelectorAll('${pill} button').length === 1 && document.querySelector('${pill} .quote-reply-pip')`,
+                "only Ask PiP",
+            );
+            await inPage(
+                `(await import('/theme.js')).setPrefs({ quoteReply: true, askPipQuote: false }); return 'null';`,
+            );
+            await see(
+                `document.querySelector('${pill} button')?.textContent.trim() === 'Reply'`,
+                "only Reply",
+            );
+            await page.click({ selector: `${pill} button` });
+            await see("!document.querySelector('.viewer')", "the viewer closed");
+            assert.equal(
+                await boxText(),
+                `From the artifact "quote-${kind}" (quote-${kind}, v1):\n> Selected\n`,
+            );
+            await inPage(
+                `(await import('/theme.js')).setPrefs({ askPipQuote: true }); return 'null';`,
+            );
+        },
+    );
+}
 
 test("a selection cannot end the follow-up's JSON fence", real, async () => {
     const selection = { a: "x```\n# not data ```` end" };

@@ -869,7 +869,7 @@ export function AppearanceSheet() {
             }
             <${SettingRow}
                 title="Reply to a passage"
-                detail="Select words in one of Pi's replies, and a Reply button by them quotes them in your next message"
+                detail="Select words in a reply, a file, or an artifact, and a Reply button by them quotes them in your next message"
             >
                 <${Switch}
                     on=${p.quoteReply}
@@ -901,7 +901,7 @@ export function AppearanceSheet() {
                 pipAvailable() &&
                 html`<${SettingRow}
                     title="Ask PiP about a passage"
-                    detail="Select words in one of Pi's replies, and PiP's orb by them asks PiP about them, and tells it which session they came from"
+                    detail="Select words in a reply, a file, or an artifact, and PiP's orb by them asks PiP about them, with the session they came from"
                 >
                     <${Switch}
                         on=${p.askPipQuote}
