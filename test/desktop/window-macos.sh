@@ -10,40 +10,70 @@ page="$(dirname "$MANIFEST")/web/app.js"
 driver="$RUNNER_TEMP/native-window-fixture"
 existing="$HOME/Downloads/window-fixture.txt"
 completed="$HOME/Downloads/window-fixture (2).txt"
-mkdir -p "$out" "$PI_POCKET_DESKTOP_STATE" "$HOME/Downloads"
-swiftc "$here/window-macos.swift" -o "$driver"
-printf 'Keep the existing file\n' > "$existing"
-cp "$page" "$page.saved"
 pid=""
+mkdir -p "$out" "$PI_POCKET_DESKTOP_STATE" "$HOME/Downloads"
 
-cleanup() {
-    if [ "$?" != 0 ]; then
-        screencapture -x "$out/failure.png" || true
-        grep -E 'download|window is signed in' "$LOG" || true
-        ls -l "$HOME/Downloads/"window-fixture* || true
-    fi
-    if [ -n "$pid" ]; then
-        "$app" --quit || true
-        wait "$pid" || true
-    fi
-    mv -f "$page.saved" "$page"
-    rm -f "$existing" "$completed"
+# macOS does not ship a timeout command. Bound external calls as well as the polling loops so an
+# unresponsive native driver or quit command still reaches the failure screenshot handler.
+bounded() {
+    node -e '
+        const { spawnSync } = require("node:child_process");
+        const [seconds, file, ...args] = process.argv.slice(1);
+        const child = spawnSync(file, args, {
+            stdio: "inherit", timeout: Number(seconds) * 1000, killSignal: "SIGKILL",
+        });
+        if (child.error) console.error(file + ": " + child.error.message);
+        process.exit(child.status ?? 1);
+    ' "$@"
 }
-trap cleanup EXIT
-node "$here/window-fixture.mjs" "$MANIFEST" "$RUNNER_TEMP/window-files"
 
-wait_for() {
-    local stage="$1" tries="$2"
-    shift 2
-    for _ in $(seq 1 "$tries"); do
-        if "$@"; then return; fi
+drive() { bounded 5 "$driver" "$pid" "$@"; }
+shot() { bounded 10 screencapture -x "$out/$1.png"; }
+stopped() { ! kill -0 "$pid" 2>/dev/null; }
+
+wait_until() {
+    local deadline=$((SECONDS + $1))
+    shift
+    until "$@"; do
+        if (( SECONDS >= deadline )); then return 1; fi
         sleep 1
     done
+}
+
+wait_for() {
+    local stage="$1"
+    shift
+    if wait_until "$@"; then return; fi
     echo "The $chrome window did not $stage." >&2
     return 1
 }
 
-has_windows() { [ "$("$driver" "$pid" count)" = "$1" ]; }
+cleanup() {
+    local status=$?
+    if [ "$status" != 0 ]; then
+        shot failure || true
+        grep -E 'download|window is signed in' "$LOG" || true
+        ls -l "$HOME/Downloads/"window-fixture* || true
+    fi
+    if [ -n "$pid" ]; then
+        # Stop only the fixture's own child. Do not wait indefinitely in the failure handler.
+        if ! stopped; then kill -TERM "$pid" 2>/dev/null || true; fi
+        if wait_until 3 stopped; then wait "$pid" || true; fi
+    fi
+    if [ -f "$page.saved" ]; then
+        mv -f "$page.saved" "$page"
+        rm -f "$existing" "$completed"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 124' INT TERM
+
+bounded 60 swiftc "$here/window-macos.swift" -o "$driver"
+cp "$page" "$page.saved"
+printf 'Keep the existing file\n' > "$existing"
+bounded 10 node "$here/window-fixture.mjs" "$MANIFEST" "$RUNNER_TEMP/window-files"
+
+has_windows() { [ "$(drive count)" = "$1" ]; }
 signed_in() { grep -q 'The window is signed in.' "$LOG" 2>/dev/null && has_windows 1; }
 
 for chrome in system seamless; do
@@ -52,34 +82,40 @@ for chrome in system seamless; do
     if [ -f "$LOG" ]; then mv "$LOG" "$RUNNER_TEMP/window-before-$chrome.log"; fi
     "$app" &
     pid=$!
-    wait_for 'sign in' 60 signed_in
+    wait_for 'sign in' 45 signed_in
     sleep 2
-    screencapture -x "$out/$chrome-light.png"
+    shot "$chrome-light"
 
     offset=0
     if [ "$chrome" = system ]; then offset=24; fi
     if [ "$chrome" = seamless ]; then
-        "$driver" "$pid" click 616 212
+        drive click 616 212
         wait_for 'save the session file without replacing the existing file' 30 test -f "$completed"
         grep -qx 'Keep the existing file' "$existing"
         grep -qx 'Pi Pocket desktop download fixture' "$completed"
         sleep 2
-        screencapture -x "$out/download.png"
-        "$driver" "$pid" click 752 212
-        sleep 2
-        screencapture -x "$out/save-dialog.png"
-        "$driver" "$pid" escape
+        shot download
+
+        before_save="$(drive window-ids)"
+        drive click 752 212
+        wait_for 'open the Save sheet' 12 drive save-open "$before_save"
+        shot save-dialog
+        if ! drive escape || ! wait_until 4 drive save-closed "$before_save"; then
+            drive cancel-save "$before_save"
+        fi
+        wait_for 'close the Save sheet' 12 drive save-closed "$before_save"
         [ ! -e "$HOME/Downloads/window-dialog.txt" ]
     fi
 
-    "$driver" "$pid" click 344 "$((212 + offset))"
+    drive click 344 "$((212 + offset))"
     sleep 2
-    screencapture -x "$out/$chrome-dark.png"
-    "$driver" "$pid" click 480 "$((212 + offset))"
+    shot "$chrome-dark"
+    drive click 480 "$((212 + offset))"
     wait_for 'open a second window' 20 has_windows 2
     sleep 2
-    screencapture -x "$out/$chrome-two-windows.png"
-    "$app" --quit
+    shot "$chrome-two-windows"
+    bounded 5 "$app" --quit
+    wait_for 'quit' 30 stopped
     wait "$pid"
     pid=""
 done

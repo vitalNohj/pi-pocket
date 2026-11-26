@@ -65,6 +65,15 @@ function Wait-For($reason, $condition) {
     throw "The window fixture did not $reason."
 }
 
+function Request-Quit {
+    $request = Start-Process -FilePath $appExe -ArgumentList '--quit' -PassThru
+    if (-not $request.WaitForExit(10000)) {
+        Stop-Process -Id $request.Id -ErrorAction SilentlyContinue
+        throw 'The window fixture could not send Quit.'
+    }
+    if ($request.ExitCode -ne 0) { throw 'The Quit command failed.' }
+}
+
 function Screenshot($file) {
     $rect = [System.Windows.Forms.SystemInformation]::VirtualScreen
     $bitmap = [System.Drawing.Bitmap]::new($rect.Width, $rect.Height)
@@ -136,7 +145,7 @@ try {
         [void][NativeWindowFixture]::SetWindowPos($extra, [IntPtr]::Zero, ($work.X + 340), ($work.Y + 160), 620, 510, 0x14)
         Start-Sleep -Seconds 2
         Screenshot "$chrome-two-windows"
-        Start-Process -FilePath $appExe -ArgumentList '--quit' -Wait
+        Request-Quit
         Wait-For 'quit' { $app.Refresh(); $app.HasExited }
     }
     'System and Seamless; light and dark; native maximize; a second window; existing name kept; Save dialog cancelled.' |
@@ -147,7 +156,9 @@ try {
     if (Test-Path $log) { Select-String -Pattern 'download|/api/me' $log | Out-Host }
     throw
 } finally {
-    if ($app -and -not $app.HasExited) { Start-Process -FilePath $appExe -ArgumentList '--quit' -Wait }
+    if ($app -and -not $app.HasExited) {
+        try { Request-Quit } catch { Write-Warning $_.Exception.Message }
+    }
     Move-Item -Force "$page.saved" $page
     Remove-Item -Force $existing, $completed -ErrorAction SilentlyContinue
 }

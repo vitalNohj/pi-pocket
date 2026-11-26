@@ -354,6 +354,7 @@ jobs:
                   Get-Content (Join-Path $env:APP "launcher.log")
 
             - name: Check native window and download fixtures
+              timeout-minutes: 5
               run: ./test/desktop/window-windows.ps1
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
