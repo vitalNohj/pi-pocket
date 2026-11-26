@@ -1,0 +1,88 @@
+# Builds unsigned installers from the branch's source. Nothing is published.
+name: Desktop builds
+
+on:
+    push:
+        branches: [desktop-native]
+    pull_request:
+        branches: [desktop-native]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: ${{ matrix.name }}
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os: windows-latest
+                      name: Windows installer
+                      basename: Pi-Pocket-Setup
+                      extension: exe
+                    - os: macos-latest
+                      name: macOS package
+                      basename: Pi-Pocket
+                      extension: pkg
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - name: Stage the branch's source to pack
+              id: source
+              shell: bash
+              run: |
+                  source="$RUNNER_TEMP/desktop-source"
+                  if [ "$RUNNER_OS" = Windows ]; then
+                      # Git Bash's tar needs forward slashes; keep the drive letter for Node and npm.
+                      source="$(cygpath -m "$source")"
+                  fi
+                  mkdir -p "$source"
+                  git archive HEAD | tar -x -C "$source"
+
+                  version="$(node -p 'require("./package.json").version')-desktop.$GITHUB_RUN_NUMBER"
+                  npm --prefix "$source" version "$version" --no-git-tag-version --ignore-scripts --workspaces=false
+
+                  # Pack this branch's runner beside the app, where `pi-pocket runner` looks first.
+                  # The regular npm package relies on the published runner instead.
+                  node --input-type=commonjs - "$source" <<'NODE'
+                  const { writeFileSync } = require("node:fs");
+                  const { join } = require("node:path");
+                  const manifestPath = join(process.argv[2], "package.json");
+                  const app = require(manifestPath);
+                  const runner = require(join(process.argv[2], "packages/runner/package.json"));
+
+                  app.files.push(
+                      "packages/runner/package.json",
+                      ...runner.files.map((file) => `packages/runner/${file}`),
+                  );
+                  writeFileSync(manifestPath, `${JSON.stringify(app, null, 4)}\n`);
+                  NODE
+                  printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+            - name: Build the unsigned Windows installer
+              if: runner.os == 'Windows'
+              shell: pwsh
+              env:
+                  VERSION: ${{ steps.source.outputs.version }}
+              run: |
+                  ./packaging/windows/build.ps1 -Version $env:VERSION -OutDir (Join-Path $env:RUNNER_TEMP "desktop-output") `
+                      -Source (Join-Path $env:RUNNER_TEMP "desktop-source")
+
+            - name: Build the unsigned macOS package
+              if: runner.os == 'macOS'
+              env:
+                  VERSION: ${{ steps.source.outputs.version }}
+              run: packaging/macos/build.sh "$VERSION" "$RUNNER_TEMP/desktop-output" --source "$RUNNER_TEMP/desktop-source"
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: ${{ matrix.basename }}-${{ steps.source.outputs.version }}
+                  path: ${{ runner.temp }}/desktop-output/${{ matrix.basename }}-${{ steps.source.outputs.version }}.${{ matrix.extension }}
+                  if-no-files-found: error
+                  retention-days: 14
