@@ -1,7 +1,7 @@
 // The Access sheet: who has what, and where. One sheet in three views, chosen in its head:
-// - By person: the people on the left, the chosen person's page beside it (`people.js` `PersonPage`), with their
+// - People: the people on the left, the chosen person's page beside it (`people.js` `PersonPage`), with their
 //   folders and sessions on each computer as a tree.
-// - By computer: the computers on the left, the chosen computer's grid beside it (`access-grid.js` `ComputerGrid`):
+// - Computer: the computers on the left, the chosen computer's grid beside it (`access-grid.js` `ComputerGrid`):
 //   every project, folder, or session there in rows, a column for each person, and under it the people who may use it.
 //   Only for who is offered runners (`store.js` `runnersOffered`) or is in charge of this server.
 // - Settings: what holds for everyone (for who manages Pi Pocket), Notifications on this device, and for each computer
@@ -71,15 +71,15 @@ import { PageItem, Pages } from "./pages.js";
 import { Face, lastSeen, ordered, PersonPage, roleText, SettingsPage } from "./people.js";
 import { isOwner, isViewer } from "../roles.js";
 
-/** Who sees By computer: who is offered runners, or is in charge of this server. */
+/** Who sees Computer: who is offered runners, or is in charge of this server. */
 const byComputer = () =>
     runnersOffered() || (store.state.thisServer !== null && inCharge(store.state.thisServer));
 
 /** The views of the sheet this person has, in the order of its switch. */
 function viewsOf() {
     return [
-        ["person", "By person"],
-        byComputer() && ["computer", "By computer"],
+        ["person", "People"],
+        byComputer() && ["computer", "Computer"],
         ["settings", "Settings"],
     ].filter(Boolean);
 }
@@ -122,7 +122,7 @@ function useLoad() {
     return loaded;
 }
 
-/** By person: everyone on the left, and the chosen person's page. */
+/** People: everyone on the left, and the chosen person's page. */
 function ByPerson({ sheet }) {
     const { me, users } = store.state;
     const [view, setView] = useState(sheet?.person ? `person:${sheet.person}` : null);
@@ -216,7 +216,7 @@ function ComputerItem({ computer, selected, onSelect, detail }) {
 }
 
 /**
- * The people of a computer in my charge, as By computer lists them under its grid: anyone who may be chosen for it
+ * The people of a computer in my charge, as Computer lists them under its grid: anyone who may be chosen for it
  * (`choosable`: not who has it anyway, so the owner too on a runner someone else linked), and someone invited to
  * sessions only while they have one there.
  */
@@ -238,7 +238,7 @@ function columnPeople(computer) {
         : [];
 }
 
-/** What a computer's row says in By computer: its state, and how many people have a column in its grid. */
+/** What a computer's row says in Computer: its state, and how many people have a column in its grid. */
 function computerLine(computer) {
     const state =
         computer.id === THIS_SERVER
@@ -284,7 +284,7 @@ function inChargeName(computer) {
 }
 
 /**
- * By computer: the computers on the left, and the chosen one's page: one line of what it is, the tool row, the key,
+ * Computer: the computers on the left, and the chosen one's page: one line of what it is, the tool row, the key,
  * the grid of who has what there, then its people with the switch that lets each use it.
  */
 function ByComputer({ sheet }) {
@@ -356,7 +356,7 @@ function ComputerNotes({ computer }) {
     const linker = users.find((each) => each.id === computer.createdBy)?.name;
     const unlinks = computer.mayUnlink === true;
     const remedy = [
-        managesPeople() && computer.createdBy !== me?.id && "make them a user in By person",
+        managesPeople() && computer.createdBy !== me?.id && "make them a user in People",
         unlinks && "unlink it",
     ].filter(Boolean);
 
@@ -377,7 +377,7 @@ function ComputerNotes({ computer }) {
                 Linked by ${linker ?? "someone else"}, who is in charge of it: only they choose its people and change
                 its settings.${
                     hasRight("reshares", computer.id) === true
-                        ? " They give folders there, and you give the folders given to you, in By person."
+                        ? " They give folders there, and you give the folders given to you, in People."
                         : " They give folders there, and so does anyone they let share what they were given."
                 }${unlinks ? " You can unlink it." : ""}
             </div>`
@@ -413,7 +413,7 @@ function UseSwitches({ computer, people }) {
     const [busy, setBusy] = useState(null);
 
     if (people.length === 0) {
-        return html`<p class="muted small">No one else yet. Invite people in By person.</p>`;
+        return html`<p class="muted small">No one else yet. Invite people in People.</p>`;
     }
 
     const flip = async (person) => {
@@ -460,7 +460,7 @@ function UseSwitches({ computer, people }) {
     </div>`;
 }
 
-/** One computer in By computer. Who is not in charge of it reads what it is, and nothing of who has what there. */
+/** One computer in Computer. Who is not in charge of it reads what it is, and nothing of who has what there. */
 function ComputerView({ computer }) {
     const mine = inCharge(computer);
     const server = computer.id === THIS_SERVER;
@@ -832,7 +832,7 @@ export function AccessSheet() {
     const views = viewsOf();
     const [view, setView] = useState(sheet?.view ?? "person");
 
-    // Asked again while open, at another view: a notice of a new message opens a chat in By person.
+    // Asked again while open, at another view: a notice of a new message opens a chat in People.
     useEffect(() => {
         if (sheet?.view) {
             setView(sheet.view);
@@ -840,7 +840,7 @@ export function AccessSheet() {
     }, [sheet]);
 
     const shown = views.some(([key]) => key === view) ? view : views[0][0];
-    // The sheet is as wide as the widest grid of By computer needs (`style.css` `.sheet.access-sheet`): the most people
+    // The sheet is as wide as the widest grid of Computer needs (`style.css` `.sheet.access-sheet`): the most people
     // with a column on one computer. One width for every view and every computer, so nothing moves under the pointer.
     const columns = Math.max(0, ...allComputers().map((each) => columnPeople(each).length));
     const pick = html`<div class="segmented ac-views" role="tablist" aria-label="Access views">

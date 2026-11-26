@@ -8281,10 +8281,10 @@ div.group-head {
     margin-left: auto;
 }
 
-/* ─── The Access sheet (`sheets/access-sheet.js`): By person, By computer, Settings ─── */
+/* ─── The Access sheet (`sheets/access-sheet.js`): People, Computer, Settings ─── */
 
 /*
- * 1040 px wide: there a computer's head row holds its name, Group by, and New session. By computer is as wide as its
+ * 1040 px wide: there a computer's head row holds its name, Group by, and New session. Computer is as wide as its
  * widest grid needs, and no wider: the list of computers (240 px and its line), the page's padding, the grid's two
  * first columns, a column for each person who has one (`--columns`, from `AccessSheet`: the most on one computer, so
  * the sheet stays as it is from one computer to the next), and room for the grid's own scrollbar. Up to 1400 px: more
@@ -8611,7 +8611,7 @@ div.group-head {
     margin-top: 0;
 }
 
-/* The tag of a project nobody changes the trust of here: By person. */
+/* The tag of a project nobody changes the trust of here: People. */
 .at-trust-tag {
     margin-left: 6px;
     padding: 0 6px;
@@ -8630,7 +8630,7 @@ div.group-head {
     }
 }
 
-/* By computer: the page is as tall as the sheet allows, and only its grid scrolls up and down. */
+/* Computer: the page is as tall as the sheet allows, and only its grid scrolls up and down. */
 @media (min-width: 720px) {
     .sheet.access-sheet.view-computer {
         height: min(86dvh, 900px);

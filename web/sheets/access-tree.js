@@ -236,8 +236,8 @@ export function projectOfFolder(folder, projects) {
 }
 
 /**
- * The rows of one computer as the Access sheet groups them, the same for a person's tree (By person) and the grid of
- * everyone (By computer). `group`:
+ * The rows of one computer as the Access sheet groups them, the same for a person's tree (People) and the grid of
+ * everyone (Computer). `group`:
  * - "folders": the folder rows of `foldersOf`, nested by path, Home first.
  * - "projects": one row for each of `projects` that holds a listed session, by name, with every session in it; then
  *   the rest as "folders" does, without the folders inside a project's root. Each project row is

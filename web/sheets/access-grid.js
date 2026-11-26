@@ -1,5 +1,5 @@
 // The parts of the Access sheet (`access-sheet.js`) over its lists: the tool row (search, two filters, the People
-// filter, Group by), the key of the access levels, the trust menu of a project, and the grid of By computer, where each
+// filter, Group by), the key of the access levels, the trust menu of a project, and the grid of Computer, where each
 // row is a project, a folder, or a session on one computer and each column one person chosen for it.
 //
 // The grid is one scroller (`.ag-scroll`): its head row and its first two columns stay in sight while it scrolls, so a
@@ -218,7 +218,7 @@ export function SearchField({ state, active, found, total, placeholder }) {
 }
 
 /**
- * The People filter of By computer: which of the people chosen for the computer have a column, as a list to check.
+ * The People filter of Computer: which of the people chosen for the computer have a column, as a list to check.
  * Its button says how many are shown: "8 people", "3 of 8 people".
  */
 export function PeopleFilter({ people, hidden, onChange }) {
@@ -353,7 +353,7 @@ const DEFAULT_TRUST = {
 };
 
 /**
- * The trust menu of a project's row in By computer (or of one of its other folders, `entry` alone: a worktree folder
+ * The trust menu of a project's row in Computer (or of one of its other folders, `entry` alone: a worktree folder
  * outside it, or a folder in it with a decision of its own): the
  * same menu button as the Access menu (`PopMenu`), with the three choices of the Project trust sheet (`trust.js`
  * `TrustSheet`) and its words. Its button says what holds now: Trusted, Not trusted, Not decided (with Pi's setting
@@ -625,7 +625,7 @@ function useMore(box) {
 }
 
 /**
- * The grid of one computer (By computer): a row for each project, folder, or session (`gridOf`), the project's or
+ * The grid of one computer (Computer): a row for each project, folder, or session (`gridOf`), the project's or
  * folder's name and its trust first, then one cell for each person shown (`people`): their Access menu on a folder or a
  * project (`LevelMenu`, on its top folder), and on a session what they have of it, with Invite or Revoke. After the
  * rows, in the same scroller, the people who may use the computer, each with the switch that lets them (`after`).

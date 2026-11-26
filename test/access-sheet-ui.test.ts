@@ -1,5 +1,5 @@
 // The Access sheet in a real browser (`web/sheets/access-sheet.js`, `web/sheets/access-grid.js`): one sheet, opened at
-// the right view from each opener; By computer only for who may have it; its grid of 8 people, whose head and rows
+// the right view from each opener; Computer only for who may have it; its grid of 8 people, whose head and rows
 // scroll sideways together, on a phone and on a desktop; the key in one row; a menu on the last row that opens upward
 // inside the sheet; the "i" buttons, centred and 14 px; and Settings, which holds a computer's approvals.
 import { newIdentity } from "../src/server/runner-link/secure-link.ts";
@@ -206,12 +206,12 @@ test("the sheet opens from each opener at the right view", real, async () => {
         [
             "the rail's Access button",
             `document.querySelector('[data-part="rail-button"][aria-label="Access"]').click()`,
-            "By person",
+            "People",
         ],
         [
             "the rail's account button",
             `document.querySelector('[data-part="rail-button"][aria-label="Your account"]').click()`,
-            "By person",
+            "People",
         ],
         [
             "Menu → Access",
@@ -223,7 +223,7 @@ test("the sheet opens from each opener at the right view", real, async () => {
                 }
                 [...document.querySelectorAll(".list-item")].find((each) => each.textContent.startsWith("Access")).click();
             })()`,
-            "By person",
+            "People",
         ],
         [
             "the launcher's Access",
@@ -239,7 +239,7 @@ test("the sheet opens from each opener at the right view", real, async () => {
                 await new Promise((resolve) => setTimeout(resolve, 200));
                 [...document.querySelectorAll(".launcher-item")].find((each) => each.textContent.includes("Access")).click();
             })()`,
-            "By person",
+            "People",
         ],
         [
             "the folder picker's Manage computers…",
@@ -251,7 +251,7 @@ test("the sheet opens from each opener at the right view", real, async () => {
                 }
                 [...document.querySelectorAll(".fp-link")].find((each) => each.textContent.trim() === "Manage computers…").click();
             })()`,
-            "By computer",
+            "Computer",
         ],
     ];
 
@@ -263,7 +263,7 @@ test("the sheet opens from each opener at the right view", real, async () => {
     }
 });
 
-test("a viewer has By person and Settings, and no By computer", real, async () => {
+test("a viewer has People and Settings, and no Computer", real, async () => {
     const theirs = new Browsers({
         dataDir: mkdtempSync(join(root, "access-sheet-viewer-")),
         load: async () => undefined,
@@ -280,9 +280,9 @@ test("a viewer has By person and Settings, and no By computer", real, async () =
             await inPage<string[]>(
                 `return JSON.stringify([...document.querySelectorAll(".access-sheet .ac-views button")].map((each) => each.textContent.trim()))`,
             ),
-            ["By person", "Settings"],
+            ["People", "Settings"],
         );
-        assert.equal((await shown()).view, "By person", "By computer asked for: By person shown");
+        assert.equal((await shown()).view, "People", "Computer asked for: People shown");
         assert.equal(
             await inPage<boolean>(
                 `return JSON.stringify(document.querySelector(".ag-scroll") !== null)`,
@@ -726,7 +726,7 @@ for (const [name, viewport] of [
                 },
             );
 
-            // By person has 1: in the key row.
+            // People has 1: in the key row.
             await openAt("person");
             // The list of the view before may still show for a moment: wait for the person's row.
             await until(
@@ -1128,7 +1128,7 @@ test(
 );
 
 test(
-    "By computer has a column for the owner on a runner a user linked, once the owner is chosen there",
+    "Computer has a column for the owner on a runner a user linked, once the owner is chosen there",
     real,
     async () => {
         const { user: linker, token } = app.config.addUser("Linker", "guest");
@@ -1194,7 +1194,7 @@ const pressGrid = (label: string) =>
     `);
 
 test(
-    "By computer has All folders last, with a cell for each person column: a choice in a cell is saved for that person alone",
+    "Computer has All folders last, with a cell for each person column: a choice in a cell is saved for that person alone",
     real,
     async () => {
         // Outside the folder every person here is given (`addPerson`): a folder nobody has.
@@ -1612,7 +1612,7 @@ test(
 
 // The last test of the file: it changes who is chosen for this server.
 test(
-    "By computer is as wide as the people with a column need, and Group by stands beside New session",
+    "Computer is as wide as the people with a column need, and Group by stands beside New session",
     real,
     async () => {
         const all = people.map((each) => each.id);
@@ -1644,7 +1644,7 @@ test(
                 });
             `);
 
-        /** By computer with `count` people chosen for this server, once the sheet has `width`. */
+        /** Computer with `count` people chosen for this server, once the sheet has `width`. */
         const at = async (count: number, viewport: Viewport, width: number): Promise<Look> => {
             app.config.setUsers(THIS_SERVER, all.slice(0, count));
             app.accessChanged();
@@ -1684,14 +1684,14 @@ test(
 
             assert.ok(eight.grid[1] > eight.grid[0], "8 people scroll sideways");
 
-            // By person keeps the least width, whoever is chosen.
+            // People keeps the least width, whoever is chosen.
             await openAt("person");
             await until(
                 async () =>
                     await inPage<boolean>(
                         `return JSON.stringify(Math.round(document.querySelector(".sheet").getBoundingClientRect().width) === 1040)`,
                     ),
-                "By person at 1040 px",
+                "People at 1040 px",
             );
 
             // A narrow window: Group by is under the computer's name, New session stays beside the name.

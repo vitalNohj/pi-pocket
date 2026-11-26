@@ -243,7 +243,7 @@ test("Runs on is pinned under the places, and the links are in the bottom row", 
             "602 px high on a 700 px screen (86dvh)",
         );
 
-        // 6. Manage computers… opens Access, By computer.
+        // 6. Manage computers… opens Access, Computer.
         await page.evaluate(
             `[...document.querySelectorAll(".fp-options .fp-link")].find((each) => each.textContent.trim() === "Manage computers…").click()`,
         );
@@ -251,7 +251,7 @@ test("Runs on is pinned under the places, and the links are in the bottom row", 
             const sheet = (await page.sheet()) as { type?: string; view?: string } | null;
 
             return sheet?.type === "access" && sheet.view === "computer";
-        }, "the Access sheet, By computer");
+        }, "the Access sheet, Computer");
     } finally {
         await page.close();
     }

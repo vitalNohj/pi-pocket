@@ -72,7 +72,7 @@ async function inPage<T>(script: string): Promise<T> {
 }
 
 /**
- * Open the Access sheet on a fresh page, signed in as the owner, at By person ("people"), By computer ("computers"), or
+ * Open the Access sheet on a fresh page, signed in as the owner, at People ("people"), Computer ("computers"), or
  * Settings: over home, or over the session at `path`.
  */
 async function open(
@@ -242,7 +242,7 @@ after(async () => {
 });
 
 test(
-    "Access is one sheet: By person, By computer, Settings in its head; By person lists the people beside the chosen one's page",
+    "Access is one sheet: People, Computer, Settings in its head; People lists the people beside the chosen one's page",
     real,
     async () => {
         await open("computers");
@@ -282,12 +282,12 @@ test(
         assert.deepEqual([people.sheet, computers.sheet], ["access", "access"], "the same sheet");
         assert.deepEqual(
             computers.views,
-            ["By person", "By computer", "Settings"],
+            ["People", "Computer", "Settings"],
             "its three views",
         );
         assert.deepEqual(
             [people.on, computers.on],
-            ["By person", "By computer"],
+            ["People", "Computer"],
             "each opener's view",
         );
         assert.deepEqual(
@@ -717,7 +717,7 @@ test("what a person may use is set in People, and shows in Runners", real, async
     assert.deepEqual(await columns(), ["Gina", "Sam"], "and who was invited to a session here");
 });
 
-/** The folders of the grid shown in By computer, each by its full path (its toggle's title). */
+/** The folders of the grid shown in Computer, each by its full path (its toggle's title). */
 const gridFolders = () =>
     inPage<string[]>(`
         return JSON.stringify(
@@ -765,7 +765,7 @@ const gridCells = (name: string) =>
         );
     `);
 
-/** The people columns of the grid shown in By computer: each one's name. */
+/** The people columns of the grid shown in Computer: each one's name. */
 const columns = () =>
     inPage<string[]>(`
         return JSON.stringify(
@@ -816,7 +816,7 @@ test(
         const others = `Folder ${home} of Gina on This server`;
         const inWork = `Folder ${work} of Gina on This server`;
 
-        // By computer, the grid has a row for each folder there, and in Gina's column what she has of each session:
+        // Computer, the grid has a row for each folder there, and in Gina's column what she has of each session:
         // Revoke for one shared with her, "Started by them" for her own, Invite for one that is not hers.
         await open("computers");
         await show("This server");
@@ -1244,7 +1244,7 @@ test(
                 /Gina's desktop/,
             );
 
-            // Back in By computer: Gina chooses the owner there, and lets them share what they were given. The note
+            // Back in Computer: Gina chooses the owner there, and lets them share what they were given. The note
             // says that they give the folders given to them, and where.
             await open("computers");
             await show("Gina's desktop");
@@ -1260,7 +1260,7 @@ test(
                     (await inPage<string>(
                         `return JSON.stringify(document.querySelector('.pages-detail [data-part="read-only"]')?.textContent.replace(/\\s+/g, " ").trim() ?? "")`,
                     )) ===
-                    "Linked by Gina, who is in charge of it: only they choose its people and change its settings. They give folders there, and you give the folders given to you, in By person. You can unlink it.",
+                    "Linked by Gina, who is in charge of it: only they choose its people and change its settings. They give folders there, and you give the folders given to you, in People. You can unlink it.",
                 "the note for who shares what they were given",
             );
         } finally {
@@ -1315,7 +1315,7 @@ test(
             assert.match(blocked.status, /^Blocked/);
             assert.equal(
                 blocked.note,
-                "Gina's desktop is blocked: Gina, who linked it, is a viewer now. Nothing starts or runs there until they are made a user. You can make them a user in By person, or unlink it.",
+                "Gina's desktop is blocked: Gina, who linked it, is a viewer now. Nothing starts or runs there until they are made a user. You can make them a user in People, or unlink it.",
             );
             assert.equal(blocked.role, "alert");
             assert.equal(
@@ -1596,7 +1596,7 @@ test(
 );
 
 test(
-    "a group's title on a page starts where the page's rows start, By person and By computer",
+    "a group's title on a page starts where the page's rows start, People and Computer",
     real,
     async () => {
         /** Each group title's left edge, relative to its card's rows or to the page. */
@@ -5100,7 +5100,7 @@ test(
             assert.deepEqual(await sessionRows(), []);
             assert.ok((await folds()).includes(`${inQuartz}: 1 of 2`));
 
-            // By computer searches the same way: a session row shows while it matches, under its folder.
+            // Computer searches the same way: a session row shows while it matches, under its folder.
             await open("computers");
             await show("This server");
             await until(async () => await has("Search folders and sessions"), "the grid's search");

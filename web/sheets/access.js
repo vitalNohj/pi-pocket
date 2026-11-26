@@ -284,7 +284,7 @@ export function trustOfProject(project) {
 }
 
 /**
- * The small tag beside a project's name where nobody changes its trust (By person): "Not trusted" for a decision
+ * The small tag beside a project's name where nobody changes its trust (People): "Not trusted" for a decision
  * against it, "Mixed" where its folders differ; nothing when it is trusted or nobody decided yet.
  */
 export function trustTag(project) {
