@@ -25,7 +25,7 @@ function preferences(key) {
 }
 
 export default function setup(pocket) {
-    const { html, useEffect, useState } = pocket;
+    const { html, Switch, useEffect, useState } = pocket;
     const engine = new BrowserEngine();
     const listeners = new Set();
     let key = null;
@@ -195,119 +195,174 @@ export default function setup(pocket) {
             </p>`;
         }
 
-        return html`
-            <p>
-                The microphone writes a draft in the message box or PiP. Audio stays on this device.
-                Dictation never presses Send.
-            </p>
-            <p>
-                To dictate, use the mic or Alt+V. Press Esc to cancel. You can allow the mic in this
-                site's permissions.
-            </p>
-            <p>
-                Models and preferences stay in this browser. Storage used:
-                ${megabytes(storageUse(ids))} of 1 GB.
-            </p>
-            <label>
-                <input
-                    type="checkbox"
-                    checked=${offline}
-                    disabled=${!!progress || (!offline && ids.length === 0)}
-                    onChange=${(event) => save({ selected: prefs.selected ?? ids[0] }, event.currentTarget.checked)}
-                />
-                Use offline dictation on this device
-            </label>
-            ${!offline && html`<p>The built-in browser recognizer, if available, may send audio to its provider.</p>`}
-            <p>
-                <label>
-                    <input
-                        type="checkbox"
-                        checked=${prefs.live}
+        function row(model) {
+            const size = modelSize(model);
+            const installed = ids.includes(model.id);
+            const selected = installed && prefs.selected === model.id;
+            const supported = size <= browserLimit();
+            const reason = supported ? undefined : `dictation-size-${model.id}`;
+            const current = progress?.id === model.id ? progress : null;
+            const meta = `${model.languages} · ${megabytes(size)} · ${model.license}`;
+            let actions;
+
+            if (current?.remove) {
+                actions = html`<span class="muted small" role="status">Removing model…</span>`;
+            } else if (current) {
+                actions = html`
+                    <div class="dictation-transfer">
+                        <progress
+                            aria-label=${`Downloading ${model.name}`}
+                            value=${current.written || null}
+                            max=${current.total}
+                        ></progress>
+                        <span class="muted small">
+                            ${
+                                current.written === 0
+                                    ? "Preparing download…"
+                                    : `${megabytes(current.written)} of ${megabytes(current.total)}`
+                            }
+                        </span>
+                    </div>
+                    <button
+                        type="button"
+                        class="button small"
+                        aria-label=${`Cancel download of ${model.name}`}
+                        onClick=${() => task?.abort()}
+                    >
+                        Cancel
+                    </button>
+                `;
+            } else if (installed) {
+                actions = html`
+                    ${
+                        selected
+                            ? html`<span class="dictation-selected">Selected</span>`
+                            : html`<button
+                                  type="button"
+                                  class="button small"
+                                  aria-label=${`Select ${model.name}`}
+                                  aria-describedby=${reason}
+                                  disabled=${!supported || !!progress}
+                                  onClick=${() => save({ selected: model.id }, true)}
+                              >
+                                  Select
+                              </button>`
+                    }
+                    <button
+                        type="button"
+                        class="button small"
+                        aria-label=${`Remove ${model.name}`}
                         disabled=${!!progress}
-                        onChange=${(event) => save({ live: event.currentTarget.checked })}
-                    />
-                    Words as you speak
-                </label>
+                        onClick=${() => change(model, true)}
+                    >
+                        Remove
+                    </button>
+                `;
+            } else {
+                actions = html`<button
+                    type="button"
+                    class="button small"
+                    aria-label=${`Download ${model.name}`}
+                    aria-describedby=${reason}
+                    disabled=${!supported || !!progress}
+                    onClick=${() => change(model, false)}
+                >
+                    Download
+                </button>`;
+            }
+
+            return html`<li class="list-item dictation-model" key=${model.id}>
+                <div class="dictation-model-info">
+                    <div class="dictation-model-title">
+                        <strong>${model.name}</strong>
+                        ${model.recommended && html`<span class="small muted">Recommended</span>`}
+                    </div>
+                    <p class="small muted">${meta}</p>
+                    <p class="small">${model.note}</p>
+                    ${
+                        reason &&
+                        html`<p class="small muted" id=${reason}>Too large for this browser.</p>`
+                    }
+                </div>
+                <div class="dictation-model-actions">${actions}</div>
+            </li>`;
+        }
+
+        return html`<div class="dictation-settings">
+            <p>
+                Use the mic or <kbd>Alt+V</kbd> to dictate. <kbd>Esc</kbd> cancels.${" "} Offline
+                dictation keeps audio on this device and does not send the draft.
             </p>
+            <div class="sheet-list">
+                <div class="list-item">
+                    <div>
+                        <div>Use offline dictation on this device</div>
+                        ${
+                            !offline &&
+                            html`<p class="muted small">
+                                The built-in browser recognizer may send audio to its provider.
+                            </p>`
+                        }
+                    </div>
+                    <${Switch}
+                        on=${offline}
+                        label="Use offline dictation on this device"
+                        disabled=${!!progress || (!offline && ids.length === 0)}
+                        onChange=${() => save({ selected: prefs.selected ?? ids[0] }, !offline)}
+                    />
+                </div>
+                <div class="list-item">
+                    <div>
+                        <div>Words as you speak</div>
+                        <p class="muted small">Show words before you finish dictating.</p>
+                    </div>
+                    <${Switch}
+                        on=${prefs.live}
+                        label="Words as you speak"
+                        disabled=${!!progress}
+                        onChange=${() => save({ live: !prefs.live })}
+                    />
+                </div>
+            </div>
             ${
                 modelById(prefs.selected)?.family === "parakeet"
-                    ? html` <label>
-                          Custom words (up to 20, one per line)
+                    ? html`<label class="field">
+                          <span class="label">Custom words (up to 20, one per line)</span>
                           <textarea
                               rows="4"
                               maxlength="2000"
                               disabled=${!!progress}
                               value=${prefs.words.join("\n")}
-                              onChange=${(event) => save({ words: cleanWords(event.currentTarget.value).join("\n") })}
-                          />
+                              onChange=${(event) => {
+                                  save({ words: cleanWords(event.currentTarget.value).join("\n") });
+                              }}
+                          ></textarea>
                       </label>`
-                    : html`<p>Custom words are available with Parakeet models.</p>`
+                    : html`<p class="muted small">
+                          Custom words are available with Parakeet models.
+                      </p>`
             }
             ${error && html`<p class="error-box" role="alert">${error}</p>`}
-            ${
-                progress &&
-                html`<p role="status">
-                    ${
-                        progress.remove
-                            ? "Removing model…"
-                            : progress.written === 0
-                              ? "Preparing download…"
-                              : `Downloading ${megabytes(progress.written)} of ${megabytes(progress.total)}…`
-                    }
-                    ${!progress.remove && html`<button type="button" class="btn" onClick=${() => task?.abort()}>Cancel</button>`}
-                </p>`
-            }
-            <ul>
-                ${MODELS.map((model) => {
-                    const installed = ids.includes(model.id);
-                    const selected = prefs.selected === model.id;
-                    const supported = modelSize(model) <= browserLimit();
-
-                    return html`<li key=${model.id}>
-                        <p>
-                            <strong>${model.name}</strong
-                            >${model.recommended ? " · Recommended" : ""} <br />${model.languages} ·
-                            ${megabytes(modelSize(model))} · ${model.license} <br />${model.note}
-                            ${!supported && html`<br />Too large for this browser. Choose a smaller model.`}
-                        </p>
-                        ${
-                            installed
-                                ? html`
-                                      <button
-                                          type="button"
-                                          class="btn"
-                                          disabled=${selected || !supported || !!progress}
-                                          onClick=${() => save({ selected: model.id }, true)}
-                                      >
-                                          ${selected ? "Selected" : "Select"}
-                                      </button>
-                                      <button
-                                          type="button"
-                                          class="btn"
-                                          disabled=${!!progress}
-                                          onClick=${() => change(model, true)}
-                                      >
-                                          Remove
-                                      </button>
-                                  `
-                                : html`
-                                      <button
-                                          type="button"
-                                          class="btn"
-                                          disabled=${!supported || !!progress}
-                                          onClick=${() => change(model, false)}
-                                      >
-                                          Download
-                                      </button>
-                                  `
-                        }
-                    </li>`;
-                })}
-            </ul>
-        `;
+            <section class="dictation-catalog">
+                <div class="dictation-catalog-head">
+                    <h3 id="dictation-models-title">Speech models</h3>
+                    <span class="muted small">
+                        ${megabytes(storageUse(ids))} of 1 GB used in this browser
+                    </span>
+                </div>
+                <ul
+                    class="sheet-list dictation-models"
+                    role="list"
+                    aria-labelledby="dictation-models-title"
+                >
+                    ${MODELS.map(row)}
+                </ul>
+            </section>
+        </div>`;
     }
 
-    pocket.sheet({ id: "settings", title: "Offline dictation", component: Settings });
+    pocket.style("style.css");
+    pocket.sheet({ id: "settings", title: "Offline dictation", component: Settings, wide: true });
     pocket.menu({
         id: "dictation",
         label: "Dictation",

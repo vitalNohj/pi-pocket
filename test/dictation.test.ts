@@ -161,7 +161,14 @@ test("the extension is off by default and serves only fixed public assets while 
     assert.equal((await fetch(`${url}/worker.js`, { headers })).status, 404);
     await app.setExtensionEnabled(first, "dictation.ts", true);
 
-    assert.ok(app.webs.clients(guest.user).find((each) => each.module === "dictation"));
+    const client = app.webs.clients(guest.user).find((each) => each.module === "dictation");
+
+    assert.ok(client);
+    const style = new URL("style.css", new URL(client.url, base));
+    const stylesheet = await fetch(style, { headers: scoped });
+
+    assert.equal(stylesheet.status, 200);
+    assert.match(stylesheet.headers.get("content-type") ?? "", /^text\/css/);
     assert.equal((await fetch(`${url}/worker.js`)).status, 401);
     const worker = await fetch(`${url}/worker.js`, { headers: scoped });
 
