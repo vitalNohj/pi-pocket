@@ -533,7 +533,7 @@ test("Ask PiP: PiP reads which session a quote came from, and people see only th
     // The model gets the hidden block, after the words, with the title made safe for an attribute and with no invisible characters.
     assert.ok(lastRequest.pip.includes('<pocket-context session=\\"' + String(session)));
     assert.ok(lastRequest.pip.includes('title=\\\"Deploy  fix   now\\\"'));
-    assert.ok(lastRequest.pip.includes(`comes from Pi's reply in session ${String(session)}`));
+    assert.ok(lastRequest.pip.includes(`comes from session ${String(session)}`));
 
     // People see the quote and the words only.
     const entries = await app.transcripts.allEntries(id, true);

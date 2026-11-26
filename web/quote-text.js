@@ -18,26 +18,38 @@ function quoteLines(passage) {
         .join("\n");
 }
 
-export function withQuote(passage, reply) {
-    return passage ? withQuotes([passage], reply) : reply;
+/** The lines of one quote, with its source above them when it has one. */
+function quoteBlock(text, source) {
+    const lines = quoteLines(text);
+
+    return source ? `${source.line}\n${lines}` : lines;
 }
 
-/** `reply` with `passages` quoted first, in order, each a quote of its own (Reply's strips, Appearance → Separate). */
-export function withQuotes(passages, reply) {
-    return passages.length === 0
+export function withQuote(passage, reply, source) {
+    return passage ? withQuotes([{ text: passage, source }], reply) : reply;
+}
+
+/** `reply` with `quotes` first, in order, each a quote of its own (Reply's strips, Appearance → Separate). */
+export function withQuotes(quotes, reply) {
+    return quotes.length === 0
         ? reply
-        : [...passages.map(quoteLines), reply].join("\n\n").trimEnd();
+        : [...quotes.map(({ text, source }) => quoteBlock(text, source)), reply]
+              .join("\n\n")
+              .trimEnd();
 }
 
-/** A message that starts with a quote (Ask PiP): its passage and the words after it. Null when it does not. */
+/** A message that starts with a quote (Ask PiP): its source if any, its passage, and the words after it. */
 export function splitQuote(text) {
-    const match = /^((?:>[^\n]*(?:\n|$))+)\n*([\s\S]*)$/.exec(text);
+    const match =
+        /^(?:(From (?:@|the artifact ")[^\n]+:)\n)?((?:>[^\n]*(?:\n|$))+)\n*([\s\S]*)$/.exec(text);
 
     if (!match) {
         return null;
     }
 
-    return { passage: passageOf(match[1].replace(/\n$/, "")), rest: match[2] };
+    const [, source, block, rest] = match;
+
+    return { ...(source ? { source } : {}), passage: passageOf(block.replace(/\n$/, "")), rest };
 }
 
 const FENCE_OPEN = /^```[\w+#.-]*[ \t]*$/;
@@ -124,8 +136,8 @@ export function quoteParts(text) {
  * quote as it goes (`messageText`). Gives the new text, where the caret goes (the line right under the quote), and the
  * quote as written, at `start`..`end`.
  */
-export function insertQuote(text, passage) {
-    const block = quoteLines(passage);
+export function insertQuote(text, passage, source) {
+    const block = quoteBlock(passage, source);
     const before = text.replace(/\s+$/, "");
     const last = before.slice(before.lastIndexOf("\n") + 1);
     const head = before === "" ? "" : `${before}${last.startsWith(">") ? "\n\n" : "\n"}`;
@@ -470,11 +482,18 @@ export function withoutQuote(text, block) {
 }
 
 /** The text of a selected range, as it was written: math as its TeX, a diagram as "[diagram]". */
-export function rangeText(range) {
+export function rangeText(range, { omitLineNumbers = false } = {}) {
     const box = document.createElement("div");
 
     box.style.cssText = "position:fixed;left:-9999px;top:0;width:600px";
     box.append(range.cloneContents());
+
+    if (omitLineNumbers) {
+        // A range over several lines can enclose the gutter even though its numbers cannot be selected.
+        for (const number of box.querySelectorAll(".file-line > .ln")) {
+            number.remove();
+        }
+    }
 
     for (const each of box.querySelectorAll("[data-tex]")) {
         const mark = each.dataset.lang === "math-display" ? "$$" : "$";
