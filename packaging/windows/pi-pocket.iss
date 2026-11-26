@@ -70,6 +70,10 @@ Type: files; Name: "{app}\install.log"
 Source: "{#NodeDir}\*"; DestDir: "{app}\node"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#AppDir}\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs; Check: ReplaceApp
 Source: "{#DesktopDir}\Pi Pocket.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DesktopDir}\Microsoft.Web.WebView2.Core.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DesktopDir}\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DesktopDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DesktopDir}\WebView2-License.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "pi-pocket.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "pi-pocket.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-pi-pocket.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -90,8 +94,12 @@ Type: filesandordirs; Name: "{app}\node"
 Type: files; Name: "{app}\install.log"
 Type: files; Name: "{app}\launcher.log"
 Type: files; Name: "{app}\launcher.old.log"
+Type: files; Name: "{app}\window-bounds.txt"
+Type: filesandordirs; Name: "{localappdata}\Pi Pocket\WebView2 profile"
+; Also remove the separate profile that older installs and the missing-Runtime fallback use.
 Type: filesandordirs; Name: "{app}\Edge profile"
 Type: dirifempty; Name: "{app}"
+Type: dirifempty; Name: "{localappdata}\Pi Pocket"
 
 [Code]
 var

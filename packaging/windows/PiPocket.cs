@@ -1,4 +1,4 @@
-// Pi Pocket.exe: the Windows desktop app. A notification area icon and an Edge app-mode window around a `pi-pocket.js --desktop` launcher.
+// Pi Pocket.exe: the Windows desktop app. A notification area icon and a WebView2 window around a `pi-pocket.js --desktop` launcher.
 //
 // build.ps1 compiles it with the .NET Framework 4.x compiler that every Windows 10 and 11 has, so this is C# 5.
 // The owner token goes only in a header of a request to this PC: never on a command line, in a title, or in the log.
@@ -15,8 +15,10 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using Microsoft.Web.WebView2.Core;
 using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Pi Pocket")]
@@ -247,6 +249,8 @@ namespace PiPocket
         readonly string appDir = Path.GetDirectoryName(Application.ExecutablePath);
         readonly string dataDir;
         readonly string logFile;
+        readonly string webProfile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Pi Pocket", "WebView2 profile");
         readonly object logLock = new object();
         readonly NotifyIcon tray = new NotifyIcon();
         readonly ToolStripMenuItem openItem = new ToolStripMenuItem("Open Pi Pocket");
@@ -263,6 +267,15 @@ namespace PiPocket
         bool ready;
         bool openWhenReady;
         bool quitting;
+        bool openingWindow;
+        bool edgeFallback;
+        CoreWebView2Environment webEnvironment;
+        PocketWindow window;
+        readonly List<PocketWindow> popups = new List<PocketWindow>();
+        readonly Queue<Action> balloons = new Queue<Action>();
+        int badge;
+        bool balloonActive;
+        string balloonAddress;
 
         public TrayApp(bool hidden)
         {
@@ -300,6 +313,18 @@ namespace PiPocket
                     OpenWindow();
                 }
             };
+            tray.BalloonTipClicked += delegate
+            {
+                string address = balloonAddress;
+                ClearBalloon();
+
+                if (!quitting && address != null && window != null)
+                {
+                    window.ShowWindow();
+                    window.OpenAddress(address);
+                }
+            };
+            tray.BalloonTipClosed += delegate { ClearBalloon(); };
             tray.Visible = true;
 
             openEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.OpenEventName);
@@ -338,7 +363,7 @@ namespace PiPocket
             }
         }
 
-        void Log(string line)
+        internal void Log(string line)
         {
             lock (logLock)
             {
@@ -430,10 +455,17 @@ namespace PiPocket
             int found = running.TryGetValue("pid", out value) && value is int ? (int)value : 0;
             string address = running.TryGetValue("url", out value) ? value as string : null;
 
-            if (found == 0 || address == null || (pid != -1 && found != pid))
+            Uri local;
+
+            if (found == 0 || (pid != -1 && found != pid) ||
+                !Uri.TryCreate(address, UriKind.Absolute, out local) || !local.IsLoopback ||
+                (local.Scheme != Uri.UriSchemeHttp && local.Scheme != Uri.UriSchemeHttps) ||
+                local.UserInfo.Length != 0 || local.PathAndQuery != "/" || local.Fragment.Length != 0)
             {
                 return null;
             }
+
+            address = local.GetLeftPart(UriPartial.Authority);
 
             try
             {
@@ -615,8 +647,13 @@ namespace PiPocket
 
         void Ready()
         {
+            if (quitting)
+            {
+                return;
+            }
+
             ready = true;
-            tray.Text = launcher == null ? "Pi Pocket (started by another launcher)" : "Pi Pocket";
+            UpdateTrayText();
             openItem.Enabled = true;
             restartItem.Enabled = true;
 
@@ -670,12 +707,12 @@ namespace PiPocket
             try
             {
                 Request("POST", url + "/api/restart", OwnerToken());
-                tray.ShowBalloonTip(3000, "Pi Pocket", "The server restarts. Running work continues.", ToolTipIcon.Info);
+                ShowBalloon("Pi Pocket", "The server restarts. Running work continues.", ToolTipIcon.Info, null);
             }
             catch (Exception)
             {
                 // No error text: a malformed config.json can put its content, the owner token, in the message.
-                tray.ShowBalloonTip(5000, "Pi Pocket", "Could not restart the server.", ToolTipIcon.Warning);
+                ShowBalloon("Pi Pocket", "Could not restart the server.", ToolTipIcon.Warning, null);
             }
         }
 
@@ -693,6 +730,7 @@ namespace PiPocket
 
         void Stop()
         {
+            CloseWindows();
             Thread stop = new Thread(delegate ()
             {
                 try
@@ -716,6 +754,8 @@ namespace PiPocket
 
         void Exit()
         {
+            quitting = true;
+            CloseWindows();
             tray.Visible = false;
             tray.Dispose();
 
@@ -731,8 +771,13 @@ namespace PiPocket
             ExitThread();
         }
 
-        void OpenWindow()
+        async void OpenWindow()
         {
+            if (quitting)
+            {
+                return;
+            }
+
             if (!ready)
             {
                 openWhenReady = true;
@@ -740,23 +785,247 @@ namespace PiPocket
                 return;
             }
 
+            if (edgeFallback)
+            {
+                OpenEdge();
+
+                return;
+            }
+
+            if (window != null)
+            {
+                window.ShowWindow();
+
+                return;
+            }
+
+            if (openingWindow)
+            {
+                return;
+            }
+
+            openingWindow = true;
+
+            try
+            {
+                if (webEnvironment == null)
+                {
+                    // This reports a missing Runtime as WebView2RuntimeNotFoundException.
+                    CoreWebView2Environment.GetAvailableBrowserVersionString(null);
+                    webEnvironment = await CoreWebView2Environment.CreateAsync(null, webProfile);
+                }
+
+                if (quitting)
+                {
+                    return;
+                }
+
+                PocketWindow made = new PocketWindow(this, url, tray.Icon, Path.Combine(appDir, "window-bounds.txt"));
+                window = made;
+                made.ShowWindow();
+                await made.Initialize(webEnvironment);
+
+                if (!quitting)
+                {
+                    string target = await Task.Run((Func<string>)SignInAddress);
+
+                    if (!quitting)
+                    {
+                        made.Browser.Navigate(target);
+                    }
+                }
+            }
+            catch (WebView2RuntimeNotFoundException)
+            {
+                CloseWindows();
+                edgeFallback = true;
+                Log("The WebView2 Runtime is missing. Opening Pi Pocket in Microsoft Edge instead.");
+
+                if (!quitting)
+                {
+                    OpenEdge();
+                }
+            }
+            catch (Exception error)
+            {
+                CloseWindows();
+
+                if (!quitting)
+                {
+                    Log("Could not open the WebView2 window (" + error.GetType().Name + ", 0x" + error.HResult.ToString("X8") + ").");
+                    ShowBalloon("Pi Pocket", "Could not open the window. See launcher.log in the install folder.", ToolTipIcon.Warning, null);
+                }
+            }
+            finally
+            {
+                openingWindow = false;
+            }
+        }
+
+        string SignInAddress()
+        {
+            try
+            {
+                return url + SignInPath();
+            }
+            catch (Exception)
+            {
+                // No error text: a malformed config.json can put the owner token in the message.
+                Log("No one-time sign-in link.");
+
+                return url + "/";
+            }
+        }
+
+        internal async void NewWindowRequested(object sender, CoreWebView2NewWindowRequestedEventArgs args)
+        {
+            args.Handled = true;
+
+            if (quitting)
+            {
+                return;
+            }
+
+            if (!PocketWindow.IsServerAddress(args.Uri, url))
+            {
+                if (args.IsUserInitiated)
+                {
+                    OpenInDefaultBrowser(args.Uri);
+                }
+
+                return;
+            }
+
+            CoreWebView2Deferral deferral = args.GetDeferral();
+            PocketWindow popup = null;
+
+            try
+            {
+                popup = new PocketWindow(this, url, tray.Icon, null);
+                popups.Add(popup);
+                popup.Disposed += delegate { popups.Remove(popup); };
+                popup.ShowWindow();
+                await popup.Initialize(webEnvironment);
+
+                if (!quitting && !popup.IsDisposed)
+                {
+                    // It must share the same environment and profile, and not have navigated yet.
+                    args.NewWindow = popup.Browser;
+                }
+            }
+            catch (Exception)
+            {
+                if (popup != null)
+                {
+                    popup.Dispose();
+                }
+
+                if (!quitting)
+                {
+                    Log("Could not open a second WebView2 window.");
+                }
+            }
+            finally
+            {
+                deferral.Complete();
+            }
+        }
+
+        void CloseWindows()
+        {
+            if (window != null)
+            {
+                window.SaveBounds();
+                window.Dispose();
+                window = null;
+            }
+
+            foreach (PocketWindow popup in popups.ToArray())
+            {
+                popup.Dispose();
+            }
+        }
+
+        internal int Badge { get { return badge; } }
+
+        internal void SetBadge(int count)
+        {
+            if (quitting || count == badge)
+            {
+                return;
+            }
+
+            badge = count;
+            UpdateTrayText();
+
+            if (window != null)
+            {
+                window.UpdateBadge();
+            }
+
+            foreach (PocketWindow popup in popups)
+            {
+                popup.UpdateBadge();
+            }
+        }
+
+        void UpdateTrayText()
+        {
+            string name = launcher == null ? "Pi Pocket (started by another launcher)" : "Pi Pocket";
+            tray.Text = badge > 0 ? name + " (" + badge + " need you)" : name;
+        }
+
+        internal void Notify(string title, string body, string address)
+        {
+            Uri target;
+
+            if (!quitting && Uri.TryCreate(new Uri(url), address, out target) && PocketWindow.IsServerAddress(target.AbsoluteUri, url))
+            {
+                ShowBalloon(title, body, ToolTipIcon.Info, target.PathAndQuery);
+            }
+        }
+
+        void ShowBalloon(string title, string body, ToolTipIcon icon, string address)
+        {
+            // WinForms reports a click on the icon, not the balloon's ID. Wait until it closes before showing the next.
+            if (balloons.Count == 8)
+            {
+                balloons.Dequeue();
+            }
+
+            balloons.Enqueue(delegate
+            {
+                balloonAddress = address;
+                tray.ShowBalloonTip(5000, title, string.IsNullOrWhiteSpace(body) ? "Pi Pocket" : body, icon);
+            });
+            ShowNextBalloon();
+        }
+
+        void ShowNextBalloon()
+        {
+            if (!quitting && !balloonActive && balloons.Count != 0)
+            {
+                balloonActive = true;
+                balloons.Dequeue()();
+            }
+        }
+
+        void ClearBalloon()
+        {
+            balloonAddress = null;
+            balloonActive = false;
+            OnUi(ShowNextBalloon);
+        }
+
+        void OpenEdge()
+        {
             if (FocusEdge())
             {
                 return;
             }
 
+            // The shell starts Edge with an address on its command line. Never give it a credential or a sign-in code.
             string target = url + "/";
-
-            try
-            {
-                target = url + SignInPath();
-            }
-            catch (Exception)
-            {
-// No error text: a malformed config.json can put the owner token in the message.
-                Log("No one-time sign-in link.");
-            }
-
             string msedge = FindEdge();
 
             if (msedge != null)
@@ -861,15 +1130,23 @@ namespace PiPocket
             return null;
         }
 
-        void OpenInDefaultBrowser(string target)
+        internal void OpenInDefaultBrowser(string target)
         {
+            Uri address;
+
+            if (!Uri.TryCreate(target, UriKind.Absolute, out address) || address.UserInfo.Length != 0 ||
+                (address.Scheme != Uri.UriSchemeHttp && address.Scheme != Uri.UriSchemeHttps && address.Scheme != Uri.UriSchemeMailto))
+            {
+                return;
+            }
+
             try
             {
-                Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
+                Process.Start(new ProcessStartInfo(address.AbsoluteUri) { UseShellExecute = true });
             }
-            catch (Exception error)
+            catch (Exception)
             {
-                Log("Could not open the default browser: " + error.Message);
+                Log("Could not open the default browser.");
             }
         }
 
@@ -893,7 +1170,8 @@ namespace PiPocket
             Dictionary<string, object> link = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(answer);
             object path;
 
-            if (!link.TryGetValue("path", out path) || !(path is string) || !((string)path).StartsWith("/login?"))
+            if (!link.TryGetValue("path", out path) || !(path is string) ||
+                !((string)path).StartsWith("/login?once=", StringComparison.Ordinal))
             {
                 throw new InvalidDataException("The server gave no sign-in link");
             }

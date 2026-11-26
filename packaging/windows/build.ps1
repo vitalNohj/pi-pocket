@@ -1,6 +1,6 @@
-# Builds Pi-Pocket-Setup-<version>.exe on Windows: the pinned Node.js zip and Inno Setup (each checked against the SHA256
-# below), the desktop app (PiPocket.cs), and the pi-pocket package (packaging/bundle-app.mjs), so Setup needs no npm and no
-# network.
+# Builds Pi-Pocket-Setup-<version>.exe on Windows: the pinned Node.js zip, WebView2 SDK, and Inno Setup (each checked
+# against the SHA256 below), the desktop app, and the pi-pocket package (packaging/bundle-app.mjs), so Setup needs no npm
+# and no network.
 #
 #   pwsh packaging/windows/build.ps1 -Version 0.30.0 [-OutDir out] [-Source <checkout>] [-SignThumbprint <SHA1>]
 #
@@ -19,6 +19,9 @@ $ProgressPreference = "SilentlyContinue"
 # To move to another Node.js, take the win-x64.zip line of https://nodejs.org/dist/v<version>/SHASUMS256.txt.
 $NodeVersion = "26.13.1"
 $NodeSha256 = "e2edda75bfb089654705cf65a13b58933bfd5f57148e8ebda916f58a2474f1f7"
+# SHA256 of the Microsoft.Web.WebView2 package from nuget.org, not the separately installed Runtime.
+$WebView2Version = "1.0.4370.26"
+$WebView2Sha256 = "1c0dacac84b70109b3fd42f90c53a0ba942abc3a87590d7a4e0ccd86e4a06cf4"
 # The SHA256 that https://github.com/jrsoftware/issrc/releases lists for the file.
 $InnoVersion = "7.1.1"
 $InnoSha256 = "8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0"
@@ -69,6 +72,19 @@ if (-not (Test-Path $csc)) {
 
 $desktop = Join-Path $work "desktop"
 New-Item -ItemType Directory -Force $desktop | Out-Null
+
+# A NuGet package is a zip. Ship the .NET Framework assemblies and the loader that matches the x64 app.
+$webViewZip = Join-Path $work "webview2.zip"
+$webView = Join-Path $work "webview2"
+Get-Checked "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/$WebView2Version/microsoft.web.webview2.$WebView2Version.nupkg" $webViewZip $WebView2Sha256
+Expand-Archive -Path $webViewZip -DestinationPath $webView
+$webCore = Join-Path $desktop "Microsoft.Web.WebView2.Core.dll"
+$webForms = Join-Path $desktop "Microsoft.Web.WebView2.WinForms.dll"
+Copy-Item (Join-Path $webView "lib\net462\Microsoft.Web.WebView2.Core.dll") $webCore
+Copy-Item (Join-Path $webView "lib\net462\Microsoft.Web.WebView2.WinForms.dll") $webForms
+Copy-Item (Join-Path $webView "build\native\x64\WebView2Loader.dll") $desktop
+Copy-Item (Join-Path $webView "LICENSE.txt") (Join-Path $desktop "WebView2-License.txt")
+
 $numeric = ($Version -replace '-.*$', '') + ".0"
 $source = Get-Content -Raw (Join-Path $PSScriptRoot "PiPocket.cs")
 $source = $source.Replace('Version = "0.0.0-dev"', "Version = `"$Version`"")
@@ -76,9 +92,10 @@ $source = $source.Replace('NumericVersion = "0.0.0.0"', "NumericVersion = `"$num
 $sourceFile = Join-Path $desktop "PiPocket.cs"
 [IO.File]::WriteAllText($sourceFile, $source, (New-Object Text.UTF8Encoding $false))
 $appExe = Join-Path $desktop "Pi Pocket.exe"
-& $csc /nologo /target:winexe /optimize+ /platform:anycpu /warnaserror+ `
+& $csc /nologo /target:winexe /optimize+ /platform:x64 /warnaserror+ `
     "/win32icon:$(Join-Path $PSScriptRoot 'pi-pocket.ico')" "/win32manifest:$(Join-Path $PSScriptRoot 'PiPocket.manifest')" `
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll "/out:$appExe" $sourceFile
+    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll "/r:$webCore" "/r:$webForms" `
+    "/out:$appExe" $sourceFile (Join-Path $PSScriptRoot "PocketWindow.cs")
 
 if ($LASTEXITCODE -ne 0) {
     throw "csc exited with $LASTEXITCODE"
