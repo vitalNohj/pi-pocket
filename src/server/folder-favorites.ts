@@ -25,7 +25,7 @@ function favoritePath(path: string, onRunner: boolean): string | undefined {
         return posix.normalize(path).replace(/(.)\/$/, "$1");
     }
 
-    if (onRunner && /^[A-Za-z]:[\\/]/.test(path)) {
+    if ((onRunner || process.platform === "win32") && /^[A-Za-z]:[\\/]/.test(path)) {
         return win32.normalize(path).replace(/^(.:\\.*?)\\$/, "$1");
     }
 
