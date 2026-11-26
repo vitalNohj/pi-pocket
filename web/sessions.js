@@ -65,7 +65,6 @@ import {
     useSide,
     useSlide,
 } from "./ui.js";
-import { isOwner, isViewer } from "./roles.js";
 
 /**
  * Back to the session list, where it is not beside the conversation: back past the sessions opened from it, as a
@@ -2788,7 +2787,6 @@ function Rail({ foldable = false, folded = false }) {
         needs > 0 && html`<span class="rail-count attn" data-part="rail-needs">${needs}</span>`;
     const keys = APPLE ? "⌘B" : "Ctrl+B";
     const fold = () => setPrefs({ sidebar: folded ? "open" : "rail" });
-    const role = isOwner(me) ? "owner" : isViewer(me) ? "view only" : "guest";
     // A rail with more buttons than room scrolls as a whole, and fades the edge where more is.
     const more = useScrollMore();
 
@@ -2946,7 +2944,7 @@ function Rail({ foldable = false, folded = false }) {
         <button
             class="rail-button rail-me"
             data-part="rail-button"
-            title=${`${me?.name ?? ""} · ${role}`}
+            title=${`${me?.name ?? ""} · ${me?.word ?? ""}`}
             aria-label="Your account"
             onClick=${() => openSheet({ type: "access", view: "person" })}
         >

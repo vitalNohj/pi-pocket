@@ -3916,7 +3916,16 @@ test(
             );
             assert.match((await asked())[0] ?? "", /^Let Gina manage users\?/);
             assert.equal(app.config.userById(guest.id)?.rights?.includes("managesUsers"), true);
-            assert.match(await text(), /manages users/);
+            // Her page's line says the word, not the right.
+            await until(
+                async () =>
+                    (
+                        await inPage<string>(
+                            `return JSON.stringify(document.querySelector(".pages-detail .sheet-page-head + .muted.small").textContent.trim())`,
+                        )
+                    ).startsWith("admin"),
+                "Gina an admin",
+            );
             assert.match(
                 await text(),
                 /On: they invite people, change what others may do, and remove them\. They cannot change you, themselves, or others who manage users\./,
@@ -4000,7 +4009,8 @@ test(
             await show("Uma");
             await until(async () => (await switches()).length === 0, "Uma's switches to go");
             assert.equal(await removable(), false);
-            assert.match(await text(), /manages users/);
+            // Her page's line says she is an admin.
+            assert.match(await text(), /Umaadmin · /);
 
             // On a phone, her page for Vera and the owner's for her fit the screen.
             await open("people", VIEWPORTS.mobile);
@@ -6182,6 +6192,74 @@ test(
             });
         } finally {
             app.config.removeUser(pia.user.id);
+            app.accessChanged();
+        }
+    },
+);
+
+test(
+    "a person's row says one word, and their page names the computers they are in charge of",
+    real,
+    async () => {
+        const ada = app.config.addUser("Ada", "guest").user;
+        const mia = app.config.addUser("Mia", "guest").user;
+        /** The words under each name in the list, by name. */
+        const rows = () =>
+            inPage<Record<string, string>>(`
+                return JSON.stringify(Object.fromEntries(
+                    [...document.querySelectorAll(".pages-sheet .pages-item")].map((each) => [
+                        each.querySelector(".pages-item-title").textContent.trim(),
+                        each.querySelector(".muted.small")?.textContent.trim() ?? "",
+                    ]),
+                ));
+            `);
+        /** The line under the head of the page shown. */
+        const line = () =>
+            inPage<string>(
+                `return JSON.stringify(document.querySelector(".pages-detail .sheet-page-head + .muted.small")?.textContent.trim() ?? "")`,
+            );
+        const word = async (name: string) => (await rows())[name]?.split(" · ")[0];
+
+        app.setRight(owner(app), { person: ada.id, right: "managesUsers", on: true });
+        app.setRight(owner(app), { person: mia.id, right: "managesRunners", on: true });
+
+        try {
+            await open("people");
+            await until(async () => (await word("Ada")) === "admin", "Ada's row");
+            // Manage users makes an admin; Manage runners does not.
+            assert.equal(await word("Mia"), "user");
+            assert.equal(await word("Gina"), "user");
+            assert.equal(await word("Vera"), "viewer");
+            assert.equal(await word("Owner (you)"), "owner");
+
+            // The owner's page: the word, then the computers they are in charge of, by name.
+            await show("Owner");
+            await until(async () => (await line()).startsWith("owner"), "the owner's line");
+            assert.match(await line(), /^owner · .* · in charge of This server and Laptop$/);
+            assert.doesNotMatch(await line(), /in charge of this server/);
+            // An admin's page says the word alone: no right in the line, and no computer.
+            await show("Ada");
+            await until(async () => (await line()).startsWith("admin"), "Ada's line");
+            assert.doesNotMatch(await line(), /manages users|in charge of/);
+            // Who manages runners is a user in charge of this server and the owner's runner.
+            await show("Mia");
+            await until(async () => (await line()).startsWith("user"), "Mia's line");
+            assert.match(await line(), /· in charge of This server and Laptop$/);
+            assert.doesNotMatch(await line(), /manages runners/);
+
+            // Manage users given and taken back reaches the open tab, with no reload.
+            app.setRight(owner(app), { person: guest.id, right: "managesUsers", on: true });
+            await until(async () => (await word("Gina")) === "admin", "Gina an admin");
+            app.setRight(owner(app), { person: guest.id, right: "managesUsers", on: false });
+            await until(async () => (await word("Gina")) === "user", "Gina a user again");
+        } finally {
+            app.setRight(owner(app), { person: guest.id, right: "managesUsers", on: false });
+            app.setRight(owner(app), { person: guest.id, right: "invites", on: false });
+
+            for (const each of [ada, mia]) {
+                app.config.removeUser(each.id);
+            }
+
             app.accessChanged();
         }
     },

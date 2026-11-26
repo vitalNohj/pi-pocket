@@ -16,9 +16,11 @@ import {
     comesWith,
     declared,
     holds,
+    roleWord,
     type ComputerRight,
     type PersonRight,
     type RightKey,
+    type RoleWord,
 } from "./rights.ts";
 import type { WebAccess } from "./host.ts";
 
@@ -578,12 +580,14 @@ export class AccessPolicy {
     // the current record: so a stale copy answers nothing, and a new role is decided here (`roles.ts`).
 
     /**
-     * What a page is told of `person`'s role, wherever the server names a person (`roles.ts` `roleSaid`): the role, and
-     * the answers the page needs so that it compares no role itself. Of the current record; of the one given, for
-     * someone no longer here.
+     * What a page is told of `person`'s role, wherever the server names a person (`roles.ts` `roleSaid`): the role, the
+     * answers the page needs so that it compares no role itself, and the one word the page says of them (`rights.ts`
+     * `roleWord`). Of the current record; of the one given, for someone no longer here.
      */
-    said(person: Pick<Person, "id" | "role">): RoleSaid {
-        return roleSaid(this.#current(person) ?? person);
+    said(person: Pick<Person, "id" | "role">): RoleSaid & { word: RoleWord } {
+        const current = this.#current(person) ?? person;
+
+        return { ...roleSaid(current), word: roleWord(current) };
     }
 
     /** Is `person` the owner. */

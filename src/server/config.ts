@@ -13,6 +13,7 @@ import {
     canHold,
     declared,
     holds,
+    roleWord,
     type ComputerRight,
     type PersonRight,
 } from "./rights.ts";
@@ -141,8 +142,9 @@ export function helloUser(user: User) {
     return {
         id: user.id,
         name: user.name,
-        // The role, and what the page asks of it (`roles.ts` `roleSaid`).
+        // The role, what the page asks of it (`roles.ts` `roleSaid`), and the word it says of them (`rights.ts` `roleWord`).
         ...roleSaid(user),
+        word: roleWord(user),
         ...(user.sessions === undefined ? {} : { sessions: user.sessions.map(Number) }),
     };
 }

@@ -62,7 +62,7 @@ import { LinkNetwork, NetError, type OpenOptions } from "./runner-network.ts";
 import { BACKGROUND_CONTEXT as BACKGROUND, type Context } from "@earendil-works/chord/context";
 import type { FileInfo } from "@earendil-works/pi-durable/env";
 import type { ConfigStore, StoredRunner, User } from "./config.ts";
-import type { ComputerRight } from "./rights.ts";
+import { roleWord, type ComputerRight, type RoleWord } from "./rights.ts";
 import { HttpError } from "./errors.ts";
 import { isOwner, roleSaid, type RoleSaid } from "./roles.ts";
 import { limitParallel } from "./folder-access.ts";
@@ -165,7 +165,7 @@ export type RunnerView = {
     tools?: Hello["tools"];
     createdBy: string;
     /** Granted people, visible only in the owner's list. */
-    users?: ({ id: string; name: string } & RoleSaid)[];
+    users?: ({ id: string; name: string; word: RoleWord } & RoleSaid)[];
     /** The folders given to each granted person there, by person id; only in the owner's list. */
     given?: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id; only in the owner's list. */
@@ -1591,7 +1591,14 @@ export class Runners {
 
                                   return person === undefined
                                       ? []
-                                      : [{ id, name: person.name, ...roleSaid(person) }];
+                                      : [
+                                            {
+                                                id,
+                                                name: person.name,
+                                                ...roleSaid(person),
+                                                word: roleWord(person),
+                                            },
+                                        ];
                               }),
                               given: Object.fromEntries(
                                   (runner.users ?? []).map((id) => [

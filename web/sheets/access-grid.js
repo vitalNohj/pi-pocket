@@ -43,7 +43,7 @@ import {
     useGroups,
 } from "./access.js";
 import { canShare } from "./session-share.js";
-import { isOwner, isViewer } from "../roles.js";
+import { isOwner } from "../roles.js";
 
 /** The explanations of the grid's column heads, and of the people columns (in the key row). */
 export const TIPS = {
@@ -338,9 +338,9 @@ export function PeopleFilter({ people, hidden, onChange }) {
         }`;
 }
 
-/** A person's role, in the one word a column head has room for. */
+/** A person's one word (`rights.ts` `roleWord`), as a column head says it: Viewer, User, Admin, or Owner. */
 export const roleWord = (person) =>
-    isViewer(person) ? "Viewer" : isOwner(person) ? "Owner" : "User";
+    person.word ? `${person.word[0].toUpperCase()}${person.word.slice(1)}` : "";
 
 /** Pi's setting for a folder nobody decided about, as the trust button says it under "Not decided". */
 const DEFAULT_TRUST = {

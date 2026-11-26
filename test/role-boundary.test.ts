@@ -266,7 +266,10 @@ describe("the page compares no role", () => {
      * Lines the finder takes for a role that name something else. Each is the whole line, so a new compare beside it
      * is still found. "viewer" here is the sheet that shows an artifact (`web/sheets/viewers.js`), not the role.
      */
-    const NOT_A_ROLE = new Set(['web/sheets.js:case "viewer":']);
+    const NOT_A_ROLE = new Set([
+        'web/sheets.js:case "viewer":',
+        'web/sheets/viewers.js:if (message.type === "pocket-selection" && store.state.sheet?.type === "viewer") {',
+    ]);
 
     it("asks web/roles.js, which reads what the server said: no file of the page compares a role", () => {
         const pages = [

@@ -29,7 +29,6 @@ import {
     typing,
 } from "./store.js";
 import { clockTime, copyText, html, Icon, Loader, Sheet, Spinner, timeAgo } from "./ui.js";
-import { isOwner, isViewer } from "./roles.js";
 
 const coarse = matchMedia("(pointer: coarse)").matches;
 
@@ -847,11 +846,8 @@ function PeopleRoster() {
                   : person.id === me?.id
                     ? "here · you"
                     : "here";
-            const roleLabel = isOwner(known)
-                ? "owner"
-                : isViewer(known)
-                  ? "view only"
-                  : "can steer";
+            // Their one word (`rights.ts` `roleWord`): the people list's, which follows a change of rights.
+            const roleLabel = (known ?? person).word;
 
             return html`<div class="people-person" key=${person.id}>
                 <span class="people-here">

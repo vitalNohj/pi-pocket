@@ -24,6 +24,7 @@ import {
     PERSON_RIGHTS,
     RIGHTS,
     declared,
+    roleWord,
     toldRights,
     type PersonRight,
 } from "../src/server/rights.ts";
@@ -160,11 +161,45 @@ test("every right is declared once, and the app is told its words and none of it
         assert.equal(each.label, declared(each.key).label);
         assert.equal(each.on, declared(each.key).on);
 
-        // Who may hold or give it is the server's to decide (`access.ts` `has`, `offer`), never the app's.
-        for (const rule of ["whole", "viewers", "gives", "with", "lapses"]) {
+        // Who may hold or give it is the server's to decide (`access.ts` `has`, `offer`), never the app's; nor is what
+        // makes an admin (`roleWord`), and no right is said in a line of its own on a person's page.
+        for (const rule of ["whole", "viewers", "gives", "with", "lapses", "admin", "line"]) {
             assert.equal(rule in each, false, `${each.key} ${rule}`);
         }
     }
+});
+
+test("one word says what a person is: owner and viewer by role; admin for a user who manages users or Pi Pocket; else user", () => {
+    const user = (rights: PersonRight[], more: { sessions?: string[] } = {}) => ({
+        role: "guest",
+        rights,
+        ...more,
+    });
+
+    assert.equal(roleWord({ role: "owner" }), "owner");
+    assert.equal(roleWord({ role: "viewer" }), "viewer");
+    assert.equal(roleWord(user([])), "user");
+    assert.equal(roleWord(user(["managesUsers"])), "admin");
+    assert.equal(roleWord(user(["managesServer"])), "admin");
+    // Manage runners, Link runners, and Invite people do not make an admin.
+    assert.equal(roleWord(user(["managesRunners"])), "user");
+    assert.equal(roleWord(user(["linksRunners"])), "user");
+    assert.equal(roleWord(user(["invites"])), "user");
+    assert.equal(
+        roleWord(user(["managesRunners", "linksRunners", "invites", "keepsWarm"])),
+        "user",
+    );
+    // A user limited to sessions cannot hold Manage users, also when their record keeps it.
+    assert.equal(roleWord(user(["managesUsers"], { sessions: ["1"] })), "user");
+    // Paused: a viewer, with the rights that lapse saved for when they link an authenticator again.
+    const paused = { role: "viewer", rights: ["invites"], paused: { rights: ["managesUsers"] } };
+
+    assert.equal(roleWord(paused), "viewer");
+    // What makes an admin is said once, in the rights themselves.
+    assert.deepEqual(
+        PERSON_RIGHTS.filter((each) => declared(each).admin === true),
+        ["managesUsers", "managesServer"],
+    );
 });
 
 test("one check answers for every right: the owner has them all, a user what they were given, nobody else any", async () => {
@@ -559,6 +594,9 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
     assert.equal(kept(pia).role, "viewer");
     assert.deepEqual(kept(pia).rights, ["linksRunners", "invites", "keepsWarm"]);
     assert.deepEqual(kept(pia).paused, { rights: lapsing });
+    // Paused, they are a viewer in word too, though Manage users waits for them.
+    assert.equal(roleWord(kept(pia)), "viewer");
+    assert.equal(app.policy.said(kept(pia)).word, "viewer");
 
     for (const right of PERSON_RIGHTS) {
         assert.equal(has(pia, right), false, right);
@@ -570,6 +608,7 @@ test("a right stays kept while its person cannot hold it, unless it lapses; a pa
     assert.equal(kept(pia).role, "guest");
     assert.deepEqual(kept(pia).rights, USERS_RIGHTS);
     assert.equal(Object.hasOwn(kept(pia), "paused"), false);
+    assert.equal(app.policy.said(kept(pia)).word, "admin");
 
     for (const right of PERSON_RIGHTS) {
         assert.equal(has(pia, right), true, right);

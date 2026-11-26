@@ -378,23 +378,16 @@ describe("what a page is told of a role, so that it compares none", () => {
         });
     });
 
-    it("says owner and prompts beside the role wherever it names a person", async () => {
-        const said = (each: { id: string; role: string; owner: boolean; prompts: boolean }) => [
-            each.role,
-            each.owner,
-            each.prompts,
-        ];
+    it("says owner, prompts, and the one word beside the role wherever it names a person", async () => {
+        type Said = { id: string; role: string; owner: boolean; prompts: boolean; word: string };
+        const said = (each: Said) => [each.role, each.owner, each.prompts, each.word];
         const expected = new Map([
-            [owner(app).id, ["owner", true, true]],
-            [guest.id, ["guest", false, true]],
-            [viewer.id, ["viewer", false, false]],
+            [owner(app).id, ["owner", true, true, "owner"]],
+            [guest.id, ["guest", false, true, "user"]],
+            [viewer.id, ["viewer", false, false, "viewer"]],
         ]);
 
-        const check = (
-            where: string,
-            people: { id: string; role: string; owner: boolean; prompts: boolean }[],
-            ids: string[],
-        ) => {
+        const check = (where: string, people: Said[], ids: string[]) => {
             for (const id of ids) {
                 const found = people.find((each) => each.id === id);
 
@@ -405,6 +398,9 @@ describe("what a page is told of a role, so that it compares none", () => {
 
         check("the people list", app.people(owner(app)), [owner(app).id, guest.id, viewer.id]);
         check("this server's people", app.thisServer(owner(app))!.users, [guest.id, viewer.id]);
+        // Who signed in, as their hello says it and as the app page carries it (`config.ts` `helloUser`).
+        check("a hello", [(await app.hello(owner(app))).user], [owner(app).id]);
+        check("a hello", [(await app.hello(viewer)).user], [viewer.id]);
         check("a session's people", app.commands.sharing(shared, owner(app)).people, [
             guest.id,
             viewer.id,

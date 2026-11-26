@@ -33,8 +33,8 @@ export type Right = {
      * when they can. A pause (`config.ts` `User.paused`) keeps a right that lapses for when it ends.
      */
     lapses?: true;
-    /** A person's page says it in the line under their name. */
-    line?: true;
+    /** Holding it makes a user an admin (`roleWord`). */
+    admin?: true;
     /** It manages or administers: its switch is in the Management group of a person's page. */
     management?: true;
     /** Its switch: the name beside it. In small letters it ends "must be a user to …". */
@@ -55,7 +55,6 @@ export const RIGHTS = {
     linksRunners: {
         scope: "person",
         whole: true,
-        line: true,
         label: "Link runners",
         says: "links runners",
         on: "On: they link computers of their own as runners, which they are in charge of.",
@@ -79,7 +78,7 @@ export const RIGHTS = {
         management: true,
         gives: "owner",
         lapses: true,
-        line: true,
+        admin: true,
         label: "Manage users",
         says: "manages users",
         on: "On: they invite people, change what others may do, and remove them. They cannot change you, themselves, or others who manage users.",
@@ -93,7 +92,6 @@ export const RIGHTS = {
         management: true,
         gives: "owner",
         lapses: true,
-        line: true,
         label: "Manage runners",
         says: "manages runners",
         on: "On: they are in charge of this server and the runners you linked, as you are. They can unlink any runner.",
@@ -107,7 +105,7 @@ export const RIGHTS = {
         management: true,
         gives: "owner",
         lapses: true,
-        line: true,
+        admin: true,
         label: "Manage Pi Pocket",
         says: "manages Pi Pocket",
         on: "On: they change Pi Pocket's settings for everyone: extensions, providers, models, themes, spend limits, and memory lessons, and restart it.",
@@ -253,16 +251,43 @@ export function holds(
     );
 }
 
+/** The one word a page says of a person (`roleWord`). */
+export type RoleWord = "viewer" | "user" | "admin" | "owner";
+
+/**
+ * The one word a page says of `person`: `owner` and `viewer` by their role; `admin` for a user who holds a person right
+ * that makes an admin (`Right.admin`: Manage users, Manage Pi Pocket); else `user`. No role of its own: it is worked
+ * out from the role and the rights held now, so a user limited to sessions, who cannot hold those rights, is a user.
+ */
+export function roleWord(person: {
+    role: string;
+    sessions?: unknown;
+    temporary?: unknown;
+    rights?: readonly string[];
+}): RoleWord {
+    if (person.role === "owner") {
+        return "owner";
+    }
+
+    if (person.role === "viewer") {
+        return "viewer";
+    }
+
+    return PERSON_RIGHTS.some((key) => declared(key).admin === true && holds(person, key))
+        ? "admin"
+        : "user";
+}
+
 /** What the app is told to draw a right's switch: its words and where it goes, not its rules. */
 export type ToldRight = Pick<
     Right,
-    "scope" | "line" | "management" | "label" | "says" | "on" | "off" | "withHint" | "confirm"
+    "scope" | "management" | "label" | "says" | "on" | "off" | "withHint" | "confirm"
 > & { key: RightKey };
 
 /** Every right as the app is told it, in the order their switches are shown. */
 export function toldRights(): ToldRight[] {
     return KEYS.map((key) => {
-        const { scope, line, management, label, says, on, off, withHint, confirm } = declared(key);
+        const { scope, management, label, says, on, off, withHint, confirm } = declared(key);
 
         return {
             key,
@@ -270,7 +295,6 @@ export function toldRights(): ToldRight[] {
             label,
             says,
             on,
-            ...(line === undefined ? {} : { line }),
             ...(management === undefined ? {} : { management }),
             ...(off === undefined ? {} : { off }),
             ...(withHint === undefined ? {} : { withHint }),

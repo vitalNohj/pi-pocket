@@ -94,6 +94,7 @@ import {
     rememberedLevel,
 } from "./project-model.ts";
 import { expandPromptTemplate, expandSkillCommand, unwrapSkill } from "./prompts.ts";
+import type { RoleWord } from "./rights.ts";
 import { clientKey, ownRequest, requestFor, requestPerson } from "./requests.ts";
 import { newestOf } from "./room.ts";
 import {
@@ -1257,6 +1258,8 @@ export class Commands {
             /** What the page asks of the role (`roles.ts` `roleSaid`). */
             owner: boolean;
             prompts: boolean;
+            /** The one word the page says of them (`rights.ts` `roleWord`). */
+            word: RoleWord;
             notChosen?: true;
             /** They see it anyway: it is in a folder they see every session of (`access.ts` `seesFolder`). */
             byFolder?: true;

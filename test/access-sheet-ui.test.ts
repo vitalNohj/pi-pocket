@@ -792,6 +792,39 @@ test(
     },
 );
 
+test(
+    "a column head says the person's word: Admin for who manages users, User again once not",
+    real,
+    async () => {
+        const heads = () =>
+            inPage<Record<string, string>>(`
+            return JSON.stringify(Object.fromEntries(
+                [...document.querySelectorAll(".ag-head .ag-who")].map((each) => [
+                    each.querySelector(".ag-who-name").textContent.trim(),
+                    each.querySelector(".ag-who-role").textContent.trim(),
+                ]),
+            ));
+        `);
+        const gil = people[2]!;
+
+        await load(DESKTOP);
+        await openAt("computer", THIS_SERVER);
+        await grid();
+        assert.equal((await heads())[gil.name], "User");
+        assert.equal((await heads())[people[1]!.name], "Viewer");
+
+        try {
+            app.setRight(owner(app), { person: gil.id, right: "managesUsers", on: true });
+            await until(async () => (await heads())[gil.name] === "Admin", "Admin in the open tab");
+        } finally {
+            app.setRight(owner(app), { person: gil.id, right: "managesUsers", on: false });
+            app.setRight(owner(app), { person: gil.id, right: "invites", on: false });
+        }
+
+        await until(async () => (await heads())[gil.name] === "User", "User again");
+    },
+);
+
 for (const [name, viewport] of [
     ["1280 px", DESKTOP],
     ["390 px", PHONE],

@@ -143,8 +143,8 @@ test("the owner chooses its people: a chosen guest may start here, a viewer may 
     assert.equal(chosen.status, 200);
     // Never the owner, someone removed, or a person invited to one session.
     assert.deepEqual(chosen.body.users, [
-        { id: alex.id, name: "Alex", role: "guest", owner: false, prompts: true },
-        { id: vera.id, name: "Vera", role: "viewer", owner: false, prompts: false },
+        { id: alex.id, name: "Alex", role: "guest", owner: false, prompts: true, word: "user" },
+        { id: vera.id, name: "Vera", role: "viewer", owner: false, prompts: false, word: "viewer" },
     ]);
     assert.equal(app.policy.mayStart(alex, THIS_SERVER), true);
     assert.equal(app.policy.mayUse(vera, THIS_SERVER), true);
@@ -302,7 +302,7 @@ test("a change reaches the owner's tabs live, and never anyone else's", async ()
             "the owner's tab hears of the change",
         );
         assert.deepEqual((ownerTab.last("this-server") as ServerView).users, [
-            { id: alex.id, name: "Alex", role: "guest", owner: false, prompts: true },
+            { id: alex.id, name: "Alex", role: "guest", owner: false, prompts: true, word: "user" },
         ]);
         assert.equal(
             alexTab.events.some((each) => each.event === "this-server"),

@@ -1009,13 +1009,16 @@ export function ordered(users) {
     );
 }
 
-/** What a person may do, in a word or two. */
+/** What a person is, in one word: the server's (`rights.ts` `roleWord`), or paused. */
 export function roleText(person) {
-    if (isViewer(person)) {
-        return person.paused ? "paused" : "viewer";
-    }
+    return person.paused ? "paused" : person.word;
+}
 
-    return isOwner(person) ? "owner" : "user";
+/** "This server", "This server and Macbook", "This server, Macbook, and Monolith". */
+function listed(names) {
+    return names.length < 3
+        ? names.join(" and ")
+        : `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`;
 }
 
 /**
@@ -2081,14 +2084,12 @@ export function PersonPage({ person, part, onPart }) {
         </div>
         <div class="muted small">
             ${[
-                isOwner(person) ? "owner · in charge of this server" : roleText(person),
+                roleText(person),
                 person.sessions && "one session only",
                 person.temporary && "temporary account",
                 lastSeen(person),
-                // The rights said in this line (`rights.ts` `line`): links runners, manages users.
-                ...declaredRights("person")
-                    .filter((each) => each.line && person.rights?.includes(each.key))
-                    .map((each) => each.says),
+                // The computers they are in charge of, as the server named them (`app.ts` `people`).
+                person.inCharge?.length > 0 && `in charge of ${listed(person.inCharge)}`,
             ]
                 .filter(Boolean)
                 .join(" · ")}

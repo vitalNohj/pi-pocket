@@ -69,6 +69,7 @@ import {
     projectStats,
     turnStart,
 } from "./projection.ts";
+import type { RoleWord } from "./rights.ts";
 import { describeRepeat } from "./when.ts";
 import { fingerprint } from "../../web/text-hash.js";
 
@@ -250,6 +251,8 @@ export type Person = {
     /** What the page asks of the role (`roles.ts` `roleSaid`). */
     owner: boolean;
     prompts: boolean;
+    /** The one word the page says of them (`rights.ts` `roleWord`). */
+    word: RoleWord;
     tabs: number;
     typing?: TypingPlace;
     away?: boolean;

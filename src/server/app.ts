@@ -88,6 +88,7 @@ import {
     toldRights,
     type ComputerRight,
     type PersonRight,
+    type RoleWord,
 } from "./rights.ts";
 import {
     type AccessMeta,
@@ -370,8 +371,8 @@ export type ServerView = {
     name: string;
     /** Its linker: the owner. */
     createdBy: string;
-    /** Its chosen people, each with their role as a page is told it (`roles.ts` `roleSaid`). */
-    users: ({ id: string; name: string } & RoleSaid)[];
+    /** Its chosen people, each with their role as a page is told it (`access.ts` `said`). */
+    users: ({ id: string; name: string; word: RoleWord } & RoleSaid)[];
     /** The folders given to each chosen person here, by person id. */
     given: Record<string, string[]>;
     /** Of those, the folders in which that person sees every session, by person id. */
@@ -2434,6 +2435,10 @@ export class PocketApp {
             if (server !== undefined) {
                 client.send("this-server", server);
             }
+
+            // The people list names the computers each person is in charge of: a runner linked, unlinked, or chosen
+            // for changes what it says.
+            this.#tellPeople(client, this.config.userById(client.user.id) ?? client.user);
         }
 
         const online = new Set(list.filter((runner) => runner.online).map((runner) => runner.id));
@@ -3256,8 +3261,19 @@ export class PocketApp {
         };
     }
 
-    /** The people list each viewer's tab last got (`#peopleChanged`, `#scheduleSessions`), as JSON. */
+    /** The people list each viewer's tab last got (`#peopleChanged`, `#tellPeople`), as JSON. */
     readonly #peopleTold = new WeakMap<Client, string>();
+
+    /** Send `client`, whose person is `user`, the people list as it is now, unless it is what their tab last got. */
+    #tellPeople(client: Client, user: User): void {
+        const people = this.people(user);
+        const told = JSON.stringify(people);
+
+        if (this.#peopleTold.get(client) !== told) {
+            this.#peopleTold.set(client, told);
+            client.send("users", people);
+        }
+    }
 
     /**
      * The people with access to this server as `viewer` may see them: who is online now, and when the others were last
@@ -3274,6 +3290,28 @@ export class PocketApp {
         const met = this.policy.seesEveryone(viewer) ? undefined : this.#metBy(viewer);
         // Someone a viewer meets in a session, or may chat with: nothing of when they are here, or of what they may do.
         const bare = (each: User) => met !== undefined && each.id !== viewer.id;
+        // The computers this viewer is told of (`runners.ts` `mayList`), in the order of the settings file: this server
+        // first, which everyone knows by name, then the runners.
+        const computers = [
+            THIS_SERVER,
+            ...this.config.runners
+                .map((each) => each.id)
+                .filter(
+                    (id) => this.policy.mayUnlink(viewer, id) || this.policy.mayUse(viewer, id),
+                ),
+        ];
+
+        // The names of the computers `each` is in charge of, of those (`access.ts` `inCharge`), as the Access sheet
+        // names them ("This server" as a computer's own name). Left out when none, and for someone met bare.
+        const inCharge = (each: User): { inCharge?: string[] } => {
+            const names = bare(each)
+                ? []
+                : computers
+                      .filter((id) => this.policy.inCharge(each, id))
+                      .map((id) => (id === THIS_SERVER ? "This server" : this.#computerName(id)));
+
+            return names.length === 0 ? {} : { inCharge: names };
+        };
 
         return this.config.users
             .filter((each) =>
@@ -3286,9 +3324,11 @@ export class PocketApp {
             .map((each) => ({
                 id: each.id,
                 name: each.name,
-                // The role, and what the page asks of it (`roles.ts` `roleSaid`).
+                // The role, what the page asks of it, and the word it says of them (`access.ts` `said`).
                 ...this.policy.said(each),
                 ...(each.avatar === undefined ? {} : { avatar: each.avatar }),
+                // The computers they are in charge of, by name: their page lists them.
+                ...inCharge(each),
                 ...(bare(each) ? {} : { online: this.#online(each.id) }),
                 ...(each.lastSeen === undefined || bare(each) ? {} : { lastSeen: each.lastSeen }),
                 // Which sessions they are limited to: only the ones this viewer may see themselves. An empty list still
@@ -5835,13 +5875,7 @@ export class PocketApp {
                 // Whom a viewer meets follows the sessions they may see (`#metBy`): shown one, or no longer, they get
                 // the names for it with the list, and lose the ones they no longer meet.
                 if (!this.policy.seesEveryone(user)) {
-                    const people = this.people(user);
-                    const told = JSON.stringify(people);
-
-                    if (this.#peopleTold.get(client) !== told) {
-                        this.#peopleTold.set(client, told);
-                        client.send("users", people);
-                    }
+                    this.#tellPeople(client, user);
                 }
 
                 if (client.board === true) {
