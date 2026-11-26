@@ -4,6 +4,8 @@ name: Desktop builds
 on:
     push:
         branches: [desktop-native]
+    pull_request:
+        branches: [desktop-native]
     workflow_dispatch:
 
 permissions:
