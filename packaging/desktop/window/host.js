@@ -40,7 +40,9 @@
     }
 
     function update(next) {
-        const geometryChanged = ["side", "width", "height"].some((field) => state[field] !== next[field]);
+        const geometryChanged = ["side", "width", "height"].some(
+            (field) => state[field] !== next[field],
+        );
         const tintChanged = state.tint !== next.tint;
 
         state = next;
@@ -112,25 +114,29 @@
 
     // Use the actual top-frame link activation, not a remembered or redirected download URL. The native download
     // event must independently match this URL; the message cannot create a download or name its destination.
-    addEventListener("click", (event) => {
-        const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+    addEventListener(
+        "click",
+        (event) => {
+            const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
 
-        if (!ready || !event.isTrusted || !link || !link.hasAttribute("download")) {
-            return;
-        }
+            if (!ready || !event.isTrusted || !link || !link.hasAttribute("download")) {
+                return;
+            }
 
-        const url = new URL(link.href);
+            const url = new URL(link.href);
 
-        if (
-            url.origin === origin &&
-            !url.hash &&
-            /^\/api\/c\/[0-9]+\/download$/.test(url.pathname) &&
-            url.searchParams.getAll("path").length === 1 &&
-            url.searchParams.get("path")
-        ) {
-            post("download-link", { url: url.href });
-        }
-    }, true);
+            if (
+                url.origin === origin &&
+                !url.hash &&
+                /^\/api\/c\/[0-9]+\/download$/.test(url.pathname) &&
+                url.searchParams.getAll("path").length === 1 &&
+                url.searchParams.get("path")
+            ) {
+                post("download-link", { url: url.href });
+            }
+        },
+        true,
+    );
 
     Object.defineProperty(window, "__piPocketWindow", {
         value: Object.freeze({
@@ -144,6 +150,7 @@
                 post("ready");
                 material();
                 const html = root ?? document.documentElement;
+
                 const queueTheme = () => {
                     if (!frame) {
                         frame = requestAnimationFrame(publishTheme);
@@ -156,12 +163,22 @@
                 queueTheme();
 
                 addEventListener("mousedown", (event) => {
-                    if (overlay.visible && event.isTrusted && event.button === 0 && dragTarget(event)) {
+                    if (
+                        overlay.visible &&
+                        event.isTrusted &&
+                        event.button === 0 &&
+                        dragTarget(event)
+                    ) {
                         post("drag", { x: event.clientX, y: event.clientY, clicks: event.detail });
                     }
                 });
                 addEventListener("contextmenu", (event) => {
-                    if (state.nativeDragContext && overlay.visible && event.isTrusted && dragTarget(event)) {
+                    if (
+                        state.nativeDragContext &&
+                        overlay.visible &&
+                        event.isTrusted &&
+                        dragTarget(event)
+                    ) {
                         event.preventDefault();
                         post("context");
                     }

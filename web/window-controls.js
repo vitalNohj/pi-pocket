@@ -203,10 +203,10 @@ function update() {
 
     for (const element of document.querySelectorAll(`${BARS}, ${PUSHED}`)) {
         // The native macOS app also runs on WebKit versions from before checkVisibility().
-        if (
-            !(element.checkVisibility?.({ visibilityProperty: true }) ??
-                getComputedStyle(element).visibility === "visible")
-        ) {
+        if (!(
+            element.checkVisibility?.({ visibilityProperty: true }) ??
+            getComputedStyle(element).visibility === "visible"
+        )) {
             continue;
         }
 
@@ -341,7 +341,7 @@ window.__piPocketWindow?.ready((event) => {
     if (
         !(target instanceof Element) ||
         target.closest(
-            'a, button, input, select, textarea, label, summary, [role], [tabindex], [contenteditable], .title, .resize-handle',
+            "a, button, input, select, textarea, label, summary, [role], [tabindex], [contenteditable], .title, .resize-handle",
         )
     ) {
         return false;
@@ -356,7 +356,9 @@ window.__piPocketWindow?.ready((event) => {
     return (
         strip &&
         target.matches("html, body, #app, .layout") &&
-        event.clientX >= strip.left && event.clientX < strip.right &&
-        event.clientY >= strip.top && event.clientY < strip.bottom
+        event.clientX >= strip.left &&
+        event.clientX < strip.right &&
+        event.clientY >= strip.top &&
+        event.clientY < strip.bottom
     );
 });

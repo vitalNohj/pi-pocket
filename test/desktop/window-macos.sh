@@ -17,6 +17,11 @@ cp "$page" "$page.saved"
 pid=""
 
 cleanup() {
+    if [ "$?" != 0 ]; then
+        screencapture -x "$out/failure.png" || true
+        grep -E 'download|window is signed in' "$LOG" || true
+        ls -l "$HOME/Downloads/"window-fixture* || true
+    fi
     if [ -n "$pid" ]; then
         "$app" --quit || true
         wait "$pid" || true
@@ -29,15 +34,15 @@ node "$here/window-fixture.mjs" "$MANIFEST" "$RUNNER_TEMP/window-files"
 
 for chrome in system seamless; do
     printf '{"titleBar":"%s"}\n' "$chrome" > "$PI_POCKET_DESKTOP_STATE/window.json"
-    previous="$(grep -c 'The window is signed in.' "$LOG" || true)"
+    # The launcher rotates its log on each start. Wait only for this fixture's sign-in.
+    if [ -f "$LOG" ]; then mv "$LOG" "$RUNNER_TEMP/window-before-$chrome.log"; fi
     "$app" &
     pid=$!
     for _ in $(seq 1 60); do
-        count="$(grep -c 'The window is signed in.' "$LOG" || true)"
-        if [ "$count" -gt "$previous" ] && [ "$("$driver" "$pid" count)" = 1 ]; then break; fi
+        if grep -q 'The window is signed in.' "$LOG" 2>/dev/null && [ "$("$driver" "$pid" count)" = 1 ]; then break; fi
         sleep 1
     done
-    [ "$count" -gt "$previous" ]
+    grep -q 'The window is signed in.' "$LOG"
     [ "$("$driver" "$pid" count)" = 1 ]
     sleep 2
     screencapture -x "$out/$chrome-light.png"
@@ -45,7 +50,7 @@ for chrome in system seamless; do
     offset=0
     if [ "$chrome" = system ]; then offset=24; fi
     if [ "$chrome" = seamless ]; then
-        "$driver" "$pid" click 616 173
+        "$driver" "$pid" click 616 212
         for _ in $(seq 1 20); do
             [ ! -f "$completed" ] || break
             sleep 1
@@ -53,14 +58,17 @@ for chrome in system seamless; do
         grep -qx 'Keep the existing file' "$existing"
         grep -qx 'Pi Pocket desktop download fixture' "$completed"
         screencapture -x "$out/download.png"
-        "$driver" "$pid" click 752 173
+        "$driver" "$pid" click 752 212
         sleep 2
         screencapture -x "$out/save-dialog.png"
         "$driver" "$pid" escape
         [ ! -e "$HOME/Downloads/window-dialog.txt" ]
     fi
 
-    "$driver" "$pid" click 480 "$((173 + offset))"
+    "$driver" "$pid" click 344 "$((212 + offset))"
+    sleep 2
+    screencapture -x "$out/$chrome-dark.png"
+    "$driver" "$pid" click 480 "$((212 + offset))"
     for _ in $(seq 1 20); do
         [ "$("$driver" "$pid" count)" != 2 ] || break
         sleep 1

@@ -35,17 +35,26 @@ namespace PiPocket
             this.report = report;
         }
 
-        static bool IsFileRoute(string url, string origin)
+        static string FileRouteName(string url, string origin)
         {
-            if (!PocketWindow.IsServerAddress(url, origin)) { return false; }
+            if (!PocketWindow.IsServerAddress(url, origin)) { return null; }
             Uri address = new Uri(url);
-            return address.Fragment.Length == 0 && Regex.IsMatch(address.AbsolutePath, @"\A/api/c/[0-9]+/download\z") &&
-                Regex.IsMatch(address.Query, @"(?:\?|&)path=[^&]+");
+            if (address.Fragment.Length != 0 || !Regex.IsMatch(address.AbsolutePath, @"\A/api/c/[0-9]+/download\z")) { return null; }
+
+            string path = null;
+            foreach (string item in address.Query.TrimStart('?').Split('&'))
+            {
+                string[] pair = item.Split(new[] { '=' }, 2);
+                if (System.Net.WebUtility.UrlDecode(pair[0]) != "path") { continue; }
+                if (path != null || pair.Length != 2 || pair[1].Length == 0) { return null; }
+                path = System.Net.WebUtility.UrlDecode(pair[1]);
+            }
+            return path == null ? null : SafeName(path.Substring(Math.Max(path.LastIndexOf('/'), path.LastIndexOf('\\')) + 1));
         }
 
         public void LinkActivated(string address)
         {
-            if (address != null && IsFileRoute(address, origin))
+            if (address != null && FileRouteName(address, origin) != null)
             {
                 nextLink = address;
                 expires = clock.ElapsedMilliseconds + 5000;
@@ -60,9 +69,6 @@ namespace PiPocket
 
         public void Start(object sender, CoreWebView2DownloadStartingEventArgs args)
         {
-            bool direct = nextLink != null && clock.ElapsedMilliseconds <= expires &&
-                nextLink == args.DownloadOperation.Uri;
-            nextLink = null;
             var deferral = args.GetDeferral();
 
             // Do not run the dialog's nested message loop in a WebView2 callback.
@@ -72,7 +78,10 @@ namespace PiPocket
                 try
                 {
                     if (disposed) { args.Cancel = true; return; }
-                    ChooseDestination(args, direct);
+                    string address = args.DownloadOperation.Uri;
+                    string name = nextLink == address && clock.ElapsedMilliseconds <= expires ? FileRouteName(address, origin) : null;
+                    nextLink = null;
+                    ChooseDestination(args, name);
                 }
                 catch (IOException) { CannotSave(args); }
                 catch (UnauthorizedAccessException) { CannotSave(args); }
@@ -88,10 +97,12 @@ namespace PiPocket
             report("Could not save the download.");
         }
 
-        void ChooseDestination(CoreWebView2DownloadStartingEventArgs args, bool direct)
+        void ChooseDestination(CoreWebView2DownloadStartingEventArgs args, string routeName)
         {
+            bool direct = routeName != null;
             string folder = DownloadsFolder();
-            string name = SafeName(Path.GetFileName(args.ResultFilePath));
+            // The browser can suggest a name it has already made unique. Start with the file's own name instead.
+            string name = routeName ?? SafeName(Path.GetFileName(args.ResultFilePath));
             string path = Path.Combine(folder, name);
 
             if (!direct)
@@ -162,8 +173,14 @@ namespace PiPocket
 
         static string SafeName(string name)
         {
-            string safe = (name ?? "").Trim().TrimEnd('.');
-            return safe.Length == 0 || safe == "." || safe == ".." ? "download" : safe;
+            string safe = string.Join("_", (name ?? "").Split(Path.GetInvalidFileNameChars())).Trim().TrimEnd('.');
+            if (safe.Length == 0) { return "download"; }
+            // Win32 device names are reserved even on a file with an extension.
+            if (Regex.IsMatch(safe.Split('.')[0].TrimEnd(), @"\A(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])\z", RegexOptions.IgnoreCase))
+            {
+                return "_" + safe;
+            }
+            return safe;
         }
 
         static string DownloadsFolder()

@@ -20,7 +20,11 @@ namespace PiPocket
             items.Add(Option("Seamless title bar", settings.titleBar == "seamless", delegate { settings.titleBar = "seamless"; host.SaveWindowPreferences(); }));
             items.Add(Option("System title bar", settings.titleBar == "system", delegate { settings.titleBar = "system"; host.SaveWindowPreferences(); }));
             items.Add(new ToolStripSeparator());
-            items.Add(Option("See-through background", settings.seeThrough, delegate { settings.seeThrough = !settings.seeThrough; host.SaveWindowPreferences(); }));
+            bool glass = AllowsTransparency();
+            var seeThrough = Option(glass ? "See-through background" : "See-through background (unavailable)",
+                settings.seeThrough, delegate { settings.seeThrough = !settings.seeThrough; host.SaveWindowPreferences(); });
+            seeThrough.Enabled = glass;
+            items.Add(seeThrough);
             items.Add(Option("Use Acrylic", settings.material == "acrylic", delegate { settings.material = "acrylic"; host.SaveWindowPreferences(); }));
             items.Add(Option("Use Mica", settings.material == "mica", delegate { settings.material = "mica"; host.SaveWindowPreferences(); }));
             items.Add(new ToolStripSeparator());

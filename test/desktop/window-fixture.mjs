@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 
 const [app, work] = process.argv.slice(2);
 const bundle = join(dirname(app), "web", "app.js");
+
 mkdirSync(work, { recursive: true });
 writeFileSync(join(work, "window-fixture.txt"), "Pi Pocket desktop download fixture\n");
 writeFileSync(

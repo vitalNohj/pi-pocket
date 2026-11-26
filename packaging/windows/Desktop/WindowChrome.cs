@@ -14,13 +14,12 @@ namespace PiPocket
         readonly string windowKey = Guid.NewGuid().ToString("N");
         WindowDownloads downloads;
         bool pageChrome, seamless, translucent, fullScreen;
-        internal bool IsForeground { get { return IsHandleCreated && GetForegroundWindow() == Handle; } }
         Rectangle caption;
         Rectangle restoredBounds;
         FormWindowState restoredState;
         Region viewClip;
         string lastGeometry;
-        Color? panel, text;
+        Color? desk, panel, text;
         bool dark;
 
         async System.Threading.Tasks.Task InitializeChrome(CoreWebView2Environment environment)
@@ -73,10 +72,12 @@ namespace PiPocket
 
         void ApplyPalette(System.Collections.Generic.Dictionary<string, object> message)
         {
+            Color? newDesk = ReadColor(BridgeProtocol.Text(message, "background", 7));
             Color? newPanel = ReadColor(BridgeProtocol.Text(message, "panel", 7));
             Color? newText = ReadColor(BridgeProtocol.Text(message, "text", 7));
             object mode;
-            if (!newPanel.HasValue || !newText.HasValue || !message.TryGetValue("dark", out mode) || !(mode is bool)) { return; }
+            if (!newDesk.HasValue || !newPanel.HasValue || !newText.HasValue || !message.TryGetValue("dark", out mode) || !(mode is bool)) { return; }
+            desk = newDesk;
             panel = newPanel;
             text = newText;
             dark = (bool)mode;
@@ -144,11 +145,6 @@ namespace PiPocket
             bool accessible = SystemInformation.HighContrast;
             int immersive = !accessible && dark ? 1 : 0;
             if (DwmSetWindowAttribute(Handle, 20, ref immersive, 4) != 0) { DwmSetWindowAttribute(Handle, 19, ref immersive, 4); }
-            int background = !accessible && panel.HasValue && !seamless ? ColorRef(panel.Value) : -1;
-            int foreground = !accessible && text.HasValue && !seamless ? ColorRef(text.Value) : -1;
-            DwmSetWindowAttribute(Handle, 35, ref background, 4); // DWMWA_CAPTION_COLOR, Win11
-            DwmSetWindowAttribute(Handle, 36, ref foreground, 4);
-
             int backdrop = pageChrome && host.WindowPrefs.seeThrough && !accessible && !fullScreen && AllowsTransparency()
                 ? (host.WindowPrefs.material == "mica" ? 2 : 3) : 1; // DWMSBT_MAINWINDOW / TRANSIENTWINDOW
             var margins = backdrop == 1 ? new Margins { Top = Math.Max(0, caption.Bottom) } : new Margins { Top = -1 };
@@ -161,7 +157,12 @@ namespace PiPocket
                 DwmExtendFrameIntoClientArea(Handle, ref margins);
             }
 
-            BackColor = translucent ? Color.Black : (!accessible ? panel ?? SystemColors.Window : SystemColors.Window);
+            Color? frame = seamless && pageChrome ? desk : panel;
+            int background = !translucent && !accessible && frame.HasValue ? ColorRef(frame.Value) : -1;
+            int foreground = !accessible && text.HasValue ? ColorRef(text.Value) : -1;
+            DwmSetWindowAttribute(Handle, 35, ref background, 4); // DWMWA_CAPTION_COLOR, Win11
+            DwmSetWindowAttribute(Handle, 36, ref foreground, 4);
+            BackColor = translucent ? Color.Black : (!accessible ? frame ?? SystemColors.Window : SystemColors.Window);
             view.DefaultBackgroundColor = translucent ? Color.Transparent : BackColor;
             bool showMenu = !fullScreen && (host.NativeShowMenuBar || altMenu);
             bool showNotice = !fullScreen && remoteNotice.Text.Length > 0;
@@ -204,6 +205,7 @@ namespace PiPocket
         }
 
         bool composition;
+        internal bool IsForeground { get { return IsHandleCreated && GetForegroundWindow() == Handle; } }
 
         async void SendGeometry(string state)
         {
@@ -214,8 +216,12 @@ namespace PiPocket
 
         static int ColorRef(Color color) { return color.R | color.G << 8 | color.B << 16; }
 
-        static bool AllowsTransparency()
+        internal static bool AllowsTransparency()
         {
+            if (Environment.OSVersion.Version.Build < 22621 || SystemInformation.HighContrast) { return false; }
+            bool enabled;
+            if (DwmIsCompositionEnabled(out enabled) != 0 || !enabled) { return false; }
+
             using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
             {
                 return key == null || !Equals(key.GetValue("EnableTransparency"), 0);
@@ -260,12 +266,10 @@ namespace PiPocket
             if (!seamless) { return false; }
             if (message.Msg == 0x0083 && message.WParam != IntPtr.Zero) // WM_NCCALCSIZE
             {
-                Rect original = (Rect)Marshal.PtrToStructure(message.LParam, typeof(Rect));
                 DefWndProc(ref message);
                 Rect client = (Rect)Marshal.PtrToStructure(message.LParam, typeof(Rect));
-                // Keep the system's resize frame and work-area constraints; remove only the caption inset.
-                uint dpi = (uint)Dpi;
-                client.Top = original.Top + GetSystemMetricsForDpi(33, dpi) + GetSystemMetricsForDpi(92, dpi);
+                // Keep the OS-sized frame, including the different maximized work-area inset. Remove only the caption.
+                client.Top -= GetSystemMetricsForDpi(4, (uint)Dpi);
                 Marshal.StructureToPtr(client, message.LParam, false);
                 message.Result = IntPtr.Zero;
                 return true;

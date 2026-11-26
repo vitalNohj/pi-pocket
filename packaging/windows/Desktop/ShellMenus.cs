@@ -151,6 +151,12 @@ namespace PiPocket
 
         protected override bool ProcessCmdKey(ref Message message, Keys key)
         {
+            if (key == (Keys.Alt | Keys.Space))
+            {
+                // Keep the OS window menu even when WebView2 has keyboard focus.
+                SendMessage(Handle, 0x0112, new IntPtr(0xF100), new IntPtr(' '));
+                return true;
+            }
             foreach (ToolStripMenuItem group in desktopMenu.Items)
             {
                 foreach (ToolStripItem item in group.DropDownItems)

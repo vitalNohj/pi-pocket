@@ -15,6 +15,7 @@ public static class NativeWindowFixture {
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr w);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr w, out Rect r);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr w, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr w, ref Point p);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
@@ -79,37 +80,50 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the window fixture' }
     foreach ($chrome in @('system', 'seamless')) {
         @{ titleBar = $chrome } | ConvertTo-Json -Compress | Set-Content $preferences -Encoding utf8NoBOM
+        if (Test-Path $log) { Move-Item -Force $log (Join-Path $env:RUNNER_TEMP "window-before-$chrome.log") }
         $app = Start-Process -FilePath $appExe -PassThru
         Wait-For 'sign in' { (Test-Path $log) -and (Select-String -Quiet -SimpleMatch '/api/me answered 200.' $log) }
         Wait-For 'open the main window' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
         $window = [NativeWindowFixture]::Windows($app.Id)[0]
+        $work = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        [void][NativeWindowFixture]::SetWindowPos($window, [IntPtr]::Zero, ($work.X + 36), ($work.Y + 36), 900, 625, 0x14)
         [void][NativeWindowFixture]::SetForegroundWindow($window)
         Start-Sleep -Seconds 2
         Screenshot "$chrome-light"
         if ($chrome -eq 'seamless') {
-            [NativeWindowFixture]::Click($window, 616, 173)
-            Wait-For 'save the session file without replacing the existing file' { Test-Path $completed }
+            [NativeWindowFixture]::Click($window, 616, 212)
+            Wait-For 'save the session file without replacing the existing file' { Test-Path -LiteralPath $completed }
             if ((Get-Content -Raw $completed).Trim() -ne 'Pi Pocket desktop download fixture' -or
                 (Get-Content -Raw $existing).Trim() -ne 'Keep the existing file') { throw 'The saved file or the existing file is wrong' }
             Screenshot 'download'
             [void][NativeWindowFixture]::SetForegroundWindow($window)
-            [NativeWindowFixture]::Click($window, 752, 173)
+            [NativeWindowFixture]::Click($window, 752, 212)
             Wait-For 'open the Save dialog' { [NativeWindowFixture]::Windows($app.Id).Length -ge 2 }
             Screenshot 'save-dialog'
             [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+            Wait-For 'close the Save dialog' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
             if (Test-Path (Join-Path $downloads 'window-dialog.txt')) { throw 'A general download skipped the dialog' }
         }
         [void][NativeWindowFixture]::SetForegroundWindow($window)
-        [NativeWindowFixture]::Click($window, 480, 173)
-        Wait-For 'open a second window' { [NativeWindowFixture]::Windows($app.Id).Length -eq 2 }
+        [NativeWindowFixture]::Click($window, 344, 212)
         Start-Sleep -Seconds 2
         Screenshot "$chrome-dark"
+        [NativeWindowFixture]::Click($window, 480, 212)
+        Wait-For 'open a second window' { [NativeWindowFixture]::Windows($app.Id).Length -eq 2 }
+        $extra = [NativeWindowFixture]::Windows($app.Id) | Where-Object { $_ -ne $window } | Select-Object -First 1
+        [void][NativeWindowFixture]::SetWindowPos($extra, [IntPtr]::Zero, ($work.X + 340), ($work.Y + 160), 620, 510, 0x14)
+        Start-Sleep -Seconds 2
         Screenshot "$chrome-two-windows"
         Start-Process -FilePath $appExe -ArgumentList '--quit' -Wait
         Wait-For 'quit' { $app.Refresh(); $app.HasExited }
     }
     'System and Seamless; light and dark; a second window; existing name kept; Save dialog cancelled.' |
         Set-Content (Join-Path $out 'assertions.txt')
+} catch {
+    Screenshot 'failure'
+    Get-ChildItem -LiteralPath $downloads -Filter 'window-fixture*' | Select-Object Name, Length | Out-Host
+    if (Test-Path $log) { Select-String -Pattern 'download|/api/me' $log | Out-Host }
+    throw
 } finally {
     if ($app -and -not $app.HasExited) { Start-Process -FilePath $appExe -ArgumentList '--quit' -Wait }
     Move-Item -Force "$page.saved" $page

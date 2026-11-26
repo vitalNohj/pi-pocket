@@ -97,7 +97,14 @@ extension AppDelegate {
         add("Seamless title bar", #selector(selectTitleBar), 1, windowPrefs.seamless)
         add("System title bar", #selector(selectTitleBar), 0, !windowPrefs.seamless)
         menu.addItem(.separator())
-        add("See-through background", #selector(toggleWindowOption), 1, windowPrefs.seeThrough == true)
+        let workspace = NSWorkspace.shared
+        let glass = !workspace.accessibilityDisplayShouldReduceTransparency && !workspace.accessibilityDisplayShouldIncreaseContrast
+        if glass {
+            add("See-through background", #selector(toggleWindowOption), 1, windowPrefs.seeThrough == true)
+        } else {
+            let unavailable = menu.addItem(withTitle: "See-through background (unavailable)", action: nil, keyEquivalent: "")
+            unavailable.isEnabled = false
+        }
         add("Window blur", #selector(selectMaterial), 0, windowPrefs.material == nil || windowPrefs.material == "window")
         add("Sidebar blur", #selector(selectMaterial), 1, windowPrefs.material == "sidebar")
         add("Dark glass", #selector(selectMaterial), 2, windowPrefs.material == "dark")
