@@ -130,6 +130,7 @@ function join(before, words, after) {
  */
 export function useDictation(box, onText, { top = false, place = null } = {}) {
     const [listening, setListening] = useState(false);
+    const [finishing, setFinishing] = useState(false);
     const hear = useRef(onText);
     const where = useRef(place);
     const self = useRef(null);
@@ -150,6 +151,7 @@ export function useDictation(box, onText, { top = false, place = null } = {}) {
                 this.recognition = null;
                 this.finishing = false;
                 setListening(false);
+                setFinishing(false);
 
                 if (current === this) {
                     current = null;
@@ -170,6 +172,7 @@ export function useDictation(box, onText, { top = false, place = null } = {}) {
                 } else if (!this.finishing) {
                     this.finishing = true;
                     setListening(false);
+                    setFinishing(true);
                     recognition.stop();
                 }
 
@@ -391,7 +394,8 @@ export function useDictation(box, onText, { top = false, place = null } = {}) {
                 }
             },
             toggle() {
-                return this.recognition && !this.finishing ? this.stop() : this.start();
+                // The microphone has stopped, but the last phrase can still be decoding.
+                return this.finishing || (this.recognition ? this.stop() : this.start());
             },
         };
     }
@@ -440,6 +444,7 @@ export function useDictation(box, onText, { top = false, place = null } = {}) {
 
     return {
         listening,
+        finishing,
         toggle: () => dictation.toggle(),
         stop: (drop) => dictation.stop(drop),
     };
@@ -462,7 +467,7 @@ export function MicButton({ dictation, class: className = "", size = 17, part, d
         return null;
     }
 
-    const { listening, toggle } = dictation;
+    const { listening, finishing, toggle } = dictation;
 
     return html`<button
         type="button"
@@ -470,8 +475,9 @@ export function MicButton({ dictation, class: className = "", size = 17, part, d
         data-part=${part}
         aria-label="Dictate"
         aria-pressed=${listening ? "true" : "false"}
-        title=${listening ? "Listening: tap to stop (Alt+V)" : "Dictate (Alt+V)"}
-        disabled=${disabled}
+        aria-busy=${finishing ? "true" : "false"}
+        title=${finishing ? "Finishing dictation…" : listening ? "Listening: tap to stop (Alt+V)" : "Dictate (Alt+V)"}
+        disabled=${disabled || finishing}
         onMouseDown=${(event) => event.preventDefault()}
         onClick=${toggle}
     >

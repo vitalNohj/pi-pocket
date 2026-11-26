@@ -493,6 +493,8 @@ jobs:
                   test/npm-update.test.ts
                   test/zip.test.ts
                   test/diff-parse.test.ts
+                  test/dictation.test.ts
+                  test/voice.test.ts
                   test/read-body.test.ts
                   test/quote-text.test.ts
                   test/timing.test.ts

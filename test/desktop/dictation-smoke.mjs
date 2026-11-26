@@ -9,8 +9,12 @@ import { createContext, SourceTextModule } from "node:vm";
 const [manifest, scratch] = process.argv.slice(2);
 
 assert(manifest && scratch, "Pass the installed package.json and a temporary model folder.");
-const bundled = (name) =>
-    pathToFileURL(join(dirname(manifest), "src/server/extensions/dictation", name)).href;
+const installed = (name) => pathToFileURL(join(dirname(manifest), name)).href;
+
+// Use the same type loader as the installed CLI for the package's own TypeScript.
+await import(installed("bin/strip-types.js"));
+
+const bundled = (name) => installed(`src/server/extensions/dictation/${name}`);
 const [{ engineScript, engineBinary }, { ModelCache }, { modelById }, { modelConfig }] =
     await Promise.all(
         ["assets.ts", "model-cache.ts", "catalog.js", "model-config.js"].map(

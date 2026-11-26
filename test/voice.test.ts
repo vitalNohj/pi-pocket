@@ -29,6 +29,7 @@ registerHooks({
 type Result = { 0: { transcript: string }; isFinal: boolean };
 type Recognition = {
     onresult: ((event: { results: Result[] }) => void) | null;
+    onend: (() => void) | null;
     started: boolean;
 };
 type Dictation = { listening: boolean; toggle: () => void; stop: (drop?: boolean) => void };
@@ -212,11 +213,16 @@ test("the offline provider uses the same draft path and never falls back for tha
     assert.equal(local.length, 1);
     local[0]!.onresult!(said(["hello", false]));
     dictation.stop();
+    dictation.toggle();
+    assert.equal(local.length, 1, "a new request must wait for the final result");
     local[0]!.onresult!(said(["hello there", true]));
+    local[0]!.onend!();
     assert.deepEqual(changes, ["Draft: hello", "Draft: hello there"]);
+    dictation.toggle();
+    assert.equal(local.length, 2, "a new request can start after the final result");
 
     remove();
-    assert.equal(local[0]!.onresult, null);
+    assert.equal(local[1]!.onresult, null);
     assert.equal(voice.voiceAvailable(), false);
     assert.equal(voice.toggleDictation(), false);
     assert.equal(recognitions.length, stock);
