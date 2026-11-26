@@ -1709,22 +1709,27 @@ export class Commands {
                 const on = has && sees.includes(path);
                 const by = has ? this.#named(givers[path]) : undefined;
                 const level = app.config.folderLevel(id, person.id, path);
+                // The Access menu offers the levels it can be set to, and the one it has.
+                const levels = FOLDER_LEVELS.filter(
+                    (each) =>
+                        each === level ||
+                        app.policy.maySetLevel(user, id, person, path, level, each),
+                );
 
                 return {
                     path,
                     has,
                     sees: on,
-                    give: !has && uses && app.policy.mayGiveFolder(user, id, path),
+                    // Theirs to be given only when some level of it can be set for them (`maySetLevel`). A viewer
+                    // gets no folder to start sessions in, and one to read only from someone who sees every
+                    // session in it: without that there is nothing to give them, though the folder is `user`'s to
+                    // pass on.
+                    give: !has && uses && levels.length > 1,
                     take: has && app.policy.mayTakeFolder(user, id, person.id, path),
                     see: has && app.policy.maySetSees(user, id, person.id, path, !on),
                     ...(by === undefined ? {} : { by }),
                     level,
-                    // The Access menu offers the levels it can be set to, and the one it has.
-                    levels: FOLDER_LEVELS.filter(
-                        (each) =>
-                            each === level ||
-                            app.policy.maySetLevel(user, id, person, path, level, each),
-                    ),
+                    levels,
                 };
             }),
         };
@@ -1817,9 +1822,8 @@ export class Commands {
             // someone else shared with them, is no reason for a column.
             if (
                 !rows.some((row) => row.give || row.take) &&
-                !folders.some(
-                    (each) => each.give || each.take || each.see || each.levels.length > 1,
-                )
+                // A folder's cell acts only by its Access menu, so only a level to set makes a column.
+                !folders.some((each) => each.levels.length > 1)
             ) {
                 continue;
             }

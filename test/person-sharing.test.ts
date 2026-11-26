@@ -1313,10 +1313,42 @@ test("a computer's grid for someone not in charge of it: each person they can gi
             );
         }
 
-        // Her folder is listed for each: theirs to be given.
-        assert.deepEqual(column?.folders, page.computers[0]?.folders, target.name);
-        assert.equal(column?.folders.length, 1, target.name);
+        // Her folder is listed for each user: theirs to be given.
+        if (target !== vera) {
+            assert.deepEqual(column?.folders, page.computers[0]?.folders, target.name);
+            assert.equal(column?.folders.length, 1, target.name);
+        }
     }
+
+    // A viewer starts nothing, and reads a folder's sessions only from someone who sees every one in it: Lea does
+    // not, so there is no level of her folder to set for Vera. Her page says so, the grid lists no folder for her, and
+    // the server refuses each way of giving it. Vera keeps her column for the sessions that can be shared with her.
+    const veras = app.commands.sharingWith(now(lea), vera.id).computers[0]?.folders[0];
+
+    assert.deepEqual([veras?.has, veras?.give, veras?.levels], [false, false, ["none"]]);
+    assert.deepEqual((await cell(lea, vera))?.folders, []);
+    assert.equal(
+        (
+            await call(lea, `runners/${THIS_SERVER}/give`, {
+                person: vera.id,
+                folder: work,
+                on: true,
+            })
+        ).status,
+        400,
+    );
+
+    for (const level of ["start", "past", "new", "all"]) {
+        const answer = await call(lea, `runners/${THIS_SERVER}/level`, {
+            person: vera.id,
+            folder: work,
+            level,
+        });
+
+        assert.ok(answer.status >= 400, `${level}: ${String(answer.status)}`);
+    }
+
+    assert.deepEqual([...app.config.givenFolders(THIS_SERVER, vera.id)], []);
 
     // Not chosen for it, Nia can be given no folder there: her page says why, and the grid has no column for her.
     assert.match(
