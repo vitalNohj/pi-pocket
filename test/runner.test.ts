@@ -503,24 +503,37 @@ describe("runner link", () => {
         }
     });
 
-    it("a folder lists every entry it can read, without the ones whose lstat fails", async () => {
-        const setup = await serve();
-        const { runner, id } = startRunner(setup, "Monolith");
+    it("a folder lists every entry it can read, without the ones whose lstat fails", async (t) => {
+        if (process.platform === "win32") {
+            return t.skip("Windows file names use UTF-16, not raw bytes");
+        }
+
+        const folder = mkdtempSync(join(root, "home-"));
+
+        mkdirSync(join(folder, "alpha"));
+        mkdirSync(join(folder, "beta"));
+        writeFileSync(join(folder, "notes.txt"), "notes");
 
         try {
-            await until(() => runner.connected, "the runner to connect");
-
-            const folder = mkdtempSync(join(root, "home-"));
-
-            mkdirSync(join(folder, "alpha"));
-            mkdirSync(join(folder, "beta"));
-            writeFileSync(join(folder, "notes.txt"), "notes");
             // A name the daemon cannot lstat: 255 bytes that are not UTF-8 become 765 bytes of U+FFFD, too long for
             // Linux (ENAMETOOLONG), as `nul` on Windows fails with EISDIR.
             writeFileSync(
                 Buffer.concat([Buffer.from(`${folder}/`), Buffer.alloc(255, 0xff)]),
                 "unreadable",
             );
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EILSEQ") {
+                return t.skip("the temporary filesystem rejects invalid UTF-8 file names");
+            }
+
+            throw error;
+        }
+
+        const setup = await serve();
+        const { runner, id } = startRunner(setup, "Monolith");
+
+        try {
+            await until(() => runner.connected, "the runner to connect");
 
             const listed = await setup.runners.folders(id, folder, false);
 
