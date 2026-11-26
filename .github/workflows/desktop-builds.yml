@@ -38,6 +38,10 @@ jobs:
               shell: bash
               run: |
                   source="$RUNNER_TEMP/desktop-source"
+                  if [ "$RUNNER_OS" = Windows ]; then
+                      # Git Bash's tar needs forward slashes; keep the drive letter for Node and npm.
+                      source="$(cygpath -m "$source")"
+                  fi
                   mkdir -p "$source"
                   git archive HEAD | tar -x -C "$source"
 
