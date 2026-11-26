@@ -21,7 +21,7 @@ const exec = promisify(execFile);
 let app;
 
 function start(...args) {
-    return spawn(exe, args, { env: environment, stdio: "ignore", windowsHide: true });
+    return spawn(exe, args, { env: environment, stdio: "ignore" });
 }
 
 async function until(description, condition, timeout = 30_000) {
@@ -43,9 +43,20 @@ const prefs = async () => JSON.parse(await readFile(settings, "utf8")).preferenc
 async function gui(command, title, ...args) {
     const parameters = [String(app.pid), command, title, ...args.map(String)];
 
-    return windows
-        ? exec("pwsh.exe", ["-NoProfile", "-File", input, ...parameters], { timeout: 25_000 })
-        : exec(input, parameters, { timeout: 25_000 });
+    try {
+        return windows
+            ? await exec("pwsh.exe", ["-NoProfile", "-File", input, ...parameters], {
+                  timeout: 60_000,
+                  windowsHide: true,
+              })
+            : await exec(input, parameters, { timeout: 25_000 });
+    } catch (error) {
+        console.error(`Desktop input ${command} failed (app exit: ${app.exitCode}).`);
+        if (error.stderr) {
+            console.error(error.stderr.trim());
+        }
+        throw error;
+    }
 }
 
 async function shot(title, name) {

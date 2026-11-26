@@ -43,7 +43,11 @@ for ($try = 0; $try -lt 60; $try++) {
     if ($window -ne [IntPtr]::Zero) { break }
     Start-Sleep -Milliseconds 300
 }
-if ($window -eq [IntPtr]::Zero) { throw "The installed app did not show '$Title'" }
+if ($window -eq [IntPtr]::Zero) {
+    $process = Get-Process -Id $AppId -ErrorAction SilentlyContinue
+    if ($null -eq $process) { throw "The app exited before it showed '$Title'" }
+    throw "The installed app did not show '$Title'. Main window: $($process.MainWindowHandle) '$($process.MainWindowTitle)'"
+}
 if ($Operation -eq 'find') { return }
 [DesktopInput]::SetForegroundWindow($window) | Out-Null
 Start-Sleep -Milliseconds 180
