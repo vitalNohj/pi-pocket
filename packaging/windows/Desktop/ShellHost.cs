@@ -156,7 +156,7 @@ namespace PiPocket
 
         async Task<object> HandleOperation(string action, object data)
         {
-            PocketWindow front = Form.ActiveForm as PocketWindow ?? window;
+            PocketWindow front = ActivePocketWindow;
             switch (action)
             {
                 case "settings.open": OpenSettings(ShellWire.Text(data, "section")); break;

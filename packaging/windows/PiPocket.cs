@@ -659,13 +659,30 @@ namespace PiPocket
             }
         }
 
+        PocketWindow MakeExtraWindow()
+        {
+            PocketWindow made = new PocketWindow(this, pageAddress, baseIcon, null);
+            popups.Add(made);
+            made.Activated += delegate { if (popups.Remove(made)) { popups.Add(made); } };
+            made.FormClosed += delegate
+            {
+                int generation = pageGeneration;
+                OnUi(delegate { if (generation == pageGeneration && window == null && popups.Count == 0 && settings == null) { Quit(); } });
+            };
+            made.Disposed += delegate { popups.Remove(made); };
+            made.ShowWindow();
+            return made;
+        }
+
+        PocketWindow ActivePocketWindow
+        {
+            get { return Form.ActiveForm as PocketWindow ?? window ?? (popups.Count > 0 ? popups[popups.Count - 1] : null); }
+        }
+
         async Task NewSessionWindow()
         {
             if (!ready || quitting) { return; }
-            PocketWindow made = new PocketWindow(this, pageAddress, baseIcon, null);
-            popups.Add(made);
-            made.Disposed += delegate { popups.Remove(made); };
-            made.ShowWindow();
+            PocketWindow made = MakeExtraWindow();
             try
             {
                 await made.Initialize(SessionWebProfile);
@@ -698,10 +715,7 @@ namespace PiPocket
 
             try
             {
-                popup = new PocketWindow(this, pageAddress, baseIcon, null);
-                popups.Add(popup);
-                popup.Disposed += delegate { popups.Remove(popup); };
-                popup.ShowWindow();
+                popup = MakeExtraWindow();
                 await popup.Initialize(SessionWebProfile);
 
                 if (!quitting && !popup.IsDisposed)

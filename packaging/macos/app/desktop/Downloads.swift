@@ -61,7 +61,7 @@ final class WindowDownloads: NSObject, WKDownloadDelegate {
 
     private func prepare(_ download: WKDownload, destination: URL, completion: (URL?) -> Void) {
         let parent = destination.deletingLastPathComponent()
-        var template = parent.appendingPathComponent(".pi-pocket-download-XXXXXX").path.utf8CString
+        var template = Array(parent.appendingPathComponent(".pi-pocket-download-XXXXXX").path.utf8CString)
         guard var request = requests[download], mkdtemp(&template) != nil else {
             requests.removeValue(forKey: download)
             log("Could not reserve a location for the download.")

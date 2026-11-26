@@ -407,8 +407,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     // The view of the window in front: the main one, or a page's own window.
     var frontView: WKWebView? {
-        let key = NSApp.keyWindow as? PocketNativeWindow
-        return key?.chrome?.webView ?? webView ?? popups.keys.compactMap { ($0 as? PocketNativeWindow)?.chrome?.webView }.first
+        (NSApp.keyWindow as? PocketNativeWindow)?.chrome?.webView ?? primaryEventView
+    }
+
+    var primaryEventView: WKWebView? {
+        webView ?? NSApp.orderedWindows.lazy.compactMap { ($0 as? PocketNativeWindow)?.chrome?.webView }.first
     }
 
     @objc func reload() {
@@ -492,11 +495,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         guard let closing = notification.object as? PocketNativeWindow else { return }
         if let view = closing.chrome?.webView { sessionBridge.remove(view) }
         guard closing === window else { return }
+        visibilityChanged(visible: false)
         closing.saveFrame(usingName: "Pi Pocket")
         webView = nil
         window = nil
         notice = nil
-        report("visibility", false)
         if popups.isEmpty && settings == nil { NSApp.terminate(nil) }
     }
 
