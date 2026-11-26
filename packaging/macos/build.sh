@@ -161,13 +161,17 @@ grep -q "^let appVersion = \"$version\"" "$work/main.swift"
 
 for arch in arm64 x86_64; do
     swiftc -O -swift-version 5 -target "$arch-apple-macos13.5" -framework Cocoa -framework WebKit \
-        -framework UserNotifications -o "$work/app-$arch" "$work/main.swift"
+        -framework UserNotifications -o "$work/app-$arch" "$work/main.swift" "$here"/app/desktop/*.swift
 done
 
 lipo -create "$work/app-arm64" "$work/app-x86_64" -output "$bundle/MacOS/Pi Pocket"
 chmod 755 "$bundle/MacOS/Pi Pocket"
 lipo -info "$bundle/MacOS/Pi Pocket"
 cp "$work/pi-pocket.icns" "$bundle/Resources/pi-pocket.icns"
+mkdir "$bundle/Resources/desktop-assets"
+for name in controller protocol settings; do
+    cp -R "$repo/packaging/desktop/$name" "$bundle/Resources/desktop-assets/"
+done
 if [ -n "${APP_SIGN_IDENTITY:-}" ]; then
     codesign --force --sign "$APP_SIGN_IDENTITY" --options runtime --timestamp "$root/Pi Pocket.app"
 else

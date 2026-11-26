@@ -244,7 +244,7 @@ namespace PiPocket
         }
     }
 
-    sealed class TrayApp : ApplicationContext
+    sealed partial class TrayApp : ApplicationContext
     {
         readonly string appDir = Path.GetDirectoryName(Application.ExecutablePath);
         readonly string dataDir;
@@ -253,9 +253,6 @@ namespace PiPocket
             "Pi Pocket", "WebView2 profile");
         readonly object logLock = new object();
         readonly NotifyIcon tray = new NotifyIcon();
-        readonly ToolStripMenuItem openItem = new ToolStripMenuItem("Open Pi Pocket");
-        readonly ToolStripMenuItem restartItem = new ToolStripMenuItem("Restart server");
-        readonly ToolStripMenuItem quitItem = new ToolStripMenuItem("Quit Pi Pocket");
         readonly Control ui = new Control();
         readonly EventWaitHandle openEvent;
         readonly EventWaitHandle quitEvent;
@@ -266,7 +263,7 @@ namespace PiPocket
         string url;
         bool ready;
         bool openWhenReady;
-        bool quitting;
+        volatile bool quitting;
         bool openingWindow;
         bool edgeFallback;
         CoreWebView2Environment webEnvironment;
@@ -294,18 +291,7 @@ namespace PiPocket
                 ? new Icon(icon, SystemInformation.SmallIconSize)
                 : Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             tray.Text = "Pi Pocket (starting)";
-            openItem.Font = new Font(openItem.Font, FontStyle.Bold);
-            openItem.Enabled = false;
-            restartItem.Enabled = false;
-            openItem.Click += delegate { OpenWindow(); };
-            restartItem.Click += delegate { Restart(); };
-            quitItem.Click += delegate { Quit(); };
-            ContextMenuStrip menu = new ContextMenuStrip();
-            menu.Items.Add(openItem);
-            menu.Items.Add(restartItem);
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(quitItem);
-            tray.ContextMenuStrip = menu;
+            MakeTrayMenu();
             tray.MouseClick += delegate (object sender, MouseEventArgs e)
             {
                 if (e.Button == MouseButtons.Left)
@@ -346,9 +332,7 @@ namespace PiPocket
             listener.IsBackground = true;
             listener.Start();
 
-            Thread start = new Thread(Start);
-            start.IsBackground = true;
-            start.Start();
+            OnUi(StartShell);
         }
 
         void OnUi(MethodInvoker action)
@@ -374,129 +358,9 @@ namespace PiPocket
             }
         }
 
-        void Start()
-        {
-            try
-            {
-                OpenLog();
-                string running = RunningUrl(-1);
-
-                if (running != null)
-                {
-                    // Another launcher runs it, such as Pi Pocket (console): use it, and leave it running on Quit.
-                    url = running;
-                    OnUi(delegate { Ready(); });
-
-                    return;
-                }
-
-                string[] problem = PackageProblem();
-
-                if (problem != null)
-                {
-                    OnUi(delegate { Fail(problem[0], problem[1]); });
-
-                    return;
-                }
-
-                StartLauncher();
-                Stopwatch waited = Stopwatch.StartNew();
-
-                // An update that does not start can take the launcher 5 minutes to undo.
-                while (waited.Elapsed.TotalMinutes < 6)
-                {
-                    if (launcher.HasExited)
-                    {
-                        return;
-                    }
-
-                    running = RunningUrl(launcher.Id);
-
-                    if (running != null)
-                    {
-                        url = running;
-                        OnUi(delegate { Ready(); });
-
-                        return;
-                    }
-
-                    Thread.Sleep(250);
-                }
-
-                OnUi(delegate { Fail("Pi Pocket did not get ready in 6 minutes."); });
-            }
-            catch (Exception error)
-            {
-                OnUi(delegate { Fail("Pi Pocket could not start: " + error.Message); });
-            }
-        }
-
-        string RunningUrl(int pid)
-        {
-            string file = Path.Combine(dataDir, "launcher-running.json");
-
-            if (!File.Exists(file))
-            {
-                return null;
-            }
-
-            Dictionary<string, object> running;
-
-            try
-            {
-                running = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(file));
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-
-            object value;
-            int found = running.TryGetValue("pid", out value) && value is int ? (int)value : 0;
-            string address = running.TryGetValue("url", out value) ? value as string : null;
-
-            Uri local;
-
-            if (found == 0 || (pid != -1 && found != pid) ||
-                !Uri.TryCreate(address, UriKind.Absolute, out local) || !local.IsLoopback ||
-                (local.Scheme != Uri.UriSchemeHttp && local.Scheme != Uri.UriSchemeHttps) ||
-                local.UserInfo.Length != 0 || local.PathAndQuery != "/" || local.Fragment.Length != 0)
-            {
-                return null;
-            }
-
-            address = local.GetLeftPart(UriPartial.Authority);
-
-            try
-            {
-                using (Process process = Process.GetProcessById(found))
-                {
-                    if (process.HasExited)
-                    {
-                        return null;
-                    }
-                }
-            }
-            catch (Exception)
-            {
-                // Gone, or the number is another user's process now: the check below decides either way.
-                return null;
-            }
-
-            try
-            {
-                string info = Request("GET", address + "/api/pocket/info", null);
-
-                return info.Contains("\"pi-pocket\"") ? address : null;
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-        }
-
         void OpenLog()
         {
+            if (log != null) { return; }
             try
             {
                 if (File.Exists(logFile))
@@ -609,7 +473,11 @@ namespace PiPocket
                     Log(e.Data);
                 }
             };
-            launcher.Exited += delegate { OnUi(LauncherExited); };
+            launcher.Exited += delegate (object sender, EventArgs args)
+            {
+                Process ended = (Process)sender;
+                OnUi(delegate { LauncherExited(ended); });
+            };
             launcher.Start();
             // At once, before the launcher starts the server: the server and every command that it runs join the job.
             AddToJob(launcher);
@@ -645,75 +513,13 @@ namespace PiPocket
             }
         }
 
-        void Ready()
+        void LauncherExited(Process ended)
         {
-            if (quitting)
-            {
-                return;
-            }
-
-            ready = true;
-            UpdateTrayText();
-            openItem.Enabled = true;
-            restartItem.Enabled = true;
-
-            if (openWhenReady)
-            {
-                OpenWindow();
-            }
-        }
-
-        void LauncherExited()
-        {
-            if (quitting)
-            {
-                return;
-            }
-
-            int code = launcher.ExitCode;
-
-            if (code == 0)
-            {
-                Exit();
-
-                return;
-            }
-
-            Fail((ready ? "Pi Pocket stopped" : "Pi Pocket could not start") + " (exit code " + code + ").");
-        }
-
-        void Fail(string message)
-        {
-            Fail(message, launcher == null ? null : "The details are in " + logFile);
-        }
-
-        void Fail(string message, string advice)
-        {
-            if (quitting)
-            {
-                return;
-            }
-
-            quitting = true;
-            tray.Visible = false;
-            Log("Error: " + message + (advice == null ? "" : " " + advice));
-            MessageBox.Show(message + (advice == null ? "" : "\r\n\r\n" + advice), "Pi Pocket", MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
-            Stop();
-        }
-
-        void Restart()
-        {
-            try
-            {
-                Request("POST", url + "/api/restart", OwnerToken());
-                ShowBalloon("Pi Pocket", "The server restarts. Running work continues.", ToolTipIcon.Info, null);
-            }
-            catch (Exception)
-            {
-                // No error text: a malformed config.json can put its content, the owner token, in the message.
-                ShowBalloon("Pi Pocket", "Could not restart the server.", ToolTipIcon.Warning, null);
-            }
+            if (quitting || stoppingLocal || ended != launcher) { return; }
+            int code = ended.ExitCode;
+            string message = "The local launcher stopped (exit code " + code + "). Check the server log.";
+            Log(message);
+            Report("local", Local("error", false, false, null, message));
         }
 
         void Quit()
@@ -730,16 +536,14 @@ namespace PiPocket
 
         void Stop()
         {
+            if (controller != null) { controller.Dispose(); }
+            if (settings != null) { settings.Dispose(); }
             CloseWindows();
             Thread stop = new Thread(delegate ()
             {
                 try
                 {
-                    if (launcher != null && !launcher.HasExited)
-                    {
-                        launcher.StandardInput.Close();
-                        launcher.WaitForExit(20000);
-                    }
+                    StopLocal();
                 }
                 catch (Exception)
                 {
@@ -781,7 +585,7 @@ namespace PiPocket
             if (!ready)
             {
                 openWhenReady = true;
-
+                OpenSettings("home");
                 return;
             }
 
@@ -805,76 +609,69 @@ namespace PiPocket
             }
 
             openingWindow = true;
+            int generation = pageGeneration;
+            PocketWindow made = null;
 
             try
             {
                 if (webEnvironment == null)
                 {
-                    // This reports a missing Runtime as WebView2RuntimeNotFoundException.
-                    CoreWebView2Environment.GetAvailableBrowserVersionString(null);
-                    webEnvironment = await CoreWebView2Environment.CreateAsync(null, webProfile);
+                    CoreWebView2Environment environment = await CoreWebView2Environment.CreateAsync(null,
+                        localPage ? webProfile : Path.Combine(stateFolder, "Remote WebView2"));
+                    if (quitting || generation != pageGeneration) { return; }
+                    webEnvironment = environment;
                 }
 
-                if (quitting)
-                {
-                    return;
-                }
-
-                PocketWindow made = new PocketWindow(this, url, tray.Icon, Path.Combine(appDir, "window-bounds.txt"));
+                if (quitting || generation != pageGeneration) { return; }
+                made = new PocketWindow(this, url, tray.Icon, Path.Combine(appDir, "window-bounds.txt"));
                 window = made;
+                made.Disposed += delegate { if (window == made) { window = null; } };
                 made.ShowWindow();
+                if (pendingSession) { pendingSession = false; made.NewSession(); }
                 await made.Initialize(webEnvironment);
-
-                if (!quitting)
-                {
-                    string target = await Task.Run((Func<string>)SignInAddress);
-
-                    if (!quitting)
-                    {
-                        made.Browser.Navigate(target);
-                    }
-                }
+                if (quitting || made.IsDisposed || generation != pageGeneration) { return; }
+                string target = localPage ? await Task.Run(() => LocalSignInAddress(url, localPid)) : pageAddress;
+                if (!quitting && !made.IsDisposed && generation == pageGeneration) { made.Browser.Navigate(target); }
             }
             catch (WebView2RuntimeNotFoundException)
             {
-                CloseWindows();
-                edgeFallback = true;
-                Log("The WebView2 Runtime is missing. Opening Pi Pocket in Microsoft Edge instead.");
-
-                if (!quitting)
+                if (generation == pageGeneration && !quitting)
                 {
+                    CloseWindows();
+                    edgeFallback = true;
+                    Log("The WebView2 Runtime is missing. Opening Pi Pocket in Microsoft Edge instead.");
                     OpenEdge();
                 }
             }
             catch (Exception error)
             {
-                CloseWindows();
-
-                if (!quitting)
+                if (generation == pageGeneration && !quitting)
                 {
-                    Log("Could not open the WebView2 window (" + error.GetType().Name + ", 0x" + error.HResult.ToString("X8") + ").");
-                    ShowBalloon("Pi Pocket", "Could not open the window. See launcher.log in the install folder.", ToolTipIcon.Warning, null);
+                    CloseWindows();
+                    Log("Could not open the WebView2 window (" + error.GetType().Name + ").");
+                    OpenSettings("home");
                 }
             }
             finally
             {
                 openingWindow = false;
+                if (!quitting && ready && generation != pageGeneration && window == null) { OpenWindow(); }
             }
         }
 
-        string SignInAddress()
+        async Task NewSessionWindow()
         {
+            if (webEnvironment == null || !ready || quitting) { return; }
+            PocketWindow made = new PocketWindow(this, url, tray.Icon, null);
+            popups.Add(made);
+            made.Disposed += delegate { popups.Remove(made); };
+            made.ShowWindow();
             try
             {
-                return url + SignInPath();
+                await made.Initialize(webEnvironment);
+                if (!quitting && !made.IsDisposed) { made.Browser.Navigate(pageAddress); }
             }
-            catch (Exception)
-            {
-                // No error text: a malformed config.json can put the owner token in the message.
-                Log("No one-time sign-in link.");
-
-                return url + "/";
-            }
+            catch (Exception) { made.Dispose(); }
         }
 
         internal async void NewWindowRequested(object sender, CoreWebView2NewWindowRequestedEventArgs args)
@@ -971,7 +768,7 @@ namespace PiPocket
 
         void UpdateTrayText()
         {
-            string name = launcher == null ? "Pi Pocket (started by another launcher)" : "Pi Pocket";
+            string name = localPage && launcher == null ? "Pi Pocket (started by another launcher)" : "Pi Pocket";
             tray.Text = badge > 0 ? name + " (" + badge + " need you)" : name;
         }
 
@@ -979,7 +776,7 @@ namespace PiPocket
         {
             Uri target;
 
-            if (!quitting && Uri.TryCreate(new Uri(url), address, out target) && PocketWindow.IsServerAddress(target.AbsoluteUri, url))
+            if (!quitting && NotificationsEnabled && url != null && Uri.TryCreate(new Uri(url), address, out target) && PocketWindow.IsServerAddress(target.AbsoluteUri, url))
             {
                 ShowBalloon(title, body, ToolTipIcon.Info, target.PathAndQuery);
             }
@@ -1025,7 +822,7 @@ namespace PiPocket
             }
 
             // The shell starts Edge with an address on its command line. Never give it a credential or a sign-in code.
-            string target = url + "/";
+            string target = pageAddress;
             string msedge = FindEdge();
 
             if (msedge != null)
@@ -1164,21 +961,6 @@ namespace PiPocket
             return (string)token;
         }
 
-        string SignInPath()
-        {
-            string answer = Request("POST", url + "/api/sign-in-link", OwnerToken());
-            Dictionary<string, object> link = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(answer);
-            object path;
-
-            if (!link.TryGetValue("path", out path) || !(path is string) ||
-                !((string)path).StartsWith("/login?once=", StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("The server gave no sign-in link");
-            }
-
-            return (string)path;
-        }
-
 /// Never through a proxy.
         static string Request(string method, string address, string token)
         {
@@ -1210,7 +992,10 @@ namespace PiPocket
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
             {
-                return reader.ReadToEnd();
+                char[] text = new char[16385];
+                int size = reader.ReadBlock(text, 0, text.Length);
+                if (size == text.Length) { throw new InvalidDataException("The local server response is too large."); }
+                return new string(text, 0, size);
             }
         }
 

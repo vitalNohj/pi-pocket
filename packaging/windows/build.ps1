@@ -92,15 +92,20 @@ $source = $source.Replace('NumericVersion = "0.0.0.0"', "NumericVersion = `"$num
 $sourceFile = Join-Path $desktop "PiPocket.cs"
 [IO.File]::WriteAllText($sourceFile, $source, (New-Object Text.UTF8Encoding $false))
 $appExe = Join-Path $desktop "Pi Pocket.exe"
-& $csc /nologo /target:winexe /optimize+ /platform:x64 /warnaserror+ `
+$adapters = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter *.cs -File | ForEach-Object FullName)
+& $csc /nologo /target:winexe /optimize+ /platform:x64 /warnaserror+ /codepage:65001 `
     "/win32icon:$(Join-Path $PSScriptRoot 'pi-pocket.ico')" "/win32manifest:$(Join-Path $PSScriptRoot 'PiPocket.manifest')" `
     /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll "/r:$webCore" "/r:$webForms" `
-    "/out:$appExe" $sourceFile (Join-Path $PSScriptRoot "PocketWindow.cs")
+    "/out:$appExe" $sourceFile (Join-Path $PSScriptRoot "PocketWindow.cs") @adapters
 
 if ($LASTEXITCODE -ne 0) {
     throw "csc exited with $LASTEXITCODE"
 }
 
+$assets = New-Item -ItemType Directory (Join-Path $desktop "desktop-assets")
+foreach ($name in @("controller", "protocol", "settings")) {
+    Copy-Item -Recurse (Join-Path $PSScriptRoot "..\desktop\$name") $assets.FullName
+}
 Write-Host "Built $appExe"
 
 $innoSetup = Join-Path $work "innosetup-$InnoVersion-x64.exe"

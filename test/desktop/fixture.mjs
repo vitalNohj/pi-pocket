@@ -23,7 +23,14 @@ export async function fixture({ prefix = "/pocket", mode = "pocket" } = {}) {
             send(
                 200,
                 "text/html",
-                "<!doctype html><title>Fixture Pi Pocket</title><h1>Fixture Pi Pocket</h1>",
+                `<!doctype html><title>Fixture Pi Pocket</title>
+                <meta charset="utf-8"><style>body{background:#eef2f9;color:#17243e;font:18px system-ui;padding:3rem}</style>
+                <h1>Pi Pocket fixture server</h1><p>This page runs in the installed app.</p>
+                <script>
+                    const isolated = typeof window.desktopSettings === 'undefined' &&
+                        !window.webkit?.messageHandlers.desktopSettings && window.pocketHost?.apiVersion === 1;
+                    fetch(location.pathname.replace(/\\/$/, '') + (isolated ? '/page-only' : '/bad-bridge'));
+                </script>`,
             );
         } else {
             send(404, "application/json", "{}");
