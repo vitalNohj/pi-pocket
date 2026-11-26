@@ -177,10 +177,29 @@ plutil -lint "$bundle/Info.plist"
 sed -e "s/^let appVersion = \"0.0.0-dev\"/let appVersion = \"$version\"/" "$here/app/main.swift" > "$work/main.swift"
 grep -q "^let appVersion = \"$version\"" "$work/main.swift"
 
+runner_source="$here/app/desktop/ProcessesRunner.swift"
+app_sources=()
+for source in "$here"/app/desktop/*.swift; do
+    if [ "$source" != "$runner_source" ]; then
+        app_sources+=("$source")
+    fi
+done
+
 for arch in arm64 x86_64; do
     swiftc -O -swift-version 5 -target "$arch-apple-macos13.5" -framework Cocoa -framework WebKit \
-        -framework UserNotifications -framework Carbon -o "$work/app-$arch" "$work/main.swift" "$here"/app/desktop/*.swift
+        -framework UserNotifications -framework Carbon -o "$work/app-$arch" "$work/main.swift" "${app_sources[@]}"
+    swiftc -O -swift-version 5 -parse-as-library -target "$arch-apple-macos13.5" \
+        -o "$work/runner-host-$arch" "$runner_source"
 done
+
+lipo -create "$work/runner-host-arm64" "$work/runner-host-x86_64" -output "$root/runner-host"
+chmod 755 "$root/runner-host"
+if [ -n "${APP_SIGN_IDENTITY:-}" ]; then
+    codesign --force --sign "$APP_SIGN_IDENTITY" --options runtime --timestamp "$root/runner-host"
+else
+    codesign --force --sign - --timestamp=none "$root/runner-host"
+fi
+codesign --verify --strict --all-architectures "$root/runner-host"
 
 lipo -create "$work/app-arm64" "$work/app-x86_64" -output "$bundle/MacOS/Pi Pocket"
 chmod 755 "$bundle/MacOS/Pi Pocket"

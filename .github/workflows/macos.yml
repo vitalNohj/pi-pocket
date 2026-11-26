@@ -161,6 +161,10 @@ jobs:
                       exit 1
                   fi
 
+            - name: Test the installed runner without npm
+              run: |
+                  "$APP/node/bin/node" test/desktop/runner-installed.mjs
+
             - name: Test offline Settings and the two-choice Home in the installed app
               run: |
                   swiftc test/desktop/window-input.swift -o "$RUNNER_TEMP/desktop-input"

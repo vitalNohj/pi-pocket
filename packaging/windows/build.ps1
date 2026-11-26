@@ -128,7 +128,9 @@ if (-not (Test-Path -LiteralPath $interopFacade -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $interopFacade -PathType Leaf)) {
     throw "The .NET Framework $interopName reference is missing. Install the .NET Framework 4.8 targeting pack."
 }
-$desktopSources = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter '*.cs' -File | ForEach-Object FullName)
+$runnerSource = Join-Path $PSScriptRoot "Desktop\ProcessesRunner.cs"
+$desktopSources = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter '*.cs' -File |
+    Where-Object FullName -ne $runnerSource | ForEach-Object FullName)
 $bootstrap = Join-Path $PSScriptRoot "..\desktop\bridge\bootstrap.js"
 $windowScript = Join-Path $PSScriptRoot '..\desktop\window\host.js'
 # The .NET 4.8 targeting pack's fallback facade can have a newer version than the WinRT contract reference.
@@ -161,6 +163,14 @@ if ($TestBridge) {
     if ($LASTEXITCODE -ne 0) { throw "Bridge tests exited with $LASTEXITCODE" }
 }
 
+$runnerHost = Join-Path $desktop "runner-host.exe"
+& $csc /nologo /target:exe /optimize+ /platform:x64 /warnaserror+ `
+    "/out:$runnerHost" $runnerSource
+
+if ($LASTEXITCODE -ne 0) {
+    throw "csc could not build the runner process adapter"
+}
+
 $innoSetup = Join-Path $work "innosetup-$InnoVersion-x64.exe"
 $innoDir = Join-Path $work "inno"
 Get-Checked "https://github.com/jrsoftware/issrc/releases/download/is-$($InnoVersion.Replace('.', '_'))/innosetup-$InnoVersion-x64.exe" $innoSetup $InnoSha256
@@ -191,10 +201,11 @@ if ($SignThumbprint -ne "") {
         throw "No signtool.exe in $kits"
     }
 
-    & $signtool.FullName sign /sha1 $SignThumbprint /fd sha256 /tr http://timestamp.digicert.com /td sha256 $appExe
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "signtool could not sign $appExe"
+    foreach ($exe in @($appExe, $runnerHost)) {
+        & $signtool.FullName sign /sha1 $SignThumbprint /fd sha256 /tr http://timestamp.digicert.com /td sha256 $exe
+        if ($LASTEXITCODE -ne 0) {
+            throw "signtool could not sign $exe"
+        }
     }
 
     # ISCC puts a quote for each `$q and the quoted file name for `$f.

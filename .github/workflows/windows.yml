@@ -116,6 +116,11 @@ jobs:
                   if (Test-Path $startup) { throw "The sign-in shortcut is there, but its task is off by default" }
                   & (Join-Path $env:APP "node\node.exe") --version
 
+            - name: Test the installed runner without npm
+              run: |
+                  & (Join-Path $env:APP "node\node.exe") test/desktop/runner-installed.mjs
+                  if ($LASTEXITCODE -ne 0) { throw "The installed runner smoke test failed" }
+
             - name: Test offline Settings and the two-choice Home in the installed app
               run: |
                   $driver = Join-Path $env:RUNNER_TEMP 'window-input.exe'

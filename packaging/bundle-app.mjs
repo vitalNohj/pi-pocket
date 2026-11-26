@@ -5,7 +5,16 @@
 // The tree must be the same on every platform (the macOS package is one for both kinds of Mac): the check fails on a
 // package for one platform only.
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+    existsSync,
+    lstatSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+} from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -115,6 +124,22 @@ function npm(args, cwd, env) {
     return result.stdout;
 }
 
+function checkRunner(prefix, source, files) {
+    const app = packageFolder(prefix);
+    const runner = join(dirname(app), "pi-pocket-runner");
+    const entry = createRequire(join(app, "package.json")).resolve("pi-pocket-runner/main");
+
+    if (!lstatSync(runner).isDirectory() || entry !== join(realpathSync(runner), "main.js")) {
+        throw new Error("Pi Pocket does not resolve the bundled workspace runner");
+    }
+
+    for (const { path } of files) {
+        if (!readFileSync(join(source, path)).equals(readFileSync(join(runner, path)))) {
+            throw new Error(`The bundled runner's ${path} differs from the checkout`);
+        }
+    }
+}
+
 function main() {
     const [checkout, prefixArgument, version] = process.argv.slice(2);
 
@@ -137,13 +162,27 @@ function main() {
         const packed = JSON.parse(
             npm(["pack", "--json", "--pack-destination", work], resolve(checkout), env),
         );
-        const tarball = join(work, packed[0].filename);
+        const runnerSource = resolve(checkout, "packages", "runner");
+        const [runner] = JSON.parse(
+            npm(["pack", "--json", "--pack-destination", work, runnerSource], work, env),
+        );
 
+        // The app's shrinkwrap points to a workspace that is not in the app tarball. Install the local runner as an
+        // explicit sibling so npm cannot silently omit it, or pick a registry package at the same version.
         rmSync(prefix, { recursive: true, force: true });
-        npm(["install", "--global", "--omit=dev", "--ignore-scripts", tarball], work, {
-            ...env,
-            NPM_CONFIG_PREFIX: prefix,
-        });
+        npm(
+            [
+                "install",
+                "--global",
+                "--omit=dev",
+                "--ignore-scripts",
+                join(work, packed[0].filename),
+                join(work, runner.filename),
+            ],
+            work,
+            { ...env, NPM_CONFIG_PREFIX: prefix },
+        );
+        checkRunner(prefix, runnerSource, runner.files);
         const problems = checkApp(prefix, version);
 
         if (problems.length > 0) {

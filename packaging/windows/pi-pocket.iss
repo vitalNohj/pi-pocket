@@ -86,6 +86,7 @@ Source: "{#NodeDir}\*"; DestDir: "{app}\node"; Flags: ignoreversion recursesubdi
 Source: "{#AppDir}\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs; Check: ReplaceApp
 #endif
 Source: "{#DesktopDir}\Pi Pocket.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DesktopDir}\runner-host.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\Microsoft.Web.WebView2.Core.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
