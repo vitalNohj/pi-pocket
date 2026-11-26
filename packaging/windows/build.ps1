@@ -97,18 +97,27 @@ $source = $source.Replace('NumericVersion = "0.0.0.0"', "NumericVersion = `"$num
 $sourceFile = Join-Path $desktop "PiPocket.cs"
 [IO.File]::WriteAllText($sourceFile, $source, (New-Object Text.UTF8Encoding $false))
 $appExe = Join-Path $desktop "Pi Pocket.exe"
-# Use the installed Windows SDK metadata. Windows provides the WinRT implementation at run time.
-$sdk = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\UnionMetadata"
-$winmd = Get-ChildItem $sdk -Filter Windows.winmd -File -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
-if (-not $winmd) { throw "Install the Windows 10 or 11 SDK to build native notifications." }
+# Reference the contracts directly. Recent Windows.winmd files forward these types to the SDK contracts.
+$sdkReferences = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\References'
+$contracts = @('Windows.Foundation.FoundationContract', 'Windows.Foundation.UniversalApiContract')
+$sdk = Get-ChildItem $sdkReferences -Directory | Where-Object {
+    (Test-Path (Join-Path $_.FullName $contracts[0])) -and (Test-Path (Join-Path $_.FullName $contracts[1]))
+} | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+if (-not $sdk) { throw 'Install the Windows 10 or 11 SDK to build native notifications.' }
+$contractReferences = foreach ($contract in $contracts) {
+    $file = Get-ChildItem (Join-Path $sdk.FullName $contract) -Filter "$contract.winmd" -File -Recurse |
+        Sort-Object { [version]$_.Directory.Name } -Descending | Select-Object -First 1
+    if (-not $file) { throw "The Windows SDK is missing $contract.winmd." }
+    "/r:$($file.FullName)"
+}
 $desktopSources = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter '*.cs' -File | ForEach-Object FullName)
 $bootstrap = Join-Path $PSScriptRoot "..\desktop\bridge\bootstrap.js"
 $compile = @(
     '/nologo', '/optimize+', '/platform:x64', '/warnaserror+', '/codepage:65001',
     '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll', '/r:System.Xml.Linq.dll',
-    '/r:System.Runtime.WindowsRuntime.dll', "/r:$($winmd.FullName)", "/r:$webCore", "/r:$webForms",
+    '/r:System.Runtime.WindowsRuntime.dll', "/r:$webCore", "/r:$webForms",
     "/resource:$bootstrap,PocketBridge.js", $sourceFile, (Join-Path $PSScriptRoot 'PocketWindow.cs')
-) + $desktopSources
+) + $contractReferences + $desktopSources
 & $csc /target:winexe "/out:$appExe" "/win32icon:$(Join-Path $PSScriptRoot 'pi-pocket.ico')" `
     "/win32manifest:$(Join-Path $PSScriptRoot 'PiPocket.manifest')" @compile
 
