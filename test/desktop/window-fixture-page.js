@@ -1,14 +1,18 @@
 // This script replaces app.js in the CI package only. It renders a real Window Controls Overlay surface.
 const root = document.documentElement;
-const mode = new URLSearchParams(location.search).get("mode") === "dark" ? "dark" : "light";
+let dark = new URLSearchParams(location.search).get("mode") === "dark";
 
-root.dataset.mode = mode;
 root.dataset.tiling = "on";
-root.style.setProperty("--o-bg", mode === "dark" ? "#212833" : "#f5f1e9");
-root.style.setProperty("--o-bg-darker", mode === "dark" ? "#171c25" : "#e3dccd");
-root.style.setProperty("--o-fg", mode === "dark" ? "#d7e0ea" : "#25303b");
-root.style.setProperty("--o-fg-bright", mode === "dark" ? "#f5f7fa" : "#182330");
-root.style.setProperty("--o-accent", mode === "dark" ? "#87c9b0" : "#195a48");
+
+function showTheme() {
+    root.dataset.mode = dark ? "dark" : "light";
+    root.style.setProperty("--o-bg", dark ? "#212833" : "#f5f1e9");
+    root.style.setProperty("--o-bg-darker", dark ? "#171c25" : "#e3dccd");
+    root.style.setProperty("--o-fg", dark ? "#d7e0ea" : "#25303b");
+    root.style.setProperty("--o-fg-bright", dark ? "#f5f7fa" : "#182330");
+    root.style.setProperty("--o-accent", dark ? "#87c9b0" : "#195a48");
+    document.querySelector(".topbar").textContent = `Pi Pocket · ${dark ? "Dark" : "Light"}`;
+}
 
 const style = document.createElement("style");
 
@@ -27,7 +31,7 @@ document.body.innerHTML = `
     <div id="app" class="fixture layout">
         <aside class="home-list window"><h2>Sessions</h2><p>Native window fixture</p><p>Installer smoke</p></aside>
         <section class="window">
-            <header class="topbar">Pi Pocket · ${mode === "dark" ? "Dark" : "Light"}</header>
+            <header class="topbar"></header>
             <main>
                 <h1>Window actions</h1>
                 <p>System buttons · Page controls · File downloads</p>
@@ -42,19 +46,21 @@ document.body.innerHTML = `
     </div>
 `;
 
+showTheme();
 await import("/window-controls.js");
-const other = new URL("?mode=dark", location.href);
-
-document.querySelector("#theme").addEventListener("click", () => location.assign(other));
+document.querySelector("#theme").addEventListener("click", () => {
+    dark = !dark;
+    showTheme();
+});
 document.querySelector("#extra").addEventListener("click", () => {
-    window.open(new URL(`?mode=${mode === "dark" ? "light" : "dark"}`, location.href), "_blank");
+    window.open(new URL(`?mode=${dark ? "light" : "dark"}`, location.href), "_blank");
 });
 document.querySelector("#save").href = URL.createObjectURL(
     new Blob(["A different download\n"], { type: "text/plain" }),
 );
 
 // Use the installed server's real session route, file access checks, and Content-Disposition. No model runs.
-if (mode === "light") {
+if (!dark) {
     const response = await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Pocket": "1" },

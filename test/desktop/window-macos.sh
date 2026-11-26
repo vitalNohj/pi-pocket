@@ -32,18 +32,27 @@ cleanup() {
 trap cleanup EXIT
 node "$here/window-fixture.mjs" "$MANIFEST" "$RUNNER_TEMP/window-files"
 
+wait_for() {
+    local stage="$1" tries="$2"
+    shift 2
+    for _ in $(seq 1 "$tries"); do
+        if "$@"; then return; fi
+        sleep 1
+    done
+    echo "The $chrome window did not $stage." >&2
+    return 1
+}
+
+has_windows() { [ "$("$driver" "$pid" count)" = "$1" ]; }
+signed_in() { grep -q 'The window is signed in.' "$LOG" 2>/dev/null && has_windows 1; }
+
 for chrome in system seamless; do
     printf '{"titleBar":"%s"}\n' "$chrome" > "$PI_POCKET_DESKTOP_STATE/window.json"
     # The launcher rotates its log on each start. Wait only for this fixture's sign-in.
     if [ -f "$LOG" ]; then mv "$LOG" "$RUNNER_TEMP/window-before-$chrome.log"; fi
     "$app" &
     pid=$!
-    for _ in $(seq 1 60); do
-        if grep -q 'The window is signed in.' "$LOG" 2>/dev/null && [ "$("$driver" "$pid" count)" = 1 ]; then break; fi
-        sleep 1
-    done
-    grep -q 'The window is signed in.' "$LOG"
-    [ "$("$driver" "$pid" count)" = 1 ]
+    wait_for 'sign in' 60 signed_in
     sleep 2
     screencapture -x "$out/$chrome-light.png"
 
@@ -51,12 +60,10 @@ for chrome in system seamless; do
     if [ "$chrome" = system ]; then offset=24; fi
     if [ "$chrome" = seamless ]; then
         "$driver" "$pid" click 616 212
-        for _ in $(seq 1 20); do
-            [ ! -f "$completed" ] || break
-            sleep 1
-        done
+        wait_for 'save the session file without replacing the existing file' 30 test -f "$completed"
         grep -qx 'Keep the existing file' "$existing"
         grep -qx 'Pi Pocket desktop download fixture' "$completed"
+        sleep 2
         screencapture -x "$out/download.png"
         "$driver" "$pid" click 752 212
         sleep 2
@@ -69,11 +76,7 @@ for chrome in system seamless; do
     sleep 2
     screencapture -x "$out/$chrome-dark.png"
     "$driver" "$pid" click 480 "$((212 + offset))"
-    for _ in $(seq 1 20); do
-        [ "$("$driver" "$pid" count)" != 2 ] || break
-        sleep 1
-    done
-    [ "$("$driver" "$pid" count)" = 2 ]
+    wait_for 'open a second window' 20 has_windows 2
     sleep 2
     screencapture -x "$out/$chrome-two-windows.png"
     "$app" --quit

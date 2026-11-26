@@ -17,11 +17,25 @@ case "count":
     print(windows.count)
 case "click":
     guard let w = windows.first else { exit(1) }
-    let app = NSRunningApplication(processIdentifier: pid)
-    app?.activate(options: [])
+    guard let app = NSRunningApplication(processIdentifier: pid), let source = CGEventSource(stateID: .hidSystemState) else { exit(1) }
+    if !app.isActive { app.activate(options: []) }
+    for _ in 0..<20 {
+        if app.isActive { break }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    }
+    guard app.isActive else {
+        fputs("The fixture could not activate Pi Pocket.\n", stderr)
+        exit(1)
+    }
     let location = CGPoint(x: w.minX + Double(args[3])!, y: w.minY + Double(args[4])!)
-    CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: location, mouseButton: .left)?.post(tap: .cghidEventTap)
-    CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: location, mouseButton: .left)?.post(tap: .cghidEventTap)
+    // Give WindowServer and WebKit a pointer move and a complete single click on separate turns.
+    for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
+        guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: location, mouseButton: .left)
+        else { exit(1) }
+        if type != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }
+        event.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.15)
+    }
 case "escape":
     for down in [true, false] {
         CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap)
