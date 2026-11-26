@@ -43,7 +43,7 @@ namespace PiPocket
         static string ReadBootstrap()
         {
             using (Stream input = Assembly.GetExecutingAssembly().GetManifestResourceStream("PocketBridge.js"))
-            using (StreamReader reader = new StreamReader(input)) { return reader.ReadToEnd().TrimEnd().TrimEnd(';'); }
+            using (StreamReader reader = new StreamReader(input)) { return reader.ReadToEnd(); }
         }
 
         public Task Attach()
@@ -86,10 +86,10 @@ namespace PiPocket
                     new { id = "server-settings", label = "Desktop Settings…" },
                 },
             };
-            return Bootstrap + "(" + new JavaScriptSerializer().Serialize(config) + @", {
+            return Bootstrap.Replace("/* POCKET_BRIDGE_ARGUMENTS */", new JavaScriptSerializer().Serialize(config) + @", {
                 send: (message) => window.chrome.webview.postMessage(message),
                 listen: (receive) => window.chrome.webview.addEventListener('message', (event) => receive(event.data)),
-            });";
+            }");
         }
 
         public void Navigating(ulong id)

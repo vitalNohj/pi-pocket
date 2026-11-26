@@ -1,5 +1,5 @@
 // Compiled into both hosts. The adapter supplies the origin, fixed menu items and the native transport.
-(config, transport) => {
+((config, transport) => {
     if (
         window.top !== window ||
         window.origin !== config.origin ||
@@ -194,4 +194,4 @@
             },
         }),
     });
-};
+})(/* POCKET_BRIDGE_ARGUMENTS */);

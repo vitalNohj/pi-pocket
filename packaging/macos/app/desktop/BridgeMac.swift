@@ -143,7 +143,7 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
 
     func install(_ configuration: WKWebViewConfiguration, origin: String) {
         guard let file = Bundle.main.url(forResource: "PocketBridge", withExtension: "js"),
-            var source = try? String(contentsOf: file, encoding: .utf8),
+            let source = try? String(contentsOf: file, encoding: .utf8),
             let data = try? JSONSerialization.data(withJSONObject: [
                 "kind": "pi-pocket-macos", "origin": origin, "items": [
                     ["id": "new-session", "label": "New session"], ["id": "new-window", "label": "New window"],
@@ -151,16 +151,15 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
                 ],
             ]), let config = String(data: data, encoding: .utf8)
         else { return }
-        source = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        if source.last == ";" { source.removeLast() }
-        source += """
-            (\(config), {
+        let arguments = """
+            \(config), {
                 send: (packet) => window.webkit.messageHandlers.pocket.postMessage(packet),
                 listen: (receive) => Object.defineProperty(window, '__pocketNativeReceive', { value: receive }),
-            });
+            }
             """
+        let script = source.replacingOccurrences(of: "/* POCKET_BRIDGE_ARGUMENTS */", with: arguments)
         configuration.userContentController.addUserScript(
-            WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         configuration.userContentController.add(self, name: "pocket")
     }
 

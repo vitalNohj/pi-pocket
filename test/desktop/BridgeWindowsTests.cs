@@ -32,8 +32,10 @@ namespace PiPocket
             Check(BridgeProtocol.IsTarget("/s/9007199254740991") && BridgeProtocol.IsTarget("/?pip=1"), "Accept session and PiP");
             Check(BridgeProtocol.Recognises(path => path == "/api/pocket/info"
                 ? "{\"name\":\"pi-pocket\",\"bridge\":1}" : "{}"), "Recognize bridge v1");
-            Check(BridgeProtocol.Recognises(path => path == "/manifest.webmanifest"
-                ? "{\"name\":\"Pi Pocket\"}" : "{}"), "Recognize legacy manifest");
+            Check(BridgeProtocol.Recognises(path => {
+                if (path != "/manifest.webmanifest") { throw new IOException("The older server answers 401."); }
+                return "{\"name\":\"Pi Pocket\"}";
+            }), "Recognize legacy manifest");
             Check(!BridgeProtocol.Recognises(_ => "{\"name\":\"unrelated\",\"bridge\":1}"), "Reject unrelated server");
 
             var json = new JavaScriptSerializer();

@@ -10,6 +10,14 @@ const script = readFileSync(
 const origin = "https://pocket.test";
 
 type Packet = Record<string, unknown>;
+type Host = {
+    subscribe(listener: (packet: Packet) => void, supported?: string[]): void;
+    invoke(id: string): boolean;
+    setAccount(active: boolean): void;
+    setBadge(count: number): void;
+    setPinned(pins: Packet[]): void;
+    notify(notice: Packet): void;
+};
 
 function fixture(
     options: { frame?: boolean; origin?: string; path?: string; events?: string[] } = {},
@@ -21,11 +29,11 @@ function fixture(
     const window: {
         top?: object;
         origin: string;
-        pocketHost?: Record<string, (...args: unknown[]) => unknown>;
+        pocketHost?: Host;
     } = { origin: effective };
 
     window.top = frame ? {} : window;
-    runInNewContext(`(${script.trim().replace(/;$/, "")})(config, transport)`, {
+    runInNewContext(script.replace("/* POCKET_BRIDGE_ARGUMENTS */", "config, transport"), {
         window,
         location: { origin, protocol: "https:", pathname: path },
         config: { origin, kind: "test", items: [{ id: "settings", label: "Desktop Settings…" }] },
