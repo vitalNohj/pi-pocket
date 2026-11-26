@@ -110,12 +110,18 @@ $contractReferences = foreach ($contract in $contracts) {
     if (-not $file) { throw "The Windows SDK is missing $contract.winmd." }
     "/r:$($file.FullName)"
 }
+# csc is invoked directly, so it does not get the framework façades that MSBuild adds.
+$runtimeFacade = Join-Path (Split-Path $csc -Parent) 'Facades\System.Runtime.dll'
+if (-not (Test-Path $runtimeFacade)) {
+    $runtimeFacade = Join-Path ${env:ProgramFiles(x86)} 'Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8\Facades\System.Runtime.dll'
+}
+if (-not (Test-Path $runtimeFacade)) { throw 'The .NET Framework System.Runtime reference is missing.' }
 $desktopSources = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter '*.cs' -File | ForEach-Object FullName)
 $bootstrap = Join-Path $PSScriptRoot "..\desktop\bridge\bootstrap.js"
 $compile = @(
     '/nologo', '/optimize+', '/platform:x64', '/warnaserror+', '/codepage:65001',
     '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll', '/r:System.Xml.Linq.dll',
-    '/r:System.Runtime.WindowsRuntime.dll', "/r:$webCore", "/r:$webForms",
+    '/r:System.Runtime.WindowsRuntime.dll', "/r:$runtimeFacade", "/r:$webCore", "/r:$webForms",
     "/resource:$bootstrap,PocketBridge.js", $sourceFile, (Join-Path $PSScriptRoot 'PocketWindow.cs')
 ) + $contractReferences + $desktopSources
 & $csc /target:winexe "/out:$appExe" "/win32icon:$(Join-Path $PSScriptRoot 'pi-pocket.ico')" `
