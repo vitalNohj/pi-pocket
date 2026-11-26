@@ -542,6 +542,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         let url = action.request.url
         if action.targetFrame?.isMainFrame == true, let chrome = (webView.window as? PocketNativeWindow)?.chrome {
+            // Only the initiating top-frame link can establish download provenance.
             chrome.firstDownload = eligibleDownload(action) ? url : nil
         }
         if action.targetFrame?.isMainFrame != false && !inApp(url, from: webView.url) {
@@ -608,15 +609,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         (webView.window as? PocketNativeWindow)?.chrome?.firstDownload = nil
-        windowDownloads.attach(download, to: webView.window, direct: eligibleDownload(navigationAction))
+        let first = eligibleDownload(navigationAction) ? navigationAction.request.url : nil
+        windowDownloads.attach(download, to: webView.window, directFrom: first)
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
         let chrome = (webView.window as? PocketNativeWindow)?.chrome
-        let direct = navigationResponse.isForMainFrame && chrome?.firstDownload != nil &&
-            chrome?.firstDownload == navigationResponse.response.url
+        let first = navigationResponse.isForMainFrame ? chrome?.firstDownload : nil
         chrome?.firstDownload = nil
-        windowDownloads.attach(download, to: webView.window, direct: direct)
+        windowDownloads.attach(download, to: webView.window, directFrom: first)
+    }
+
+    func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        (webView.window as? PocketNativeWindow)?.chrome?.firstDownload = nil
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

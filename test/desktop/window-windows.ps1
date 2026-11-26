@@ -107,6 +107,7 @@ try {
         if ($chrome -eq 'seamless') {
             [NativeWindowFixture]::ClickMaximize($window)
             Wait-For 'maximize with the native button' { [NativeWindowFixture]::IsZoomed($window) }
+            Start-Sleep -Seconds 1 # The browser paints the enlarged surface after the HWND changes state.
             Screenshot 'seamless-maximized'
             [void][NativeWindowFixture]::ShowWindow($window, 9) # SW_RESTORE
             Wait-For 'restore the window' { -not [NativeWindowFixture]::IsZoomed($window) }
@@ -115,6 +116,7 @@ try {
             Wait-For 'save the session file without replacing the existing file' { Test-Path -LiteralPath $completed }
             if ((Get-Content -Raw $completed).Trim() -ne 'Pi Pocket desktop download fixture' -or
                 (Get-Content -Raw $existing).Trim() -ne 'Keep the existing file') { throw 'The saved file or the existing file is wrong' }
+            Start-Sleep -Seconds 2 # Let Explorer reveal the saved file before the capture.
             Screenshot 'download'
             [void][NativeWindowFixture]::SetForegroundWindow($window)
             [NativeWindowFixture]::Click($window, 752, 212)

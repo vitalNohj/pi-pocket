@@ -4,7 +4,7 @@ import WebKit
 final class WindowDownloads: NSObject, WKDownloadDelegate {
     private struct Request {
         weak var window: NSWindow?
-        var direct: Bool
+        var directFrom: URL?
         var folder: URL?
         var temporary: URL?
         var destination: URL?
@@ -21,9 +21,17 @@ final class WindowDownloads: NSObject, WKDownloadDelegate {
         return true
     }
 
-    func attach(_ download: WKDownload, to window: NSWindow?, direct: Bool) {
-        requests[download] = Request(window: window, direct: direct)
+    func attach(_ download: WKDownload, to window: NSWindow?, directFrom: URL?) {
+        requests[download] = Request(window: window, directFrom: directFrom)
         download.delegate = self
+    }
+
+    func download(
+        _ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse, newRequest: URLRequest,
+        decisionHandler: @escaping (WKDownload.RedirectPolicy) -> Void
+    ) {
+        requests[download]?.directFrom = nil
+        decisionHandler(.allow)
     }
 
     func download(
@@ -35,11 +43,12 @@ final class WindowDownloads: NSObject, WKDownloadDelegate {
         let leaf = (suggestedFilename as NSString).lastPathComponent
         let name = ["", ".", "..", "/"].contains(leaf) ? "download" : leaf
 
-        if request.direct, let folder = folder {
+        if let origin = request.directFrom, origin == response.url, let folder = folder {
             prepare(download, destination: folder.appendingPathComponent(name), completion: completionHandler)
             return
         }
 
+        requests[download]?.directFrom = nil
         let panel = NSSavePanel()
         panel.directoryURL = folder
         panel.nameFieldStringValue = name
@@ -83,7 +92,7 @@ final class WindowDownloads: NSObject, WKDownloadDelegate {
         else { return }
         defer { clean(request) }
 
-        if request.direct {
+        if request.directFrom != nil {
             let directory = destination.deletingLastPathComponent()
             let stem = destination.deletingPathExtension().lastPathComponent
             let suffix = destination.pathExtension.isEmpty ? "" : "." + destination.pathExtension
