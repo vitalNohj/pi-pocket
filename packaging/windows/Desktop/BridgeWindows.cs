@@ -49,8 +49,9 @@ namespace PiPocket
 
         public static bool IsNewLink(string value)
         {
-            // Compare the whole URI before a URL parser can fold a path, remove a port, or drop delimiters.
-            return string.Equals(value, "pi-pocket://new", StringComparison.OrdinalIgnoreCase);
+            // Windows can add a root slash to a protocol link. Accept that spelling, but do not normalize any other input.
+            return string.Equals(value, "pi-pocket://new", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "pi-pocket://new/", StringComparison.OrdinalIgnoreCase);
         }
 
         public static bool IsTarget(string path)

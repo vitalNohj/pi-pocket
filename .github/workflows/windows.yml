@@ -244,12 +244,19 @@ jobs:
             - name: Open the New Session picker through the installed URL handler
               run: |
                   $log = Join-Path $env:APP 'launcher.log'
+                  $subscription = 'A Pi Pocket page subscribed to the desktop bridge.'
+                  $received = 'Received a Windows New Session request.'
                   $request = 'Delivered New Session to the Pi Pocket page.'
+                  for ($i = 0; $i -lt 15 -and -not (Select-String -Path $log -SimpleMatch $subscription -Quiet); $i++) {
+                      Start-Sleep -Seconds 1
+                  }
+                  if (-not (Select-String -Path $log -SimpleMatch $subscription -Quiet)) { throw 'The signed-in page did not subscribe to the desktop bridge' }
                   Start-Process 'pi-pocket://new'
                   for ($i = 0; $i -lt 30 -and -not (Select-String -Path $log -SimpleMatch $request -Quiet); $i++) {
                       Start-Sleep -Seconds 1
                   }
-                  if (@(Select-String -Path $log -SimpleMatch $request).Count -ne 1) { throw 'Expected one New Session intent' }
+                  if (@(Select-String -Path $log -SimpleMatch $received).Count -ne 1) { throw 'The URL handler did not pass one New Session request to the running app' }
+                  if (@(Select-String -Path $log -SimpleMatch $request).Count -ne 1) { throw 'The running app did not deliver one New Session request to the page' }
                   if (@(Get-Process -Name 'Pi Pocket').Count -ne 1) { throw 'The URL opened a second instance' }
                   $activator = 'HKCU:\Software\Classes\CLSID\{3482E279-4BAB-4932-BF9D-CE95126FE324}\LocalServer32'
                   if (-not (Test-Path $activator)) { throw 'Setup did not register the current-user toast activator' }

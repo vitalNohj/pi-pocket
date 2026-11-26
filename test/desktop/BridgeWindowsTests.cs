@@ -21,7 +21,8 @@ namespace PiPocket
         static int Main()
         {
             Check(BridgeProtocol.IsNewLink("pi-pocket://new"), "New Session URL");
-            foreach (var url in new[] { "pi-pocket://new/", "pi-pocket://new:80", "pi-pocket://new?", "pi-pocket://name@new", "pi-pocket://new#x" })
+            Check(BridgeProtocol.IsNewLink("pi-pocket://new/"), "Shell's normalized New Session URL");
+            foreach (var url in new[] { "pi-pocket://new/extra", "pi-pocket://new//", "pi-pocket://new:80", "pi-pocket://new?", "pi-pocket://name@new", "pi-pocket://new#x" })
             {
                 Check(!BridgeProtocol.IsNewLink(url), "Reject noncanonical New Session URL: " + url);
             }

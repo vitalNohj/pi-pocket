@@ -322,7 +322,13 @@ namespace PiPocket
                     {
                         case 0: OnUi(delegate { OpenWindow(); }); break;
                         case 1: OnUi(delegate { Quit(); }); return;
-                        case 2: OnUi(delegate { Bridge.NewSession(); }); break;
+                        case 2:
+                            OnUi(delegate
+                            {
+                                Log("Received a Windows New Session request.");
+                                Bridge.NewSession();
+                            });
+                            break;
                     }
                 }
             });
