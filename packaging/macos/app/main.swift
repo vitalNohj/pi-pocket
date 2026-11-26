@@ -5,11 +5,11 @@
 // /api/pocket/info, /api/sign-in-link, and /api/restart.
 import Cocoa
 import CoreFoundation
-import UserNotifications
 import WebKit
 
 let appVersion = "0.0.0-dev"  // build.sh puts the package's version here.
 let openNotice = Notification.Name("io.github.tannermidd.pi-pocket.app.open")
+let newSessionNotice = Notification.Name("io.github.tannermidd.pi-pocket.app.new-session")
 let quitNotice = Notification.Name("io.github.tannermidd.pi-pocket.app.quit")
 let home = FileManager.default.homeDirectoryForCurrentUser
 let appFolder = home.appendingPathComponent("Library/Application Support/Pi Pocket")
@@ -22,53 +22,6 @@ let dataFolder: URL = {
 }()
 let logFolder = home.appendingPathComponent("Library/Logs/Pi Pocket")
 let logFile = logFolder.appendingPathComponent("launcher.log")
-
-func bridgeScript(origin: String) -> String {
-    return """
-        (() => {
-            if (window.top !== window || window.origin !== \(jsString(origin)) || location.origin !== \(jsString(origin))) { return; }
-            const post = (message) => window.webkit.messageHandlers.pocket.postMessage(message);
-            let listener = null;
-            let shown = true;
-            let handlesNewSession = false;
-            Object.defineProperty(window, "__pocketHostEvent", {
-                value: (event) => {
-                    if (event.type === "visibility") { shown = event.visible; }
-                    if (event.type === "newSession" && !handlesNewSession) { return; }
-                    try { listener?.({ type: event.type, url: event.url }); } catch (error) { console.error(error); }
-                },
-            });
-            window.pocketHost = Object.freeze({
-                kind: "pi-pocket-macos",
-                apiVersion: 1,
-                capabilities: Object.freeze(["menu", "badge", "notify", "visibility", "open", "newSession"]),
-                menuTitle: () => "Pi Pocket Desktop",
-                menuItems: () => [{ id: "server-settings", label: "Desktop Settings…" }],
-                invoke: (id) => { if (id !== "server-settings") { return false; } post({ type: "settings" }); return true; },
-                setBadge: (count) => post({ type: "badge", count: Number(count) || 0 }),
-                notify: (message) => post({
-                    type: "notify",
-                    title: String(message?.title ?? "Pi Pocket"),
-                    body: String(message?.body ?? ""),
-                    url: String(message?.url ?? "/"),
-                    tag: String(message?.tag ?? ""),
-                }),
-                visible: () => shown,
-                subscribe: (next, events) => {
-                    listener = typeof next === "function" ? next : null;
-                    handlesNewSession = Array.isArray(events) && events.includes("newSession");
-                },
-            });
-        })();
-        """
-}
-
-func jsString(_ text: String) -> String {
-    let data = try? JSONSerialization.data(withJSONObject: [text])
-    let array = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
-
-    return String(array.dropFirst().dropLast())
-}
 
 /// Same order as compareVersions in place-app.mjs.
 func compareVersions(_ a: String, _ b: String) -> Int {
@@ -233,7 +186,7 @@ func log(_ line: String) {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate,
-    WKDownloadDelegate, WKScriptMessageHandler, UNUserNotificationCenterDelegate
+    WKDownloadDelegate
 {
     var window: NSWindow?
     var webView: WKWebView?
@@ -249,7 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     var notice: NSStackView?
     var pageStatus: String?
     var pageCommitted = false
-    var pendingSession = false
+    private var shellStarted = false
+    private var initialNewSession = CommandLine.arguments.dropFirst().contains(where: BridgeProtocol.isNewLink)
     var recovered = false
     let localStore = WKWebsiteDataStore.nonPersistent()
     let localQueue = DispatchQueue(label: "Pi Pocket local launcher")
@@ -258,6 +212,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     var quitting = false
     var checkedSignIn = false
     var termSource: DispatchSourceSignal?
+    lazy var sessionBridge = BridgeMac(showMain: { [weak self] in self?.openWindow() }, badge: { [weak self] count in
+        self?.setBadge(count)
+        if let self = self, let generation = self.page?.generation {
+            self.report("badge", ["generation": generation, "count": count])
+        }
+    }, action: { [weak self] action in self?.bridgeAction(action) }, notificationsEnabled: { [weak self] in self?.notices == true })
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
@@ -273,8 +233,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         if let other = others.first {
             log("Pi Pocket.app runs already (process \(other.processIdentifier)): this one exits.")
 
-            if openWhenReady {
-                center.postNotificationName(openNotice, object: nil, userInfo: nil, deliverImmediately: true)
+            if initialNewSession || openWhenReady {
+                center.postNotificationName(initialNewSession ? newSessionNotice : openNotice, object: nil, userInfo: nil, deliverImmediately: true)
                 other.activate(options: [])
             }
 
@@ -282,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
 
         center.addObserver(forName: openNotice, object: nil, queue: .main) { [weak self] _ in self?.openWindow() }
+        center.addObserver(forName: newSessionNotice, object: nil, queue: .main) { [weak self] _ in self?.requestNewSession() }
         center.addObserver(forName: quitNotice, object: nil, queue: .main) { _ in NSApp.terminate(nil) }
     }
 
@@ -294,7 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         NSApp.setActivationPolicy(openWhenReady ? .regular : .accessory)
         NSApp.mainMenu = mainMenu()
         makeStatusItem()
-        UNUserNotificationCenter.current().delegate = self
+        _ = sessionBridge.notices
         signal(SIGTERM, SIG_IGN)
         let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 
@@ -307,6 +268,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
 
         startShell()
+        shellStarted = true
+        if initialNewSession { newSession() }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if urls.contains(where: { BridgeProtocol.isNewLink($0.absoluteString) }) { requestNewSession() }
+    }
+
+    private func requestNewSession() {
+        if shellStarted { newSession() }
+        else { initialNewSession = true }
+    }
+
+    func applicationDidHide(_ notification: Notification) { updateSessionVisibility(false) }
+    func applicationDidUnhide(_ notification: Notification) { updateSessionVisibility() }
+
+    private func updateSessionVisibility(_ shown: Bool? = nil) {
+        visibilityChanged(visible: shown)
+        for extra in popups.keys {
+            if let view = extra.contentView as? WKWebView { sessionBridge.visibility(view, shown: shown) }
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -483,6 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         window = made
         webView = view
         notice = strip
+        if page.bridge, let origin = pageOrigin(page.address) { sessionBridge.add(view, origin: origin) }
         pageNotice(page.bridge ? nil : "Sign in on this page to use Pi Pocket")
         made.makeKeyAndOrderFront(nil)
         if page.local, let server = local { signIn(server, generation: page.generation) }
@@ -516,7 +499,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func windowWillClose(_ notification: Notification) {
-        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "pocket")
+        guard let closing = notification.object as? NSWindow else { return }
+        if let view = closing == window ? webView : closing.contentView as? WKWebView { sessionBridge.remove(view) }
+        guard closing == window else { return }
         webView = nil
         window = nil
         notice = nil
@@ -524,16 +509,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         if popups.isEmpty { NSApp.terminate(nil) }
     }
 
-    func windowDidMiniaturize(_ notification: Notification) { visibilityChanged(visible: false) }
-    func windowDidDeminiaturize(_ notification: Notification) { visibilityChanged() }
-    func windowDidBecomeKey(_ notification: Notification) { report("focus", true) }
+    func windowDidMiniaturize(_ notification: Notification) { windowVisibility(notification, shown: false) }
+    func windowDidDeminiaturize(_ notification: Notification) { windowVisibility(notification) }
+    func windowDidBecomeKey(_ notification: Notification) {
+        report("focus", true)
+        if let focused = notification.object as? NSWindow,
+            let view = focused == window ? webView : focused.contentView as? WKWebView {
+            sessionBridge.focus(view)
+        }
+        windowVisibility(notification)
+    }
     func windowDidResignKey(_ notification: Notification) { report("focus", false) }
+
+    private func windowVisibility(_ notification: Notification, shown: Bool? = nil) {
+        if let changed = notification.object as? NSWindow {
+            if changed == window { visibilityChanged(visible: shown) }
+            else if let view = changed.contentView as? WKWebView { sessionBridge.visibility(view, shown: shown) }
+        }
+    }
 
     func visibilityChanged(visible: Bool? = nil) {
         let shown = visible ?? (window?.isVisible == true && window?.isMiniaturized == false)
 
         report("visibility", shown)
-        sendPageEvent(webView, type: "visibility", fields: ["visible": shown])
+        if let view = webView { sessionBridge.visibility(view, shown: shown) }
     }
 
     func sameOrigin(_ url: URL?) -> Bool {
@@ -572,6 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        sessionBridge.started(webView, navigation)
         if webView === self.webView { pageCommitted = false }
     }
 
@@ -584,9 +584,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        sessionBridge.failed(webView, navigation)
         if webView === self.webView, (error as NSError).code != NSURLErrorCancelled {
             pageNotice("Could not load this server. Check the address or try again.")
         }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        sessionBridge.failed(webView, navigation)
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
@@ -617,14 +622,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        NSSound.beep()
+        if notices { sessionBridge.notices.local("Download complete.") }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        sessionBridge.loaded(webView, navigation)
         if webView !== self.webView { return }
         visibilityChanged()
         recovered = false
-        if pageCommitted && pendingSession { sendPageEvent(webView, type: "newSession"); pendingSession = false }
 
         if !checkedSignIn && page?.local == true && pageCommitted {
             checkedSignIn = true
@@ -639,6 +644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        sessionBridge.failed(webView, nil)
         if webView !== self.webView { return }
         reportPage(pageOrigin(webView.url), hung: true)
         pageCommitted = false
@@ -683,8 +689,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         made.minSize = NSSize(width: 420, height: 400)
         made.isReleasedWhenClosed = false
         made.contentView = view
+        made.delegate = self
         made.tabbingMode = .disallowed
         made.center()
+        if let page = page, page.bridge, let origin = pageOrigin(page.address) { sessionBridge.add(view, origin: origin) }
         popups[made] = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: made, queue: .main
         ) { [weak self] _ in
@@ -758,69 +766,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         completionHandler(alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil)
     }
 
-    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "pocket", page?.bridge == true, message.frameInfo.isMainFrame,
-            let view = message.webView, (view === webView ? pageCommitted : (view.window.map { popups[$0] != nil } ?? false)),
-            let address = view.url, sameOrigin(address), let host = address.host, let scheme = address.scheme,
-            let body = message.body as? [String: Any], let type = body["type"] as? String,
-            let encoded = try? JSONSerialization.data(withJSONObject: body), encoded.count <= 16_384 else { return }
-        let origin = message.frameInfo.securityOrigin
-        let clean = CharacterSet(charactersIn: "[]")
-        let port = scheme == "https" ? 443 : 80
-
-        guard origin.protocol == scheme, origin.host.trimmingCharacters(in: clean).lowercased() == host.trimmingCharacters(in: clean).lowercased(),
-            (origin.port == 0 ? port : origin.port) == (address.port ?? port) else { return }
-        if type == "settings" { openSettings(nil) }
-        else if view === webView && type == "badge" {
-            let count = min(Int(Int32.max), max(0, body["count"] as? Int ?? 0))
-            setBadge(count)
-            if let generation = page?.generation { report("badge", ["generation": generation, "count": count]) }
-        } else if view === webView && type == "notify" && notices { notify(body) }
-    }
-
-    func notify(_ body: [String: Any]) {
-        let center = UNUserNotificationCenter.current()
-
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-            guard granted else {
-                return
-            }
-
-            let content = UNMutableNotificationContent()
-
-            content.title = String((body["title"] as? String ?? "Pi Pocket").prefix(200))
-            content.body = String((body["body"] as? String ?? "").prefix(400))
-            content.sound = .default
-            content.userInfo = ["url": body["url"] as? String ?? "/"]
-            let tag = body["tag"] as? String ?? ""
-
-            center.add(UNNotificationRequest(identifier: tag.isEmpty ? UUID().uuidString : tag, content: content, trigger: nil))
-        }
-    }
-
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
-        withCompletionHandler completionHandler: @escaping () -> Void
-    ) {
-        let path = response.notification.request.content.userInfo["url"] as? String ?? "/"
-
-        DispatchQueue.main.async {
-            self.openWindow()
-
-            if path.hasPrefix("/") && !path.hasPrefix("//") {
-                self.sendPageEvent(self.webView, type: "open", fields: ["url": path])
-            }
-        }
-
-        completionHandler()
-    }
-
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-    ) {
-        completionHandler([.banner, .sound])
-    }
 }
 
 let app = NSApplication.shared

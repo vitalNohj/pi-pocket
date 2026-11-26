@@ -117,11 +117,15 @@ namespace PiPocket
         [STAThread]
         static int Main(string[] args)
         {
-            bool hidden = Array.IndexOf(args, "--hidden") >= 0;
+            bool newSession = args.Length == 1 && BridgeProtocol.IsNewLink(args[0]);
+            if (!newSession && Array.Exists(args, each => each.StartsWith("pi-pocket:", StringComparison.OrdinalIgnoreCase))) { return 0; }
+            bool hidden = Array.IndexOf(args, "--hidden") >= 0 || Array.IndexOf(args, "--toast-server") >= 0;
             bool quit = Array.IndexOf(args, "--quit") >= 0;
-            bool first;
+            bool first, madeIntent;
 
             using (Mutex mutex = new Mutex(true, MutexName, out first))
+            using (EventWaitHandle newEvent = new EventWaitHandle(false, EventResetMode.AutoReset,
+                BridgeProtocol.NewEventName, out madeIntent, BridgeProtocol.IntentAccess))
             {
                 if (quit)
                 {
@@ -134,7 +138,7 @@ namespace PiPocket
                     if (!hidden)
                     {
                         Native.AllowSetForegroundWindow(Native.ASFW_ANY);
-                        Signal(OpenEventName);
+                        if (newSession) { newEvent.Set(); } else { Signal(OpenEventName); }
                     }
 
                     return 0;
@@ -145,9 +149,12 @@ namespace PiPocket
                     return 0;
                 }
 
+                NoticesWindows.SetAppIdentity();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                TrayApp app = new TrayApp(hidden);
+                Application.OleRequired();
+                TrayApp app = new TrayApp(hidden, newEvent);
+                if (newSession) { newEvent.Set(); }
                 Application.Run(app);
                 GC.KeepAlive(mutex);
 
@@ -271,12 +278,12 @@ namespace PiPocket
         bool edgeFallback;
         PocketWindow window;
         readonly List<PocketWindow> popups = new List<PocketWindow>();
-        readonly Queue<Action> balloons = new Queue<Action>();
+        internal readonly BridgeWindows Bridge;
+        readonly Icon baseIcon;
+        Icon dottedIcon;
         int badge;
-        bool balloonActive;
-        string balloonAddress;
 
-        public TrayApp(bool hidden)
+        public TrayApp(bool hidden, EventWaitHandle newEvent)
         {
             string data = Environment.GetEnvironmentVariable("PI_POCKET_DIR");
             dataDir = string.IsNullOrEmpty(data)
@@ -289,10 +296,12 @@ namespace PiPocket
             GC.KeepAlive(ui.Handle);
 
             string icon = Path.Combine(appDir, "pi-pocket.ico");
-            tray.Icon = File.Exists(icon)
+            baseIcon = File.Exists(icon)
                 ? new Icon(icon, SystemInformation.SmallIconSize)
                 : Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            tray.Icon = baseIcon;
             tray.Text = "Pi Pocket (starting)";
+            Bridge = new BridgeWindows(this);
             MakeTrayMenu();
             tray.MouseClick += delegate (object sender, MouseEventArgs e)
             {
@@ -301,18 +310,6 @@ namespace PiPocket
                     OpenWindow();
                 }
             };
-            tray.BalloonTipClicked += delegate
-            {
-                string address = balloonAddress;
-                ClearBalloon();
-
-                if (!quitting && address != null && window != null)
-                {
-                    window.ShowWindow();
-                    window.OpenAddress(address);
-                }
-            };
-            tray.BalloonTipClosed += delegate { ClearBalloon(); };
             tray.Visible = true;
 
             openEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.OpenEventName);
@@ -321,13 +318,11 @@ namespace PiPocket
             {
                 for (;;)
                 {
-                    if (WaitHandle.WaitAny(new WaitHandle[] { openEvent, quitEvent }) == 0)
+                    switch (WaitHandle.WaitAny(new[] { openEvent, quitEvent, newEvent }))
                     {
-                        OnUi(delegate { OpenWindow(); });
-                    }
-                    else
-                    {
-                        OnUi(delegate { Quit(); });
+                        case 0: OnUi(delegate { OpenWindow(); }); break;
+                        case 1: OnUi(delegate { Quit(); }); return;
+                        case 2: OnUi(delegate { Bridge.NewSession(); }); break;
                     }
                 }
             });
@@ -337,7 +332,7 @@ namespace PiPocket
             OnUi(StartShell);
         }
 
-        void OnUi(MethodInvoker action)
+        internal void OnUi(MethodInvoker action)
         {
             try
             {
@@ -566,6 +561,9 @@ namespace PiPocket
             CloseWindows();
             tray.Visible = false;
             tray.Dispose();
+            Bridge.Dispose();
+            if (dottedIcon != null) { dottedIcon.Dispose(); }
+            baseIcon.Dispose();
 
             lock (logLock)
             {
@@ -579,7 +577,7 @@ namespace PiPocket
             ExitThread();
         }
 
-        async void OpenWindow()
+        internal async void OpenWindow()
         {
             if (quitting)
             {
@@ -618,11 +616,10 @@ namespace PiPocket
 
             try
             {
-                made = new PocketWindow(this, url, tray.Icon, Path.Combine(appDir, "window-bounds.txt"));
+                made = new PocketWindow(this, url, baseIcon, Path.Combine(appDir, "window-bounds.txt"));
                 window = made;
                 made.Disposed += delegate { if (window == made) { window = null; } };
                 made.ShowWindow();
-                if (pendingSession) { pendingSession = false; made.NewSession(); }
                 await made.Initialize(SessionWebProfile);
                 if (quitting || made.IsDisposed || generation != pageGeneration) { return; }
                 string target = localPage ? await Task.Run(() => LocalSignInAddress(url, localPid)) : pageAddress;
@@ -657,14 +654,14 @@ namespace PiPocket
         async Task NewSessionWindow()
         {
             if (!ready || quitting) { return; }
-            PocketWindow made = new PocketWindow(this, url, tray.Icon, null);
+            PocketWindow made = new PocketWindow(this, url, baseIcon, null);
             popups.Add(made);
             made.Disposed += delegate { popups.Remove(made); };
             made.ShowWindow();
             try
             {
                 await made.Initialize(SessionWebProfile);
-                if (!quitting && !made.IsDisposed) { made.Browser.Navigate(pageAddress); }
+                if (!quitting && !made.IsDisposed) { made.Browser.Navigate(url + "/"); }
             }
             catch (Exception) { made.Dispose(); }
         }
@@ -693,7 +690,7 @@ namespace PiPocket
 
             try
             {
-                popup = new PocketWindow(this, url, tray.Icon, null);
+                popup = new PocketWindow(this, url, baseIcon, null);
                 popups.Add(popup);
                 popup.Disposed += delegate { popups.Remove(popup); };
                 popup.ShowWindow();
@@ -723,8 +720,9 @@ namespace PiPocket
             }
         }
 
-        void CloseWindows()
+        void CloseWindows(bool keepUnboundNewSession = false)
         {
+            Bridge.ResetConnection(keepUnboundNewSession);
             if (window != null)
             {
                 window.SaveBounds();
@@ -748,7 +746,10 @@ namespace PiPocket
             }
 
             badge = count;
+            if (count > 0 && dottedIcon == null) { dottedIcon = TaskbarBadge.TrayDot(baseIcon); }
+            tray.Icon = count > 0 ? dottedIcon : baseIcon;
             UpdateTrayText();
+            if (pageGeneration > 0) { Report("badge", new { generation = pageGeneration, count = count }); }
 
             if (window != null)
             {
@@ -767,46 +768,25 @@ namespace PiPocket
             tray.Text = badge > 0 ? name + " (" + badge + " need you)" : name;
         }
 
-        internal void Notify(string title, string body, string address)
+        internal void BridgeTip(string body)
         {
-            Uri target;
+            if (!quitting) { MessageBox.Show(body, "Pi Pocket", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+        }
 
-            if (!quitting && NotificationsEnabled && url != null && Uri.TryCreate(new Uri(url), address, out target) && PocketWindow.IsServerAddress(target.AbsoluteUri, url))
+        internal async void InvokeBridgeAction(string action)
+        {
+            if (quitting || !ready) { return; }
+            switch (action)
             {
-                ShowBalloon(title, body, ToolTipIcon.Info, target.PathAndQuery);
+                case "new-session": Bridge.NewSession(); break;
+                case "new-window": await NewSessionWindow(); break;
+                case "server-settings": ShellAction("settings.open"); break;
             }
         }
 
-        void ShowBalloon(string title, string body, ToolTipIcon icon, string address)
+        void LocalNotice(string body)
         {
-            // WinForms reports a click on the icon, not the balloon's ID. Wait until it closes before showing the next.
-            if (balloons.Count == 8)
-            {
-                balloons.Dequeue();
-            }
-
-            balloons.Enqueue(delegate
-            {
-                balloonAddress = address;
-                tray.ShowBalloonTip(5000, title, string.IsNullOrWhiteSpace(body) ? "Pi Pocket" : body, icon);
-            });
-            ShowNextBalloon();
-        }
-
-        void ShowNextBalloon()
-        {
-            if (!quitting && !balloonActive && balloons.Count != 0)
-            {
-                balloonActive = true;
-                balloons.Dequeue()();
-            }
-        }
-
-        void ClearBalloon()
-        {
-            balloonAddress = null;
-            balloonActive = false;
-            OnUi(ShowNextBalloon);
+            if (!quitting && NotificationsEnabled) { Bridge.Notices.Local(body); }
         }
 
         void OpenEdge()

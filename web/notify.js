@@ -1,7 +1,15 @@
 // Phone notifications: this device subscribes to the server's pushes, and each person picks what they hear about.
 import { useEffect, useState } from "preact/hooks";
 import { callHost, hostCan } from "./host.js";
-import { api, attempt, closeSheet, notify, sessionUnread, store } from "./store.js";
+import {
+    api,
+    attempt,
+    closeSheet,
+    embedderAccountReady,
+    notify,
+    sessionUnread,
+    store,
+} from "./store.js";
 import { html, Loader, Sheet, Switch } from "./ui.js";
 
 const supported =
@@ -25,6 +33,11 @@ let badged = null;
 /** What the count was worked out from: it changes only with these, while streaming updates the store many times a second. */
 let countedFrom = null;
 
+addEventListener("pocket:bridge-reset", () => {
+    badged = null;
+    countedFrom = null;
+});
+
 /**
  * The home-screen icon counts the sessions that need you: a call waits for approval, or the chat has news. An
  * embedder with a badge of its own (`web/host.js`) shows it on its icon and tray instead.
@@ -32,7 +45,7 @@ let countedFrom = null;
 export function updateBadge(state) {
     const embedder = hostCan("badge");
 
-    if ((!embedder && !("setAppBadge" in navigator)) || !state.me) {
+    if ((embedder ? !embedderAccountReady() : !("setAppBadge" in navigator)) || !state.me) {
         return;
     }
 

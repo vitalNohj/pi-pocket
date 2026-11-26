@@ -1,6 +1,6 @@
 // App state, the server connection, and API calls. Components read `store.state` and re-render on `store.subscribe`.
 import { onRoute, popRoute, pushRoute, routeState, routeUnder } from "./back.js";
-import { hostCan, onPageVisibility, pageVisible } from "./host.js";
+import { callHost, hostCan, hostNotices, onHost, onPageVisibility, pageVisible } from "./host.js";
 import { sessionForest, unfolded } from "./session-tree.js";
 import { liveMessage } from "./live.js";
 import { fitClock, moment } from "./clock.js";
@@ -1080,6 +1080,63 @@ let changingAccount = false;
 let signingOut = false;
 let accountGeneration = 0;
 let source;
+let bridgeVerified = false;
+let bridgeAccount = null;
+
+function resetBridgeAccount() {
+    bridgeVerified = false;
+
+    if (bridgeAccount === null) {
+        return;
+    }
+
+    bridgeAccount = null;
+
+    if (hostCan("sessionFeed")) {
+        callHost("setAccount", false);
+    }
+
+    if (hostCan("pinned")) {
+        callHost("setPinned", []);
+    }
+
+    if (hostCan("badge")) {
+        callHost("setBadge", 0);
+    }
+
+    dispatchEvent(new Event("pocket:bridge-reset"));
+}
+
+export const embedderAccountReady = () => bridgeAccount !== null;
+
+/** Check the cookie again before using a native menu's or OS notification's cached destination. */
+export async function embedderAccount(session = null) {
+    const account = bridgeAccount;
+    const generation = accountGeneration;
+
+    if (account === null) {
+        return false;
+    }
+
+    try {
+        const signal = AbortSignal.timeout(5000);
+        const { user } = await api("me", undefined, { signal });
+
+        if (!user || ownerOf(user) !== account) {
+            resetBridgeAccount();
+
+            return false;
+        }
+
+        const allowed =
+            session === null ||
+            (await api("sessions", undefined, { signal })).some((each) => each.id === session);
+
+        return allowed && bridgeAccount === account && generation === accountGeneration;
+    } catch {
+        return false;
+    }
+}
 
 /**
  * Drop the old document's in-memory composers and requests before loading the cookie's current account: this page
@@ -1152,6 +1209,7 @@ function acceptPerson(user, generation) {
         return false;
     }
 
+    bridgeVerified = user != null;
     personStorage.identify(person);
 
     try {
@@ -1445,6 +1503,35 @@ addEventListener("storage", (event) => {
  * another, or before this person's rights changed, is not shown.
  */
 const ownerOf = (me) => fingerprint(JSON.stringify([me.id, me.role, me.sessions ?? null]));
+
+if (hostCan("sessionFeed") || hostCan("pinned") || hostCan("badge")) {
+    addEventListener("pocket:signedOut", resetBridgeAccount);
+    store.subscribe(({ me }) => {
+        const account =
+            bridgeVerified && me && !changingAccount && !signingOut ? ownerOf(me) : null;
+
+        if (account === bridgeAccount) {
+            if (me === null && hostCan("sessionFeed")) {
+                callHost("setAccount", false);
+            }
+
+            return;
+        }
+
+        const verified = bridgeVerified;
+
+        resetBridgeAccount();
+
+        if (account !== null) {
+            bridgeVerified = verified;
+            bridgeAccount = account;
+
+            if (hostCan("sessionFeed")) {
+                callHost("setAccount", true);
+            }
+        }
+    });
+}
 
 // A tab's reading places survive reload without writing another whole view. The shared cache is still a fallback.
 const TAB_PLACES = "pocket.transcriptPlaces";
@@ -2413,7 +2500,11 @@ const handlers = {
     },
     auth: (data) => handleAuth(data),
     // A notification for the embedder this page runs in, which shows it itself (`web/embedder.js`).
-    "embedder-notify": (data) => embedderListeners.forEach((listener) => listener(data)),
+    "embedder-notify": (data) => {
+        if (hostNotices() && !signingOut && !changingAccount) {
+            embedderListeners.forEach((listener) => listener(data));
+        }
+    },
     closing: () => store.set({ connection: "closed" }),
     reload: () => {
         // A web file changed on the server. Message, notes, and attachment drafts survive when browser storage works;
@@ -2473,6 +2564,12 @@ export function connect() {
     source = pollHere() && !local ? pollEvents() : streamEvents(eventsQuery(true));
 }
 
+onHost("primary", () => {
+    if (hostCan("sessionFeed") && source && !changingAccount && !signingOut) {
+        connect();
+    }
+});
+
 /**
  * What a new connection asks for: this tab, what its code understands, the session it shows now (a switch changes it
  * on the connection it has), and, with `kept`, what it kept of that session.
@@ -2481,7 +2578,7 @@ function eventsQuery(kept) {
     const id = store.state.conversationId;
     const have = kept && id !== null ? haveOf(store.state.view) : null;
     // An embedder that shows notifications itself gets them over this connection (`web/host.js`).
-    const embedder = hostCan("notify") ? "&embedder=notify" : "";
+    const embedder = hostNotices() ? "&embedder=notify" : "";
     const session = id === null ? "" : `&c=${id}`;
     const resume = have === null ? "" : `&have=${have}`;
 
@@ -2547,6 +2644,7 @@ async function restoreAccount() {
         accountCover.close();
         accountCover.remove();
         accountCover = null;
+        store.set({ me: hello.user });
         connect();
     } catch (error) {
         if (accountRequest !== request) {
@@ -2593,6 +2691,7 @@ addEventListener("pagehide", (event) => {
     accountRequest = null;
 
     if (event.persisted) {
+        resetBridgeAccount();
         coverAccount();
     }
 });

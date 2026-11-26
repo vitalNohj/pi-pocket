@@ -48,7 +48,7 @@ jobs:
 
             - name: Build the installer
               run: |
-                  ./packaging/windows/build.ps1 -Version $env:VERSION -OutDir (Join-Path $env:RUNNER_TEMP "setup")
+                  ./packaging/windows/build.ps1 -Version $env:VERSION -OutDir (Join-Path $env:RUNNER_TEMP "setup") -TestBridge
                   Write-Host "Setup is $([math]::Round((Get-Item $env:SETUP).Length / 1MB, 1)) MB"
 
             # From here on, nothing reaches npm's registry: its names point to this PC, where nothing listens, and npm
@@ -240,6 +240,19 @@ jobs:
                   }
                   "DESKTOP_PID=$($app[0].Id)" >> $env:GITHUB_ENV
                   "WINDOW_HWND=$($app[0].MainWindowHandle.ToInt64())" >> $env:GITHUB_ENV
+
+            - name: Open the New Session picker through the installed URL handler
+              run: |
+                  $log = Join-Path $env:APP 'launcher.log'
+                  $request = 'Delivered New Session to the Pi Pocket page.'
+                  Start-Process 'pi-pocket://new'
+                  for ($i = 0; $i -lt 30 -and -not (Select-String -Path $log -SimpleMatch $request -Quiet); $i++) {
+                      Start-Sleep -Seconds 1
+                  }
+                  if (@(Select-String -Path $log -SimpleMatch $request).Count -ne 1) { throw 'Expected one New Session intent' }
+                  if (@(Get-Process -Name 'Pi Pocket').Count -ne 1) { throw 'The URL opened a second instance' }
+                  $activator = 'HKCU:\Software\Classes\CLSID\{3482E279-4BAB-4932-BF9D-CE95126FE324}\LocalServer32'
+                  if (-not (Test-Path $activator)) { throw 'Setup did not register the current-user toast activator' }
 
             - name: Take a screenshot of the WebView2 window
               run: |

@@ -1,6 +1,15 @@
 // The desktop host bridge's page side, in a real Chromium: a page in a embedder names the host events it handles as
 // it subscribes, and a `newSession` event opens the New session sheet, as Alt+N does.
-import { type App, cleanUp, openApp, root, scriptedModel, until } from "./helpers.ts";
+import {
+    addPerson,
+    type App,
+    cleanUp,
+    newSession,
+    openApp,
+    root,
+    scriptedModel,
+    until,
+} from "./helpers.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -37,7 +46,7 @@ let browser: Chromium | undefined;
 let base = "";
 
 /** A page of its own, with its own cookies, and the given host in it. */
-async function openPage(capabilities: string[]) {
+async function openPage(capabilities: string[], token = app.config.ownerToken) {
     const connection = browser!.connection;
     const context = await connection.send("Target.createBrowserContext");
     const target = await connection.send("Target.createTarget", {
@@ -76,7 +85,7 @@ async function openPage(capabilities: string[]) {
         );
     };
 
-    await go(`${base}/login?token=${encodeURIComponent(app.config.ownerToken)}`);
+    await go(`${base}/login?token=${encodeURIComponent(token)}`);
     await go(`${base}/`);
     // Signed in, and the app's modules running.
     await until(
@@ -136,6 +145,7 @@ test(
             assert.ok(Array.isArray(events), "the page names its events");
             assert.ok(events.includes("newSession"));
             assert.ok(events.includes("open"));
+            assert.ok(events.includes("primary"));
             assert.equal(await page.sheet(), null);
 
             await page.evaluate(`window.hostListener({ type: "newSession" })`);
@@ -152,12 +162,26 @@ test(
     },
 );
 
+for (const role of ["viewer", "guest"] as const) {
+    test(`New Session does not open for a ${role} without permission`, real, async () => {
+        const session = await newSession(app);
+        const { token } = await addPerson(app, `Desktop ${role}`, role, [String(session)]);
+        const page = await openPage(["newSession", "open"], token);
+
+        try {
+            await page.evaluate(`window.hostListener({ type: "newSession" })`);
+            assert.equal(await page.sheet(), null);
+        } finally {
+            await page.close();
+        }
+    });
+}
+
 test("without the newSession capability, the event opens nothing", real, async () => {
     const page = await openPage(["open"]);
 
     try {
         await page.evaluate(`window.hostListener({ type: "newSession" })`);
-        await new Promise((resolve) => setTimeout(resolve, 300));
         assert.equal(await page.sheet(), null);
     } finally {
         await page.close();

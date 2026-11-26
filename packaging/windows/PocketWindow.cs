@@ -1,13 +1,9 @@
 // The Windows web view and version 1 app bridge (docs/embedders.md). The tray owns the window, not the other way round.
 using System;
-using System.Collections.Generic;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -19,19 +15,13 @@ namespace PiPocket
         readonly TrayApp host;
         readonly string origin;
         readonly string boundsFile;
-        readonly string bridgeKey = Guid.NewGuid().ToString("N");
-        readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 16384, RecursionLimit = 8 };
         readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
         bool committed;
-        bool subscribed;
-        bool newSessionEnabled;
-        bool pendingNewSession;
         bool recovered;
         readonly int generation;
-        readonly bool bridge;
+        readonly bool bridgeEnabled;
         readonly string[] allowed;
-        bool? lastVisibility;
-        string pendingAddress;
+        BridgeView bridge;
 
         public PocketWindow(TrayApp host, string origin, Icon icon, string boundsFile)
         {
@@ -39,7 +29,7 @@ namespace PiPocket
             this.origin = origin;
             this.boundsFile = boundsFile;
             generation = host.PageGeneration;
-            bridge = host.PageBridge;
+            bridgeEnabled = host.PageBridge;
             allowed = host.OtherOrigins;
             Text = "Pi Pocket";
             Icon = icon;
@@ -55,23 +45,22 @@ namespace PiPocket
         }
 
         public CoreWebView2 Browser { get { return view.CoreWebView2; } }
-        bool ShownToUser { get { return Visible && WindowState != FormWindowState.Minimized; } }
+        internal bool ShownToUser { get { return Visible && WindowState != FormWindowState.Minimized; } }
 
         public async Task Initialize(ShellWebProfile profile)
         {
             await host.InitializeWebView(view, profile);
-            if (IsDisposed) { return; }
+            if (IsDisposed || generation != host.PageGeneration) { return; }
             CoreWebView2 core = Browser;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.AreDevToolsEnabled = host.DeveloperTools;
-            core.WebMessageReceived += Receive;
             core.NavigationStarting += Navigate;
             core.ContentLoading += delegate (object sender, CoreWebView2ContentLoadingEventArgs args)
             {
                 if (args.NavigationId != navigation) { return; }
                 committed = !args.IsErrorPage && IsServerAddress(core.Source, origin);
                 host.ReportPage(this, committed ? origin : null);
-                ShowPageNotice(!bridge || !committed ? "Sign in on this page to use Pi Pocket" : null);
+                ShowPageNotice(!bridgeEnabled || !committed ? "Sign in on this page to use Pi Pocket" : null);
             };
             core.NavigationCompleted += delegate (object sender, CoreWebView2NavigationCompletedEventArgs args)
             {
@@ -92,51 +81,16 @@ namespace PiPocket
             core.NewWindowRequested += host.NewWindowRequested;
             core.WindowCloseRequested += delegate { BeginInvoke((MethodInvoker)Close); };
 
-            if (boundsFile != null && bridge)
+            if (boundsFile != null && bridgeEnabled)
             {
                 core.WebResourceResponseReceived += CheckSignIn;
             }
 
-            if (bridge) { await core.AddScriptToExecuteOnDocumentCreatedAsync(BridgeScript()); }
-        }
-
-        /// Check the URL as well as the effective origin. A sandboxed document can have a Pi Pocket URL and an opaque origin.
-        string BridgeScript()
-        {
-            return @"(() => {
-    const origin = " + json.Serialize(origin) + @";
-    if (window.top !== window || window.origin !== origin || location.origin !== origin ||
-        (location.protocol !== 'http:' && location.protocol !== 'https:')) { return; }
-    const key = " + json.Serialize(bridgeKey) + @";
-    const webview = window.chrome.webview;
-    const post = (message) => webview.postMessage({ ...message, key });
-    let listener = null;
-    let shown = " + (ShownToUser ? "true" : "false") + @";
-    webview.addEventListener('message', ({ data }) => {
-        if (data.type === 'visibility') { shown = data.visible; }
-        try { listener?.({ type: data.type, url: data.url }); } catch (error) { console.error(error); }
-    });
-    window.pocketHost = Object.freeze({
-        kind: 'pi-pocket-windows',
-        apiVersion: 1,
-        capabilities: Object.freeze(['menu', 'badge', 'notify', 'visibility', 'open', 'newSession']),
-        menuTitle: () => 'Pi Pocket Desktop',
-        menuItems: () => [{ id: 'server-settings', label: 'Desktop Settings…' }],
-        invoke: (id) => { if (id !== 'server-settings') { return false; } post({ type: 'settings' }); return true; },
-        setBadge: (count) => post({ type: 'badge', count: Math.max(0, Math.min(2147483647, Math.floor(Number(count) || 0))) }),
-        notify: (message) => post({
-            type: 'notify',
-            title: String(message?.title ?? 'Pi Pocket').slice(0, 63),
-            body: String(message?.body ?? '').slice(0, 255),
-            url: String(message?.url ?? '/').slice(0, 2048),
-        }),
-        visible: () => shown,
-        subscribe: (next, events) => {
-            listener = typeof next === 'function' ? next : null;
-            if (listener) { post({ type: 'subscribe', newSession: Array.isArray(events) && events.includes('newSession') }); }
-        },
-    });
-})();";
+            if (bridgeEnabled)
+            {
+                bridge = new BridgeView(host.Bridge, this, core, origin, host.InvokeBridgeAction);
+                await bridge.Attach();
+            }
         }
 
         public static bool IsServerAddress(string address, string origin)
@@ -177,8 +131,8 @@ namespace PiPocket
             }
 
             navigation = args.NavigationId;
-            committed = subscribed = newSessionEnabled = false;
-            lastVisibility = null;
+            committed = false;
+            if (bridge != null) { bridge.Navigating(navigation); }
         }
 
         void CheckSignIn(object sender, CoreWebView2WebResourceResponseReceivedEventArgs args)
@@ -196,121 +150,15 @@ namespace PiPocket
             }
         }
 
-        void Receive(object sender, CoreWebView2WebMessageReceivedEventArgs args)
-        {
-            // CoreWebView2.WebMessageReceived is top-frame only; we do not handle CoreWebView2Frame messages.
-            // Source is a URL, not an effective origin. Only the guarded document-start script gets the key.
-            if (!bridge || !committed || generation != host.PageGeneration || IsDisposed || Disposing ||
-                !IsServerAddress(args.Source, origin) || !IsServerAddress(Browser.Source, origin))
-            {
-                return;
-            }
-
-            Dictionary<string, object> message;
-
-            try
-            {
-                message = json.Deserialize<Dictionary<string, object>>(args.WebMessageAsJson);
-            }
-            catch (ArgumentException)
-            {
-                return;
-            }
-            catch (InvalidOperationException)
-            {
-                return;
-            }
-
-            if (message == null || ReadText(message, "key", 32) != bridgeKey)
-            {
-                return;
-            }
-
-            switch (ReadText(message, "type", 12))
-            {
-                case "subscribe":
-                    subscribed = true;
-                    newSessionEnabled = ShellWire.Flag(message, "newSession");
-                    lastVisibility = null;
-                    PublishVisibility();
-                    SendPendingAddress();
-                    if (pendingNewSession) { NewSession(); }
-                    break;
-
-                case "settings":
-                    host.ShellAction("settings.open");
-                    break;
-
-                case "badge":
-                    object count;
-                    if (message.TryGetValue("count", out count) && count is int && (int)count >= 0)
-                    {
-                        if (boundsFile != null)
-                        {
-                            host.SetBadge((int)count);
-                            host.Report("badge", new { generation = generation, count = (int)count });
-                        }
-                    }
-                    break;
-
-                case "notify":
-                    if (boundsFile != null)
-                    {
-                        host.Notify(ReadText(message, "title", 63) ?? "Pi Pocket", ReadText(message, "body", 255),
-                            ReadText(message, "url", 2048) ?? "/");
-                    }
-                    break;
-            }
-        }
-
-        static string ReadText(Dictionary<string, object> message, string name, int limit)
-        {
-            object value;
-            string text = message.TryGetValue(name, out value) ? value as string : null;
-
-            return text != null && text.Length <= limit ? text : null;
-        }
-
-        bool Post(object message)
-        {
-            if (!bridge || !committed || generation != host.PageGeneration || !subscribed || IsDisposed || Disposing || Browser == null || !IsServerAddress(Browser.Source, origin))
-            {
-                return false;
-            }
-
-            Browser.PostWebMessageAsJson(json.Serialize(message));
-            return true;
-        }
-
         void PublishVisibility()
         {
-            bool visible = ShownToUser;
-            if (boundsFile != null) { host.Report("visibility", visible); }
-
-            if (lastVisibility != visible && Post(new { type = "visibility", visible = visible }))
-            {
-                lastVisibility = visible;
-            }
-        }
-
-        public void NewSession()
-        {
-            pendingNewSession = !subscribed;
-            if (newSessionEnabled) { Post(new { type = "newSession" }); }
+            if (boundsFile != null) { host.Report("visibility", ShownToUser); }
+            if (bridge != null) { bridge.Visibility(); }
         }
 
         public void OpenAddress(string address)
         {
-            pendingAddress = address;
-            SendPendingAddress();
-        }
-
-        void SendPendingAddress()
-        {
-            if (pendingAddress != null && Post(new { type = "open", url = pendingAddress }))
-            {
-                pendingAddress = null;
-            }
+            if (bridge != null && BridgeProtocol.IsTarget(address)) { bridge.Deliver("open", address, null, false); }
         }
 
         public void ShowWindow()
@@ -428,95 +276,6 @@ namespace PiPocket
             if (message.Msg == TaskbarBadge.ButtonCreated && host != null)
             {
                 UpdateBadge();
-            }
-        }
-    }
-
-    static class TaskbarBadge
-    {
-        public static readonly int ButtonCreated = RegisterWindowMessage("TaskbarButtonCreated");
-
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        static extern int RegisterWindowMessage(string name);
-
-        [DllImport("user32.dll")]
-        static extern bool DestroyIcon(IntPtr icon);
-
-        [ComImport, Guid("56FDF344-FD6D-11d0-958A-006097C9A090")]
-        class TaskbarList { }
-
-        [ComImport, Guid("EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        interface ITaskbarList3
-        {
-            // All methods before SetOverlayIcon, in vtable order, including those from ITaskbarList and ITaskbarList2.
-            void HrInit();
-            void AddTab(IntPtr window);
-            void DeleteTab(IntPtr window);
-            void ActivateTab(IntPtr window);
-            void SetActiveAlt(IntPtr window);
-            void MarkFullscreenWindow(IntPtr window, [MarshalAs(UnmanagedType.Bool)] bool fullScreen);
-            void SetProgressValue(IntPtr window, ulong completed, ulong total);
-            void SetProgressState(IntPtr window, int flags);
-            void RegisterTab(IntPtr tab, IntPtr window);
-            void UnregisterTab(IntPtr tab);
-            void SetTabOrder(IntPtr tab, IntPtr before);
-            void SetTabActive(IntPtr tab, IntPtr window, uint flags);
-            void ThumbBarAddButtons(IntPtr window, uint count, IntPtr buttons);
-            void ThumbBarUpdateButtons(IntPtr window, uint count, IntPtr buttons);
-            void ThumbBarSetImageList(IntPtr window, IntPtr imageList);
-            void SetOverlayIcon(IntPtr window, IntPtr icon, [MarshalAs(UnmanagedType.LPWStr)] string description);
-        }
-
-        public static void Set(IntPtr window, int count)
-        {
-            object shell = null;
-            IntPtr icon = IntPtr.Zero;
-
-            try
-            {
-                shell = new TaskbarList();
-                ITaskbarList3 taskbar = shell as ITaskbarList3;
-
-                if (taskbar == null)
-                {
-                    return;
-                }
-
-                taskbar.HrInit();
-
-                if (count > 0)
-                {
-                    using (Bitmap image = new Bitmap(32, 32))
-                    using (Graphics graphics = Graphics.FromImage(image))
-                    using (Brush red = new SolidBrush(Color.FromArgb(180, 30, 48)))
-                    using (Font font = new Font("Segoe UI", count > 99 ? 12 : 17, FontStyle.Bold, GraphicsUnit.Pixel))
-                    using (StringFormat center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                    {
-                        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                        graphics.FillEllipse(red, 0, 0, 32, 32);
-                        graphics.DrawString(count > 99 ? "99+" : count.ToString(), font, Brushes.White,
-                            new RectangleF(0, 0, 32, 32), center);
-                        icon = image.GetHicon();
-                    }
-                }
-
-                taskbar.SetOverlayIcon(window, icon, count > 0 ? count + " sessions need you" : "");
-            }
-            catch (COMException)
-            {
-                // Explorer may not have the taskbar button yet. TaskbarButtonCreated tries again.
-            }
-            finally
-            {
-                if (icon != IntPtr.Zero)
-                {
-                    DestroyIcon(icon);
-                }
-
-                if (shell != null)
-                {
-                    Marshal.ReleaseComObject(shell);
-                }
             }
         }
     }

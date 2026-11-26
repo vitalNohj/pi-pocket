@@ -234,3 +234,39 @@ test("Push notifications turned off for a kind stay off on embedders", async () 
         app.pushStore!.setPrefs(owner(app).id, { done: true });
     }
 });
+
+test("the authenticated session list does not expose an unrelated session to a scoped desktop guest", async () => {
+    const visible = await newSession(app);
+    const hidden = await newSession(app);
+    const guest = await addPerson(app, "Scoped Desktop Guest", "guest", [String(visible)]);
+    const server = createServer(
+        createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }),
+    );
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    try {
+        const { port } = server.address() as { port: number };
+        const url = `http://127.0.0.1:${port}/api/sessions`;
+        const answer = await fetch(url, { headers: { authorization: `Bearer ${guest.token}` } });
+
+        assert.equal(answer.status, 200);
+        const sessions = (await answer.json()) as { id: ConversationId }[];
+
+        assert.equal(
+            sessions.some(({ id }) => id === visible),
+            true,
+        );
+        assert.equal(
+            sessions.some(({ id }) => id === hidden),
+            false,
+        );
+        app.config.removeUser(guest.user.id);
+        assert.equal(
+            (await fetch(url, { headers: { authorization: `Bearer ${guest.token}` } })).status,
+            401,
+        );
+    } finally {
+        server.close();
+    }
+});

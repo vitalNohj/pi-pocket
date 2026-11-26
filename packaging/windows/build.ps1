@@ -12,7 +12,8 @@ param(
     [string]$Source = (Join-Path $PSScriptRoot "..\.."),
     [string]$SignThumbprint = "",
     [switch]$WithDesktopUpdate,
-    [switch]$DesktopOnly
+    [switch]$DesktopOnly,
+    [switch]$TestBridge
 )
 
 $ErrorActionPreference = "Stop"
@@ -96,11 +97,20 @@ $source = $source.Replace('NumericVersion = "0.0.0.0"', "NumericVersion = `"$num
 $sourceFile = Join-Path $desktop "PiPocket.cs"
 [IO.File]::WriteAllText($sourceFile, $source, (New-Object Text.UTF8Encoding $false))
 $appExe = Join-Path $desktop "Pi Pocket.exe"
-$adapters = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter *.cs -File | ForEach-Object FullName)
-& $csc /nologo /target:winexe /optimize+ /platform:x64 /warnaserror+ /codepage:65001 `
-    "/win32icon:$(Join-Path $PSScriptRoot 'pi-pocket.ico')" "/win32manifest:$(Join-Path $PSScriptRoot 'PiPocket.manifest')" `
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll "/r:$webCore" "/r:$webForms" `
-    "/out:$appExe" $sourceFile (Join-Path $PSScriptRoot "PocketWindow.cs") @adapters
+# Use the installed Windows SDK metadata. Windows provides the WinRT implementation at run time.
+$sdk = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\UnionMetadata"
+$winmd = Get-ChildItem $sdk -Filter Windows.winmd -File -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
+if (-not $winmd) { throw "Install the Windows 10 or 11 SDK to build native notifications." }
+$desktopSources = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter '*.cs' -File | ForEach-Object FullName)
+$bootstrap = Join-Path $PSScriptRoot "..\desktop\bridge\bootstrap.js"
+$compile = @(
+    '/nologo', '/optimize+', '/platform:x64', '/warnaserror+', '/codepage:65001',
+    '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll', '/r:System.Xml.Linq.dll',
+    '/r:System.Runtime.WindowsRuntime.dll', "/r:$($winmd.FullName)", "/r:$webCore", "/r:$webForms",
+    "/resource:$bootstrap,PocketBridge.js", $sourceFile, (Join-Path $PSScriptRoot 'PocketWindow.cs')
+) + $desktopSources
+& $csc /target:winexe "/out:$appExe" "/win32icon:$(Join-Path $PSScriptRoot 'pi-pocket.ico')" `
+    "/win32manifest:$(Join-Path $PSScriptRoot 'PiPocket.manifest')" @compile
 
 if ($LASTEXITCODE -ne 0) {
     throw "csc exited with $LASTEXITCODE"
@@ -111,6 +121,15 @@ foreach ($name in @("controller", "protocol", "settings", "feed")) {
     Copy-Item -Recurse (Join-Path $PSScriptRoot "..\desktop\$name") $assets.FullName
 }
 Write-Host "Built $appExe"
+
+if ($TestBridge) {
+    $bridgeTest = Join-Path $desktop 'bridge-tests.exe'
+    & $csc /target:exe /main:PiPocket.BridgeWindowsTests "/out:$bridgeTest" @compile `
+        (Join-Path $PSScriptRoot '..\..\test\desktop\BridgeWindowsTests.cs')
+    if ($LASTEXITCODE -ne 0) { throw "Bridge test compilation exited with $LASTEXITCODE" }
+    & $bridgeTest
+    if ($LASTEXITCODE -ne 0) { throw "Bridge tests exited with $LASTEXITCODE" }
+}
 
 $innoSetup = Join-Path $work "innosetup-$InnoVersion-x64.exe"
 $innoDir = Join-Path $work "inno"

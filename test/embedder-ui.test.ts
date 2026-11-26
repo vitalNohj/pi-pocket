@@ -29,11 +29,14 @@ const real = {
 const preload = `<script>
     const embedder = globalThis.embedderTest = {
         notifications: [], badges: [], pinned: [], invoked: [], visible: true, listener: null,
+        native: new URL(location.href).searchParams.has('native'), primary: false, accounts: [],
         emit(event) { this.listener(event); },
     };
     globalThis.pocketHost = {
         apiVersion: 1,
-        capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open"],
+        capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open", ...(embedder.native ? ["sessionFeed"] : [])],
+        primary() { return embedder.primary; },
+        setAccount(active) { embedder.accounts.push(active); },
         subscribe(listener) { embedder.listener = listener; },
         visible() { return embedder.visible; },
         notify(message) { embedder.notifications.push(message); },
@@ -449,6 +452,73 @@ test(
                     `return JSON.stringify(getComputedStyle(document.querySelector(".topbar")).appRegion === "none")`,
                 ),
             "no drag regions without window controls",
+        );
+    },
+);
+
+test(
+    "a native secondary page cannot ask for notices; promotion and sign-out replace its feed",
+    real,
+    async () => {
+        await page.navigate(`${base}/?native=1`);
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(embedderTest.accounts.at(-1) === true && embedderTest.pinned.length > 0)`,
+                ),
+            "the authenticated native page",
+        );
+        assert.equal(queries.at(-1)?.has("embedder"), false);
+
+        await page.evaluate(`
+        embedderTest.primary = true;
+        embedderTest.emit({ type: "primary" });
+    `);
+        await until(
+            () => queries.at(-1)?.get("embedder") === "notify",
+            "the promoted page's event stream",
+        );
+        const tab = queries.at(-1)?.get("tab");
+
+        await page.evaluate(`
+        await (await import('/embedder.js')).openAddress('/s/${session}');
+    `);
+        assert.equal(await inPage(`return JSON.stringify(location.pathname)`), `/s/${session}`);
+        await page.evaluate(`
+        const { openAddress } = await import('/embedder.js');
+        await openAddress('/s/9007199254740991');
+        await openAddress('/s/01');
+        await openAddress('https://example.invalid/');
+        await openAddress('/?pip=1&extra=1');
+    `);
+        assert.equal(await inPage(`return JSON.stringify(location.pathname)`), `/s/${session}`);
+
+        await page.evaluate(`
+        embedderTest.primary = false;
+        embedderTest.emit({ type: "primary" });
+    `);
+        await until(
+            () =>
+                queries.some(
+                    (query, i) =>
+                        query.get("tab") === tab &&
+                        !query.has("embedder") &&
+                        i >
+                            queries.findIndex(
+                                (other) => other.get("tab") === tab && other.has("embedder"),
+                            ),
+                ),
+            "demotion removes the feed",
+        );
+        assert.deepEqual(
+            await inPage(`
+            const { store } = await import('/store.js');
+            store.set({ pinned: [${session}] });
+            const before = embedderTest.pinned.at(-1)[0].id;
+            dispatchEvent(new Event('pocket:signedOut'));
+            return JSON.stringify([before, embedderTest.accounts.at(-1), embedderTest.pinned.at(-1), embedderTest.badges.at(-1)]);
+        `),
+            [session, false, [], 0],
         );
     },
 );

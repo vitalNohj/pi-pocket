@@ -94,9 +94,21 @@ Source: "pi-pocket.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-pi-pocket.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "Open Pi Pocket"
+Name: "{autoprograms}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "Open Pi Pocket"; AppUserModelID: "PiPocket.Desktop"; AppUserModelToastActivatorCLSID: "{{3482E279-4BAB-4932-BF9D-CE95126FE324}"
 Name: "{autoprograms}\Pi Pocket (console)"; Filename: "{app}\pi-pocket.cmd"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\pi-pocket.ico"; Comment: "Start Pi Pocket in a console window, to choose how other devices reach it"
 Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--hidden"; WorkingDir: "{%USERPROFILE}"; Tasks: startup
+
+[Registry]
+; Shell activation and the URL association both belong to this user, not to an administrator's machine.
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{3482E279-4BAB-4932-BF9D-CE95126FE324}\LocalServer32"; ValueType: string; ValueData: """{app}\Pi Pocket.exe"" --toast-server"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\CLSID\{{3482E279-4BAB-4932-BF9D-CE95126FE324}"; Flags: uninsdeletekeyifempty
+Root: HKCU; Subkey: "Software\Classes\PiPocket.Desktop.URL"; ValueType: string; ValueData: "Pi Pocket Desktop link"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\PiPocket.Desktop.URL"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\PiPocket.Desktop.URL\shell\open\command"; ValueType: string; ValueData: """{app}\Pi Pocket.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\PiPocket.Desktop\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "Pi Pocket Desktop"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\PiPocket.Desktop\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "Open Pi Pocket in a native window"
+Root: HKCU; Subkey: "Software\PiPocket.Desktop\Capabilities\URLAssociations"; ValueType: string; ValueName: "pi-pocket"; ValueData: "PiPocket.Desktop.URL"
+Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "PiPocket.Desktop"; ValueData: "Software\PiPocket.Desktop\Capabilities"; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\Pi Pocket.exe"; WorkingDir: "{%USERPROFILE}"; Description: "Open Pi Pocket now"; Flags: postinstall nowait skipifsilent
@@ -394,11 +406,25 @@ end;
 
 { Last of all: the mark that the package in the app folder is whole. Pi Pocket.exe refuses a package without it, which
   an install that stopped while it copied the package leaves. }
+function ProtocolCommand: String;
+begin
+  Result := '"' + ExpandConstant('{app}\Pi Pocket.exe') + '" "%1"';
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
     SaveStringToFile(ExpandConstant('{app}\app\setup-finished.txt'),
       'Pi Pocket Setup {#AppVersion} put the package in this folder in place.' + #13#10, False);
+    { Do not replace an existing handler, for example Pi Pocket GUI. The native app is in Default apps either way. }
+    if not RegKeyExists(HKCR, 'pi-pocket') then
+    begin
+      RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', '', 'URL:Pi Pocket Desktop link');
+      RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', 'URL Protocol', '');
+      RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket\shell\open\command', '', ProtocolCommand);
+    end;
+  end;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
@@ -411,8 +437,21 @@ end;
 { The data folder holds sessions, sign-ins, and settings: keep it unless the user says yes. }
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  Data: String;
+  Data, LinkCommand: String;
 begin
+  if (CurUninstallStep = usUninstall) and
+    RegQueryStringValue(HKCU, 'Software\Classes\pi-pocket\shell\open\command', '', LinkCommand) and
+    (LinkCommand = ProtocolCommand) then
+  begin
+    RegDeleteValue(HKCU, 'Software\Classes\pi-pocket\shell\open\command', '');
+    RegDeleteKeyIfEmpty(HKCU, 'Software\Classes\pi-pocket\shell\open\command');
+    RegDeleteKeyIfEmpty(HKCU, 'Software\Classes\pi-pocket\shell\open');
+    RegDeleteKeyIfEmpty(HKCU, 'Software\Classes\pi-pocket\shell');
+    RegDeleteValue(HKCU, 'Software\Classes\pi-pocket', 'URL Protocol');
+    RegDeleteValue(HKCU, 'Software\Classes\pi-pocket', '');
+    RegDeleteKeyIfEmpty(HKCU, 'Software\Classes\pi-pocket');
+  end;
+
   if (CurUninstallStep = usUninstall) and PiPocketRunning then
   begin
     SuppressibleMsgBox('Pi Pocket is running. Uninstall stops it now.', mbInformation, MB_OK, IDOK);

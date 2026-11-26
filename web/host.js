@@ -40,7 +40,12 @@ const listeners = new Map();
  * The host's events this page's code handles, told to the host as it subscribes: an app sends an event that came after
  * version 1 began (such as "newSession") only to a page that names it, and does something else for an older page.
  */
-const EVENTS = ["visibility", "open", "approve", "newSession"];
+const EVENTS = ["visibility", "open", "approve", "newSession", "primary"];
+
+/** A legacy embedder owns its feed for the life of the document. A native host can move it between windows. */
+export function hostNotices() {
+    return hostCan("notify") && (!hostCan("sessionFeed") || callHost("primary") === true);
+}
 
 callHost(
     "subscribe",
