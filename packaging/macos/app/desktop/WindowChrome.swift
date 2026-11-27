@@ -50,6 +50,7 @@ final class WindowChrome: NSView {
     private var knownPage = false
     private var lastGeometry = ""
     private var tint: Int?
+    var onEffect: ((String) -> Void)?
     var firstDownload: URL?
     var overlay: Bool { window?.styleMask.contains(.fullSizeContentView) == true && window?.styleMask.contains(.fullScreen) == false }
 
@@ -86,8 +87,10 @@ final class WindowChrome: NSView {
             window.titlebarAppearsTransparent = seamless
         }
         window.appearance = contrast ? nil : self.palette.flatMap { NSAppearance(named: $0.dark ? .darkAqua : .aqua) }
-        let glass = knownPage && preferences.seeThrough == true && !contrast &&
-            !workspace.accessibilityDisplayShouldReduceTransparency && !window.styleMask.contains(.fullScreen)
+        let noEffects = contrast || workspace.accessibilityDisplayShouldReduceTransparency
+        let fullScreen = window.styleMask.contains(.fullScreen)
+        let glass = knownPage && preferences.seeThrough && !noEffects && !fullScreen
+        onEffect?(noEffects ? "unsupported" : fullScreen ? "full-screen" : knownPage ? "available" : "page")
         switch preferences.material {
         case "sidebar": effect.material = .sidebar
         case "dark": effect.material = .hudWindow

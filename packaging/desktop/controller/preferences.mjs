@@ -70,7 +70,12 @@ export async function readPreferences(file, defaults, rules) {
         }
     }
 
-    return { preferences, warnings, missing: false };
+    return {
+        preferences,
+        warnings,
+        missing: false,
+        hasWindowPreferences: stored.windowPreferencesVersion === 1,
+    };
 }
 
 export function patchPreferences(previous, patch, rules) {
@@ -98,7 +103,7 @@ export function patchPreferences(previous, patch, rules) {
 }
 
 export async function savePreferences(file, preferences) {
-    const content = `${JSON.stringify({ schemaVersion: 1, preferences }, null, 4)}\n`;
+    const content = `${JSON.stringify({ schemaVersion: 1, windowPreferencesVersion: 1, preferences }, null, 4)}\n`;
 
     if (Buffer.byteLength(content) > MAX_PACKET_BYTES) {
         throw new Error("Settings file too large");

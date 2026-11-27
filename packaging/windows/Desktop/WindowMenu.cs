@@ -1,4 +1,4 @@
-using System;
+using System.Drawing;
 using System.Windows.Forms;
 
 namespace PiPocket
@@ -9,37 +9,57 @@ namespace PiPocket
         {
             if (IsDisposed) { return; }
             var menu = new ContextMenuStrip();
-            FillWindowOptions(menu.Items);
+            menu.Items.Add("Window Settings…", null, delegate { host.OpenSettings("window"); });
+            menu.Items.Add("Appearance Settings…", null, delegate { host.OpenSettings("appearance"); });
             menu.Closed += delegate { menu.Dispose(); };
             menu.Show(Cursor.Position);
         }
+    }
 
-        void FillWindowOptions(ToolStripItemCollection items)
+    sealed partial class TrayApp
+    {
+        internal void ReportWindowTheme(PocketWindow source, object palette)
         {
-            WindowPreferences settings = host.WindowPrefs;
-            items.Add(Option("Seamless title bar", settings.titleBar == "seamless", delegate { settings.titleBar = "seamless"; host.SaveWindowPreferences(); }));
-            items.Add(Option("System title bar", settings.titleBar == "system", delegate { settings.titleBar = "system"; host.SaveWindowPreferences(); }));
-            items.Add(new ToolStripSeparator());
-            bool glass = AllowsTransparency();
-            var seeThrough = Option(glass ? "See-through background" : "See-through background (unavailable)",
-                settings.seeThrough, delegate { settings.seeThrough = !settings.seeThrough; host.SaveWindowPreferences(); });
-            seeThrough.Enabled = glass;
-            items.Add(seeThrough);
-            items.Add(Option("Use Acrylic", settings.material == "acrylic", delegate { settings.material = "acrylic"; host.SaveWindowPreferences(); }));
-            items.Add(Option("Use Mica", settings.material == "mica", delegate { settings.material = "mica"; host.SaveWindowPreferences(); }));
-            items.Add(new ToolStripSeparator());
-            items.Add(Option("Close to tray", host.NativeCloseToTray, delegate { settings.closeToTray = !host.NativeCloseToTray; host.SaveWindowPreferences(); }));
-            items.Add(Option("Show menu bar", host.NativeShowMenuBar, delegate { settings.showMenuBar = !host.NativeShowMenuBar; host.SaveWindowPreferences(); }));
-            items.Add(Option("Open other Pi Pocket pages in browser", settings.externalPages, delegate { settings.externalPages = !settings.externalPages; host.SaveWindowPreferences(); }));
-            items.Add(Option("Show/hide shortcut (Ctrl+Shift+P)", settings.globalShortcut, host.ToggleWindowHotkey));
-            items.Add(Option("Launch at login", WindowLogin.Enabled, host.ToggleWindowLogin));
-            items.Add(Option("Start hidden at login", settings.startHidden, host.ToggleStartHidden));
-            items.Add(Option("Enable developer tools", host.NativeDeveloperTools, delegate { settings.developerTools = !host.NativeDeveloperTools; host.SaveWindowPreferences(); }));
+            if (source == window) { Report("window.theme", new { generation = pageGeneration, palette = palette }); }
         }
 
-        static ToolStripMenuItem Option(string label, bool selected, Action action)
+        void ApplyTrayAppearance()
         {
-            return new ToolStripMenuItem(label, null, delegate { action(); }) { Checked = selected };
+            if (windowPrefs.trayStyle == "pocket" && !SystemInformation.HighContrast)
+            {
+                object palette = ShellWire.Get(ShellWire.Get(snapshot, "window"), "theme");
+                Color? panel = PocketWindow.ReadColor(ShellWire.Text(palette, "panel"));
+                Color? text = PocketWindow.ReadColor(ShellWire.Text(palette, "text"));
+                if (panel.HasValue && text.HasValue)
+                {
+                    trayMenu.Renderer = new ToolStripProfessionalRenderer(new TrayColors(panel.Value, text.Value));
+                    trayMenu.ForeColor = text.Value;
+                    return;
+                }
+            }
+            trayMenu.RenderMode = ToolStripRenderMode.System;
+            trayMenu.ForeColor = SystemColors.MenuText;
         }
+    }
+
+    sealed class TrayColors : ProfessionalColorTable
+    {
+        readonly Color panel, selection;
+
+        internal TrayColors(Color panel, Color text)
+        {
+            this.panel = panel;
+            selection = Color.FromArgb((panel.R * 4 + text.R) / 5, (panel.G * 4 + text.G) / 5, (panel.B * 4 + text.B) / 5);
+        }
+
+        public override Color ToolStripDropDownBackground { get { return panel; } }
+        public override Color ImageMarginGradientBegin { get { return panel; } }
+        public override Color ImageMarginGradientMiddle { get { return panel; } }
+        public override Color ImageMarginGradientEnd { get { return panel; } }
+        public override Color MenuItemSelected { get { return selection; } }
+        public override Color MenuItemBorder { get { return selection; } }
+        public override Color MenuBorder { get { return selection; } }
+        public override Color SeparatorDark { get { return selection; } }
+        public override Color SeparatorLight { get { return panel; } }
     }
 }

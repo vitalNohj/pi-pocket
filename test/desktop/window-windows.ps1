@@ -91,10 +91,7 @@ $out = Join-Path $env:RUNNER_TEMP 'window-evidence'
 $env:PI_POCKET_DESKTOP_STATE = Join-Path $env:RUNNER_TEMP 'window-state'
 $env:PI_POCKET_DIR = Join-Path $env:RUNNER_TEMP 'window-data'
 New-Item -ItemType Directory -Force $out, $env:PI_POCKET_DESKTOP_STATE | Out-Null
-# Select local Home only in the fixture. A real fresh install must show both choices.
-Set-Content -LiteralPath (Join-Path $env:PI_POCKET_DESKTOP_STATE 'desktop.json') -Encoding utf8NoBOM `
-    -Value '{"schemaVersion":1,"preferences":{"home":{"mode":"local"}}}'
-$preferences = Join-Path $env:PI_POCKET_DESKTOP_STATE 'window.json'
+$preferences = Join-Path $env:PI_POCKET_DESKTOP_STATE 'desktop.json'
 $downloads = Join-Path $env:USERPROFILE 'Downloads'
 New-Item -ItemType Directory -Force $downloads | Out-Null
 $existing = Join-Path $downloads 'window-fixture.txt'
@@ -105,7 +102,10 @@ try {
     node "${PSScriptRoot}/window-fixture.mjs" $env:MANIFEST (Join-Path $env:RUNNER_TEMP 'window-files')
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the window fixture' }
     foreach ($chrome in @('system', 'seamless')) {
-        @{ titleBar = $chrome } | ConvertTo-Json -Compress | Set-Content $preferences -Encoding utf8NoBOM
+        # The existing chrome/download proof covers both styles. The Settings proof changes these with the UI.
+        @{ schemaVersion = 1; windowPreferencesVersion = 1; preferences = @{
+            home = @{ mode = 'local' }; window = @{ titleBar = $chrome }
+        } } | ConvertTo-Json -Depth 4 -Compress | Set-Content $preferences -Encoding utf8NoBOM
         if (Test-Path $log) { Move-Item -Force $log (Join-Path $env:RUNNER_TEMP "window-before-$chrome.log") }
         $app = Start-Process -FilePath $appExe -PassThru
         Wait-For 'sign in' { (Test-Path $log) -and (Select-String -Quiet -SimpleMatch '/api/me answered 200.' $log) }

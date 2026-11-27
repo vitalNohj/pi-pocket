@@ -1,66 +1,88 @@
 using System;
-using System.IO;
-using System.Web.Script.Serialization;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace PiPocket
 {
     sealed partial class TrayApp
     {
-        readonly WindowPreferences windowPrefs = PiPocket.WindowPreferences.Load();
+        WindowPreferences windowPrefs = WindowPreferences.Defaults;
         WindowHotkey windowHotkey;
+        string windowEffect;
+        bool readingLogin;
         internal WindowPreferences WindowPrefs { get { return windowPrefs; } }
-        internal bool NativeCloseToTray { get { return WindowPrefs.closeToTray ?? CloseToTray; } }
-        internal bool NativeShowMenuBar { get { return WindowPrefs.showMenuBar ?? ShowMenuBar; } }
-        internal bool NativeDeveloperTools { get { return WindowPrefs.developerTools ?? DeveloperTools; } }
+        internal bool NativeCloseToTray { get { return windowPrefs.closeToTray; } }
+        internal bool NativeShowMenuBar { get { return windowPrefs.showMenuBar; } }
+        internal bool NativeDeveloperTools { get { return windowPrefs.developerTools; } }
 
         void StartWindowActions()
         {
             windowHotkey = new WindowHotkey(delegate {
                 if (window != null && !window.IsDisposed && window.IsForeground) { window.Hide(); }
-                else { OpenWindow(); }
+                else if (!ready && settings != null && Form.ActiveForm == settings) { settings.Hide(); }
+                else if (ready) { OpenWindow(); }
+                else { OpenSettings("runner"); }
             });
-            if (WindowPrefs.globalShortcut && !windowHotkey.Bind(WindowHotkey.DefaultModifiers, WindowHotkey.DefaultKey))
+        }
+
+        void ApplySavedWindowPreferences(object next, bool first)
+        {
+            windowPrefs = WindowPreferences.Read(ShellWire.Get(next, "preferences"));
+            if (!first) { return; }
+            if (loginLaunch && !windowPrefs.startHidden) { openWhenReady = true; }
+            try { SetWindowHotkey(windowPrefs.shortcutEnabled, windowPrefs.shortcut); }
+            catch (InvalidOperationException error) { Log(error.Message); }
+            RefreshWindowPlatform();
+        }
+
+        void SetWindowHotkey(bool enabled, string shortcut)
+        {
+            if (!enabled) { windowHotkey.Clear(); }
+            else if (!windowHotkey.Bind(shortcut))
             {
-                DownloadNotice("The show/hide shortcut is already in use.");
+                Report("window.status", new { shortcutActive = windowHotkey.Active });
+                throw new InvalidOperationException("The show/hide shortcut is already in use or reserved by Windows. Choose another shortcut.");
             }
+            Report("window.status", new { shortcutActive = windowHotkey.Active });
         }
 
-        internal void SaveWindowPreferences()
+        internal void ReportWindowEffect(PocketWindow source, string effect)
         {
-            try { WindowPrefs.Save(); }
-            catch (Exception) { DownloadNotice("Could not save the window options."); }
-            if (window != null) { window.ApplyShellPreferences(); }
-            foreach (PocketWindow extra in popups.ToArray()) { extra.ApplyShellPreferences(); }
+            if (source != window) { return; }
+            if (effect == "page" && !PocketWindow.AllowsTransparency()) { effect = "unsupported"; }
+            if (effect == windowEffect) { return; }
+            windowEffect = effect;
+            Report("window.status", new { effect = effect });
         }
 
-        internal void ToggleWindowHotkey()
+        async void RefreshWindowPlatform()
         {
-            if (WindowPrefs.globalShortcut) { windowHotkey.Clear(); }
-            else if (!windowHotkey.Bind(WindowHotkey.DefaultModifiers, WindowHotkey.DefaultKey))
+            if (window != null) { window.ApplyWindowPreferences(); }
+            ReportWindowEffect(window, window == null ? "page" : window.EffectStatus ?? "page");
+            if (readingLogin) { return; }
+            readingLogin = true;
+            try { Report("platform", new { loginEnabled = await Task.Run(() => WindowLogin.Enabled) }); }
+            catch (Exception) { Log("Could not read the login shortcut."); }
+            finally { readingLogin = false; }
+        }
+
+        async Task<object> SetWindowLogin(bool enabled)
+        {
+            try
             {
-                DownloadNotice("The show/hide shortcut is already in use.");
-                return;
+                return await Task.Run<object>(delegate
+                {
+                    WindowLogin.Set(enabled);
+                    return WindowLogin.Enabled;
+                });
             }
-            WindowPrefs.globalShortcut = !WindowPrefs.globalShortcut;
-            SaveWindowPreferences();
+            catch (Exception) { throw new InvalidOperationException("Could not change Launch at login in Windows."); }
         }
 
-        internal void ToggleWindowLogin()
+        async Task PrepareWindowLogin()
         {
-            try { WindowLogin.Set(!WindowLogin.Enabled); }
-            catch (Exception) { DownloadNotice("Could not change launch at login."); }
-        }
-
-        internal void ToggleStartHidden()
-        {
-            WindowPrefs.startHidden = !WindowPrefs.startHidden;
-            if (WindowLogin.Enabled)
-            {
-                try { WindowLogin.Set(true); }
-                catch (Exception) { DownloadNotice("Could not update the login shortcut."); }
-            }
-            SaveWindowPreferences();
+            try { await Task.Run(() => WindowLogin.UpdateLegacyShortcut()); }
+            catch (Exception) { throw new InvalidOperationException("Could not update the Windows login shortcut."); }
         }
 
         internal void DownloadNotice(string message)
@@ -70,87 +92,37 @@ namespace PiPocket
         }
     }
 
-    // The native window settings adapter. Keep independent of server config and browser storage.
+    // The controller owns persisted preferences. This is a typed copy for Win32 and WebView2.
     internal sealed class WindowPreferences
     {
-        public string titleBar { get; set; }
-        public bool? closeToTray { get; set; }
-        public bool startHidden { get; set; }
-        public bool? showMenuBar { get; set; }
-        public bool externalPages { get; set; }
-        public bool globalShortcut { get; set; }
-        public bool seeThrough { get; set; }
-        public int opacity { get; set; }
-        public string material { get; set; }
-        public bool? developerTools { get; set; }
+        public string titleBar, shortcut, material, trayStyle;
+        public bool closeToTray, startHidden, showMenuBar, externalPages, shortcutEnabled, seeThrough, developerTools;
+        public int opacity;
 
-        public WindowPreferences()
+        public static WindowPreferences Defaults
         {
-            titleBar = "seamless";
-            opacity = 82;
-            material = "acrylic";
+            get { return new WindowPreferences { titleBar = "system", closeToTray = true, shortcut = "Ctrl+Shift+P", opacity = 82, material = "acrylic", trayStyle = "system" }; }
         }
 
-        static string FileName
+        public static WindowPreferences Read(object preferences)
         {
-            get
-            {
-                string folder = Environment.GetEnvironmentVariable("PI_POCKET_DESKTOP_STATE");
-                return Path.Combine(string.IsNullOrEmpty(folder)
-                    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Pi Pocket", "desktop")
-                    : folder, "window.json");
-            }
-        }
-
-        public static WindowPreferences Load()
-        {
-            WindowPreferences value = null;
-
-            try
-            {
-                var file = new FileInfo(FileName);
-                if (file.Exists && file.Length <= 4096)
-                {
-                    value = new JavaScriptSerializer().Deserialize<WindowPreferences>(File.ReadAllText(file.FullName));
-                }
-            }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
-            catch (ArgumentException) { }
-            catch (InvalidOperationException) { }
-
-            if (value == null)
-            {
-                value = new WindowPreferences();
-                if (File.Exists(Path.Combine(Application.StartupPath, "window-bounds.txt")))
-                {
-                    value.titleBar = "system";
-                }
-            }
-
-            if (value.titleBar != "system") { value.titleBar = "seamless"; }
-            if (value.material != "mica") { value.material = "acrylic"; }
-            if (value.opacity < 0 || value.opacity > 100) { value.opacity = 82; }
-
-            return value;
-        }
-
-        public void Save()
-        {
-            string file = FileName;
-            string temp = file + "." + Guid.NewGuid().ToString("N");
-            Directory.CreateDirectory(Path.GetDirectoryName(file));
-
-            try
-            {
-                File.WriteAllText(temp, new JavaScriptSerializer().Serialize(this));
-                if (File.Exists(file)) { File.Replace(temp, file, null); }
-                else { File.Move(temp, file); }
-            }
-            finally
-            {
-                if (File.Exists(temp)) { File.Delete(temp); }
-            }
+            object window = ShellWire.Get(preferences, "window");
+            object appearance = ShellWire.Get(preferences, "appearance");
+            if (window == null || appearance == null) { return Defaults; }
+            return new WindowPreferences {
+                titleBar = ShellWire.Text(window, "titleBar"),
+                closeToTray = ShellWire.Flag(window, "closeToTray"),
+                startHidden = ShellWire.Flag(window, "startHidden"),
+                showMenuBar = ShellWire.Flag(window, "showMenuBar"),
+                externalPages = ShellWire.Text(window, "links") == "browser",
+                shortcutEnabled = ShellWire.Flag(window, "shortcutEnabled"),
+                shortcut = ShellWire.Text(window, "shortcut"),
+                developerTools = ShellWire.Flag(window, "developerTools"),
+                seeThrough = ShellWire.Flag(appearance, "transparent"),
+                opacity = ShellWire.Number(appearance, "opacity"),
+                material = ShellWire.Text(appearance, "material"),
+                trayStyle = ShellWire.Text(appearance, "trayStyle"),
+            };
         }
     }
 }

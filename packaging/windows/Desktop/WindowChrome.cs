@@ -21,6 +21,7 @@ namespace PiPocket
         string lastGeometry;
         Color? desk, panel, text;
         bool dark;
+        internal string EffectStatus { get; private set; }
 
         async System.Threading.Tasks.Task InitializeChrome(CoreWebView2Environment environment)
         {
@@ -81,10 +82,17 @@ namespace PiPocket
             panel = newPanel;
             text = newText;
             dark = (bool)mode;
+            host.ReportWindowTheme(this, new {
+                dark = dark,
+                background = BridgeProtocol.Text(message, "background", 7),
+                panel = BridgeProtocol.Text(message, "panel", 7),
+                text = BridgeProtocol.Text(message, "text", 7),
+                accent = BridgeProtocol.Text(message, "accent", 7),
+            });
             LayoutChrome();
         }
 
-        static Color? ReadColor(string value)
+        internal static Color? ReadColor(string value)
         {
             int rgb;
             if (value == null || value.Length != 7 || value[0] != '#' || !int.TryParse(value.Substring(1),
@@ -145,7 +153,8 @@ namespace PiPocket
             bool accessible = SystemInformation.HighContrast;
             int immersive = !accessible && dark ? 1 : 0;
             if (DwmSetWindowAttribute(Handle, 20, ref immersive, 4) != 0) { DwmSetWindowAttribute(Handle, 19, ref immersive, 4); }
-            int backdrop = pageChrome && host.WindowPrefs.seeThrough && !accessible && !fullScreen && AllowsTransparency()
+            bool allowsTransparency = AllowsTransparency();
+            int backdrop = pageChrome && host.WindowPrefs.seeThrough && !fullScreen && allowsTransparency
                 ? (host.WindowPrefs.material == "mica" ? 2 : 3) : 1; // DWMSBT_MAINWINDOW / TRANSIENTWINDOW
             var margins = backdrop == 1 ? new Margins { Top = FrameExtension } : new Margins { Top = -1 };
             int glass = DwmExtendFrameIntoClientArea(Handle, ref margins);
@@ -156,6 +165,9 @@ namespace PiPocket
                 margins.Top = FrameExtension;
                 DwmExtendFrameIntoClientArea(Handle, ref margins);
             }
+            EffectStatus = !allowsTransparency || backdrop != 1 && !translucent ? "unsupported" :
+                fullScreen ? "full-screen" : pageChrome ? "available" : "page";
+            host.ReportWindowEffect(this, EffectStatus);
 
             Color? frame = seamless && pageChrome ? desk : panel;
             int background = !translucent && !accessible && frame.HasValue ? ColorRef(frame.Value) : -1;

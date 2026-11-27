@@ -72,14 +72,14 @@ bounded 60 swiftc "$here/window-macos.swift" -o "$driver"
 cp "$page" "$page.saved"
 printf 'Keep the existing file\n' > "$existing"
 bounded 10 node "$here/window-fixture.mjs" "$MANIFEST" "$RUNNER_TEMP/window-files"
-# Select local Home only in the fixture. A real fresh install must show both choices.
-printf '%s\n' '{"schemaVersion":1,"preferences":{"home":{"mode":"local"}}}' > "$PI_POCKET_DESKTOP_STATE/desktop.json"
 
 has_windows() { [ "$(drive count)" = "$1" ]; }
 signed_in() { grep -q 'The window is signed in.' "$LOG" 2>/dev/null && has_windows 1; }
 
 for chrome in system seamless; do
-    printf '{"titleBar":"%s"}\n' "$chrome" > "$PI_POCKET_DESKTOP_STATE/window.json"
+    # The existing chrome/download proof covers both styles. The Settings proof changes these with the UI.
+    printf '{"schemaVersion":1,"windowPreferencesVersion":1,"preferences":{"home":{"mode":"local"},"window":{"titleBar":"%s"}}}\n' "$chrome" \
+        > "$PI_POCKET_DESKTOP_STATE/desktop.json"
     # The launcher rotates its log on each start. Wait only for this fixture's sign-in.
     if [ -f "$LOG" ]; then mv "$LOG" "$RUNNER_TEMP/window-before-$chrome.log"; fi
     "$app" &

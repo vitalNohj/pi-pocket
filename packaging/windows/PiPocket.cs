@@ -120,6 +120,7 @@ namespace PiPocket
             bool newSession = args.Length == 1 && BridgeProtocol.IsNewLink(args[0]);
             if (!newSession && Array.Exists(args, each => each.StartsWith("pi-pocket:", StringComparison.OrdinalIgnoreCase))) { return 0; }
             bool hidden = Array.IndexOf(args, "--hidden") >= 0 || Array.IndexOf(args, "--toast-server") >= 0;
+            bool login = Array.IndexOf(args, "--login") >= 0;
             bool quit = Array.IndexOf(args, "--quit") >= 0;
             bool first, madeIntent;
 
@@ -135,7 +136,7 @@ namespace PiPocket
                 if (!first)
                 {
                     // The running one opens its window. This process got the click, so it may hand the foreground on.
-                    if (!hidden)
+                    if (!hidden && !login)
                     {
                         Native.AllowSetForegroundWindow(Native.ASFW_ANY);
                         if (newSession) { newEvent.Set(); } else { Signal(OpenEventName); }
@@ -144,7 +145,7 @@ namespace PiPocket
                     return 0;
                 }
 
-                if (DesktopUpdates.TakeStagedUpdate(hidden))
+                if (DesktopUpdates.TakeStagedUpdate(hidden || login))
                 {
                     return 0;
                 }
@@ -153,7 +154,7 @@ namespace PiPocket
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.OleRequired();
-                TrayApp app = new TrayApp(hidden, Array.IndexOf(args, "--login") >= 0, newEvent);
+                TrayApp app = new TrayApp(hidden, login, newEvent);
                 if (newSession) { newEvent.Set(); }
                 Application.Run(app);
                 GC.KeepAlive(mutex);
@@ -273,6 +274,7 @@ namespace PiPocket
         string url;
         bool ready;
         bool openWhenReady;
+        readonly bool loginLaunch;
         volatile bool quitting;
         bool openingWindow;
         bool edgeFallback;
@@ -290,7 +292,8 @@ namespace PiPocket
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".pi-pocket")
                 : Path.GetFullPath(data);
             logFile = Path.Combine(appDir, "launcher.log");
-            openWhenReady = !hidden && !(login && WindowPrefs.startHidden);
+            loginLaunch = login && !hidden;
+            openWhenReady = !hidden && !login;
             // The handle that BeginInvoke needs, made on this thread.
             ui.CreateControl();
             GC.KeepAlive(ui.Handle);

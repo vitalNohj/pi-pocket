@@ -22,13 +22,9 @@ namespace PiPocket
         bool restartingServer;
         string[] otherOrigins = new string[0];
 
-        internal bool ShowMenuBar { get { return ShellWire.Flag(WindowPreferences, "showMenuBar"); } }
-        internal bool DeveloperTools { get { return ShellWire.Flag(WindowPreferences, "developerTools"); } }
-        internal bool CloseToTray { get { return snapshot == null || ShellWire.Flag(WindowPreferences, "closeToTray"); } }
         internal int PageGeneration { get { return pageGeneration; } }
         internal bool PageBridge { get { return pageBridge; } }
         internal string[] OtherOrigins { get { return otherOrigins; } }
-        object WindowPreferences { get { return ShellWire.Get(ShellWire.Get(snapshot, "preferences"), "window"); } }
 
         async void StartShell()
         {
@@ -85,11 +81,13 @@ namespace PiPocket
         void ApplySnapshot(object next)
         {
             if (next == null || quitting || ShellWire.Number(snapshot, "revision") > ShellWire.Number(next, "revision")) { return; }
+            bool first = snapshot == null;
             snapshot = next;
             object notices = ShellWire.Get(ShellWire.Get(next, "preferences"), "notifications");
             Bridge.Notices.Configure(!false.Equals(ShellWire.Get(notices, "enabled")),
                 !false.Equals(ShellWire.Get(notices, "sound")), ShellWire.Text(notices, "approve") ?? "full",
                 ShellWire.Get(notices, "commandLimit") is int ? ShellWire.Number(notices, "commandLimit") : 120);
+            ApplySavedWindowPreferences(next, first);
             if (settings != null) { settings.UpdateState(next); }
             if (window != null) { window.ApplyShellPreferences(); }
             foreach (PocketWindow extra in popups.ToArray()) { extra.ApplyShellPreferences(); }
@@ -183,7 +181,9 @@ namespace PiPocket
                 case "window.fullScreen": if (front != null) { front.ToggleFullScreen(); } break;
                 case "window.minimize": if (front != null) { front.WindowState = FormWindowState.Minimized; } break;
                 case "window.close": if (Form.ActiveForm != null) { Form.ActiveForm.Close(); } break;
-                case "window.preferences": break;
+                case "window.shortcut": SetWindowHotkey(ShellWire.Flag(data, "enabled"), ShellWire.Text(data, "shortcut")); break;
+                case "window.login.set": return await SetWindowLogin(ShellWire.Flag(data, "enabled"));
+                case "window.login.prepare": await PrepareWindowLogin(); break;
                 case "notifications.refresh": Bridge.Notices.RefreshPermission(); break;
                 case "notifications.systemSettings":
                     Process.Start(new ProcessStartInfo("ms-settings:notifications") { UseShellExecute = true });
@@ -227,6 +227,7 @@ namespace PiPocket
             }
             ShellSettings made = new ShellSettings(baseIcon, (command, data) => controller.Call(command, data));
             settings = made;
+            made.Activated += delegate { RefreshWindowPlatform(); };
             made.Disposed += delegate { if (settings == made) { settings = null; } };
             made.Activated += delegate { Bridge.Notices.RefreshPermission(); };
             made.SelectSection(section);

@@ -65,7 +65,6 @@ export const HOST_COMMANDS = Object.freeze([
     "local.open",
     "local.stop",
     "local.restart",
-    "window.preferences",
 ]);
 
 export const isRecord = (value) =>

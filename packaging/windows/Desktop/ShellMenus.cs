@@ -13,6 +13,7 @@ namespace PiPocket
             trayMenu.Opening += delegate (object sender, System.ComponentModel.CancelEventArgs args)
             {
                 args.Cancel = false;
+                ApplyTrayAppearance();
                 while (trayMenu.Items.Count > 0)
                 {
                     ToolStripItem old = trayMenu.Items[0];
@@ -36,7 +37,7 @@ namespace PiPocket
             if (ShellWire.Flag(entry, "separator")) { return new ToolStripSeparator(); }
             // Ampersands are WinForms mnemonic markers, not part of a session title.
             string label = (ShellWire.Text(entry, "label") ?? "").Replace("&", "&&");
-            ToolStripMenuItem item = new ToolStripMenuItem(label);
+            ToolStripMenuItem item = new ToolStripMenuItem(label) { ForeColor = trayMenu.ForeColor };
             object children = ShellWire.Get(entry, "items");
             if (children != null)
             {
