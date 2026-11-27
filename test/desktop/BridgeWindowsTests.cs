@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -45,6 +46,13 @@ namespace PiPocket
                 return "{\"name\":\"Pi Pocket\"}";
             }), "Recognize legacy manifest");
             Check(!BridgeProtocol.Recognises(_ => "{\"name\":\"unrelated\",\"bridge\":1}"), "Reject unrelated server");
+
+            var state = ShellWire.Serializer().Deserialize<Dictionary<string, object>>(
+                "{\"menus\":{\"tray\":[{\"label\":\"Pinned Sessions\",\"items\":[{\"data\":{\"id\":\"17\"}}]}]}}");
+            var pinned = ShellWire.Items(ShellWire.Get(ShellWire.Get(state, "menus"), "tray")).Single();
+            var entry = ShellWire.Items(ShellWire.Get(pinned, "items")).Single();
+            Check(ShellWire.Text(pinned, "label") == "Pinned Sessions" &&
+                ShellWire.Text(ShellWire.Get(entry, "data"), "id") == "17", "Read controller menu groups and items from JSON");
 
             var json = new JavaScriptSerializer();
             var first = NoticeData.Read(json.Deserialize<Dictionary<string, object>>(
