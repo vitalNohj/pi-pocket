@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { MAX_PACKET_BYTES, parseRequest } from "../protocol/index.mjs";
 import { DesktopController } from "./index.mjs";
+import { registerDictation } from "./dictation/index.mjs";
 
 const [folder, platform, version, migration] = process.argv.slice(2);
 
@@ -36,6 +37,9 @@ const desktop = new DesktopController({
 });
 
 // Installed feature modules register here before load, so saved preferences can be validated on the first read.
+const root = new URL("./dictation/runtime/", import.meta.url);
+
+await registerDictation(desktop, { folder, root });
 await desktop.load();
 
 const decoder = new TextDecoder("utf-8", { fatal: true });

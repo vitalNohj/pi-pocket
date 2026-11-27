@@ -152,6 +152,9 @@ $assets = New-Item -ItemType Directory (Join-Path $desktop "desktop-assets")
 foreach ($name in @("controller", "protocol", "settings", "feed")) {
     Copy-Item -Recurse (Join-Path $PSScriptRoot "..\desktop\$name") $assets.FullName
 }
+& (Join-Path $nodeDir "node.exe") (Join-Path $PSScriptRoot "..\desktop\bundle-dictation.mjs") `
+    (Join-Path $appDir "node_modules\pi-pocket") (Join-Path $assets.FullName "controller\dictation\runtime")
+if ($LASTEXITCODE -ne 0) { throw "bundle-dictation.mjs exited with $LASTEXITCODE" }
 Write-Host "Built $appExe"
 
 if ($TestBridge) {

@@ -543,6 +543,7 @@ namespace PiPocket
         void Stop()
         {
             if (windowHotkey != null) { windowHotkey.Dispose(); windowHotkey = null; }
+            StopDictation();
             if (controller != null) { controller.Dispose(); }
             if (settings != null) { settings.Dispose(); }
             CloseWindows();

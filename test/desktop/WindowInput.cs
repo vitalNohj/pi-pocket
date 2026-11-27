@@ -68,6 +68,12 @@ static class WindowInput
             {
                 case "expect-field": WaitForFocusedField(window, args[3]); break;
                 case "shot": Screenshot(window, args[3]); break;
+                case "dictation-menu":
+                    SendKeys.SendWait("^+{F10}");
+                    Thread.Sleep(550);
+                    Capture(SystemInformation.VirtualScreen, args[3]);
+                    SendKeys.SendWait("{ESC}");
+                    break;
                 case "click": Click(window, int.Parse(args[3], CultureInfo.InvariantCulture), int.Parse(args[4], CultureInfo.InvariantCulture)); break;
                 case "type": SendKeys.SendWait(args[3]); break;
                 default: throw new ArgumentException("Unknown test operation.");
@@ -148,6 +154,11 @@ static class WindowInput
         Rect rect;
         if (!GetWindowRect(window, out rect)) { throw new InvalidOperationException("Cannot measure the installed window."); }
         Rectangle bounds = Rectangle.Intersect(Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom), SystemInformation.VirtualScreen);
+        Capture(bounds, path);
+    }
+
+    static void Capture(Rectangle bounds, string path)
+    {
         using (var image = new Bitmap(bounds.Width, bounds.Height))
         using (Graphics graphics = Graphics.FromImage(image))
         {

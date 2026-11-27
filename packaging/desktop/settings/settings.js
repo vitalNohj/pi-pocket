@@ -605,6 +605,126 @@
     }
 
     const coming = () => element("p", "More options are coming soon.", { className: "hint" });
+
+    function dictation() {
+        const unavailable = state.dictation.status !== "available";
+        const mac = state.platform === "macos";
+        const models = element("div");
+        const selected = element("p", "", { className: "muted" });
+        const progress = element("p", "", { className: "muted", role: "status" });
+        const cancel = action("Cancel download", () => run("dictation.cancelDownload"));
+        const words = element("textarea", "", {
+            rows: 3,
+            maxLength: 2000,
+            value: state.preferences.dictation.words ?? "",
+            placeholder: "Names or terms, one per line",
+        });
+
+        words.onchange = () => patch("dictation", "words", words.value);
+        let modelKey;
+
+        refresh = () => {
+            const speech = state.dictation;
+            const task = speech.progress;
+            const current = speech.models?.find(({ id }) => id === speech.selected);
+
+            selected.textContent =
+                speech.message ||
+                (current ? `Selected: ${current.name}` : "No speech model selected.");
+            progress.textContent =
+                task?.kind === "download"
+                    ? `Downloading and verifying${task.total ? `… ${Math.round((100 * task.written) / task.total)}%` : "…"}`
+                    : task
+                      ? "Updating speech models…"
+                      : speech.busy
+                        ? "Dictation is in progress…"
+                        : "";
+            cancel.hidden = task?.kind !== "download";
+            const next = JSON.stringify([speech.models, speech.selected, speech.busy]);
+
+            if (next === modelKey) {
+                return;
+            }
+
+            modelKey = next;
+            models.replaceChildren(
+                ...(speech.models ?? []).map((model) => {
+                    const controls = element("div", "", { className: "actions" });
+                    const button = (label, kind) =>
+                        action(label, () => run(`dictation.${kind}`, { model: model.id }));
+
+                    if (model.installed) {
+                        const use = button(
+                            model.id === speech.selected ? "Selected" : "Select",
+                            "select",
+                        );
+                        const remove = button("Remove", "remove");
+
+                        use.disabled = speech.busy || model.id === speech.selected;
+                        remove.disabled = speech.busy;
+                        controls.append(use, remove);
+                    } else {
+                        const download = button(
+                            model.supported ? "Download" : "Too large for this engine",
+                            "download",
+                        );
+
+                        download.disabled = speech.busy || !model.supported;
+                        controls.append(download);
+                    }
+
+                    return panel(
+                        model.name,
+                        element(
+                            "p",
+                            `${model.languages} · ${Math.round(model.bytes / 1e6)} MB · ${model.license}${model.recommended ? " · Recommended" : ""}`,
+                            { className: "muted" },
+                        ),
+                        controls,
+                    );
+                }),
+            );
+        };
+
+        content.append(
+            panel(
+                "Offline dictation",
+                element(
+                    "p",
+                    "Speech is recognized on this device. Enable Offline dictation in Pi Pocket’s Extensions menu and focus an editable composer. Dictation changes the draft; it never sends it.",
+                ),
+                selectField(
+                    "Dictation key",
+                    "dictation",
+                    "key",
+                    [
+                        ["default", mac ? "Default (Right Option)" : "Default (Right Ctrl)"],
+                        ["none", "None"],
+                        ["primary-shift-d", mac ? "Command + Shift + D" : "Ctrl + Shift + D"],
+                        ["F8", "F8"],
+                        ["F9", "F9"],
+                    ],
+                    unavailable,
+                ),
+                selectField(
+                    "Key behavior",
+                    "dictation",
+                    "keyMode",
+                    [
+                        ["both", "Hold or tap"],
+                        ["hold", "Hold"],
+                        ["tap", "Tap"],
+                    ],
+                    unavailable,
+                ),
+                checkbox("Show words as you speak", "dictation", "live", unavailable),
+                field("Custom words (Parakeet models)", words),
+            ),
+            panel("Speech models", selected, progress, cancel),
+            models,
+        );
+    }
+
     const sections = {
         home,
         server,
@@ -630,14 +750,7 @@
                     "The server checks for its own updates in Pi Pocket. The desktop app does not update the server or runner.",
                 ),
             ),
-        dictation: () =>
-            content.append(
-                panel(
-                    "Offline dictation",
-                    checkbox("Dictate anywhere", "dictation", "anywhere", true),
-                    coming(),
-                ),
-            ),
+        dictation,
         window: () => {
             const controls = [
                 checkbox("Close to tray", "window", "closeToTray"),

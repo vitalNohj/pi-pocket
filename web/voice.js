@@ -29,7 +29,10 @@ function Recognizer() {
         // Storage is not available in this profile.
     }
 
-    return globalThis.SpeechRecognition ?? globalThis.webkitSpeechRecognition;
+    // The desktop view uses only the offline extension. Do not fall back to the browser vendor there.
+    return globalThis.pocketDictation?.apiVersion === 1
+        ? undefined
+        : (globalThis.SpeechRecognition ?? globalThis.webkitSpeechRecognition);
 }
 
 /** A first-party extension supplies a Web Speech-shaped local recognizer. Removal cancels its outstanding results. */
@@ -78,6 +81,28 @@ export function toggleDictation() {
     const box = top ?? (store.state.pipOpen ? undefined : boxes.findLast(shown));
 
     return voiceAvailable() && (box?.toggle() ?? false);
+}
+
+/** Native key and tray commands may only use the focused, editable composer. PiP keeps priority. */
+export function controlFocusedDictation(op) {
+    if (!document.hasFocus() || document.hidden || !voiceAvailable()) {
+        return false;
+    }
+
+    const box = boxes.findLast(
+        (entry) =>
+            entry.box.current === document.activeElement && (!store.state.pipOpen || entry.top),
+    );
+
+    if (!box) {
+        return false;
+    }
+
+    if (op === "hold") {
+        return !box.recognition && box.start();
+    }
+
+    return op === "release" ? box.stop() : box.toggle();
 }
 
 /**

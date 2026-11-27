@@ -1,5 +1,5 @@
 // Compiled into both hosts. The adapter supplies the origin, fixed menu items and the native transport.
-((config, transport) => {
+((config, transport, dictation) => {
     const { basePath } = config;
     const path = location.pathname;
     const page =
@@ -63,6 +63,18 @@
         }
     };
 
+    let speechReceiver;
+
+    dictation?.(
+        config.origin,
+        (packet) => {
+            if (key !== null) {
+                transport.send({ ...packet, key });
+            }
+        },
+        (receive) => { speechReceiver = receive; },
+    );
+
     transport.listen((data) => {
         if (data?.type === "bind" && typeof data.key === "string") {
             // Only a committed top-level document gets a lease. A restored document may get a new one.
@@ -70,6 +82,7 @@
             shown = data.visible === true;
             primary = false;
             hello();
+            speechReceiver?.({ type: "bind" });
             emit({ type: "visibility" });
             emit({ type: "primary" });
 
@@ -80,7 +93,9 @@
             return;
         }
 
-        if (data.type === "visibility") {
+        if (data.type === "dictation") {
+            speechReceiver?.(data);
+        } else if (data.type === "visibility") {
             shown = data.visible === true;
             emit({ type: "visibility" });
         } else if (data.type === "primary" && primary !== data.primary) {

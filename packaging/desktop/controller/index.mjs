@@ -61,6 +61,7 @@ export class DesktopController {
     #pending = new Map();
     #actions = new Map();
     #commands = new Map();
+    #reports = new Map();
     #rules = structuredCloneRules();
     #saving = Promise.resolve();
     #id = 0;
@@ -185,6 +186,18 @@ export class DesktopController {
         this.#commands.set(name, validate);
     }
 
+    registerHostReport(name, validate, run) {
+        this.#reports.set(name, { validate, run });
+    }
+
+    get activeGeneration() {
+        return this.#state.home.active?.generation ?? 0;
+    }
+
+    get dictationPreferences() {
+        return { ...this.#state.preferences.dictation };
+    }
+
     registerPreference(section, key, defaultValue, validate) {
         if (!isSection(section) || !validate(defaultValue)) {
             throw new Error("Invalid desktop preference definition");
@@ -283,15 +296,27 @@ export class DesktopController {
                     await this.#patch(value);
                     result = this.snapshot();
                     break;
-                case "host.report":
-                    if (
-                        !onlyKeys(value, ["event", "data"]) ||
-                        !this.#report(value.event, value.data)
-                    ) {
+
+                case "host.report": {
+                    if (!onlyKeys(value, ["event", "data"])) {
+                        throw invalid();
+                    }
+
+                    const report = this.#reports.get(value.event);
+
+                    if (report) {
+                        if (!report.validate(value.data)) {
+                            throw invalid();
+                        }
+
+                        result = await report.run(value.data);
+                    } else if (!this.#report(value.event, value.data)) {
                         throw invalid();
                     }
 
                     break;
+                }
+
                 case "host.result":
                     this.#hostResult(value);
                     break;

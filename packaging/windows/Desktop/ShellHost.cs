@@ -52,8 +52,10 @@ namespace PiPocket
             controller = new ShellController(start, packet => OnUi(delegate { ControllerPacket(packet); }),
                 () => OnUi(delegate
                 {
+                    StopDictation();
                     LocalNotice("Desktop Settings could not connect to the controller. Try reinstalling Pi Pocket.");
                 }));
+            StartDictationKey();
             Task<object> subscribed = controller.Call("subscribe");
             if (openWhenReady && fresh) { OpenSettings("home"); }
             try { ApplySnapshot(await subscribed); }
@@ -159,6 +161,9 @@ namespace PiPocket
             PocketWindow front = ActivePocketWindow;
             switch (action)
             {
+                case "dictation.toggle": return await DictationOperation("toggle", data);
+                case "dictation.copy": return await DictationOperation("copy", data);
+                case "dictation.event": return await DictationOperation("event", data);
                 case "settings.open": OpenSettings(ShellWire.Text(data, "section")); break;
                 case "settings.back": BackToPage(); break;
                 case "window.open": OpenWindow(); break;

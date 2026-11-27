@@ -53,5 +53,7 @@
     </dict>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright (c) 2026 Tanner Middleton. MIT License.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Pi Pocket uses the microphone for offline dictation. Audio stays on this device.</string>
 </dict>
 </plist>

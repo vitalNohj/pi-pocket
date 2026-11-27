@@ -100,6 +100,17 @@ case "shot":
     try capture.run()
     capture.waitUntilExit()
     if capture.terminationStatus != 0 { fail("Could not capture the installed window.") }
+case "dictation-menu":
+    prepareInput()
+    key(109, flags: [.maskControl, .maskShift]) // Ctrl+Shift+F10 in the isolated fixture profile.
+    Thread.sleep(forTimeInterval: 0.6)
+    let capture = Process()
+    capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    capture.arguments = ["-x", args[4]]
+    try capture.run()
+    capture.waitUntilExit()
+    key(53) // Escape
+    if capture.terminationStatus != 0 { fail("Could not capture the π menu.") }
 case "click":
     prepareInput()
     let frame = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 930, height: 710),

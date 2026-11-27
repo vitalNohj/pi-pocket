@@ -141,6 +141,7 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
     let action: (String) -> Void
     let badge: (Int) -> Void
     private let notificationsEnabled: () -> Bool
+    private let dictation: (WKWebView, [String: Any]) -> Void
     private var documents: [Document] = []
     private var primary: Document?
     private weak var newTarget: Document?
@@ -151,14 +152,15 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
     lazy var notices = NoticesMac { [weak self] ticket, choice in self?.activate(ticket, choice) }
 
     init(showMain: @escaping () -> Void, badge: @escaping (Int) -> Void, action: @escaping (String) -> Void,
-        notificationsEnabled: @escaping () -> Bool) {
+        notificationsEnabled: @escaping () -> Bool, dictation: @escaping (WKWebView, [String: Any]) -> Void = { _, _ in }) {
         self.showMain = showMain
         self.badge = badge
         self.action = action
         self.notificationsEnabled = notificationsEnabled
+        self.dictation = dictation
     }
 
-    func install(_ configuration: WKWebViewConfiguration, address: URL) {
+    func install(_ configuration: WKWebViewConfiguration, address: URL, speechScript: String = "null") {
         guard let origin = BridgeProtocol.origin(address),
             let file = Bundle.main.url(forResource: "PocketBridge", withExtension: "js"),
             let source = try? String(contentsOf: file, encoding: .utf8),
@@ -173,7 +175,7 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
             \(config), {
                 send: (packet) => window.webkit.messageHandlers.pocket.postMessage(packet),
                 listen: (receive) => Object.defineProperty(window, '__pocketNativeReceive', { value: receive }),
-            }
+            }, (speechScript)
             """
         let script = source.replacingOccurrences(of: "/* POCKET_BRIDGE_ARGUMENTS */", with: arguments)
         configuration.userContentController.addUserScript(
@@ -187,6 +189,10 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
         if let origin = BridgeProtocol.origin(address) {
             documents.append(Document(view, origin: origin, basePath: BridgeProtocol.basePath(address)))
         }
+    }
+
+    func sendDictation(_ view: WKWebView, _ event: [String: Any]) {
+        document(view)?.send("dictation", event)
     }
 
     func focus(_ view: WKWebView) {
@@ -333,6 +339,7 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
             let type = body["type"] as? String
         else { return }
 
+        if type == "dictation" { dictation(view, body); return }
         if type == "subscribe" && doc.events == nil {
             let offered = (body["events"] as? [Any])?.prefix(8).compactMap { $0 as? String } ?? BridgeProtocol.legacy
             doc.events = BridgeProtocol.events.intersection(offered)

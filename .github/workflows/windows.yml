@@ -121,7 +121,12 @@ jobs:
                   & (Join-Path $env:APP "node\node.exe") test/desktop/runner-installed.mjs
                   if ($LASTEXITCODE -ne 0) { throw "The installed runner smoke test failed" }
 
-            - name: Test offline Settings and the two-choice Home in the installed app
+            - name: Transcribe the local fixture with the installed speech worker
+              timeout-minutes: 5
+              run: |
+                  & (Join-Path $env:APP "node\node.exe") --experimental-vm-modules test/desktop/dictation-smoke.mjs $env:MANIFEST (Join-Path $env:RUNNER_TEMP "dictation-models")
+
+            - name: Test Desktop Settings, Home and native dictation in the installed app
               run: |
                   $driver = Join-Path $env:RUNNER_TEMP 'window-input.exe'
                   $source = Join-Path $env:GITHUB_WORKSPACE 'test\desktop\WindowInput.cs'
@@ -134,7 +139,7 @@ jobs:
                       @automation "/out:$driver" $source
                   if ($LASTEXITCODE -ne 0) { throw 'Could not compile the Windows input driver' }
                   node test/desktop/native-smoke.mjs (Join-Path $env:APP 'Pi Pocket.exe') `
-                      $driver (Join-Path $env:RUNNER_TEMP 'windows-home')
+                      $driver (Join-Path $env:RUNNER_TEMP 'windows-home') (Join-Path $env:RUNNER_TEMP "dictation-models")
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               if: always()
@@ -143,11 +148,6 @@ jobs:
                   path: ${{ runner.temp }}/windows-home/*.png
                   if-no-files-found: ignore
                   retention-days: 7
-
-            - name: Transcribe the local fixture with the installed speech worker
-              timeout-minutes: 5
-              run: |
-                  & (Join-Path $env:APP "node\node.exe") --experimental-vm-modules test/desktop/dictation-smoke.mjs $env:MANIFEST (Join-Path $env:RUNNER_TEMP "dictation-models")
 
             - name: Start Pi Pocket and check that it answers HTTP
               run: |

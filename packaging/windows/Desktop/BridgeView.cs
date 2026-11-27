@@ -22,6 +22,7 @@ namespace PiPocket
         HashSet<string> events;
         readonly HashSet<string> actions = new HashSet<string> { "new-session", "new-window", "server-settings" };
         readonly Action<string> action;
+        readonly Action<object> dictation;
         ulong navigation;
         bool? shown;
         public string Lease { get; private set; }
@@ -32,7 +33,7 @@ namespace PiPocket
         public bool Modern { get { return Can("primary"); } }
 
         public BridgeView(BridgeWindows windows, PocketWindow window, CoreWebView2 browser, string origin, string basePath,
-            Action<string> action)
+            Action<string> action, Action<object> dictation = null)
         {
             this.window = window;
             this.windows = windows;
@@ -40,6 +41,7 @@ namespace PiPocket
             this.origin = origin;
             this.basePath = basePath;
             this.action = action;
+            this.dictation = dictation;
         }
 
         static string ReadBootstrap()
@@ -48,7 +50,7 @@ namespace PiPocket
             using (StreamReader reader = new StreamReader(input)) { return reader.ReadToEnd(); }
         }
 
-        public Task Attach()
+        public Task Attach(string speechScript = "null")
         {
             windows.Add(this);
             window.Activated += delegate { windows.Focus(this); };
@@ -76,10 +78,10 @@ namespace PiPocket
                     windows.Replaced(this);
                 }
             };
-            return browser.AddScriptToExecuteOnDocumentCreatedAsync(Script(origin, basePath));
+            return browser.AddScriptToExecuteOnDocumentCreatedAsync(Script(origin, basePath, speechScript));
         }
 
-        internal static string Script(string origin, string basePath)
+        internal static string Script(string origin, string basePath, string speechScript = "null")
         {
             var config = new
             {
@@ -91,7 +93,7 @@ namespace PiPocket
             return Bootstrap.Replace("/* POCKET_BRIDGE_ARGUMENTS */", new JavaScriptSerializer().Serialize(config) + @", {
                 send: (message) => window.chrome.webview.postMessage(message),
                 listen: (receive) => window.chrome.webview.addEventListener('message', (event) => receive(event.data)),
-            }");
+            }, " + speechScript);
         }
 
         public void Navigating(ulong id)
@@ -123,6 +125,7 @@ namespace PiPocket
             catch (InvalidOperationException) { return; }
             if (body == null || BridgeProtocol.Text(body, "key", 32) != Lease) { return; }
             string type = BridgeProtocol.Text(body, "type", 12);
+            if (type == "dictation") { if (dictation != null) { dictation(body); } return; }
             object value;
 
             if (type == "subscribe" && !Subscribed)
@@ -193,6 +196,11 @@ namespace PiPocket
             }
             catch (InvalidOperationException) { return false; }
             catch (System.Runtime.InteropServices.COMException) { return false; }
+        }
+
+        internal bool SendDictation(string op, string scope, string id, object parts, string message)
+        {
+            return Push(new { type = "dictation", key = Lease, op = op, scope = scope, id = id, parts = parts, message = message });
         }
 
         public bool Can(string name) { return events != null && events.Contains(name); }

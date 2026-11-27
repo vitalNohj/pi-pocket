@@ -161,11 +161,16 @@ jobs:
                       exit 1
                   fi
 
-            - name: Test offline Settings and the two-choice Home in the installed app
+            - name: Transcribe the local fixture with the installed speech worker
+              timeout-minutes: 5
+              run: |
+                  "$APP/node/bin/node" --experimental-vm-modules test/desktop/dictation-smoke.mjs "$MANIFEST" "$RUNNER_TEMP/dictation-models"
+
+            - name: Test Desktop Settings, Home and native dictation in the installed app
               run: |
                   swiftc test/desktop/window-input.swift -o "$RUNNER_TEMP/desktop-input"
                   node test/desktop/native-smoke.mjs "$BUNDLE/Contents/MacOS/Pi Pocket" \
-                      "$RUNNER_TEMP/desktop-input" "$RUNNER_TEMP/macos-home"
+                      "$RUNNER_TEMP/desktop-input" "$RUNNER_TEMP/macos-home" "$RUNNER_TEMP/dictation-models"
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               if: always()
@@ -179,11 +184,6 @@ jobs:
             - name: Test the installed runner without npm
               run: |
                   "$APP/node/bin/node" test/desktop/runner-installed.mjs
-
-            - name: Transcribe the local fixture with the installed speech worker
-              timeout-minutes: 5
-              run: |
-                  "$APP/node/bin/node" --experimental-vm-modules test/desktop/dictation-smoke.mjs "$MANIFEST" "$RUNNER_TEMP/dictation-models"
 
             - name: Start Pi Pocket and check that it answers HTTP
               run: |
