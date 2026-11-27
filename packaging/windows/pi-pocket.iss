@@ -74,6 +74,7 @@ Source: "{#DesktopDir}\Microsoft.Web.WebView2.Core.dll"; DestDir: "{app}"; Flags
 Source: "{#DesktopDir}\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\WebView2-License.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DesktopDir}\desktop-assets\*"; DestDir: "{app}\desktop-assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "pi-pocket.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "pi-pocket.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-pi-pocket.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -95,6 +96,8 @@ Type: files; Name: "{app}\install.log"
 Type: files; Name: "{app}\launcher.log"
 Type: files; Name: "{app}\launcher.old.log"
 Type: files; Name: "{app}\window-bounds.txt"
+Type: files; Name: "{app}\desktop-upgrade.txt"
+Type: filesandordirs; Name: "{localappdata}\Pi Pocket\desktop"
 Type: filesandordirs; Name: "{localappdata}\Pi Pocket\WebView2 profile"
 ; Also remove the separate profile that older installs and the missing-Runtime fallback use.
 Type: filesandordirs; Name: "{app}\Edge profile"
@@ -344,6 +347,9 @@ begin
     Result := 'Pi Pocket is still running. Quit it (Pi Pocket''s icon in the notification area, then Quit), then run Setup again.';
     exit;
   end;
+
+  if FileExists(ExpandConstant('{app}\Pi Pocket.exe')) and not FileExists(ExpandConstant('{app}\desktop-assets\settings\index.html')) then
+    SaveStringToFile(ExpandConstant('{app}\desktop-upgrade.txt'), 'Previous desktop install.', False);
 
   Installed := InstalledAppVersion;
   KeepApp := (Installed <> '') and (CompareVersions(Installed, '{#AppVersion}') > 0);

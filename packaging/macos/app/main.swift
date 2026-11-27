@@ -4,6 +4,7 @@
 // A newer pi-pocket package replaces nothing here, so this app uses only --desktop, launcher-running.json,
 // /api/pocket/info, /api/sign-in-link, and /api/restart.
 import Cocoa
+import CoreFoundation
 import UserNotifications
 import WebKit
 
@@ -25,20 +26,25 @@ let logFile = logFolder.appendingPathComponent("launcher.log")
 func bridgeScript(origin: String) -> String {
     return """
         (() => {
-            if (window.top !== window || location.origin !== \(jsString(origin))) { return; }
+            if (window.top !== window || window.origin !== \(jsString(origin)) || location.origin !== \(jsString(origin))) { return; }
             const post = (message) => window.webkit.messageHandlers.pocket.postMessage(message);
             let listener = null;
             let shown = true;
+            let handlesNewSession = false;
             Object.defineProperty(window, "__pocketHostEvent", {
                 value: (event) => {
                     if (event.type === "visibility") { shown = event.visible; }
+                    if (event.type === "newSession" && !handlesNewSession) { return; }
                     try { listener?.({ type: event.type, url: event.url }); } catch (error) { console.error(error); }
                 },
             });
             window.pocketHost = Object.freeze({
                 kind: "pi-pocket-macos",
                 apiVersion: 1,
-                capabilities: ["badge", "notify", "visibility", "open"],
+                capabilities: Object.freeze(["menu", "badge", "notify", "visibility", "open", "newSession"]),
+                menuTitle: () => "Pi Pocket Desktop",
+                menuItems: () => [{ id: "server-settings", label: "Desktop Settings…" }],
+                invoke: (id) => { if (id !== "server-settings") { return false; } post({ type: "settings" }); return true; },
                 setBadge: (count) => post({ type: "badge", count: Number(count) || 0 }),
                 notify: (message) => post({
                     type: "notify",
@@ -48,7 +54,10 @@ func bridgeScript(origin: String) -> String {
                     tag: String(message?.tag ?? ""),
                 }),
                 visible: () => shown,
-                subscribe: (next) => { listener = typeof next === "function" ? next : null; },
+                subscribe: (next, events) => {
+                    listener = typeof next === "function" ? next : null;
+                    handlesNewSession = Array.isArray(events) && events.includes("newSession");
+                },
             });
         })();
         """
@@ -138,31 +147,6 @@ func packageProblem() -> (title: String, advice: String)? {
     return nil
 }
 
-func runningServer(pid: Int32?) -> URL? {
-    guard let data = try? Data(contentsOf: dataFolder.appendingPathComponent("launcher-running.json")),
-        let running = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-        let found = running["pid"] as? Int, let address = running["url"] as? String,
-        let url = URL(string: address)
-    else {
-        return nil
-    }
-
-    if let pid = pid, Int32(found) != pid {
-        return nil
-    }
-
-    // Signal 0 checks that the process is there without touching it.
-    if kill(pid_t(found), 0) != 0 {
-        return nil
-    }
-
-    guard let info = try? request("GET", url.appendingPathComponent("api/pocket/info"), token: nil) else {
-        return nil
-    }
-
-    return String(data: info, encoding: .utf8)?.contains("\"pi-pocket\"") == true ? url : nil
-}
-
 func ownerToken() throws -> String {
     let data = try Data(contentsOf: dataFolder.appendingPathComponent("config.json"))
 
@@ -173,6 +157,14 @@ func ownerToken() throws -> String {
     }
 
     return token
+}
+
+// A verified token request must never follow a redirect, even to the original origin.
+final class NoRedirect: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
 }
 
 func request(_ method: String, _ url: URL, token: String?) throws -> Data {
@@ -194,7 +186,7 @@ func request(_ method: String, _ url: URL, token: String?) throws -> Data {
     let configuration = URLSessionConfiguration.ephemeral
 
     configuration.connectionProxyDictionary = [:]
-    let session = URLSession(configuration: configuration)
+    let session = URLSession(configuration: configuration, delegate: NoRedirect(), delegateQueue: nil)
     let done = DispatchSemaphore(value: 0)
     var result: Result<Data, Error> = .failure(URLError(.timedOut))
 
@@ -209,10 +201,11 @@ func request(_ method: String, _ url: URL, token: String?) throws -> Data {
 
         done.signal()
     }.resume()
-    _ = done.wait(timeout: .now() + 15)
-    session.finishTasksAndInvalidate()
-
-    return try result.get()
+    defer { session.invalidateAndCancel() }
+    guard done.wait(timeout: .now() + 15) == .success else { throw URLError(.timedOut) }
+    let data = try result.get()
+    guard data.count <= 16 * 1024 else { throw URLError(.dataLengthExceedsMaximum) }
+    return data
 }
 
 /// Opened to append: this app and its launcher write to the log at once.
@@ -243,15 +236,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     // Windows that pages opened (an artifact's "Open tab"), each kept until it closes, with its close observer.
     var popups: [NSWindow: NSObjectProtocol] = [:]
     var statusItem: NSStatusItem?
-    var openItem: NSMenuItem?
-    var restartItem: NSMenuItem?
     var launcher: Process?
     var lifeline: Pipe?
-    var server: URL?
-    var ready = false
+    var controller: ShellController?
+    var snapshot: [String: Any] = [:]
+    var settings: ShellSettings?
+    var page: ShellPage?
+    var notice: NSStackView?
+    var pageStatus: String?
+    var pageCommitted = false
+    var pendingSession = false
+    var recovered = false
+    let localStore = WKWebsiteDataStore.nonPersistent()
+    let localQueue = DispatchQueue(label: "Pi Pocket local launcher")
+    var local: LocalServer?
     var openWhenReady = !CommandLine.arguments.contains("--hidden")
     var quitting = false
-    var stopped = false
     var checkedSignIn = false
     var termSource: DispatchSourceSignal?
 
@@ -297,7 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             NSApp.activate(ignoringOtherApps: true)
         }
 
-        DispatchQueue.global().async { self.start() }
+        startShell()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -308,48 +308,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false
-    }
-
-    func start() {
-        if let running = runningServer(pid: nil) {
-            // Another launcher runs it, such as Pi Pocket (console): use it, and leave it running on Quit.
-            DispatchQueue.main.async { self.becameReady(running) }
-
-            return
-        }
-
-        if let problem = packageProblem() {
-            DispatchQueue.main.async { self.fail(problem.title, advice: problem.advice) }
-
-            return
-        }
-
-        do {
-            try startLauncher()
-        } catch {
-            DispatchQueue.main.async { self.fail("Pi Pocket could not start: \(error.localizedDescription)") }
-
-            return
-        }
-
-        let started = Date()
-
-        // An update that does not start can take the launcher 5 minutes to undo.
-        while Date().timeIntervalSince(started) < 6 * 60 {
-            guard let launcher = launcher, launcher.isRunning else {
-                return
-            }
-
-            if let running = runningServer(pid: launcher.processIdentifier) {
-                DispatchQueue.main.async { self.becameReady(running) }
-
-                return
-            }
-
-            Thread.sleep(forTimeInterval: 0.25)
-        }
-
-        DispatchQueue.main.async { self.fail("Pi Pocket did not get ready in 6 minutes.") }
     }
 
     func startLauncher() throws {
@@ -415,179 +373,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         try? output.close()
     }
 
-    func becameReady(_ url: URL) {
-        server = url
-        ready = true
-        openItem?.isEnabled = true
-        restartItem?.isEnabled = true
-        statusItem?.button?.toolTip = launcher == nil ? "Pi Pocket (started by another launcher)" : "Pi Pocket"
-
-        if openWhenReady {
-            openWindow()
-        }
-    }
-
     func launcherEnded(_ process: Process) {
-        if quitting || process !== launcher {
-            return
-        }
+        if quitting || process !== launcher { return }
+        let message = "The local launcher stopped (exit code \(process.terminationStatus)). Check the server log."
 
-        if process.terminationStatus == 0 {
-            stopped = true
-            NSApp.terminate(nil)
-
-            return
-        }
-
-        fail("\(ready ? "Pi Pocket stopped" : "Pi Pocket could not start") (exit code \(process.terminationStatus)).")
-    }
-
-    func fail(_ message: String, advice: String? = nil) {
-        if quitting {
-            return
-        }
-
-        log("Error: \(message) \(advice ?? "")")
-        let alert = NSAlert()
-
-        alert.alertStyle = .critical
-        alert.messageText = message
-        alert.informativeText = advice ?? (launcher == nil ? "" : "The details are in \(logFile.path).")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
-        NSApp.terminate(nil)
-    }
-
-    @objc func restartServer() {
-        guard let server = server else {
-            return
-        }
-
-        DispatchQueue.global().async {
-            do {
-                _ = try request("POST", server.appendingPathComponent("api/restart"), token: try ownerToken())
-            } catch {
-                DispatchQueue.main.async {
-                    let alert = NSAlert()
-
-                    alert.messageText = "Could not restart the server: \(error.localizedDescription)"
-                    alert.runModal()
-                }
-            }
-        }
+        log(message)
+        report("local", localSnapshot("error", message: message))
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if quitting { return .terminateLater }
         quitting = true
-
-        guard let process = launcher, process.isRunning, !stopped else {
-            return .terminateNow
-        }
-
-        log("Quit: stopping the launcher.")
-        try? lifeline?.fileHandleForWriting.close()
-        kill(process.processIdentifier, SIGTERM)
-        let started = Date()
-
-        while kill(process.processIdentifier, 0) == 0 && Date().timeIntervalSince(started) < 20 {
-            var status: Int32 = 0
-
-            // The launcher is this app's child: reap it here, so that the check above sees it gone.
-            if waitpid(process.processIdentifier, &status, WNOHANG) == process.processIdentifier {
-                break
+        controller?.close()
+        closeSessionWindows()
+        settings?.window.close()
+        let loop = CFRunLoopGetMain()
+        let mode = RunLoop.Mode.modalPanel.rawValue as CFString
+        localQueue.async {
+            do { try self.stopLocal() }
+            catch {
+                // Only this app's own direct child. A borrowed launcher has no Process handle here.
+                self.launcher?.terminate()
             }
-
-            usleep(100_000)
+            // AppKit waits in modal panel mode after .terminateLater. Use that mode for the reply.
+            CFRunLoopPerformBlock(loop, mode) { sender.reply(toApplicationShouldTerminate: true) }
+            CFRunLoopWakeUp(loop)
         }
-
-        if kill(process.processIdentifier, 0) == 0 {
-            log("Quit: the launcher did not stop in 20 seconds; killing it.")
-            kill(process.processIdentifier, SIGKILL)
-        }
-
-        log("Quit: done.")
-
-        return .terminateNow
-    }
-
-    func mainMenu() -> NSMenu {
-        let bar = NSMenu()
-
-        func menu(_ title: String, _ items: [NSMenuItem]) {
-            let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            let submenu = NSMenu(title: title)
-
-            items.forEach { submenu.addItem($0) }
-            holder.submenu = submenu
-            bar.addItem(holder)
-        }
-
-        func item(_ title: String, _ action: Selector?, _ key: String = "", _ modifiers: NSEvent.ModifierFlags = .command)
-            -> NSMenuItem
-        {
-            let made = NSMenuItem(title: title, action: action, keyEquivalent: key)
-
-            made.keyEquivalentModifierMask = modifiers
-
-            return made
-        }
-
-        menu("Pi Pocket", [
-            item("About Pi Pocket", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
-            .separator(),
-            item("Restart Server", #selector(restartServer)),
-            .separator(),
-            item("Hide Pi Pocket", #selector(NSApplication.hide(_:)), "h"),
-            item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
-            item("Show All", #selector(NSApplication.unhideAllApplications(_:))),
-            .separator(),
-            item("Quit Pi Pocket", #selector(NSApplication.terminate(_:)), "q"),
-        ])
-        menu("Edit", [
-            item("Undo", Selector(("undo:")), "z"),
-            item("Redo", Selector(("redo:")), "z", [.command, .shift]),
-            .separator(),
-            item("Cut", #selector(NSText.cut(_:)), "x"),
-            item("Copy", #selector(NSText.copy(_:)), "c"),
-            item("Paste", #selector(NSText.paste(_:)), "v"),
-            item("Select All", #selector(NSText.selectAll(_:)), "a"),
-        ])
-        menu("View", [
-            item("Reload", #selector(reload), "r"),
-            item("Actual Size", #selector(actualSize), "0"),
-            item("Zoom In", #selector(zoomIn), "+"),
-            item("Zoom Out", #selector(zoomOut), "-"),
-            .separator(),
-            item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]),
-        ])
-        menu("Window", [
-            item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
-            item("Zoom", #selector(NSWindow.performZoom(_:))),
-            item("Close", #selector(NSWindow.performClose(_:)), "w"),
-        ])
-
-        return bar
-    }
-
-    func makeStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let menu = NSMenu()
-        let open = NSMenuItem(title: "Open Pi Pocket", action: #selector(openFromMenu), keyEquivalent: "")
-        let restart = NSMenuItem(title: "Restart Server", action: #selector(restartServer), keyEquivalent: "")
-
-        item.button?.title = "π"
-        item.button?.toolTip = "Pi Pocket (starting)"
-        open.isEnabled = false
-        restart.isEnabled = false
-        menu.autoenablesItems = false
-        menu.addItem(open)
-        menu.addItem(restart)
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Pi Pocket", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
-        item.menu = menu
-        statusItem = item
-        openItem = open
-        restartItem = restart
+        return .terminateLater
     }
 
     @objc func openFromMenu() {
@@ -596,7 +408,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     // The view of the window in front: the main one, or a page's own window.
     var frontView: WKWebView? {
-        (NSApp.keyWindow?.contentView as? WKWebView) ?? webView
+        let key = NSApp.keyWindow
+        return key == window ? webView : (key?.contentView as? WKWebView) ?? webView
     }
 
     @objc func reload() {
@@ -616,148 +429,155 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func openWindow() {
-        guard ready, let server = server else {
-            openWhenReady = true
-
-            return
-        }
-
+        openWhenReady = true
+        guard let page = page else { openSettings("home"); return }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-
         if let window = window {
             window.makeKeyAndOrderFront(nil)
             visibilityChanged()
-
-            if webView?.url == nil {
-                signIn(server)
-            }
-
             return
         }
-
-        let configuration = WKWebViewConfiguration()
-        let origin = "\(server.scheme ?? "http")://\(server.host ?? "127.0.0.1")\(server.port.map { ":\($0)" } ?? "")"
-
-        configuration.websiteDataStore = .default()
-        configuration.applicationNameForUserAgent = "PiPocketMac/\(appVersion)"
-        configuration.userContentController.addUserScript(
-            WKUserScript(source: bridgeScript(origin: origin), injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        configuration.userContentController.add(self, name: "pocket")
-        configuration.preferences.isElementFullscreenEnabled = true
-        let view = WKWebView(frame: .zero, configuration: configuration)
-
+        let view = WKWebView(frame: .zero, configuration: pageConfig(page))
         view.navigationDelegate = self
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
         view.allowsMagnification = true
+        if #available(macOS 13.3, *) { view.isInspectable = devTools }
+        let made = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 820),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        let help = NSTextField(labelWithString: "")
+        let settingsButton = NSButton(title: "Desktop Settings…", target: self, action: #selector(openSettingsMenu))
+        let strip = NSStackView(views: [help, settingsButton])
+        let layout = NSStackView(views: [strip, view])
 
-        // For debugging only: defaults write io.github.tannermidd.pi-pocket.launcher WebInspector -bool true
-        if #available(macOS 13.3, *) {
-            view.isInspectable = UserDefaults.standard.bool(forKey: "WebInspector")
-        }
-
-        let made = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 820),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered, defer: false)
-
+        help.lineBreakMode = .byTruncatingTail
+        strip.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        strip.distribution = .fill
+        layout.orientation = .vertical
+        layout.alignment = .leading
+        layout.spacing = 0
+        layout.detachesHiddenViews = true
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true
+        strip.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         made.title = "Pi Pocket"
         made.minSize = NSSize(width: 420, height: 400)
         made.isReleasedWhenClosed = false
-        made.contentView = view
+        made.contentView = layout
         made.delegate = self
         made.tabbingMode = .disallowed
         made.center()
         made.setFrameAutosaveName("Pi Pocket")
         window = made
         webView = view
+        notice = strip
+        pageNotice(page.bridge ? nil : "Sign in on this page to use Pi Pocket")
         made.makeKeyAndOrderFront(nil)
-        signIn(server)
+        if page.local, let server = local { signIn(server, generation: page.generation) }
+        else { view.load(URLRequest(url: page.address)) }
     }
 
-    func signIn(_ server: URL) {
+    func signIn(_ server: LocalServer, generation: Int) {
         DispatchQueue.global().async {
-            var target = server.appendingPathComponent("/")
-
-            do {
-                let answer = try request("POST", server.appendingPathComponent("api/sign-in-link"), token: try ownerToken())
-
-                if let link = try JSONSerialization.jsonObject(with: answer) as? [String: Any],
-                    let path = link["path"] as? String, path.hasPrefix("/login?"),
-                    let url = URL(string: path, relativeTo: server)
-                {
-                    target = url.absoluteURL
-                }
-            } catch {
-                log("No one-time sign-in link: \(error.localizedDescription)")
+            var target = server.address
+            if let answer = try? verifiedOwnerRequest(server, "api/sign-in-link"),
+                let link = (try? JSONSerialization.jsonObject(with: answer)) as? [String: Any], let path = link["path"] as? String,
+                path.range(of: #"^/login\?once=[A-Za-z0-9_-]{16,128}$"#, options: .regularExpression) != nil,
+                let url = URL(string: path, relativeTo: server.address) {
+                target = url.absoluteURL
+            } else { log("No one-time sign-in link.") }
+            let address = target
+            DispatchQueue.main.async {
+                if self.page?.generation == generation, !self.quitting { self.webView?.load(URLRequest(url: address)) }
             }
-
-            DispatchQueue.main.async { self.webView?.load(URLRequest(url: target)) }
         }
     }
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if closeToTray, sender == window {
+            sender.orderOut(nil)
+            visibilityChanged(visible: false)
+            if settings == nil, popups.isEmpty { NSApp.setActivationPolicy(.accessory) }
+            return false
+        }
+        return true
+    }
+
     func windowWillClose(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
-        visibilityChanged(visible: false)
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "pocket")
+        webView = nil
+        window = nil
+        notice = nil
+        report("visibility", false)
+        if popups.isEmpty { NSApp.terminate(nil) }
     }
 
-    func windowDidMiniaturize(_ notification: Notification) {
-        visibilityChanged(visible: false)
-    }
-
-    func windowDidDeminiaturize(_ notification: Notification) {
-        visibilityChanged()
-    }
+    func windowDidMiniaturize(_ notification: Notification) { visibilityChanged(visible: false) }
+    func windowDidDeminiaturize(_ notification: Notification) { visibilityChanged() }
+    func windowDidBecomeKey(_ notification: Notification) { report("focus", true) }
+    func windowDidResignKey(_ notification: Notification) { report("focus", false) }
 
     func visibilityChanged(visible: Bool? = nil) {
         let shown = visible ?? (window?.isVisible == true && window?.isMiniaturized == false)
 
-        webView?.evaluateJavaScript("window.__pocketHostEvent?.({ type: 'visibility', visible: \(shown) })")
+        report("visibility", shown)
+        sendPageEvent(webView, type: "visibility", fields: ["visible": shown])
     }
 
     func sameOrigin(_ url: URL?) -> Bool {
-        guard let url = url, let server = server else {
-            return false
-        }
-
-        return url.scheme == server.scheme && url.host == server.host && url.port == server.port
+        guard let address = page?.address, let origin = pageOrigin(url) else { return false }
+        return origin == pageOrigin(address)
     }
 
-    func webView(
-        _ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-    ) {
-        if action.shouldPerformDownload {
-            decisionHandler(.download)
+    func inApp(_ url: URL?, from: URL?) -> Bool {
+        guard let origin = pageOrigin(url), !(from?.scheme == "https" && url?.scheme != "https") else { return false }
+        return sameOrigin(url) || (page?.allowed.contains(origin) == true && (page?.address.scheme != "https" || url?.scheme == "https"))
+    }
 
-            return
-        }
-
-// Frames (artifacts) may load what they load.
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         let url = action.request.url
-        let local = sameOrigin(url) || ["about", "blob", "data"].contains(url?.scheme ?? "")
-
-        if action.targetFrame?.isMainFrame != false && !local {
-            if let url = url, ["http", "https", "mailto"].contains(url.scheme ?? "") {
+        if action.targetFrame?.isMainFrame != false && !inApp(url, from: webView.url) {
+            if action.navigationType == .linkActivated, let url = url, ["http", "https", "mailto"].contains(url.scheme ?? "") {
                 NSWorkspace.shared.open(url)
-            }
-
+            } else if webView === self.webView { pageNotice("This sign-in address is not allowed. Review allowed origins under Server.") }
             decisionHandler(.cancel)
-
             return
         }
-
-        decisionHandler(.allow)
+        decisionHandler(action.shouldPerformDownload ? .download : .allow)
     }
 
-    func webView(
-        _ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
-        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
-    ) {
+    func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if response.isForMainFrame, !inApp(response.response.url, from: webView.url) {
+            if webView === self.webView { pageNotice("This sign-in address is not allowed. Review allowed origins under Server.") }
+            decisionHandler(.cancel)
+            return
+        }
         let disposition = (response.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition") ?? ""
 
         decisionHandler(!response.canShowMIMEType || disposition.lowercased().hasPrefix("attachment") ? .download : .allow)
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if webView === self.webView { pageCommitted = false }
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        if webView === self.webView {
+            pageCommitted = sameOrigin(webView.url)
+            reportPage(pageOrigin(webView.url))
+            pageNotice(page?.bridge == true && pageCommitted ? nil : "Sign in on this page to use Pi Pocket")
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if webView === self.webView, (error as NSError).code != NSURLErrorCancelled {
+            pageNotice("Could not load this server. Check the address or try again.")
+        }
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
@@ -792,9 +612,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if webView !== self.webView { return }
         visibilityChanged()
+        recovered = false
+        if pageCommitted && pendingSession { sendPageEvent(webView, type: "newSession"); pendingSession = false }
 
-        if !checkedSignIn {
+        if !checkedSignIn && page?.local == true && pageCommitted {
             checkedSignIn = true
             webView.callAsyncJavaScript(
                 "return (await fetch('/api/me')).status", arguments: [:], in: nil, in: .page
@@ -807,7 +630,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        webView.reload()
+        if webView !== self.webView { return }
+        reportPage(pageOrigin(webView.url), hung: true)
+        pageCommitted = false
+        if !recovered { recovered = true; webView.reload() }
+        else { pageNotice("The page is not responding. Reload it or return to Home.") }
     }
 
     func webView(
@@ -815,7 +642,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         for action: WKNavigationAction, windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         if let url = action.request.url {
-            if sameOrigin(url) {
+            if inApp(url, from: webView.url) {
                 return popup(configuration)
             } else if ["http", "https", "mailto"].contains(url.scheme ?? "") {
                 NSWorkspace.shared.open(url)
@@ -835,7 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         view.allowsMagnification = true
 
         if #available(macOS 13.3, *) {
-            view.isInspectable = UserDefaults.standard.bool(forKey: "WebInspector")
+            view.isInspectable = devTools
         }
 
         let made = NSWindow(
@@ -879,7 +706,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
         panel.canChooseDirectories = parameters.allowsDirectories
         panel.canChooseFiles = true
-        panel.beginSheetModal(for: window ?? NSWindow()) { answer in
+        panel.beginSheetModal(for: webView.window ?? window ?? NSWindow()) { answer in
             completionHandler(answer == .OK ? panel.urls : nil)
         }
     }
@@ -923,23 +750,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        // Only the top frame of the server's own origin: never an artifact's frame, never another site.
+        guard message.name == "pocket", page?.bridge == true, message.frameInfo.isMainFrame,
+            let view = message.webView, (view === webView ? pageCommitted : (view.window.map { popups[$0] != nil } ?? false)),
+            let address = view.url, sameOrigin(address), let host = address.host, let scheme = address.scheme,
+            let body = message.body as? [String: Any], let type = body["type"] as? String,
+            let encoded = try? JSONSerialization.data(withJSONObject: body), encoded.count <= 16_384 else { return }
         let origin = message.frameInfo.securityOrigin
+        let clean = CharacterSet(charactersIn: "[]")
+        let port = scheme == "https" ? 443 : 80
 
-        guard message.frameInfo.isMainFrame, let server = server, origin.protocol == server.scheme,
-            origin.host == server.host, origin.port == (server.port ?? 0),
-            let body = message.body as? [String: Any], let type = body["type"] as? String
-        else {
-            return
-        }
-
-        if type == "badge" {
-            let count = body["count"] as? Int ?? 0
-
-            NSApp.dockTile.badgeLabel = count > 0 ? String(count) : nil
-        } else if type == "notify" {
-            notify(body)
-        }
+        guard origin.protocol == scheme, origin.host.trimmingCharacters(in: clean).lowercased() == host.trimmingCharacters(in: clean).lowercased(),
+            (origin.port == 0 ? port : origin.port) == (address.port ?? port) else { return }
+        if type == "settings" { openSettings(nil) }
+        else if view === webView && type == "badge" {
+            let count = min(Int(Int32.max), max(0, body["count"] as? Int ?? 0))
+            setBadge(count)
+            if let generation = page?.generation { report("badge", ["generation": generation, "count": count]) }
+        } else if view === webView && type == "notify" && notices { notify(body) }
     }
 
     func notify(_ body: [String: Any]) {
@@ -972,7 +799,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             self.openWindow()
 
             if path.hasPrefix("/") && !path.hasPrefix("//") {
-                self.webView?.evaluateJavaScript("window.__pocketHostEvent?.({ type: 'open', url: \(jsString(path)) })")
+                self.sendPageEvent(self.webView, type: "open", fields: ["url": path])
             }
         }
 

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta
+            http-equiv="Content-Security-Policy"
+            content="default-src 'none'; script-src 'self' pocket-settings://desktop; style-src 'self' pocket-settings://desktop; frame-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+        />
+        <title>Desktop Settings — Pi Pocket</title>
+        <link rel="stylesheet" href="settings.css" />
+        <script src="settings.js" defer></script>
+    </head>
+    <body>
+        <div class="shell">
+            <aside class="sidebar" aria-label="Desktop Settings navigation">
+                <div class="brand">
+                    <span class="mark" aria-hidden="true">π</span>
+                    <div><strong>Pi Pocket</strong><span>Desktop Settings</span></div>
+                </div>
+                <nav aria-label="Sections">
+                    <button type="button" data-section="home" aria-current="page">Home</button>
+                    <button type="button" data-section="runner">Runner</button>
+                    <button type="button" data-section="updates">Updates</button>
+                    <button type="button" data-section="dictation">Dictation</button>
+                    <span class="nav-heading">Preferences</span>
+                    <button type="button" data-section="window">Window</button>
+                    <button type="button" data-section="appearance">Appearance</button>
+                    <button type="button" data-section="notifications">Notifications</button>
+                    <button type="button" data-section="server">Server</button>
+                </nav>
+                <span class="version" id="version"></span>
+            </aside>
+            <main>
+                <header>
+                    <button class="quiet" type="button" id="back">← Back to Pi Pocket</button
+                    ><span class="connection" id="connection">No server open</span>
+                </header>
+                <div id="warnings" role="status" hidden></div>
+                <div id="error" role="alert" hidden></div>
+                <div id="content" aria-busy="true">
+                    <h1>Home</h1>
+                    <p>Loading Desktop Settings…</p>
+                </div>
+                <footer>
+                    <button class="quiet" type="button" id="preferences">Show settings file</button>
+                    <button class="quiet" type="button" id="diagnostics">
+                        Open diagnostics log
+                    </button>
+                </footer>
+            </main>
+        </div>
+        <dialog id="confirm">
+            <form method="dialog">
+                <h2 id="confirm-title"></h2>
+                <p id="confirm-message"></p>
+                <div class="actions">
+                    <button value="cancel" autofocus>Cancel</button
+                    ><button class="primary" value="yes">Continue</button>
+                </div>
+            </form>
+        </dialog>
+    </body>
+</html>

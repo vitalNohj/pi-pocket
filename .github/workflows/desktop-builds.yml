@@ -12,6 +12,19 @@ permissions:
     contents: read
 
 jobs:
+    contract:
+        name: Desktop contract (Linux)
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              with:
+                  node-version: 26
+            - run: node --test --test-concurrency=2 test/desktop/*.test.mjs
+
     build:
         name: ${{ matrix.name }}
         runs-on: ${{ matrix.os }}

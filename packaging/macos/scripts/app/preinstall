@@ -26,5 +26,13 @@ if ! stop_pi_pocket; then
     exit 1
 fi
 
+# Before replacing the native app, keep the startup default for people upgrading from the old shell.
+for bundle in "$HOME/Applications/Pi Pocket.app" "$APP/Pi Pocket.app"; do
+    if [ -x "$bundle/Contents/MacOS/Pi Pocket" ] && [ ! -d "$bundle/Contents/Resources/desktop-assets" ]; then
+        printf '%s\n' 'Previous desktop install.' > "$APP/desktop-upgrade.txt"
+        break
+    fi
+done
+
 rm -rf "$APP/node" "$APP/Pi Pocket.app" "$APP/Pi Pocket (console).app" "$APP/Pi Pocket at sign-in.command" \
     "$APP/app.new" "$APP/app.old" "$APP/install-app.mjs" "$APP"/pi-pocket-*.tgz

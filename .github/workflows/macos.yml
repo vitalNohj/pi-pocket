@@ -154,6 +154,20 @@ jobs:
                       exit 1
                   fi
 
+            - name: Test offline Settings and the two-choice Home in the installed app
+              run: |
+                  swiftc test/desktop/window-input.swift -o "$RUNNER_TEMP/desktop-input"
+                  node test/desktop/native-smoke.mjs "$BUNDLE/Contents/MacOS/Pi Pocket" \
+                      "$RUNNER_TEMP/desktop-input" "$RUNNER_TEMP/macos-home"
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: always()
+              with:
+                  name: macos-desktop-settings-and-home-${{ matrix.arch }}
+                  path: ${{ runner.temp }}/macos-home/*.png
+                  if-no-files-found: ignore
+                  retention-days: 7
+
             - name: Start Pi Pocket and check that it answers HTTP
               run: |
                   out="$RUNNER_TEMP/pi-pocket.log"
@@ -246,8 +260,10 @@ jobs:
                       exit 1
                   fi
 
-            - name: Open Pi Pocket.app
+            - name: Open Pi Pocket.app with the previous installation's startup default
               run: |
+                  # The installer writes this marker before it replaces an older native app.
+                  printf '%s\n' 'Previous desktop install.' > "$APP/desktop-upgrade.txt"
                   open "$BUNDLE"
                   ready=""
                   for try in $(seq 1 180); do
@@ -387,9 +403,9 @@ jobs:
                   screencapture -x "$RUNNER_TEMP/macos-app-older-${{ matrix.arch }}.png" || true
                   app="$(pgrep -f "Pi Pocket.app/Contents/MacOS/Pi Pocket" || true)"
                   started="$(pgrep -f "Pi Pocket/app/lib/node_modules/pi-pocket" || true)"
-                  pkill -9 -f "Pi Pocket.app/Contents/MacOS/Pi Pocket" || true
+                  "$BUNDLE/Contents/MacOS/Pi Pocket" --quit
                   if [ -z "$app" ]; then
-                      echo "The app exited without its alert"
+                      echo "The app exited without Desktop Settings"
                       exit 1
                   fi
                   if [ -n "$started" ]; then

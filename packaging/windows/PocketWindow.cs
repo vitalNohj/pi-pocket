@@ -14,7 +14,7 @@ using Microsoft.Web.WebView2.WinForms;
 
 namespace PiPocket
 {
-    sealed class PocketWindow : Form
+    sealed partial class PocketWindow : Form
     {
         readonly TrayApp host;
         readonly string origin;
@@ -22,7 +22,14 @@ namespace PiPocket
         readonly string bridgeKey = Guid.NewGuid().ToString("N");
         readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 16384, RecursionLimit = 8 };
         readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
+        bool committed;
         bool subscribed;
+        bool newSessionEnabled;
+        bool pendingNewSession;
+        bool recovered;
+        readonly int generation;
+        readonly bool bridge;
+        readonly string[] allowed;
         bool? lastVisibility;
         string pendingAddress;
 
@@ -31,6 +38,9 @@ namespace PiPocket
             this.host = host;
             this.origin = origin;
             this.boundsFile = boundsFile;
+            generation = host.PageGeneration;
+            bridge = host.PageBridge;
+            allowed = host.OtherOrigins;
             Text = "Pi Pocket";
             Icon = icon;
             MinimumSize = new Size(420, 400);
@@ -39,6 +49,7 @@ namespace PiPocket
             StartPosition = FormStartPosition.CenterScreen;
             RestoreSavedBounds();
             Controls.Add(view);
+            AddDesktopMenus();
             VisibleChanged += delegate { PublishVisibility(); };
             Resize += delegate { PublishVisibility(); };
         }
@@ -46,23 +57,47 @@ namespace PiPocket
         public CoreWebView2 Browser { get { return view.CoreWebView2; } }
         bool ShownToUser { get { return Visible && WindowState != FormWindowState.Minimized; } }
 
-        public async Task Initialize(CoreWebView2Environment environment)
+        public async Task Initialize(ShellWebProfile profile)
         {
-            await view.EnsureCoreWebView2Async(environment);
+            await host.InitializeWebView(view, profile);
+            if (IsDisposed) { return; }
             CoreWebView2 core = Browser;
             core.Settings.AreHostObjectsAllowed = false;
-            core.Settings.AreDevToolsEnabled = false;
+            core.Settings.AreDevToolsEnabled = host.DeveloperTools;
             core.WebMessageReceived += Receive;
             core.NavigationStarting += Navigate;
+            core.ContentLoading += delegate (object sender, CoreWebView2ContentLoadingEventArgs args)
+            {
+                if (args.NavigationId != navigation) { return; }
+                committed = !args.IsErrorPage && IsServerAddress(core.Source, origin);
+                host.ReportPage(this, committed ? origin : null);
+                ShowPageNotice(!bridge || !committed ? "Sign in on this page to use Pi Pocket" : null);
+            };
+            core.NavigationCompleted += delegate (object sender, CoreWebView2NavigationCompletedEventArgs args)
+            {
+                if (args.NavigationId != navigation) { return; }
+                if (args.IsSuccess) { recovered = false; }
+                else if (args.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled) { ShowPageNotice("Could not load this server. Check the address or try again."); }
+            };
+            core.ProcessFailed += delegate (object sender, CoreWebView2ProcessFailedEventArgs args)
+            {
+                host.ReportPage(this, committed ? origin : null, true);
+                if (!recovered && args.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited)
+                {
+                    recovered = true;
+                    core.Reload();
+                }
+                else { ShowPageNotice("The page is not responding. Reload it or return to Home."); }
+            };
             core.NewWindowRequested += host.NewWindowRequested;
             core.WindowCloseRequested += delegate { BeginInvoke((MethodInvoker)Close); };
 
-            if (boundsFile != null)
+            if (boundsFile != null && bridge)
             {
                 core.WebResourceResponseReceived += CheckSignIn;
             }
 
-            await core.AddScriptToExecuteOnDocumentCreatedAsync(BridgeScript());
+            if (bridge) { await core.AddScriptToExecuteOnDocumentCreatedAsync(BridgeScript()); }
         }
 
         /// Check the URL as well as the effective origin. A sandboxed document can have a Pi Pocket URL and an opaque origin.
@@ -84,7 +119,10 @@ namespace PiPocket
     window.pocketHost = Object.freeze({
         kind: 'pi-pocket-windows',
         apiVersion: 1,
-        capabilities: Object.freeze(['badge', 'notify', 'visibility', 'open']),
+        capabilities: Object.freeze(['menu', 'badge', 'notify', 'visibility', 'open', 'newSession']),
+        menuTitle: () => 'Pi Pocket Desktop',
+        menuItems: () => [{ id: 'server-settings', label: 'Desktop Settings…' }],
+        invoke: (id) => { if (id !== 'server-settings') { return false; } post({ type: 'settings' }); return true; },
         setBadge: (count) => post({ type: 'badge', count: Math.max(0, Math.min(2147483647, Math.floor(Number(count) || 0))) }),
         notify: (message) => post({
             type: 'notify',
@@ -93,9 +131,9 @@ namespace PiPocket
             url: String(message?.url ?? '/').slice(0, 2048),
         }),
         visible: () => shown,
-        subscribe: (next) => {
+        subscribe: (next, events) => {
             listener = typeof next === 'function' ? next : null;
-            if (listener) { post({ type: 'subscribe' }); }
+            if (listener) { post({ type: 'subscribe', newSession: Array.isArray(events) && events.includes('newSession') }); }
         },
     });
 })();";
@@ -110,21 +148,36 @@ namespace PiPocket
                 string.Equals(uri.GetLeftPart(UriPartial.Authority), origin, StringComparison.OrdinalIgnoreCase);
         }
 
+        ulong navigation;
+
+        internal bool IsAppAddress(string address)
+        {
+            if (IsServerAddress(address, origin)) { return true; }
+            Uri target;
+            if (!Uri.TryCreate(address, UriKind.Absolute, out target) ||
+                (origin.StartsWith("https:", StringComparison.Ordinal) && target.Scheme != "https")) { return false; }
+            foreach (string allowedOrigin in allowed)
+            {
+                if (IsServerAddress(address, allowedOrigin)) { return true; }
+            }
+            return false;
+        }
+
         void Navigate(object sender, CoreWebView2NavigationStartingEventArgs args)
         {
-            if (!IsServerAddress(args.Uri, origin))
+            Uri target, current;
+            bool downgrade = Uri.TryCreate(Browser.Source, UriKind.Absolute, out current) && current.Scheme == "https" &&
+                Uri.TryCreate(args.Uri, UriKind.Absolute, out target) && target.Scheme == "http";
+            if (!IsAppAddress(args.Uri) || downgrade)
             {
                 args.Cancel = true;
-
-                if (args.IsUserInitiated && !args.IsRedirected)
-                {
-                    host.OpenInDefaultBrowser(args.Uri);
-                }
-
+                if (args.IsUserInitiated && !args.IsRedirected) { host.OpenInDefaultBrowser(args.Uri); }
+                else { ShowPageNotice("This sign-in address is not allowed. Review allowed origins under Server."); }
                 return;
             }
 
-            subscribed = false;
+            navigation = args.NavigationId;
+            committed = subscribed = newSessionEnabled = false;
             lastVisibility = null;
         }
 
@@ -147,7 +200,8 @@ namespace PiPocket
         {
             // CoreWebView2.WebMessageReceived is top-frame only; we do not handle CoreWebView2Frame messages.
             // Source is a URL, not an effective origin. Only the guarded document-start script gets the key.
-            if (!IsServerAddress(args.Source, origin) || !IsServerAddress(Browser.Source, origin))
+            if (!bridge || !committed || generation != host.PageGeneration || IsDisposed || Disposing ||
+                !IsServerAddress(args.Source, origin) || !IsServerAddress(Browser.Source, origin))
             {
                 return;
             }
@@ -176,22 +230,35 @@ namespace PiPocket
             {
                 case "subscribe":
                     subscribed = true;
+                    newSessionEnabled = ShellWire.Flag(message, "newSession");
                     lastVisibility = null;
                     PublishVisibility();
                     SendPendingAddress();
+                    if (pendingNewSession) { NewSession(); }
+                    break;
+
+                case "settings":
+                    host.ShellAction("settings.open");
                     break;
 
                 case "badge":
                     object count;
                     if (message.TryGetValue("count", out count) && count is int && (int)count >= 0)
                     {
-                        host.SetBadge((int)count);
+                        if (boundsFile != null)
+                        {
+                            host.SetBadge((int)count);
+                            host.Report("badge", new { generation = generation, count = (int)count });
+                        }
                     }
                     break;
 
                 case "notify":
-                    host.Notify(ReadText(message, "title", 63) ?? "Pi Pocket", ReadText(message, "body", 255),
-                        ReadText(message, "url", 2048) ?? "/");
+                    if (boundsFile != null)
+                    {
+                        host.Notify(ReadText(message, "title", 63) ?? "Pi Pocket", ReadText(message, "body", 255),
+                            ReadText(message, "url", 2048) ?? "/");
+                    }
                     break;
             }
         }
@@ -206,7 +273,7 @@ namespace PiPocket
 
         bool Post(object message)
         {
-            if (!subscribed || IsDisposed || Disposing || Browser == null || !IsServerAddress(Browser.Source, origin))
+            if (!bridge || !committed || generation != host.PageGeneration || !subscribed || IsDisposed || Disposing || Browser == null || !IsServerAddress(Browser.Source, origin))
             {
                 return false;
             }
@@ -218,11 +285,18 @@ namespace PiPocket
         void PublishVisibility()
         {
             bool visible = ShownToUser;
+            if (boundsFile != null) { host.Report("visibility", visible); }
 
             if (lastVisibility != visible && Post(new { type = "visibility", visible = visible }))
             {
                 lastVisibility = visible;
             }
+        }
+
+        public void NewSession()
+        {
+            pendingNewSession = !subscribed;
+            if (newSessionEnabled) { Post(new { type = "newSession" }); }
         }
 
         public void OpenAddress(string address)
@@ -256,8 +330,8 @@ namespace PiPocket
             if (boundsFile != null && args.CloseReason == CloseReason.UserClosing)
             {
                 SaveBounds();
-                args.Cancel = true;
-                Hide();
+                if (host.CloseToTray) { args.Cancel = true; Hide(); }
+                else { host.MainClosed(); }
             }
 
             base.OnFormClosing(args);
@@ -341,6 +415,14 @@ namespace PiPocket
 
         protected override void WndProc(ref Message message)
         {
+            // Alt alone reveals the native menu. Alt+Space goes to the OS system menu.
+            if (message.Msg == 0x0112 && (message.WParam.ToInt64() & 0xfff0) == 0xf100 && message.LParam == IntPtr.Zero && !fullScreen)
+            {
+                altMenu = true;
+                desktopMenu.Show();
+                desktopMenu.Focus();
+                return;
+            }
             base.WndProc(ref message);
 
             if (message.Msg == TaskbarBadge.ButtonCreated && host != null)

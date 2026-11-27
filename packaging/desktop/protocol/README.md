@@ -1,0 +1,47 @@
+# Native desktop protocol, version 1
+
+The desktop controller is a bundled Node process. The host starts it with the fixed installer copy of Node, private stdin and stdout, and the arguments `<absolute state folder> <windows|macos> <app version> <new|existing>`. The last argument supplies migration defaults only. There is no listening socket. Standard error is for fixed diagnostics, not packets. EOF ends the controller. UTF-8 JSON packets end with LF and have a maximum length of 65536 bytes, excluding LF. Names that are not registered do not dispatch.
+
+## Controller pipe
+
+| Direction         | Packet                                                 | Meaning                                                                                                  |
+| ----------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| Host → controller | `{v:1,id,command,value?}`                              | `id` is a positive 32-bit integer, unique among this sender's outstanding requests.                      |
+| Controller → host | `{v:1,type:"result",id,ok:true,value}`                 | Request result; use `null` for no value.                                                                 |
+| Controller → host | `{v:1,type:"result",id,ok:false,error:{code,message}}` | Display-safe error. It contains no paths or credentials from a request.                                  |
+| Controller → host | `{v:1,type:"state",state}`                             | Complete snapshot, sent to subscribers. Keep the most recent revision.                                   |
+| Controller → host | `{v:1,type:"host",id,action,data?}`                    | Perform a named native operation. `id` is in a separate namespace; return its result with `host.result`. |
+
+The commands are:
+
+- `getState`: current snapshot; no arguments.
+- `subscribe`: start sending snapshots; returns the current snapshot. The host subscribes once and forwards updates only to its own Settings view. Other native surfaces use the same snapshot.
+- `patchPreferences`: an object of sections and fields. An invalid field rejects the entire patch. The result is the saved snapshot. Connection mode and address are read-only in a patch; Home actions save them on success.
+- `action`: `{id: "settings.open", data: {section: "runner"}}`, for example. `id` is a name from a closed action table, not a process, selector, URL, or script. The data shape belongs to that action. Errors have stable codes and plain text.
+- `host.result`: `{id,ok:true,value}` or `{id,ok:false,error:{code,message}}` for a native operation. Always reply, including on cancellation. Unknown or late IDs are ignored.
+- `host.report`: `{event,data}` for native state. These **two host commands never** come from a web page. See native events below.
+
+## Settings, actions, and state
+
+Only the dedicated bundled Settings view has `window.desktopSettings`: `getState()`, `subscribe(listener)` (returns an unsubscribe function), `patchPreferences(patch)`, and `action(id, data?)` (promises, except subscribe). The Settings view cannot browse to the server, use web permissions, or access host objects. The page and its pop-outs do not get it, including if a page loads a URL with the same spelling as an app asset. State contains no owner tokens, sign-in URLs, runner link codes, or cookies. Values from every source render as text, not HTML.
+
+`state.mjs` sets the initial slices and preference types. `home.active` is `null` or `{mode, address, kind, bridge, generation, status, allowedOrigins}`. Modes are `local` and `remote`; `kind` is `pocket`, `legacy`, or `preview`; `status` is `connected` or `reconnecting`. Only a change of `generation` switches a native session view; health changes in the same generation leave its history and cookies intact. `home.local` has `{status,owned,verified,address?,message?}` and describes the local launcher even if `home.active` is remote. The health probe result is `home.check` and never overwrites the active page or saved mode. `state.menus.tray` and `state.menus.dock` are trees of `{id,label,enabled,data?}`, `{label,items}`, or `{separator:true}`. `state.preferences` is persisted in `desktop.json` (`schemaVersion:1`); runtime slices are not persisted.
+
+| Action                                                                                          | Data                 | Operation                                                                                                 |
+| ----------------------------------------------------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------- |
+| `home.check`, `home.connect`, `home.preview`                                                    | `{address}`          | Test an address, connect to a verified server, or explicitly open a previously checked HTML sign-in page. |
+| `home.retry`                                                                                    | none                 | Check the active or saved remote page now.                                                                |
+| `home.local.open`, `home.local.stop`, `home.local.restart`                                      | none                 | Start/use the local launcher, stop only an owned launcher, or restart a verified local launcher.          |
+| `settings.open`                                                                                 | optional `{section}` | Raise the single Settings window at a known section.                                                      |
+| `window.pinned`                                                                                 | `{id}`               | Open an existing pin in the current connection.                                                           |
+| `window.*`, `settings.back`, `app.quit`, `help.*`, `preferences.open`, `logs.open`, `local.log` | none                 | Fixed native menu commands; see `WINDOW_ACTIONS` in `index.mjs`.                                          |
+| `dictation.toggle`, `dictation.copyLast`                                                        | none                 | Reserved for dictation. Not available until the feature registers them.                                   |
+
+A feature registers its own additional named actions and typed preference rules in installed controller code. The controller calls registered actions with validated data and publishes updates to that feature's slice. Use `runner.*`, `updates.*`, `dictation.*`, `notifications.*`, and `window.*` for new action names. Use `setSlice` to publish runtime state. Add native operations with `registerHostCommand`; unregistered strings cannot turn into platform calls. Do not add a generic execute, read-file, or fetch action. A feature must not log secrets or publish them in a snapshot. Runner, update, dictation and notification handlers can register independently; their defaults and tray integration are here so they do not need to replace Home or menus.
+
+## Native adapter
+
+- `local.inspect` and `local.open` return `{status,owned,verified,address?,message?}` (`stopped`, `starting`, `running`, or `error`). `local.stop` must never stop a launcher that the host does not own. `local.restart` confirms a borrowed launcher and rechecks listener identity before the local owner request. The host puts owner sign-in directly into the local session view; do not put an owner token or a one-time link on this pipe. Use a different cookie store for remote views, including a loopback remote view.
+- `window.preferences` receives the validated window preferences after a change. A platform can report OS capability/state rather than silently claiming to have applied an unsupported preference.
+- `host.report` accepts `page` (`{generation,committedOrigin,hung?}`), `pins` (`{generation,items:[{id,title,label,state,url}]}`), `badge` (`{generation,count}`), `visibility` and `focus` (boolean), `power` (`{idle,suspended}`), `platform` (`{loginEnabled}`), and `local` (same as `local.inspect`). `generation` must match `home.active.generation`; a native adapter reports a new commit or auth reset before sending data from that page. Pins and badges are cleared on commit/reset, connection change, and sign-out. The platform adapter handles document/auth generation inside its WebView and drops late page events before they reach the controller.
+- Future host operations get their own names and validators. Keep `pocketHost` separate: `PAGE_CAPABILITIES`, `PAGE_DEFAULT_EVENTS`, and `PAGE_SETTINGS_ITEM` match [the server's app bridge](../../../docs/embedders.md). Only inject it into the active, trusted top document. `invoke("server-settings")` opens Settings; it cannot patch preferences. Delegate events `open`, `visibility`, `approve`, and `newSession` only to a subscribed, still-current page that handles them. Do not inject the bridge into an HTML preview or a sign-in provider's origin. The dictation extension may add a versioned optional seam without changing this contract.
