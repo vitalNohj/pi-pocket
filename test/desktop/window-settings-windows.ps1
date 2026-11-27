@@ -26,7 +26,11 @@ if ($hadStartup) { Copy-Item $startup "$env:RUNNER_TEMP/window-startup-original.
 try {
     node "$PSScriptRoot/window-evidence.mjs" wallpaper $wallpaper
     if ($LASTEXITCODE -ne 0 -or -not [NativeWindowFixture]::SystemParametersInfo(20, 0, $wallpaper, 3)) { throw 'Could not set runner wallpaper' }
-    Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name EnableTransparency -Value 1
+    $personalize = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+    New-ItemProperty -LiteralPath $personalize -Name EnableTransparency -PropertyType DWord -Value 1 -Force | Out-Null
+    $transparency = Get-ItemPropertyValue -LiteralPath $personalize -Name EnableTransparency
+    Write-Host "Windows transparency setting (registry read-back, EnableTransparency DWORD): $transparency"
+    if ($transparency -ne 1) { throw 'The runner did not enable transparency effects' }
     [NativeWindowFixture]::RefreshDesktopColors()
     Write-Host "Remote Desktop session: $([System.Windows.Forms.SystemInformation]::TerminalServerSession)"
     # Keep the runner console and Explorer behind the wallpaper captures.
