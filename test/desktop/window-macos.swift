@@ -36,6 +36,8 @@ func click(_ location: CGPoint) {
     for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
         guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: location, mouseButton: .left)
         else { exit(1) }
+        // This is a plain click, even if an earlier installer fixture used a keyboard shortcut.
+        event.flags = []
         if type != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }
         event.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.15)

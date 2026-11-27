@@ -82,7 +82,8 @@ func waitForFocusedField(_ expected: String) {
 func key(_ code: CGKeyCode, flags: CGEventFlags = []) {
     for pressed in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: pressed) else { fail("Cannot create key event.") }
-        event.flags = flags
+        // The installer runs other UI fixtures in this same desktop session.
+        event.flags = pressed ? flags : []
         event.post(tap: .cghidEventTap)
     }
 }
@@ -91,6 +92,7 @@ func click(_ point: CGPoint) {
     for type: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
         else { fail("Cannot create mouse event.") }
+        event.flags = []
         if type != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }
         event.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.04)
