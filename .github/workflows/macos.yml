@@ -175,6 +175,11 @@ jobs:
                   if-no-files-found: ignore
                   retention-days: 7
 
+            # Check Home on a fresh install, before the runner smoke starts its disposable server.
+            - name: Test the installed runner without npm
+              run: |
+                  "$APP/node/bin/node" test/desktop/runner-installed.mjs
+
             - name: Transcribe the local fixture with the installed speech worker
               timeout-minutes: 5
               run: |

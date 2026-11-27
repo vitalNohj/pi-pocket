@@ -7,6 +7,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using System.Windows.Automation;
 using System.Windows.Forms;
 
 static class WindowInput
@@ -65,6 +66,7 @@ static class WindowInput
 
             switch (operation)
             {
+                case "expect-field": WaitForFocusedField(window, args[3]); break;
                 case "shot": Screenshot(window, args[3]); break;
                 case "click": Click(window, int.Parse(args[3], CultureInfo.InvariantCulture), int.Parse(args[4], CultureInfo.InvariantCulture)); break;
                 case "type": SendKeys.SendWait(args[3]); break;
@@ -78,6 +80,27 @@ static class WindowInput
             Console.Error.WriteLine(error.Message);
             return 1;
         }
+    }
+
+    static void WaitForFocusedField(IntPtr window, string expected)
+    {
+        // Poll observations only. Do not post more input or change the field.
+        Stopwatch wait = Stopwatch.StartNew();
+        while (wait.Elapsed.TotalSeconds < 5)
+        {
+            try
+            {
+                AutomationElement field = AutomationElement.FocusedElement;
+                object pattern;
+                if (GetForegroundWindow() == window && field != null &&
+                    field.Current.ControlType == ControlType.Edit &&
+                    field.TryGetCurrentPattern(ValuePattern.Pattern, out pattern) &&
+                    ((ValuePattern)pattern).Current.Value == expected) { return; }
+            }
+            catch (ElementNotAvailableException) { } // The WebView can replace an accessibility node while rendering.
+            Thread.Sleep(100);
+        }
+        throw new InvalidOperationException("The focused Server address field did not contain the fixture address.");
     }
 
     static IntPtr WaitForWindow(int pid, string title)

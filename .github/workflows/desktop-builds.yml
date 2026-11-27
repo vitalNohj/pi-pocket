@@ -38,6 +38,19 @@ jobs:
                   node-version: 26
             - run: node --test --test-concurrency=2 test/desktop/updates.test.mjs
 
+    runner-controller:
+        name: Runner controller (Linux)
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              with:
+                  node-version: 26
+            - run: node --test test/desktop/runner.test.mjs
+
     build:
         name: ${{ matrix.name }}
         runs-on: ${{ matrix.os }}
@@ -79,21 +92,6 @@ jobs:
                   version="$base-desktop.$GITHUB_RUN_NUMBER"
                   npm --prefix "$source" version "$version" --no-git-tag-version --ignore-scripts --workspaces=false
 
-                  # Pack this branch's runner beside the app, where `pi-pocket runner` looks first.
-                  # The regular npm package relies on the published runner instead.
-                  node --input-type=commonjs - "$source" <<'NODE'
-                  const { writeFileSync } = require("node:fs");
-                  const { join } = require("node:path");
-                  const manifestPath = join(process.argv[2], "package.json");
-                  const app = require(manifestPath);
-                  const runner = require(join(process.argv[2], "packages/runner/package.json"));
-
-                  app.files.push(
-                      "packages/runner/package.json",
-                      ...runner.files.map((file) => `packages/runner/${file}`),
-                  );
-                  writeFileSync(manifestPath, `${JSON.stringify(app, null, 4)}\n`);
-                  NODE
                   printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
                   printf 'next=%s-desktop.%s\n' "$base" "$((GITHUB_RUN_NUMBER + 1))" >> "$GITHUB_OUTPUT"
 
