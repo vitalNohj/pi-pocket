@@ -3,7 +3,7 @@
 # checked against the SHA256 below and joined with lipo, and the pi-pocket package (packaging/bundle-app.mjs), so the
 # install needs no npm and no network.
 #
-#   packaging/macos/build.sh <version> [out folder] [--source <checkout>] [--with-desktop-update | --desktop-only]
+#   packaging/macos/build.sh <version> [out folder] [--source <checkout>] [--with-desktop-update | --desktop-only] [--test-status-menu]
 #
 # --source is the checkout to pack (default: the one this script is in), with <version> in its package.json.
 # The package is unsigned: the workflow signs it when it has the secrets.
@@ -22,6 +22,7 @@ out="$here/out"
 checkout="$repo"
 desktop_only=false
 with_desktop_update=false
+test_status_menu=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -32,6 +33,10 @@ while [ $# -gt 0 ]; do
             ;;
         --with-desktop-update)
             with_desktop_update=true
+            shift
+            ;;
+        --test-status-menu)
+            test_status_menu=true
             shift
             ;;
         --source)
@@ -57,6 +62,11 @@ fi
 
 if [ ! -f "$checkout/package.json" ]; then
     echo "--source $checkout is not a checkout of pi-pocket" >&2
+    exit 1
+fi
+
+if $test_status_menu && { $with_desktop_update || [ -n "${APP_SIGN_IDENTITY:-}" ] || [ -n "${INSTALLER_SIGN_IDENTITY:-}" ]; }; then
+    echo "The status-menu fixture is only for the unsigned installer smoke test." >&2
     exit 1
 fi
 
@@ -184,6 +194,9 @@ for source in "$here"/app/desktop/*.swift; do
         app_sources+=("$source")
     fi
 done
+if $test_status_menu; then
+    app_sources+=(-D DESKTOP_STATUS_SMOKE "$repo/test/desktop/StatusMenuFixture.swift")
+fi
 
 for arch in arm64 x86_64; do
     swiftc -O -swift-version 5 -target "$arch-apple-macos13.5" -framework Cocoa -framework WebKit \

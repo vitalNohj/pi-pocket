@@ -268,6 +268,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         NSApp.setActivationPolicy(openWhenReady ? .regular : .accessory)
         NSApp.mainMenu = mainMenu()
         makeStatusItem()
+        #if DESKTOP_STATUS_SMOKE
+        StatusMenuFixture.start(for: self)
+        #endif
         _ = sessionBridge.notices
         startWindowActions()
         signal(SIGTERM, SIG_IGN)

@@ -62,7 +62,7 @@ jobs:
 
             - name: Build the package
               run: |
-                  packaging/macos/build.sh "$VERSION" "$RUNNER_TEMP/pkg"
+                  packaging/macos/build.sh "$VERSION" "$RUNNER_TEMP/pkg" --test-status-menu
                   echo "The package is $(du -h "$PKG" | cut -f 1)"
 
             - name: Test native messages and notification actions
@@ -176,7 +176,9 @@ jobs:
               if: always()
               with:
                   name: macos-desktop-settings-and-home-${{ matrix.arch }}
-                  path: ${{ runner.temp }}/macos-home/*.png
+                  path: |
+                      ${{ runner.temp }}/macos-home/*.png
+                      ${{ runner.temp }}/macos-home/status-menu-model.json
                   if-no-files-found: ignore
                   retention-days: 7
 

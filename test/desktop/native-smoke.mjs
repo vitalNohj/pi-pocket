@@ -16,7 +16,12 @@ const settingsTitle = "Desktop Settings — Pi Pocket";
 const stateFolder = await mkdtemp(join(tmpdir(), "pocket-desktop-smoke-"));
 const data = join(stateFolder, "server-data");
 const settings = join(stateFolder, "desktop.json");
-const environment = { ...process.env, PI_POCKET_DESKTOP_STATE: stateFolder, PI_POCKET_DIR: data };
+const environment = {
+    ...process.env,
+    PI_POCKET_DESKTOP_STATE: stateFolder,
+    PI_POCKET_DIR: data,
+    PI_POCKET_TEST_STATUS_MENU: "1",
+};
 const remote = await fixture({ dictation: Boolean(speechCache) });
 const exec = promisify(execFile);
 let app;

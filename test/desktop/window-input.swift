@@ -195,7 +195,7 @@ func pointAt(_ point: CGPoint, click: Bool) {
     }
 }
 
-func useStatusMenu(badge: String, submenu: String, select: String, proof: String, other: String) throws {
+func useStatusMenu(badge: String, submenu: String, select: String, proof: String, other: String, anchor: CGPoint?) throws {
     requirePostEvent()
     let screen = CGDisplayBounds(CGMainDisplayID())
     let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
@@ -205,12 +205,14 @@ func useStatusMenu(badge: String, submenu: String, select: String, proof: String
             let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
         return rect.minY < screen.minY + 8 && rect.height >= 18 && rect.height <= 48 && rect.width < 180
     }
-    guard let bounds = status?[kCGWindowBounds as String] as? [String: Any],
-        let icon = CGRect(dictionaryRepresentation: bounds as CFDictionary) else {
+    let bounds = status?[kCGWindowBounds as String] as? [String: Any]
+    let rect = bounds.flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
+    let point = rect.map { CGPoint(x: $0.midX, y: $0.midY) } ?? anchor
+    guard let point = point, screen.contains(point), point.y < screen.minY + 48 else {
         if proof != "-" { try capture(proof) }
         fail("No π status item for the installed app.")
     }
-    pointAt(CGPoint(x: icon.midX, y: icon.midY), click: true)
+    pointAt(point, click: true)
 
     // Read the real menu on this display. Unlike AX inspection, this needs only the screenshot
     // and Quartz input access already used by the installer smoke, not an additional TCC grant.
@@ -235,7 +237,8 @@ func useStatusMenu(badge: String, submenu: String, select: String, proof: String
             }
         }
         if proof != "-" { try capture(proof) }
-        fail("The π menu did not show '\(sought)' after a click on the status item at \(icon). Visible text: \(lines.joined(separator: " | "))")
+        key(53) // Leave menu tracking before the test uses native actions without a click.
+        fail("The π menu did not show '\(sought)' after a click on the status item at \(point). Visible text: \(lines.joined(separator: " | "))")
     }
     _ = try waitForText(badge)
     if submenu != "-" { pointAt(try waitForText(submenu), click: false) }
@@ -246,7 +249,9 @@ func useStatusMenu(badge: String, submenu: String, select: String, proof: String
 }
 
 if operation == "tray" {
-    try useStatusMenu(badge: title, submenu: args[4], select: args[5], proof: args[6], other: args[7])
+    var anchor: CGPoint?
+    if args.count > 9, let x = Double(args[8]), let y = Double(args[9]) { anchor = CGPoint(x: x, y: y) }
+    try useStatusMenu(badge: title, submenu: args[4], select: args[5], proof: args[6], other: args[7], anchor: anchor)
     Thread.sleep(forTimeInterval: 0.25)
     exit(0)
 }
