@@ -147,6 +147,13 @@ namespace PiPocket
             }
         }
 
+        // The stdin lifeline closes on the writer thread. Never wait from the UI thread.
+        internal void WaitForExit()
+        {
+            try { child.WaitForExit(8000); }
+            catch (InvalidOperationException) { } // The controller may not have started.
+        }
+
         public void Dispose()
         {
             List<TaskCompletionSource<object>> waiting;

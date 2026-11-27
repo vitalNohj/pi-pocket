@@ -51,6 +51,27 @@ Notifications arrive while the app runs. On Windows they appear as tray balloons
 
 A server on a Unix socket (`--socket`) has no address for the window. The app cannot use it, and its own launcher cannot start while that one runs.
 
+## Use this computer as a runner
+
+In **Desktop Settings → Runner**, enter a server address and a one-time code from
+**Menu → Access → By computer → Link a computer** on that server. Link only to a server you trust:
+its sessions can run commands and change files as your OS user, without a sandbox. Leave plain HTTP
+clear unless the CLI needs it and you trust the network.
+
+Choose **Enable runner** to let the app start the runner now and on later launches, including hidden
+launches. The runner works with either choice on Home and does not need a page open. The Windows tray
+or macOS **π** menu has a **Runner** row that opens this card. **Working now** means a session is
+using a runner tool on this computer. It does not list background tasks.
+
+**Disable runner** keeps the link. **Reconnect** stops and starts the app's runner. **Unlink** removes
+the app's local link; to cancel its key, also remove it in **Access → Settings** on the server. Use
+**Link again** there to replace the link and keep the server's settings for this computer. Stopping
+the runner or quitting the app can interrupt commands and stops runner background tasks, even when
+the runner is idle. Closing a window to the tray does not stop it.
+
+The runner comes with the full offline installer. The desktop app does not download or update the
+runner. For more on linking and access, see [Runners](runners.md).
+
 ## How it is tested
 
 [`test/launcher-desktop.test.ts`](../test/launcher-desktop.test.ts) runs `--desktop`: `launcher-running.json`, the one-time link, no token in the output, and the stop when its input closes. On each pull request, [`windows.yml`](../.github/workflows/windows.yml) and [`macos.yml`](../.github/workflows/macos.yml) install the app, open it as the Start menu or Finder does, and check: no console or Terminal window, the server on this computer only, a window that signed in (its own `/api/me` answers 200), no token in the log or on a command line, one instance only, and **Quit** that stops the launcher, the server, and the window. They also take a screenshot of the window. Then they write an older version into the package's `package.json`, and check that the app shows its message, writes it to the log, and starts no launcher. Nobody has tried them yet on a real PC or Mac, only on GitHub's runners.

@@ -18,7 +18,7 @@ const REPAIR = "Install the current Pi Pocket desktop build again to restore the
 const LINK_AGAIN =
     "On the server, open Menu → Access → Settings, select this computer and choose Link again.";
 
-class RunnerError extends Error {
+export class RunnerError extends Error {
     constructor(code, message) {
         super(message);
         this.code = code;
@@ -276,7 +276,7 @@ export class RunnerController {
     }
 
     #confirm(confirmed, always = false) {
-        if (confirmed !== true && (always || this.#child)) {
+        if (confirmed !== true && (always || this.#child || this.#timer !== undefined)) {
             const active = this.#state.working ? "The runner is working now. " : "";
 
             throw new RunnerError("runner.confirm", active + STOP_WARNING);

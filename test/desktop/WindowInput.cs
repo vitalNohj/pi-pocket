@@ -31,6 +31,7 @@ static class WindowInput
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr first, IntPtr second);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string kind, string title);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
 
     [STAThread]
@@ -50,6 +51,11 @@ static class WindowInput
             SetProcessDpiAwarenessContext(new IntPtr(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
             int pid = int.Parse(args[0], CultureInfo.InvariantCulture);
             string operation = args[1];
+            if (operation == "tray-shot")
+            {
+                RunnerTray(pid, args[2], args[3]);
+                return 0;
+            }
             IntPtr window = WaitForWindow(pid, args[2]);
             if (operation == "find") { return 0; }
             if (operation == "close")
@@ -68,10 +74,20 @@ static class WindowInput
             switch (operation)
             {
                 case "expect-field": WaitForFocusedField(window, args[3]); break;
+                case "expect-text": WaitForNamed(() => Named(AutomationElement.FromHandle(window), args[3]), args[3]); break;
+                case "press": ClickElement(WaitForNamed(() => Named(AutomationElement.FromHandle(window), args[3]), args[3]), false); break;
                 case "shot": Screenshot(window, args[3]); break;
                 case "dictation-menu": DictationMenu(pid, window, args[3]); break;
                 case "click": Click(window, int.Parse(args[3], CultureInfo.InvariantCulture), int.Parse(args[4], CultureInfo.InvariantCulture)); break;
                 case "type": SendKeys.SendWait(args[3]); break;
+                case "type-private":
+                    string code = Console.ReadLine();
+                    if (code == null || !System.Text.RegularExpressions.Regex.IsMatch(code, "^[A-Z0-9]{4}(-[A-Z0-9]{4}){2}$"))
+                    {
+                        throw new ArgumentException("Expected a disposable code on stdin.");
+                    }
+                    SendKeys.SendWait(code);
+                    break;
                 default: throw new ArgumentException("Unknown test operation.");
             }
             Thread.Sleep(250);
@@ -82,6 +98,60 @@ static class WindowInput
             Console.Error.WriteLine(error.Message);
             return 1;
         }
+    }
+
+    static AutomationElement Named(AutomationElement root, string name)
+    {
+        return root.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, name));
+    }
+
+    static AutomationElement WaitForNamed(Func<AutomationElement> find, string name)
+    {
+        Stopwatch wait = Stopwatch.StartNew();
+        while (wait.Elapsed.TotalSeconds < 15)
+        {
+            try
+            {
+                AutomationElement item = find();
+                if (item != null && !item.Current.IsOffscreen) { return item; }
+            }
+            catch (ElementNotAvailableException) { }
+            Thread.Sleep(200);
+        }
+        throw new InvalidOperationException("Could not see '" + name + "' in the installed app or notification area.");
+    }
+
+    static void ClickElement(AutomationElement item, bool right)
+    {
+        System.Windows.Point point;
+        if (!item.TryGetClickablePoint(out point)) { throw new InvalidOperationException("The control cannot be clicked."); }
+        if (!SetCursorPos((int)point.X, (int)point.Y)) { throw new InvalidOperationException("Cannot move the pointer to the control."); }
+        mouse_event(right ? 8u : 2u, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(right ? 16u : 4u, 0, 0, 0, UIntPtr.Zero);
+    }
+
+    static AutomationElement InWindow(string kind, string name)
+    {
+        IntPtr hwnd = FindWindow(kind, null);
+        return hwnd == IntPtr.Zero ? null : Named(AutomationElement.FromHandle(hwnd), name);
+    }
+
+    static void RunnerTray(int pid, string label, string path)
+    {
+        AutomationElement icon = InWindow("Shell_TrayWnd", "Pi Pocket");
+        if (icon == null || icon.Current.IsOffscreen)
+        {
+            ClickElement(WaitForNamed(() => InWindow("Shell_TrayWnd", "Show hidden icons"), "Show hidden icons"), false);
+            icon = WaitForNamed(() => InWindow("NotifyIconOverflowWindow", "Pi Pocket") ??
+                InWindow("TopLevelWindowForOverflowXamlIsland", "Pi Pocket"), "Pi Pocket tray icon");
+        }
+        ClickElement(icon, true);
+        var row = WaitForNamed(() => AutomationElement.RootElement.FindFirst(TreeScope.Descendants, new AndCondition(
+            new PropertyCondition(AutomationElement.ProcessIdProperty, pid),
+            new PropertyCondition(AutomationElement.NameProperty, label))), label);
+        Capture(SystemInformation.VirtualScreen, path);
+        // Activate the exact native row that appears in the screenshot.
+        ClickElement(row, false);
     }
 
     static void WaitForFocusedField(IntPtr window, string expected)

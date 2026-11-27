@@ -18,6 +18,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DESKTOP_RUNNER_SOURCE } from "./desktop/controller/runner/source.mjs";
 
 function packageFolder(prefix, platform = process.platform) {
     return platform === "win32"
@@ -147,6 +148,12 @@ function main() {
         console.error("Usage: node bundle-app.mjs <checkout> <prefix> <version>");
 
         return 2;
+    }
+
+    const repository = process.env.GITHUB_REPOSITORY;
+
+    if (repository && repository.toLowerCase() !== DESKTOP_RUNNER_SOURCE.toLowerCase()) {
+        throw new Error(`Build the desktop runner from ${DESKTOP_RUNNER_SOURCE}.`);
     }
 
     const prefix = resolve(prefixArgument);

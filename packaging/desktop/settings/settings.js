@@ -604,6 +604,233 @@
         }
     }
 
+    function runnerCard() {
+        const status = element("strong");
+        const activity = element("span", "", { className: "muted" });
+        const headline = element("p", "", { className: "runner-status" });
+        const identity = element("p", "", { className: "address" });
+        const message = element("p", "", { className: "hint" });
+        const controls = element("div", "", { className: "actions" });
+        const help = element("p", "", { className: "hint" });
+        const source = element("p", "", { className: "hint" });
+        let pending = false;
+        let editLink = false;
+        let editedAddress = false;
+
+        headline.setAttribute("role", "status");
+        headline.append(status, activity);
+
+        const stopWarning = () =>
+            `${state.runner.working ? "The runner is working now. " : ""}Stopping the runner can interrupt commands. Its background tasks stop even when the runner is idle.`;
+        const mayStop = () => state.runner.running || state.runner.status === "retrying";
+
+        async function perform(id, data, title, warning) {
+            if (pending || state.runner.busy) {
+                return;
+            }
+
+            pending = true;
+            sayError();
+            refresh();
+
+            try {
+                if (!title || (await confirm(title, warning))) {
+                    await api.action(id, { ...data, confirmed: Boolean(title) });
+
+                    if (id === "runner.link" || id === "runner.unlink") {
+                        editLink = editedAddress = false;
+                    }
+                }
+            } catch (error) {
+                sayError(error.message);
+            } finally {
+                pending = false;
+                refresh();
+            }
+        }
+
+        const enable = action(
+            "Enable runner",
+            () => {
+                const enabled = !state.runner.enabled;
+                const stops = !enabled && mayStop();
+
+                return perform(
+                    "runner.enable",
+                    { enabled },
+                    stops ? "Disable the runner?" : "",
+                    stops ? stopWarning() : "",
+                );
+            },
+            true,
+        );
+        const reconnect = action("Reconnect", () =>
+            perform("runner.reconnect", {}, "Reconnect the runner?", stopWarning()),
+        );
+        const unlink = action("Unlink", () =>
+            perform(
+                "runner.unlink",
+                {},
+                "Unlink this computer?",
+                `${mayStop() ? `${stopWarning()} ` : ""}This removes the link from this app only. To cancel this computer’s key, also remove it in Menu → Access → Settings on the server.`,
+            ),
+        );
+        const relink = action("Link again", () => {
+            editLink = !editLink;
+            clearLink();
+            refresh();
+        });
+
+        controls.append(enable, reconnect, relink, unlink);
+
+        const form = element("form", "", { autocomplete: "off" });
+        const fields = element("fieldset", "", { className: "runner-link" });
+        const address = element("input", "", {
+            type: "url",
+            name: "runnerServer",
+            maxLength: 2048,
+            required: true,
+            spellcheck: false,
+        });
+        const code = element("input", "", {
+            type: "password",
+            name: "runnerCode",
+            maxLength: 32,
+            required: true,
+            spellcheck: false,
+        });
+        const allowHttp = element("input", "", { type: "checkbox" });
+        const allow = element("label", "", { className: "check" });
+        const trusted = element("input", "", { type: "checkbox", required: true });
+        const trust = element("label", "", { className: "check" });
+        const link = element("button", "Link", { type: "submit", className: "primary" });
+
+        function clearLink() {
+            code.value = "";
+            allowHttp.checked = trusted.checked = false;
+        }
+
+        address.oninput = () => {
+            editedAddress = true;
+        };
+
+        allow.append(allowHttp, "Allow plain HTTP for this link (trusted networks only)");
+        trust.append(trusted, "I trust this server");
+        fields.append(
+            element("legend", "Link this computer"),
+            element(
+                "p",
+                "Sessions from this server can run commands and change files as your OS user. There is no sandbox. Link only to a server you trust.",
+                { className: "runner-trust" },
+            ),
+            trust,
+            field("Runner server address", address),
+            field("One-time code", code),
+            allow,
+            link,
+        );
+        form.append(fields);
+
+        form.onsubmit = async (event) => {
+            event.preventDefault();
+            const data = {
+                server: address.value,
+                code: code.value,
+                allowHttp: allowHttp.checked,
+                trusted: trusted.checked,
+            };
+            const replace = mayStop();
+
+            clearLink();
+            await perform(
+                "runner.link",
+                data,
+                replace ? "Replace the runner link?" : "",
+                replace ? stopWarning() : "",
+            );
+        };
+
+        const log = element("details");
+        const lines = element("ul", "", { className: "runner-log" });
+        const noLog = element("p", "No runner messages yet.", { className: "hint" });
+        let lastLog;
+
+        log.append(element("summary", "Runner log"), noLog, lines);
+
+        refresh = () => {
+            const { runner, home } = state;
+            const locked = pending || runner.busy || runner.status === "checking";
+            const ended = runner.status === "ended";
+            const canStart = runner.linked && !ended && runner.status !== "unavailable";
+            const working = runner.workingFolders;
+
+            status.textContent = runner.label;
+            activity.textContent = runner.working
+                ? ` · ${working} working ${working === 1 ? "folder" : "folders"}`
+                : "";
+            identity.textContent = runner.linked ? `${runner.name} · ${runner.server}` : "";
+            identity.hidden = !runner.linked;
+            message.textContent =
+                runner.message ||
+                (runner.status === "disabled"
+                    ? "Enable the runner to let the linked server use this computer while Pi Pocket is open."
+                    : "");
+            message.hidden = !message.textContent;
+            enable.textContent = runner.enabled ? "Disable runner" : "Enable runner";
+            enable.hidden = reconnect.hidden = unlink.hidden = !runner.linked;
+            relink.hidden = !runner.linked || ended;
+            relink.textContent = editLink ? "Cancel link again" : "Link again";
+            enable.disabled = locked || (!canStart && !runner.enabled);
+            reconnect.disabled = locked || !canStart || !runner.enabled;
+            unlink.disabled = relink.disabled = locked;
+            form.hidden = runner.status === "checking" || (runner.linked && !ended && !editLink);
+            fields.disabled = locked || runner.status === "unavailable";
+            link.textContent = runner.linked ? "Replace link" : "Link";
+            help.textContent = runner.linked
+                ? "On the linked server, see Menu → Access → By computer. To replace the link and keep the server’s settings for this computer, choose Link again in Access → Settings."
+                : "On the server, open Menu → Access → By computer → Link a computer to get a one-time code.";
+            source.textContent = runner.source ? `Bundled runner source: ${runner.source}` : "";
+            source.hidden = !runner.source;
+
+            if (!editedAddress) {
+                const active = home.active;
+                const candidate =
+                    runner.server ||
+                    (active?.kind !== "preview" && active?.status === "connected"
+                        ? active.address
+                        : "");
+
+                // Do not offer a sign-in page or URL with a credential, query, or fragment.
+                address.value = /^https?:\/\/[^/@?#]+(?:\/[^?#]*)?$/i.test(candidate)
+                    ? candidate
+                    : "";
+            }
+
+            const entries = runner.log ?? [];
+            const text = entries.join("\n");
+
+            if (text !== lastLog) {
+                lastLog = text;
+                lines.replaceChildren(...entries.map((entry) => element("li", entry)));
+                noLog.hidden = entries.length > 0;
+            }
+        };
+
+        content.append(
+            panel(
+                "This computer's runner",
+                headline,
+                identity,
+                message,
+                controls,
+                form,
+                log,
+                help,
+                source,
+            ),
+        );
+    }
+
     const coming = () => element("p", "More options are coming soon.", { className: "hint" });
 
     function dictation() {
@@ -728,15 +955,7 @@
     const sections = {
         home,
         server,
-        runner: () =>
-            content.append(
-                panel(
-                    "This computer's runner",
-                    element("p", `Runner: ${state.runner.label}`),
-                    checkbox("Enable runner", "runner", "enabled", true),
-                    coming(),
-                ),
-            ),
+        runner: runnerCard,
         updates: () =>
             content.append(
                 panel(

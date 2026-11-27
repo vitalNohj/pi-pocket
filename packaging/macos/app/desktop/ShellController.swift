@@ -8,6 +8,7 @@ final class ShellController {
     let child = Process()
     private let input = Pipe()
     private let output = Pipe()
+    private let exited = DispatchGroup()
     private let writer = DispatchQueue(label: "Pi Pocket controller input")
     private var pending: [Int: Reply] = [:]
     private var next = 0
@@ -25,6 +26,8 @@ final class ShellController {
         child.standardInput = input
         child.standardOutput = output
         child.standardError = FileHandle.nullDevice
+        exited.enter()
+        child.terminationHandler = { [exited] _ in exited.leave() }
         try child.run()
         try? input.fileHandleForReading.close()
         try? output.fileHandleForWriting.close()
@@ -86,6 +89,11 @@ final class ShellController {
         data.append(10)
         let line = data
         writer.async { [input] in try? input.fileHandleForWriting.write(contentsOf: line) }
+    }
+
+    // The stdin lifeline closes on the writer queue. Never wait from the main thread.
+    func waitForExit() {
+        _ = exited.wait(timeout: .now() + 8)
     }
 
     func close() {
