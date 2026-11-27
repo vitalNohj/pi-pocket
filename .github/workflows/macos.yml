@@ -161,10 +161,6 @@ jobs:
                       exit 1
                   fi
 
-            - name: Test the installed runner without npm
-              run: |
-                  "$APP/node/bin/node" test/desktop/runner-installed.mjs
-
             - name: Test offline Settings and the two-choice Home in the installed app
               run: |
                   swiftc test/desktop/window-input.swift -o "$RUNNER_TEMP/desktop-input"
@@ -178,6 +174,11 @@ jobs:
                   path: ${{ runner.temp }}/macos-home/*.png
                   if-no-files-found: ignore
                   retention-days: 7
+
+            # Check Home on a fresh install, before the runner smoke starts its disposable server.
+            - name: Test the installed runner without npm
+              run: |
+                  "$APP/node/bin/node" test/desktop/runner-installed.mjs
 
             - name: Transcribe the local fixture with the installed speech worker
               timeout-minutes: 5
