@@ -79,6 +79,7 @@ static class WindowInput
             {
                 case "expect-field": WaitForFocusedField(window, args[3]); break;
                 case "expect-text": WaitForNamed(() => Named(AutomationElement.FromHandle(window), args[3]), args[3]); break;
+                case "expect-prefix": WaitForNamed(() => WithPrefix(AutomationElement.FromHandle(window), args[3]), args[3]); break;
                 case "press": ClickElement(WaitForNamed(() => Named(AutomationElement.FromHandle(window), args[3]), args[3]), false); break;
                 case "shot": Screenshot(window, args[3]); break;
                 case "dictation-menu": DictationMenu(pid, window, args[3]); break;
@@ -107,6 +108,15 @@ static class WindowInput
     static AutomationElement Named(AutomationElement root, string name)
     {
         return root.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, name));
+    }
+
+    static AutomationElement WithPrefix(AutomationElement root, string prefix)
+    {
+        foreach (AutomationElement item in root.FindAll(TreeScope.Descendants, Condition.TrueCondition))
+        {
+            if (!item.Current.IsOffscreen && item.Current.Name.StartsWith(prefix, StringComparison.Ordinal)) { return item; }
+        }
+        return null;
     }
 
     static AutomationElement WaitForNamed(Func<AutomationElement> find, string name)

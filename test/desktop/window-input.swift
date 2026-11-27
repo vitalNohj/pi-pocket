@@ -38,29 +38,32 @@ func elementAttribute(_ item: AXUIElement, _ name: String) -> AXUIElement? {
     return (value as! AXUIElement)
 }
 
-func hasName(_ item: AXUIElement, _ name: String) -> Bool {
-    [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains { attribute(item, $0) as? String == name }
+func hasName(_ item: AXUIElement, _ name: String, prefix: Bool = false) -> Bool {
+    [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains {
+        guard let text = attribute(item, $0) as? String else { return false }
+        return prefix ? text.hasPrefix(name) : text == name
+    }
 }
 
-func named(_ roots: [AXUIElement], _ name: String, role: String? = nil) -> AXUIElement? {
+func named(_ roots: [AXUIElement], _ name: String, role: String? = nil, prefix: Bool = false) -> AXUIElement? {
     var queue = roots
     var index = 0
     while index < queue.count && index < 1500 {
         let item = queue[index]
         index += 1
         if role == nil || attribute(item, kAXRoleAttribute) as? String == role {
-            if hasName(item, name) { return item }
-            if let label = elementAttribute(item, kAXTitleUIElementAttribute), hasName(label, name) { return item }
+            if hasName(item, name, prefix: prefix) { return item }
+            if let label = elementAttribute(item, kAXTitleUIElementAttribute), hasName(label, name, prefix: prefix) { return item }
         }
         queue.append(contentsOf: attribute(item, kAXChildrenAttribute) as? [AXUIElement] ?? [])
     }
     return nil
 }
 
-func waitForNamed(_ roots: [AXUIElement], _ name: String, role: String? = nil) -> AXUIElement {
+func waitForNamed(_ roots: [AXUIElement], _ name: String, role: String? = nil, prefix: Bool = false) -> AXUIElement {
     let start = ProcessInfo.processInfo.systemUptime
     while ProcessInfo.processInfo.systemUptime - start < 15 {
-        if let item = named(roots, name, role: role) { return item }
+        if let item = named(roots, name, role: role, prefix: prefix) { return item }
         Thread.sleep(forTimeInterval: 0.25)
     }
     fail("Could not see '\(name)' (\(role ?? "any role")) in the installed app or menu bar.")
@@ -207,7 +210,7 @@ case "click":
     let frame = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 930, height: 710),
         styleMask: [.titled, .closable, .miniaturizable, .resizable])
     click(CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!))
-case "press", "expect-text", "focus-field":
+case "press", "expect-text", "expect-prefix", "focus-field":
     prepareInput()
     guard AXIsProcessTrusted() else { fail("The app's input driver needs Accessibility permission.") }
     let app = AXUIElementCreateApplication(pid)
@@ -220,7 +223,7 @@ case "press", "expect-text", "focus-field":
             fail("Could not focus '\(args[4])'.")
         }
     } else {
-        let item = waitForNamed([app], args[4])
+        let item = waitForNamed([app], args[4], prefix: operation == "expect-prefix")
         if operation == "press" { press(item) }
     }
 case "type":

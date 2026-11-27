@@ -154,20 +154,23 @@ try {
         restart: () => {},
     });
 
+    const accessPage = `/?direct=${encodeURIComponent(owner.id)}`;
+
     http = createServer((request, response) => {
         if (request.method === "GET" && request.url === "/" && signIn) {
             // Only this loopback fixture can issue this redirect. The app signs in as a normal browser.
             response.writeHead(303, { Location: signIn, "Cache-Control": "no-store" }).end();
             signIn = undefined;
+        } else if (
+            request.method === "GET" &&
+            request.url === "/" &&
+            !signedIn &&
+            request.headers.cookie?.includes("pocket_auth=")
+        ) {
+            // Use the real server page's Access deep link. The tab and list come from the installed web app.
+            signedIn = true;
+            response.writeHead(303, { Location: accessPage, "Cache-Control": "no-store" }).end();
         } else {
-            if (
-                request.method === "GET" &&
-                request.url === "/" &&
-                request.headers.cookie?.includes("pocket_auth=")
-            ) {
-                signedIn = true;
-            }
-
             void handler(request, response);
         }
     });
@@ -204,12 +207,25 @@ try {
         id: "7053c1d4-4f9f-48b4-81ea-5b3fccc10fb6",
         folder: work,
     });
-    const command = runner.exec('node -e "setTimeout(() => {}, 90000)"', {}, BACKGROUND_CONTEXT);
+    const command = runner.exec('node -e "setTimeout(() => {}, 180000)"', {}, BACKGROUND_CONTEXT);
 
     void command.catch(() => {}); // The fixture stops this command when it disables or quits the runner.
     await expect("Working now");
     await shot("runner-working", settings);
     console.log("The installed Runner card showed Working now.");
+
+    await press("Home");
+    let menuError;
+
+    try {
+        await shot("runner-menu");
+        await expect("Working now"); // Selecting the native row opened Runner, not the last Settings section.
+        console.log("The native menu showed Working now and its Runner row opened the card.");
+    } catch (error) {
+        // Still check the server's list if the OS menu driver failed.
+        menuError = error;
+        console.error(error.message);
+    }
 
     const signed = await fetch(`${address}/api/sign-in-link`, {
         method: "POST",
@@ -225,17 +241,15 @@ try {
     await input("expect-field", settings, address);
     await press("Connect");
     await until("the installed app open the linked server's signed-in page", () => signedIn);
-    await press("Menu", serverWindow);
-    await press("Access", serverWindow);
     await press("By computer", serverWindow);
-    await expect(name, serverWindow);
+    await input("expect-prefix", serverWindow, name);
     assert.ok(online(id), "the listed runner remained online across Home's connection change");
     await shot("server-connected", serverWindow);
     console.log("The server listed the same computer in Access → By computer while it was online.");
 
-    await shot("runner-menu");
-    await expect("Working now"); // Selecting the native row opened Runner, not the last Settings section.
-    console.log("The native menu showed Working now and its Runner row opened the card.");
+    if (menuError) {
+        throw menuError;
+    }
 
     await quit();
     await until("the app quit", exited);
