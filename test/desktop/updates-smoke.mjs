@@ -34,6 +34,7 @@ const startup = win
     : join(home, "Library/LaunchAgents/io.github.tannermidd.pi-pocket.plist");
 const log = win ? join(install, "launcher.log") : join(home, "Library/Logs/Pi Pocket/launcher.log");
 const settings = join(install, "desktop/desktop.json");
+const webViewLog = join(dirname(settings), "webview2.log");
 const data = join(home, ".pi-pocket");
 const running = join(data, "launcher-running.json");
 const config = join(data, "config.json");
@@ -142,9 +143,7 @@ function appPid() {
 
 function launchApp() {
     if (win) {
-        const child = spawn(app, [], { stdio: "ignore" });
-
-        child.unref();
+        run(input, ["launch", app]);
     } else {
         run("/usr/bin/open", ["-a", app]);
     }
@@ -199,7 +198,19 @@ async function exerciseUpdates(pid, fixture, downloaded) {
 
     await writeFile(openSettings, "");
     gui(pid, "find", settingsTitle);
-    await setTimeout(2500); // Let the installed Settings view load the Updates section.
+
+    if (win) {
+        // The WinForms window can appear before its WebView finishes loading Settings.
+        await waitFor("the bundled Windows Settings page to load", async () =>
+            (await readFile(webViewLog, "utf8")).includes(
+                "The bundled Desktop Settings page loaded.",
+            ),
+        );
+        await capture("idle", "00-not-checked-yet", null);
+    } else {
+        await setTimeout(2500);
+    }
+
     check();
     await capture("current", "01-up-to-date", current);
     fixture.run.run_number = Number(next.split(".").at(-1));
@@ -425,7 +436,12 @@ try {
         () => {},
     );
 
-    for (const file of [log, join(cache, "last-result.json"), join(cache, "setup.log")]) {
+    for (const file of [
+        log,
+        webViewLog,
+        join(cache, "last-result.json"),
+        join(cache, "setup.log"),
+    ]) {
         const contents = await readFile(file, "utf8").catch(() => null);
 
         if (contents) {
