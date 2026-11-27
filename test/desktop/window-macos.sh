@@ -60,6 +60,9 @@ cleanup() {
         if ! stopped; then kill -TERM "$pid" 2>/dev/null || true; fi
         if wait_until 3 stopped; then wait "$pid" || true; fi
     fi
+    if [ -n "${index:-}" ] && [ -f "$index.evidence-original" ]; then
+        mv -f "$index.evidence-original" "$index"
+    fi
     if [ -f "$page.saved" ]; then
         mv -f "$page.saved" "$page"
         rm -f "$existing" "$completed"
@@ -122,4 +125,7 @@ for chrome in system seamless; do
     wait "$pid"
     pid=""
 done
+mv -f "$page.saved" "$page"
+rm -f "$existing" "$completed"
+. "$here/window-settings-macos.sh"
 printf '%s\n' 'System and Seamless; light and dark; a second window; existing name kept; Save dialog cancelled.' > "$out/assertions.txt"

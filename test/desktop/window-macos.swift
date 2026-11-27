@@ -4,6 +4,18 @@ import Cocoa
 
 let args = CommandLine.arguments
 let pid = pid_t(args[1])!
+if args[2] == "wallpaper" {
+    let image = URL(fileURLWithPath: args[3])
+    do {
+        for screen in NSScreen.screens {
+            try NSWorkspace.shared.setDesktopImageURL(image, for: screen, options: [:])
+        }
+    } catch {
+        fputs("Could not set runner wallpaper: \(error)\n", stderr)
+        exit(1)
+    }
+    exit(0)
+}
 typealias Window = (id: Int, layer: Int, bounds: CGRect)
 let windows = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
     .compactMap { entry -> Window? in
@@ -111,11 +123,22 @@ case "click", "click-verified":
     let point = CGPoint(x: w.minX + Double(args[3])!, y: w.minY + Double(args[4])!)
     if args[2] == "click-verified" { clickVerified(point, name: args[5]) }
     else { click(point) }
-case "escape":
+case "escape", "key":
     let source = focusedEventSource()
+    let key = args[2] == "escape" ? CGKeyCode(53) : CGKeyCode(args[3])!
+    var flags: CGEventFlags = []
+    for modifier in args.dropFirst(4) {
+        switch modifier {
+        case "command": flags.insert(.maskCommand)
+        case "shift": flags.insert(.maskShift)
+        case "control": flags.insert(.maskControl)
+        case "option": flags.insert(.maskAlternate)
+        default: exit(1)
+        }
+    }
     for down in [true, false] {
-        guard let event = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: down) else { exit(1) }
-        event.flags = []
+        guard let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down) else { exit(1) }
+        event.flags = flags
         event.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.15)
     }

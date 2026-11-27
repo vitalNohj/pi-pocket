@@ -5,6 +5,7 @@ Add-Type @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class NativeWindowFixture {
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
@@ -20,6 +21,9 @@ public static class NativeWindowFixture {
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr w);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr w, int command);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr w, int attribute, out Rect bounds, int size);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr w, int attribute, out int value, int size);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr w, StringBuilder text, int size);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool SystemParametersInfo(uint action, uint param, string value, uint flags);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
     public static IntPtr[] Windows(int process) {
@@ -34,6 +38,20 @@ public static class NativeWindowFixture {
             return true;
         }, IntPtr.Zero);
         return windows.ToArray();
+    }
+    public static string Title(IntPtr w) {
+        var text = new StringBuilder(200);
+        GetWindowText(w, text, text.Capacity);
+        return text.ToString();
+    }
+    public static int FrameTop(IntPtr w) {
+        Rect rect;
+        var origin = new Point();
+        return GetWindowRect(w, out rect) && ClientToScreen(w, ref origin) ? origin.Y - rect.Top : -1;
+    }
+    public static int Backdrop(IntPtr w) {
+        int value;
+        return DwmGetWindowAttribute(w, 38, out value, 4) == 0 ? value : 0;
     }
     public static void Click(IntPtr w, int x, int y) {
         var p = new Point { X = x, Y = y };
@@ -82,6 +100,26 @@ function Screenshot($file) {
         $graphics.CopyFromScreen($rect.Location, [System.Drawing.Point]::Empty, $rect.Size)
         $bitmap.Save((Join-Path $out "$file.png"), [System.Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
+}
+
+function Open-Settings($app, $window) {
+    [void][NativeWindowFixture]::SetForegroundWindow($window)
+    [System.Windows.Forms.SendKeys]::SendWait('^{,}')
+    Wait-For 'open Desktop Settings' { [NativeWindowFixture]::Windows($app.Id) | Where-Object { [NativeWindowFixture]::Title($_) -like 'Desktop Settings*' } }
+    Start-Sleep -Seconds 1
+    $settingsWindow = [NativeWindowFixture]::Windows($app.Id) | Where-Object { [NativeWindowFixture]::Title($_) -like 'Desktop Settings*' } | Select-Object -First 1
+    [void][NativeWindowFixture]::SetForegroundWindow($settingsWindow)
+    return $settingsWindow
+}
+
+function Saved($section, $name, $value) {
+    $saved = Get-Content -Raw $preferences | ConvertFrom-Json
+    return $saved.preferences.$section.$name -eq $value
+}
+
+function Settings-Select($handle, $y, $keys) {
+    [NativeWindowFixture]::Click($handle, 450, $y)
+    [System.Windows.Forms.SendKeys]::SendWait($keys + '{ENTER}')
 }
 
 $appExe = Join-Path $env:APP 'Pi Pocket.exe'
@@ -151,6 +189,8 @@ try {
         Request-Quit
         Wait-For 'quit' { $app.Refresh(); $app.HasExited }
     }
+    Move-Item -Force "$page.saved" $page
+    & "$PSScriptRoot/window-settings-windows.ps1"
     'System and Seamless; light and dark; native maximize; a second window; existing name kept; Save dialog cancelled.' |
         Set-Content (Join-Path $out 'assertions.txt')
 } catch {
@@ -162,6 +202,6 @@ try {
     if ($app -and -not $app.HasExited) {
         try { Request-Quit } catch { Write-Warning $_.Exception.Message }
     }
-    Move-Item -Force "$page.saved" $page
+    if (Test-Path "$page.saved") { Move-Item -Force "$page.saved" $page }
     Remove-Item -Force $existing, $completed -ErrorAction SilentlyContinue
 }
