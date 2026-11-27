@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { DesktopController } from "../../packaging/desktop/controller/index.mjs";
 import {
     FRAME_SAMPLES,
@@ -19,6 +20,105 @@ const speech = {
     family: "whisper",
 };
 const another = { ...speech, id: "another", name: "Another model" };
+
+async function pageBridge({ path = "/pocket", effective, secure = true, frame = false } = {}) {
+    const [bootstrap, adapter] = await Promise.all(
+        ["bridge/bootstrap.js", "protocol/page-dictation.js"].map((name) =>
+            readFile(new URL(`../../packaging/desktop/${name}`, import.meta.url), "utf8"),
+        ),
+    );
+    const origin = "https://speech.example.test";
+    const window = { origin: effective ?? origin };
+    const navigator = { userActivation: { isActive: false } };
+    const document = { hidden: false, focused: true, hasFocus: () => document.focused };
+    const outgoing = [];
+    const listeners = new Map();
+    let receive;
+
+    window.top = frame ? {} : window;
+    runInNewContext(
+        bootstrap.replace(
+            "/* POCKET_BRIDGE_ARGUMENTS */",
+            () => `config, transport, ${adapter.trim().replace(/;$/, "")}`,
+        ),
+        {
+            config: { origin, basePath: "/pocket", items: [] },
+            transport: {
+                send: (packet) => outgoing.push(structuredClone(packet)),
+                listen: (next) => {
+                    receive = next;
+                },
+            },
+            window,
+            location: { origin, protocol: "https:", pathname: path },
+            isSecureContext: secure,
+            crypto: globalThis.crypto,
+            document,
+            navigator,
+            addEventListener: (name, handler) => listeners.set(name, handler),
+        },
+    );
+
+    return { api: window.pocketDictation, receive, outgoing, navigator, document, listeners };
+}
+
+test("the native speech adapter is scoped to a bound, secure Pi Pocket page and needs a gesture", async () => {
+    for (const invalid of [
+        { effective: "null" },
+        { path: "/pocket/login" },
+        { secure: false },
+        { frame: true },
+    ]) {
+        assert.equal((await pageBridge(invalid)).api, undefined);
+    }
+
+    const { api, outgoing, receive, navigator, document, listeners } = await pageBridge();
+    const connection = api.attach((op) => {
+        if (op === "hold") {
+            recognition.start();
+        }
+
+        if (op === "release") {
+            recognition.stop();
+        }
+    });
+    const recognition = new connection.Recognition();
+    const results = [];
+    const errors = [];
+
+    recognition.onresult = ({ results: parts }) => results.push(parts[0][0].transcript);
+    recognition.onerror = ({ error }) => errors.push(error);
+    assert.throws(() => recognition.start(), /press its microphone button/);
+    navigator.userActivation.isActive = true;
+    assert.throws(() => recognition.start(), /finish loading/);
+    navigator.userActivation.isActive = false;
+    assert.deepEqual(outgoing, []);
+
+    receive({ type: "bind", key: "lease" });
+    const { scope } = outgoing.shift();
+    const packet = { type: "dictation", key: "lease", scope };
+
+    assert.match(scope, /^[a-f0-9]{32}$/);
+    document.focused = false;
+    receive({ ...packet, op: "hold" });
+    document.focused = true;
+    receive({ ...packet, key: "older", op: "hold" });
+    receive({ ...packet, scope: "older", op: "hold" });
+    assert.deepEqual(outgoing, []);
+
+    receive({ ...packet, op: "hold" });
+    const { id, op } = outgoing.shift();
+
+    assert.equal(op, "start");
+    receive({ ...packet, op: "result", id: "older", parts: [{ text: "old", final: true }] });
+    receive({ ...packet, op: "result", id, parts: [{ text: "words", final: true }] });
+    assert.deepEqual(results, ["words"]);
+    receive({ ...packet, op: "release" });
+    assert.deepEqual(outgoing.shift(), { ...packet, op: "stop", id });
+    listeners.get("pagehide")();
+    assert.deepEqual(outgoing.shift(), { ...packet, op: "detach" });
+    assert.deepEqual(errors, ["aborted"]);
+});
 
 async function setup(t, reuse) {
     const folder = reuse ?? (await mkdtemp(join(tmpdir(), "desktop-dictation-")));

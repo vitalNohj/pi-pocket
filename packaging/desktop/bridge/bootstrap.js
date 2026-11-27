@@ -68,11 +68,17 @@
     dictation?.(
         config.origin,
         (packet) => {
-            if (key !== null) {
-                transport.send({ ...packet, key });
+            if (key === null) {
+                return false;
             }
+
+            transport.send({ ...packet, key });
+
+            return true;
         },
-        (receive) => { speechReceiver = receive; },
+        (receive) => {
+            speechReceiver = receive;
+        },
     );
 
     transport.listen((data) => {

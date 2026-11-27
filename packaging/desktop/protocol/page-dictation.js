@@ -18,7 +18,7 @@
     let gesture = false;
 
     function send(op, scope, id) {
-        post({ type: "dictation", op, scope, ...(id ? { id } : {}) });
+        return post({ type: "dictation", op, scope, ...(id ? { id } : {}) });
     }
 
     function finish(error, message) {
@@ -37,7 +37,9 @@
 
     listen((event) => {
         if (event.type === "bind" && attached) {
+            finish("aborted");
             send("attach", attached.scope);
+
             return;
         }
 
@@ -133,8 +135,12 @@
                             }
 
                             this.id = nonce();
+
+                            if (!send("start", entry.scope, this.id)) {
+                                throw new Error("Wait for the desktop window to finish loading.");
+                            }
+
                             request = this;
-                            send("start", entry.scope, this.id);
                         }
 
                         stop() {

@@ -175,7 +175,7 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
             \(config), {
                 send: (packet) => window.webkit.messageHandlers.pocket.postMessage(packet),
                 listen: (receive) => Object.defineProperty(window, '__pocketNativeReceive', { value: receive }),
-            }, (speechScript)
+            }, \(speechScript)
             """
         let script = source.replacingOccurrences(of: "/* POCKET_BRIDGE_ARGUMENTS */", with: arguments)
         configuration.userContentController.addUserScript(

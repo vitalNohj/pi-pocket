@@ -72,15 +72,10 @@ final class DictationHost {
         consent.removeAll()
     }
 
-    func addScript(_ configuration: WKWebViewConfiguration, origin: String) {
-        guard speechOrigin(URL(string: origin)),
-            let source = try? String(contentsOf: owner.assets.appendingPathComponent("protocol/page-dictation.js"), encoding: .utf8) else { return }
-        let function = source.trimmingCharacters(in: .whitespacesAndNewlines).dropLast()
-        let script = """
-            \(function)(\(jsString(origin)), message => webkit.messageHandlers.pocket.postMessage(message),
-                receive => Object.defineProperty(window, "__pocketDictationEvent", { value: receive }));
-            """
-        configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    func script(for address: URL) -> String {
+        guard speechOrigin(address),
+            let source = try? String(contentsOf: owner.assets.appendingPathComponent("protocol/page-dictation.js"), encoding: .utf8) else { return "null" }
+        return String(source.trimmingCharacters(in: .whitespacesAndNewlines).dropLast())
     }
 
     private func speechOrigin(_ url: URL?) -> Bool {
@@ -274,15 +269,12 @@ final class DictationHost {
     }
 
     private func send(_ target: Target, _ op: String, id: String? = nil, fields: [String: Any] = [:]) {
-        guard let view = target.view, eligible(view), target.generation == owner.page?.generation,
-            let origin = pageOrigin(view.url) else { return }
+        guard let view = target.view, eligible(view), target.generation == owner.page?.generation else { return }
         var event = fields
-        event["type"] = "dictation"
         event["scope"] = target.scope
         event["op"] = op
         event["id"] = id
-        view.callAsyncJavaScript("if (window.origin === origin && location.origin === origin) window.__pocketDictationEvent?.(event)",
-            arguments: ["origin": origin, "event": event], in: nil, in: .page) { _ in }
+        owner.sessionBridge.sendDictation(view, event)
     }
 
     private func showIndicator(_ view: WKWebView) {
