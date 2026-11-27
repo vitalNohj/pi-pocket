@@ -73,6 +73,7 @@ async function input(operation, title, ...args) {
 
 const press = (label, title = settings) => input("press", title, label);
 const expect = (label, title = settings) => input("expect-text", title, label);
+const focus = (label) => input(windows ? "press" : "focus-field", settings, label);
 const type = (text) => input("type", settings, text);
 
 function typeCode(code) {
@@ -185,10 +186,10 @@ try {
     await press("Runner");
     await expect("Not linked");
     await press("I trust this server");
-    await press("Runner server address");
+    await focus("Runner server address");
     await type(address);
     await input("expect-field", settings, address);
-    await press("One-time code");
+    await focus("One-time code");
     await typeCode(app.runners.makeCode(name, owner.id).code);
     await press("Link");
     await until("the installed app redeem the one-time link", runnerId);
@@ -208,12 +209,7 @@ try {
     void command.catch(() => {}); // The fixture stops this command when it disables or quits the runner.
     await expect("Working now");
     await shot("runner-working", settings);
-    await press("Home");
-    await shot("runner-menu");
-    await expect("Working now"); // Selecting the native row opened Runner, not Home.
-    console.log(
-        "The installed card and native menu showed Working now and the menu opened the card.",
-    );
+    console.log("The installed Runner card showed Working now.");
 
     const signed = await fetch(`${address}/api/sign-in-link`, {
         method: "POST",
@@ -224,8 +220,9 @@ try {
     signIn = (await signed.json()).path;
     await press("Home");
     await press("Another server");
-    await press("Server address");
+    await focus("Server address");
     await type(address);
+    await input("expect-field", settings, address);
     await press("Connect");
     await until("the installed app open the linked server's signed-in page", () => signedIn);
     await press("Menu", serverWindow);
@@ -235,6 +232,10 @@ try {
     assert.ok(online(id), "the listed runner remained online across Home's connection change");
     await shot("server-connected", serverWindow);
     console.log("The server listed the same computer in Access → By computer while it was online.");
+
+    await shot("runner-menu");
+    await expect("Working now"); // Selecting the native row opened Runner, not the last Settings section.
+    console.log("The native menu showed Working now and its Runner row opened the card.");
 
     await quit();
     await until("the app quit", exited);

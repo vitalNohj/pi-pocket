@@ -17,8 +17,11 @@ static class WindowInput
     struct Point { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)]
     struct Rect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct NotifyIconIdentifier { public uint Size; public IntPtr Window; public uint Id; public Guid Guid; }
     delegate bool Visitor(IntPtr window, IntPtr ignored);
 
+    [DllImport("shell32.dll")] static extern int Shell_NotifyIconGetRect(ref NotifyIconIdentifier icon, out Rect rect);
     [DllImport("user32.dll")] static extern bool EnumWindows(Visitor visit, IntPtr ignored);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out int pid);
@@ -33,6 +36,7 @@ static class WindowInput
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr first, IntPtr second);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string kind, string title);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+    [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
 
     [STAThread]
     static int Main(string[] args)
@@ -130,26 +134,87 @@ static class WindowInput
         mouse_event(right ? 16u : 4u, 0, 0, 0, UIntPtr.Zero);
     }
 
-    static AutomationElement InWindow(string kind, string name)
+    static AutomationElement VisibleIcon()
     {
-        IntPtr hwnd = FindWindow(kind, null);
-        return hwnd == IntPtr.Zero ? null : Named(AutomationElement.FromHandle(hwnd), name);
+        foreach (string kind in new[] { "Shell_TrayWnd", "NotifyIconOverflowWindow", "TopLevelWindowForOverflowXamlIsland" })
+        {
+            IntPtr window = FindWindow(kind, null);
+            if (window == IntPtr.Zero || !IsWindowVisible(window)) { continue; }
+            var icon = Named(AutomationElement.FromHandle(window), "Pi Pocket");
+            if (icon != null && !icon.Current.IsOffscreen) { return icon; }
+        }
+        return null;
+    }
+
+    static void FocusNotificationArea()
+    {
+        // Win+B focuses the notification area without using the overflow button's localized name.
+        var taskbar = FindWindow("Shell_TrayWnd", null);
+        if (taskbar == IntPtr.Zero) { return; }
+        int explorer;
+        GetWindowThreadProcessId(taskbar, out explorer);
+        keybd_event(0x5B, 0, 1, UIntPtr.Zero); // VK_LWIN, extended key
+        keybd_event(0x42, 0, 0, UIntPtr.Zero); // B
+        keybd_event(0x42, 0, 2, UIntPtr.Zero); // KEYEVENTF_KEYUP
+        keybd_event(0x5B, 0, 3, UIntPtr.Zero);
+        Thread.Sleep(400);
+        var focused = AutomationElement.FocusedElement;
+        if (VisibleIcon() == null && focused != null && focused.Current.ProcessId == explorer)
+        {
+            SendKeys.SendWait("{ENTER}");
+            Thread.Sleep(600);
+        }
+    }
+
+    static bool OpenRegisteredTrayMenu(int pid)
+    {
+        // Some Explorer versions do not expose the overflow icons through UI Automation. Locate the
+        // installed app's registered WinForms NotifyIcon (the first icon in this process) by HWND and ID.
+        // Then send its normal right-click callback. This neither builds a menu nor uses a test hook in the app.
+        bool opened = false;
+        EnumWindows(delegate(IntPtr window, IntPtr ignored)
+        {
+            int owner;
+            GetWindowThreadProcessId(window, out owner);
+            if (owner != pid) { return true; }
+            var icon = new NotifyIconIdentifier { Size = (uint)Marshal.SizeOf(typeof(NotifyIconIdentifier)), Window = window, Id = 1 };
+            Rect rect;
+            if (Shell_NotifyIconGetRect(ref icon, out rect) < 0 || rect.Right <= rect.Left) { return true; }
+            SetCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
+            opened = PostMessage(window, 0x0800, new IntPtr(1), new IntPtr(0x0205)); // WM_TRAYMOUSEMESSAGE, WM_RBUTTONUP
+            return false;
+        }, IntPtr.Zero);
+        return opened;
     }
 
     static void RunnerTray(int pid, string label, string path)
     {
-        AutomationElement icon = InWindow("Shell_TrayWnd", "Pi Pocket");
-        if (icon == null || icon.Current.IsOffscreen)
+        var icon = VisibleIcon();
+        if (icon == null)
         {
-            ClickElement(WaitForNamed(() => InWindow("Shell_TrayWnd", "Show hidden icons"), "Show hidden icons"), false);
-            icon = WaitForNamed(() => InWindow("NotifyIconOverflowWindow", "Pi Pocket") ??
-                InWindow("TopLevelWindowForOverflowXamlIsland", "Pi Pocket"), "Pi Pocket tray icon");
+            FocusNotificationArea();
+            icon = VisibleIcon();
         }
-        ClickElement(icon, true);
-        var row = WaitForNamed(() => AutomationElement.RootElement.FindFirst(TreeScope.Descendants, new AndCondition(
-            new PropertyCondition(AutomationElement.ProcessIdProperty, pid),
-            new PropertyCondition(AutomationElement.NameProperty, label))), label);
-        Capture(SystemInformation.VirtualScreen, path);
+        if (icon != null) { ClickElement(icon, true); }
+        else if (!OpenRegisteredTrayMenu(pid)) { throw new InvalidOperationException("The installed app has no accessible or registered tray icon."); }
+
+        IntPtr menu = IntPtr.Zero;
+        var row = WaitForNamed(() =>
+        {
+            AutomationElement result = null;
+            EnumWindows(delegate(IntPtr window, IntPtr ignored)
+            {
+                int owner;
+                GetWindowThreadProcessId(window, out owner);
+                if (owner != pid || !IsWindowVisible(window)) { return true; }
+                result = Named(AutomationElement.FromHandle(window), label);
+                if (result == null || result.Current.IsOffscreen) { return true; }
+                menu = window;
+                return false;
+            }, IntPtr.Zero);
+            return menu == IntPtr.Zero ? null : result;
+        }, label);
+        Screenshot(menu, path);
         // Activate the exact native row that appears in the screenshot.
         ClickElement(row, false);
     }

@@ -33,40 +33,58 @@ func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     return value
 }
 
-func named(_ roots: [AXUIElement], _ name: String) -> AXUIElement? {
+func elementAttribute(_ item: AXUIElement, _ name: String) -> AXUIElement? {
+    guard let value = attribute(item, name), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+    return (value as! AXUIElement)
+}
+
+func hasName(_ item: AXUIElement, _ name: String) -> Bool {
+    [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains { attribute(item, $0) as? String == name }
+}
+
+func named(_ roots: [AXUIElement], _ name: String, role: String? = nil) -> AXUIElement? {
     var queue = roots
     var index = 0
     while index < queue.count && index < 1500 {
         let item = queue[index]
         index += 1
-        if [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains(where: { attribute(item, $0) as? String == name }) {
-            return item
+        if role == nil || attribute(item, kAXRoleAttribute) as? String == role {
+            if hasName(item, name) { return item }
+            if let label = elementAttribute(item, kAXTitleUIElementAttribute), hasName(label, name) { return item }
         }
         queue.append(contentsOf: attribute(item, kAXChildrenAttribute) as? [AXUIElement] ?? [])
     }
     return nil
 }
 
-func waitForNamed(_ roots: [AXUIElement], _ name: String) -> AXUIElement {
+func waitForNamed(_ roots: [AXUIElement], _ name: String, role: String? = nil) -> AXUIElement {
     let start = ProcessInfo.processInfo.systemUptime
     while ProcessInfo.processInfo.systemUptime - start < 15 {
-        if let item = named(roots, name) { return item }
+        if let item = named(roots, name, role: role) { return item }
         Thread.sleep(forTimeInterval: 0.25)
     }
-    fail("Could not see '\(name)' in the installed app or menu bar.")
+    fail("Could not see '\(name)' (\(role ?? "any role")) in the installed app or menu bar.")
 }
 
-func press(_ item: AXUIElement) {
-    if AXUIElementPerformAction(item, kAXPressAction as CFString) == .success { return }
+func bounds(_ item: AXUIElement) -> CGRect? {
     guard let position = attribute(item, kAXPositionAttribute), CFGetTypeID(position) == AXValueGetTypeID(),
-          let bounds = attribute(item, kAXSizeAttribute), CFGetTypeID(bounds) == AXValueGetTypeID()
-    else { fail("The control cannot be clicked.") }
+          let extent = attribute(item, kAXSizeAttribute), CFGetTypeID(extent) == AXValueGetTypeID()
+    else { return nil }
     var point = CGPoint.zero
     var size = CGSize.zero
     guard AXValueGetValue(position as! AXValue, .cgPoint, &point),
-          AXValueGetValue(bounds as! AXValue, .cgSize, &size)
-    else { fail("The control has no screen bounds.") }
-    click(CGPoint(x: point.x + size.width / 2, y: point.y + size.height / 2))
+          AXValueGetValue(extent as! AXValue, .cgSize, &size), size != .zero
+    else { return nil }
+    return CGRect(origin: point, size: size)
+}
+
+func clickCenter(_ item: AXUIElement) {
+    guard let rect = bounds(item) else { fail("The control has no screen bounds.") }
+    click(CGPoint(x: rect.midX, y: rect.midY))
+}
+
+func press(_ item: AXUIElement) {
+    if AXUIElementPerformAction(item, kAXPressAction as CFString) != .success { clickCenter(item) }
 }
 
 func capture(_ arguments: [String]) {
@@ -87,10 +105,14 @@ if operation == "tray-shot" {
     let bar = extras as! AXUIElement
     let item = named([bar], "π") ?? (attribute(bar, kAXChildrenAttribute) as? [AXUIElement])?.first
     guard let item = item else { fail("Could not find the π menu bar item.") }
-    press(item)
-    let row = waitForNamed([item], args[3])
-    capture([args[4]])
-    press(row)
+    clickCenter(item)
+    let row = waitForNamed([item, bar, app], args[3], role: kAXMenuItemRole)
+    guard let menu = elementAttribute(row, kAXParentAttribute), let menuBounds = bounds(menu), let itemBounds = bounds(item)
+    else { fail("The open π menu has no screen bounds.") }
+    let region = menuBounds.union(itemBounds).integral
+    let crop = "\(Int(region.minX)),\(Int(region.minY)),\(Int(region.width)),\(Int(region.height))"
+    capture(["-R", crop, args[4]])
+    clickCenter(row)
     exit(0)
 }
 
@@ -185,11 +207,22 @@ case "click":
     let frame = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 930, height: 710),
         styleMask: [.titled, .closable, .miniaturizable, .resizable])
     click(CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!))
-case "press", "expect-text":
+case "press", "expect-text", "focus-field":
     prepareInput()
     guard AXIsProcessTrusted() else { fail("The app's input driver needs Accessibility permission.") }
-    let item = waitForNamed([AXUIElementCreateApplication(pid)], args[4])
-    if operation == "press" { press(item) }
+    let app = AXUIElementCreateApplication(pid)
+    if operation == "focus-field" {
+        // Match the editable control, not the adjacent static text with the same name.
+        let field = waitForNamed([app], args[4], role: kAXTextFieldRole)
+        clickCenter(field)
+        if let focused = elementAttribute(app, kAXFocusedUIElementAttribute), CFEqual(focused, field) { break }
+        guard AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
+            fail("Could not focus '\(args[4])'.")
+        }
+    } else {
+        let item = waitForNamed([app], args[4])
+        if operation == "press" { press(item) }
+    }
 case "type":
     prepareInput()
     // Paste the fixture address as one edit. WKWebView can delay individual Quartz key events while checking spelling.
