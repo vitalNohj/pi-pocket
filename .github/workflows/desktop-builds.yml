@@ -145,9 +145,11 @@ jobs:
               if: runner.os == 'Windows'
               shell: pwsh
               run: |
+                  $driver = Join-Path $env:RUNNER_TEMP 'desktop-input.exe'
+                  $source = Join-Path $env:GITHUB_WORKSPACE 'test\desktop\WindowInput.cs'
                   $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-                  & $csc /nologo /r:System.Drawing.dll /r:System.Windows.Forms.dll `
-                      "/out:$env:RUNNER_TEMP/desktop-input.exe" test/desktop/WindowInput.cs
+                  & $csc /nologo /target:exe /platform:x64 /warnaserror+ /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+                      "/out:$driver" $source
                   if ($LASTEXITCODE -ne 0) { throw "Desktop input driver did not compile" }
 
             - name: Build the update input driver (macOS)

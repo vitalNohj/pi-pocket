@@ -323,7 +323,10 @@ case "select-file":
     prepareInput()
     key(5, flags: [.maskCommand, .maskShift]) // Go to Folder in the open panel
     Thread.sleep(forTimeInterval: 0.5)
-    for character in args[4] { key(0, text: String(character)) }
+    let clipboard = NSPasteboard.general
+    clipboard.clearContents()
+    guard clipboard.setString(args[4], forType: .string) else { fail("Could not copy the fixture path.") }
+    key(9, flags: .maskCommand) // Paste the full path without dropping key events.
     Thread.sleep(forTimeInterval: 0.5)
     key(36) // Go to the file
     Thread.sleep(forTimeInterval: 0.8)

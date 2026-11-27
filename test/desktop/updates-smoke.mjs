@@ -191,6 +191,12 @@ async function exerciseUpdates(pid, fixture, downloaded) {
         assert.equal(state.version, current);
         assert.equal(state.latest, latest);
         assert.equal(state.updateLine, phase === "staged" ? updateLine : null);
+
+        if (phase === "downloading" && !win) {
+            // Opening the browser can make the first click raise Settings without hitting a control.
+            gui(pid, "click", settingsTitle, 300, -15); // Title bar
+        }
+
         await setTimeout(350); // Let the real WebView paint the new snapshot before capture.
         await screenshot(name, pid);
 
@@ -213,7 +219,12 @@ async function exerciseUpdates(pid, fixture, downloaded) {
     await capture("downloading", "03-downloading", next);
 
     async function pick(file) {
+        if (!win) {
+            gui(pid, "click", settingsTitle, 300, -15); // Return focus from the browser.
+        }
+
         click(590); // Select installer…
+        await waitForStatus("selecting");
 
         if (win) {
             gui(pid, "type", "Select the downloaded desktop installer", `${file}{ENTER}`);
