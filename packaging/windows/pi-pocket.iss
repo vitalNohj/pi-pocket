@@ -70,7 +70,7 @@ SignedUninstaller=yes
 Name: startup; Description: "Start Pi Pocket when I sign in to Windows"; Flags: unchecked
 
 [InstallDelete]
-Type: files; Name: "{autostartup}\Pi Pocket.lnk"; Tasks: not startup
+Type: files; Name: "{autostartup}\Pi Pocket.lnk"; Check: RemoveStartupShortcut
 ; An older Node.js must not leave files behind in the new one.
 Type: filesandordirs; Name: "{app}\node"
 ; The package goes in whole, unless a newer one that the app updated to stays. An install that stops after this leaves
@@ -99,11 +99,11 @@ Source: "stop-pi-pocket.ps1"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "Open Pi Pocket"; AppUserModelID: "PiPocket.Desktop"; AppUserModelToastActivatorCLSID: "3482E279-4BAB-4932-BF9D-CE95126FE324"
 Name: "{autoprograms}\Pi Pocket (console)"; Filename: "{app}\pi-pocket.cmd"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\pi-pocket.ico"; Comment: "Start Pi Pocket in a console window, to choose how other devices reach it"
-Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--login"; WorkingDir: "{%USERPROFILE}"; Tasks: startup
+Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--login"; WorkingDir: "{%USERPROFILE}"; Check: InstallStartupShortcut
 
 [Registry]
 ; Selecting startup also enables a shortcut that Windows previously disabled.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"; ValueType: none; ValueName: "Pi Pocket.lnk"; Flags: deletevalue; Tasks: startup
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"; ValueType: none; ValueName: "Pi Pocket.lnk"; Flags: deletevalue; Check: InstallStartupShortcut
 ; Shell activation and the URL association both belong to this user, not to an administrator's machine.
 Root: HKCU; Subkey: "Software\Classes\CLSID\{{3482E279-4BAB-4932-BF9D-CE95126FE324}\LocalServer32"; ValueType: string; ValueData: """{app}\Pi Pocket.exe"" --toast-server"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\CLSID\{{3482E279-4BAB-4932-BF9D-CE95126FE324}"; Flags: uninsdeletekeyifempty
@@ -153,6 +153,8 @@ var
   KeepApp: Boolean;
   UpgradingDesktop: Boolean;
   LegacyStartup: Boolean;
+  StartupDefaultShown: Boolean;
+  InstallStartup: Boolean;
 
 function NextPart(var Text: String): String;
 var
@@ -388,20 +390,29 @@ begin
     Result := (Ord(State[1]) and 1) = 0;
 end;
 
-procedure InitializeWizard;
+function StartupTasksSupplied: Boolean;
 var
   I: Integer;
   Arg: String;
 begin
-  { Leave explicitly supplied task choices alone. Otherwise take the default from Windows. }
+  Result := True;
   for I := 1 to ParamCount do
   begin
     Arg := Uppercase(ParamStr(I));
     if (Pos('/TASKS=', Arg) = 1) or (Pos('/MERGETASKS=', Arg) = 1) or (Pos('/LOADINF=', Arg) = 1) then
       exit;
   end;
-  if FileExists(AddBackslash(WizardDirValue) + 'Pi Pocket.exe') and StartupEnabled then
-    WizardSelectTasks('startup');
+  Result := False;
+end;
+
+function InstallStartupShortcut: Boolean;
+begin
+  Result := InstallStartup;
+end;
+
+function RemoveStartupShortcut: Boolean;
+begin
+  Result := not InstallStartup;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -424,6 +435,11 @@ begin
 
   UpgradingDesktop := FileExists(ExpandConstant('{app}\Pi Pocket.exe'));
   LegacyStartup := UpgradingDesktop and StartupEnabled;
+  { Silent Setup does not show the task page. Unless it got an explicit choice, keep the Windows state. }
+  if WizardSilent and not StartupTasksSupplied then
+    InstallStartup := LegacyStartup
+  else
+    InstallStartup := WizardIsTaskSelected('startup');
   if UpgradingDesktop and not FileExists(ExpandConstant('{app}\desktop-assets\settings\index.html')) then
     SaveStringToFile(ExpandConstant('{app}\desktop-upgrade.txt'), 'Previous desktop install.', False);
 
@@ -482,6 +498,13 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  if (CurPageID = wpSelectTasks) and not StartupDefaultShown then
+  begin
+    StartupDefaultShown := True;
+    if not StartupTasksSupplied and FileExists(AddBackslash(WizardDirValue) + 'Pi Pocket.exe') and StartupEnabled then
+      WizardSelectTasks('startup');
+  end;
+
   if (CurPageID = wpFinished) and not GitBashFound then
     WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
       'Pi''s bash tool needs Git for Windows (https://git-scm.com/download/win), unless bash.exe is on your PATH.';
