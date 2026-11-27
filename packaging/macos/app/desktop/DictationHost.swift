@@ -49,8 +49,15 @@ final class DictationHost {
             send: { [weak self] view, op in
                 guard let self = self, let target = self.targets[ObjectIdentifier(view)] else { return }
                 if op == "fixture-menu", self.fixture(view) != nil {
-                    // Open the installed π menu without relying on the runner’s menu-bar item positions.
-                    DispatchQueue.main.async { self.owner.statusItem?.button?.performClick(nil) }
+                    // Open the real menu without relying on the runner’s menu-bar item positions.
+                    // End tracking after the screenshot so the runner's distributed Quit notification can arrive.
+                    DispatchQueue.main.async {
+                        guard let item = self.owner.statusItem, let menu = item.menu else { return }
+                        let dismiss = Timer(timeInterval: 2, repeats: false) { _ in menu.cancelTracking() }
+                        RunLoop.main.add(dismiss, forMode: .eventTracking)
+                        RunLoop.main.add(dismiss, forMode: .default)
+                        item.button?.performClick(nil)
+                    }
                 } else if op == "cancel" { self.cancel() }
                 else { self.lastView = view; self.send(target, op) }
             }

@@ -152,8 +152,13 @@ try {
     await shot(settingsTitle, "home-fresh-install");
 
     if (speechCache) {
-        await gui("click", settingsTitle, 95, 240);
+        await gui("click", settingsTitle, 95, 217); // Dictation in the installed sidebar.
         await shot(settingsTitle, "dictation-settings");
+        assert.notDeepEqual(
+            await readFile(join(out, "dictation-settings.png")),
+            await readFile(join(out, "home-fresh-install.png")),
+            "the Dictation screenshot is not another Home screenshot",
+        );
     }
 
     // The installed Settings asset has a fixed sidebar and starts with the Home section.

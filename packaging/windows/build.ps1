@@ -91,11 +91,11 @@ Copy-Item (Join-Path $webView "build\native\x64\WebView2Loader.dll") $desktop
 Copy-Item (Join-Path $webView "LICENSE.txt") (Join-Path $desktop "WebView2-License.txt")
 
 $numeric = ($Version -replace '-.*$', '') + ".0"
-$source = Get-Content -Raw (Join-Path $PSScriptRoot "PiPocket.cs")
-$source = $source.Replace('Version = "0.0.0-dev"', "Version = `"$Version`"")
-$source = $source.Replace('NumericVersion = "0.0.0.0"', "NumericVersion = `"$numeric`"")
+$launcherSource = Get-Content -Raw (Join-Path $PSScriptRoot "PiPocket.cs")
+$launcherSource = $launcherSource.Replace('Version = "0.0.0-dev"', "Version = `"$Version`"")
+$launcherSource = $launcherSource.Replace('NumericVersion = "0.0.0.0"', "NumericVersion = `"$numeric`"")
 $sourceFile = Join-Path $desktop "PiPocket.cs"
-[IO.File]::WriteAllText($sourceFile, $source, (New-Object Text.UTF8Encoding $false))
+[IO.File]::WriteAllText($sourceFile, $launcherSource, (New-Object Text.UTF8Encoding $false))
 $appExe = Join-Path $desktop "Pi Pocket.exe"
 # Reference the contracts directly. Recent Windows.winmd files forward these types to the SDK contracts.
 $sdkReferences = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\References'
@@ -152,8 +152,13 @@ $assets = New-Item -ItemType Directory (Join-Path $desktop "desktop-assets")
 foreach ($name in @("controller", "protocol", "settings", "feed")) {
     Copy-Item -Recurse (Join-Path $PSScriptRoot "..\desktop\$name") $assets.FullName
 }
-& (Join-Path $nodeDir "node.exe") (Join-Path $PSScriptRoot "..\desktop\bundle-dictation.mjs") `
-    (Join-Path $appDir "node_modules\pi-pocket") (Join-Path $assets.FullName "controller\dictation\runtime")
+$speechBundler = Join-Path $PSScriptRoot "..\desktop\bundle-dictation.mjs"
+$speechRuntime = Join-Path $assets.FullName "controller\dictation\runtime"
+if ($DesktopOnly) {
+    node $speechBundler $Source $speechRuntime --from-checkout
+} else {
+    & (Join-Path $nodeDir "node.exe") $speechBundler (Join-Path $appDir "node_modules\pi-pocket") $speechRuntime
+}
 if ($LASTEXITCODE -ne 0) { throw "bundle-dictation.mjs exited with $LASTEXITCODE" }
 Write-Host "Built $appExe"
 

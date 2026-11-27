@@ -212,8 +212,13 @@ for name in controller protocol settings feed; do
 done
 cp "$here/../desktop/bridge/bootstrap.js" "$bundle/Resources/PocketBridge.js"
 cp "$here/../desktop/window/host.js" "$bundle/Resources/window-host.js"
-"$root/node/bin/node" "$repo/packaging/desktop/bundle-dictation.mjs" "$root/app.new/lib/node_modules/pi-pocket" \
-    "$bundle/Resources/desktop-assets/controller/dictation/runtime"
+speech_bundler="$repo/packaging/desktop/bundle-dictation.mjs"
+speech_runtime="$bundle/Resources/desktop-assets/controller/dictation/runtime"
+if $desktop_only; then
+    node "$speech_bundler" "$checkout" "$speech_runtime" --from-checkout
+else
+    "$root/node/bin/node" "$speech_bundler" "$root/app.new/lib/node_modules/pi-pocket" "$speech_runtime"
+fi
 if [ -n "${APP_SIGN_IDENTITY:-}" ]; then
     codesign --force --sign "$APP_SIGN_IDENTITY" --options runtime --timestamp --entitlements "$here/resources/Dictation.entitlements" "$root/Pi Pocket.app"
 else

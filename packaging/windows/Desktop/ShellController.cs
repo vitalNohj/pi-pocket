@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -35,7 +36,10 @@ namespace PiPocket
 
         public static IEnumerable<object> Items(object value)
         {
-            return value as IEnumerable<object> ?? new object[0];
+            // JavaScriptSerializer can return an ArrayList for nested arrays.
+            IList items = value as IList;
+            if (items == null) { yield break; }
+            foreach (object item in items) { yield return item; }
         }
     }
 

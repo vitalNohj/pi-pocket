@@ -91,6 +91,16 @@ func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
     }
 }
 
+func click(_ point: CGPoint) {
+    for type: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
+        else { fail("Cannot create mouse event.") }
+        if type != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }
+        event.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.04)
+    }
+}
+
 switch operation {
 case "find": break
 case "shot":
@@ -109,20 +119,14 @@ case "dictation-menu":
     capture.arguments = ["-x", args[4]]
     try capture.run()
     capture.waitUntilExit()
-    key(53) // Escape
+    click(CGPoint(x: rect.midX, y: rect.maxY - 45)) // A click outside ends mouse tracking.
+    Thread.sleep(forTimeInterval: 2.0) // Let the menu's fixture-only dismissal finish before Quit.
     if capture.terminationStatus != 0 { fail("Could not capture the π menu.") }
 case "click":
     prepareInput()
     let frame = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 930, height: 710),
         styleMask: [.titled, .closable, .miniaturizable, .resizable])
-    let point = CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!)
-    for type: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
-        else { fail("Cannot create mouse event.") }
-        if type != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }
-        event.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.04)
-    }
+    click(CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!))
 case "type":
     prepareInput()
     for character in args[4] { key(0, text: String(character)) }
