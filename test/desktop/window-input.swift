@@ -206,7 +206,10 @@ func useStatusMenu(badge: String, submenu: String, select: String, proof: String
         return rect.minY < screen.minY + 8 && rect.height >= 18 && rect.height <= 48 && rect.width < 180
     }
     guard let bounds = status?[kCGWindowBounds as String] as? [String: Any],
-        let icon = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { fail("No π status item for the installed app.") }
+        let icon = CGRect(dictionaryRepresentation: bounds as CFDictionary) else {
+        if proof != "-" { try capture(proof) }
+        fail("No π status item for the installed app.")
+    }
     pointAt(CGPoint(x: icon.midX, y: icon.midY), click: true)
 
     // Read the real menu on this display. Unlike AX inspection, this needs only the screenshot
@@ -232,7 +235,7 @@ func useStatusMenu(badge: String, submenu: String, select: String, proof: String
             }
         }
         if proof != "-" { try capture(proof) }
-        fail("The π menu did not show '\(sought)'. Visible text: \(lines.joined(separator: " | "))")
+        fail("The π menu did not show '\(sought)' after a click on the status item at \(icon). Visible text: \(lines.joined(separator: " | "))")
     }
     _ = try waitForText(badge)
     if submenu != "-" { pointAt(try waitForText(submenu), click: false) }
@@ -288,10 +291,9 @@ case "new":
 case "selectAll":
     prepareInput()
     key(0, flags: .maskCommand) // Cmd+A
-case "choose":
+case "chooseNext":
     prepareInput()
     key(125) // Down
-    if args[4] == "last" { key(125) }
     key(36) // Return
 case "type":
     prepareInput()

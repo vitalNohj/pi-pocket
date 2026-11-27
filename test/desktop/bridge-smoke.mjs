@@ -62,9 +62,11 @@ export async function testBridge({
             async () => (await prefs()).notifications[key] === value,
         );
 
-    const choose = async (which) => {
-        await click(450, 302);
-        await gui("choose", settings, which);
+    const windows = process.platform === "win32";
+
+    const chooseNext = async () => {
+        await click(450, windows ? 302 : 297);
+        await gui("chooseNext", settings);
     };
 
     const expectDecision = async (call, code) => {
@@ -82,10 +84,10 @@ export async function testBridge({
     await check("enabled", false);
     await click(252, 235); // Play a sound
     await check("sound", false);
-    await choose("next"); // When the full command is shown -> Always
+    await chooseNext(); // When the full command is shown -> Always
     await check("approve", "always");
-    await click(282, 429); // Advanced
-    await click(380, 496); // Command length limit
+    await click(282, windows ? 429 : 422); // Advanced
+    await click(380, windows ? 496 : 490); // Command length limit
     await gui("selectAll", settings);
     await gui("type", settings, "20");
     await click(340, 100); // Commit the input by leaving it.
@@ -95,7 +97,7 @@ export async function testBridge({
     await check("enabled", true);
     await shot(settings, "notifications-settings");
     await expectDecision("read:\n" + "fixture command ".repeat(8), "silent.allow-deny");
-    await choose("last");
+    await chooseNext(); // Always -> Never
     await check("approve", "never");
     await expectDecision("read: notes", "silent.deny");
     await click(252, 235);

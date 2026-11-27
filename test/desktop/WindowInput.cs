@@ -100,7 +100,7 @@ static class WindowInput
                     SendKeys.SendWait(code);
                     break;
                 case "new": SendKeys.SendWait("^n"); break;
-                case "choose": SendKeys.SendWait(args[3] == "next" ? "{DOWN}{ENTER}" : "{END}{ENTER}"); break;
+                case "chooseNext": SendKeys.SendWait("{DOWN}{ENTER}"); break;
                 case "selectAll": SendKeys.SendWait("^a"); break;
                 default: throw new ArgumentException("Unknown test operation.");
             }

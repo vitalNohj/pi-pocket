@@ -73,12 +73,13 @@ extension AppDelegate: NSMenuDelegate, NSMenuItemValidation {
 
         statusItem = item
         menu.autoenablesItems = false
+        fillMenu(menu, key: "tray")
         menu.delegate = self
         item.menu = menu
         setBadge(0)
     }
 
-    func menuWillOpen(_ menu: NSMenu) { fillMenu(menu, key: "tray") }
+    func menuNeedsUpdate(_ menu: NSMenu) { fillMenu(menu, key: "tray") }
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
