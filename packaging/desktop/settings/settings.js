@@ -203,6 +203,11 @@
         if (state) {
             render();
         }
+
+        if (section === "notifications") {
+            // Read the current OS setting. This does not request permission.
+            void run("notifications.refresh");
+        }
     }
 
     function field(label, control) {
@@ -1017,26 +1022,67 @@
                     coming(),
                 ),
             ),
-        notifications: () =>
+        notifications: () => {
+            const permission = element("p", "", { className: "muted", role: "status" });
+            const system = action("Open system settings", () =>
+                run("notifications.systemSettings"),
+            );
+            const statusText = {
+                prompt: "Your computer may ask for permission the first time Pi Pocket shows a notification.",
+                allowed: "System settings allow Pi Pocket notifications.",
+                blocked:
+                    "System settings block Pi Pocket notifications. The needs-you badge still shows.",
+                unknown: "Check your system settings if notifications do not show.",
+            };
+
             content.append(
                 panel(
                     "Native notifications",
                     checkbox("Show notifications", "notifications", "enabled"),
-                    checkbox("Play a sound", "notifications", "sound", true),
-                    selectField(
-                        "Approve from notifications",
-                        "notifications",
-                        "approve",
-                        [
-                            ["full", "When the full command is shown"],
-                            ["always", "Always"],
-                            ["never", "Never"],
-                        ],
-                        true,
+                    checkbox("Play a sound", "notifications", "sound"),
+                    selectField("Approve from notifications", "notifications", "approve", [
+                        ["full", "When the full command is shown"],
+                        ["always", "Always"],
+                        ["never", "Never"],
+                    ]),
+                    element(
+                        "p",
+                        "Deny is available when you can answer a request from a notification.",
                     ),
-                    coming(),
+                    element(
+                        "p",
+                        "Always can show Allow even if part of the command is hidden. Open the session to review the whole command.",
+                    ),
+                    advanced(
+                        number(
+                            "Command length limit (characters)",
+                            "notifications",
+                            "commandLimit",
+                            20,
+                            2000,
+                        ),
+                        element(
+                            "p",
+                            "Control and other invisible characters show as codes, for example [U+000A]. Shortened commands are marked.",
+                        ),
+                    ),
+                    permission,
+                    system,
+                    element(
+                        "p",
+                        "Choose which alerts the server sends in Pi Pocket → Menu → Notifications.",
+                        { className: "hint" },
+                    ),
                 ),
-            ),
+            );
+
+            refresh = () => {
+                const status = state.notifications.permission;
+
+                permission.textContent = statusText[status] || statusText.unknown;
+                system.hidden = status === "allowed" || status === "prompt";
+            };
+        },
     };
 
     function render() {

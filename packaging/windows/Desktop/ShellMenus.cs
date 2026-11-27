@@ -94,6 +94,13 @@ namespace PiPocket
             shellStrip.Items.Add(new ToolStripControlHost(remoteNotice));
             Controls.Add(shellStrip);
             Controls.Add(desktopMenu);
+            // WebView2 raises KeyDown for accelerators while its native child owns focus.
+            view.KeyDown += delegate (object sender, KeyEventArgs args)
+            {
+                if (args.KeyData != (Keys.Control | Keys.N)) { return; }
+                args.SuppressKeyPress = true;
+                BeginInvoke((MethodInvoker)delegate { host.ShellAction("window.newSession"); });
+            };
             Activated += delegate { host.Report("focus", true); };
             Deactivate += delegate { host.Report("focus", false); HideAltMenu(); };
             ApplyShellPreferences();

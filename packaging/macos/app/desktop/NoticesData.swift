@@ -75,7 +75,7 @@ struct NoticeData: Hashable {
         let shown = Self.mark(call, min(2000, max(20, limit)), alreadyCut: cut)
         let entireLine = shown.whole && call.utf8.count <= 24 && call == call.trimmingCharacters(in: .whitespaces) &&
             call.utf8.allSatisfy { (32...126).contains($0) }
-        return (shown.text, may && (mode == "always" || (mode == "whenFullyShown" && entireLine)))
+        return (shown.text, may && (mode == "always" || (mode == "full" && entireLine)))
     }
 }
 

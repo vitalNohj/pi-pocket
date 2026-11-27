@@ -56,11 +56,14 @@ namespace PiPocket
             var approval = NoticeData.Read(json.Deserialize<Dictionary<string, object>>(
                 "{\"tag\":\"approval-test\",\"url\":\"/s/8\",\"approval\":{\"id\":\"test\",\"call\":\"read: notes\",\"may\":true}}"));
             string shown;
-            Check(approval.CanAllow("whenFullyShown", 120, out shown) && shown == "read: notes", "A small full call may be allowed");
+            Check(approval.CanAllow("full", 120, out shown) && shown == "read: notes", "A small full call may be allowed");
             approval.Call = "read:\u202Enotes";
-            Check(!approval.CanAllow("whenFullyShown", 120, out shown) && shown.Contains("[U+202E]"), "Mark hidden text; omit Allow");
+            Check(!approval.CanAllow("full", 120, out shown) && shown.Contains("[U+202E]"), "Mark hidden text; omit Allow");
             approval.Call = new string('a', 100);
-            Check(!approval.CanAllow("whenFullyShown", 20, out shown) && shown.Contains("[shortened]"), "Mark truncation; omit Allow");
+            Check(!approval.CanAllow("full", 20, out shown) && shown.Contains("[shortened]"), "Mark truncation; omit Allow");
+            Check(approval.CanAllow("always", 20, out shown) && shown.Contains("[shortened]"), "Always permits a shortened but eligible call");
+            approval.Call = "read: notes";
+            Check(!approval.CanAllow("never", 120, out shown), "Never omits Allow even for a short call");
             approval.May = false;
             Check(!approval.CanAllow("always", 20, out shown), "The local setting cannot override server eligibility");
 

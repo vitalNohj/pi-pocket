@@ -26,8 +26,64 @@ const speechPage = `
         }
     </script>`;
 
+function pageScript(prefix) {
+    return `
+        const base = ${JSON.stringify(prefix)};
+        const host = window.pocketHost;
+        const report = (event) => fetch(base + '/' + event);
+        const isolated = typeof window.desktopSettings === 'undefined' &&
+            !window.webkit?.messageHandlers.desktopSettings && host?.apiVersion === 1;
+        report(isolated ? 'page-only' : 'bad-bridge');
+        if (isolated) {
+            const sheet = document.querySelector('#new');
+            host.subscribe((event) => {
+                if (event.type === 'open') {
+                    document.querySelector('#session').textContent = 'Opened ' + event.url;
+                    report('opened' + event.url);
+                } else if (event.type === 'newSession') {
+                    if (sheet.open) { sheet.close(); }
+                    sheet.showModal();
+                    if (sheet.open) { report('new-sheet'); }
+                } else if (event.type === 'visibility' && !host.visible()) {
+                    report('window-hidden');
+                } else if (event.type === 'primary' && host.primary()) {
+                    report('primary');
+                }
+            }, ['visibility', 'open', 'newSession', 'primary']);
+            host.setAccount(true);
+            host.setPinned([
+                { id: 4, title: 'Release notes & checks', label: 'Waiting for you', state: 'waiting' },
+                { id: 17, title: 'Installer smoke', label: 'Working', state: 'working' },
+            ]);
+            let seen = 0;
+            async function nextStep() {
+                try {
+                    const step = await fetch(base + '/fixture-step').then((r) => r.json());
+                    if (step.number > seen && host.primary()) {
+                        if (step.badge !== undefined) {
+                            if (step.hidden && host.visible()) { return; }
+                            host.setBadge(step.badge);
+                        } else if (step.call) {
+                            host.notify({ title: 'Pi needs approval', url: '/s/4',
+                                tag: 'approval-fixture-' + step.number,
+                                approval: { id: 'fixture-' + step.number, may: true, call: step.call },
+                            });
+                        }
+                        seen = step.number;
+                        report('step-' + seen);
+                    }
+                } finally {
+                    setTimeout(nextStep, 300);
+                }
+            }
+            nextStep();
+        }
+    `;
+}
+
 export async function fixture({ prefix = "/pocket", mode = "pocket", dictation = false } = {}) {
     let current = mode;
+    let step = { number: 0 };
     const requests = [];
     const server = createServer((request, response) => {
         requests.push({
@@ -58,13 +114,17 @@ export async function fixture({ prefix = "/pocket", mode = "pocket", dictation =
                 "text/html",
                 `<!doctype html><title>Fixture Pi Pocket</title>
                 <meta charset="utf-8"><style>body{background:#eef2f9;color:#17243e;font:18px system-ui;padding:3rem}</style>
-                <h1>Pi Pocket fixture server</h1><p>This page runs in the installed app.</p>
-                <script>
-                    const isolated = typeof window.desktopSettings === 'undefined' &&
-                        !window.webkit?.messageHandlers.desktopSettings && window.pocketHost?.apiVersion === 1;
-                    fetch(location.pathname.replace(/\\/$/, '') + (isolated ? '/page-only' : '/bad-bridge'));
-                </script>${dictation ? speechPage : ""}`,
+                <h1>Pi Pocket fixture server</h1><p id="session">This page runs in the installed app.</p>
+                <dialog id="new"><h2>New Session</h2><p>Choose where to start a session.</p>
+                    <form method="dialog"><button>Cancel</button></form>
+                </dialog>
+                <script src="${prefix}/fixture.js"></script>${dictation ? speechPage : ""}`,
             );
+        } else if (request.url === `${prefix}/fixture.js`) {
+            send(200, "text/javascript", pageScript(prefix));
+        } else if (request.url === `${prefix}/fixture-step`) {
+            response.setHeader("Cache-Control", "no-store");
+            send(200, "application/json", JSON.stringify(step));
         } else {
             send(404, "application/json", "{}");
         }
@@ -80,6 +140,11 @@ export async function fixture({ prefix = "/pocket", mode = "pocket", dictation =
         requests,
         setMode(next) {
             current = next;
+        },
+        step(data) {
+            step = { ...data, number: step.number + 1 };
+
+            return step.number;
         },
         close: () =>
             new Promise((resolve, reject) =>

@@ -2,6 +2,7 @@
 import ApplicationServices
 import Cocoa
 import CoreGraphics
+import Vision
 
 let args = CommandLine.arguments
 let pid = Int32(args[1])!
@@ -83,19 +84,18 @@ func bounds(_ item: AXUIElement) -> CGRect? {
 
 func clickCenter(_ item: AXUIElement) {
     guard let rect = bounds(item) else { fail("The control has no screen bounds.") }
-    click(CGPoint(x: rect.midX, y: rect.midY))
+    pointAt(CGPoint(x: rect.midX, y: rect.midY), click: true)
 }
 
 func press(_ item: AXUIElement) {
     if AXUIElementPerformAction(item, kAXPressAction as CFString) != .success { clickCenter(item) }
 }
 
-func capture(_ arguments: [String]) {
+func capture(_ arguments: [String]) throws {
     let command = Process()
     command.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
     command.arguments = ["-x"] + arguments
-    do { try command.run() }
-    catch { fail("Could not start screencapture.") }
+    try command.run()
     command.waitUntilExit()
     if command.terminationStatus != 0 { fail("Could not capture the installed app.") }
 }
@@ -114,18 +114,16 @@ if operation == "tray-shot" {
     else { fail("The open π menu has no screen bounds.") }
     let region = menuBounds.union(itemBounds).integral
     let crop = "\(Int(region.minX)),\(Int(region.minY)),\(Int(region.width)),\(Int(region.height))"
-    capture(["-R", crop, args[4]])
+    try capture(["-R", crop, args[4]])
     clickCenter(row)
     exit(0)
 }
 
-var found: (Int, CGRect)?
-for _ in 0..<60 {
-    found = window()
-    if found != nil { break }
-    Thread.sleep(forTimeInterval: 0.3)
-}
-guard let (number, rect) = found else {
+func waitForWindow() -> (Int, CGRect) {
+    for _ in 0..<60 {
+        if let found = window() { return found }
+        Thread.sleep(forTimeInterval: 0.3)
+    }
     let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
     let owned = windows.filter { $0[kCGWindowOwnerPID as String] as? Int32 == pid }
     let details = owned.map { window in
@@ -136,8 +134,12 @@ guard let (number, rect) = found else {
     fail("The installed app did not show '\(title)'. Its \(owned.count) windows: \(details)")
 }
 
-func prepareInput() {
+func requirePostEvent() {
     guard CGPreflightPostEventAccess() else { fail("macOS has not authorized the installer input driver to post Quartz events.") }
+}
+
+func prepareInput() {
+    requirePostEvent()
     if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
         NSRunningApplication(processIdentifier: pid)?.activate(options: [])
         Thread.sleep(forTimeInterval: 0.3)
@@ -178,8 +180,12 @@ func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
     }
 }
 
-func click(_ point: CGPoint) {
-    for type: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
+func capture(_ path: String, window: Int? = nil) throws {
+    try capture((window.map { ["-o", "-l", String($0)] } ?? ["-m"]) + [path])
+}
+
+func pointAt(_ point: CGPoint, click: Bool) {
+    for type: CGEventType in click ? [.mouseMoved, .leftMouseDown, .leftMouseUp] : [.mouseMoved] {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
         else { fail("Cannot create mouse event.") }
         event.flags = []
@@ -189,27 +195,77 @@ func click(_ point: CGPoint) {
     }
 }
 
+func useStatusMenu(badge: String, submenu: String, select: String, proof: String, other: String) throws {
+    requirePostEvent()
+    let screen = CGDisplayBounds(CGMainDisplayID())
+    let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+    let status = windows.first { window in
+        guard window[kCGWindowOwnerPID as String] as? Int32 == pid,
+            let bounds = window[kCGWindowBounds as String] as? [String: Any],
+            let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
+        return rect.minY < screen.minY + 8 && rect.height >= 18 && rect.height <= 48 && rect.width < 180
+    }
+    guard let bounds = status?[kCGWindowBounds as String] as? [String: Any],
+        let icon = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { fail("No π status item for the installed app.") }
+    pointAt(CGPoint(x: icon.midX, y: icon.midY), click: true)
+
+    // Read the real menu on this display. Unlike AX inspection, this needs only the screenshot
+    // and Quartz input access already used by the installer smoke, not an additional TCC grant.
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("pocket-menu-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: temp) }
+    func waitForText(_ sought: String) throws -> CGPoint {
+        var lines: [String] = []
+        for _ in 0..<7 {
+            Thread.sleep(forTimeInterval: 0.25)
+            try capture(temp.path)
+            let recognition = VNRecognizeTextRequest()
+            recognition.recognitionLevel = .accurate
+            try VNImageRequestHandler(url: temp, options: [:]).perform([recognition])
+            lines = []
+            for result in recognition.results ?? [] {
+                guard let text = result.topCandidates(1).first?.string else { continue }
+                lines.append(text)
+                if text.localizedCaseInsensitiveContains(sought) {
+                    let rect = result.boundingBox
+                    return CGPoint(x: screen.minX + rect.midX * screen.width, y: screen.minY + (1 - rect.midY) * screen.height)
+                }
+            }
+        }
+        if proof != "-" { try capture(proof) }
+        fail("The π menu did not show '\(sought)'. Visible text: \(lines.joined(separator: " | "))")
+    }
+    _ = try waitForText(badge)
+    if submenu != "-" { pointAt(try waitForText(submenu), click: false) }
+    if other != "-" { _ = try waitForText(other) }
+    let item = try waitForText(select)
+    if proof != "-" { try capture(proof) }
+    pointAt(item, click: true)
+}
+
+if operation == "tray" {
+    try useStatusMenu(badge: title, submenu: args[4], select: args[5], proof: args[6], other: args[7])
+    Thread.sleep(forTimeInterval: 0.25)
+    exit(0)
+}
+
+let (number, rect) = waitForWindow()
 switch operation {
 case "find": break
 case "shot":
-    capture(["-o", "-l", String(number), args[4]])
+    try capture(args[4], window: number)
 case "dictation-menu":
     prepareInput()
     key(109, flags: [.maskControl, .maskShift]) // Ctrl+Shift+F10 in the isolated fixture profile.
     Thread.sleep(forTimeInterval: 0.6)
-    let capture = Process()
-    capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    capture.arguments = ["-x", args[4]]
-    try capture.run()
-    capture.waitUntilExit()
-    click(CGPoint(x: rect.midX, y: rect.maxY - 45)) // A click outside ends mouse tracking.
+    try capture(args[4])
+    pointAt(CGPoint(x: rect.midX, y: rect.maxY - 45), click: true) // A click outside ends mouse tracking.
     Thread.sleep(forTimeInterval: 2.0) // Let the menu's fixture-only dismissal finish before Quit.
-    if capture.terminationStatus != 0 { fail("Could not capture the π menu.") }
 case "click":
     prepareInput()
     let frame = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 930, height: 710),
         styleMask: [.titled, .closable, .miniaturizable, .resizable])
-    click(CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!))
+    let point = CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!)
+    pointAt(point, click: true)
 case "press", "expect-text", "expect-prefix", "focus-field":
     prepareInput()
     guard AXIsProcessTrusted() else { fail("The app's input driver needs Accessibility permission.") }
@@ -226,6 +282,17 @@ case "press", "expect-text", "expect-prefix", "focus-field":
         let item = waitForNamed([app], args[4], prefix: operation == "expect-prefix")
         if operation == "press" { press(item) }
     }
+case "new":
+    prepareInput()
+    key(45, flags: .maskCommand) // Cmd+N
+case "selectAll":
+    prepareInput()
+    key(0, flags: .maskCommand) // Cmd+A
+case "choose":
+    prepareInput()
+    key(125) // Down
+    if args[4] == "last" { key(125) }
+    key(36) // Return
 case "type":
     prepareInput()
     // Paste the fixture address as one edit. WKWebView can delay individual Quartz key events while checking spelling.

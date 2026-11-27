@@ -29,7 +29,6 @@ namespace PiPocket
         internal bool PageBridge { get { return pageBridge; } }
         internal string[] OtherOrigins { get { return otherOrigins; } }
         object WindowPreferences { get { return ShellWire.Get(ShellWire.Get(snapshot, "preferences"), "window"); } }
-        internal bool NotificationsEnabled { get { return snapshot == null || ShellWire.Flag(ShellWire.Get(ShellWire.Get(snapshot, "preferences"), "notifications"), "enabled"); } }
 
         async void StartShell()
         {
@@ -87,6 +86,10 @@ namespace PiPocket
         {
             if (next == null || quitting || ShellWire.Number(snapshot, "revision") > ShellWire.Number(next, "revision")) { return; }
             snapshot = next;
+            object notices = ShellWire.Get(ShellWire.Get(next, "preferences"), "notifications");
+            Bridge.Notices.Configure(!false.Equals(ShellWire.Get(notices, "enabled")),
+                !false.Equals(ShellWire.Get(notices, "sound")), ShellWire.Text(notices, "approve") ?? "full",
+                ShellWire.Get(notices, "commandLimit") is int ? ShellWire.Number(notices, "commandLimit") : 120);
             if (settings != null) { settings.UpdateState(next); }
             if (window != null) { window.ApplyShellPreferences(); }
             foreach (PocketWindow extra in popups.ToArray()) { extra.ApplyShellPreferences(); }
@@ -172,7 +175,7 @@ namespace PiPocket
                 case "window.newWindow": await NewSessionWindow(); break;
                 case "window.back": if (front != null && front.Browser != null && front.Browser.CanGoBack) { front.Browser.GoBack(); } break;
                 case "window.forward": if (front != null && front.Browser != null && front.Browser.CanGoForward) { front.Browser.GoForward(); } break;
-                case "window.pinned": if (front != null) { front.ShowWindow(); front.OpenAddress("/s/" + ShellWire.Text(data, "id")); } break;
+                case "window.pinned": Bridge.OpenPin("/s/" + ShellWire.Text(data, "id"), ShellWire.Text(data, "feed")); break;
                 case "window.zoomIn": if (front != null) { front.Zoom(0.1); } break;
                 case "window.zoomOut": if (front != null) { front.Zoom(-0.1); } break;
                 case "window.actualSize": if (front != null) { front.Zoom(0); } break;
@@ -181,6 +184,10 @@ namespace PiPocket
                 case "window.minimize": if (front != null) { front.WindowState = FormWindowState.Minimized; } break;
                 case "window.close": if (Form.ActiveForm != null) { Form.ActiveForm.Close(); } break;
                 case "window.preferences": break;
+                case "notifications.refresh": Bridge.Notices.RefreshPermission(); break;
+                case "notifications.systemSettings":
+                    Process.Start(new ProcessStartInfo("ms-settings:notifications") { UseShellExecute = true });
+                    break;
                 case "app.quit": Quit(); break;
                 case "help.repository": OpenInDefaultBrowser("https://github.com/vitalNohj/pi-pocket"); break;
                 case "help.documentation": OpenInDefaultBrowser("https://github.com/vitalNohj/pi-pocket/blob/desktop-native/docs/desktop-app.md"); break;
@@ -219,6 +226,7 @@ namespace PiPocket
             ShellSettings made = new ShellSettings(baseIcon, (command, data) => controller.Call(command, data));
             settings = made;
             made.Disposed += delegate { if (settings == made) { settings = null; } };
+            made.Activated += delegate { Bridge.Notices.RefreshPermission(); };
             made.SelectSection(section);
             made.Show();
             made.Activate();

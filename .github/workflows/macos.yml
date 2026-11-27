@@ -166,7 +166,7 @@ jobs:
               run: |
                   "$APP/node/bin/node" --experimental-vm-modules test/desktop/dictation-smoke.mjs "$MANIFEST" "$RUNNER_TEMP/dictation-models"
 
-            - name: Test Desktop Settings, Home and native dictation in the installed app
+            - name: Test Settings, Home, dictation and the desktop bridge in the installed app
               run: |
                   swiftc test/desktop/window-input.swift -o "$RUNNER_TEMP/desktop-input"
                   node test/desktop/native-smoke.mjs "$BUNDLE/Contents/MacOS/Pi Pocket" \

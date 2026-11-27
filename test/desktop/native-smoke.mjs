@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { testBridge } from "./bridge-smoke.mjs";
 import { fixture } from "./fixture.mjs";
 
 const windows = process.platform === "win32";
@@ -253,6 +254,7 @@ try {
         "Check did not connect. Connect used the base path. The fixture had no Desktop Settings API or local credentials.",
     );
 
+    await testBridge({ remote, gui, until, prefs, waitForSettings, shot, out, stateFolder });
     await quit();
     await until("Quit ended the app", () => exited(app));
     console.log("The installed app passed the offline Settings and remote Home smoke test.");

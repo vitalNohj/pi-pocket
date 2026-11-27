@@ -126,7 +126,7 @@ jobs:
               run: |
                   & (Join-Path $env:APP "node\node.exe") --experimental-vm-modules test/desktop/dictation-smoke.mjs $env:MANIFEST (Join-Path $env:RUNNER_TEMP "dictation-models")
 
-            - name: Test Desktop Settings, Home and native dictation in the installed app
+            - name: Test Settings, Home, dictation and the desktop bridge in the installed app
               run: |
                   $driver = Join-Path $env:RUNNER_TEMP 'window-input.exe'
                   $source = Join-Path $env:GITHUB_WORKSPACE 'test\desktop\WindowInput.cs'

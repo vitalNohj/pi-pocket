@@ -41,11 +41,14 @@ struct BridgeMacTests {
         func approval(_ call: String, may: Bool = true) -> NoticeData {
             NoticeData(["tag": "approval-test", "url": "/s/8", "approval": ["id": "test", "call": call, "may": may]])!
         }
-        precondition(approval("read: notes").command(mode: "whenFullyShown", limit: 120).allow)
-        let bidi = approval("read:\u{202E}notes").command(mode: "whenFullyShown", limit: 120)
+        precondition(approval("read: notes").command(mode: "full", limit: 120).allow)
+        let bidi = approval("read:\u{202E}notes").command(mode: "full", limit: 120)
         precondition(!bidi.allow && bidi.body.contains("[U+202E]"))
-        let cut = approval(String(repeating: "a", count: 100)).command(mode: "whenFullyShown", limit: 20)
+        let cut = approval(String(repeating: "a", count: 100)).command(mode: "full", limit: 20)
         precondition(!cut.allow && cut.body.contains("[shortened]"))
+        let always = approval(String(repeating: "a", count: 100)).command(mode: "always", limit: 20)
+        precondition(always.allow && always.body.contains("[shortened]"))
+        precondition(!approval("read: notes").command(mode: "never", limit: 120).allow)
         precondition(!approval("read: notes", may: false).command(mode: "always", limit: 20).allow)
 
         let now = Date()

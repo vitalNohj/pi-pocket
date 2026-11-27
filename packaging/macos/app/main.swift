@@ -212,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     var windowPrefs = WindowPreferences.load()
     var windowHotkey: WindowHotkey?
     lazy var windowDownloads = WindowDownloads { [weak self] in
-        if let self = self, self.notices { self.sessionBridge.notices.local("Download complete.") }
+        self?.sessionBridge.notices.local("Download complete.")
     }
     let windowKey = UUID().uuidString
     lazy var openWhenReady = !CommandLine.arguments.contains("--hidden") &&
@@ -227,7 +227,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         if let self = self, let generation = self.page?.generation {
             self.report("badge", ["generation": generation, "count": count])
         }
-    }, action: { [weak self] action in self?.bridgeAction(action) }, notificationsEnabled: { [weak self] in self?.notices == true },
+    }, action: { [weak self] action in self?.bridgeAction(action) }, reportPins: { [weak self] feed, pins in
+        self?.reportPins(feed: feed, pins: pins)
+    }, reportNotices: { [weak self] key, value in self?.report("notifications", [key: value]) },
         dictation: { [weak self] view, data in self?.dictation.receive(view, data) })
 
     func applicationWillFinishLaunching(_ notification: Notification) {

@@ -105,14 +105,15 @@ namespace PiPocket
         BridgeView primary, newTarget;
         long newUntil;
         bool explained, closing;
-        public IList<BridgePin> Pins { get; private set; }
+        IList<BridgePin> pins = new List<BridgePin>().AsReadOnly();
+        string pinFeed;
         public readonly NoticesWindows Notices;
 
         public BridgeWindows(TrayApp host)
         {
             this.host = host;
-            Pins = new List<BridgePin>().AsReadOnly();
-            Notices = new NoticesWindows(Activate, host.Log, run => host.OnUi(() => run()));
+            Notices = new NoticesWindows(Activate, host.Log, run => host.OnUi(() => run()),
+                (key, value) => host.Report("notifications", new Dictionary<string, object> { { key, value } }));
             timer.Tick += delegate { FlushNew(); };
         }
 
@@ -171,19 +172,32 @@ namespace PiPocket
             if (IsPrimary(view)) { host.SetBadge(count); }
         }
 
-        public void Pinned(BridgeView view, IList<BridgePin> pins)
+        public void Pinned(BridgeView view, IList<BridgePin> next)
         {
-            if (IsPrimary(view)) { Pins = pins; }
+            if (!IsPrimary(view)) { return; }
+            pins = next;
+            if (pinFeed == null) { pinFeed = Guid.NewGuid().ToString(); }
+            ReportPins();
+        }
+
+        void ReportPins()
+        {
+            if (host.PageGeneration <= 0) { return; }
+            host.Report("pins", new { generation = host.PageGeneration, feed = pinFeed, items = pins.Select(pin => new {
+                id = pin.Path.Substring(3), title = pin.Title, state = pin.State, label = pin.Label, url = pin.Path,
+            }).ToArray() });
         }
 
         public void Notice(BridgeView view, NoticeData notice)
         {
-            if (IsPrimary(view) && host.NotificationsEnabled) { Notices.Receive(notice, view.Lease, view.Auth, view.Modern); }
+            if (IsPrimary(view)) { Notices.Receive(notice, view.Lease, view.Auth, view.Modern); }
         }
 
         void ClearFeed(bool forget)
         {
-            Pins = new List<BridgePin>().AsReadOnly();
+            pins = new List<BridgePin>().AsReadOnly();
+            pinFeed = null;
+            ReportPins();
             host.SetBadge(0);
             Notices.Clear(forget);
         }
@@ -201,13 +215,11 @@ namespace PiPocket
             closing = false;
         }
 
-        public void OpenPin(string path)
+        public void OpenPin(string path, string feed)
         {
-            if (primary != null && Pins.Any(pin => pin.Path == path))
-            {
-                primary.Raise();
-                primary.Deliver("open", path, null, false);
-            }
+            BridgeView target = primary;
+            if (target != null && pinFeed != null && pinFeed == feed && pins.Any(pin => pin.Path == path) &&
+                target.Deliver("open", path, null, false)) { target.Raise(); }
         }
 
         void Activate(NoticeTicket ticket, string choice)

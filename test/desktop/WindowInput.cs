@@ -56,6 +56,11 @@ static class WindowInput
                 RunnerTray(pid, args[2], args[3]);
                 return 0;
             }
+            if (operation == "tray")
+            {
+                Tray(pid, args[2], args[3], args[4], args[5], args[6]);
+                return 0;
+            }
             IntPtr window = WaitForWindow(pid, args[2]);
             if (operation == "find") { return 0; }
             if (operation == "close" || operation == "close-to-tray")
@@ -94,6 +99,9 @@ static class WindowInput
                     }
                     SendKeys.SendWait(code);
                     break;
+                case "new": SendKeys.SendWait("^n"); break;
+                case "choose": SendKeys.SendWait(args[3] == "next" ? "{DOWN}{ENTER}" : "{END}{ENTER}"); break;
+                case "selectAll": SendKeys.SendWait("^a"); break;
                 default: throw new ArgumentException("Unknown test operation.");
             }
             Thread.Sleep(250);
@@ -205,15 +213,18 @@ static class WindowInput
         throw new InvalidOperationException("The tray did not show '" + text + "'.");
     }
 
-    static void PointAt(AutomationElement element, uint down)
+    static void PointAt(AutomationElement element, uint down = 0)
     {
         var rect = element.Current.BoundingRectangle;
         if (!SetCursorPos((int)(rect.Left + rect.Width / 2), (int)(rect.Top + rect.Height / 2)))
         {
             throw new InvalidOperationException("Cannot move the pointer to the tray item.");
         }
-        mouse_event(down, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(down * 2, 0, 0, 0, UIntPtr.Zero);
+        if (down != 0)
+        {
+            mouse_event(down, 0, 0, 0, UIntPtr.Zero);
+            mouse_event(down * 2, 0, 0, 0, UIntPtr.Zero);
+        }
     }
 
     static void RunnerTray(int pid, string label, string path)
@@ -336,6 +347,34 @@ static class WindowInput
             Thread.Sleep(100);
         }
         throw new InvalidOperationException("The installed app did not show the dictation tray menu.");
+    }
+
+    static void Tray(int pid, string badge, string submenu, string select, string proof, string other)
+    {
+        // Use Explorer's real icon (which may be under the overflow chevron), not app IPC.
+        string label = "Pi Pocket (" + badge + ")";
+        AutomationElement icon = FindUI(0, label, false);
+        if (icon == null)
+        {
+            PointAt(WaitForUI(0, "Show hidden icons"), 2);
+            icon = WaitForUI(0, label);
+        }
+        PointAt(icon, 8);
+        try
+        {
+            WaitForUI(pid, "Open " + label);
+            if (submenu != "-") { PointAt(WaitForUI(pid, submenu)); }
+            if (other != "-") { WaitForUI(pid, other); }
+            AutomationElement item = WaitForUI(pid, select);
+            if (proof != "-") { Capture(SystemInformation.VirtualScreen, proof); }
+            PointAt(item, 2);
+            Thread.Sleep(250);
+        }
+        catch
+        {
+            if (proof != "-") { Capture(SystemInformation.VirtualScreen, proof); }
+            throw;
+        }
     }
 
     static void Screenshot(IntPtr window, string path)

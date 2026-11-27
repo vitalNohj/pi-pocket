@@ -21,6 +21,7 @@ namespace PiPocket
         readonly Action<NoticeTicket, string> activate;
         readonly Action<string> log;
         readonly Action<Action> ui;
+        readonly Action<string, string> report;
         readonly Dictionary<string, NoticeTicket> tickets = new Dictionary<string, NoticeTicket>();
         readonly Dictionary<string, DateTime> seen = new Dictionary<string, DateTime>();
         readonly List<NoticeData> finishes = new List<NoticeData>();
@@ -30,21 +31,22 @@ namespace PiPocket
         bool suspended, locked, held, disposed;
         string latestLease;
         int latestAuth;
-        public bool Enabled = true;
-        public bool Sound = true;
-        public string AllowMode = "whenFullyShown";
-        public int CommandLimit = 120;
-        public string Unavailable { get; private set; }
+        bool enabled = true, sound = true;
+        string allowMode = "full", permission = "unknown", lastDecision;
+        int commandLimit = 120;
+        string unavailable;
 
-        public NoticesWindows(Action<NoticeTicket, string> activate, Action<string> log, Action<Action> ui)
+        public NoticesWindows(Action<NoticeTicket, string> activate, Action<string> log, Action<Action> ui,
+            Action<string, string> report)
         {
             this.activate = activate;
             this.log = log;
             this.ui = ui;
+            this.report = report;
             factory = new ToastClassFactory(arguments => ui(() => Activated(arguments)));
             Guid clsid = new Guid("3482e279-4bab-4932-bf9d-ce95126fe324");
             int error = CoRegisterClassObject(ref clsid, factory, 4, 1, out registration);
-            if (error < 0) { Unavailable = "Windows could not register Pi Pocket notification activation."; }
+            if (error < 0) { SetUnavailable("Windows could not register Pi Pocket notification activation."); }
             timer.Tick += delegate { Recheck(); };
             SystemEvents.SessionSwitch += SessionChanged;
             SystemEvents.PowerModeChanged += PowerChanged;
@@ -76,9 +78,52 @@ namespace PiPocket
             return suspended || locked || (GetLastInputInfo(ref last) && unchecked((uint)Environment.TickCount - last.Time) >= 120000U);
         }
 
+        public void Configure(bool show, bool playSound, string mode, int limit)
+        {
+            // Remove cards and invalidate action tickets made under the previous policy.
+            if ((enabled && !show) || mode != allowMode || limit != commandLimit) { Clear(!show); }
+            enabled = show;
+            sound = playSound;
+            allowMode = mode;
+            commandLimit = limit;
+        }
+
+        public void RefreshPermission()
+        {
+            try { Notifier(); }
+            catch (Exception) { SetPermission("unknown"); }
+        }
+
+        ToastNotifier Notifier()
+        {
+            if (registration == 0) { SetPermission("unknown"); return null; }
+            var notifier = ToastNotificationManager.CreateToastNotifier(AppId);
+            var setting = notifier.Setting;
+            bool allowed = setting == NotificationSetting.Enabled;
+            SetPermission(allowed ? "allowed" : "blocked");
+            SetUnavailable(allowed ? null : "Windows notifications are unavailable: " + setting + ".");
+            return allowed ? notifier : null;
+        }
+
+        void SetPermission(string next)
+        {
+            if (permission == next) { return; }
+            permission = next;
+            report("permission", next);
+        }
+
+        // Diagnose policy without recording titles, destinations, approval IDs or commands.
+        void Decision(string code)
+        {
+            if (lastDecision == code) { return; }
+            lastDecision = code;
+            report("decision", code);
+        }
+
         public void Receive(NoticeData data, string lease, int auth, bool modern)
         {
-            if (!Enabled || disposed) { return; }
+            if (disposed) { return; }
+            if (!enabled) { if (data.Approval != null) { Decision("suppressed"); } return; }
             Prune();
             string fingerprint = Slot(data.Tag + "\n" + data.Stamp + "\n" + data.Path + "\n" + data.Title + "\n" + data.Body + "\n" + data.Call);
             if (seen.ContainsKey(fingerprint)) { return; }
@@ -120,18 +165,11 @@ namespace PiPocket
 
         void Show(NoticeData data, string slot, string lease, int auth, bool modern)
         {
-            if (registration == 0 || !Enabled) { return; }
+            if (!enabled) { return; }
             try
             {
-                var notifier = ToastNotificationManager.CreateToastNotifier(AppId);
-                if (notifier.Setting != NotificationSetting.Enabled)
-                {
-                    SetUnavailable("Windows notifications are unavailable: " + notifier.Setting + ".");
-                    return;
-                }
-                SetUnavailable(null);
                 string body = data.Body;
-                bool allow = data.Approval != null && data.CanAllow(AllowMode, CommandLimit, out body);
+                bool allow = data.Approval != null && data.CanAllow(allowMode, commandLimit, out body);
                 string approval = modern ? data.Approval : null;
                 var ticket = new NoticeTicket {
                     Token = Guid.NewGuid().ToString("N"), Lease = lease, Auth = auth, Path = data.Path, Slot = slot,
@@ -147,7 +185,14 @@ namespace PiPocket
                     buttons.Add(Button("Deny", "deny:", ticket.Token));
                     toast.Add(buttons);
                 }
-                if (!Sound) { toast.Add(new XElement("audio", new XAttribute("silent", "true"))); }
+                if (!sound) { toast.Add(new XElement("audio", new XAttribute("silent", "true"))); }
+                if (data.Approval != null)
+                {
+                    Decision((sound ? "sound" : "silent") + "." +
+                        (ticket.Allow ? "allow-deny" : approval != null ? "deny" : "no-actions"));
+                }
+                var notifier = Notifier();
+                if (notifier == null) { return; }
                 var xml = new Windows.Data.Xml.Dom.XmlDocument();
                 xml.LoadXml(toast.ToString(SaveOptions.DisableFormatting));
                 var notification = new ToastNotification(xml) { Tag = slot, Group = Group, ExpirationTime = ticket.Expires };
@@ -171,8 +216,8 @@ namespace PiPocket
 
         void SetUnavailable(string reason)
         {
-            if (Unavailable == reason) { return; }
-            Unavailable = reason;
+            if (unavailable == reason) { return; }
+            unavailable = reason;
             log(reason ?? "Windows notifications are available.");
         }
 
@@ -202,7 +247,7 @@ namespace PiPocket
 
         void Activated(string arguments)
         {
-            if (disposed || !Enabled || arguments == null || arguments.Length > 40) { return; }
+            if (disposed || !enabled || arguments == null || arguments.Length > 40) { return; }
             var parts = arguments.Split(':');
             if (parts.Length != 2 || (parts[0] != "open" && parts[0] != "allow" && parts[0] != "deny") || parts[1].Length != 32) { return; }
             Prune();

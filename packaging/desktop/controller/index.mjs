@@ -8,6 +8,7 @@ import {
     menuModel,
     onlyKeys,
     packet,
+    PIN_GLYPHS,
 } from "../protocol/index.mjs";
 import { initialState, preferenceRules } from "../protocol/state.mjs";
 import {
@@ -26,7 +27,10 @@ const invalid = () => connectionError("invalid", "Check the values and try again
 const noData = (data) => data === undefined;
 const optionalSection = (data) =>
     data === undefined || (onlyKeys(data, ["section"]) && isSection(data.section));
-const pinId = (id) => typeof id === "string" && /^\d{1,20}$/.test(id);
+const pinId = (id) =>
+    typeof id === "string" && /^[1-9]\d{0,15}$/.test(id) && Number.isSafeInteger(Number(id));
+const pinFeed = (value) =>
+    typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value);
 
 function validLocal(data) {
     return (
@@ -45,8 +49,9 @@ function cleanPin(item) {
     return isRecord(item) &&
         pinId(item.id) &&
         isText(item.title, 160) &&
-        isText(item.label, 40) &&
-        ["waiting", "limited", "working", "failed", "fresh", "seen"].includes(item.state) &&
+        isText(item.label, 80) &&
+        typeof item.state === "string" &&
+        Object.hasOwn(PIN_GLYPHS, item.state) &&
         item.url === `/s/${item.id}`
         ? { id: item.id, title: item.title, label: item.label, state: item.state, url: item.url }
         : null;
@@ -87,7 +92,7 @@ export class DesktopController {
         this.registerHostCommand("settings.open", optionalSection);
         this.registerHostCommand(
             "window.pinned",
-            (data) => onlyKeys(data, ["id"]) && pinId(data.id),
+            (data) => onlyKeys(data, ["id", "feed"]) && pinId(data.id) && pinFeed(data.feed),
         );
         this.registerHostCommand(
             "window.preferences",
@@ -376,7 +381,8 @@ export class DesktopController {
 
         if (
             action === "window.pinned" &&
-            !this.#state.page.pins.some((pin) => pin.id === data.id)
+            (this.#state.page.pinFeed !== data.feed ||
+                !this.#state.page.pins.some((pin) => pin.id === data.id))
         ) {
             throw unavailable();
         }
@@ -410,6 +416,21 @@ export class DesktopController {
             typeof data.loginEnabled === "boolean"
         ) {
             window.loginEnabled = data.loginEnabled;
+        } else if (
+            event === "notifications" &&
+            onlyKeys(data, ["decision"]) &&
+            typeof data.decision === "string" &&
+            /^(?:suppressed|(?:silent|sound)\.(?:allow-deny|deny|no-actions))$/.test(data.decision)
+        ) {
+            this.#log("notifications.approval", data.decision);
+
+            return true;
+        } else if (
+            event === "notifications" &&
+            onlyKeys(data, ["permission"]) &&
+            ["unknown", "prompt", "allowed", "blocked"].includes(data.permission)
+        ) {
+            this.#state.notifications.permission = data.permission;
         } else if (isRecord(data) && this.#state.home.active?.generation === data.generation) {
             if (
                 event === "page" &&
@@ -418,14 +439,17 @@ export class DesktopController {
                 (data.hung === undefined || typeof data.hung === "boolean")
             ) {
                 page.committedOrigin = data.committedOrigin;
-
-                if (data.hung === undefined) {
-                    page.pins = [];
-                    page.badge = 0;
-                }
-
                 page.hung = data.hung ?? false;
-            } else if (event === "pins" && Array.isArray(data.items) && data.items.length <= 20) {
+            } else if (
+                event === "pins" &&
+                onlyKeys(data, ["generation", "feed", "items"]) &&
+                Array.isArray(data.items) &&
+                data.items.length <= 20 &&
+                (pinFeed(data.feed) || (data.feed === null && data.items.length === 0))
+            ) {
+                // Only the native bridge knows which document/account owns the feed. A main-window
+                // navigation or a change in focus does not invalidate another document’s pins.
+                page.pinFeed = data.feed;
                 page.pins = data.items.map(cleanPin).filter(Boolean);
             } else if (
                 event === "badge" &&
@@ -606,6 +630,7 @@ export class DesktopController {
             generation: this.#generation,
             committedOrigin: null,
             pins: [],
+            pinFeed: null,
             badge: 0,
             hung: false,
         });
@@ -668,7 +693,12 @@ export class DesktopController {
 
         if (this.#state.home.active?.mode === "local") {
             this.#state.home.active = null;
-            Object.assign(this.#state.page, { pins: [], badge: 0, committedOrigin: null });
+            Object.assign(this.#state.page, {
+                pins: [],
+                pinFeed: null,
+                badge: 0,
+                committedOrigin: null,
+            });
             this.#publish();
             this.#monitor();
         }

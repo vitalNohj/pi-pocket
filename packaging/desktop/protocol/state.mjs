@@ -21,6 +21,7 @@ export function initialState(platform, version, existingInstall) {
             generation: 0,
             committedOrigin: null,
             pins: [],
+            pinFeed: null,
             badge: 0,
             visible: false,
             hung: false,
