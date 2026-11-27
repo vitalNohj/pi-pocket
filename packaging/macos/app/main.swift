@@ -210,7 +210,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     var local: LocalServer?
     var windowPrefs = WindowPreferences.load()
     var windowHotkey: WindowHotkey?
-    let windowDownloads = WindowDownloads()
+    lazy var windowDownloads = WindowDownloads { [weak self] in
+        if let self = self, self.notices { self.sessionBridge.notices.local("Download complete.") }
+    }
     let windowKey = UUID().uuidString
     lazy var openWhenReady = !CommandLine.arguments.contains("--hidden") &&
         !(CommandLine.arguments.contains("--login") && (windowPrefs.startHidden ?? WindowLogin.legacyHidden))

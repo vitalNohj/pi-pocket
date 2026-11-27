@@ -11,6 +11,9 @@ final class WindowDownloads: NSObject, WKDownloadDelegate {
     }
 
     private var requests: [WKDownload: Request] = [:]
+    private let saved: () -> Void
+
+    init(saved: @escaping () -> Void) { self.saved = saved }
 
     static func fileRoute(_ url: URL?, onServer: (URL?) -> Bool) -> Bool {
         guard let url = url, onServer(url), let parts = URLComponents(url: url, resolvingAgainstBaseURL: true),
@@ -102,12 +105,15 @@ final class WindowDownloads: NSObject, WKDownloadDelegate {
                 // The destination must not exist, even if another download saved the same name a moment ago.
                 if link(stage.path, path.path) == 0 {
                     NSWorkspace.shared.activateFileViewerSelecting([path])
+                    saved()
                     return
                 }
                 if errno != EEXIST { break }
             }
         } else if rename(stage.path, destination.path) == 0 {
-            return  // The Save dialog authorized replacement at this path.
+            // The Save dialog authorized replacement at this path.
+            saved()
+            return
         }
         log("Could not save the download.")
     }

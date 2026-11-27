@@ -92,7 +92,7 @@ namespace PiPocket
             }
 
             await InitializeChrome(core.Environment);
-            if (bridgeEnabled)
+            if (bridgeEnabled && !IsDisposed && generation == host.PageGeneration)
             {
                 bridge = new BridgeView(host.Bridge, this, core, origin, basePath, host.InvokeBridgeAction);
                 await bridge.Attach();
@@ -125,7 +125,7 @@ namespace PiPocket
 
         void Navigate(object sender, CoreWebView2NavigationStartingEventArgs args)
         {
-            downloads.Navigating(args);
+            if (downloads != null) { downloads.Navigating(args); }
             Uri target, current;
             bool downgrade = Uri.TryCreate(Browser.Source, UriKind.Absolute, out current) && current.Scheme == "https" &&
                 Uri.TryCreate(args.Uri, UriKind.Absolute, out target) && target.Scheme == "http";
@@ -259,6 +259,16 @@ namespace PiPocket
             {
                 host.Log("Could not save the window bounds.");
             }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (downloads != null) { downloads.Dispose(); downloads = null; }
+                if (viewClip != null) { viewClip.Dispose(); viewClip = null; }
+            }
+            base.Dispose(disposing);
         }
 
         public void UpdateBadge()
