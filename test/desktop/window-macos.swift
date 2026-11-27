@@ -123,8 +123,12 @@ case "click", "click-verified":
     let point = CGPoint(x: w.minX + Double(args[3])!, y: w.minY + Double(args[4])!)
     if args[2] == "click-verified" { clickVerified(point, name: args[5]) }
     else { click(point) }
-case "escape", "key":
-    let source = focusedEventSource()
+case "escape", "key", "hotkey":
+    let source: CGEventSource
+    if args[2] == "hotkey" {
+        guard let global = CGEventSource(stateID: .hidSystemState) else { exit(1) }
+        source = global
+    } else { source = focusedEventSource() }
     let key = args[2] == "escape" ? CGKeyCode(53) : CGKeyCode(args[3])!
     var flags: CGEventFlags = []
     for modifier in args.dropFirst(4) {

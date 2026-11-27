@@ -60,6 +60,12 @@ cleanup() {
         if ! stopped; then kill -TERM "$pid" 2>/dev/null || true; fi
         if wait_until 3 stopped; then wait "$pid" || true; fi
     fi
+    if [ -f "$RUNNER_TEMP/window-agent-original.plist" ]; then
+        mkdir -p "$(dirname "$AGENT")"
+        mv -f "$RUNNER_TEMP/window-agent-original.plist" "$AGENT"
+    elif [ -n "${index:-}" ]; then
+        rm -f "$AGENT"
+    fi
     if [ -n "${index:-}" ] && [ -f "$index.evidence-original" ]; then
         mv -f "$index.evidence-original" "$index"
     fi

@@ -3,6 +3,8 @@ $index = Join-Path (Split-Path $env:MANIFEST) 'web\index.html'
 $wallpaper = Join-Path $env:RUNNER_TEMP 'window-backdrop.bmp'
 $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Pi Pocket.lnk'
 Copy-Item $index "$index.evidence-original"
+$hadStartup = Test-Path $startup
+if ($hadStartup) { Copy-Item $startup "$env:RUNNER_TEMP/window-startup-original.lnk" }
 try {
     node "$PSScriptRoot/window-evidence.mjs" wallpaper $wallpaper
     if ($LASTEXITCODE -ne 0 -or -not [NativeWindowFixture]::SystemParametersInfo(20, 0, $wallpaper, 3)) { throw 'Could not set runner wallpaper' }
@@ -25,7 +27,11 @@ try {
             Wait-For 'save Close to tray off' { Saved 'window' 'closeToTray' $false }
             [NativeWindowFixture]::Click($handle, 266, 202)
             Wait-For 'save Close to tray on' { Saved 'window' 'closeToTray' $true }
-            if (-not (Test-Path $startup)) { [NativeWindowFixture]::Click($handle, 266, 235) }
+            if ($hadStartup) {
+                [NativeWindowFixture]::Click($handle, 266, 235)
+                Wait-For 'remove the pre-existing Startup shortcut' { -not (Test-Path $startup) }
+            }
+            [NativeWindowFixture]::Click($handle, 266, 235)
             Wait-For 'register Launch at login with Windows' { Test-Path $startup }
             if ((New-Object -ComObject WScript.Shell).CreateShortcut($startup).Arguments -ne '--login') { throw 'Settings created the wrong Startup shortcut' }
             [NativeWindowFixture]::Click($handle, 266, 267)
@@ -77,21 +83,31 @@ try {
     if ([NativeWindowFixture]::Windows($app.Id).Length -ne 0) { throw 'Start hidden showed a window at login' }
     [System.Windows.Forms.SendKeys]::SendWait('^+p')
     Wait-For 'restore the saved global shortcut after login' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
+    [void][NativeWindowFixture]::Close([NativeWindowFixture]::Windows($app.Id)[0])
+    Wait-For 'hide instead of closing the app' { -not $app.HasExited -and [NativeWindowFixture]::Windows($app.Id).Length -eq 0 }
+    [System.Windows.Forms.SendKeys]::SendWait('^+p')
+    Wait-For 'restore the closed window with the global shortcut' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
     $handle = Open-Settings $app ([NativeWindowFixture]::Windows($app.Id)[0])
     [NativeWindowFixture]::Click($handle, 75, 290)
     [NativeWindowFixture]::Click($handle, 266, 235)
     Wait-For 'remove Launch at login' { -not (Test-Path $startup) }
     [NativeWindowFixture]::Click($handle, 266, 267)
     Wait-For 'save Start hidden off' { Saved 'window' 'startHidden' $false }
+    [NativeWindowFixture]::Click($handle, 266, 202)
+    Wait-For 'save Close to tray off' { Saved 'window' 'closeToTray' $false }
     Request-Quit
     Wait-For 'quit after changing login preferences' { $app.Refresh(); $app.HasExited }
     $app = Start-Process -FilePath $appExe -ArgumentList '--login' -PassThru
     Wait-For 'show the window at login with Start hidden off' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
+    [void][NativeWindowFixture]::Close([NativeWindowFixture]::Windows($app.Id)[0])
+    Wait-For 'quit on close with Close to tray off' { $app.Refresh(); $app.HasExited }
     'Changes made through installed Settings survived Quit. Windows Startup, both title bars, the global shortcut, and Acrylic/Mica applied in the installed app.' |
         Set-Content (Join-Path $out 'settings-assertions.txt')
 } finally {
     if ($app -and -not $app.HasExited) {
         try { Request-Quit; [void]$app.WaitForExit(15000) } catch { Write-Warning $_.Exception.Message }
     }
+    if ($hadStartup) { Move-Item -Force "$env:RUNNER_TEMP/window-startup-original.lnk" $startup }
+    elseif (Test-Path $startup) { Remove-Item -Force $startup }
     Move-Item -Force "$index.evidence-original" $index
 }

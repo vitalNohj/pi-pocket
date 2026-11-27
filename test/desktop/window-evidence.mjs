@@ -46,8 +46,8 @@ if (command === "theme" && ["dark", "light"].includes(mode)) {
     for (let y = 0, i = 54; y < height; y++) {
         for (let x = 0; x < width; x++, i += 3) {
             const wave = x + 260 * Math.sin(y / 240) - y * 0.4;
-            const stripe = Math.floor((wave + 530) / 330);
-            const [r, g, b] = colors[stripe % colors.length];
+            const stripe = Math.floor(wave / 330) % colors.length;
+            const [r, g, b] = colors[(stripe + colors.length) % colors.length];
             const shade = 0.86 + 0.14 * Math.cos((x + y) / 310);
             bmp[i] = b * shade;
             bmp[i + 1] = g * shade;

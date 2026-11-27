@@ -20,6 +20,8 @@ public static class NativeWindowFixture {
     [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr w, ref Point p);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr w);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr w, int command);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr w, uint message, IntPtr wParam, IntPtr lParam);
+    public static bool Close(IntPtr w) { return PostMessage(w, 0x0010, IntPtr.Zero, IntPtr.Zero); }
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr w, int attribute, out Rect bounds, int size);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr w, int attribute, out int value, int size);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr w, StringBuilder text, int size);

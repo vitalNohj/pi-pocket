@@ -4,6 +4,8 @@ index="$(dirname "$MANIFEST")/web/index.html"
 bmp="$RUNNER_TEMP/window-backdrop.bmp"
 wallpaper="$RUNNER_TEMP/window-backdrop.png"
 cp "$index" "$index.evidence-original"
+# The following installer checks reuse the per-user login item. Restore the original registration.
+if [ -f "$AGENT" ]; then cp -p "$AGENT" "$RUNNER_TEMP/window-agent-original.plist"; fi
 
 saved() { [ "$(plutil -extract "preferences.$1.$2" raw "$PI_POCKET_DESKTOP_STATE/desktop.json" 2>/dev/null)" = "$3" ]; }
 # Settings uses a system title bar independent of the session window (28 points on these runners).
@@ -37,7 +39,11 @@ for mode in light dark; do
         wait_for 'save Close to tray off' 10 saved window closeToTray false
         settings_click 266 202
         wait_for 'save Close to tray on' 10 saved window closeToTray true
-        if [ ! -f "$AGENT" ]; then settings_click 266 235; fi
+        if [ -f "$AGENT" ]; then
+            settings_click 266 235
+            wait_for 'remove the pre-existing Launch at login entry' 10 test ! -e "$AGENT"
+        fi
+        settings_click 266 235
         wait_for 'register Launch at login with macOS' 10 test -f "$AGENT"
         [ "$(plutil -extract ProgramArguments.5 raw "$AGENT")" = --login ]
         settings_click 266 267
@@ -72,7 +78,7 @@ for mode in light dark; do
         wait_for 'return to Pi Pocket' 15 has_windows 1
         drive key 35 command shift
         wait_for 'hide Pi Pocket with the global shortcut' 10 has_windows 0
-        drive key 35 command shift
+        drive hotkey 35 command shift
         wait_for 'show Pi Pocket with the global shortcut' 10 has_windows 1
     fi
     sleep 2
@@ -85,18 +91,28 @@ pid=$!
 wait_for 'start the local server at login' 60 test -f "$PI_POCKET_DIR/launcher-running.json"
 sleep 2
 has_windows 0
-drive key 35 command shift
+drive hotkey 35 command shift
 wait_for 'restore the saved global shortcut after login' 20 has_windows 1
+drive key 13 command
+wait_for 'hide instead of closing the app' 10 has_windows 0
+! stopped
+drive hotkey 35 command shift
+wait_for 'restore the closed window with the global shortcut' 10 has_windows 1
 settings_open
 settings_click 75 290
 settings_click 266 235
 wait_for 'remove Launch at login' 10 test ! -e "$AGENT"
 settings_click 266 267
 wait_for 'save Start hidden off' 10 saved window startHidden false
+settings_click 266 202
+wait_for 'save Close to tray off' 10 saved window closeToTray false
 quit_fixture_app
 "$app" --login &
 pid=$!
 wait_for 'show the window at login with Start hidden off' 60 has_windows 1
-quit_fixture_app
+drive key 13 command
+wait_for 'quit on close with Close to tray off' 30 stopped
+wait "$pid"
+pid=""
 mv -f "$index.evidence-original" "$index"
 printf '%s\n' 'Changes made through installed Settings survived Quit. The LaunchAgent, title bar choices, and the global shortcut applied in the installed app.' > "$out/settings-assertions.txt"
