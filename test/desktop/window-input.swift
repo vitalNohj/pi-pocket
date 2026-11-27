@@ -316,6 +316,18 @@ case "type-private":
 case "expect-field":
     prepareInput()
     waitForFocusedField(args[4])
+case "settings":
+    prepareInput()
+    key(43, flags: .maskCommand) // Cmd+,
+case "select-file":
+    prepareInput()
+    key(5, flags: [.maskCommand, .maskShift]) // Go to Folder in the open panel
+    Thread.sleep(forTimeInterval: 0.5)
+    for character in args[4] { key(0, text: String(character)) }
+    Thread.sleep(forTimeInterval: 0.5)
+    key(36) // Go to the file
+    Thread.sleep(forTimeInterval: 0.8)
+    key(36) // Open
 case "close":
     prepareInput()
     key(13, flags: .maskCommand) // Cmd+W

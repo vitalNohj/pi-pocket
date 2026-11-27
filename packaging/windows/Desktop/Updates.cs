@@ -55,6 +55,30 @@ namespace PiPocket
             }
         }
 
+        // The controller supplies only the pinned GitHub artifact link. The browser handles sign-in.
+        public static bool OpenDownload(string url)
+        {
+            if (url == null) { return false; }
+            using (Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })) { }
+            return true;
+        }
+
+        public static string PickInstaller(Form owner)
+        {
+            if (owner == null || owner.IsDisposed) { return null; }
+            using (var picker = new OpenFileDialog
+            {
+                Title = "Select the downloaded desktop installer",
+                Filter = "Pi Pocket desktop installer (*.exe)|*.exe",
+                InitialDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"),
+                CheckFileExists = true,
+                RestoreDirectory = true,
+            })
+            {
+                return picker.ShowDialog(owner) == DialogResult.OK ? picker.FileName : null;
+            }
+        }
+
         // Setup did not change the runtime during a desktop-only update. Check its original floor.
         public static string RuntimeFloor(string marker)
         {

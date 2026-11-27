@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { installerName } from "../../packaging/desktop/feed/desktop-builds.mjs";
 
-// The shipped app cannot select this feed. Tests inject the request function directly into the controller.
+// The shipped app cannot select this feed. Unit tests inject the request function into the controller.
 export async function updateFixture(platform, version, bytes) {
     const repo = "/repos/vitalNohj/pi-pocket";
     const query = "branch=desktop-native&event=push&status=success&per_page=1";
@@ -58,5 +59,38 @@ export async function updateFixture(platform, version, bytes) {
 
             return response.json();
         },
+    };
+}
+
+// The installer smoke test imports this into its disposable copy of the installed controller.
+// No environment variable or Settings command can select a different feed in the shipping app.
+export function installFixtureTransport(url, trace) {
+    const fetch = globalThis.fetch;
+    const prefix = "https://api.github.com/repos/vitalNohj/pi-pocket/actions/";
+
+    globalThis.fetch = (input, options) => {
+        const address = new URL(input);
+
+        if (address.href.startsWith(prefix)) {
+            return fetch(new URL(address.pathname + address.search, url), options);
+        }
+
+        return fetch(input, options);
+    };
+
+    const write = process.stdout.write.bind(process.stdout);
+
+    process.stdout.write = (chunk, ...args) => {
+        const packet = JSON.parse(chunk);
+
+        if (packet.type === "state") {
+            const { version, updates, menus } = packet.state;
+            const updateLine =
+                menus.tray.find((item) => item.data?.section === "updates")?.label ?? null;
+
+            appendFileSync(trace, JSON.stringify({ version, ...updates, updateLine }) + "\n");
+        }
+
+        return write(chunk, ...args);
     };
 }

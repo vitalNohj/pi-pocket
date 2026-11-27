@@ -194,8 +194,12 @@ export function menuModel(state) {
         ...(active?.mode === "local" && local?.verified
             ? [item("home.local.restart", "Restart Server")]
             : []),
-        ...(state.updates.available
-            ? [item("settings.open", "Desktop App Update…", true, { section: "updates" })]
+        ...(state.updates.status === "staged"
+            ? [
+                  item("settings.open", "Update ready - restart to apply", true, {
+                      section: "updates",
+                  }),
+              ]
             : []),
         settings,
         { separator: true },

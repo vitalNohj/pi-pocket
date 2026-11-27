@@ -143,6 +143,13 @@ p {
 .address {
     overflow-wrap: anywhere;
 }
+.update-status {
+    margin-block-start: 14px;
+    font-weight: 650;
+}
+.update-failed {
+    color: var(--alert);
+}
 .choices,
 .actions,
 footer {

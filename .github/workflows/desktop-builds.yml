@@ -63,10 +63,16 @@ jobs:
                       name: Windows installer
                       basename: Pi-Pocket-Setup
                       extension: exe
+                      publish: true
                     - os: macos-latest
                       name: macOS package
                       basename: Pi-Pocket
                       extension: pkg
+                      publish: true
+                    - os: macos-15-intel
+                      name: macOS package (Intel)
+                      # Both Mac jobs build a universal package. Publish only one copy in the feed.
+                      publish: false
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
@@ -135,21 +141,38 @@ jobs:
                   "$HOME/Library/Application Support/Pi Pocket/login-item.sh" on
                   packaging/macos/build.sh "$NEXT" "$RUNNER_TEMP/desktop-update-next" --desktop-only
 
-            - name: Check, stage and apply N+1 without stopping the server
+            - name: Build the update input driver (Windows)
+              if: runner.os == 'Windows'
+              shell: pwsh
+              run: |
+                  $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+                  & $csc /nologo /r:System.Drawing.dll /r:System.Windows.Forms.dll `
+                      "/out:$env:RUNNER_TEMP/desktop-input.exe" test/desktop/WindowInput.cs
+                  if ($LASTEXITCODE -ne 0) { throw "Desktop input driver did not compile" }
+
+            - name: Build the update input driver (macOS)
+              if: runner.os == 'macOS'
+              run: swiftc test/desktop/window-input.swift -o "$RUNNER_TEMP/desktop-input"
+
+            - name: Check, verify and stage N+1 in Settings, then apply it on next start
               shell: bash
               env:
                   VERSION: ${{ steps.source.outputs.version }}
                   NEXT: ${{ steps.source.outputs.next }}
-              run: node test/desktop/updates-smoke.mjs "$VERSION" "$NEXT"
+              run: |
+                  driver="$RUNNER_TEMP/desktop-input"
+                  if [ "$RUNNER_OS" = Windows ]; then driver="$driver.exe"; fi
+                  node test/desktop/updates-smoke.mjs "$VERSION" "$NEXT" "$driver"
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               if: always()
               with:
-                  name: desktop-update-proof-${{ runner.os }}
+                  name: desktop-update-proof-${{ runner.os }}-${{ runner.arch }}
                   path: ${{ runner.temp }}/desktop-update-proof
                   retention-days: 7
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: matrix.publish
               with:
                   name: ${{ matrix.basename }}-${{ steps.source.outputs.version }}
                   path: ${{ runner.temp }}/desktop-output/${{ matrix.basename }}-${{ steps.source.outputs.version }}.${{ matrix.extension }}
@@ -157,6 +180,7 @@ jobs:
                   retention-days: 14
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: matrix.publish
               with:
                   # GitHub serves this single file as-is, so the updater can check the artifact digest itself.
                   path: ${{ runner.temp }}/desktop-output/Pi-Pocket-Desktop-Update-${{ steps.source.outputs.version }}.${{ matrix.extension }}

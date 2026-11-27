@@ -28,7 +28,7 @@ export function initialState(platform, version, existingInstall) {
         },
         window: { focused: false, loginEnabled: null, idle: false, suspended: false },
         runner: { status: "checking", label: "Checking link", working: false },
-        updates: { status: "unavailable", available: false },
+        updates: { status: "disabled", latest: null, message: null },
         dictation: { status: "unavailable", recording: false, canDictate: false, canCopy: false },
         notifications: { permission: "unknown" },
         preferences: {
