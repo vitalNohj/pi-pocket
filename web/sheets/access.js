@@ -858,36 +858,24 @@ function timeLine(level, at) {
 /**
  * The Access menu of a folder (`PopMenu`): a button that says what the person has of it now (`level`, in that level's
  * colour), and open, one item for each level they can be given (`levels`), each with what they get (`LEVELS`).
- * `reason`: why nothing can be changed, in the button’s title. `by`: the giver, when someone else gave it.
- * `at`: the time of the level shown (`timeOf`), said on its item.
+ * Drawn only where a level can be set: a cell with none has no menu (`access-grid.js`). `at`: the time of the level
+ * shown (`timeOf`), said on its item.
  */
-export function LevelMenu({
-    person,
-    folder,
-    where,
-    level,
-    from,
-    at,
-    levels,
-    reason,
-    by,
-    busy,
-    onPick,
-}) {
+export function LevelMenu({ person, folder, where, level, from, at, levels, busy, onPick }) {
     const viewer = isViewer(person);
     // With no level of its own, a folder has the one of the folder above it that has one (`from`): said, quietly.
     const shown = from?.level ?? level;
 
-    const detail =
-        reason ??
-        (from ? `${LEVELS[shown].name}, from ${from.folder}` : `Access: ${LEVELS[level].name}`);
+    const detail = from
+        ? `${LEVELS[shown].name}, from ${from.folder}`
+        : `Access: ${LEVELS[level].name}`;
 
     return html`<${PopMenu}
             face=${html`<span>${LEVELS[shown].short}</span>`}
             buttonClass=${`lv-${shown} ${level === "none" ? "ghost" : ""} ${from ? "inherited" : ""}`}
             label=${`Access of ${person.name} to ${folder} on ${where}: ${LEVELS[shown].name}${from ? ` (from ${from.folder})` : ""}`}
-            title=${by ? `Given by ${by} · ${detail}` : detail}
-            disabled=${busy || Boolean(reason)}
+            title=${detail}
+            disabled=${busy}
             menuLabel=${`Access of ${person.name} to ${folder}`}
             items=${levels.map((each) => ({
                 key: each,

@@ -1400,6 +1400,150 @@ test(
 );
 
 test(
+    "the grid draws a control only where the reader can use it: nothing is disabled at rest, in charge or not",
+    real,
+    async () => {
+        const manager = app.config.addUser("Grid manager", "guest");
+        const giver = app.config.addUser("Grid giver", "guest");
+        const other = app.config.addUser("Grid other", "guest").user;
+        const folder = realpathSync(mkdtempSync(join(root, "control-")));
+        const second = realpathSync(mkdtempSync(join(root, "control-two-")));
+        const stop = answerRequests(app, () => true);
+        let invited: User | undefined;
+        /** The controls drawn disabled in the grid and under it, each by its name. */
+        const disabled = () =>
+            inPage<string[]>(`
+            return JSON.stringify([...document.querySelectorAll(".ag-scroll :disabled")].map((each) => each.getAttribute("aria-label") ?? each.textContent.trim()));
+        `);
+        /** How many Access menus the grid has in the column of `name`. */
+        const menusOf = (name: string) =>
+            inPage<number>(
+                `return JSON.stringify(document.querySelectorAll(${JSON.stringify(`.ag-table .at-level[aria-label^=${JSON.stringify(`Access of ${name} to `)}]`)}).length)`,
+            );
+        /** Who has a switch under the grid. */
+        const switchNames = () =>
+            inPage<string[]>(`
+            return JSON.stringify([...document.querySelectorAll(".ag-people [role=switch]")].map((each) => each.getAttribute("aria-label").split(" may use ")[0]));
+        `);
+
+        try {
+            for (const each of [manager.user, giver.user, other]) {
+                await app.choosePerson(THIS_SERVER, each.id, true);
+            }
+
+            app.setRight(owner(app), {
+                computer: THIS_SERVER,
+                person: manager.user.id,
+                right: "manages",
+                on: true,
+            });
+            await app.giveFolders(owner(app), THIS_SERVER, giver.user.id, [folder, second]);
+            app.setRight(owner(app), {
+                computer: THIS_SERVER,
+                person: giver.user.id,
+                right: "reshares",
+                on: true,
+            });
+            // The owner gave the second folder to the other person: not the giver's to change.
+            await app.giveFolders(owner(app), THIS_SERVER, other.id, [second]);
+            await app.commands.createSession(giver.user, { cwd: folder, title: "Control: hers" });
+            const owners = (
+                await app.commands.createSession(owner(app), {
+                    cwd: folder,
+                    title: "Control: the owner's",
+                })
+            ).id;
+
+            // The owner shared a session with both: the giver passes it on, and cannot take it from the other person.
+            await app.commands.shareSession(owners, owner(app), [giver.user.id, other.id]);
+            invited = app.config.addUser("Grid invited", "viewer", [String(owners)]).user;
+            app.accessChanged();
+
+            // In charge. A manager has no column: nothing of theirs can be changed. Someone invited to one session
+            // has one, for that session, and no Access menu in it. Nothing is drawn disabled.
+            await load();
+            await openAt("computer", THIS_SERVER);
+            await until(async () => {
+                const names = await gridNames();
+
+                return ["Grid giver", "Grid other", "Grid invited"].every((name) =>
+                    names.includes(name),
+                );
+            }, "the owner's grid");
+            assert.equal((await gridNames()).includes("Grid manager"), false, "no manager column");
+            assert.ok((await gridNames()).includes("Grid other"));
+            await openGridTo(folder);
+            await until(
+                async () => "Control: the owner's" in (await sessionCells("Grid invited")),
+                "the sessions of the folder",
+            );
+            assert.equal((await sessionCells("Grid invited"))["Control: the owner's"], "Revoke");
+            assert.equal(await menusOf("Grid invited"), 0, "no menu that cannot be used");
+            assert.ok((await menusOf("Grid other")) > 0, "a menu for someone chosen");
+            assert.deepEqual(await disabled(), []);
+
+            // Under the grid, only the switches the owner can flip: a manager's too, and not the invited person's.
+            const flips = await switchNames();
+
+            assert.ok(flips.includes("Grid manager"), JSON.stringify(flips));
+            assert.ok(flips.includes("Grid other"));
+            assert.equal(flips.includes("Grid invited"), false, "chosen for no computer");
+
+            // Not in charge. The giver is told only what is hers to change.
+            await asPerson(giver.token, async () => {
+                await openAt("computer", THIS_SERVER);
+                await until(async () => (await gridNames()).includes("Grid other"), "her grid");
+
+                const names = await gridNames();
+
+                assert.equal(names.includes("Grid manager"), false, "in charge: nothing to give");
+                assert.equal(names.includes("Grid invited"), false, "invited to one session only");
+                await openGridTo(folder);
+                await until(
+                    async () => "Control: hers" in (await sessionCells("Grid other")),
+                    "her sessions",
+                );
+
+                const cells = await sessionCells("Grid other");
+
+                // Hers to share with them: Invite. The one the owner shared with them: nothing to do, a dash.
+                assert.match(cells["Control: hers"]!, /Invite/);
+                assert.equal(cells["Control: the owner's"], "—");
+                // The folder she can give has its menu. The one they have from the owner has none.
+                assert.equal(
+                    await inPage<boolean>(
+                        `return JSON.stringify(${cellOf("Grid other", folder)}?.disabled === false)`,
+                    ),
+                    true,
+                );
+                assert.equal(
+                    await inPage<boolean>(
+                        `return JSON.stringify(${cellOf("Grid other", second)} === null)`,
+                    ),
+                    true,
+                    "a folder given by someone else has no menu",
+                );
+                assert.deepEqual(await disabled(), []);
+                assert.equal(
+                    await inPage<boolean>(
+                        `return JSON.stringify(document.querySelector(".ag-people") === null)`,
+                    ),
+                    true,
+                );
+            });
+        } finally {
+            stop();
+
+            for (const person of [manager.user, giver.user, other, invited]) {
+                if (person !== undefined) {
+                    await app.removeUser(owner(app), person.id);
+                }
+            }
+        }
+    },
+);
+
+test(
     "a refused sharing read ends loading and the next read can bring back the grid",
     real,
     async () => {

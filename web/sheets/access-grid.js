@@ -504,6 +504,11 @@ export function recordSource(computer, people) {
             };
         },
         folder(person, path) {
+            // No level of theirs can be set here: no menu.
+            if (reasonOf(computer, person) !== undefined) {
+                return undefined;
+            }
+
             const { level, from } = levelFor(computer, person, path);
 
             return {
@@ -511,7 +516,6 @@ export function recordSource(computer, people) {
                 from,
                 at: timeOf(computer, person, path, level, from),
                 levels: levelsFor(person),
-                reason: reasonOf(computer, person),
             };
         },
         setLevel: (person, node, level) => setLevelOf(computer, person, node.folder, level),
@@ -563,17 +567,8 @@ export function answerSource(computer, answer) {
 
             const levels = levelsFor(person).filter((each) => cell.levels.includes(each));
 
-            return {
-                level: cell.level,
-                levels,
-                by: cell.by,
-                reason:
-                    levels.length > 1
-                        ? undefined
-                        : entries.get(person.id).reason
-                          ? "Cannot be given here"
-                          : "Not yours to change",
-            };
+            // The server tells only a folder with a level to set (`commands.ts` `sharingOn`).
+            return levels.length > 1 ? { level: cell.level, levels } : undefined;
         },
         async setLevel(person, node, level) {
             if (
@@ -697,7 +692,10 @@ function stateOf(person, session, kept, reason) {
     return kept !== undefined ? "folder" : reason ? "blocked" : "none";
 }
 
-/** Why `person`'s level cannot be changed on `computer`, or undefined when it can. */
+/**
+ * Why nothing can be given to `person` on `computer`, or undefined when it can: their folder cells have no menu
+ * (`recordSource`), and a session is not shared with them.
+ */
 function reasonOf(computer, person) {
     const { chosen, manager } = standing(computer, person);
 
@@ -747,9 +745,10 @@ function useMore(box) {
 }
 
 /**
- * The source's grid, with an Access menu on a folder or project and a state or action on a session. Only one
- * person shown: the grid can select sessions. Who is in charge can also change trust, browse All folders and
- * choose people.
+ * The source's grid, with an Access menu on a folder or project and a state or action on a session. A control is
+ * drawn only where the reader can use it: a cell with nothing to do is a dash, and nothing is disabled but while a
+ * save runs. Only one person shown: the grid can select sessions. Who is in charge can also change trust, browse
+ * All folders and choose people.
  */
 export function ComputerGrid({
     source,
@@ -910,8 +909,6 @@ export function ComputerGrid({
             from=${cell.from}
             at=${cell.at}
             levels=${cell.levels}
-            reason=${cell.reason}
-            by=${cell.by?.id !== store.state.me?.id ? cell.by?.name : undefined}
             busy=${busy || select.busy}
             onPick=${(next) => {
                 find.keep(node.all.map((each) => each.id));

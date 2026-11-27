@@ -1288,10 +1288,13 @@ test("a computer's grid for someone not in charge of it: each person they can gi
         assert.equal(columns.has(who.id), has, who.name);
     }
 
-    // Each cell is what that person's page says: the two answers are made by the same code.
+    // Each cell is what that person's page says of a session Lea can share with them or take back: the two answers
+    // are made by the same code. A session with nothing for her to do is on the page, as a line, and not in the grid.
     for (const target of [ana, pat, vera]) {
         const page = app.commands.sharingWith(now(lea), target.id);
-        const here = page.sessions.filter((each) => each.computer === THIS_SERVER);
+        const here = page.sessions.filter(
+            (each) => each.computer === THIS_SERVER && (each.give || each.take),
+        );
         const column = await cell(lea, target);
 
         assert.deepEqual(
@@ -1437,8 +1440,50 @@ test("a computer's grid names a person only when there is something to do for th
     );
     assert.equal((await columns(rea)).includes(tom.id), false, "Tom: he started it");
     // One Rea can share with him is a column.
-    await session("column: Rea's", rea);
+    const reas2 = await session("column: Rea's", rea);
+
     assert.equal((await columns(rea)).includes(tom.id), true, "Tom: a session to share with him");
+
+    // The grid shows Rea only what is hers to change. A session the owner shared with Tom and with her is hers to pass
+    // on, and not to take back from him.
+    const shared = await session("column: the owner's");
+
+    await app.commands.shareSession(shared, boss, [rea.id, tom.id]);
+    assert.deepEqual(
+        [
+            rows(rea, tom).get("column: the owner's")?.state,
+            app.policy.mayShare(now(rea), String(shared)),
+        ],
+        ["shared", true],
+        "his page has it as a line",
+    );
+
+    const told = async (by: User) =>
+        ((await call(by, `runners/${THIS_SERVER}/sharing`)).body.people ?? []).find(
+            (each) => each.id === tom.id,
+        );
+    const hers = await told(rea);
+
+    // Allowed: the one she can share with him is told, with its action.
+    assert.deepEqual(hers?.sessions[String(reas2)], { state: "none", give: true, take: false });
+    // Refused: the one he started, the one someone else shared with him, and the folder someone else gave him are
+    // not told to her at all, not as a cell that does nothing.
+    assert.deepEqual(Object.keys(hers?.sessions ?? {}), [String(reas2)]);
+    assert.deepEqual(hers?.folders, []);
+    assert.equal("reason" in (hers ?? {}), false);
+
+    // Who is in charge can change each of them, and is told each: the share and the started session to take back, the
+    // one not shared to give.
+    const owners = await told(boss);
+
+    assert.deepEqual(owners?.sessions[String(shared)], {
+        state: "shared",
+        give: false,
+        take: true,
+        by: { id: boss.id, name: boss.name },
+    });
+    assert.deepEqual(owners?.sessions[String(toms)], { state: "started", give: false, take: true });
+    assert.equal(owners?.sessions[String(reas2)]?.give, true);
 });
 
 test("a computer's grid is refused to a viewer, and a computer someone may not use answers as one that is not linked", async () => {

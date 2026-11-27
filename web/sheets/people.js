@@ -1393,14 +1393,17 @@ function computerRow(computer, person, told) {
                   };
         }
 
+        // A manager has no column in its grid: nothing of theirs there can be changed.
+        if (manager) {
+            return { line: "In charge here: every session there is theirs." };
+        }
+
         const folders = (computer.given?.[person.id] ?? []).length;
-        const line = manager
-            ? "In charge here"
-            : chosen
-              ? `${countOf(folders, "folder")} · ${countOf(sessions, "session")}`
-              : sessions > 0
-                ? `Not chosen · ${countOf(sessions, "session")} shared`
-                : "Not chosen";
+        const line = chosen
+            ? `${countOf(folders, "folder")} · ${countOf(sessions, "session")}`
+            : sessions > 0
+              ? `Not chosen · ${countOf(sessions, "session")} shared`
+              : "Not chosen";
 
         return { jump: true, line };
     }

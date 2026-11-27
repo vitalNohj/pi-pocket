@@ -3757,55 +3757,69 @@ test("19: the computer cards fit a 390 px viewport", real, async () => {
     }
 });
 
-test("23: only the owner can turn off the computer switch for a manager", real, async () => {
-    const manager = await managerCase("Reader manager");
-    const target = await managerCase("Chosen manager");
-    const made: Browsers[] = [];
-    const owners = page;
-    const label = "Chosen manager may use This server";
-    const control = `[...document.querySelectorAll('.pages-detail [role="switch"]')].find((each) => each.getAttribute("aria-label").startsWith(${JSON.stringify(label)}))`;
+test(
+    "23: only the owner has the computer switch of a manager, and turns it off",
+    real,
+    async () => {
+        const manager = await managerCase("Reader manager");
+        const target = await managerCase("Chosen manager");
+        const made: Browsers[] = [];
+        const owners = page;
+        const label = "Chosen manager may use This server";
+        const control = `[...document.querySelectorAll('.pages-detail [role="switch"]')].find((each) => each.getAttribute("aria-label").startsWith(${JSON.stringify(label)}))`;
 
-    grantManagement(manager.user);
-    grantManagement(target.user);
+        grantManagement(manager.user);
+        grantManagement(target.user);
 
-    try {
-        page = await ownBrowser(made, manager.token);
-        await open("people");
-        await show(target.user.name);
-        await jump(target.user.name);
-        await until(
-            () => inPage<boolean>(`return JSON.stringify(Boolean(${control}));`),
-            "the protected switch",
-        );
-        const read = () =>
-            inPage<{ disabled: boolean; title: string }>(`
-            const control = ${control};
+        const present = () => inPage<boolean>(`return JSON.stringify(Boolean(${control}));`);
 
-            return JSON.stringify({ disabled: control.disabled, title: control.title });
-        `);
+        /** Open This server in Computer, and wait for the switches under its grid. */
+        const computer = async () => {
+            await open("computers");
+            await until(
+                () =>
+                    inPage<boolean>(
+                        `return JSON.stringify(document.querySelector(".pages-detail .ag-people [role=switch]") !== null)`,
+                    ),
+                "the switches under the grid",
+            );
+        };
 
-        assert.deepEqual(await read(), {
-            disabled: true,
-            title: "Only the owner of this computer takes a manager off it.",
-        });
-        page = owners;
-        await open("people");
-        await show(target.user.name);
-        await jump(target.user.name);
-        assert.equal((await read()).disabled, false);
-        await inPage(`window.confirm = () => true; return JSON.stringify(true);`);
-        await flip(label);
-        await until(
-            () => !app.config.rightHolders(THIS_SERVER, "manages").includes(target.user.id),
-            "the owner to un-choose the manager",
-        );
-    } finally {
-        page = owners;
-        await Promise.all(made.map((browser) => browser.closeAll({ final: true })));
-        await app.removeUser(owner(app), manager.user.id);
-        await app.removeUser(owner(app), target.user.id);
-    }
-});
+        try {
+            // Refused: a manager cannot take another manager off the computer, so that switch is not drawn for them.
+            page = await ownBrowser(made, manager.token);
+            await computer();
+            assert.equal(await present(), false, "no switch a manager cannot flip");
+            // A manager's row on a person's page does not jump: they have no column.
+            await open("people");
+            await show(target.user.name);
+            await showPart("Computers");
+            assert.deepEqual(
+                (await computerRows()).find(([name]) => name === "This server"),
+                ["This server", "In charge here: every session there is theirs.", false],
+            );
+            // Allowed: the owner has the switch, and it takes a click.
+            page = owners;
+            await computer();
+            await until(present, "the owner's switch for a manager");
+            assert.equal(
+                await inPage<boolean>(`return JSON.stringify(${control}.disabled)`),
+                false,
+            );
+            await inPage(`window.confirm = () => true; return JSON.stringify(true);`);
+            await flip(label);
+            await until(
+                () => !app.config.rightHolders(THIS_SERVER, "manages").includes(target.user.id),
+                "the owner to un-choose the manager",
+            );
+        } finally {
+            page = owners;
+            await Promise.all(made.map((browser) => browser.closeAll({ final: true })));
+            await app.removeUser(owner(app), manager.user.id);
+            await app.removeUser(owner(app), target.user.id);
+        }
+    },
+);
 
 test(
     "a person's rights on a computer are two switches of their Permissions, for those who prompt there: flipped, their open session offers the wheel and their own calls at once",
@@ -4854,19 +4868,17 @@ test(
             assert.equal(app.config.givenBy(THIS_SERVER, lou.user.id)[amber], kay.user.id);
             await openGrid(amber);
             await openGrid(work);
-            await until(async () => (await sessionTitles("Lou")).length === 2, "the two sessions");
+            // The session the owner shared with Lou is not hers to take back: the grid does not list it for him.
+            await until(async () => (await sessionTitles("Lou")).length === 1, "her one session");
+            assert.deepEqual(await sessionTitles("Lou"), ["give: her own"]);
             assert.equal(await has("Revoke give: shared with her from Lou"), false);
             assert.equal(await has("Invite Lou to give: shared with her"), false);
-            assert.equal(
-                await has(`Shared by ${owner(app).name}`),
-                false,
-                "the credit is a title, not an action",
-            );
             assert.equal(
                 await inPage<boolean>(
                     `return JSON.stringify(Boolean(document.querySelector(${JSON.stringify(`.ag-cell [title="Shared by ${owner(app).name}"]`)})));`,
                 ),
-                true,
+                false,
+                "a share someone else made is not shown",
             );
             await press("Invite Lou to give: her own");
             await until(() => has("Revoke give: her own from Lou"), "her share refreshes");
@@ -4881,13 +4893,14 @@ test(
                 () => has("Revoke give: her own from Lou"),
                 "the owner can take back that share too",
             );
-            await app.giveFolder(owner(app), THIS_SERVER, lou.user.id, beryl, true);
             page = kays;
+            assert.equal((await access(beryl))?.disabled, false, "hers to give while he has none");
+            await app.giveFolder(owner(app), THIS_SERVER, lou.user.id, beryl, true);
+            // A folder he has from someone else is not hers to change: no menu for it, not a disabled one.
             await until(
-                async () => (await access(beryl))?.disabled === true,
-                "a folder given by someone else cannot be changed",
+                async () => (await access(beryl)) === null,
+                "a folder given by someone else has no menu",
             );
-            assert.match((await access(beryl))!.title, new RegExp(`Given by ${owner(app).name}`));
             assert.equal((await access(amber))?.disabled, false);
             app.setRight(owner(app), {
                 computer: THIS_SERVER,

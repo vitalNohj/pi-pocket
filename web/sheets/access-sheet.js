@@ -235,9 +235,15 @@ function peopleHere(computer) {
     );
 }
 
+/** Of `peopleHere`, the people who have something on the computer: chosen for it, or invited to a session there. */
+function usersHere(computer) {
+    return peopleHere(computer).filter((person) => chosenFor(computer, person) || person.sessions);
+}
+
 /**
- * The people who have a column in a computer's grid: of `peopleHere`, those chosen for it, and those invited to a
- * session there. The list on the left and the People filter both count these.
+ * The people who have a column in a computer's grid: each one the reader can give something to there, or take
+ * something from. In my charge, `usersHere` without its managers: every session there is theirs, so no cell of
+ * theirs can be changed. Else the people the server names (`commands.ts` `sharingOn`).
  */
 function columnPeople(computer) {
     if (computer.mayUse === false) {
@@ -245,11 +251,11 @@ function columnPeople(computer) {
     }
 
     return inCharge(computer)
-        ? peopleHere(computer).filter((person) => chosenFor(computer, person) || person.sessions)
+        ? usersHere(computer).filter((person) => !standing(computer, person).manager)
         : answerPeople(sharingOf(computer));
 }
 
-/** What a computer's row says in Computer: its state, and how many people have a column in its grid. */
+/** What a computer's row says in Computer: its state, and how many other people have something on it. */
 function computerLine(computer) {
     const state =
         computer.id === THIS_SERVER
@@ -263,7 +269,7 @@ function computerLine(computer) {
                   : computer.away
                     ? "Offline"
                     : "Not connected";
-    const people = inCharge(computer) ? columnPeople(computer).length : undefined;
+    const people = inCharge(computer) ? usersHere(computer).length : undefined;
     const owner = !inCharge(computer)
         ? store.state.users.find((each) => each.id === computer.createdBy)?.name
         : undefined;
@@ -435,12 +441,23 @@ function ComputerNotes({ computer }) {
         }`;
 }
 
-/** The people of a computer, each with whether they may use it: under its grid. */
-function UseSwitches({ computer, people }) {
+/**
+ * The people of a computer, each with whether they may use it: under its grid. Only the switches the reader can
+ * flip: not someone invited to one session only, who is chosen for no computer, and not a manager the reader may not
+ * take off it (`unchooseReason`).
+ */
+function UseSwitches({ computer, people: everyone }) {
     const [busy, setBusy] = useState(null);
+    const people = everyone.filter(
+        (person) => !person.sessions && unchooseReason(computer, person) === undefined,
+    );
+
+    if (everyone.length === 0) {
+        return html`<p class="muted small">No one else yet. Invite people in People.</p>`;
+    }
 
     if (people.length === 0) {
-        return html`<p class="muted small">No one else yet. Invite people in People.</p>`;
+        return null;
     }
 
     const flip = async (person) => {
@@ -456,8 +473,7 @@ function UseSwitches({ computer, people }) {
     return html`<div class="ag-people">
         <div class="group-title">People</div>
         ${people.map((person) => {
-            const { chosen } = standing(computer, person);
-            const reason = unchooseReason(computer, person);
+            const { chosen, manager } = standing(computer, person);
             const has = chosen ? sessionsOf(computer, person).length : 0;
             const folders = chosen ? (computer.given?.[person.id] ?? []).length : 0;
 
@@ -467,8 +483,8 @@ function UseSwitches({ computer, people }) {
                     <div class="small"><strong>${person.name}</strong> <span class="muted">${roleWord(person)}</span></div>
                     <div class="muted small">
                         ${
-                            person.sessions
-                                ? "Invited to one session only: not chosen for a computer."
+                            manager
+                                ? "In charge here: every session there is theirs."
                                 : chosen
                                   ? `${folders} ${folders === 1 ? "folder" : "folders"} · ${has} ${has === 1 ? "session" : "sessions"}`
                                   : "Off: they have only the sessions shared with them here."
@@ -477,8 +493,7 @@ function UseSwitches({ computer, people }) {
                 </div>
                 <${Switch}
                     on=${chosen}
-                    disabled=${busy === person.id || Boolean(person.sessions) || reason !== undefined}
-                    title=${reason}
+                    disabled=${busy === person.id}
                     label=${`${person.name} may use ${computer.name}: ${chosen ? "on" : "off"}`}
                     onChange=${() => flip(person)}
                 />
@@ -520,9 +535,10 @@ function ComputerView({ computer, only }) {
 
     const everyone = mine ? peopleHere(computer) : [];
     const chosen = columnPeople(computer);
+    // Asked for someone who has no column because they may not use it yet: said, with where to turn them on.
     const onlyOff = chosen.some((each) => each.id === only)
         ? undefined
-        : everyone.find((each) => each.id === only);
+        : everyone.find((each) => each.id === only && !each.sessions && !chosenFor(computer, each));
     const target = onlyOff || chosen.some((each) => each.id === only) ? only : undefined;
     const hidden =
         picked ??
@@ -681,7 +697,13 @@ function ComputerView({ computer, only }) {
                     ${onlyOff.name} may not use ${computer.name} yet. Turn them on under People, below.
                 </p>`
                         : chosen.length === 0
-                          ? html`<p class="muted small">No one else may use ${computer.name}. Turn someone on below.</p>`
+                          ? html`<p class="muted small">
+                                ${
+                                    mine && usersHere(computer).length > 0
+                                        ? `Everyone else on ${computer.name} is in charge of it: there is nothing to give them.`
+                                        : `No one else may use ${computer.name}. Turn someone on below.`
+                                }
+                            </p>`
                           : people.length === 0
                             ? html`<p class="muted small">No one is shown. Choose people in the filter.</p>`
                             : null

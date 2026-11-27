@@ -504,12 +504,10 @@ export type SharingOn = {
     /** The people there is something to give to there, or to take back from, in the order of People. */
     people: {
         id: string;
-        /** By session id: how they have each session whoever asks may share with them, or take back from them. */
-        sessions: Record<string, Pick<SharingRow, "state" | "give" | "take" | "by" | "reason">>;
-        /** The folders whoever asks can give them there, or gave them, and the ones they have from someone else. */
+        /** By session id: how they have each session whoever asks can share with them now, or take back from them. */
+        sessions: Record<string, Pick<SharingRow, "state" | "give" | "take" | "by">>;
+        /** The folders whoever asks can set to another level for them: to give, to take back, or to change. */
         folders: SharingFolder[];
-        /** Why no folder can be given to them there. */
-        reason?: string;
     }[];
 };
 
@@ -1782,9 +1780,9 @@ export class Commands {
      * for someone who uses it and is not in charge of it. The same answers as `sharingWith`, by computer: each
      * person's sessions (`#sharingRows`) and folders (`#sharingFolders`). A person is named when `user` can do
      * something for them there: share a session or take one back, give a folder, take it back, or change its level.
-     * What they have from someone else is told beside that, and never names them by itself: with nothing of `user`'s
-     * to give or take there, nobody is named. Who is in charge of the computer is never named: everything there is
-     * theirs, so there is no row and no folder for them.
+     * Only that is told: what they have from someone else is not `user`'s to change, so the grid does not show it, and
+     * with nothing of `user`'s to give or take there, nobody is named. Who is in charge of the computer is never
+     * named: everything there is theirs, so there is no row and no folder for them.
      *
      * For whoever prompts and may use the computer (`access.ts` `mayUse`). One they may not use answers as one that is
      * not linked, so nothing tells them it is there.
@@ -1810,21 +1808,19 @@ export class Commands {
                 continue;
             }
 
-            const rows = this.#sharingRows(user, person, list, new Map());
-            const place = this.#sharingFolders(user, person, computer);
-
-            const folders = (place?.folders ?? []).filter(
-                (each) => each.has || each.give || each.take,
+            // The grid shows whoever asks only what is theirs to change: a session to share with this person or to
+            // take back from them, and a folder with a level to set (its cell acts only by its Access menu). What the
+            // person has from someone else is not told: a session someone else shared with them, one they started, a
+            // folder someone else gave them.
+            const rows = this.#sharingRows(user, person, list, new Map()).filter(
+                (row) => row.give || row.take,
+            );
+            const folders = (this.#sharingFolders(user, person, computer)?.folders ?? []).filter(
+                (each) => each.levels.length > 1,
             );
 
-            // Nothing to do for them here: no session to share with them or to take back, and no folder to give, to
-            // take back, or to set to another level. A folder two people were given by someone else, or a session
-            // someone else shared with them, is no reason for a column.
-            if (
-                !rows.some((row) => row.give || row.take) &&
-                // A folder's cell acts only by its Access menu, so only a level to set makes a column.
-                !folders.some((each) => each.levels.length > 1)
-            ) {
+            // Nothing to do for them here: they are not named.
+            if (rows.length === 0 && folders.length === 0) {
                 continue;
             }
 
@@ -1838,12 +1834,10 @@ export class Commands {
                             give: row.give,
                             take: row.take,
                             ...(row.by === undefined ? {} : { by: row.by }),
-                            ...(row.reason === undefined ? {} : { reason: row.reason }),
                         },
                     ]),
                 ),
                 folders,
-                ...(place?.reason === undefined ? {} : { reason: place.reason }),
             });
         }
 
