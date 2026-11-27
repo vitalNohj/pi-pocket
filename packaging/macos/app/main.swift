@@ -545,6 +545,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             // Only the initiating top-frame link can establish download provenance.
             chrome.firstDownload = eligibleDownload(action) ? url : nil
         }
+        // A file the active Pi Pocket page made can use the Save dialog without navigating to its blob URL.
+        if action.shouldPerformDownload, page?.bridge == true, sameOrigin(webView.url),
+            isMainServerFrame(action.sourceFrame), let scheme = url?.scheme, scheme == "blob" || scheme == "data" {
+            decisionHandler(.download)
+            return
+        }
         if action.targetFrame?.isMainFrame != false && !inApp(url, from: webView.url) {
             if action.navigationType == .linkActivated, let url = url, ["http", "https", "mailto"].contains(url.scheme ?? "") {
                 NSWorkspace.shared.open(url)

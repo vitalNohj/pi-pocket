@@ -91,6 +91,9 @@ $out = Join-Path $env:RUNNER_TEMP 'window-evidence'
 $env:PI_POCKET_DESKTOP_STATE = Join-Path $env:RUNNER_TEMP 'window-state'
 $env:PI_POCKET_DIR = Join-Path $env:RUNNER_TEMP 'window-data'
 New-Item -ItemType Directory -Force $out, $env:PI_POCKET_DESKTOP_STATE | Out-Null
+# Select local Home only in the fixture. A real fresh install must show both choices.
+Set-Content -LiteralPath (Join-Path $env:PI_POCKET_DESKTOP_STATE 'desktop.json') -Encoding utf8NoBOM `
+    -Value '{"schemaVersion":1,"preferences":{"home":{"mode":"local"}}}'
 $preferences = Join-Path $env:PI_POCKET_DESKTOP_STATE 'window.json'
 $downloads = Join-Path $env:USERPROFILE 'Downloads'
 New-Item -ItemType Directory -Force $downloads | Out-Null
