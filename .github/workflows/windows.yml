@@ -4,8 +4,8 @@
 #   without its menu, checks that it answers HTTP and that the sign-in link works, and stops it. Then it opens the
 #   desktop app (Pi Pocket.exe) as the Start menu does: no console window, a server on this PC only, a WebView2 window
 #   that signed in with a one-time link, one instance only, and Quit that stops it all. An older package makes the app
-#   show its error and start nothing, and Setup puts its own package back; a newer one stays. It uninstalls while the
-#   app runs, which must stop it and keep the data folder.
+#   show its error without starting a server, and Setup puts its own package back; a newer one stays.
+#   It uninstalls while the app runs, which must stop it and keep the data folder.
 # - checks: the type check and the part of the test suite that is known to pass on Windows, with the background task
 #   and quiet-limit tests.
 name: Windows
@@ -422,10 +422,22 @@ jobs:
                   } catch {
                       Write-Host "No screenshot: $($_.Exception.Message)"
                   }
-                  $nodes = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.ExecutablePath -like "$env:APP\*" -and $_.CommandLine -notlike '*desktop-assets*' })
+                  # Settings can read the separate runner's status while the server package is blocked.
+                  # Allow only that exact bundled CLI command, not a running runner or a server.
+                  $runtime = Join-Path $env:APP 'node\node.exe'
+                  $runner = Join-Path $env:APP 'app\node_modules\pi-pocket-runner\bin\pi-pocket-runner.js'
+                  $link = Join-Path $env:APP 'desktop\runner\link.json'
+                  $status = '"{0}" "{1}" "status" "--config" "{2}"' -f $runtime, $runner, $link
+                  $nodes = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object {
+                      $_.ExecutablePath -like "$env:APP\*" -and $_.CommandLine -notlike '*desktop-assets*'
+                  })
+                  if ($nodes | Where-Object CommandLine -eq $status) { Write-Host 'The separate runner checked its local link' }
+                  $unexpected = @($nodes | Where-Object CommandLine -ne $status)
                   Start-Process -FilePath (Join-Path $env:APP 'Pi Pocket.exe') -ArgumentList '--quit' -Wait
                   if (-not $app.WaitForExit(30000)) { throw 'The app did not quit' }
-                  if ($nodes.Count -gt 0) { throw "The app started the older package" }
+                  if ($unexpected.Count -gt 0) { throw "The app started an unexpected installed Node process (IDs: $($unexpected.ProcessId -join ', '))" }
+                  $left = @(Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$env:APP\*" })
+                  if ($left.Count -gt 0) { throw "Quit left $($left.Count) node.exe processes after the repair window" }
                   $run = Start-Process -FilePath $env:SETUP -Wait -PassThru -ArgumentList @(
                       "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=startup", "/LOG=$(Join-Path $env:RUNNER_TEMP 'setup-again.log')"
                   )
